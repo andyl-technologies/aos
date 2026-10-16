@@ -127,6 +127,20 @@ impl core::error::Error for ViewError {}
 pub enum EndpointKind {
     /// A directory used for SDK checkout or a kernel mount.
     Directory,
+    /// A kernel filesystem mount directory.
+    MountPath,
+    /// A file backing a persistent-memory device.
+    DeviceFile,
+    /// A vhost-user monitor socket.
+    VhostUserSocket,
+    /// A network block device socket or TCP address.
+    NbdSocket,
+    /// A gRPC listening address.
+    GrpcListen,
+    /// A native Git listening address.
+    GitListen,
+    /// An SSH listening address.
+    SshListen,
     /// A Unix-domain socket.
     UnixSocket,
     /// An HTTP URL prefix.
@@ -166,7 +180,7 @@ pub enum WriterMode {
 
 /// Holds the pure configuration of one registered exposure (SURF-29).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Exposure {
+pub struct Exposure<Options = ()> {
     /// Stable identifier unique within an instance.
     pub id: String,
     /// Content selector.
@@ -181,6 +195,8 @@ pub struct Exposure {
     pub reader: ReaderMode,
     /// Mutation acknowledgment mode, absent for read-only surfaces.
     pub writer: Option<WriterMode>,
+    /// Surface-specific options with no prescribed serialization.
+    pub options: Options,
 }
 
 /// Names the metadata kind required at a schema path.

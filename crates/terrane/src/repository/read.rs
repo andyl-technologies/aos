@@ -45,6 +45,63 @@ where
     C: Clock + Sync,
     F: LocalFs + Sync,
 {
+    /// Validates a resolved view's schema using authorized metadata only.
+    ///
+    /// Returned properties are canonical allowed values equivalent to the
+    /// effective recorded policy; private history and backend access stay here.
+    ///
+    /// # Errors
+    /// Rejects authorization, policy, subtree and schema failures before any
+    /// object plaintext is requested.
+    pub async fn validate_view_schema(
+        &self,
+        view: &View,
+        token: &[u8],
+        surface: &str,
+        schema: &crate::surface::TreeSchema,
+    ) -> Result<crate::surface::ViewMetadata, Error> {
+        let (snapshot, entries) = self.metadata(view, token, surface).await?;
+        let minimum = self.chunk_profile().minimum() as u64;
+        let mut path = b"/".to_vec();
+        path.extend_from_slice(&view.subtree);
+        let occurrences = snapshot.evidence.occurrences(minimum)?;
+        let occurrence = occurrences.iter()
+            .filter(|occurrence| path == occurrence.path || path.strip_prefix(&occurrence.path)
+                .is_some_and(|suffix| occurrence.path == b"/" || suffix.starts_with(b"/")))
+            .max_by_key(|occurrence| occurrence.path.len()).ok_or(Error::Absent)?;
+        let layers = occurrence.layers.iter().map(|(properties, overrides)| {
+            terrane_core::properties::RootLayer { properties, overrides }
+        }).collect::<Vec<_>>();
+        let guard = self.coordinator.guard();
+        let effective = snapshot.interpretation.resolve(&layers, guard.defaults_for(&snapshot.evidence))?;
+        let mut properties = Vec::new();
+        for (name, allowed) in &schema.required_properties {
+            let mut matched = None;
+            for value in allowed {
+                let property = tree_format::Property { name, value };
+                let (key, candidate) = terrane_core::properties::validate_property(&property)
+                    .map_err(|_| Error::Schema)?;
+                if effective.get(key) == Some(&candidate) { matched = Some(value.clone()); break; }
+            }
+            properties.push((name.clone(), matched.ok_or(Error::Schema)?));
+        }
+        let root_attributes = if view.subtree.is_empty() {
+            Vec::new()
+        } else {
+            let (location, _) = snapshot.history.locate(snapshot.commit.identity(), &view.subtree)
+                .map_err(|_| Error::Absent)?;
+            snapshot.history.entry(&location).map_err(|_| Error::Absent)?.attrs
+                .iter().map(|attribute| (attribute.name.to_owned(), attribute.value.to_vec())).collect()
+        };
+        let metadata = crate::surface::ViewMetadata {
+            commit: snapshot.commit.identity(), minimum_chunk_size: minimum,
+            entries: entries.into_iter().map(|entry| (entry.key, entry.encoded)).collect(),
+            root_attributes, properties,
+        };
+        crate::surface::validate_schema(schema, &metadata)?;
+        Ok(metadata)
+    }
+
     /// Reads one authenticated file under the view's current authority.
     ///
     /// The returned identity is the exact immutable commit that supplied the

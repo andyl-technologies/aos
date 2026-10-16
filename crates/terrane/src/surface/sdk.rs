@@ -38,7 +38,10 @@ where
         if endpoint.kind != EndpointKind::Directory {
             return Err(Error::Unrealizable);
         }
-        let resolved = self.repository.read_view(&view, self.token, "sdk").await?;
+        let metadata = self.repository.validate_view_schema(&view, self.token, "sdk", &self.schema()).await?;
+        let mut pinned = view;
+        pinned.target = super::ViewTarget::Commit(metadata.commit);
+        let resolved = self.repository.read_view(&pinned, self.token, "sdk").await?;
         self.repository
             .materialize_checkout(Path::new(&endpoint.address), &resolved)
             .await?;

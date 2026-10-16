@@ -118,6 +118,15 @@ pub struct FeatureOutcome {
     pub reason: String,
 }
 
+/// Reports a completed mutation without treating a failure as an acknowledgment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommitOutcome {
+    /// Repository publication completed durably.
+    Committed(Digest),
+    /// Publication failed and the consumer must receive its native error.
+    Failed(String),
+}
+
 /// Reports the commit and behavior of one exposure (SURF-27, SURF-28).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExposureStatus {
@@ -134,7 +143,7 @@ pub struct ExposureStatus {
     /// Writer mode, absent for read-only presentations.
     pub writer: Option<WriterMode>,
     /// Whether the most recent mutation committed; absent before mutations.
-    pub last_commit: Option<Digest>,
+    pub last_commit: Option<CommitOutcome>,
     /// Metadata schema state.
     pub schema: SchemaState,
     /// Current exposure lifecycle.

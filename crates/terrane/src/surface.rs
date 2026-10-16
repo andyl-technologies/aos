@@ -10,6 +10,22 @@ pub use terrane_core::surface::{
 };
 
 #[cfg(feature = "std")]
+pub(crate) mod presentation;
+
+#[cfg(feature = "std")]
+mod exposure;
+#[cfg(feature = "std")]
+pub use exposure::{PreparedExposures, TokenResolver};
+
+#[cfg(feature = "std")]
+mod schema;
+#[cfg(feature = "std")]
+pub use schema::{ViewMetadata, validate_schema};
+
+mod registry;
+pub use registry::{SurfaceRegistration, registration};
+
+#[cfg(feature = "std")]
 mod native;
 #[cfg(feature = "std")]
 pub use native::*;
