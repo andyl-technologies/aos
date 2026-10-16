@@ -6,6 +6,7 @@
 //! a live owner with a constructor quote or an absent initial-phase bank.
 
 use super::*;
+use crate::node_qualification::QualificationError;
 use crucible::node_contract::{ActivationRecord, RuntimeError};
 use std::mem::{size_of, size_of_val};
 
@@ -123,7 +124,7 @@ impl PacketCompleteRestorationPrebirth {
             .fresh_graph
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
-        if !graph.plan().is_same_original_plan_data(plan) {
+        if !graph.plan().is_original_plan_data(plan) {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.factory

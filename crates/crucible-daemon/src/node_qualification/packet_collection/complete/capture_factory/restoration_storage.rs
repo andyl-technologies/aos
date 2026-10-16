@@ -6,6 +6,7 @@
 //! native Source3 and runtime owners receive no implicit alias refund.
 
 use super::*;
+use crate::node_qualification::QualificationError;
 use crate::node_qualification::packet_collection::complete::retained::Counter;
 use crucible::node_contract::RuntimeError;
 

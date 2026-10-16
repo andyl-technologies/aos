@@ -13,7 +13,7 @@ use crucible::node_admission::{
 };
 use crucible::node_contract::RuntimeError;
 use crucible_node_contract::Id;
-use std::mem::size_of;
+use std::{mem::size_of, rc::Weak};
 
 pub(super) struct OriginalRestorationRequestOwners {
     prepare: Option<[Id; 3]>,
