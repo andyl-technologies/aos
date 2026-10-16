@@ -47,7 +47,7 @@ case_name=sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs
 python3 "$src/tests/terrane/check_native_gate.py" inventory \
     "$TERRANE_PRESENTATION_EVIDENCE/inventory.log" "[\"$case_name\"]"
 
-if ! "$binary" "$case_name" --exact > "$TERRANE_PRESENTATION_EVIDENCE/execution.log" 2>&1; then
+if ! "$binary" "$case_name" --exact --ignored > "$TERRANE_PRESENTATION_EVIDENCE/execution.log" 2>&1; then
     cat "$TERRANE_PRESENTATION_EVIDENCE/execution.log"
     exit 1
 fi

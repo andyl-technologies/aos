@@ -188,6 +188,7 @@ async fn prepared_snapshots_recheck_current_authority_before_startup() -> TestRe
 }
 
 #[tokio::test]
+#[ignore = "Requires native ext4 xattrs; executed by gate:surface-status"]
 async fn sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs() -> TestResult {
     use std::os::unix::fs::MetadataExt;
     use terrane::repository::PreparedTree;
