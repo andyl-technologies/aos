@@ -284,6 +284,7 @@ def install(helper_path):
         ]))
         wrapper.chmod(0o755)
         for path in [event_path, temporary / f"configured-sdk-{kind}-launch.json",
+                     temporary / f"configured-sdk-{kind}-runner",
                      temporary / f"configured-sdk-{kind}-discovery.log"]:
             shutil.copy2(path, output / "share" / path.name)
         if kind == "unit":

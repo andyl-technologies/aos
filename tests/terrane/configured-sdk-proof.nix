@@ -81,6 +81,9 @@
       actor setup "$container/deny" 840
       [ -s "$container/deny/first.cap" ]
       [ -d "$container/deny/authority" ]
+      [ -s "$container/deny/authority/issuer.seed" ]
+      [ -s "$container/deny/authority/terminal.seed" ]
+      [ -s "$container/deny/authority/token.cbor" ]
       [ -s "$container/deny/second.cap" ]
       rm -- "$container/deny/second.cap"
       actor deny-late "$container/deny" 840
