@@ -14,7 +14,6 @@
   # Repository sources remain model-specific; installed companion filenames
   # are fixed by the source-owned controller and auditor import contract.
   helperSources = {
-    "native-controller-temporary-root-check.py" = ./_gem5/native-controller-temporary-root-check.py;
     "native-controller.py" = ./_gem5/native-controller.py;
     "native-controller-models.py" = ./_gem5/native-controller-models.py;
     "native-controller-arm-root.py" = ./_gem5/native-controller-arm-root.py;
@@ -83,6 +82,8 @@ in
         script = ''
           mkdir helper-source
           ${helperCopies}
+          # This executed check is source provenance, not a native runtime helper.
+          cp ${./_gem5/native-controller-temporary-root-check.py} helper-source/native-controller-temporary-root-check.py
         '';
       }
       {
@@ -90,6 +91,17 @@ in
         script = ''
           export PYTHONDONTWRITEBYTECODE=1
           ${python3}/bin/python3 -I -B ${helperSource}/native-controller-temporary-root-check.py
+          ${python3}/bin/python3 -I -B - helper-source <<'PY'
+          import hashlib, json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          check = "native-controller-temporary-root-check.py"
+          record = {
+              "schema": "crucible.gem5.root-qualification-sources.v1",
+              "controller_sha256": hashlib.sha256((root / "native-controller.py").read_bytes()).hexdigest(),
+              "checks": {check: hashlib.sha256((root / check).read_bytes()).hexdigest()},
+          }
+          pathlib.Path("qualification-sources.json").write_text(json.dumps(record, sort_keys=True) + "\n")
+          PY
           ${python3}/bin/python3 -B ${helperSource}/native-model-assets-check.py \
             ${helperSource}/native-model-assets.py
           ${python3}/bin/python3 -B ${helperSource}/full-system-process-image-audit-check.py
@@ -117,6 +129,7 @@ in
           cp summary.json "$out/share/checks/arm-linux-shared-controller.json"
           cp ${sourceManifest} "$out/share/gem5/arm-controller-proof-source/manifest.json"
           cp ${helperSource}/*.py "$out/share/gem5/arm-controller-proof-source/"
+          cp qualification-sources.json "$out/share/gem5/arm-controller-proof-source/qualification-sources.json"
           cp ${./gem5-shared-controller-arm-root-check.nix} "$out/share/gem5/arm-controller-proof-source/recipe.nix"
           cp ${../../LICENSES/MIT.txt} "$out/share/licenses/gem5-shared-controller-arm-root-check/LICENSE"
         '';

@@ -38,6 +38,34 @@ ASSET_ROLES = {
 }
 
 
+
+QUALIFICATION_ROLES = {"source_manifest", "temporary_root_check"}
+TEMPORARY_ROOT_CHECK = "native-controller-temporary-root-check.py"
+
+
+def validate_qualification_document(source, controller_sha256, check_sha256):
+    """Checks executed build inputs separately from native runtime artifacts."""
+    if (type(source) is not dict
+            or set(source) != {"schema", "controller_sha256", "checks"}
+            or source["schema"] != "crucible.gem5.root-qualification-sources.v1"
+            or source["controller_sha256"] != controller_sha256
+            or source["checks"] != {TEMPORARY_ROOT_CHECK: check_sha256}):
+        raise ValueError("Root qualification source receipt differs from installed inputs")
+
+
+def qualification_inputs(selected, artifacts):
+    """Measures the closed source-only inputs and checks their controller binding."""
+    if type(selected) is not dict or set(selected) != QUALIFICATION_ROLES:
+        raise ValueError("Root qualification input roles are incomplete or unknown")
+    inputs = {role: measure(path) for role, path in selected.items()}
+    source = read_document(inputs["source_manifest"]["path"])
+    validate_qualification_document(
+        source, artifacts["controller"]["sha256"],
+        inputs["temporary_root_check"]["sha256"],
+    )
+    return inputs
+
+
 def fingerprint(metadata):
     return tuple(getattr(metadata, name) for name in (
         "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_mode", "st_nlink"))
@@ -174,12 +202,13 @@ def validate_witness(witness, artifacts, original):
 
 
 def manifest(specification):
-    if type(specification) is not dict or set(specification) != {"artifacts"}:
+    if type(specification) is not dict or set(specification) != {"artifacts", "qualification_inputs"}:
         raise ValueError("x86 root profile specification differs")
     selected = specification["artifacts"]
     if type(selected) is not dict or set(selected) != ROLES:
         raise ValueError("x86 root profile roles are missing or unknown")
     artifacts = {role: measure(path) for role, path in selected.items()}
+    checks = qualification_inputs(specification["qualification_inputs"], artifacts)
     original = read_document(artifacts["assets_manifest"]["path"])
     verifier = load("crucible_x86_root_assets_verifier", artifacts["assets_verifier"]["path"])
     verifier.verify_data(original)
@@ -195,7 +224,7 @@ def manifest(specification):
     witness = read_document(artifacts["mechanism_evidence"]["path"])
     validate_witness(witness, artifacts, original)
     return {
-        "schema": "crucible.gem5.installed-x86-root-profile-mechanism.v1",
+        "schema": "crucible.gem5.installed-x86-root-profile-mechanism.v2",
         "policy_id": "x86-linux-pc-atomic-root-functional-v1",
         "native_dialect": "crucible.gem5.x86-linux-native/1",
         "host_abi": {"os": "linux", "architecture": "x86_64", "endian": "little",
@@ -209,6 +238,7 @@ def manifest(specification):
                                        "direction": "output", "causal_parent": "0"}]},
         "configuration_root": original["configuration"]["root"],
         "qualification": dict(QUALIFICATION), "artifacts": artifacts,
+        "qualification_inputs": checks,
     }
 
 

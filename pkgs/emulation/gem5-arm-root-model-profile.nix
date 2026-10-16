@@ -15,6 +15,10 @@
   native = gem5-native-original-scope-foundation;
   specification = builtins.toJSON {
     configuration_tree = "${native}/share/gem5/configs";
+    qualification_inputs = {
+      source_manifest = "${source}/qualification-sources.json";
+      temporary_root_check = "${source}/native-controller-temporary-root-check.py";
+    };
     artifacts = {
       native_executable = "${native}/bin/gem5";
       native_source_manifest = "${native}/share/gem5/source-manifest.json";

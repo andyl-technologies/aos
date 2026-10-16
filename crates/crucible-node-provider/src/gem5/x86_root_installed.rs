@@ -111,6 +111,7 @@ impl InstalledX86RootModel {
         for artifact in artifacts.values() {
             remeasure(artifact)?;
         }
+        validate_qualification_sources(&document, &artifacts)?;
         Ok(Self { document })
     }
 
@@ -267,9 +268,40 @@ fn remeasure(artifact: &Artifact) -> Result<(), ProviderError> {
     Ok(())
 }
 
+fn validate_qualification_sources(
+    document: &Value, artifacts: &BTreeMap<String, Artifact>,
+) -> Result<(), ProviderError> {
+    let Some(raw) = document.get("qualification_inputs") else {
+        return Ok(());
+    };
+    let inputs: BTreeMap<String, Artifact> = serde_json::from_value(raw.clone())
+        .map_err(|_| ProviderError::Frame("invalid Root qualification input records"))?;
+    // validate_scope already checked the closed v2 namespace. Each independent
+    // source file is still remeasured; no test file is staged into the guest.
+    for artifact in inputs.values() {
+        remeasure(artifact)?;
+    }
+    let source = inputs.get("source_manifest")
+        .ok_or(ProviderError::Frame("Root qualification receipt absent"))?;
+    let check = inputs.get("temporary_root_check")
+        .ok_or(ProviderError::Frame("Root qualification test absent"))?;
+    let controller = artifacts.get("controller")
+        .ok_or(ProviderError::Frame("Root native controller absent"))?;
+    let value = super::installed_qualification::read_source_document(
+        immutable_file(&source.path, MAX_MANIFEST)?, MAX_MANIFEST as usize,
+    )?;
+    super::installed_qualification::validate_source_document(
+        &value, &controller.sha256, &check.sha256,
+    )
+}
+
 pub(super) fn validate_scope(document: &Value) -> Result<(), ProviderError> {
-    if document["schema"] != "crucible.gem5.installed-x86-root-profile-mechanism.v1"
-        || document["policy_id"] != "x86-linux-pc-atomic-root-functional-v1"
+    super::installed_qualification::validate_profile_version(
+        document,
+        "crucible.gem5.installed-x86-root-profile-mechanism.v1",
+        "crucible.gem5.installed-x86-root-profile-mechanism.v2",
+    )?;
+    if document["policy_id"] != "x86-linux-pc-atomic-root-functional-v1"
         || document["native_dialect"] != "crucible.gem5.x86-linux-native/1"
         || document["host_abi"]
             != serde_json::json!({"os":"linux","architecture":"x86_64",
@@ -349,4 +381,22 @@ mod tests {
         promoted["qualification"]["execution_admission_qualified"] = true.into();
         assert!(validate_scope(&promoted).is_err());
     }
+    #[test]
+    fn current_profile_requires_separate_qualification_inputs() {
+        let mut document: Value = serde_json::from_str(
+            include_str!("x86-root-scope-fixture.json"),
+        ).unwrap();
+        document["schema"] = "crucible.gem5.installed-x86-root-profile-mechanism.v2".into();
+        assert!(validate_scope(&document).is_err());
+        document["qualification_inputs"] = serde_json::json!({
+            "source_manifest":{"path":"/nix/store/inert-receipt","length":"1","sha256":"a".repeat(64)},
+            "temporary_root_check":{"path":"/nix/store/inert-check","length":"1","sha256":"b".repeat(64)},
+        });
+        validate_scope(&document).unwrap();
+        document["qualification_inputs"]["unexpected"] = serde_json::json!({});
+        assert!(validate_scope(&document).is_err());
+        document["schema"] = "crucible.gem5.installed-x86-root-profile-mechanism.v1".into();
+        assert!(validate_scope(&document).is_err());
+    }
+
 }

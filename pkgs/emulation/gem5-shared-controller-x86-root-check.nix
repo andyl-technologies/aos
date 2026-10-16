@@ -10,7 +10,6 @@
 }: let
   assets = gem5-x86-linux-model-assets;
   helperSources = {
-    "native-controller-temporary-root-check.py" = ./_gem5/native-controller-temporary-root-check.py;
     "native-controller-x86-root.py" = ./_gem5/native-controller-x86-root.py;
     "native-controller-x86-root-model.py" = ./_gem5/native-controller-x86-root-model.py;
     "native-controller-x86-root-model-check.py" = ./_gem5/native-controller-x86-root-model-check.py;
@@ -40,6 +39,8 @@ in
         script = ''
           mkdir helper-source
           ${helperCopies}
+          # This executed check is source provenance, not a native runtime helper.
+          cp ${./_gem5/native-controller-temporary-root-check.py} helper-source/native-controller-temporary-root-check.py
           ${python3}/bin/python3 -I -B - "${assets}/share/crucible/gem5/x86-linux-assets.json" <<'PY'
           import json, pathlib, shutil, sys
           document = json.loads(pathlib.Path(sys.argv[1]).read_text())
@@ -58,6 +59,17 @@ in
         script = ''
           export PYTHONDONTWRITEBYTECODE=1
           ${python3}/bin/python3 -I -B helper-source/native-controller-temporary-root-check.py
+          ${python3}/bin/python3 -I -B - helper-source <<'PY'
+          import hashlib, json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          check = "native-controller-temporary-root-check.py"
+          record = {
+              "schema": "crucible.gem5.root-qualification-sources.v1",
+              "controller_sha256": hashlib.sha256((root / "native-controller.py").read_bytes()).hexdigest(),
+              "checks": {check: hashlib.sha256((root / check).read_bytes()).hexdigest()},
+          }
+          pathlib.Path("qualification-sources.json").write_text(json.dumps(record, sort_keys=True) + "\n")
+          PY
           ${python3}/bin/python3 -B helper-source/native-controller-x86-root-model-check.py
           export LD_LIBRARY_PATH="${abseil-cpp}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           ${python3}/bin/python3 -I -B - <<'PY'
@@ -84,6 +96,7 @@ in
           mkdir -p "$out/share/checks" "$out/share/gem5/x86-root-proof-source"
           cp result.json "$out/share/checks/x86-root-shared-controller.json"
           cp helper-source/*.py "$out/share/gem5/x86-root-proof-source/"
+          cp qualification-sources.json "$out/share/gem5/x86-root-proof-source/qualification-sources.json"
           cp ${./gem5-shared-controller-x86-root-check.nix} "$out/share/gem5/x86-root-proof-source/recipe.nix"
           cp ${../../LICENSES/MIT.txt} "$out/share/gem5/x86-root-proof-source/LICENSE"
         '';

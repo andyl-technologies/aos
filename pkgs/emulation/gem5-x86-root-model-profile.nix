@@ -12,6 +12,10 @@
   specification = builtins.toJSON {
     assets_manifest = "${assets}/share/crucible/gem5/x86-linux-assets.json";
     assets_verifier = "${assets.source}/x86-linux-bundle.py";
+    qualification_inputs = {
+      source_manifest = "${proof}/share/gem5/x86-root-proof-source/qualification-sources.json";
+      temporary_root_check = "${proof}/share/gem5/x86-root-proof-source/native-controller-temporary-root-check.py";
+    };
     selected = {
       image_guard = "${gem5-process-custody}/lib/libcrucible-resource-custody.so";
       dmtcp_launch = "${dmtcp}/bin/dmtcp_launch";
@@ -77,7 +81,9 @@ in
               "profile_recipe": str(root / "recipe.nix"),
               "root_model_check": str(root / "native-controller-x86-root-model-check.py"),
           })
-          pathlib.Path("profile-inputs.json").write_text(json.dumps({"artifacts": roles}))
+          pathlib.Path("profile-inputs.json").write_text(json.dumps({
+              "artifacts": roles, "qualification_inputs": selection["qualification_inputs"],
+          }))
           PY
           ${python3}/bin/python3 -I -B "$source/x86-root-model-profile.py" \
             profile-inputs.json "$out/share/crucible/gem5/x86-root-model-profile.json"

@@ -103,3 +103,5 @@ pub use x86_root_source::X86RootHistoricalSource;
 
 mod native_command;
 pub use native_command::{NativeCommandConstructionBudget, NativeCommandConstructionPolicy};
+
+mod installed_qualification;

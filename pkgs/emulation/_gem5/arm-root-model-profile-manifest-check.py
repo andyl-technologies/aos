@@ -164,8 +164,10 @@ class EvidenceTests(unittest.TestCase):
 
     def test_changed_source_recipe_helpers_or_terminal_extension_refuse(self):
         specification = {"artifacts": {role: record["path"] for role, record in bundle["artifacts"].items()},
-                         "configuration_tree": bundle["configuration_root"]}
-        by_path = {record["path"]: record for record in bundle["artifacts"].values()}
+                         "configuration_tree": bundle["configuration_root"],
+                         "qualification_inputs": {role: record["path"] for role, record in bundle["qualification_inputs"].items()}}
+        by_path = {record["path"]: record for record in (
+            *bundle["artifacts"].values(), *bundle["qualification_inputs"].values())}
         original_read = profile.read_document
         cases = (("source_manifest", "recipe_sha256"),
                  ("terminal_runtime_manifest", "patchSha256"),
@@ -200,8 +202,10 @@ class EvidenceTests(unittest.TestCase):
 
     def test_changed_complete_configuration_tree_refuses(self):
         specification = {"artifacts": {role: record["path"] for role, record in bundle["artifacts"].items()},
-                         "configuration_tree": bundle["configuration_root"]}
-        by_path = {record["path"]: record for record in bundle["artifacts"].values()}
+                         "configuration_tree": bundle["configuration_root"],
+                         "qualification_inputs": {role: record["path"] for role, record in bundle["qualification_inputs"].items()}}
+        by_path = {record["path"]: record for record in (
+            *bundle["artifacts"].values(), *bundle["qualification_inputs"].values())}
         changed = copy.deepcopy(bundle["model"]["configuration_tree"])
         changed["files"] = "167"
         with patch.object(profile, "measure", side_effect=lambda path: by_path[str(path)]), \

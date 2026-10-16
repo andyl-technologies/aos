@@ -41,6 +41,34 @@ SOURCE_ROLES = {
 }
 
 
+
+QUALIFICATION_ROLES = {"source_manifest", "temporary_root_check"}
+TEMPORARY_ROOT_CHECK = "native-controller-temporary-root-check.py"
+
+
+def validate_qualification_document(source, controller_sha256, check_sha256):
+    """Checks executed build inputs separately from native runtime artifacts."""
+    if (type(source) is not dict
+            or set(source) != {"schema", "controller_sha256", "checks"}
+            or source["schema"] != "crucible.gem5.root-qualification-sources.v1"
+            or source["controller_sha256"] != controller_sha256
+            or source["checks"] != {TEMPORARY_ROOT_CHECK: check_sha256}):
+        raise ValueError("Root qualification source receipt differs from installed inputs")
+
+
+def qualification_inputs(selected, artifacts):
+    """Measures the closed source-only inputs and checks their controller binding."""
+    if type(selected) is not dict or set(selected) != QUALIFICATION_ROLES:
+        raise ValueError("Root qualification input roles are incomplete or unknown")
+    inputs = {role: measure(path) for role, path in selected.items()}
+    source = read_document(inputs["source_manifest"]["path"])
+    validate_qualification_document(
+        source, artifacts["controller"]["sha256"],
+        inputs["temporary_root_check"]["sha256"],
+    )
+    return inputs
+
+
 def fingerprint(metadata):
     return tuple(getattr(metadata, field) for field in (
         "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_nlink", "st_mode"
@@ -192,10 +220,11 @@ def validate_witness(witness):
 
 
 def manifest(specification):
-    if (set(specification) != {"artifacts", "configuration_tree"}
+    if (set(specification) != {"artifacts", "configuration_tree", "qualification_inputs"}
             or set(specification["artifacts"]) != ARTIFACT_ROLES):
         raise ValueError("ARM installed artifact roles are incomplete or unknown")
     artifacts = {role: measure(path) for role, path in specification["artifacts"].items()}
+    checks = qualification_inputs(specification["qualification_inputs"], artifacts)
     witness = read_document(artifacts["mechanism_evidence"]["path"])
     validate_witness(witness)
     source = read_document(artifacts["source_manifest"]["path"])
@@ -232,7 +261,7 @@ def manifest(specification):
             or os.sysconf("SC_PAGE_SIZE") != 4096):
         raise ValueError("ARM native process image requires its fixed source-built host ABI")
     return {
-        "schema": "crucible.gem5.installed-arm-root-profile-mechanism.v1",
+        "schema": "crucible.gem5.installed-arm-root-profile-mechanism.v2",
         "policy_id": "arm-linux-vexpress-atomic-root-functional-v1",
         "native_dialect": "crucible.gem5.arm-linux-native/1",
         "host_abi": {"os": "linux", "architecture": "x86_64", "endian": "little",
@@ -245,6 +274,7 @@ def manifest(specification):
                   "exposed_facets": [{"kind": "serial", "terminal": "system.terminal",
                                       "direction": "output", "causal_parent": "0"}]},
         "artifacts": artifacts,
+        "qualification_inputs": checks,
         "configuration_root": specification["configuration_tree"],
         "witness": witness,
         "qualification": {"opaque_capture_mechanism_verified": True,
