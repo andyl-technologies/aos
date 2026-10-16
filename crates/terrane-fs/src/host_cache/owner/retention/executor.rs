@@ -33,6 +33,8 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
         >,
     >,
     manifest_backings: Vec<super::recovery_manifest::RecoveryManifestBodyRetention>,
+    verified_manifests: Vec<Arc<crate::host_cache::recovery_inspection::VerifiedRecoveryManifest>>,
+    manifest_failures: Vec<super::super::recovery_manifests::ManifestFailureResources>,
 }
 
 impl NativeOwnerExecutor {
@@ -47,6 +49,8 @@ impl NativeOwnerExecutor {
             manifest_sources: Vec::new(),
             manifest_bodies: Vec::new(),
             manifest_backings: Vec::new(),
+            verified_manifests: Vec::new(),
+            manifest_failures: Vec::new(),
         }
     }
 
@@ -103,6 +107,72 @@ impl NativeOwnerExecutor {
         &self,
     ) -> &[Arc<crate::host_cache::NativeManifestSource>] {
         &self.manifest_sources
+    }
+
+    /// Borrows actual adopted manifest body descriptors for synchronized accounting.
+    pub(in crate::host_cache::owner) fn manifest_body_registry(
+        &self,
+    ) -> &[Arc<
+        crate::publisher_local::client::PeerPublishedObject<
+            terrane::host::cache::HostDomainLocation,
+        >,
+    >] {
+        &self.manifest_bodies
+    }
+
+    /// Borrows actual independently verified results retained by this worker.
+    pub(in crate::host_cache::owner) fn verified_manifests(
+        &self,
+    ) -> &[Arc<crate::host_cache::recovery_inspection::VerifiedRecoveryManifest>] {
+        &self.verified_manifests
+    }
+
+    /// Reserves actual result/failure slots before any source or adoption effect.
+    ///
+    /// # Errors
+    /// Refuses another worker, unavailable custody, configured record capacity
+    /// exhaustion or memory allocation failure. No native effects occur here.
+    pub(in crate::host_cache::owner) fn reserve_manifest_reconciliation(
+        &mut self,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self.verified_manifests.len() >= limit || self.manifest_failures.len() >= limit {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "manifest reconciliation registry limit reached",
+            ));
+        }
+        self.verified_manifests
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        self.manifest_failures
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        Ok(())
+    }
+
+    /// Stores an actual Inspector result before subsequent fallible reconciliation.
+    pub(super) fn retain_verified_manifest(
+        &mut self,
+        verified: crate::host_cache::recovery_inspection::VerifiedRecoveryManifest,
+    ) {
+        self.verified_manifests.push(Arc::new(verified));
+    }
+
+    /// Stores actual failed response resources before returning its original cause.
+    pub(in crate::host_cache::owner) fn retain_manifest_failure(
+        &mut self,
+        failure: super::super::recovery_manifests::ManifestFailureResources,
+    ) {
+        self.manifest_failures.push(failure);
     }
 
     /// Reserves bounded registry slots before a downstream recovery effect.

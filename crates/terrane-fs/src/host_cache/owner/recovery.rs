@@ -1,7 +1,7 @@
 //! Runs serialized actual recovery without conflating it with tier readiness.
 //!
-//! Supported cases contain empty cold policy and either no content or only
-//! canonical sealed inline chunks with exact verified bindings. Unknown names,
+//! Supported cases start with empty cold policy and reconcile empty, inline-only
+//! or manifest-only content using actual verified metadata and native bindings. Unknown names,
 //! unhandled private publication state, temporary files,
 //! pending bodies and every unhandled candidate remain non-ready. A receipt
 //! requires real shared/private scans, durable state, synchronized allocation,
@@ -10,7 +10,9 @@
 
 use super::{
     recovery_accounting::{self, SynchronizedAllocation},
+    recovery_candidates,
     recovery_inline::{self, AdoptedInline},
+    recovery_manifest_state, recovery_manifests,
     recovery_namespace::SharedNamespaceObservation,
     recovery_state,
     recovery_state_parent::StateParentObservation,
@@ -28,7 +30,7 @@ use std::{
 use terrane::host::cache::HostDomainLocation;
 use tokio::sync::oneshot;
 
-/// Retains genuine completion of supported empty or inline-only recovery.
+/// Retains genuine completion of a supported, fully reconciled recovery case.
 ///
 /// Only the physical owner constructs this after exhaustive actual observations
 /// and durable reconciliation. It cannot be constructed from a boolean, caller
@@ -36,18 +38,37 @@ use tokio::sync::oneshot;
 /// resume exposures or authorize native admission. The physical owner may consume
 /// it through its serialized publisher Resume handoff; that grants no Store readiness.
 pub struct CompletedRecovery {
-    custody: Arc<Mutex<Custody>>,
-    session: Arc<Client<HostDomainLocation>>,
-    context: PublisherRecoveryContext<HostDomainLocation>,
-    shared: SharedNamespaceObservation,
-    state_parent: StateParentObservation,
-    inventory: NativeRecoveryInspection,
-    generation: u64,
-    recovery_id: [u8; 16],
-    allocation: SynchronizedAllocation,
-    charged_reserved_bytes: u64,
-    future_hold_bytes: u64,
-    adopted_inline: Vec<AdoptedInline>,
+    /// Retains actual physical state/source ownership through this receipt.
+    pub(super) custody: Arc<Mutex<Custody>>,
+    /// Retains the original authenticated client instance.
+    pub(super) session: Arc<Client<HostDomainLocation>>,
+    /// Retains the original acknowledged Drain barrier, never a recaptured epoch.
+    pub(super) context: PublisherRecoveryContext<HostDomainLocation>,
+    /// Retains the exhaustive original shared namespace observation.
+    pub(super) shared: SharedNamespaceObservation,
+    /// Retains exact supported state-parent children and native custody.
+    pub(super) state_parent: StateParentObservation,
+    /// Retains the final exhaustive Inspector report.
+    pub(super) inventory: NativeRecoveryInspection,
+    /// Identifies the actual final owner mutation generation.
+    pub(super) generation: u64,
+    /// Names the real durable bootstrap reservation for this recovery.
+    pub(super) recovery_id: [u8; 16],
+    /// Records synchronized blocks only for the explicitly retained inodes.
+    pub(super) allocation: SynchronizedAllocation,
+    /// Records the separate fresh authenticated full-owner quota boundary.
+    pub(super) charged_reserved_bytes: u64,
+    /// Records distinct durable logical future holds, never physical allocation.
+    pub(super) future_hold_bytes: u64,
+    /// Retains actual adopted inline native handles independently of state reads.
+    pub(super) adopted_inline: Vec<AdoptedInline>,
+    /// Retains independent manifest/source/plaintext verification results.
+    pub(super) manifest_results:
+        Vec<Arc<crate::host_cache::recovery_inspection::VerifiedRecoveryManifest>>,
+    /// Retains the exact verified full-pack/index source closure.
+    pub(super) metadata_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
+    /// Contains only reconstructed allowed policy rows for a manifest case.
+    pub(super) expected_policy: Option<terrane::host::cache::CacheState>,
 }
 
 impl CompletedRecovery {
@@ -118,6 +139,26 @@ impl CompletedRecovery {
                 "recovery completion no longer matches actual owner custody",
             ));
         }
+        if let Some(expected) = &self.expected_policy {
+            recovery_manifest_state::require_same(&owner.state, expected)?;
+            self.shared
+                .require_metadata_sources(&self.metadata_sources)?;
+            self.state_parent.check_current()?;
+            self.inventory.check_current()?;
+            recovery_manifests::check_inventory(
+                &self.inventory,
+                &self.manifest_results,
+                &self.metadata_sources,
+            )?;
+            drop(owner);
+            for body in &self.manifest_results {
+                body.check_current(&self.context)?;
+            }
+            return self
+                .session
+                .check_recovery_context(&self.context)
+                .map_err(io::Error::other);
+        }
         let claims = recovery_inline::claims(&self.inventory, owner.preparation.layout())?;
         recovery_state::check_reconciled(
             &owner.preparation.config,
@@ -139,8 +180,8 @@ impl CompletedRecovery {
 impl NativeMetadataOwner {
     /// Runs bounded actual recovery in the retained physical command queue.
     ///
-    /// Supported cases require empty cold policy and an exhaustive empty or
-    /// canonical inline-only namespace. Other cases remain explicitly unresolved;
+    /// Supported cases require empty cold policy and an exhaustive empty,
+    /// inline-only or manifest-only verified namespace. Other cases remain unresolved;
     /// no record is auto-cleared and no exposure is resumed. Request cancellation
     /// never cancels accepted physical work or releases its durable future hold.
     ///
@@ -168,7 +209,7 @@ impl NativeMetadataOwner {
     }
 }
 
-/// Completes supported empty or inline-only recovery on the physical executor.
+/// Completes a supported recovery case on the actual exclusive physical executor.
 ///
 /// # Errors
 /// Refuses every unresolved record/name/candidate, stale native or publisher
@@ -192,11 +233,6 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         recovery_state::require_empty(&owner.state)?;
         let state_parent = StateParentObservation::inspect(&owner.preparation)?;
         let shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
-        if !shared.only_empty_scaffolds() {
-            return Err(unresolved(
-                "shared body, temporary or unknown namespace entry requires reconciliation",
-            ));
-        }
         (
             owner.preparation.publisher_session(),
             owner.preparation.recovery_inspector()?,
@@ -215,7 +251,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         state_parent.check_current()?;
         owner.preparation.recheck()?;
         let bootstrap = recovery_state::bootstrap(&owner.preparation.config, &owner.state)?;
-        check_charge(&owner)?;
+        check_charge(&owner, owner.preparation.config.metadata_sync_hold_bytes)?;
         owner.begin_mutation()?;
         owner.state = bootstrap.snapshot;
         owner.faulted = true;
@@ -223,6 +259,34 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         (bootstrap.id, owner.generation)
     };
     let initial_inventory = inspector.inspect()?;
+    recovery_candidates::preflight(&initial_inventory)?;
+    let mut has_manifest = false;
+    for candidate in initial_inventory.candidates() {
+        has_manifest |= matches!(
+            recovery_candidates::classify(candidate)?,
+            recovery_candidates::RecoveryCase::Manifest(_)
+        );
+    }
+    if has_manifest {
+        return recovery_manifests::run(
+            executor,
+            recovery_manifests::ManifestRecoveryStart {
+                session,
+                inspector,
+                shared,
+                state_parent,
+                original: context,
+                bootstrap_id: id,
+                inventory: initial_inventory,
+            },
+        )
+        .await;
+    }
+    if !shared.only_empty_scaffolds() {
+        return Err(unresolved(
+            "unsupported shared namespace without retained manifest closure",
+        ));
+    }
     let claims = {
         let mut owner = custody
             .lock()
@@ -234,7 +298,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             .encoded_len(owner.preparation.config.state)
             .map_err(io::Error::other)?;
         owner.preparation.recheck()?;
-        check_charge(&owner)?;
+        check_charge(&owner, 0)?;
         claims
     };
     // No embedded lock crosses the RPC. Each actual receipt enters the physical
@@ -277,6 +341,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             &shared,
             &state_parent,
             executor.inline_registry(),
+            executor.manifest_body_registry(),
         )?;
         owner.snapshot_allocated_bytes = owner
             .snapshot
@@ -285,7 +350,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             .and_then(|(file, _)| synchronized_allocated_bytes(file))?;
         owner.directory_allocated_bytes = synchronized_allocated_bytes(&owner.directory)?;
         owner.preparation.recheck()?;
-        check_charge(&owner)?;
+        check_charge(&owner, 0)?;
         shared.check_current()?;
         state_parent.check_current()?;
         owner.check_current()?;
@@ -338,21 +403,36 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         charged_reserved_bytes,
         future_hold_bytes,
         adopted_inline: executor.inline_registry().to_vec(),
+        manifest_results: Vec::new(),
+        metadata_sources: Vec::new(),
+        expected_policy: None,
     })
 }
 
-fn check_charge(owner: &Custody) -> io::Result<()> {
+/// Checks actual charged quota plus distinct existing and proposed future holds.
+///
+/// # Errors
+/// Refuses overflowing holds and capacity excess before effects or acknowledgment.
+pub(super) fn check_charge(owner: &Custody, additional: u64) -> io::Result<()> {
+    let future = owner
+        .state
+        .reservations
+        .iter()
+        .try_fold(additional, |sum, hold| {
+            sum.checked_add(hold.bytes)
+                .ok_or_else(|| invalid("recovery future holds overflow"))
+        })?;
     if owner
         .preparation
         .quota()
         .observation()
         .charged_reserved_bytes
-        .checked_add(owner.preparation.config.metadata_sync_hold_bytes)
+        .checked_add(future)
         .is_none_or(|total| total > owner.preparation.config.policy.capacity)
     {
         return Err(io::Error::new(
             io::ErrorKind::StorageFull,
-            "recovery charge and future hold exceed policy",
+            "recovery charge and future holds exceed policy",
         ));
     }
     Ok(())

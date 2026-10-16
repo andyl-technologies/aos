@@ -122,6 +122,31 @@ impl NativeOwnerExecutor {
 }
 
 impl<'executor> LiveManifestRecoveryContext<'executor> {
+    /// Reserves real physical result and failure capacity before recovery effects.
+    ///
+    /// # Errors
+    /// Refuses stale phase and unavailable bounded registry capacity.
+    pub(in crate::host_cache::owner) fn reserve_reconciliation(&mut self) -> io::Result<()> {
+        self.check_current()?;
+        self.executor.reserve_manifest_reconciliation()
+    }
+
+    /// Retains the exact successful Inspector result before later fallible work.
+    pub(in crate::host_cache::owner) fn retain_verified(
+        &mut self,
+        verified: crate::host_cache::recovery_inspection::VerifiedRecoveryManifest,
+    ) {
+        self.executor.retain_verified_manifest(verified);
+    }
+
+    /// Retains failed native resources even when this live phase already faulted.
+    pub(in crate::host_cache::owner) fn retain_failure(
+        &mut self,
+        resources: super::super::recovery_manifests::ManifestFailureResources,
+    ) {
+        self.executor.retain_manifest_failure(resources);
+    }
+
     /// Returns the same original barrier only after all local effects are settled.
     ///
     /// This does not certify complete namespace/state recovery. The owner still

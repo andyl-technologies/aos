@@ -13,6 +13,7 @@ mod recovery_accounting;
 mod recovery_candidates;
 mod recovery_inline;
 mod recovery_manifest_state;
+mod recovery_manifests;
 mod recovery_namespace;
 mod recovery_residences;
 mod recovery_state;

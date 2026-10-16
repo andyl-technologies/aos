@@ -16,8 +16,8 @@ use terrane_core::identity::{Descriptor, Identity, IdentityKind, TERRANE_V1};
 
 /// Identifies candidate work, never native pin, content or serving authority.
 pub(super) enum RecoveryCase {
-    /// Carries the still-unadopted inline descriptor for native verification.
-    Inline(Descriptor),
+    /// Identifies still-unadopted inline content for native verification.
+    Inline,
     /// Names reconstruction metadata whose actual bytes still require retention.
     Manifest(Identity),
     /// Retains a verified container provisionally until exact source closure matching.
@@ -65,7 +65,7 @@ pub(super) fn classify(candidate: &NativeRecoveryCandidate) -> io::Result<Recove
             .kind(descriptor.domain())
             .map_err(io::Error::other)?
         {
-            IdentityKind::Chunk => Ok(RecoveryCase::Inline(descriptor)),
+            IdentityKind::Chunk => Ok(RecoveryCase::Inline),
             IdentityKind::Manifest => Ok(RecoveryCase::Manifest(
                 TERRANE_V1
                     .from_digest(IdentityKind::Manifest, descriptor.digest())

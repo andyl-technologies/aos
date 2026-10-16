@@ -37,6 +37,11 @@ pub(super) fn observe(
     shared: &SharedNamespaceObservation,
     state_parent: &StateParentObservation,
     adopted_inline: &[AdoptedInline],
+    adopted_manifests: &[std::sync::Arc<
+        crate::publisher_local::client::PeerPublishedObject<
+            terrane::host::cache::HostDomainLocation,
+        >,
+    >],
 ) -> io::Result<SynchronizedAllocation> {
     owner.check_current()?;
     let layout = owner.preparation.layout();
@@ -71,7 +76,7 @@ pub(super) fn observe(
         measure(file, &mut measured)?;
     }
     measure(owner.preparation.probe_handle(), &mut measured)?;
-    for body in adopted_inline {
+    for body in adopted_inline.iter().chain(adopted_manifests) {
         measure(body.handle(), &mut measured)?;
     }
     let (snapshot, _) = owner
