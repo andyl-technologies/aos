@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, TryLockError, Weak};
 
 // crucible-lint: allow host-nondeterminism-state -- exact node generations index operational resource ownership, not scheduler decisions or guest time.
 use crucible_api::ProductionVmNodeGeneration;
@@ -80,6 +80,33 @@ where
         }
         self.guard.prepare_generation_run_directory(requirements)
     }
+}
+
+/// Observes which retained participant still excludes aggregate release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QemuHotForkWorldReleaseReadiness {
+    /// Every issued target and required lifecycle has finished its handoff.
+    Ready,
+    /// At least one exact issued child target has not finished.
+    AwaitingTargets,
+    /// The issued primary lifecycle launcher has not finished.
+    AwaitingLifecycleLauncher,
+    /// An auxiliary lifecycle still retains the aggregate contract.
+    AwaitingAuxiliaryLifecycle,
+}
+
+/// Refuses an unobservable or terminal aggregate release observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum QemuHotForkWorldReleaseReadinessError {
+    /// Another participant currently holds the same registry.
+    #[error("hot-fork world resource registry remains borrowed")]
+    Borrowed,
+    /// A prior registry operation panicked while holding its lock.
+    #[error("hot-fork world resource registry is poisoned")]
+    Poisoned,
+    /// Aggregate release or quarantine has already made this owner terminal.
+    #[error("hot-fork world resource owner is terminal")]
+    Terminal,
 }
 
 /// Indivisible attempt-resource owner shared by every child in one forked World.
@@ -338,6 +365,37 @@ where
             resources: self.resources,
             cancellation: self.cancellation.clone(),
         }
+    }
+
+    /// Observes existing release latches without finishing or quarantining them.
+    ///
+    /// Pending participants may still complete through their retained owners.
+    /// A ready observation grants no resource authority: the caller must retain
+    /// its existing retirement operation and still execute actual `finish`.
+    ///
+    /// # Errors
+    /// Refuses a borrowed, poisoned or terminal registry without waiting,
+    /// invoking its guard or constructing a replacement diagnostic allocation.
+    pub(crate) fn release_readiness(
+        &self,
+    ) -> Result<QemuHotForkWorldReleaseReadiness, QemuHotForkWorldReleaseReadinessError> {
+        let state = self.state.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => QemuHotForkWorldReleaseReadinessError::Borrowed,
+            TryLockError::Poisoned(_) => QemuHotForkWorldReleaseReadinessError::Poisoned,
+        })?;
+        if state.terminal {
+            return Err(QemuHotForkWorldReleaseReadinessError::Terminal);
+        }
+        if state.issued != state.released {
+            return Ok(QemuHotForkWorldReleaseReadiness::AwaitingTargets);
+        }
+        if state.lifecycle_launcher_required && !state.lifecycle_launcher_finished {
+            return Ok(QemuHotForkWorldReleaseReadiness::AwaitingLifecycleLauncher);
+        }
+        if state.auxiliary_lifecycle_active {
+            return Ok(QemuHotForkWorldReleaseReadiness::AwaitingAuxiliaryLifecycle);
+        }
+        Ok(QemuHotForkWorldReleaseReadiness::Ready)
     }
 
     /// Releases aggregate enforcement after every exact child target finished.

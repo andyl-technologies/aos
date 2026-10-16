@@ -989,6 +989,25 @@ pub trait CrucibleExecutionRunner {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
 
+    /// Retries physical retirement using the existing supervised operation.
+    ///
+    /// The default is valid only when the runner retains no operational owners.
+    /// Wrappers forward retirement to every contained runner, including inactive
+    /// routes. A refusal leaves the exact owners in the runner for another call;
+    /// the returned error reports failure without carrying cleanup ownership.
+    /// Retirement does not create a new deadline or change semantic disposition.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first physical retirement refusal while retaining unfinished
+    /// owners. Wrappers still attempt retirement of their other runners.
+    fn try_retire_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Quarantines authority retained by a successful execution immediately.
     ///
     /// An outer runner must call this when its own result preparation fails

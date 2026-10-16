@@ -469,6 +469,20 @@ pub trait QemuHotForkWorldLifecycleFactory {
         context: &AttemptExecutionContext,
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>;
 
+    /// Retires retained construction through the same supplied operation.
+    ///
+    /// The default is valid only for factories without retained owners.
+    /// Resource-owning factories keep unfinished state in themselves on refusal.
+    ///
+    /// # Errors
+    /// Keeps actual retained owners when physical cleanup or publication refuses.
+    fn try_retire_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Restores the source from a completely reconciled lifecycle.
     ///
     /// # Errors
@@ -583,6 +597,15 @@ where
                 QemuHotForkWorldLifecycleStart::Started(self.observe(lifecycle, fingerprint_nodes))
             }
         })
+    }
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.inner_mut()
+            .try_retire_original(original)
+            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Inner)
     }
 
     fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
