@@ -257,7 +257,9 @@
       RestrictSUIDSGID = true;
       LockPersonality = true;
       ReadWritePaths = writable role;
-      InaccessiblePaths = lib.optionals (role != "publish") (builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication"]) roots);
+      # The optional prefix preserves SDK-only startup before host quota
+      # provisioning. Existing global project claims are never role data.
+      InaccessiblePaths = ["-/var/lib/terrane-host/project-claims"] ++ lib.optionals (role != "publish") (builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication"]) roots);
     };
   };
 in {
@@ -312,6 +314,10 @@ in {
         inherit config roleNames identities userFor groupsFor reservedGroupIds expectedGroupName;
       })
       ++ [
+        {
+          assertion = builtins.all (root: !overlaps root "/var/lib/terrane-host/project-claims") declaredRoots;
+          message = "Terrane content and administrative roots must stay disjoint from the fixed host-global project registry.";
+        }
         {
           assertion = cfg.hostTier.publisher == null || (cfg.hostTier.publisher.socketPath == "/run/terrane-publish/publisher.sock" && cfg.hostTier.publisher.serveUid == identities.serve && cfg.hostTier.publisher.publishUid == identities.publish && cfg.hostTier.publisher.contentUid == identities.serve && cfg.hostTier.publisher.contentUid != cfg.hostTier.publisher.publishUid && cfg.hostTier.publisher.contentGid == 845);
           message = "Terrane publisher configuration must match the deployed socket and service/content identities.";

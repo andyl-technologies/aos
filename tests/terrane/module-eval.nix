@@ -260,6 +260,37 @@
     !attempt.success || !attempt.value;
   extraAssertions = [
     {
+      name = "host-global-project-registry-root-custody";
+      pass =
+        lib.hasInfix "d /var/lib/terrane-host/project-claims 0700 root root" helper.environment.etc."tmpfiles.d/terrane-host.conf".text
+        && helper.systemd.services.aos-terrane-host-provision.serviceConfig.User == "root"
+        && helper.systemd.services.aos-terrane-host-quota.serviceConfig.User == "root";
+    }
+    {
+      name = "host-global-project-registry-helper-access";
+      pass =
+        builtins.elem "/var/lib/terrane-host/project-claims" helper.systemd.services.aos-terrane-host-provision.serviceConfig.ReadWritePaths
+        && helper.systemd.services.aos-terrane-host-quota.serviceConfig.ReadOnlyPaths == ["/var/lib/terrane-host/project-claims"]
+        && helper.systemd.services.aos-terrane-host-quota.serviceConfig.ReadWritePaths == ["/run/aos-terrane-host"]
+        && lib.hasInfix "ReadOnlyPaths=/var/lib/terrane-host/project-claims" helper.system.build.systemdUnitBodies."aos-terrane-host-quota.service".text;
+    }
+    {
+      name = "host-global-project-registry-role-inaccessible";
+      pass = builtins.all (role:
+        builtins.elem "-/var/lib/terrane-host/project-claims" (service role).InaccessiblePaths
+        && !(builtins.elem "/var/lib/terrane-host/project-claims" (service role).ReadWritePaths))
+      roles;
+    }
+    {
+      name = "host-global-project-registry-content-overlap-refused";
+      pass = rejected {aos.terrane.hostTier.path = "/var/lib/terrane-host/project-claims/content";};
+    }
+    {
+      name = "host-global-project-registry-content-ancestor-refused";
+      pass = rejected {aos.terrane.hostTier.path = "/var/lib/terrane-host";};
+    }
+
+    {
       name = "native-complete-override-positive-control";
       pass = !rejectedNative {aos.terrane.hostTier.publisher.maxConnections = 16;};
     }

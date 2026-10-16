@@ -17,6 +17,7 @@
   domainRoots = lib.mapAttrs (_: domain: domain.path) terrane.hostTier.domains // {public = publicRoot;};
   overlaps = a: b: a == b || lib.hasPrefix "${a}/" b || lib.hasPrefix "${b}/" a;
   ledgerDirectory = "/var/lib/terrane-host";
+  projectClaimsDirectory = "${ledgerDirectory}/project-claims";
   ledgerPath = "${ledgerDirectory}/ledger.toml";
   socketDirectory = "/run/aos-terrane-host";
   configPath = "/etc/terrane-host/host.toml";
@@ -161,6 +162,7 @@ in {
     };
     environment.etc."tmpfiles.d/terrane-host.conf".text = ''
       d ${ledgerDirectory} 0700 root root - -
+      d ${projectClaimsDirectory} 0700 root root - -
       d ${socketDirectory} 0755 root root - -
     '';
     # Provisioning is an explicit host-admin action; boot never reassigns IDs.
@@ -176,7 +178,7 @@ in {
           # Root is not a member of the content groups; restoring setgid
           # after restrictive custody modes therefore also needs CAP_FSETID.
           CapabilityBoundingSet = "CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN CAP_FSETID";
-          ReadWritePaths = [ledgerDirectory] ++ lib.unique (builtins.concatMap (owner: map (root: root.path) owner.roots) cfg.owners);
+          ReadWritePaths = [ledgerDirectory projectClaimsDirectory] ++ lib.unique (builtins.concatMap (owner: map (root: root.path) owner.roots) cfg.owners);
         };
     };
     systemd.services.aos-terrane-host-quota = {
@@ -190,6 +192,9 @@ in {
           Type = "simple";
           ExecStart = command "serve";
           CapabilityBoundingSet = "CAP_SYS_ADMIN CAP_DAC_READ_SEARCH";
+          # The host-global ownership registry is authenticated by native
+          # identity checks; the query process has no mutation path to it.
+          ReadOnlyPaths = [projectClaimsDirectory];
           ReadWritePaths = [socketDirectory];
         };
     };
