@@ -950,6 +950,13 @@ fn selected_native_definition_bodies(
             ),
         ]);
     }
+    if source.is_original_restoration_observation_declaration_data().map_err(|_| refused())? {
+        use crucible_node_provider::reference_packet::service::complete_restore::restoration_observe::{
+            restoration_observe_schema, restoration_observe_contract_data,
+        };
+        definitions.push((restoration_observe_schema().map_err(|_| refused())?,
+            restoration_observe_contract_data().to_vec()));
+    }
     Ok(definitions)
 }
 

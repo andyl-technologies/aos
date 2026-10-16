@@ -53,6 +53,17 @@ impl SimulationNode for CnpSemanticNode {
         self.inspect_original_restoration_continuation_data(inspection)
     }
 
+    fn activate_original_installed_restoration_world(
+        &mut self,
+        world: &WorldActivation,
+    ) -> Result<(), RuntimeError> {
+        if !self.has_installed_restoration_data() {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        self.activate_installed_restoration(world)
+            .map_err(|_| RuntimeError::InvalidReceipt)
+    }
+
     fn retained_descriptor_views_precredit_data(&self) -> Result<Option<usize>, RuntimeError> {
         self.preparation
             .retained_descriptor_views_precredit_data()
@@ -619,6 +630,9 @@ impl SimulationNode for CnpSemanticNode {
         original: &OperationAdmission,
         outcome: &OperationOutcome,
     ) -> Result<(), OperationFailure> {
+        if self.has_installed_restoration_data() {
+            return self.validate_installed_restoration_outcome(original, outcome);
+        }
         self.current()?;
         let saved = self.check_token(original.token())?;
         if saved.admission.request() != original.request()
@@ -655,6 +669,9 @@ impl SimulationNode for CnpSemanticNode {
         &mut self,
         activation: &WorldActivation,
     ) -> Result<NativeSchedulingObservation, OperationFailure> {
+        if self.has_installed_restoration_data() {
+            return self.observe_installed_restoration(activation);
+        }
         self.current()?;
         self.source()?.preflight_transition(
             self.scope()?.native,
@@ -709,6 +726,9 @@ impl SimulationNode for CnpSemanticNode {
         activation: &WorldActivation,
         observation: &NativeSchedulingObservation,
     ) -> Result<(), OperationFailure> {
+        if self.has_installed_restoration_data() {
+            return self.validate_installed_restoration_observation(activation, observation);
+        }
         self.current()?;
         let (original, saved) = self
             .state()?

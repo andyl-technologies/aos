@@ -79,6 +79,7 @@ pub use host_startup::{
 /// Names actual assigned activation originals without issuing phase claims.
 pub use controller::{
     CompletedOriginalInstalledRestorationActivation,
+    CompletedOriginalInstalledRestorationObservation,PreparedOriginalInstalledRestorationObservation,
     OriginalRestorationActivationTargetBindingData, PreparedOriginalInstalledRestorationActivation,
 };
 

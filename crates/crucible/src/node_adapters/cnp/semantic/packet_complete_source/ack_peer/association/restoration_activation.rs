@@ -55,6 +55,7 @@ mod upload;
 mod world_content;
 pub use evidence::OriginalSourceRestorationActivationVerifiedPhase;
 use evidence::authenticate_saved_pair;
+pub(super) use evidence::with_verified_world_under_read_data;
 
 fn provider_phase(
     phase: OriginalInstalledRestorationActivationPhase,

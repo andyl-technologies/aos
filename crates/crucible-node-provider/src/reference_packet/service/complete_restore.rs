@@ -36,6 +36,9 @@ pub mod transfer;
 /// Defines the separately signed restoration activation contract and DATA.
 pub mod activation;
 
+/// Defines separately signed once observation after complete restored publication.
+pub mod restoration_observe;
+
 pub use assigned::{
     complete_restore_assigned_request_digest, complete_restore_assigned_response_digest,
 };

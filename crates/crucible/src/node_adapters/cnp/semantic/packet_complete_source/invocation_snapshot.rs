@@ -30,6 +30,7 @@ pub(super) enum Declaration {
     Attempted,
     Invocation14,
     RestorationActivation14,
+    RestorationObservation14,
 }
 
 impl PacketCompleteSemanticSource {
@@ -93,13 +94,16 @@ impl PacketCompleteSemanticSource {
         match self.invocation_snapshot_declaration {
             None => Ok(false),
             Some(Declaration::Attempted) => Err(RuntimeError::UnsupportedFacet),
-            Some(Declaration::Invocation14 | Declaration::RestorationActivation14) => {
+            Some(Declaration::Invocation14 | Declaration::RestorationActivation14 | Declaration::RestorationObservation14) => {
                 self.authenticate_invocation_snapshot_declaration_tuple_data()?;
                 if matches!(
                     self.invocation_snapshot_declaration,
-                    Some(Declaration::RestorationActivation14)
+                    Some(Declaration::RestorationActivation14 | Declaration::RestorationObservation14)
                 ) {
                     self.authenticate_restoration_activation_declaration_tuple_data()?;
+                }
+                if matches!(self.invocation_snapshot_declaration, Some(Declaration::RestorationObservation14)) {
+                    self.authenticate_restoration_observation_declaration_tuple_data()?;
                 }
                 Ok(true)
             }
@@ -135,6 +139,7 @@ impl PacketCompleteSemanticSource {
             + size_of::<Result<(), RuntimeError>>()
             + native_owned14_snapshot_schema_counter_scratch_data()
             + restoration_activation::counter_scratch_data()
+            + restoration_observation::counter_scratch_data()
     }
 
     fn authenticate_invocation_snapshot_declaration_tuple_data(&self) -> Result<(), RuntimeError> {
@@ -281,3 +286,6 @@ mod tests {
 
 #[path = "invocation_snapshot/restoration_activation.rs"]
 mod restoration_activation;
+
+#[path = "invocation_snapshot/restoration_observation.rs"]
+mod restoration_observation;

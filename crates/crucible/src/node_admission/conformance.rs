@@ -1394,3 +1394,9 @@ pub(crate) use restoration_construction::{
 };
 
 pub use restoration_construction::OriginalRestorationCoordinatorConstructionData;
+
+pub use restoration_construction::OriginalInstalledRestorationObservationClaim;
+pub(crate) use restoration_construction::{
+    OriginalInstalledRestorationObservationSigningConstructionInputs,
+    OriginalInstalledRestorationObservationSigningInputs,
+};

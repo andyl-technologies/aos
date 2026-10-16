@@ -171,6 +171,8 @@ pub struct CompleteOriginalRestorationWindow {
     final_construction: scope_storage::OriginalRestorationFinalConstructionData,
     activation_phases: [super::activation::OriginalInstalledRestorationActivationLedger; 3],
     activation_request_ids: OnceCell<[Id; 2]>,
+    observation_request_ids: [OnceCell<Id>; 3],
+    observation_phases: [super::observation::OriginalInstalledRestorationObservationLedger; 3],
     context_started: Cell<bool>,
     context_issued: Cell<bool>,
     coordinator_construction: OnceCell<OriginalRestorationCoordinatorConstructionData>,
@@ -181,6 +183,7 @@ pub struct CompleteOriginalRestorationWindow {
     paused_scheduler: RefCell<Option<crate::node_scheduling::PreparedSchedulingRestore>>,
     scheduler_started: Cell<bool>,
     install_started: Cell<bool>,
+    world_roster: world_roster::OriginalRestorationWorldRoster,
     activation_world: OnceCell<crate::node_contract::WorldActivation>,
     scope_partial: RefCell<Option<scope_owner::OriginalRestorationScopeOwner>>,
     complete_scope: OnceCell<scope_owner::OriginalRestorationScopeOwner>,
@@ -216,6 +219,7 @@ impl InstalledConformancePlan {
             OriginalRestorationRuntimeMemberIdentity::counter_scratch_data(),
             CompleteOriginalRestorationTransactionTarget::counter_scratch_data(),
             CompleteOriginalRestorationWindow::phase_counter_scratch_data(),
+            world_roster::counter_scratch_data()?,
             super::transaction_group::OriginalRestorationTransactionGroup::counter_scratch_data(),
             size_of::<super::target::OriginalRestorationTargetInputs>(),
             size_of::<Option<super::target::OriginalRestorationTargetInputs>>(),
@@ -239,6 +243,18 @@ impl InstalledConformancePlan {
             CompleteOriginalRestorationWindow::continuation_counter_scratch_data(),
             scope_storage::OriginalRestorationFinalConstructionData::counter_scratch_data(),
             super::activation::OriginalInstalledRestorationActivationClaim::counter_scratch_data(),
+            super::observation::OriginalInstalledRestorationObservationClaim::counter_scratch_data()?,
+            observation_continuation::counter_scratch_data()?,
+            size_of::<[OnceCell<Id>; 3]>(),
+            size_of::<Option<&Id>>(),
+            size_of::<Result<Id, RuntimeError>>(),
+            size_of::<Result<Id, crucible_node_contract::ContractError>>(),
+            size_of::<Result<(), Id>>(),
+            size_of::<std::slice::Iter<'static, OnceCell<Id>>>(),
+            size_of::<String>(),
+            size_of::<Result<(), std::collections::TryReserveError>>(),
+            PacketCompleteSemanticSource::original_restoration_observation_source_construction_counter_scratch_data(),
+            PacketCompleteSemanticSource::original_restoration_observation_declaration_counter_scratch_data(),
             OriginalRestorationCoordinatorConstructionData::defining_counter_scratch_data(),
             ConformanceRuntime::original_runtime_restoration_installation_counter_scratch_data()?,
             crate::node_scheduling::PreparedSchedulingRestore::original_retained_counter_scratch_data(),
@@ -365,6 +381,10 @@ impl InstalledConformancePlan {
                 super::activation::OriginalInstalledRestorationActivationLedger::new()
             }),
             activation_request_ids: OnceCell::new(),
+            observation_request_ids: std::array::from_fn(|_| OnceCell::new()),
+            observation_phases: std::array::from_fn(|_| {
+                super::observation::OriginalInstalledRestorationObservationLedger::new()
+            }),
             context_started: Cell::new(false),
             context_issued: Cell::new(false),
             coordinator_construction: OnceCell::new(),
@@ -376,6 +396,7 @@ impl InstalledConformancePlan {
             paused_scheduler: RefCell::new(None),
             scheduler_started: Cell::new(false),
             install_started: Cell::new(false),
+            world_roster: world_roster::OriginalRestorationWorldRoster::new(),
             activation_world: OnceCell::new(),
             scope_partial: RefCell::new(None),
             complete_scope: OnceCell::new(),
@@ -548,6 +569,7 @@ impl CompleteOriginalRestorationWindow {
             .authenticate_original_restoration_construction(&plan.evidence(), &scope, &policy)?;
         let current = observed_current(&scope, policy, storage)?;
         self.retain_original_activation_request_ids_data(inputs.activation)?;
+        self.retain_original_observation_request_ids_data(inputs.activation, current)?;
         self.coordinator_target
             .set(inputs.activation.clone())
             .map_err(|_| RuntimeError::DuplicateOperation)?;
@@ -591,6 +613,7 @@ impl CompleteOriginalRestorationWindow {
                     self.activation_request_ids
                         .get()
                         .ok_or(RuntimeError::OwnerUnavailable)?,
+                    self.observation_request_ids[index].get(),
                     self.coordinator_construction
                         .get()
                         .ok_or(RuntimeError::OwnerUnavailable)?,
@@ -601,6 +624,8 @@ impl CompleteOriginalRestorationWindow {
                 if row.signer.is_none()
                     || row.installed_custody.is_none()
                     || row.source_activation.is_none()
+                    || row.source_observation.is_some()
+                        != self.observation_request_ids[index].get().is_some()
                 {
                     return Err(RuntimeError::OwnerUnavailable);
                 }
@@ -1270,6 +1295,9 @@ impl OriginalRestorationConstructionScope<'_> {
 #[path = "window/common_install.rs"]
 mod common_install;
 
+#[path = "window/world_roster.rs"]
+mod world_roster;
+
 impl OriginalRestorationConstructionScope<'_> {
     /// Borrows the same concrete future coordinator row when its quote exists.
     ///
@@ -1299,3 +1327,11 @@ impl OriginalRestorationMemberScope<'_> {
 
 #[path = "window/phase_budget.rs"]
 mod phase_budget;
+
+#[path = "window/observation_effect.rs"]
+mod observation_effect;
+#[path = "window/observation_ids.rs"]
+mod observation_ids;
+
+#[path = "window/observation_continuation.rs"]
+mod observation_continuation;

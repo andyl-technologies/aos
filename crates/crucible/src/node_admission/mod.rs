@@ -526,3 +526,9 @@ pub(crate) use conformance::{
 };
 
 pub use conformance::OriginalRestorationCoordinatorConstructionData;
+
+pub use conformance::OriginalInstalledRestorationObservationClaim;
+pub(crate) use conformance::{
+    OriginalInstalledRestorationObservationSigningConstructionInputs,
+    OriginalInstalledRestorationObservationSigningInputs,
+};

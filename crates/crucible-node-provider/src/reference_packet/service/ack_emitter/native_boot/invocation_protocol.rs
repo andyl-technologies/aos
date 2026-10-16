@@ -17,6 +17,7 @@ impl NativeAckBoot {
         self.authenticate_invocation_owned_data()?;
         if self.restoration_activation.iter().any(Option::is_some)
             || self.restoration_uploads.iter().any(Option::is_some)
+            || self.restoration_observation.is_some()
             || !self.permits_original_invocation_without_fresh_query_data()?
             || self
                 .startup
@@ -147,6 +148,7 @@ impl Serialize for InvocationBaseView<'_> {
             restoration: _,
             restoration_activation: _,
             restoration_uploads: _,
+            restoration_observation: _,
             transfer: _,
             startup: _,
         } = self.0;

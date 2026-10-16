@@ -43,6 +43,7 @@ pub(crate) use fresh_publication::{
 pub(crate) use fresh_restore::original_fresh_report_owner_layout_data;
 mod prefix;
 mod restoration_activation;
+mod restoration_observation;
 mod restore;
 mod restore_commit;
 pub(crate) use restore::PacketEndpointRestoreAllocation;
@@ -418,6 +419,14 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             }
             return Ok(());
         }
+        if let Some(read) = self.prepare_original_restoration_observation_receive()? {
+            if selected_restore.is_none() || service_context.is_none() {
+                return Err(ProviderError::Correlation("restored Observe concrete service absent"));
+            }
+            return self.receive_and_dispatch_original_restoration_observation(
+                read, selected_deadline.ok_or(ProviderError::Correlation("restored Observe deadline absent"))?,
+            );
+        }
         let fresh_query = self.prepare_original_fresh_query_receive()?;
         let original_report_query = if self.capture_allocation_attempt.is_none()
             && self.native.requires_original_capture_report_query()?
@@ -568,6 +577,11 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             return Err(ProviderError::Correlation("restoration activation private target absent"));
         }
 
+        if request.extensions.contains_key(
+            super::service::complete_restore::restoration_observe::PACKET_RESTORATION_OBSERVE_FEATURE,
+        ) {
+            return Err(ProviderError::Correlation("restored Observe once receiver absent"));
+        }
         if let Some(restore) = selected_restore {
             if restore(
                 self,

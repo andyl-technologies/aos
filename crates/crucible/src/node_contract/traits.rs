@@ -92,6 +92,23 @@ pub trait SimulationNode {
         Err(RuntimeError::UnsupportedFacet)
     }
 
+    /// Releases one selected restored node under its actual published world.
+    ///
+    /// The owning installed window selects the exact three native participants
+    /// and accepts only their genuine Source-verified World evidence. This hook
+    /// cannot create an activation claim or replace that whole-roster check.
+    ///
+    /// # Errors
+    /// Refuses unsupported adapters, another actual world or failed selected
+    /// Source/native custody. Partial attempts remain in the same node.
+    #[doc(hidden)]
+    fn activate_original_installed_restoration_world(
+        &mut self,
+        _world: &super::WorldActivation,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
     /// Rechecks completed original custody against retained archive journals.
     ///
     /// This separate read-only adapter hook accepts only a genuine installed

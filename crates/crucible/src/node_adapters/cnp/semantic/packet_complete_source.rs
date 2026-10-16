@@ -417,6 +417,21 @@ impl PacketCompleteSemanticSource {
 }
 
 impl CnpSemanticSource for PacketCompleteSemanticSource {
+    fn call_original_installed_restoration_observation_into<'a>(
+        &'a self,
+        controller: &'a mut CnpController,
+        claim: crate::node_admission::OriginalInstalledRestorationObservationClaim,
+        admitted: &OriginalSourceRestorationObservationConstructionData,
+        completed: &mut Option<crucible_node_provider::bodies::ResponseBody>,
+    ) -> Result<
+        OriginalSourceRestorationObservationVerifiedPhase<'a>,
+        crate::node_contract::RuntimeError,
+    > {
+        PacketCompleteSemanticSource::call_original_installed_restoration_observation_into(
+            self, controller, claim, admitted, completed,
+        )
+    }
+
     fn call_original_installed_restoration_activation_into<'a>(
         &'a self,
         controller: &'a mut CnpController,
@@ -1168,7 +1183,7 @@ pub use archive_journal::{
 
 #[path = "packet_complete_source/archive_owner.rs"]
 mod archive_owner;
-pub(crate) use archive_owner::OriginalRestorationColdGroup;
+pub(crate) use archive_owner::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
 pub use archive_owner::PacketCompleteArchivedOwnerData;
 
 impl PacketCompleteSemanticSource {
@@ -1333,4 +1348,6 @@ pub(in crate::node_adapters::cnp::semantic) use retained_values::value_storage_w
 pub use ack_peer::{
     OriginalSourceRestorationActivationConstructionData,
     OriginalSourceRestorationActivationVerifiedPhase,
+    OriginalSourceRestorationObservationConstructionData,
+    OriginalSourceRestorationObservationVerifiedPhase,
 };

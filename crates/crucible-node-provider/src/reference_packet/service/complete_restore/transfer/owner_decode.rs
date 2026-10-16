@@ -17,6 +17,14 @@ pub use selected_construction::{
     complete_restore_selected_owner_construction_storage_data,
 };
 
+#[path = "owner_decode/observation_population.rs"]
+mod observation_population;
+pub use observation_population::{
+    PacketCompleteRestoreModelOutputPopulationData,
+    complete_restore_selected_model_output_population_data,
+    complete_restore_selected_model_output_population_counter_scratch_data,
+};
+
 /// Reports named requested-layout terms for the complete owner-state projector.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PacketCompleteRestoreOwnerValidationStorage {

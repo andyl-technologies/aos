@@ -15,6 +15,11 @@ mod owned11;
 #[path = "restore.rs"]
 mod restore;
 pub(crate) use restore::{
+    NativeRestorationObservationAttempt, OriginalRestorationObservationRead,
+    OriginalRestorationObservationPermit, OriginalRestorationReleased, OriginalRestorationReleaseState,
+    original_native_restoration_observation_attempt_backing_data,
+    original_native_restoration_observation_counter_scratch_data,
+    original_native_restoration_observation_ingress_row_data,
     NativeRestorationActivationAttempt, NativeRestorationUploadAttempt,
     OriginalRestorationActivationPermit, OriginalRestorationActivationRequirement,
     OriginalRestorationUploadPermit, original_native_restoration_activation_attempt_backing_data,
@@ -90,6 +95,7 @@ pub(crate) struct NativeAckBoot {
     startup: Option<native_startup::OriginalNativeStartupBoot>,
     restoration_activation: [Option<Rc<RefCell<NativeRestorationActivationAttempt>>>; 2],
     restoration_uploads: [Option<Rc<RefCell<NativeRestorationUploadAttempt>>>; 2],
+    restoration_observation: Option<Rc<RefCell<NativeRestorationObservationAttempt>>>,
 }
 
 /// Returns the actual shared boot payload layout for historical row validation.
@@ -200,6 +206,7 @@ impl NativeAckBoot {
             restoration: None,
             restoration_activation: std::array::from_fn(|_| None),
             restoration_uploads: std::array::from_fn(|_| None),
+            restoration_observation: None,
             transfer: None,
             startup,
         }));

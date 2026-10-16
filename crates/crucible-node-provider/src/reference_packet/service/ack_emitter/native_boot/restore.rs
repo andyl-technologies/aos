@@ -90,6 +90,11 @@ use held::prepare_gate_evidence;
 #[path = "restoration_activation.rs"]
 mod restoration_activation;
 pub(crate) use restoration_activation::{
+    NativeRestorationObservationAttempt, OriginalRestorationObservationRead,
+    OriginalRestorationObservationPermit, OriginalRestorationReleased, OriginalRestorationReleaseState,
+    original_native_restoration_observation_attempt_backing_data,
+    original_native_restoration_observation_counter_scratch_data,
+    original_native_restoration_observation_ingress_row_data,
     NativeRestorationActivationAttempt, NativeRestorationUploadAttempt,
     OriginalRestorationActivationPermit, OriginalRestorationActivationRequirement,
     OriginalRestorationUploadPermit, original_native_restoration_activation_attempt_backing_data,

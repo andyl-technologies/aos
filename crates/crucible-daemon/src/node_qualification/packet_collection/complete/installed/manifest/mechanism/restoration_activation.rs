@@ -51,7 +51,7 @@ pub(super) fn authenticate_profile_declaration_data(
     )
 }
 
-fn authenticate_activation_rosters_data(
+pub(super) fn authenticate_activation_rosters_data(
     schema: &str,
     rosters: [(&[SchemaRef], &[SchemaRef]); 3],
     features: [&[Id]; 3],

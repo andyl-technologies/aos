@@ -672,3 +672,27 @@ impl NodeRuntime {
         inspection.authenticate_current()
     }
 }
+
+impl NodeRuntime {
+    pub(crate) fn activate_original_installed_restoration_node_world(
+        &mut self,
+        node: &Id,
+        world: &WorldActivation,
+    ) -> Result<(), RuntimeError> {
+        self.nodes
+            .get_mut(node)
+            .ok_or(RuntimeError::UnknownNode)?
+            .activate_original_installed_restoration_world(world)
+    }
+
+    pub(crate) fn original_installed_world_dispatch_counter_scratch_data() -> usize {
+        size_of::<&mut Self>()
+            + size_of::<&Id>()
+            + size_of::<&WorldActivation>()
+            + size_of::<Option<&mut Box<dyn SimulationNode>>>()
+            + size_of::<Result<&mut Box<dyn SimulationNode>, RuntimeError>>()
+            + size_of::<&mut Box<dyn SimulationNode>>()
+            + size_of::<&mut dyn SimulationNode>()
+            + size_of::<Result<(), RuntimeError>>()
+    }
+}

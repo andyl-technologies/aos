@@ -397,7 +397,7 @@ fn invalid() -> ProviderError {
 
 // Both explicit artifact editions validate exactly the same retained common
 // identities. This borrowed predicate constructs no synthetic phase DTO.
-fn validate_scope_data(scope: &PacketRestorationActivationScope) -> Result<(), ProviderError> {
+pub(super) fn validate_scope_data(scope: &PacketRestorationActivationScope) -> Result<(), ProviderError> {
     if scope.restoration.context_digest.as_slice().len() != 32
         || scope.restoration.commit_request == scope.restoration.commit_response
         || scope.target.native_pid.get() == 0

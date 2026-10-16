@@ -14,6 +14,11 @@ mod bootstrap;
 mod owned_read;
 pub(crate) use boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;
 pub(crate) use boot::{
+    NativeRestorationObservationAttempt, OriginalRestorationObservationRead,
+    OriginalRestorationObservationPermit, OriginalRestorationReleased, OriginalRestorationReleaseState,
+    original_native_restoration_observation_attempt_backing_data,
+    original_native_restoration_observation_counter_scratch_data,
+    original_native_restoration_observation_ingress_row_data,
     NativeRestorationUploadAttempt, OriginalRestorationActivationPermit,
     OriginalRestorationActivationRequirement, OriginalRestorationUploadPermit,
     original_native_restoration_activation_attempt_backing_data,

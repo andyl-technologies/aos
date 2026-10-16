@@ -14,7 +14,8 @@ impl PacketCompleteReportStartupHolder {
     /// The source, tickets and actual native attempts remain in this registered
     /// holder through failure. Final context issuance requires all three genuine
     /// committed Holds and the fourth actual Host validator. Durable publication
-    /// precedes real WorldActivate and common-runtime custody installation.
+    /// precedes common-runtime installation and the complete three-node World
+    /// dispatch. Scheduling Observe starts only after all three actual phases.
     ///
     /// # Errors
     /// Refuses foreign or repeated owners, missing full construction admission,
@@ -96,6 +97,11 @@ impl PacketCompleteReportStartupHolder {
             .try_borrow_mut()
             .map_err(|_| RuntimeError::OwnerBusy)?
             .install_original_complete_restoration(&window, &plan, &context)?;
+        Self::recheck_original_restoration_transaction_data(original, activation)?;
+        capsule
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?
+            .activate_original_complete_restoration_worlds(&window, &plan, &context)?;
         Self::recheck_original_restoration_transaction_data(original, activation).map(|_| ())
     }
 }

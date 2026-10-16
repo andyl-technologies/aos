@@ -146,6 +146,7 @@ impl PacketCompleteSemanticSource {
             signer: None,
             installed_custody: None,
             source_activation: None,
+            source_observation: None,
         };
         if let Some(signing) = &inputs.signing {
             let construction = signing.cold.original_signing_construction_inputs_data(

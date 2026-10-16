@@ -312,7 +312,7 @@ impl PacketControl {
     }
 }
 
-fn borrowed_reference_matches(value: &Value, expected: &ContentRef) -> bool {
+pub(super) fn borrowed_reference_matches(value: &Value, expected: &ContentRef) -> bool {
     let Some(value) = value.as_object().filter(|value| value.len() == 3) else {
         return false;
     };

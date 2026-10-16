@@ -140,7 +140,7 @@ impl CnpController {
         for upload in self.original_installed_restoration_upload.iter().flatten() {
             upload.ensure_complete_data()?;
         }
-        Ok(())
+        self.ensure_no_pending_original_installed_restoration_observation()
     }
 
     pub(crate) const fn original_installed_restoration_activation_owner_header_bytes_data() -> usize
@@ -458,7 +458,7 @@ impl OriginalRestorationActivationTargetBindingData<'_> {
         self.authenticate_scope_data(&request.scope)
     }
 
-    fn authenticate_scope_data(
+    pub(super) fn authenticate_scope_data(
         &self,
         scope: &PacketRestorationActivationScope,
     ) -> Result<(), ProviderError> {

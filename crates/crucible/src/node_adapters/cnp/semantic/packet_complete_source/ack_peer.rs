@@ -723,4 +723,6 @@ pub(crate) use association::{
 pub use association::{
     OriginalSourceRestorationActivationConstructionData,
     OriginalSourceRestorationActivationVerifiedPhase,
+    OriginalSourceRestorationObservationConstructionData,
+    OriginalSourceRestorationObservationVerifiedPhase,
 };

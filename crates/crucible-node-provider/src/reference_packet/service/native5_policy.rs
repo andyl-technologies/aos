@@ -738,6 +738,9 @@ impl BodySchemaVerifier for Native5Policy {
                 "native5 body extensions unsupported",
             ));
         }
+        if super::complete_restore::restoration_observe::verify_selected_wire_header_data(&self.selection,authority,envelope)? {
+            return authority.ensure_live();
+        }
         if super::complete_restore::activation::verify_selected_wire_header_data(
             &self.selection,
             authority,

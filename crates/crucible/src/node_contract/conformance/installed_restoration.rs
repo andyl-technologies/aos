@@ -206,6 +206,33 @@ impl ConformanceRuntime {
             activation,
             scheduling,
         )?;
+        context.validate_current(&self.runtime)?;
+        window.complete_original_common_installation_data(plan, &self.runtime)
+    }
+}
+
+impl ConformanceRuntime {
+    /// Completes every selected native World phase before any scheduling Observe.
+    ///
+    /// The exact retained native tickets select three nodes on this runtime.
+    /// Host readiness is independently validated through the complete context;
+    /// it is never sent through the native-only hook. A failed or interrupted
+    /// roster dispatch cannot be retried, and every native partial stays owned.
+    ///
+    /// # Errors
+    /// Refuses a foreign context/runtime/world, missing common installation or
+    /// whole observation, repeated dispatch or absent genuine World evidence.
+    pub fn activate_original_installed_restoration_worlds(
+        &mut self,
+        window: &Rc<CompleteOriginalRestorationWindow>,
+        plan: &InstalledConformancePlan,
+        context: &OriginalLineageRestoration<'_>,
+    ) -> Result<(), RuntimeError> {
+        window.authenticate_original_context_owner_data(context)?;
+        window.authenticate_original_common_construction_data(self, plan)?;
+        context.validate_current(&self.runtime)?;
+        let world = self.activation.as_ref().ok_or(RuntimeError::NotActivated)?;
+        window.dispatch_original_installed_worlds_data(plan, world, &mut self.runtime)?;
         context.validate_current(&self.runtime)
     }
 }

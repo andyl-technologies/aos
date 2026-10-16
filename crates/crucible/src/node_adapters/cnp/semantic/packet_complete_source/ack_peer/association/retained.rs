@@ -45,6 +45,9 @@ impl OriginalAckPeerAssociation {
                 maximum,
             )?;
         }
+        if let Some(observation)=&self.restoration_observation {
+            bytes=sum_with_error::<E,_>([bytes,observation.retained_heap_bytes_with_error::<E>(maximum)?],maximum)?;
+        }
         for value in self
             .normalized
             .iter()

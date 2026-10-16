@@ -49,6 +49,8 @@ pub(super) fn authenticate_edition_data(
         {
             Ok(())
         }
+        Some("crucible.complete-scene.installation/5")
+            if object.get("mechanism").is_some_and(serde_json::Value::is_object) => Ok(()),
         Some("crucible.complete-scene.installation/4")
             if object
                 .get("mechanism")
@@ -71,6 +73,7 @@ pub(super) fn authenticate_selection_data(
             Some(selected),
         ) => selected.authenticate(),
         ("crucible.complete-scene.installation/4", Some(selected)) => selected.authenticate(),
+        ("crucible.complete-scene.installation/5", Some(selected)) => selected.authenticate(),
         _ => Err(refused()),
     }
 }
@@ -382,8 +385,9 @@ mod invocation_declaration_tests {
 }
 
 mod restoration_activation;
+mod restoration_observation;
 pub(super) fn authenticate_profile_declaration_data(
     selected: &Manifest,
 ) -> Result<(), QualificationError> {
-    restoration_activation::authenticate_profile_declaration_data(selected)
+    restoration_observation::authenticate_profile_declaration_data(selected)
 }

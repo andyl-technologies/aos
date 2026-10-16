@@ -154,7 +154,7 @@ impl OriginalSourceRestorationActivationAttempt {
         .map_err(|_| RuntimeError::InvalidReceipt)
     }
 
-    pub(super) fn value(
+    pub(in super::super) fn value(
         &self,
         phase: PacketRestorationActivationPhase,
         index: usize,

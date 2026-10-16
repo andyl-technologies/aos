@@ -15,6 +15,8 @@ use serde::{Serialize, Serializer, ser::SerializeSeq};
 /// Identifies a closed shared backing category in the whole-eleven graph.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum MetadataSharedKind {
+    /// Names the independent once restored observation attempt allocation.
+    NativeRestorationObservationAttempt,
     /// Names an original protocol-capture actor header.
     ProtocolOwner,
     /// Names the original registrar's epoch counter backing.
@@ -74,6 +76,7 @@ impl MetadataSharedKind {
 
     fn name(self) -> &'static str {
         match self {
+            Self::NativeRestorationObservationAttempt => "native-restoration-observation-attempt",
             Self::ProtocolOwner => "protocol-owner",
             Self::RegistrarEpoch => "registrar-epoch",
             Self::RegistrarGate => "registrar-gate",

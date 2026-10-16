@@ -79,6 +79,15 @@ pub(super) fn observe(
                     ],
                     policy.maximum_requested_bytes,
                 )?;
+                if let Some(observation) = &row.source_observation {
+                    // Every later reauthentication remains independently funded;
+                    // completed World or Observe does not refund the old rows.
+                    requested = checked_sum(&[
+                        requested,
+                        observation.requested_peak_bytes_data(),
+                        observation.counter_scratch_bytes_data(),
+                    ], policy.maximum_requested_bytes)?;
+                }
                 let signer = row.signer.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
                 let custody = row
                     .installed_custody
@@ -221,6 +230,11 @@ pub(super) fn observed_current(
         if let Some(target) = window.coordinator_target.get() {
             use crate::node_contract::runtime_owned_counter::OwnedStorage;
             requested = checked_sum(&[requested, target.owned_storage()?], maximum)?;
+        }
+        for slot in &window.observation_request_ids {
+            if let Some(id) = slot.get() {
+                requested = checked_sum(&[requested, id.allocated_capacity()], maximum)?;
+            }
         }
         if let Some(ids) = window.activation_request_ids.get() {
             for id in ids {

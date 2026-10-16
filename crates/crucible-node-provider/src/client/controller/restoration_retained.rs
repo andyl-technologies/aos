@@ -35,6 +35,7 @@ struct Fields<'a> {
     activation:
         &'a [Option<installed_activation::AssignedOriginalInstalledRestorationActivation>; 2],
     uploads: &'a [Option<installed_activation::AssignedUpload>; 2],
+    observation: &'a Option<installed_observation::AssignedOriginalInstalledRestorationObservation>,
 }
 
 impl<'a> Fields<'a> {
@@ -53,6 +54,7 @@ impl<'a> Fields<'a> {
             installed_complete_restore,
             original_installed_restoration_activation,
             original_installed_restoration_upload,
+            original_installed_restoration_observation,
         } = controller;
         if original_complete_restore.is_some() || installed_complete_restore.is_some() {
             return Err(ProviderError::Correlation(
@@ -70,6 +72,7 @@ impl<'a> Fields<'a> {
             commit: original_complete_restore_commit,
             activation: original_installed_restoration_activation,
             uploads: original_installed_restoration_upload,
+            observation: original_installed_restoration_observation,
         })
     }
 
@@ -99,6 +102,7 @@ impl<'a> Fields<'a> {
         for original in self.activation.iter().flatten() {
             original.observe_owned_metadata(observer)?;
         }
+        if let Some(original)=self.observation {original.observe_owned_metadata(observer)?;}
         Ok(())
     }
 }
@@ -147,6 +151,7 @@ impl CnpController {
         Self::original_live_host_metadata_counter_scratch_data()
             + Self::original_installed_restoration_activation_counter_scratch_data()
             + Self::original_installed_restoration_upload_counter_scratch_data()
+            + Self::original_installed_restoration_observation_counter_scratch_data()
             + ClientSession::original_restoration_metadata_counter_scratch_data()
             + size_of::<Fields<'static>>()
             + size_of::<Result<Fields<'static>, ProviderError>>()

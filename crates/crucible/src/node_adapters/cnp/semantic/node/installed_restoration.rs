@@ -19,6 +19,10 @@ use crate::{
 mod activation;
 #[path = "installed_restoration/correspondence.rs"]
 mod correspondence;
+#[path = "installed_restoration/observation.rs"]
+mod observation;
+#[path = "installed_restoration/outcome.rs"]
+mod outcome;
 #[path = "installed_restoration/raw_storage.rs"]
 mod raw_storage;
 #[path = "installed_restoration/storage.rs"]
@@ -37,6 +41,10 @@ pub(in crate::node_adapters::cnp::semantic) struct InstalledRestorationCustody {
     world_manifest: Option<crucible_node_contract::ActivationManifest>,
     world_value: Option<serde_json::Value>,
     world_bytes: Option<Vec<u8>>,
+    observation_attempted: bool,
+    observation_completed: Option<crucible_node_provider::bodies::ResponseBody>,
+    observation: Option<crate::node_scheduling::NativeSchedulingObservation>,
+    observation_return: Option<crate::node_scheduling::NativeSchedulingObservation>,
 }
 
 /// Counts new selected-node custody copies before the restoration transaction.
@@ -52,6 +60,7 @@ pub struct OriginalInstalledRestorationCustodyConstructionData {
     inputs: usize,
     requested: usize,
     activation: crucible_node_provider::reference_packet::service::complete_restore::activation::OriginalInstalledRestorationActivationConstructionData,
+    observation: Option<crucible_node_provider::reference_packet::service::complete_restore::restoration_observe::OriginalInstalledRestorationObservationConstructionData>,
 }
 
 impl OriginalInstalledRestorationCustodyConstructionData {
@@ -60,6 +69,13 @@ impl OriginalInstalledRestorationCustodyConstructionData {
     /// Neither this row nor an association's copied DATA issues a phase claim.
     pub fn activation_construction_data(&self) -> &crucible_node_provider::reference_packet::service::complete_restore::activation::OriginalInstalledRestorationActivationConstructionData{
         &self.activation
+    }
+
+    /// Borrows separately quoted first-observation DATA for explicit mechanism5.
+    ///
+    /// Older activation-only declarations have no observation constructor row.
+    pub fn observation_construction_data(&self) -> Option<&crucible_node_provider::reference_packet::service::complete_restore::restoration_observe::OriginalInstalledRestorationObservationConstructionData>{
+        self.observation.as_ref()
     }
 
     /// Returns the independent copied custody and fixed observer demand.
@@ -136,6 +152,10 @@ impl super::super::CnpSemanticNode {
             world_manifest: None,
             world_value: None,
             world_bytes: None,
+            observation_attempted: false,
+            observation_completed: None,
+            observation: None,
+            observation_return: None,
         });
         self.authenticate_installed_restoration_current_data()
     }
@@ -267,6 +287,25 @@ impl super::super::CnpSemanticNode {
                 &coordinator_inputs,
             )
             .map_err(|_| RuntimeError::ResourceLimit)?;
+        let observation = if view
+            .source
+            .is_original_restoration_observation_declaration_data()?
+        {
+            Some(
+                controller
+                    .quote_original_installed_restoration_observation_construction_data(
+                        view.launch,
+                        &owner_inputs,
+                    )
+                    .map_err(|_| RuntimeError::ResourceLimit)?,
+            )
+        } else {
+            None
+        };
+        let observation_requested = match observation.as_ref() {
+            Some(data) => data.requested_bytes_data(),
+            None => 0, // Explicit older declaration has no observation route.
+        };
         // Node-owned command/result/Ready copies and manifest construction are
         // additional independent owners, never the SDK/Core rows reassigned.
         let node_activation = storage::node_activation_copies(&activation, coordinator, maximum)?;
@@ -276,6 +315,7 @@ impl super::super::CnpSemanticNode {
                 node_activation,
                 scratch,
                 activation.requested_bytes_data(),
+                observation_requested,
             ],
             maximum,
         )?;
@@ -289,15 +329,18 @@ impl super::super::CnpSemanticNode {
             inputs,
             requested,
             activation,
+            observation,
         })
     }
 }
 
-fn custody_counter_scratch_data() -> Result<usize, RuntimeError> {
+pub(super) fn custody_counter_scratch_data() -> Result<usize, RuntimeError> {
     storage::sum(
         &[
             storage::counter_scratch_data(),
             activation::counter_scratch_data(),
+            observation::counter_scratch_data(),
+            outcome::counter_scratch_data(),
             raw_storage::counter_scratch_data(),
             OriginalInstalledRestorationNodeAssociation::counter_scratch_data(),
             size_of::<OriginalInstalledRestorationCustodyConstructionData>(),

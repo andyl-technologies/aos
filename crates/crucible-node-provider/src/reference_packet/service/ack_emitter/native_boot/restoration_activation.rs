@@ -12,6 +12,18 @@ use std::mem::size_of;
 
 #[path = "restoration_activation/upload.rs"]
 mod upload;
+#[path = "restoration_activation/released.rs"]
+mod released;
+#[path = "restoration_activation/observation.rs"]
+mod observation;
+pub(crate) use observation::{
+    NativeRestorationObservationAttempt, OriginalRestorationObservationRead,
+    OriginalRestorationObservationPermit,
+    original_native_restoration_observation_attempt_backing_data,
+    original_native_restoration_observation_counter_scratch_data,
+    original_native_restoration_observation_ingress_row_data,
+};
+pub(crate) use released::{OriginalRestorationReleased, OriginalRestorationReleaseState};
 pub(crate) use upload::{
     NativeRestorationUploadAttempt, OriginalRestorationUploadPermit,
     original_native_restoration_upload_attempt_backing_data,
@@ -23,6 +35,7 @@ pub(crate) struct NativeRestorationActivationAttempt {
     thread: ThreadId,
     phase: PacketRestorationActivationPhase,
     original: Option<Envelope>,
+    incoming_slot: Option<usize>,
     artifact: Option<PacketRestorationActivationArtifact>,
     context: Option<PacketRestorationActivationContext>,
     coordinator: Option<serde_json::Value>,
@@ -126,6 +139,7 @@ impl NativeAckBoot {
                 thread: std::thread::current().id(),
                 phase,
                 original: Some(original),
+                incoming_slot: None,
                 artifact: None,
                 context: None,
                 coordinator: None,
@@ -138,6 +152,21 @@ impl NativeAckBoot {
             *slot = Some(Rc::clone(&attempt));
             attempt
         };
+
+        // Retain the actual reader slot after the once original is owned and
+        // before its artifact is parsed. Future release/Observe checks borrow
+        // these exact physical canonical bytes without constructing a clone.
+        if phase == PacketRestorationActivationPhase::WorldActivate
+            && admission.policy.original_restoration_activation_selection_data()
+                .provider.extensions_supported.iter().any(|feature| feature.as_str() ==
+                    crate::reference_packet::service::complete_restore::restoration_observe::PACKET_RESTORATION_OBSERVE_FEATURE)
+        {
+            let mut flight = attempt.try_borrow_mut().map_err(|_| borrowed())?;
+            let slot = connection.original_restoration_incoming_literal_slot_data(
+                flight.original.as_ref().ok_or_else(refused)?,
+            )?;
+            flight.incoming_slot = Some(slot);
+        }
 
         // Parse directly from the original already moved into the sticky slot.
         // Assign each complete typed partial before its subsequent validation.
@@ -488,6 +517,7 @@ pub(crate) fn original_native_restoration_activation_counter_scratch_data() -> u
         + size_of::<std::array::IntoIter<usize, 2>>()
         + restoration_activation_protocol_counter_scratch_data()
         + original_native_restoration_upload_counter_scratch_data()
+        + released::counter_scratch_data()
 }
 
 /// Quotes fixed ingress before any untrusted artifact can supply a phase row.
@@ -674,6 +704,7 @@ impl NativeAckBoot {
                     thread: _,
                     phase,
                     original,
+                    incoming_slot,
                     artifact,
                     context,
                     coordinator,
@@ -686,6 +717,7 @@ impl NativeAckBoot {
                 observer.observe(creator)?;
                 observer.observe(phase)?;
                 observer.observe(original)?;
+                observer.observe(incoming_slot)?;
                 if let Some(artifact) = artifact {
                     artifact.observe_owned_metadata_data(observer)?;
                 }

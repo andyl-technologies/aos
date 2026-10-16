@@ -70,7 +70,7 @@ impl CnpSemanticNode {
             inputs,
         )?;
         if let Some(signing) = &inputs.signing {
-            let (custody, source_activation) = {
+            let (custody, source_activation, source_observation) = {
                 let construction = signing.cold.original_signing_construction_inputs_data(
                     signing.inputs,
                     inputs.plan,
@@ -104,10 +104,40 @@ impl CnpSemanticNode {
                         &activation_inputs,
                         inputs.maximum_requested_bytes,
                     )?;
-                (custody, source_activation)
+                let source_observation = match (
+                    custody.observation_construction_data(),
+                    signing.observation_request_id,
+                ) {
+                    (Some(observation_data), Some(request_id)) => {
+                        if !inputs
+                            .source
+                            .is_original_restoration_observation_declaration_data()?
+                        {
+                            return Err(RuntimeError::ForeignAuthority);
+                        }
+                        let observation_inputs = crate::node_admission::OriginalInstalledRestorationObservationSigningConstructionInputs {
+                            activation: &activation_inputs,
+                            activation_source: &source_activation,
+                            observation_data,
+                            request_id,
+                        };
+                        Some(
+                            inputs
+                                .source
+                                .original_restoration_observation_source_construction_data(
+                                    &observation_inputs,
+                                    inputs.maximum_requested_bytes,
+                                )?,
+                        )
+                    }
+                    (None, None) => None,
+                    _ => return Err(RuntimeError::ForeignAuthority),
+                };
+                (custody, source_activation, source_observation)
             };
             data.installed_custody = Some(custody);
             data.source_activation = Some(source_activation);
+            data.source_observation = source_observation;
         }
         data.authenticate_original_owner_data(
             inputs.source,
@@ -133,12 +163,24 @@ impl CnpSemanticNode {
             .ok_or(RuntimeError::OwnerUnavailable)?;
         let controller = native.controller().ok_or(RuntimeError::OwnerUnavailable)?;
         let terms = [
+            std::mem::size_of::<[usize; 11]>(),
+            std::mem::size_of::<std::array::IntoIter<usize, 11>>(),
             std::mem::size_of::<OriginalRestorationNodeInputs<'static>>(),
             std::mem::size_of::<OriginalRestorationNodeConstructionData>(),
+            std::mem::size_of::<(
+                super::installed_restoration::OriginalInstalledRestorationCustodyConstructionData,
+                crate::node_adapters::cnp::OriginalSourceRestorationActivationConstructionData,
+                Option<crate::node_adapters::cnp::OriginalSourceRestorationObservationConstructionData>,
+            )>(),
+            std::mem::size_of::<(
+                Option<&crucible_node_provider::reference_packet::service::complete_restore::restoration_observe::OriginalInstalledRestorationObservationConstructionData>,
+                Option<&crucible_node_contract::Id>,
+            )>(),
             std::mem::size_of_val(&native.read_owner),
             super::super::packet_complete_source::OriginalCompletedCanonicalAckWorldAdmission::original_restoration_query_counter_scratch_data(),
             super::super::PacketCompleteSemanticSource::original_restoration_source_counter_scratch_data(),
             controller.original_complete_restore_upload_before_mapping_counter_scratch_data(),
+            super::installed_restoration::custody_counter_scratch_data()?,
         ];
         terms.into_iter().try_fold(0usize, |sum, term| {
             sum.checked_add(term).ok_or(RuntimeError::ResourceLimit)

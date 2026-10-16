@@ -1056,3 +1056,12 @@ mod native_owned15;
 mod restoration_retained;
 
 mod assigned_activation;
+mod assigned_observation;
+
+// Borrows the same physical native World original for released continuation.
+mod restoration_release;
+pub(crate) use restoration_release::original_restoration_release_literal_counter_scratch_data;
+
+// Receives only the separately prepaid, boot-owned restored observation.
+mod restoration_observation;
+pub(crate) use restoration_observation::original_native_restoration_observation_receive_counter_scratch_data;

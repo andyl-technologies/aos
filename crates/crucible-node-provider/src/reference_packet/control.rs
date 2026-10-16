@@ -50,6 +50,7 @@ mod fresh_report;
 mod input;
 mod native5;
 mod restoration_activation;
+pub(crate) use restoration_activation::original_restoration_released_counter_scratch_data;
 pub(crate) use native5::{
     authenticate_original_restoration_coordinator_data,
     original_restoration_coordinator_counter_scratch_data,
@@ -749,6 +750,27 @@ impl PacketControl {
             &super::service::ack_emitter::OriginalRestorationActivationPermit,
         >,
     ) -> Result<&PacketControlReply, ProviderError> {
+        self.dispatch_prepared_with_restoration_permissions(
+            request, preparation, canonical_ack_admit, selected_observe,
+            restoration_activation, None,
+        )
+    }
+
+    fn dispatch_prepared_with_restoration_permissions(
+        &mut self,
+        request: &Envelope,
+        preparation: &mut ReplyPreparation<'_>,
+        canonical_ack_admit: Option<
+            &super::service::ack_emitter::OriginalCanonicalAckControlAdmit<'_>,
+        >,
+        selected_observe: Option<&mut OriginalObserveAllocationPreparation<'_>>,
+        restoration_activation: Option<
+            &super::service::ack_emitter::OriginalRestorationActivationPermit,
+        >,
+        restoration_observation: Option<
+            &super::service::ack_emitter::OriginalRestorationObservationPermit,
+        >,
+    ) -> Result<&PacketControlReply, ProviderError> {
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
                 "packet original dispatch foreign creator",
@@ -760,6 +782,7 @@ impl PacketControl {
             ));
         }
         if selected_observe.is_none()
+            && restoration_observation.is_none()
             && request.method == Method::Observe
             && self.complete_capture_allocation_selection.is_some()
         {
@@ -769,6 +792,11 @@ impl PacketControl {
             return Err(ProviderError::Correlation(
                 "native allocation Observe requires its original producer",
             ));
+        }
+        if let Some(permit) = restoration_observation {
+            permit.authenticate_control_request_data(request, &self.selection, self)?;
+        } else if self.restoration_activation_required && request.method == Method::Observe {
+            return Err(ProviderError::Correlation("restored Observe private permit absent"));
         }
         if let Some(permit) = restoration_activation {
             permit.authenticate_control_request(
@@ -848,7 +876,8 @@ impl PacketControl {
             || (!request.extensions.is_empty()
                 && !(self.program.is_connected() && request.method == Method::Input)
                 && !authenticated_admit
-                && restoration_activation.is_none())
+                && restoration_activation.is_none()
+                && restoration_observation.is_none())
         {
             return Err(ProviderError::Correlation("packet original native route"));
         }

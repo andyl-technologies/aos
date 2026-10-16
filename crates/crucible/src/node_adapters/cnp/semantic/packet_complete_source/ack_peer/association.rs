@@ -33,6 +33,8 @@ mod complete_restore;
 mod fresh_restore_host;
 #[path = "association/restoration_activation.rs"]
 mod restoration_activation;
+#[path = "association/restoration_observation.rs"]
+mod restoration_observation;
 
 #[path = "association/restoration_transfer.rs"]
 mod restoration_transfer;
@@ -51,6 +53,7 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
     restore_transfer_banks: Option<restore_transfer_banks::OriginalRestoreTransferBanks>,
     restoration_activation:
         Option<restoration_activation::OriginalSourceRestorationActivationAttempt>,
+    restoration_observation: Option<restoration_observation::OriginalSourceRestorationObservationAttempt>,
     emitter: Option<OriginalCanonicalBlobAckEmitter>,
     restore_input_emitter: Option<OriginalCanonicalRestoreInputEmitter>,
     native: Option<CnpSemanticSourceRead>,
@@ -90,6 +93,7 @@ impl OriginalAckPeerAssociation {
             restore: None,
             restore_transfer_banks: None,
             restoration_activation: None,
+            restoration_observation: None,
             emitter: None,
             restore_input_emitter: None,
             native: None,
@@ -147,8 +151,10 @@ impl OriginalAckPeerAssociation {
             .map_or(Ok(0), |attempt| {
                 attempt.allocated_bank_bytes_with_error::<E>()
             })?;
+        let observation=self.restoration_observation.as_ref().map_or(Ok(0),|attempt| attempt.allocated_bank_bytes_with_error::<E>())?;
         existing
-            .checked_add(activation)
+            .checked_add(observation)
+            .and_then(|bytes| bytes.checked_add(activation))
             .and_then(|bytes| bytes.checked_add(restore))
             .and_then(|bytes| bytes.checked_add(transfer))
             .ok_or_else(|| E::limit("complete restore association capacity overflow"))
@@ -1144,6 +1150,7 @@ impl OriginalAckPeerAssociation {
             restore,
             restore_transfer_banks,
             restoration_activation,
+            restoration_observation,
             emitter,
             restore_input_emitter,
             native,
@@ -1160,7 +1167,8 @@ impl OriginalAckPeerAssociation {
             publication_attempted,
             completed_mechanism,
         } = self;
-        if restoration_activation.is_some()
+        if restoration_observation.is_some()
+            || restoration_activation.is_some()
             || emitter.is_some()
             || restore_input_emitter.is_some()
             || native.is_some()
@@ -1250,4 +1258,10 @@ pub(crate) use restoration_transfer::{
 pub use restoration_activation::{
     OriginalSourceRestorationActivationConstructionData,
     OriginalSourceRestorationActivationVerifiedPhase,
+};
+
+
+pub use restoration_observation::{
+    OriginalSourceRestorationObservationConstructionData,
+    OriginalSourceRestorationObservationVerifiedPhase,
 };

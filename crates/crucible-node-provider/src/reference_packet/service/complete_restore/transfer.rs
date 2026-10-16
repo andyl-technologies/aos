@@ -32,6 +32,9 @@ pub use contract::{
 pub use crypto::*;
 pub use owner_state::{
     PacketCompleteRestoreOwnerProjection, PacketCompleteRestoreOwnerStateData,
+    PacketCompleteRestoreModelOutputPopulationData,
+    complete_restore_selected_model_output_population_data,
+    complete_restore_selected_model_output_population_counter_scratch_data,
     PacketCompleteRestoreOwnerValidationStorage, PacketCompleteRestoreSelectedOwnerInputs,
     authenticate_complete_restore_owner_state_data,
     complete_restore_invocation_owner_construction_storage_data,

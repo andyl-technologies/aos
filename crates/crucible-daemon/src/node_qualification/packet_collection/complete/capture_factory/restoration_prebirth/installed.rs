@@ -117,3 +117,17 @@ impl PacketCompleteRestorationPrebirth {
             .install_original_installed_restoration(window, plan, context)
     }
 }
+
+impl PacketCompleteRestorationPrebirth {
+    pub(in crate::node_qualification::packet_collection::complete) fn activate_original_complete_restoration_worlds(
+        &mut self,
+        window: &Rc<CompleteOriginalRestorationWindow>,
+        plan: &InstalledConformancePlan,
+        context: &OriginalLineageRestoration<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.runtime
+            .as_mut()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .activate_original_installed_restoration_worlds(window, plan, context)
+    }
+}

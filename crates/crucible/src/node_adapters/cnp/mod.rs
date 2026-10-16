@@ -110,7 +110,7 @@ pub(crate) use semantic::{
     OriginalInitialLifecycleDiagnostics, original_construction_failure_reason,
 };
 
-pub(crate) use semantic::OriginalRestorationColdGroup;
+pub(crate) use semantic::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
 
 pub(crate) use semantic::{
     OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
@@ -120,4 +120,6 @@ pub(crate) use semantic::{
 pub use semantic::{
     OriginalSourceRestorationActivationConstructionData,
     OriginalSourceRestorationActivationVerifiedPhase,
+    OriginalSourceRestorationObservationConstructionData,
+    OriginalSourceRestorationObservationVerifiedPhase,
 };

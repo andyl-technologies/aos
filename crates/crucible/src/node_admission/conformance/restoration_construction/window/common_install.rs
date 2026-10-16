@@ -90,6 +90,9 @@ impl CompleteOriginalRestorationWindow {
         if self.install_started.replace(true) {
             return Err(RuntimeError::OutstandingObligations);
         }
+        // Installation changes real common owners even when a later validation
+        // refuses. The next effect requires a fresh whole-owner observation.
+        self.whole_observation.require_observation();
         // The legacy consumer performs real fallible currentness and activation
         // checks before it retains an active scheduler. Keep this SAME original
         // owner through that entire interval and after every outcome. Its inert

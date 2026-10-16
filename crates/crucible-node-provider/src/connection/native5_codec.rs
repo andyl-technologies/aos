@@ -822,6 +822,9 @@ impl BodySchemaVerifier for Native5CodecOwner {
         match self {
             Self::ControllerPacket(policy) => {
                 policy.validate_current_negotiation(authority)?;
+                if crate::reference_packet::service::complete_restore::restoration_observe::verify_selected_wire_data(&policy.selection,authority,envelope,body)? {
+                    return authority.ensure_live();
+                }
                 if crate::reference_packet::service::complete_restore::activation::verify_selected_wire_data(
                     &policy.selection, authority, envelope, body,
                 )? {

@@ -185,6 +185,24 @@ pub enum CnpSemanticTransition {
 /// A generic frontend cannot infer a Clock, Compute or other role from labels.
 /// Unsupported facets must remain absent from the exact installation.
 pub trait CnpSemanticSource {
+    /// Publishes one separately admitted restored observation from its Source.
+    ///
+    /// Unsupported implementations refuse before any effect. Portable labels,
+    /// rows or completed World DATA never replace the genuine once Core claim.
+    ///
+    /// # Errors
+    /// Refuses unsupported Sources, foreign/stale claims, changed originals,
+    /// exhausted independent credit or failed native/currentness verification.
+    fn call_original_installed_restoration_observation_into<'a>(
+        &'a self,
+        _controller:&'a mut crucible_node_provider::client::CnpController,
+        _claim:crate::node_admission::OriginalInstalledRestorationObservationClaim,
+        _admitted:&super::OriginalSourceRestorationObservationConstructionData,
+        _completed:&mut Option<crucible_node_provider::bodies::ResponseBody>,
+    )->Result<super::OriginalSourceRestorationObservationVerifiedPhase<'a>,crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
     /// Publishes one separately admitted restoration phase from its real Source.
     ///
     /// Unsupported Sources refuse. A body, phase label or construction row

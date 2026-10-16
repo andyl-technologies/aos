@@ -394,3 +394,112 @@ impl OriginalInstalledRestorationNodeAssociation {
         self.origin()
     }
 }
+
+impl OriginalInstalledRestorationNodeAssociation {
+    /// Returns the independent fixed Source row admitted before Prepare.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, a lost Window, changed proof or absent Observe1.
+    /// This DATA copy never creates or renews an observation claim.
+    pub fn admitted_source_observation_data(
+        &self,
+    ) -> Result<
+        crate::node_adapters::cnp::OriginalSourceRestorationObservationConstructionData,
+        RuntimeError,
+    > {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.original_installed_source_observation_data(self.selected)
+    }
+
+    pub(crate) fn begin_original_observation_claim_data(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        world: &WorldActivation,
+    ) -> Result<crate::node_admission::OriginalInstalledRestorationObservationClaim, RuntimeError>
+    {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.begin_original_installed_observation_claim_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            world,
+        )
+    }
+
+}
+
+impl OriginalInstalledRestorationNodeAssociation {
+    /// Retains actual Source scheduling copies before completing observation.
+    ///
+    /// # Errors
+    /// Refuses another original Window/Source, a spent phase, changed native
+    /// evidence, unadmitted copies or a failing callback/currentness fence.
+    pub(crate) fn with_original_observation_scheduling_data(
+        &self,
+        source: &dyn CnpSemanticSource,
+        evidence: &crate::node_adapters::cnp::OriginalSourceRestorationObservationVerifiedPhase<'_>,
+        inspect: impl FnOnce(
+            &crate::node_scheduling::NativeSchedulingObservation,
+        ) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.with_original_observation_scheduling_data(self.selected, source, evidence, inspect)
+    }
+
+    /// Rechecks the same saved observation under its actual current Source fence.
+    ///
+    /// # Errors
+    /// Refuses unfinished evidence, another controller/read owner/world, changed
+    /// complete histories or a failing comparison/currentness callback.
+    pub(crate) fn with_original_current_observation_scheduling_data(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        world: &WorldActivation,
+        inspect: impl FnOnce(
+            &crate::node_scheduling::NativeSchedulingObservation,
+        ) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.with_original_current_observation_scheduling_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            world,
+            inspect,
+        )
+    }
+}

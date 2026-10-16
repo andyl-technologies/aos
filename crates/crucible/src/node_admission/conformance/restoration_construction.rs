@@ -208,6 +208,13 @@ pub use window::OriginalRestorationHostContinuationInspection;
 
 #[path = "restoration_construction/activation.rs"]
 mod activation;
+#[path = "restoration_construction/observation.rs"]
+mod observation;
+pub use observation::OriginalInstalledRestorationObservationClaim;
+pub(crate) use observation::{
+    OriginalInstalledRestorationObservationSigningConstructionInputs,
+    OriginalInstalledRestorationObservationSigningInputs,
+};
 
 pub use activation::{
     OriginalInstalledRestorationActivationClaim, OriginalInstalledRestorationActivationPhase,

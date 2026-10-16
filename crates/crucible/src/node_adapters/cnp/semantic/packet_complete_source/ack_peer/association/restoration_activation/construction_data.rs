@@ -80,7 +80,7 @@ impl OriginalSourceRestorationActivationConstructionData {
     // Core lends this fixed DATA by value so its Window loan ends before the
     // mutable Controller loan. Compare the complete defining fields, not the
     // address of that temporary copy; the genuine owned claim remains required.
-    pub(super) fn authenticate_same_construction_data(
+    pub(in super::super) fn authenticate_same_construction_data(
         &self,
         other: &Self,
     ) -> Result<(), RuntimeError> {
@@ -131,7 +131,7 @@ impl OriginalSourceRestorationActivationConstructionData {
             .map_err(|_| RuntimeError::ForeignAuthority)
     }
 
-    pub(super) fn authenticate_original(
+    pub(in super::super) fn authenticate_original(
         &self,
         source: &PacketCompleteSemanticSource,
         controller: &CnpController,
