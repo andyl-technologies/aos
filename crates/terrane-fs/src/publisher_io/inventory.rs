@@ -4,9 +4,15 @@
 //! candidates require genuine kernel sealing and exact chunk identity. Encoded
 //! chunks retain only bounded frame-declared sizes until independent HOST-14
 //! verification. Pages retain one owner-issued snapshot, never caller offsets.
+//! Unhandled private staging or publication-state remnants fail the whole scan.
+//! Private descendants must retain the actual layout-root project assignment,
+//! with inheritance enabled on directories. These read-only comparisons grant
+//! no quota or recovery-completion receipt: configured runtime separately binds
+//! the retained root to authenticated finite quotas before physical readiness.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::sync::Arc;
 
@@ -60,11 +66,40 @@ fn source(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
 }
 
 fn open(parent: &File, name: &str, directory: bool) -> io::Result<File> {
-    let mut flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    // Classify the retained inode without opening devices or blocking on FIFOs.
+    // Only the verified regular file/directory is reopened for actual reads.
+    let retained = File::from(fs::openat(
+        parent,
+        name,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    let expected = retained.metadata()?;
+    if (directory && !expected.is_dir()) || (!directory && !expected.is_file()) {
+        return Err(invalid("unexpected inventory inode type"));
+    }
+    let mut flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK;
     if directory {
         flags |= OFlags::DIRECTORY;
     }
-    Ok(File::from(fs::openat(parent, name, flags, Mode::empty())?))
+    // This procfs link names our retained descriptor, never a caller path.
+    let file = File::from(fs::open(
+        format!("/proc/self/fd/{}", retained.as_raw_fd()),
+        flags,
+        Mode::empty(),
+    )?);
+    let observed = file.metadata()?;
+    if (observed.dev(), observed.ino()) != (expected.dev(), expected.ino()) {
+        return Err(invalid("inventory inode changed during retained reopen"));
+    }
+    Ok(file)
+}
+
+fn charge(budget: &mut usize) -> io::Result<()> {
+    *budget = budget
+        .checked_sub(1)
+        .ok_or_else(|| invalid("inventory physical entry budget exceeded"))?;
+    Ok(())
 }
 
 fn names(directory: &File, remaining: usize) -> io::Result<Vec<String>> {
@@ -85,6 +120,13 @@ fn names(directory: &File, remaining: usize) -> io::Result<Vec<String>> {
     }
     names.sort();
     Ok(names)
+}
+
+fn require_empty(directory: &File, budget: usize, message: &'static str) -> io::Result<()> {
+    if !names(directory, budget)?.is_empty() {
+        return Err(invalid(message));
+    }
+    Ok(())
 }
 
 fn digest(name: &str, size: usize) -> io::Result<Vec<u8>> {
@@ -188,6 +230,23 @@ impl NativeInventory {
         Ok(NativeCommandResult::Inventory { keys, next_cursor })
     }
 
+    fn check_project(&self, file: &File, kind: InodeKind) -> io::Result<()> {
+        // The retained root comes from native preparation, not request fields.
+        // Configured startup independently authenticates its finite quota. The
+        // installed confinement prevents future setter changes but cannot make
+        // preexisting foreign-project descendants safe merely by observing it.
+        let root = crate::host_quota::NativeProject::inspect(&self.root)?;
+        let actual = crate::host_quota::NativeProject::inspect(file)?;
+        if !root.inherit
+            || actual.device != root.device
+            || actual.project_id != root.project_id
+            || (kind == InodeKind::Directory && !actual.inherit)
+        {
+            return Err(invalid("inventory inode project or inheritance changed"));
+        }
+        Ok(())
+    }
+
     fn check(&self, file: &File, custody: Custody, kind: InodeKind) -> io::Result<()> {
         let metadata = file.metadata()?;
         let encoded = custody == Custody::Content;
@@ -206,7 +265,7 @@ impl NativeInventory {
         {
             return Err(invalid("inventory inode custody changed"));
         }
-        Ok(())
+        self.check_project(file, kind)
     }
 
     async fn sealed(&self, name: &str, file: &mut File) -> io::Result<NativeBodyKey> {
@@ -281,10 +340,72 @@ impl NativeInventory {
         Ok(NativeBodyKey::Chunk { descriptor, codec })
     }
 
+    fn scan_private_remnants(&self, budget: &mut usize) -> io::Result<()> {
+        charge(budget)?;
+        let staging = open(&self.root, "staging", true)?;
+        self.check(&staging, Custody::Publisher, InodeKind::Directory)?;
+        if staging.metadata()?.mode() & 0o7777 != 0o700 {
+            return Err(invalid("publisher staging root is not private"));
+        }
+        let publisher_id = std::process::id().to_string();
+        let staging_names = names(&staging, *budget)?;
+        if staging_names.len() != 1 {
+            return Err(invalid(
+                "publisher staging incarnation is missing or unreconciled",
+            ));
+        }
+        for name in staging_names {
+            charge(budget)?;
+            if name != publisher_id {
+                return Err(invalid("unreconciled publisher staging namespace entry"));
+            }
+            let directory = open(&staging, &name, true)?;
+            self.check(&directory, Custody::Publisher, InodeKind::Directory)?;
+            if directory.metadata()?.mode() & 0o7777 != 0o700 {
+                return Err(invalid("publisher staging incarnation is not private"));
+            }
+            require_empty(
+                &directory,
+                *budget,
+                "unreconciled publisher staging contents",
+            )?;
+        }
+
+        charge(budget)?;
+        let state = open(&self.root, "state", true)?;
+        let metadata = state.metadata()?;
+        if metadata.dev() != self.root.metadata()?.dev()
+            || (metadata.uid() != 0 && metadata.uid() != rustix::process::geteuid().as_raw())
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(invalid("publisher state parent custody changed"));
+        }
+        charge(budget)?;
+        self.check_project(&state, InodeKind::Directory)?;
+        let publication = open(&state, "publication", true)?;
+        self.check(&publication, Custody::Publisher, InodeKind::Directory)?;
+        if publication.metadata()?.mode() & 0o7777 != 0o700 {
+            return Err(invalid("publisher publication state is not private"));
+        }
+        // No control files are created for fresh state: exclusion is held on
+        // directory descriptors. Every remaining file requires reconciliation.
+        // Binding and retirement records are physical recovery state, not body
+        // keys. Until they are genuinely reconciled, an empty wire inventory
+        // must not silently certify them (or unknown temporary remnants) absent.
+        require_empty(
+            &publication,
+            *budget,
+            "unreconciled publisher publication-state contents",
+        )
+    }
+
     async fn scan(&self) -> io::Result<Vec<NativeBodyKey>> {
         let mut keys = Vec::new();
         let mut budget = MAX_CANDIDATES;
+        self.check_project(&self.root, InodeKind::Directory)?;
+        self.scan_private_remnants(&mut budget)?;
         for (class, encoded) in [("sealed", false), ("chunks", true)] {
+            charge(&mut budget)?;
             let directory = open(&self.root, class, true)?;
             self.check(
                 &directory,
@@ -295,7 +416,8 @@ impl NativeInventory {
                 },
                 InodeKind::Directory,
             )?;
-            for shard in names(&directory, MAX_CANDIDATES)? {
+            for shard in names(&directory, budget)? {
+                charge(&mut budget)?;
                 digest(&shard, 1)?;
                 let shard_directory = open(&directory, &shard, true)?;
                 self.check(
@@ -308,9 +430,7 @@ impl NativeInventory {
                     InodeKind::Directory,
                 )?;
                 for name in names(&shard_directory, budget)? {
-                    budget = budget
-                        .checked_sub(1)
-                        .ok_or_else(|| invalid("inventory candidate budget exceeded"))?;
+                    charge(&mut budget)?;
                     let mut file = open(&shard_directory, &name, false)?;
                     let key = if encoded {
                         let (hash, codec) = name
@@ -334,12 +454,11 @@ impl NativeInventory {
             }
         }
         self.scan_packs(&mut keys, &mut budget)?;
+        charge(&mut budget)?;
         let pending = open(&self.root, "pending-delete", true)?;
         self.check(&pending, Custody::Publisher, InodeKind::Directory)?;
         for name in names(&pending, budget)? {
-            budget = budget
-                .checked_sub(1)
-                .ok_or_else(|| invalid("inventory candidate budget exceeded"))?;
+            charge(&mut budget)?;
             digest(&name, 32)?;
             let mut file = open(&pending, &name, false)?;
             let key = if file.metadata()?.uid() == rustix::process::geteuid().as_raw() {
@@ -355,22 +474,28 @@ impl NativeInventory {
     }
 
     fn scan_packs(&self, keys: &mut Vec<NativeBodyKey>, budget: &mut usize) -> io::Result<()> {
+        charge(budget)?;
         let objects = open(&self.root, "objects", true)?;
         self.check(&objects, Custody::Content, InodeKind::Directory)?;
+        for name in names(&objects, *budget)? {
+            charge(budget)?;
+            if name != "pack" {
+                return Err(invalid("unreconciled inventory objects namespace entry"));
+            }
+        }
         let packs = match open(&objects, "pack", true) {
             Ok(packs) => packs,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
         self.check(&packs, Custody::Content, InodeKind::Directory)?;
-        for shard in names(&packs, MAX_CANDIDATES)? {
+        for shard in names(&packs, *budget)? {
+            charge(budget)?;
             digest(&shard, 1)?;
             let directory = open(&packs, &shard, true)?;
             self.check(&directory, Custody::Content, InodeKind::Directory)?;
             for name in names(&directory, *budget)? {
-                *budget = budget
-                    .checked_sub(1)
-                    .ok_or_else(|| invalid("inventory candidate budget exceeded"))?;
+                charge(budget)?;
                 let (id, extension) = name
                     .split_once('.')
                     .ok_or_else(|| invalid("invalid inventory pack name"))?;
@@ -423,6 +548,56 @@ impl NativeInventory {
 mod tests {
     use super::*;
     use terrane_core::chunking::ChunkProfile;
+
+    #[test]
+    fn retained_open_rejects_symlinks_and_wrong_inode_kinds() {
+        let root = File::open("/").unwrap();
+        assert!(open(&root, "dev/null", false).is_err());
+        assert!(open(&root, "proc/self", true).is_err());
+        assert!(open(&root, "dev", false).is_err());
+    }
+
+    #[test]
+    fn physical_entry_budget_counts_directories_and_bodies() {
+        let mut budget = 2;
+        charge(&mut budget).unwrap();
+        charge(&mut budget).unwrap();
+        assert!(charge(&mut budget).is_err());
+        assert_eq!(budget, 0);
+    }
+
+    #[test]
+    fn private_remnant_names_prevent_empty_namespace_classification() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+
+        let path = std::env::temp_dir().join(format!(
+            "terrane-private-inventory-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let directory = File::open(&path).unwrap();
+        let scan = || require_empty(&directory, MAX_CANDIDATES, "unreconciled private contents");
+
+        // This tests name coverage only. Actual project/inheritance inspection
+        // requires a provisioned native filesystem in the fresh-process VM.
+        scan().unwrap();
+        for name in [
+            "incomplete",
+            ".binding-interrupted",
+            "retirement-existing.toml",
+            "unknown",
+        ] {
+            let remnant = path.join(name);
+            std::fs::write(&remnant, b"unreconciled").unwrap();
+            assert!(scan().is_err());
+            std::fs::remove_file(remnant).unwrap();
+        }
+        std::fs::create_dir(path.join("stale")).unwrap();
+        assert!(scan().is_err());
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn key_parser_refuses_noncanonical_names() {
