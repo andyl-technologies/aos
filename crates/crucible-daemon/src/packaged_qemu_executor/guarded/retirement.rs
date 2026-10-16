@@ -87,7 +87,7 @@ pub(super) enum GuardedRetirementState {
 
 /// Refusal to physically retire the actual standalone guarded Main factory.
 #[derive(Debug, thiserror::Error)]
-pub enum GuardedCampaignOwnerRetirementError {
+pub enum GuardedCampaignOwnerRetirementCause {
     /// Another strong or weak facade still retains this same owner.
     #[error("guarded Main owner borrowers remain")]
     SharedOwner,
@@ -114,6 +114,99 @@ pub enum GuardedCampaignOwnerRetirementError {
     LifecycleCleanup(#[source] crucible_api::LifecycleApiError),
 }
 
+/// Preserves the primary retirement refusal and independently observed cleanup history.
+///
+/// These fields contain reports only. The same Main, worker directory, queue and
+/// native factory retain physical ownership independently of this returned error.
+#[derive(Debug, thiserror::Error)]
+#[error("{first}; additional controls: {controls:?}; additional lifecycle: {lifecycle:?}")]
+pub struct GuardedCampaignOwnerRetirementError {
+    #[source]
+    first: GuardedCampaignOwnerRetirementCause,
+    controls: Option<crate::campaign_process::ExecutorControlRetirementError>,
+    lifecycle: Option<crucible_api::LifecycleApiError>,
+}
+
+impl GuardedCampaignOwnerRetirementError {
+    /// Returns the refusal selected by the existing retirement phase ordering.
+    #[must_use]
+    pub fn first_error(&self) -> &GuardedCampaignOwnerRetirementCause {
+        &self.first
+    }
+
+    /// Returns the same Main control report, whether primary or supplemental.
+    #[must_use]
+    pub fn controls_error(
+        &self,
+    ) -> Option<&crate::campaign_process::ExecutorControlRetirementError> {
+        match &self.first {
+            GuardedCampaignOwnerRetirementCause::Controls(error) => Some(error),
+            _ => self.controls.as_ref(),
+        }
+    }
+
+    /// Returns the independent queue-pass refusal, whether primary or supplemental.
+    ///
+    /// The control report may separately retain an earlier queue-pass refusal.
+    #[must_use]
+    pub fn lifecycle_error(&self) -> Option<&crucible_api::LifecycleApiError> {
+        match &self.first {
+            GuardedCampaignOwnerRetirementCause::LifecycleCleanup(error) => Some(error),
+            _ => self.lifecycle.as_ref(),
+        }
+    }
+}
+
+impl From<GuardedCampaignOwnerRetirementCause> for GuardedCampaignOwnerRetirementError {
+    fn from(first: GuardedCampaignOwnerRetirementCause) -> Self {
+        Self {
+            first,
+            controls: None,
+            lifecycle: None,
+        }
+    }
+}
+
+// Selects history before permitting the existing native retirement effects.
+// The borrowed callback creates no new owner or storage.
+fn retire_after_controls(
+    controls: Option<crate::campaign_process::ExecutorControlRetirementError>,
+    lifecycle: Option<crucible_api::LifecycleApiError>,
+    retire_native: impl FnOnce() -> Result<(), GuardedCampaignOwnerRetirementCause>,
+) -> Result<(), GuardedCampaignOwnerRetirementError> {
+    let controls = match controls {
+        Some(error) if !error.physically_closed() => {
+            return Err(GuardedCampaignOwnerRetirementError {
+                first: GuardedCampaignOwnerRetirementCause::Controls(error),
+                controls: None,
+                lifecycle,
+            });
+        }
+        other => other,
+    };
+    if let Some(error) = lifecycle {
+        return Err(GuardedCampaignOwnerRetirementError {
+            first: GuardedCampaignOwnerRetirementCause::LifecycleCleanup(error),
+            controls,
+            lifecycle: None,
+        });
+    }
+
+    match (retire_native(), controls) {
+        (Ok(()) | Err(GuardedCampaignOwnerRetirementCause::DispatcherPending), Some(error)) => {
+            // Historical closed controls preceded pending physical observation
+            // in the original route, while concrete native errors took priority.
+            Err(GuardedCampaignOwnerRetirementCause::Controls(error).into())
+        }
+        (Err(first), controls) => Err(GuardedCampaignOwnerRetirementError {
+            first,
+            controls,
+            lifecycle: None,
+        }),
+        (Ok(()), None) => Ok(()),
+    }
+}
+
 impl GuardedCampaignOwner {
     pub(crate) fn physically_retired(&self) -> bool {
         self.inner.retirement == GuardedRetirementState::Closed
@@ -135,7 +228,7 @@ impl GuardedCampaignOwner {
     /// old physical cleanup and retirement retry can continue.
     pub fn try_retire(&mut self) -> Result<(), GuardedCampaignOwnerRetirementError> {
         if !self.lifecycle_record || self.inner.facades.is_quarantined() {
-            return Err(GuardedCampaignOwnerRetirementError::UncertainOwner);
+            return Err(GuardedCampaignOwnerRetirementCause::UncertainOwner.into());
         }
         let controls = self.inner.config.normal_executor.as_ref().and_then(|main| {
             crate::campaign_process::try_retire_executor_controls_for_main(main).err()
@@ -145,51 +238,41 @@ impl GuardedCampaignOwner {
             let empty = queue.verify_empty();
             work.and(empty).err()
         });
-        let controls = match controls {
-            Some(error) if !error.physically_closed() => {
-                return Err(GuardedCampaignOwnerRetirementError::Controls(error));
-            }
-            other => other,
-        };
-        if let Some(error) = lifecycle {
-            return Err(GuardedCampaignOwnerRetirementError::LifecycleCleanup(error));
-        }
+        retire_after_controls(controls, lifecycle, || self.try_retire_native())
+    }
+
+    fn try_retire_native(&mut self) -> Result<(), GuardedCampaignOwnerRetirementCause> {
         let owner = Arc::get_mut(&mut self.inner)
-            .ok_or(GuardedCampaignOwnerRetirementError::SharedOwner)?;
+            .ok_or(GuardedCampaignOwnerRetirementCause::SharedOwner)?;
         let preparation = owner
             ._preparation
             .as_mut()
-            .ok_or(GuardedCampaignOwnerRetirementError::BorrowedMain)?;
+            .ok_or(GuardedCampaignOwnerRetirementCause::BorrowedMain)?;
         if owner.retirement == GuardedRetirementState::Closed {
-            return controls.map_or(Ok(()), |error| {
-                Err(GuardedCampaignOwnerRetirementError::Controls(error))
-            });
+            return Ok(());
         }
         let factory = owner
             .host
             .exclusive_factory()
-            .map_err(GuardedCampaignOwnerRetirementError::Factory)?;
+            .map_err(GuardedCampaignOwnerRetirementCause::Factory)?;
         factory
             .verify_native_quiescent()
-            .map_err(GuardedCampaignOwnerRetirementError::Factory)?;
+            .map_err(GuardedCampaignOwnerRetirementCause::Factory)?;
         if owner.retirement == GuardedRetirementState::Active {
             preparation
                 .try_begin_terminal()
-                .map_err(GuardedCampaignOwnerRetirementError::Actor)?;
+                .map_err(GuardedCampaignOwnerRetirementCause::Actor)?;
             owner.retirement = GuardedRetirementState::Terminal;
         }
         let work = factory.finish_target_dispatcher();
         if factory.target_dispatcher_physically_retired() {
             owner.retirement = GuardedRetirementState::Closed;
         }
-        work.map_err(GuardedCampaignOwnerRetirementError::Factory)?;
-        match controls {
-            Some(error) => Err(GuardedCampaignOwnerRetirementError::Controls(error)),
-            None if owner.retirement != GuardedRetirementState::Closed => {
-                Err(GuardedCampaignOwnerRetirementError::DispatcherPending)
-            }
-            None => Ok(()),
+        work.map_err(GuardedCampaignOwnerRetirementCause::Factory)?;
+        if owner.retirement != GuardedRetirementState::Closed {
+            return Err(GuardedCampaignOwnerRetirementCause::DispatcherPending);
         }
+        Ok(())
     }
 }
 
@@ -230,7 +313,7 @@ impl GuardedCampaignOwner {
         barrier: Arc<std::sync::Barrier>,
     ) -> Result<(), GuardedCampaignOwnerRetirementError> {
         let owner = Arc::get_mut(&mut self.inner)
-            .ok_or(GuardedCampaignOwnerRetirementError::SharedOwner)?;
+            .ok_or(GuardedCampaignOwnerRetirementCause::SharedOwner)?;
         owner.facades.release_barrier = Some(barrier);
         Ok(())
     }
@@ -246,3 +329,7 @@ impl GuardedCampaignOwner {
             .store(usize::MAX, Ordering::Release);
     }
 }
+
+#[cfg(test)]
+#[path = "retirement/tests.rs"]
+mod tests;

@@ -14,7 +14,7 @@ mod retirement;
 use crate::executor_pool::{CampaignActorPort, PreparedExecutorActor};
 use crucible_cas::content_store::StorePhysicalQuotaGuard;
 pub(crate) use reproduction::{CompletedReproductionBasis, CompletedReproductionError};
-pub use retirement::GuardedCampaignOwnerRetirementError;
+pub use retirement::{GuardedCampaignOwnerRetirementCause, GuardedCampaignOwnerRetirementError};
 use retirement::{GuardedFacadeRetirement, GuardedRetirementState};
 use std::sync::atomic::{AtomicU64, Ordering};
 

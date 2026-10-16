@@ -162,7 +162,7 @@ the actual retained thread table. The input alias control proves last strong-ali
 closure and credit retention; its test-only Weak witness does not prove Arc
 backing deallocation. Production keeps the body graph free of Weak/raw escapes
 and drops that allocation before its decoder custody. The full private-feature
-library run has 1,672 passes, 17 failures and 43 ignored tests. Its failed-name
+library run has 1,680 passes, 17 failures and 43 ignored tests. Its failed-name
 set matches the preceding native integration failures. The membership cancellation
 control now selects five actual traversal boundaries instead of calibrating raw
 callback ordinals across independent SQLite reads. It checks the same operation,
@@ -225,6 +225,25 @@ and launcher occupy 44,080, 1,704 and 8,720 bytes respectively. These inline
 fields enter the actual sizeof-based admission queries. The probe is removed
 and the exact source hashes are restored. These are Rust object extents, not
 whole-stack, allocator-overhead, policy-fit or performance proofs.
+
+Composed guards now distinguish active ownership, successful return and terminal
+quarantine. Failed cleanup and explicit quarantine cannot become a successful
+later finish; repeated calls perform no second host cleanup effect. Routing
+refusals also update that same outer state. This prevents retained Source cleanup
+from treating containment as physical closure. Guarded Main retirement preserves
+its selected refusal alongside independently observed worker and lifecycle
+reports, without changing native effect ordering or using another allocation.
+Five real worker/file report controls and three new guard-state controls pass;
+existing controls are retained. The joined full private-library run has exactly
+the preceding 17 daemon and six QEMU failed names, with no new failures.
+
+The Guarded cause and complete returned report measure 616 and 832 bytes;
+retained-constructor cleanup and retirement reports measure 1,032 and 1,200 bytes.
+These are returned diagnostics, not newly stored actor fields. Main remains 5,024
+bytes, and the concrete Source factory, pending construction and launcher retain
+the extents above. These measurements establish neither whole-stack usage nor
+budget fit. The broader generic finish adapter still needs its typed leaf
+migration through the actual launcher, cleanup queue and scheduler boundary.
 
 Dispatcher retirement now retains the first Cleanup admission result once and
 authenticates that exact saved operation without initializing another one.

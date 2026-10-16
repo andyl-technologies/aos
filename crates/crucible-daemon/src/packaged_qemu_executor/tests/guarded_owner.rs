@@ -147,15 +147,15 @@ fn genuine_standalone_main_retirement_retains_busy_custody_and_closes_once(
     let original_owner = Arc::as_ptr(&owner.inner);
     let peer = owner.clone();
     assert!(matches!(
-        owner.try_retire(),
-        Err(guarded::GuardedCampaignOwnerRetirementError::SharedOwner)
+        owner.try_retire().unwrap_err().first_error(),
+        guarded::GuardedCampaignOwnerRetirementCause::SharedOwner
     ));
     assert_eq!(Arc::as_ptr(&owner.inner), original_owner);
     drop(peer);
     let weak = Arc::downgrade(&owner.inner);
     assert!(matches!(
-        owner.try_retire(),
-        Err(guarded::GuardedCampaignOwnerRetirementError::SharedOwner)
+        owner.try_retire().unwrap_err().first_error(),
+        guarded::GuardedCampaignOwnerRetirementCause::SharedOwner
     ));
     assert_eq!(Arc::as_ptr(&owner.inner), original_owner);
     drop(weak);
@@ -310,12 +310,12 @@ fn genuine_clone_record_overflow_seals_the_same_retained_owner(
     let mut sealed = owner.clone();
 
     assert!(matches!(
-        owner.try_retire(),
-        Err(guarded::GuardedCampaignOwnerRetirementError::UncertainOwner)
+        owner.try_retire().unwrap_err().first_error(),
+        guarded::GuardedCampaignOwnerRetirementCause::UncertainOwner
     ));
     assert!(matches!(
-        sealed.try_retire(),
-        Err(guarded::GuardedCampaignOwnerRetirementError::UncertainOwner)
+        sealed.try_retire().unwrap_err().first_error(),
+        guarded::GuardedCampaignOwnerRetirementCause::UncertainOwner
     ));
     assert!(Arc::ptr_eq(&owner.inner, &sealed.inner));
     drop(owner);

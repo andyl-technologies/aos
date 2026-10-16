@@ -740,9 +740,63 @@ fn failed_reap_quarantines_process_and_filesystem_authority_once() {
         guard.finish(),
         Err(QemuVmRealizationError::ReapQuarantined { .. })
     ));
+    for _ in 0..3 {
+        assert!(matches!(
+            guard.finish(),
+            Err(QemuVmRealizationError::ReapQuarantined { .. })
+        ));
+    }
+    assert!(guard.check_operational_boundary().is_err());
+    assert!(guard.charge_execution_quantum().is_err());
+    guard.quarantine();
     drop(guard);
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn explicit_quarantine_cannot_become_successful_finish() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut host = factory(resources, Arc::clone(&counters));
+    let mut guard = host
+        .begin(resources, ExecutionCancellation::default(), None)
+        .unwrap();
+
+    guard.quarantine();
+    guard.quarantine();
+    for _ in 0..3 {
+        assert!(matches!(
+            guard.finish(),
+            Err(QemuVmRealizationError::ReapQuarantined { .. })
+        ));
+    }
+    assert!(guard.check_operational_boundary().is_err());
+    assert!(guard.charge_execution_quantum().is_err());
+    drop(guard);
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn returned_generic_guard_stays_idempotent_and_cannot_reopen() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut host = factory(resources, Arc::clone(&counters));
+    let mut guard = host
+        .begin(resources, ExecutionCancellation::default(), None)
+        .unwrap();
+
+    guard.finish().unwrap();
+    guard.quarantine();
+    guard.finish().unwrap();
+    assert!(guard.check_operational_boundary().is_err());
+    assert!(guard.charge_execution_quantum().is_err());
+    drop(guard);
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -1027,6 +1081,13 @@ fn original_composed_retirement_cannot_retry_or_attest_terminal_containment() {
         })
     ));
     guard.quarantine();
+    assert!(matches!(
+        guard.finish(),
+        Err(QemuVmRealizationError::Canceled {
+            operation: "repeat quarantined original native retirement"
+        })
+    ));
+    drop(guard);
 
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
@@ -1050,9 +1111,47 @@ fn original_composed_retirement_keeps_healthy_finish_idempotent() {
     guard
         .finish()
         .expect("same completed facade remains idempotent");
+    guard.quarantine();
+    guard
+        .finish()
+        .expect("post-return quarantine cannot reopen the guard");
+    assert!(guard.check_operational_boundary().is_err());
+    drop(guard);
 
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(feature = "private-measurement-domain")]
+#[test]
+fn original_explicit_quarantine_never_attests_return() {
+    let limits = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut host = factory(limits, Arc::clone(&counters));
+    let mut guard = host
+        .begin(limits, ExecutionCancellation::default(), None)
+        .unwrap();
+    // The existing component registry selects the Original reporting path;
+    // this control does not authenticate Main or issue native Source authority.
+    guard
+        .retain_original_native_registry(crate::HostOperationalRegistry::default())
+        .unwrap();
+
+    guard.quarantine();
+    for _ in 0..3 {
+        assert!(matches!(
+            guard.finish(),
+            Err(QemuVmRealizationError::Canceled {
+                operation: "repeat quarantined original native retirement"
+            })
+        ));
+    }
+    guard.quarantine();
+    assert!(guard.check_operational_boundary().is_err());
+    drop(guard);
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
 }
 
 #[test]
