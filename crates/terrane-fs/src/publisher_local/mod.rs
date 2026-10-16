@@ -5,6 +5,11 @@
 //! sequenced-packet connections and descriptor custody. Native publication and
 //! lifecycle authority remain in `publisher_io`.
 
+#[cfg(feature = "native-test-fixtures")]
+mod native_fixture;
+#[cfg(feature = "native-test-fixtures")]
+pub use native_fixture::{native_fixture_selectors, run_native_fixture, supervise_native_fixture};
+
 #[cfg(feature = "tokio")]
 pub mod server;
 
