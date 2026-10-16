@@ -6,9 +6,17 @@
 //! of those authorities.
 
 mod config;
+mod index_io;
 mod preparation;
+mod recovery;
+mod recovery_accounting;
+mod recovery_namespace;
+mod recovery_state;
+mod recovery_state_parent;
 mod retention;
 
-pub use config::NativeCacheOwnerConfig;
+pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
-pub use retention::{NativeMetadataOwner, RetainedManifest};
+pub use recovery::CompletedRecovery;
+pub(crate) use retention::PublisherResumeTurn;
+pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};

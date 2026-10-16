@@ -51,3 +51,6 @@ pub use custody::{
 };
 
 pub use native::require_unused_project;
+
+mod claim;
+pub use claim::{MAX_PROJECT_CLAIM_BYTES, RetainedProjectClaim, project_claim_name};

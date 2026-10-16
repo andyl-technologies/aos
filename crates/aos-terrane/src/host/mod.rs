@@ -10,11 +10,16 @@
 //!
 //! The host ledger stores an explicit transition and original inode custody:
 //! ```toml
-//! version = 1
+//! version = 2
 //! epoch = "00000000000000000000000000000001"
 //! phase = "provisioning" # Becomes "ready" only after verified restoration.
 //! bindings = [] # Each binding records UUID, inode, domain, project and uid/gid/mode.
+//! [registry]
+//! device = 1
+//! inode = 2
 //! ```
+
+mod claims;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,7 +74,7 @@ pub struct RootConfig {
     pub path: PathBuf,
 }
 
-#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Binding {
     owner_id: String,
@@ -98,6 +103,7 @@ enum ProvisioningPhase {
 struct Ledger {
     version: u32,
     epoch: String,
+    registry: claims::RegistryIdentity,
     phase: ProvisioningPhase,
     bindings: Vec<Binding>,
 }
@@ -272,6 +278,7 @@ fn retain(config: &HostConfig) -> io::Result<Vec<ConfiguredOwner>> {
             allowed_client_uids: owner.allowed_client_uids.clone(),
             roots,
             scaffolding: Vec::new(),
+            claim: None,
         });
     }
     Ok(owners)
@@ -398,7 +405,7 @@ fn stable_binding(left: &Binding, right: &Binding) -> bool {
 
 fn read_ledger(path: &Path, config: &HostConfig) -> io::Result<Ledger> {
     let ledger: Ledger = toml::from_str(&protected_text(path)?).map_err(parse_error)?;
-    if ledger.version != 1
+    if ledger.version != 2
         || ledger.epoch != config.epoch
         || ledger.bindings.len() > 1024
         || !ledger
@@ -567,6 +574,11 @@ fn persist_ledger(path: &Path, ledger: &Ledger) -> io::Result<()> {
 
 fn verify_live(owners: &[ConfiguredOwner]) -> io::Result<()> {
     for owner in owners {
+        owner
+            .claim
+            .as_ref()
+            .ok_or_else(|| io::Error::other("owner has no durable project claim"))?
+            .verify(&owner.filesystem_uuid, owner.project_id)?;
         for scaffold in &owner.scaffolding {
             let named =
                 terrane_fs::host_quota::open_directory_child(&scaffold.parent, &scaffold.name)?
@@ -649,6 +661,14 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     // to a quota project; the directory is outside the content layout.
     let _ledger_guard =
         terrane_fs::host_quota::DomainProvisioningGuard::exclusive(&ledger_directory)?;
+    let initial_enrollment = match fs::symlink_metadata(ledger_path) {
+        Ok(_) => false,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error),
+    };
+    let registry = claims::Registry::open(&config, ledger_path, initial_enrollment)?;
+    let _registry_guard =
+        terrane_fs::host_quota::DomainProvisioningGuard::exclusive(registry.directory())?;
     let mut ledger = match fs::symlink_metadata(ledger_path) {
         Ok(_) => read_ledger(ledger_path, &config)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -667,16 +687,21 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
                 )?;
             }
             let ledger = Ledger {
-                version: 1,
+                version: 2,
                 epoch: config.epoch.clone(),
+                registry: registry.identity(),
                 phase: ProvisioningPhase::Provisioning,
                 bindings: snapshot.into_iter().map(|(binding, _)| binding).collect(),
             };
+            registry.ensure(&ledger, &owners)?;
             persist_ledger(ledger_path, &ledger)?;
+            #[cfg(test)]
+            provisioning_test_checkpoint("ledger-durable")?;
             ledger
         }
         Err(error) => return Err(error),
     };
+    registry.bind(&ledger, &mut owners)?;
     let directories = bind_ledger(&config, &mut owners, &ledger)?;
     if ledger.phase == ProvisioningPhase::Ready {
         return verify_live(&owners);
@@ -684,6 +709,8 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     for directory in &directories {
         terrane_fs::host_quota::set_directory_custody(directory, 0, 0, 0o700)?;
     }
+    #[cfg(test)]
+    provisioning_test_checkpoint("custody-taken")?;
     // Re-enumeration under root custody closes creation and rename races from
     // the initial snapshot, including creation through old directory FDs.
     // Existing open file custody is excluded by quiescent native factory guards;
@@ -701,6 +728,8 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     }
     for (binding, directory) in ledger.bindings.iter().zip(&directories) {
         provision_project(directory, binding.project_id, binding.hard_limit_bytes)?;
+        #[cfg(test)]
+        provisioning_test_checkpoint("project-mutated")?;
     }
     for (binding, directory) in ledger.bindings.iter().zip(&directories) {
         terrane_fs::host_quota::set_directory_custody(
@@ -726,6 +755,8 @@ pub fn serve(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     if ledger.phase != ProvisioningPhase::Ready {
         return Err(io::Error::other("host provisioning remains incomplete"));
     }
+    let registry = claims::Registry::open(&config, ledger_path, false)?;
+    registry.bind(&ledger, &mut owners)?;
     bind_ledger(&config, &mut owners, &ledger)?;
     verify_live(&owners)?;
     let parent = config
@@ -787,4 +818,33 @@ pub fn query(
     let mut client =
         terrane_fs::host_quota::HostQuotaClient::connect(&config.socket, 0, epoch(&config.epoch)?)?;
     client.query(owner_id, domain)
+}
+
+// The production binary contains no fault-injection environment surface. The
+// explicit VM unit-test executable alone can pause at durable transitions so
+// its supervising test can kill the real provisioning process.
+#[cfg(test)]
+fn provisioning_test_checkpoint(stage: &str) -> io::Result<()> {
+    if std::env::var("TERRANE_QUOTA_TEST_STOP").as_deref() != Ok(stage) {
+        return Ok(());
+    }
+    let marker = PathBuf::from(
+        std::env::var_os("TERRANE_QUOTA_TEST_MARKER")
+            .ok_or_else(|| io::Error::other("test checkpoint lacks marker"))?,
+    );
+    let temporary = marker.with_extension("marker-partial");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    file.write_all(stage.as_bytes())?;
+    file.sync_all()?;
+    // Publish only the completed marker. Its pathname must never signal a
+    // checkpoint while the stage bytes are still being written or synced.
+    fs::hard_link(&temporary, &marker)?;
+    fs::remove_file(&temporary)?;
+    loop {
+        std::thread::park();
+    }
 }
