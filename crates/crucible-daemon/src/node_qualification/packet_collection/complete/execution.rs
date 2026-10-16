@@ -4,8 +4,8 @@
 //! actual native capsules and Core issues operation/input admissions. This scene
 //! cannot turn its schedule, a Refused audit or copied metadata into those tokens.
 
-mod retained;
 mod construction;
+mod retained;
 
 use std::{cell::Cell, rc::Rc};
 

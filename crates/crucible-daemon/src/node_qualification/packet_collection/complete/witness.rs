@@ -4,8 +4,8 @@
 //! Child. Only concrete original source scopes enroll native bodies; portable
 //! reports cannot supply a journal or replace an independently owned receiver.
 
-mod retained;
 mod construction;
+mod retained;
 pub(crate) use construction::PacketCompleteConstructionStorageData;
 
 use std::{cell::RefCell, rc::Rc};
@@ -70,7 +70,8 @@ pub(crate) struct PacketCompleteSharedOracleRequest<'a> {
     pub(crate) coordinator: &'a PacketNative5CoordinatorInstallation,
     pub(crate) programmes: [PacketConnectedSourceProgram; 3],
     pub(crate) receiver_group: Rc<crucible::node_adapters::cnp::PacketCompleteEffectReceiverGroup>,
-    pub(crate) receiver_reader: Rc<crucible::node_adapters::cnp::PacketCompleteEffectReceiverReader>,
+    pub(crate) receiver_reader:
+        Rc<crucible::node_adapters::cnp::PacketCompleteEffectReceiverReader>,
     pub(crate) effect_paths: [std::path::PathBuf; 3],
     pub(crate) schedule: PacketConnectedSchedule,
     pub(crate) plan: &'a WitnessPlan,
@@ -84,11 +85,17 @@ enum ReaderOwner {
 
 impl ReaderOwner {
     fn reader(&self) -> &crucible::node_adapters::cnp::PacketCompleteEffectReceiverReader {
-        match self { Self::Original(reader) => reader, Self::Shared(reader) => reader.as_ref() }
+        match self {
+            Self::Original(reader) => reader,
+            Self::Shared(reader) => reader.as_ref(),
+        }
     }
 
     fn into_shared(self) -> Rc<crucible::node_adapters::cnp::PacketCompleteEffectReceiverReader> {
-        match self { Self::Original(reader) => Rc::new(reader), Self::Shared(reader) => reader }
+        match self {
+            Self::Original(reader) => Rc::new(reader),
+            Self::Shared(reader) => reader,
+        }
     }
 }
 
@@ -185,11 +192,15 @@ impl PacketCompleteNativeOracle {
         request: PacketCompleteOracleRequest<'_>,
     ) -> Result<Rc<Self>, QualificationError> {
         Self::install_selected(OracleInstallationRequest {
-            roster: request.roster, coordinator: request.coordinator,
-            programmes: request.programmes, receiver_group: request.receiver_group,
+            roster: request.roster,
+            coordinator: request.coordinator,
+            programmes: request.programmes,
+            receiver_group: request.receiver_group,
             receiver_reader: ReaderOwner::Original(request.receiver_reader),
-            effect_paths: request.effect_paths, schedule: request.schedule,
-            plan: request.plan, maximum_bytes: request.maximum_bytes,
+            effect_paths: request.effect_paths,
+            schedule: request.schedule,
+            plan: request.plan,
+            maximum_bytes: request.maximum_bytes,
         })
     }
 
@@ -205,15 +216,21 @@ impl PacketCompleteNativeOracle {
         request: PacketCompleteSharedOracleRequest<'_>,
     ) -> Result<Rc<Self>, QualificationError> {
         Self::install_selected(OracleInstallationRequest {
-            roster: request.roster, coordinator: request.coordinator,
-            programmes: request.programmes, receiver_group: request.receiver_group,
+            roster: request.roster,
+            coordinator: request.coordinator,
+            programmes: request.programmes,
+            receiver_group: request.receiver_group,
             receiver_reader: ReaderOwner::Shared(request.receiver_reader),
-            effect_paths: request.effect_paths, schedule: request.schedule,
-            plan: request.plan, maximum_bytes: request.maximum_bytes,
+            effect_paths: request.effect_paths,
+            schedule: request.schedule,
+            plan: request.plan,
+            maximum_bytes: request.maximum_bytes,
         })
     }
 
-    fn install_selected(request: OracleInstallationRequest<'_>) -> Result<Rc<Self>, QualificationError> {
+    fn install_selected(
+        request: OracleInstallationRequest<'_>,
+    ) -> Result<Rc<Self>, QualificationError> {
         request.roster.current_scope()?;
         request
             .receiver_reader

@@ -682,26 +682,38 @@ impl PacketWorldHostSupervisor {
     /// Refuses generic/foreign creators, changed proposal/limits, a distinct or
     /// transferred queue slot, or returned/entered original native custody.
     pub(crate) fn authenticate_original_reserved_slot_data(
-        &self, proposal: &ActivationRecord, limits: RuntimeLimits,
+        &self,
+        proposal: &ActivationRecord,
+        limits: RuntimeLimits,
         slot: &dyn RuntimeCustodySlot,
     ) -> Result<(), crucible::node_contract::RuntimeError> {
         use crucible::node_contract::RuntimeError;
         match self.complete_origin {
-            Some((process,_)) if process != std::process::id() => return Err(RuntimeError::ForeignAuthority),
-            Some((_,thread)) if thread != std::thread::current().id() => return Err(RuntimeError::ThreadAffinity),
-            None => return Err(RuntimeError::UnsupportedFacet), Some(_) => {}
+            Some((process, _)) if process != std::process::id() => {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            Some((_, thread)) if thread != std::thread::current().id() => {
+                return Err(RuntimeError::ThreadAffinity);
+            }
+            None => return Err(RuntimeError::UnsupportedFacet),
+            Some(_) => {}
         }
-        if self.complete_wake.is_none() || self.runtime.reserved_worlds()!=1 {
+        if self.complete_wake.is_none() || self.runtime.reserved_worlds() != 1 {
             return Err(RuntimeError::OutstandingObligations);
         }
         for mailbox in &self.mailboxes {
-            if !mailbox.reserved.get() || !mailbox.expected.get() || mailbox.returned.get()
-                || mailbox.reaped.get() || mailbox.journal_retained.get()
-                || mailbox.polling.get() || mailbox.invalid.get() {
+            if !mailbox.reserved.get()
+                || !mailbox.expected.get()
+                || mailbox.returned.get()
+                || mailbox.reaped.get()
+                || mailbox.journal_retained.get()
+                || mailbox.polling.get()
+                || mailbox.invalid.get()
+            {
                 return Err(RuntimeError::OutstandingObligations);
             }
         }
         self.runtime.authenticate_original_slot(slot)?;
-        slot.validate_world(proposal,limits)
+        slot.validate_world(proposal, limits)
     }
 }
