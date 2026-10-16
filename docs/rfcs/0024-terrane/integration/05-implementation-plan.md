@@ -8537,7 +8537,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.
-- [ ] **T-CRATE-1** SDK types and verbs (`Tree`, `View`, `Store`,
+- [x] **T-CRATE-1** SDK types and verbs (`Tree`, `View`, `Store`,
   `Repository`, `fork`, `commit`, `merge`, `diff`, `realize`) and the `sdk`
   surface (checkout to a directory). All 21 reviewed native repository and
   surface paths are integrated, including protected local retention, canonical

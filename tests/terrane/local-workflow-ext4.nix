@@ -15,6 +15,7 @@
     rootfsDeps = [
       pkgs.terrane
       pkgs.coreutils
+      pkgs.diffutils
       pkgs.util-linux
     ];
     testScript = workflow;
