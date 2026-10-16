@@ -1,50 +1,26 @@
-From 370189d531defc907a2be52a36e348a9f9bbd524 Mon Sep 17 00:00:00 2001
+From a41786431da54103482f23ae56d78430972f2467 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] Integrate Crucible QEMU control and parent Park ownership
+Subject: [PATCH] Integrate Crucible ownership and resident Root closure
 
-Preserve the existing emulator, checkpoint, observation and plugin
-integration together with its SDK exports, C++ template field and corrected
-preexec selector. Add the production two-phase parent Park request path
-with retained original request, prepared Source and Monitor identities.
+Integrate the retained Source, checkpoint request, metadata and parent Park
+paths with versioned public transport and factual physical return journals.
+Preserve the current SDK, preexec, export and configured fixture fixes.
 
-Keep real Native admission, capture, page-rounded metadata accounting and
-physical return under their owning subsystem barriers. Publish versioned
-Source terminal facts only after final Original and local identity return.
-Expose authenticated closed-request evidence after writer and retained
-Monitor release, and admit fresh authenticated requests only after complete
-prior local closure while preserving debit, replay and failure history.
-Publisher action-membership and process Source retirement remain separate
-owners.
+Acquire resident background closure from the actual entered Main Root before
+its writer. Retain a Source-owned service absence loan and constructor gate,
+freeze empty service and zero-actor thread membership, and run the existing
+participant, kernel-task and descriptor checks. Return writer, native closure
+and Source custody in order while retaining partial debt and independent
+first, post and cleanup errors. The lifetime loan stores stable generations
+and creator identity without retaining an Original pointer. Price its actual
+inline storage and prevent publication settlement while owners remain held.
 
-Bind checked region equations to the exact public generated ABI33 header
-as an external include input: 768-byte node slots and a separate Park
-return journal. Document QAPI, callback and terminal contracts, the pinned
-permissive protocol input, and remaining owning marshalling, source-built
-link, consumer and runtime qualification obligations.
-
-Use the current exported cancellation observer in candidate entry as well
-as the shared receiving paths, retaining independent cancellation identity
-checks and retained metadata, uncertain-close and post-status journals.
-
-Allow actual owning storage to supply its strong sizeof getter alongside
-the grouped unavailable Native operations. Only the passive absent-extent
-fallback is weak; operational identity, storage and gate providers remain
-strong and unchanged, with no admission issued by storage observation.
-
-Emit the current standing3 framing in the purpose8 syntax fixture while
-preserving positive field checks and every existing malformed-record and
-legacy-purpose refusal case. Production decoding accepts no old standing
-alias and the fixture supplies no issued purpose or effective contract.
-
-Keep configured literal-source extraction bound to the current exported
-cancellation observer, guarded Source fragments and actual Native request
-storage. Update the standing fixture to its current schema while retaining
-all 68 Source roots, assertions, limits and causal omission controls.
-
-Source-built Python generation passes for all 41 existing products and all
-132 fingerprint bindings match. Owning compilation, compiled negative-case
-classification and runtime qualification remain pending.
+Refresh the affected literal extraction fingerprints. All 28 baseline and
+omission-control source products generate with the existing assertions and
+controls preserved. Compilation and runtime qualification remain separate;
+this source integration does not establish receiver ingress activation,
+production resident module enrollment or dirty-iterator positive coverage.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -75304,7 +75280,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..28b02b13a1df095bacbbc53bdc7ca7bbb8683fdb 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..31c357cb4a2543b5f1dd3ae5ac95f9a2b0f1ad04 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,11 +9,14 @@
@@ -75334,16 +75310,21 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..28b02b13a1df095bacbbc53bdc7ca7bb
  /*
   * Construct a qemu_plugin_meminfo_t.
   */
-@@ -43,7 +51,40 @@ get_plugin_meminfo_rw(qemu_plugin_meminfo_t i)
+@@ -43,7 +51,45 @@ get_plugin_meminfo_rw(qemu_plugin_meminfo_t i)
      return i >> 16;
  }
  
 +typedef struct QemuCrucibleRamActorPause QemuCrucibleRamActorPause;
++typedef struct QemuCrucibleResidentServiceAbsence QemuCrucibleResidentServiceAbsence;
 +struct QemuThreadRamActorBinding;
 +struct QemuCrucibleCheckpointRequestLoan;
 +struct QemuCrucibleRamControlActor;
 +
  #ifdef CONFIG_PLUGIN
++/* Retained Source lifetime identity, independent of an ended Root Original. */
++int qemu_crucible_resident_service_absence_current_v1(
++    QemuCrucibleResidentServiceAbsence *absence, uint64_t *generation);
++bool qemu_crucible_resident_service_birth_blocked_v1(void);
 +void plugin_retirement_cpu_created(CPUState *cpu);
 +int qemu_plugin_crucible_ram_actor_pause_begin(QemuCrucibleRamActorPause **out);
 +/* Only inventory's pre-census cut uses the positive pending convention. */
@@ -75375,7 +75356,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..28b02b13a1df095bacbbc53bdc7ca7bb
  extern QemuOptsList qemu_plugin_opts;
  
  static inline void qemu_plugin_add_opts(void)
-@@ -54,6 +95,9 @@ static inline void qemu_plugin_add_opts(void)
+@@ -54,6 +100,9 @@ static inline void qemu_plugin_add_opts(void)
  void qemu_plugin_opt_parse(const char *optstr, QemuPluginList *head);
  int qemu_plugin_load_list(QemuPluginList *head, Error **errp);
  
@@ -75385,7 +75366,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..28b02b13a1df095bacbbc53bdc7ca7bb
  union qemu_plugin_cb_sig {
      qemu_plugin_udata_cb_t               udata;
      qemu_plugin_vcpu_udata_cb_t          vcpu_udata;
-@@ -75,6 +119,8 @@ enum plugin_dyn_cb_type {
+@@ -75,6 +124,8 @@ enum plugin_dyn_cb_type {
  };
  
  struct qemu_plugin_regular_cb {
@@ -75394,7 +75375,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..28b02b13a1df095bacbbc53bdc7ca7bb
      union qemu_plugin_cb_sig f;
      TCGHelperInfo *info;
      void *userp;
-@@ -88,6 +134,8 @@ struct qemu_plugin_inline_cb {
+@@ -88,6 +139,8 @@ struct qemu_plugin_inline_cb {
  };
  
  struct qemu_plugin_conditional_cb {
@@ -75403,7 +75384,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..28b02b13a1df095bacbbc53bdc7ca7bb
      union qemu_plugin_cb_sig f;
      TCGHelperInfo *info;
      void *userp;
-@@ -183,6 +231,103 @@ void qemu_plugin_flush_cb(void);
+@@ -183,6 +236,103 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -75507,10 +75488,19 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..28b02b13a1df095bacbbc53bdc7ca7bb
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -233,10 +378,71 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -233,10 +383,80 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  }
  
  #else /* !CONFIG_PLUGIN */
++static inline int qemu_crucible_resident_service_absence_current_v1(
++    QemuCrucibleResidentServiceAbsence *absence, uint64_t *generation)
++{
++    return -ENOTSUP;
++}
++static inline bool qemu_crucible_resident_service_birth_blocked_v1(void)
++{
++    return false;
++}
 +static inline int qemu_plugin_crucible_ram_actor_pause_begin(
 +    QemuCrucibleRamActorPause **out)
 +{
@@ -75579,7 +75569,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..28b02b13a1df095bacbbc53bdc7ca7bb
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -306,6 +512,204 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -306,6 +526,204 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -79155,10 +79145,10 @@ index 0000000000000000000000000000000000000000..ab686e190ee52b75d25b2a86741a2226
 +#endif
 diff --git a/include/system/crucible-ram-quiescence.h b/include/system/crucible-ram-quiescence.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4311e70df098af94dc8fcc8ffc052782760b7adf
+index 0000000000000000000000000000000000000000..4f904dc9a192bee8bb6f8c3dd5241dea94927b4f
 --- /dev/null
 +++ b/include/system/crucible-ram-quiescence.h
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,119 @@
 +/*
 + * Physical RAM borrower owner closure
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -79257,6 +79247,16 @@ index 0000000000000000000000000000000000000000..4311e70df098af94dc8fcc8ffc052782
 +
 +/* A nonzero token owns every hold, including after a partial cleanup failure. */
 +int qemu_crucible_ram_owner_closure_begin(uint64_t *token);
++/* Only a genuinely entered resident Root can lend this Source absence owner.
++ * Both acquisition and cleanup errors survive a failed physical constructor.
++ * A nonzero token must be returned even when acquisition fails. */
++struct QemuCrucibleResidentServiceAbsence;
++int qemu_crucible_ram_owner_resident_begin_v1(
++    struct QemuCrucibleResidentServiceAbsence *absence, uint64_t *token,
++    int *first_status, int *cleanup_status);
++/* Identity-only observation; no census, Original, or fresh acquisition. */
++int qemu_crucible_ram_owner_resident_returned_v1(
++    struct QemuCrucibleResidentServiceAbsence *absence);
 +/* Checks only the retained process/thread/paused fence, without collecting
 + * memberships or acquiring holds. It is not a replacement for validate. */
 +bool qemu_crucible_ram_owner_closure_current(uint64_t token);
@@ -149517,10 +149517,10 @@ index 0000000000000000000000000000000000000000..ae379395f87919cd5146cef5a3cba656
 +}
 diff --git a/plugins/crucible-paged-ram.c b/plugins/crucible-paged-ram.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1d735d343
+index 0000000000000000000000000000000000000000..09ca66bf88d62190672a1e7dc526e6f7f97a9754
 --- /dev/null
 +++ b/plugins/crucible-paged-ram.c
-@@ -0,0 +1,7041 @@
+@@ -0,0 +1,7152 @@
 +/*
 + * Logical RAM observation and host paging ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -149774,6 +149774,14 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +static qemu_plugin_crucible_fingerprint_operation_v1 *fingerprint_root_operation;
 +static QemuCrucibleObservationWriterFence *fingerprint_root_writer;
 +static QemuCrucibleObservationRootExecutionWitness *fingerprint_root_execution;
++static struct {
++    QemuCrucibleResidentServiceAbsence *source;
++    uint64_t token;
++    int first_status;
++    int post_status;
++    int cleanup_status;
++    int return_status;
++} fingerprint_root_background;
 +struct QemuCrucibleFingerprintRootFrame {
 +    pid_t process;
 +    QemuThread thread;
@@ -149864,6 +149872,7 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +        sizeof(logical_root_invocation) + sizeof(fingerprint_root_operation) +
 +        sizeof(fingerprint_root_writer) + sizeof(fingerprint_root_outcome) +
 +        sizeof(fingerprint_root_frame) + sizeof(fingerprint_root_execution) +
++        sizeof(fingerprint_root_background) +
 +        sizeof(fingerprint_cleanup) +
 +        sizeof(fingerprint_baseline) + sizeof(fingerprint_publication) +
 +        qemu_crucible_observation_writer_metadata_bytes_v1();
@@ -150968,6 +150977,38 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +    return qemu_in_main_thread() ? 0 : -EPERM;
 +}
 +
++int qemu_crucible_ram_fingerprint_background_identity_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_fingerprint_operation_v1 *operation,
++    qemu_plugin_crucible_fingerprint_frame_v1 **frame, uint64_t *serial)
++{
++    int status = qemu_crucible_ram_fingerprint_root_invocation_current_v1(id);
++
++    if (status || !frame || *frame || !serial || current_cpu ||
++        operation != fingerprint_root_operation || !operation ||
++        !fingerprint_root_outcome.entry_returned ||
++        fingerprint_root_outcome.entry_status ||
++        fingerprint_root_outcome.preobserver_returned ||
++        fingerprint_root_outcome.module_invoking ||
++        fingerprint_root_outcome.callback_returned || fingerprint_root_writer ||
++        fingerprint_root_background.source || fingerprint_root_background.token) {
++        return status ? status : -EPERM;
++    }
++    *frame = &fingerprint_root_frame;
++    *serial = fingerprint_root_frame.serial;
++    return 0;
++}
++
++int qemu_crucible_ram_fingerprint_background_return_identity_v1(
++    qemu_plugin_crucible_fingerprint_frame_v1 *frame, uint64_t serial)
++{
++    /* The old frame may be inactive after an uncertain return. Its immutable
++     * creator/serial remain until every retained owner physically returns. */
++    return frame == &fingerprint_root_frame && serial == frame->serial &&
++        frame->process == getpid() && qemu_thread_is_self(&frame->thread) &&
++        qemu_in_main_thread() && !current_cpu && bql_locked() &&
++        !qemu_in_coroutine() && !fingerprint_root_writer ? 0 : -EPERM;
++}
++
 +/* Early identity for the CPU execution witness, after a genuine Source owner
 + * was issued and before writer/module acquisition. This lends no Original or
 + * RAM exclusion; the CPU producer independently authenticates its real epoch. */
@@ -151171,6 +151212,7 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +    {
 +        bool accepted = !status && !logical_capture_result() && claim->staged &&
 +            !claim->source_claim && !fingerprint_root_operation && !fingerprint_root_writer &&
++            !fingerprint_root_background.source && !fingerprint_root_background.token &&
 +            !fingerprint_root_execution && !fingerprint_cleanup.held &&
 +            !ordinary_fingerprint.operation_borrowed &&
 +            !claim->progress.borrowed && !claim->progress.published;
@@ -151193,6 +151235,7 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +        .operation_class = publication->original.class_index,
 +        .settled = !claim->source_claim && !fingerprint_root_operation &&
 +            !fingerprint_root_writer && !fingerprint_root_execution &&
++            !fingerprint_root_background.source && !fingerprint_root_background.token &&
 +            !fingerprint_cleanup.held && !ordinary_fingerprint.operation_borrowed &&
 +            !claim->progress.borrowed &&
 +            !claim->progress.published,
@@ -151507,6 +151550,42 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +    return status ? status : disposition;
 +}
 +
++static int fingerprint_root_background_return(void)
++{
++    int status;
++
++    if (!fingerprint_root_background.source && !fingerprint_root_background.token) {
++        return 0;
++    }
++    if (fingerprint_root_writer) {
++        status = fingerprint_root_outcome.writer_return_status ?
++            fingerprint_root_outcome.writer_return_status : -EBUSY;
++        fingerprint_root_background.return_status = status;
++        if (!fingerprint_root_background.cleanup_status) {
++            fingerprint_root_background.cleanup_status = status;
++        }
++        return status;
++    }
++    if (fingerprint_root_background.token) {
++        status = qemu_crucible_ram_owner_closure_end(fingerprint_root_background.token);
++        fingerprint_root_background.return_status = status;
++        if (status) {
++            if (!fingerprint_root_background.cleanup_status) {
++                fingerprint_root_background.cleanup_status = status;
++            }
++            return status;
++        }
++        fingerprint_root_background.token = 0;
++    }
++    status = qemu_crucible_startup_source_resident_absence_return_v1(
++        &fingerprint_root_background.source, fingerprint_root_background.cleanup_status);
++    fingerprint_root_background.return_status = status;
++    if (status && !fingerprint_root_background.cleanup_status) {
++        fingerprint_root_background.cleanup_status = status;
++    }
++    return status;
++}
++
 +static int fingerprint_root_observe(
 +    qemu_plugin_crucible_ram_root_observer_v2 observer, uint32_t scope,
 +    uint8_t root[32], uint64_t *logical_bytes)
@@ -151546,6 +151625,10 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +        if (first || fingerprint_root_writer) {
 +            return first ? first : -EBUSY;
 +        }
++    }
++    first = fingerprint_root_background_return();
++    if (first) {
++        return first;
 +    }
 +    first = fingerprint_root_return_old_borrow();
 +    if (first) {
@@ -151594,6 +151677,7 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +        logical_capture_close_native();
 +    }
 +    memset(&fingerprint_root_outcome, 0, sizeof(fingerprint_root_outcome));
++    memset(&fingerprint_root_background, 0, sizeof(fingerprint_root_background));
 +    fingerprint_root_frame.serial++;
 +    fingerprint_root_frame.process = getpid();
 +    qemu_thread_get_self(&fingerprint_root_frame.thread);
@@ -151619,6 +151703,25 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +            first = qemu_crucible_observation_root_execution_borrow_v1(
 +                id, &fingerprint_root_execution);
 +            fingerprint_root_outcome.execution_borrow_status = first;
++        }
++        if (!first && !current_cpu && qemu_crucible_startup_source_resident_root_v1()) {
++            first = qemu_crucible_startup_source_resident_absence_begin_v1(
++                id, fingerprint_root_operation, &fingerprint_root_background.source);
++            if (!first) {
++                first = qemu_crucible_ram_owner_resident_begin_v1(
++                    fingerprint_root_background.source, &fingerprint_root_background.token,
++                    &fingerprint_root_background.first_status,
++                    &fingerprint_root_background.cleanup_status);
++            }
++            fingerprint_root_background.first_status = first;
++            if (fingerprint_root_background.source) {
++                fingerprint_root_background.post_status =
++                    qemu_crucible_startup_source_resident_absence_post_v1(
++                        fingerprint_root_background.source, fingerprint_root_operation, first);
++                if (!first) {
++                    first = fingerprint_root_background.post_status;
++                }
++            }
 +        }
 +        if (!first) {
 +            first = qemu_crucible_observation_writer_acquire_v1(id, &fingerprint_root_writer);
@@ -151716,6 +151819,13 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +        fingerprint_root_outcome.writer_return_status = writer_return;
 +        if (!status) {
 +            status = writer_return ? writer_return : fingerprint_root_writer ? -EBUSY : 0;
++        }
++    }
++    if (fingerprint_root_background.source) {
++        int returned = fingerprint_root_background_return();
++
++        if (!status) {
++            status = returned;
 +        }
 +    }
 +    status = fingerprint_retirement_root_complete(status);
@@ -155304,7 +155414,8 @@ index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1
 +    struct QemuCrucibleLogicalCapture *claim = logical_capture;
 +
 +    if (claim->source_claim || claim->progress.borrowed || claim->progress.published ||
-+        claim->outer_owner_retained || claim->writer_owner_retained) {
++        claim->outer_owner_retained || claim->writer_owner_retained ||
++        fingerprint_root_background.source || fingerprint_root_background.token) {
 +        return;
 +    }
 +    if (capture_active && claim->generation == capture_generation) {
@@ -161315,10 +161426,10 @@ index 0000000000000000000000000000000000000000..85e0007223fe4cedc5bd88b561174bdc
 +}
 diff --git a/plugins/crucible-ram-control.inc.h b/plugins/crucible-ram-control.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..00e9840e6aa58ac4d10d2b7fb099ea5b31b1a3bb
+index 0000000000000000000000000000000000000000..536ef64514ff239bd64cf48f74e742c022e7bdbb
 --- /dev/null
 +++ b/plugins/crucible-ram-control.inc.h
-@@ -0,0 +1,2071 @@
+@@ -0,0 +1,2088 @@
 +/*
 + * Partial sole-actor construction and bounded native receipt
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -161413,7 +161524,12 @@ index 0000000000000000000000000000000000000000..00e9840e6aa58ac4d10d2b7fb099ea5b
 +    const QemuCrucibleProcessPurposeRecord *record;
 +    struct qemu_plugin_crucible_ram_endpoint_borrow_v1 borrowed;
 +    int descriptor;
-+    int status = startup_runtime_admission(id, runtime);
++    int status;
++
++    if (qemu_crucible_resident_service_birth_blocked_v1()) {
++        return -EBUSY;
++    }
++    status = startup_runtime_admission(id, runtime);
 +
 +    if (status || !out) {
 +        return status ? status : -EINVAL;
@@ -161771,6 +161887,9 @@ index 0000000000000000000000000000000000000000..00e9840e6aa58ac4d10d2b7fb099ea5b
 +{
 +    int status;
 +
++    if (qemu_crucible_resident_service_birth_blocked_v1()) {
++        return -EBUSY;
++    }
 +    if (!startup_invocation(id)) {
 +        return -EPERM;
 +    }
@@ -161806,6 +161925,9 @@ index 0000000000000000000000000000000000000000..00e9840e6aa58ac4d10d2b7fb099ea5b
 +{
 +    int status;
 +
++    if (qemu_crucible_resident_service_birth_blocked_v1()) {
++        return -EBUSY;
++    }
 +    if (!startup_invocation(id)) {
 +        return -EPERM;
 +    }
@@ -161844,6 +161966,12 @@ index 0000000000000000000000000000000000000000..00e9840e6aa58ac4d10d2b7fb099ea5b
 +    uint64_t extent;
 +    int status;
 +
++    /* Runtime admission binds this constructor to the actual Main creator.
++     * Refuse before endpoint borrowing, debit, mutex, mapping or thread birth;
++     * a live absence loan must not deadlock at the later registry freeze. */
++    if (qemu_crucible_resident_service_birth_blocked_v1()) {
++        return -EBUSY;
++    }
 +    status = startup_runtime_admission(id, purpose);
 +    if (status) {
 +        return status;
@@ -163464,10 +163592,10 @@ index 0000000000000000000000000000000000000000..90699b7f8d18fb14d7d38701c2ac81eb
 +#endif /* CRUCIBLE_RAM_OWNER_DIAGNOSTIC_H */
 diff --git a/plugins/crucible-ram-record.inc.h b/plugins/crucible-ram-record.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..20c2f767347147954a75f466db2076a5570a836c
+index 0000000000000000000000000000000000000000..06c7717a72f48d51622e9c7da2c2fc984b07b99f
 --- /dev/null
 +++ b/plugins/crucible-ram-record.inc.h
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,419 @@
 +/*
 + * Genuine registered per-record original lease for the retained RAM actor.
 + *
@@ -163490,6 +163618,9 @@ index 0000000000000000000000000000000000000000..20c2f767347147954a75f466db2076a5
 +    QemuCrucibleRamRecordBinding *binding = &startup_source.record_binding;
 +    int status;
 +
++    if (qemu_crucible_resident_service_birth_blocked_v1()) {
++        return -EBUSY;
++    }
 +    if (!startup_invocation(id)) {
 +        return -EPERM;
 +    }
@@ -165611,10 +165742,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7dab815ae66b2c9e6645353c755219cd66a6c7aa
+index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcfac837b67
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,7182 @@
+@@ -0,0 +1,7374 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -165635,6 +165766,7 @@ index 0000000000000000000000000000000000000000..7dab815ae66b2c9e6645353c755219cd
 +#include "crucible-startup-source.h"
 +#include "crucible-checkpoint-receiving.h"
 +#include "system/crucible-observation-realization.h"
++#include "system/crucible-ram-quiescence.h"
 +#include "system/replay.h"
 +
 +#ifdef CONFIG_LINUX
@@ -167956,6 +168088,9 @@ index 0000000000000000000000000000000000000000..7dab815ae66b2c9e6645353c755219cd
 +    void *registered;
 +    int result;
 +
++    if (qemu_crucible_resident_service_birth_blocked_v1()) {
++        return -EBUSY;
++    }
 +    /* Process/thread/current invocation gate precedes mutable state and lookup. */
 +    if (!startup_invocation(id) || !startup_source.acquisition_attempted ||
 +        startup_source.saved.plugin_id != id ||
@@ -168982,6 +169117,7 @@ index 0000000000000000000000000000000000000000..7dab815ae66b2c9e6645353c755219cd
 +
 +    if (!out || *out || operation->held || purpose->cleanup_execution ||
 +        purpose->cleanup_holder || startup_source.checkpoint_inventory_metadata.held ||
++        qatomic_load_acquire(&startup_source.resident_service_absence.held) ||
 +        !bql_locked()) {
 +        return -EBUSY;
 +    }
@@ -169853,6 +169989,193 @@ index 0000000000000000000000000000000000000000..7dab815ae66b2c9e6645353c755219cd
 +        qemu_crucible_startup_source_fingerprint_observer_current_v1(purpose->observer);
 +}
 +#endif
++
++bool qemu_crucible_startup_source_resident_root_v1(void)
++{
++    return qatomic_load_acquire(&startup_source.resident_fingerprint.enrolled);
++}
++
++bool qemu_crucible_resident_service_birth_blocked_v1(void)
++{
++    return qatomic_load_acquire(&startup_source.resident_service_absence.held);
++}
++
++#ifdef CONFIG_LINUX
++static int resident_service_absent(void)
++{
++    QemuCrucibleRamControlActor *actor = &startup_source.ram_control_actor;
++
++    /* A failed attempt is retained debt, not evidence of an absent service. */
++    if (startup_source.checkpoint_pager_attempted ||
++        startup_source.checkpoint_pager_registered ||
++        startup_source.provider_attempted || startup_source.provider_registered ||
++        startup_source.checkpoint_finalize_attempted ||
++        startup_source.checkpoint_finalize_registered ||
++        startup_source.record_binding.attempted ||
++        startup_source.record_binding.registered || actor->attempted ||
++        actor->charge.held || actor->stack || actor->born ||
++        actor->dispatch_mutex_initialized || actor->service_registered ||
++        actor->receipt.active || actor->receipt.uncertain) {
++        return -EBUSY;
++    }
++    return 0;
++}
++#endif
++
++int qemu_crucible_resident_service_absence_current_v1(
++    QemuCrucibleResidentServiceAbsence *absence, uint64_t *generation)
++{
++#ifdef CONFIG_LINUX
++    int status;
++
++    if (absence != &startup_source.resident_service_absence ||
++        !qatomic_load_acquire(&absence->held) || absence->process != getpid() ||
++        !qemu_thread_is_self(&absence->thread) || !qemu_in_main_thread() ||
++        !bql_locked() || qemu_in_coroutine() ||
++        absence->resident != &startup_source.resident_fingerprint ||
++        absence->runtime != &startup_source.runtime_purpose ||
++        absence->process_generation !=
++            startup_source.process_purpose_record.process_generation ||
++        absence->installer.ctx != startup_source.saved.ctx ||
++        absence->installer.module != startup_source.saved.module ||
++        absence->installer.install != startup_source.saved.install ||
++        absence->installer.plugin_id != startup_source.saved.plugin_id) {
++        return -EPERM;
++    }
++    status = resident_fingerprint_identity(absence->resident);
++    if (!status) {
++        status = resident_service_absent();
++    }
++    if (!status && generation) {
++        *generation = absence->generation;
++    }
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_startup_source_resident_absence_begin_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_fingerprint_operation_v1 *operation,
++    QemuCrucibleResidentServiceAbsence **out)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleResidentServiceAbsence *absence =
++        &startup_source.resident_service_absence;
++    qemu_plugin_crucible_fingerprint_frame_v1 *frame = NULL;
++    uint64_t serial;
++    int status;
++
++    if (!out || *out || absence->held || absence->generation == UINT64_MAX ||
++        id != startup_source.saved.plugin_id ||
++        !standing_operation_identity(operation)) {
++        return -EPERM;
++    }
++    status = resident_fingerprint_identity(&startup_source.resident_fingerprint);
++    if (!status) {
++        status = resident_service_absent();
++    }
++    if (!status) {
++        status = qemu_crucible_ram_fingerprint_background_identity_v1(
++            id, operation, &frame, &serial);
++    }
++    if (!status) {
++        status = standing_operation_current(operation);
++    }
++    if (status) {
++        return status;
++    }
++    absence->resident = &startup_source.resident_fingerprint;
++    absence->installer = startup_source.saved;
++    absence->runtime = &startup_source.runtime_purpose;
++    absence->frame = frame;
++    absence->frame_serial = serial;
++    absence->operation_serial = operation->serial;
++    absence->process_generation =
++        startup_source.process_purpose_record.process_generation;
++    absence->process = getpid();
++    qemu_thread_get_self(&absence->thread);
++    absence->generation++;
++    absence->first_status = 0;
++    absence->post_status = 0;
++    absence->cleanup_status = 0;
++    absence->post_recorded = false;
++    /* Same Main owns constructor admission. Publish the birth exclusion and
++     * escaped lifetime loan before any native barrier or later fallible cut. */
++    qatomic_store_release(&absence->held, true);
++    *out = absence;
++    return 0;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_startup_source_resident_absence_post_v1(
++    QemuCrucibleResidentServiceAbsence *absence,
++    qemu_plugin_crucible_fingerprint_operation_v1 *operation, int first_status)
++{
++    int status = qemu_crucible_resident_service_absence_current_v1(absence, NULL);
++
++    if (status || absence->post_recorded ||
++        !standing_operation_identity(operation) ||
++        operation->serial != absence->operation_serial) {
++        return status ? status : -EPERM;
++    }
++    absence->first_status = first_status;
++    status = standing_boundary();
++    if (!status) {
++        status = standing_operation_current(operation);
++    }
++    absence->post_status = status;
++    absence->post_recorded = true;
++    if (first_status && !absence->lifetime_first_status) {
++        absence->lifetime_first_status = first_status;
++    }
++    if (status && !absence->lifetime_post_status) {
++        absence->lifetime_post_status = status;
++    }
++    return status;
++}
++
++int qemu_crucible_startup_source_resident_absence_return_v1(
++    QemuCrucibleResidentServiceAbsence **owner, int cleanup_status)
++{
++    QemuCrucibleResidentServiceAbsence *absence;
++    int status;
++
++    if (!owner) {
++        return -EINVAL;
++    }
++    absence = *owner;
++    status = qemu_crucible_resident_service_absence_current_v1(absence, NULL);
++    if (status) {
++        return status;
++    }
++    if (cleanup_status && !absence->cleanup_status) {
++        absence->cleanup_status = cleanup_status;
++    }
++    if (cleanup_status && !absence->lifetime_cleanup_status) {
++        absence->lifetime_cleanup_status = cleanup_status;
++    }
++    status = qemu_crucible_ram_fingerprint_background_return_identity_v1(
++        absence->frame, absence->frame_serial);
++    if (!status) {
++        status = qemu_crucible_ram_owner_resident_returned_v1(absence);
++    }
++    if (status) {
++        if (!absence->cleanup_status) {
++            absence->cleanup_status = status;
++        }
++        if (!absence->lifetime_cleanup_status) {
++            absence->lifetime_cleanup_status = status;
++        }
++        return status;
++    }
++    /* No Original query, callback, refund, or process Source retirement. */
++    qatomic_store_release(&absence->held, false);
++    *owner = NULL;
++    return 0;
++}
 +
 +int qemu_plugin_crucible_register_resident_fingerprint_retirement_v1(
 +    qemu_plugin_id_t id,
@@ -172799,10 +173122,10 @@ index 0000000000000000000000000000000000000000..7dab815ae66b2c9e6645353c755219cd
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4f78e916a42eb3bf5bb79e09c6b95047a7744304
+index 0000000000000000000000000000000000000000..ccf6445c62e52da26678b76f7ec999b6609c2759
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,1973 @@
+@@ -0,0 +1,2014 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -174107,6 +174430,29 @@ index 0000000000000000000000000000000000000000..4f78e916a42eb3bf5bb79e09c6b95047
 +    bool enrolled;
 +} QemuCrucibleResidentFingerprintPurpose;
 +
++/* Paid inline lifetime custody. The entered Root authenticates birth, but
++ * its Original can end before writer/native/Source physical return. */
++struct QemuCrucibleResidentServiceAbsence {
++    QemuCrucibleResidentFingerprintPurpose *resident;
++    QemuCrucibleStartupInstallerBinding installer;
++    QemuCrucibleStartupRuntimePurpose *runtime;
++    qemu_plugin_crucible_fingerprint_frame_v1 *frame;
++    QemuThread thread;
++    pid_t process;
++    uint64_t generation;
++    uint64_t process_generation;
++    uint64_t operation_serial;
++    uint64_t frame_serial;
++    bool held;
++    bool post_recorded;
++    int first_status;
++    int post_status;
++    int cleanup_status;
++    int lifetime_first_status;
++    int lifetime_post_status;
++    int lifetime_cleanup_status;
++};
++
 +typedef struct QemuCrucibleCheckpointInventoryLoan
 +    QemuCrucibleCheckpointInventoryLoan;
 +
@@ -174392,7 +174738,25 @@ index 0000000000000000000000000000000000000000..4f78e916a42eb3bf5bb79e09c6b95047
 +#endif
 +    QemuCrucibleFingerprintCompletionBinding fingerprint_completion;
 +    QemuCrucibleResidentFingerprintPurpose resident_fingerprint;
++    QemuCrucibleResidentServiceAbsence resident_service_absence;
 +} QemuCrucibleStartupSourceControl;
++
++/* Selection is canonical enrollment, never a caller's absence assertion. */
++bool qemu_crucible_startup_source_resident_root_v1(void);
++int qemu_crucible_startup_source_resident_absence_begin_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_fingerprint_operation_v1 *operation,
++    QemuCrucibleResidentServiceAbsence **out);
++int qemu_crucible_startup_source_resident_absence_post_v1(
++    QemuCrucibleResidentServiceAbsence *absence,
++    qemu_plugin_crucible_fingerprint_operation_v1 *operation, int first_status);
++int qemu_crucible_startup_source_resident_absence_return_v1(
++    QemuCrucibleResidentServiceAbsence **owner, int cleanup_status);
++/* Native frame joins lend identity only, without writer or module authority. */
++int qemu_crucible_ram_fingerprint_background_identity_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_fingerprint_operation_v1 *operation,
++    qemu_plugin_crucible_fingerprint_frame_v1 **frame, uint64_t *serial);
++int qemu_crucible_ram_fingerprint_background_return_identity_v1(
++    qemu_plugin_crucible_fingerprint_frame_v1 *frame, uint64_t serial);
 +
 +/* Private QMP/Native consuming seam. Callers cannot nominate a pair owner,
 + * module or callback. None of these methods publishes a Native entered frame. */
@@ -185634,7 +185998,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1711a0d6bc94936f42f942c6aa975182f7620095
+index 0000000000000000000000000000000000000000..3c654cbe92459144bdae8e794a05cad57674c250
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -185662,7 +186026,7 @@ index 0000000000000000000000000000000000000000..1711a0d6bc94936f42f942c6aa975182
 +    'include/plugins/qemu-plugin.h':
 +        '10904bea6fcdfa073696f9b597332e022539533f40873b7847cca742e906878f',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'fe21f9d278f508b7901c2688293fecbef1fe40db1ecc6d2b2f94f9ec0ac6cbdb',
++        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -201381,10 +201745,10 @@ index 0000000000000000000000000000000000000000..b4fb265161580080ff341f5d4a129056
 +}
 diff --git a/system/crucible-ram-quiescence.c b/system/crucible-ram-quiescence.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4bab2dafb
+index 0000000000000000000000000000000000000000..0338306a4b423de0b989cb82c52d364c420fbbcc
 --- /dev/null
 +++ b/system/crucible-ram-quiescence.c
-@@ -0,0 +1,1191 @@
+@@ -0,0 +1,1295 @@
 +/*
 + * Physical RAM borrower owner closure
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -201450,6 +201814,10 @@ index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4
 +    bool block_owned;
 +    QemuThreadRamPauseTransaction threads;
 +    QemuCrucibleRamActorPause *actor_pause;
++    QemuCrucibleResidentServiceAbsence *resident_absence;
++    uint64_t absence_generation;
++    bool service_owned;
++    bool returning;
 +    RamOwnerDescriptor descriptors[RAM_OWNER_DESCRIPTORS_MAX];
 +    size_t descriptor_count;
 +    unsigned observation_borrowers;
@@ -201495,7 +201863,9 @@ index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4
 +            available = worker;
 +        }
 +    }
-+    if (match && match->actor != actor) {
++    if (enter && qemu_crucible_resident_service_birth_blocked_v1()) {
++        result = -EBUSY;
++    } else if (match && match->actor != actor) {
 +        result = -EPERM;
 +    } else if (service_frozen) {
 +        /* Unexpected worker failure poisons the retained proof immediately. */
@@ -202259,13 +202629,43 @@ index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4
 +    return 0;
 +}
 +
++static int ram_owner_participant_current(void)
++{
++    uint64_t generation;
++    int status;
++
++    if (owner_closure.returning) {
++        return -ESTALE;
++    }
++    if (!owner_closure.resident_absence) {
++        return qemu_plugin_crucible_ram_actor_pause_current(owner_closure.actor_pause);
++    }
++    status = qemu_crucible_resident_service_absence_current_v1(
++        owner_closure.resident_absence, &generation);
++    if (status || generation != owner_closure.absence_generation) {
++        return status ? status : -ESTALE;
++    }
++    pthread_mutex_lock(&service_lock);
++    if (!owner_closure.service_owned || !service_frozen || service_failed ||
++        owner_closure.service_generation != service_generation) {
++        status = -ESTALE;
++    }
++    for (size_t index = 0; !status && index < RAM_SERVICE_WORKERS_MAX; index++) {
++        if (service_workers[index].thread_id) {
++            status = -ESTALE;
++        }
++    }
++    pthread_mutex_unlock(&service_lock);
++    return status;
++}
++
 +bool qemu_crucible_ram_owner_closure_current(uint64_t token)
 +{
 +    return token && owner_closure.token == token &&
 +        owner_closure.process_id == getpid() &&
 +        owner_closure.owner_thread_id == qemu_get_thread_id() &&
 +        owner_closure.threads.active && ram_owner_paused() &&
-+        !qemu_plugin_crucible_ram_actor_pause_current(owner_closure.actor_pause);
++        !ram_owner_participant_current();
 +}
 +
 +int qemu_crucible_ram_owner_closure_validate(uint64_t token)
@@ -202282,7 +202682,7 @@ index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4
 +        !ram_owner_paused()) {
 +        return -EPERM;
 +    }
-+    result = qemu_plugin_crucible_ram_actor_pause_current(owner_closure.actor_pause);
++    result = ram_owner_participant_current();
 +    if (result) {
 +        return result;
 +    }
@@ -202343,7 +202743,7 @@ index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4
 +        !ram_owner_paused()) {
 +        return -EPERM;
 +    }
-+    result = qemu_plugin_crucible_ram_actor_pause_current(owner_closure.actor_pause);
++    result = ram_owner_participant_current();
 +    if (result) {
 +        return result;
 +    }
@@ -202403,6 +202803,9 @@ index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4
 +    if (owner_closure.observation_borrowers) {
 +        return -EBUSY;
 +    }
++    /* Semantic closure is revoked before any release can create participants.
++     * The independent Source birth gate survives every partial return. */
++    owner_closure.returning = true;
 +    /* Release membership first; subsystem release may create native workers. */
 +    if (owner_closure.threads.active) {
 +        result = qemu_thread_ram_pause_end(&owner_closure.threads);
@@ -202444,23 +202847,31 @@ index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4
 +        }
 +        owner_closure.block_owned = false;
 +    }
-+    pthread_mutex_lock(&service_lock);
-+    service_frozen = false;
-+    pthread_mutex_unlock(&service_lock);
-+    result = qemu_plugin_crucible_ram_actor_pause_end(owner_closure.actor_pause);
-+    if (result) {
-+        return result;
++    if (owner_closure.service_owned) {
++        pthread_mutex_lock(&service_lock);
++        service_frozen = false;
++        pthread_mutex_unlock(&service_lock);
++        owner_closure.service_owned = false;
++    }
++    if (!owner_closure.resident_absence) {
++        result = qemu_plugin_crucible_ram_actor_pause_end(owner_closure.actor_pause);
++        if (result) {
++            return result;
++        }
 +    }
 +    memset(&owner_closure, 0, sizeof(owner_closure));
 +    return 0;
 +}
 +
-+int qemu_crucible_ram_owner_closure_begin(uint64_t *token)
++static int ram_owner_closure_begin(
++    QemuCrucibleResidentServiceAbsence *absence, uint64_t *token,
++    int *first_status, int *cleanup_status)
 +{
 +    QemuPluginCrucibleHotForkBarrierInventory plugin;
 +    QemuRcuHotForkBarrierInventory rcu;
 +    QemuAsyncWorkerHotForkBarrierInventory async;
 +    QemuBlockBackendHotForkBarrierInventory block;
++    uint64_t absence_generation = 0;
 +    int result;
 +
 +    if (!token || owner_closure.token || owner_closure.threads.active ||
@@ -202472,17 +202883,36 @@ index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4
 +    if (owner_token_counter == UINT64_MAX) {
 +        return -EOVERFLOW;
 +    }
-+    result = qemu_plugin_crucible_ram_actor_pause_begin(&owner_closure.actor_pause);
++    result = absence ? qemu_crucible_resident_service_absence_current_v1(
++        absence, &absence_generation) :
++        qemu_plugin_crucible_ram_actor_pause_begin(&owner_closure.actor_pause);
 +    if (result) {
 +        return result;
 +    }
 +    owner_closure.token = ++owner_token_counter;
 +    owner_closure.process_id = getpid();
 +    owner_closure.owner_thread_id = qemu_get_thread_id();
++    owner_closure.resident_absence = absence;
++    owner_closure.absence_generation = absence_generation;
 +    *token = owner_closure.token;
 +    pthread_mutex_lock(&service_lock);
++    if (service_frozen || service_failed) {
++        pthread_mutex_unlock(&service_lock);
++        result = -EBUSY;
++        goto fail;
++    }
 +    service_frozen = true;
++    owner_closure.service_owned = true;
 +    owner_closure.service_generation = service_generation;
++    if (absence) {
++        for (size_t index = 0; index < RAM_SERVICE_WORKERS_MAX; index++) {
++            if (service_workers[index].thread_id) {
++                pthread_mutex_unlock(&service_lock);
++                result = -EBUSY;
++                goto fail;
++            }
++        }
++    }
 +    pthread_mutex_unlock(&service_lock);
 +
 +    /* Drain block users before closing completion admission. Never wait here. */
@@ -202569,12 +202999,50 @@ index 0000000000000000000000000000000000000000..848a46069cf46f12f0e490dc782b6ce4
 +    {
 +        int release = qemu_crucible_ram_owner_closure_end(*token);
 +
++        if (first_status) {
++            *first_status = result;
++        }
++        if (cleanup_status) {
++            *cleanup_status = release;
++        }
 +        if (release) {
-+            return release;
++            return absence ? result : release;
 +        }
 +    }
 +    *token = 0;
 +    return result;
++}
++
++int qemu_crucible_ram_owner_closure_begin(uint64_t *token)
++{
++    return ram_owner_closure_begin(NULL, token, NULL, NULL);
++}
++
++int qemu_crucible_ram_owner_resident_begin_v1(
++    QemuCrucibleResidentServiceAbsence *absence, uint64_t *token,
++    int *first_status, int *cleanup_status)
++{
++    int status;
++
++    if (!absence || !first_status || !cleanup_status) {
++        return -EINVAL;
++    }
++    *first_status = 0;
++    *cleanup_status = 0;
++    status = ram_owner_closure_begin(absence, token, first_status, cleanup_status);
++    if (status && !*first_status) {
++        *first_status = status;
++    }
++    return status;
++}
++
++int qemu_crucible_ram_owner_resident_returned_v1(
++    QemuCrucibleResidentServiceAbsence *absence)
++{
++    if (!absence || !bql_locked() || !qemu_in_main_thread() || qemu_in_coroutine()) {
++        return -EPERM;
++    }
++    return owner_closure.resident_absence == absence ? -EBUSY : 0;
 +}
 diff --git a/system/ioport.c b/system/ioport.c
 index 0a1b80f29949e8c92c500e0a60aafa8868e88960..a4a44491d8085b662f053765509616ef66ece15e 100644
@@ -228484,7 +228952,7 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..495a050570a8a70add1dad3501f656436793ce9f
+index 0000000000000000000000000000000000000000..f47d65e239cd50e336f31fa55697ba7695451bf3
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -228500,9 +228968,9 @@ index 0000000000000000000000000000000000000000..495a050570a8a70add1dad3501f65643
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'include/system/crucible-ram-quiescence.h':
-+        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
++        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'fe21f9d278f508b7901c2688293fecbef1fe40db1ecc6d2b2f94f9ec0ac6cbdb',
++        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
 +}
 +
 +FUNCTIONS = (
@@ -228590,7 +229058,7 @@ index 0000000000000000000000000000000000000000..495a050570a8a70add1dad3501f65643
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2e5ac6d1e39020217527be39ab8b1cb6d7388576
+index 0000000000000000000000000000000000000000..0cb55d290b07e1809e7eae0a53e49d00576513e7
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -228611,17 +229079,17 @@ index 0000000000000000000000000000000000000000..2e5ac6d1e39020217527be39ab8b1cb6
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '0f042e3d26cf80570a79bc7224883111ba12b2f32a7c17d41cca2e2b1a498122',
 +    'plugins/crucible-startup-source.c':
-+        'd490a87d0fea8eb3aef4fe5605980bced8033e784b2421040e26211afe51147d',
++        'e86eba4344d03882824e02ad04e413a1037961996195cdf14d2af62a4b9265f8',
 +    'plugins/crucible-startup-source.h':
-+        'e2fb909a29f28ef714c83f84588c1270fe80affdc70751698a6202698b70bab8',
++        '9b77359da6dabc7f3613cfa11cc8bd16fd4a3975d7f24a26a06b1fb3f86b4bf3',
 +    'include/plugins/qemu-plugin.h':
 +        '10904bea6fcdfa073696f9b597332e022539533f40873b7847cca742e906878f',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'include/system/crucible-ram-quiescence.h':
-+        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
++        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'fe21f9d278f508b7901c2688293fecbef1fe40db1ecc6d2b2f94f9ec0ac6cbdb',
++        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
 +}
 +
 +FUNCTIONS = (
@@ -228837,7 +229305,7 @@ index 0000000000000000000000000000000000000000..2e5ac6d1e39020217527be39ab8b1cb6
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e8b802ed0e2f4d9ad6086a7edf3a4e7d0c544b36
+index 0000000000000000000000000000000000000000..1a39656fa902a7c6e6e6e7817f903f298f95c20c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -228861,7 +229329,7 @@ index 0000000000000000000000000000000000000000..e8b802ed0e2f4d9ad6086a7edf3a4e7d
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'fe21f9d278f508b7901c2688293fecbef1fe40db1ecc6d2b2f94f9ec0ac6cbdb',
++        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
 +}
 +
 +FUNCTIONS = (
@@ -228955,7 +229423,7 @@ index 0000000000000000000000000000000000000000..e8b802ed0e2f4d9ad6086a7edf3a4e7d
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b416da5b23ccddee821b669929bb6796689cb98
+index 0000000000000000000000000000000000000000..48ca88df1d3e78d530940bb6c10d07879b6e179a
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -228996,9 +229464,9 @@ index 0000000000000000000000000000000000000000..6b416da5b23ccddee821b669929bb679
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'fe21f9d278f508b7901c2688293fecbef1fe40db1ecc6d2b2f94f9ec0ac6cbdb',
++        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '8fd676523d2c5f36806f3179efdd195cc12ead754108189a72b5e291fcb8c6c5',
++        '6227a40897413f65346ac5a4545a1994a0c99d49429313c83e5b5cfdbee07671',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -229134,7 +229602,7 @@ index 0000000000000000000000000000000000000000..6b416da5b23ccddee821b669929bb679
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4d8a7db74872c1f62fc54b608c6d3902981a74c4
+index 0000000000000000000000000000000000000000..3c8bbc1c99c163099c5eb6f7d03a2b39bf931c53
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,835 @@
@@ -229190,15 +229658,15 @@ index 0000000000000000000000000000000000000000..4d8a7db74872c1f62fc54b608c6d3902
 +    'plugins/loader.c':
 +        'ee5bb6da8d25638e197eb03de2e9d5de344eae52f77f8a0143513124bed9f502',
 +    'plugins/crucible-paged-ram.c':
-+        '322bf51026f20cdf74bd105706e6d2121127409ff6867a06a5cb67b5e1be85f9',
++        '35550458277684bd0cdcea8411abc1410783b3008575c5992210c4c7a3aaa8fd',
 +    'monitor/qmp-cmds.c':
 +        '0b2c2b17f0a87bdf5d70ebae885e07b1c00d2a6944b58ed105f5ca1e5d2c6649',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'plugins/crucible-startup-source.c':
-+        'd490a87d0fea8eb3aef4fe5605980bced8033e784b2421040e26211afe51147d',
++        'e86eba4344d03882824e02ad04e413a1037961996195cdf14d2af62a4b9265f8',
 +    'plugins/crucible-startup-source.h':
-+        'e2fb909a29f28ef714c83f84588c1270fe80affdc70751698a6202698b70bab8',
++        '9b77359da6dabc7f3613cfa11cc8bd16fd4a3975d7f24a26a06b1fb3f86b4bf3',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
@@ -229214,9 +229682,9 @@ index 0000000000000000000000000000000000000000..4d8a7db74872c1f62fc54b608c6d3902
 +    'plugins/crucible-callback-publication.inc.h':
 +        '79faed4ff36b426c3b03d672b60d33383d6b0f7ae636872f3a6481cc3787a24a',
 +    'plugins/crucible-ram-control.inc.h':
-+        '8e91784184cfed22bf0d2986a9eaea18f6d0fda4872420a4c7cf5420d960ccbf',
++        'e36826d3c6850a279608aeb377832c4f30f4ad34fe34770b8661914722eac5ef',
 +    'plugins/crucible-ram-record.inc.h':
-+        '08a624a8798efd82601fd1d91324afefcf7a056a681df51a7c89262430bc0f9d',
++        '9a372b3721ff9a4f13d4a17636d7a63ff0a69ec40517ebed945f0315fc9bce25',
 +    'include/qemu/crucible-shared-region-layout.h':
 +        '9ad3be4a8b3aa0e0c10ab0f12908b0e827e219ec93e91d3939c90606383f54b5',
 +    'include/qemu/crucible-native-invocation.h':
@@ -229228,7 +229696,7 @@ index 0000000000000000000000000000000000000000..4d8a7db74872c1f62fc54b608c6d3902
 +    'include/hw/core/cpu.h':
 +        '7ad1fe4b222dbbc84e7c2f5d2d2d0d59c7a9328f16666d157815c72a2145ae67',
 +    'include/qemu/plugin.h':
-+        '4d861347edd89403b832b1fcd483a95b38b3c19920bf2d799eb65d7ad2057467',
++        '95d720cdd919180f08d55eb120246ac2a2939ff3198aa91e11c7eeeaeeaa80bf',
 +    'plugins/plugin.h':
 +        'dec437b7d16e795c5e1e45ad37a8b16d44c933a6614006449cdf03b869257036',
 +    'system/cpus.c':
@@ -229270,7 +229738,7 @@ index 0000000000000000000000000000000000000000..4d8a7db74872c1f62fc54b608c6d3902
 +    'include/system/crucible-hot-fork-coordinator.h':
 +        'c8fcfdf24406c55aab0bf144329171b8cd9c4888dfa9a243089f381928886934',
 +    'include/system/crucible-ram-quiescence.h':
-+        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
++        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'include/qemu/thread.h':
 +        'a3254ccf7b60eb60a6d36b1113bb97036fcf43e2d4c9582c655939c409078ca8',
 +    'include/qemu/crucible-process-purpose.h':
