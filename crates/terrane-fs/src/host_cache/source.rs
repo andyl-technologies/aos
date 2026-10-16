@@ -4,11 +4,14 @@
 //! read. A retained descriptor is not a pin or an allocation reservation.
 
 use super::NativeHostLayout;
-use rustix::fs::{Mode, OFlags, openat};
+use rustix::fs::{Mode, OFlags, open, openat};
 use std::{
-    fs::File,
+    fs::{File, Metadata},
     io::{self, Read, Seek, SeekFrom},
-    os::unix::fs::MetadataExt,
+    os::{
+        fd::{AsFd, AsRawFd},
+        unix::fs::MetadataExt,
+    },
 };
 use terrane::host::cache::{
     HostReadLocation, inspect_standalone_length, maximum_encoded_chunk_bytes,
@@ -82,18 +85,13 @@ impl NativeChunkSource {
         )?;
         let mut file = None;
         for codec in 0_u8..=2 {
-            match openat(
-                &shard,
-                format!("{hash}.{codec}"),
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            ) {
+            match open_regular_at(&shard, &format!("{hash}.{codec}")) {
                 Ok(descriptor) => {
-                    file = Some((File::from(descriptor), codec));
+                    file = Some((descriptor, codec));
                     break;
                 }
-                Err(rustix::io::Errno::NOENT) => continue,
-                Err(error) => return Err(error.into()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
             }
         }
         let (mut file, codec) =
@@ -220,6 +218,118 @@ fn read_bounded(file: &mut File, profile: &ChunkProfile) -> io::Result<Vec<u8>> 
     Ok(encoded)
 }
 
-fn invalid(message: impl ToString) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.to_string())
+/// Classifies a canonical chunk without invoking a special file's read-open.
+fn open_regular_at(parent: impl AsFd, name: &str) -> io::Result<File> {
+    let observation = File::from(openat(
+        parent,
+        name,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    let before = observation.metadata()?;
+    if !before.is_file() {
+        return Err(invalid("chunk source is not an ordinary regular inode"));
+    }
+
+    // Read the classified inode through its retained descriptor. A replaced
+    // canonical name cannot redirect this open to a FIFO, device or symlink.
+    let file = File::from(open(
+        format!("/proc/self/fd/{}", observation.as_raw_fd()),
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    if !same_file(&before, &file.metadata()?) || !same_file(&before, &observation.metadata()?) {
+        return Err(invalid("classified chunk changed during read-only reopen"));
+    }
+    Ok(file)
+}
+
+fn same_file(before: &Metadata, after: &Metadata) -> bool {
+    before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.mode() == after.mode()
+        && before.uid() == after.uid()
+        && before.gid() == after.gid()
+        && before.len() == after.len()
+        && before.mtime() == after.mtime()
+        && before.mtime_nsec() == after.mtime_nsec()
+        && before.ctime() == after.ctime()
+        && before.ctime_nsec() == after.ctime_nsec()
+}
+
+fn invalid(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture(std::path::PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            let mut random = [0; 16];
+            File::open("/dev/urandom")
+                .unwrap()
+                .read_exact(&mut random)
+                .unwrap();
+            let suffix = random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let path = std::env::temp_dir().join(format!("terrane-chunk-open-{suffix}"));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_chunk_open_classifies_fifo_symlink_and_character_device_before_read_open() {
+        let fixture = Fixture::new();
+        std::fs::write(fixture.0.join("chunk"), b"encoded chunk").unwrap();
+        let parent = File::open(&fixture.0).unwrap();
+        rustix::fs::mkfifoat(&parent, "fifo", Mode::from_raw_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink("chunk", fixture.0.join("symlink")).unwrap();
+
+        let mut file = open_regular_at(&parent, "chunk").unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"encoded chunk");
+        for name in ["fifo", "symlink"] {
+            assert_eq!(
+                open_regular_at(&parent, name).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        assert_eq!(
+            open_regular_at(File::open("/dev").unwrap(), "null")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn native_chunk_source_errors_preserve_typed_causes() {
+        let error = invalid(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "source denied",
+        ));
+        assert_eq!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
 }
