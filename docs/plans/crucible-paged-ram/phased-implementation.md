@@ -355,9 +355,14 @@ the standards suite retains its one unresolved broad classifier gate.
 Full affected-library and packaged-target qualification is in progress. The full
 storage run records a checked-fence allocation-observer test failure; an isolated
 diagnostic invocation passes, which does not clear the original failure. Its
-parallel interaction remains under investigation. The 512-MiB archive/repack
-cases are still running. These partial results do not qualify the complete
-library run, native integration, physical resource floors or VM performance.
+process-wide allocator roster now runs the unchanged six ordering/unwind cases
+in one dedicated test child. The parent requires successful exit and the real
+outer-fence measurement, so selecting no test cannot pass. The fresh focused
+control, default/private workspace checks and hygiene pass; confirmation in the
+complete parallel storage suite remains pending. The original run still has one
+512-MiB capture/archive/restore/repack case in progress. These partial results do
+not qualify the complete library run, native integration, physical resource
+floors or VM performance.
 
 Prepared Service retention also needs an actual owning continuation before the
 World claim: assignment/window changes can precede the before-effects callback.
@@ -368,6 +373,23 @@ Replay still lacks Source's fixed retained-owner continuation. The existing Worl
 queue role can support that design without a fourth cell, but these ownership
 and return-observation seams remain unimplemented; an empty node ledger is
 insufficient evidence.
+
+Ordinary prepared-Source retirement also has an unresolved ownership defect:
+it empties the Source and leaks a newly boxed lifecycle/observer pair after
+shutdown refusal. A replacement must preserve reachable cleanup custody and
+exclude every work and reuse route once retirement starts. Keeping the lifecycle
+alive until aggregate World return is insufficient: its existing cleanup cell
+holds the containing-body lease, which returns only after actual body
+destruction. The successful construction path currently drops its exact World
+cleanup loan when extracting launcher parts. The repair must move that same
+loan and observer outside the retiring body, use the existing preallocated
+carrier/reservation for destruction, and observe exact World return before
+service discharge. A historical error or cleanup receipt alone cannot establish
+that return. The existing Source lifecycle Box also needs explicit accounting
+for its overlap with the retained carrier; no increased ceiling is assumed.
+Consuming demotion, restore-refusal and descendant-retirement callers must retain
+the actual Source or its existing cleanup handoff across failure. Typed error
+preservation is a prerequisite, not an implementation of these ownership seams.
 
 World and node returns now verify their exact saved Cleanup, retained family,
 kernel partition and ledger epoch rather than requiring a live preparation
