@@ -20,9 +20,36 @@ pub struct AuthenticatedSourceHostPurpose {
     held: Arc<SourceHostState>,
 }
 
+/// Borrows an existing Source control payer without extending its lifetime.
+///
+/// This weak link issues no Source or credit; a reservation must upgrade the
+/// same actual purpose and pass its existing live/capacity checks.
+#[derive(Clone)]
+pub struct WeakSourceHostPurpose {
+    held: std::sync::Weak<SourceHostState>,
+}
+
+impl WeakSourceHostPurpose {
+    /// Reserves actual controls from the same retained Source before birth.
+    ///
+    /// # Errors
+    /// Refuses a retired payer, changed Main or exhausted existing peak.
+    pub fn reserve_controls(
+        &self,
+        descriptors: u64,
+        bytes: u64,
+    ) -> Result<SourceHostControlLease, ServiceBirthError> {
+        let held = self
+            .held
+            .upgrade()
+            .ok_or_else(|| ServiceBirthError::policy("Source control payer has retired"))?;
+        AuthenticatedSourceHostPurpose { held }.reserve_controls(descriptors, bytes)
+    }
+}
+
 struct SourceHostState {
     issuer: Arc<AuthenticatedNativeSlotPurpose>,
-    epoch: u64,
+    window: Option<AuthenticatedNativeNodeHostWindow>,
     child: Mutex<SourceChildState>,
     controls: Mutex<SourceControlState>,
     control_peak: u64,
@@ -85,51 +112,66 @@ impl AuthenticatedNativeSubdivision {
         &self,
         control_peak: u64,
         descriptor_peak: u64,
-    ) -> Result<AuthenticatedSourceHostPurpose, ServiceBirthError> {
-        self.check()?;
-        let (layout, _) = std::alloc::Layout::new::<(
-            std::sync::atomic::AtomicUsize,
-            std::sync::atomic::AtomicUsize,
-        )>()
-        .extend(std::alloc::Layout::new::<SourceHostState>())
-        .map_err(|_| ServiceBirthError::policy("Source host holder layout overflows"))?;
-        let extent = u64::try_from(layout.pad_to_align().size())
-            .ok()
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<SourceHostState>() as u64))
-            .and_then(|bytes| bytes.checked_add(control_peak))
-            .and_then(|bytes| bytes.checked_add(host_descriptors::CENSUS_BYTES as u64))
-            .and_then(|bytes| bytes.checked_add(2 * HostServiceLease::metadata_bytes()))
-            .filter(|_| control_peak != 0 && descriptor_peak != 0)
-            .ok_or_else(|| ServiceBirthError::policy("Source host control peak is invalid"))?;
-        // The containing counters and table window pay before Arc/body birth.
-        let metadata = self
-            .owner
-            .owner
-            .reserve_metadata(extent)
-            .map_err(ServiceBirthError::from)?;
-        let (epoch, descriptors) = self
-            .owner
-            .host_descriptors
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("Source host table custody is uncertain"))?
-            .as_mut()
-            .ok_or_else(|| ServiceBirthError::policy("Source host table payer is absent"))?
-            .reserve_source_window(descriptor_peak, &self.owner.original)?;
-        Ok(construct_source_host(
-            Arc::clone(&self.owner),
-            epoch,
-            control_peak,
-            descriptor_peak,
-            descriptors,
-            metadata,
-        ))
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<AuthenticatedSourceHostPurpose, NativePoolRefusal> {
+        let result = (|| {
+            self.verify_native_preparation(original)?;
+            let node = self.node.as_ref().ok_or_else(|| {
+                ServiceBirthError::policy("Source host needs its consumed node claim")
+            })?;
+            let (layout, _) = std::alloc::Layout::new::<(
+                std::sync::atomic::AtomicUsize,
+                std::sync::atomic::AtomicUsize,
+            )>()
+            .extend(std::alloc::Layout::new::<SourceHostState>())
+            .map_err(|_| ServiceBirthError::policy("Source host holder layout overflows"))?;
+            let extent = u64::try_from(layout.pad_to_align().size())
+                .ok()
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<SourceHostState>() as u64))
+                .and_then(|bytes| bytes.checked_add(control_peak))
+                .and_then(|bytes| bytes.checked_add(host_descriptors::CENSUS_BYTES as u64))
+                .and_then(|bytes| bytes.checked_add(2 * HostServiceLease::metadata_bytes()))
+                .filter(|_| control_peak != 0 && descriptor_peak != 0)
+                .ok_or_else(|| ServiceBirthError::policy("Source host control peak is invalid"))?;
+            // The containing counters and table window pay before Arc/body birth.
+            let metadata = self
+                .owner
+                .owner
+                .reserve_metadata(extent)
+                .map_err(ServiceBirthError::from)?;
+            let window = node.occupy_window(native_pool::WindowRole::Source)?;
+            let assigned_descriptors = window.descriptor_peak()?;
+            if assigned_descriptors < descriptor_peak {
+                return Err(ServiceBirthError::policy(
+                    "selected Source landing is undersized",
+                ));
+            }
+            let descriptors = self
+                .owner
+                .host_descriptors
+                .lock()
+                .map_err(|_| ServiceBirthError::policy("Source host table custody is uncertain"))?
+                .as_ref()
+                .ok_or_else(|| ServiceBirthError::policy("Source host table payer is absent"))?
+                .retain_pool_remainder()?;
+            Ok(construct_source_host(
+                Arc::clone(&self.owner),
+                window,
+                control_peak,
+                assigned_descriptors,
+                descriptors,
+                metadata,
+            ))
+        })();
+        let after = self.verify_native_preparation(original).err();
+        native_pool::finish_source(result, after)
     }
 }
 
 /// Enters the candidate-body frame only after its same Main peak is held.
 fn construct_source_host(
     issuer: Arc<AuthenticatedNativeSlotPurpose>,
-    epoch: u64,
+    window: AuthenticatedNativeNodeHostWindow,
     control_peak: u64,
     descriptor_peak: u64,
     descriptors: HostServiceLease,
@@ -138,7 +180,7 @@ fn construct_source_host(
     AuthenticatedSourceHostPurpose {
         held: Arc::new(SourceHostState {
             issuer,
-            epoch,
+            window: Some(window),
             child: Mutex::new(SourceChildState::default()),
             controls: Mutex::new(SourceControlState::default()),
             control_peak,
@@ -150,6 +192,14 @@ fn construct_source_host(
 }
 
 impl AuthenticatedSourceHostPurpose {
+    /// Lends nonowning access to this actual Source control reservation.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakSourceHostPurpose {
+        WeakSourceHostPurpose {
+            held: Arc::downgrade(&self.held),
+        }
+    }
+
     /// Borrows controls already priced by the authentic Main Source reservation.
     ///
     /// # Errors
@@ -195,6 +245,11 @@ impl AuthenticatedSourceHostPurpose {
     #[must_use]
     pub fn belongs_to(&self, subdivision: &AuthenticatedNativeSubdivision) -> bool {
         Arc::ptr_eq(&self.held.issuer, &subdivision.owner)
+            && self
+                .held
+                .window
+                .as_ref()
+                .is_some_and(|window| window.matches(subdivision))
     }
 
     /// Checks that the actual node supervisor shares this retained Main cap.
@@ -221,13 +276,11 @@ impl AuthenticatedSourceHostPurpose {
     pub fn check(&self) -> Result<(), ServiceBirthError> {
         self.held.issuer.check()?;
         self.held
-            .issuer
-            .host_descriptors
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("Source host window is uncertain"))?
+            .window
             .as_ref()
-            .ok_or_else(|| ServiceBirthError::policy("Source host window owner is absent"))?
-            .check_source_window(self.held.epoch)
+            .ok_or_else(|| ServiceBirthError::policy("Source host landing is absent"))?
+            .descriptor_peak()?;
+        Ok(())
     }
 
     /// Marks the actual Source spawn attempt before invoking process creation.
@@ -356,14 +409,9 @@ impl Drop for SourceHostState {
         let closed = proven
             && controls_closed
             && self
-                .issuer
-                .host_descriptors
-                .lock()
-                .is_ok_and(|mut partition| {
-                    partition
-                        .as_mut()
-                        .is_some_and(|partition| partition.close_source_window(self.epoch).is_ok())
-                });
+                .window
+                .as_mut()
+                .is_some_and(|window| window.close_after_controls().is_ok());
         if !closed {
             // Preserve the same real payer on unknown process/alias lifetime.
             if let Some(descriptors) = self.descriptors.take() {

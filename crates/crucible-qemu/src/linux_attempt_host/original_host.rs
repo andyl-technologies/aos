@@ -17,54 +17,11 @@ impl LinuxQemuAttemptHostFactory {
     /// Refuses absent normal custody, foreign binding, competing roster access,
     /// surviving Source/Target state, or the same original's refusal.
     pub fn verify_native_quiescent(&self) -> Result<(), QemuVmRealizationError> {
-        let roster = self
-            .normal_roster
+        self.normal_pool
             .as_ref()
-            .ok_or_else(|| missing_authority("verify normal QEMU roster quiescence"))?;
-        if let Some(binding) = self.original_accounts.as_ref() {
-            if !roster.matches_binding(binding) {
-                return Err(missing_authority("verify same QEMU factory roster"));
-            }
-        } else if !self.poisoned {
-            return Err(missing_authority(
-                "verify retained QEMU factory terminal custody",
-            ));
-        }
-        // A missing binding is allowed only after this actual factory entered
-        // terminal retirement and dropped its own weak alias. The retained
-        // normal roster remains the authority on every later retry.
-        roster
+            .ok_or_else(|| missing_authority("verify normal QEMU node pool quiescence"))?
             .verify_quiescent()
             .map_err(original_roster::original_error)
-    }
-
-    /// Retains the actual normal main subdivision in this genuine factory.
-    ///
-    /// Publication precedes factory opening. This move keeps the owner outside
-    /// all native states, while process and project-quota enforcement remain the
-    /// existing concrete factory's responsibility.
-    ///
-    /// # Errors
-    /// Refuses a poisoned, occupied or mismatched factory. Refused custody is
-    /// retained rather than treating facade destruction as physical cleanup.
-    pub fn bind_normal_accounts(
-        &mut self,
-        roster: OriginalNativeAccountRoster,
-        binding: OriginalNativeAccountFactoryBinding,
-    ) -> Result<(), OriginalActorAccountError> {
-        if self.poisoned
-            || self.process.is_poisoned()
-            || self.original_accounts.is_some()
-            || self.normal_roster.is_some()
-            || !roster.matches_binding(&binding)
-        {
-            std::mem::forget(roster);
-            std::mem::forget(binding);
-            return Err(OriginalActorAccountError::Unavailable);
-        }
-        self.normal_roster = Some(roster);
-        self.original_accounts = Some(binding);
-        Ok(())
     }
 
     /// Binds this genuine factory once to its admitted external account roster.
@@ -79,7 +36,11 @@ impl LinuxQemuAttemptHostFactory {
         &mut self,
         binding: OriginalNativeAccountFactoryBinding,
     ) -> Result<(), OriginalActorAccountError> {
-        if self.poisoned || self.process.is_poisoned() || self.original_accounts.is_some() {
+        if self.poisoned
+            || self.process.is_poisoned()
+            || self.original_accounts.is_some()
+            || self.normal_pool.is_some()
+        {
             return Err(OriginalActorAccountError::Unavailable);
         }
         self.original_accounts = Some(binding);
@@ -93,10 +54,34 @@ impl LinuxQemuAttemptHostFactory {
         maximum_writable_bytes: u64,
         exact_checkpoint_root: Option<crucible::ContentHash>,
     ) -> Result<LinuxQemuAttemptHostOwner, QemuVmRealizationError> {
-        let original = self
+        self.poisoned = true;
+        let binding = self
             .original_accounts
-            .as_ref()
-            .ok_or_else(|| missing_authority("retain original native factory binding"))?
+            .take()
+            .ok_or_else(|| missing_authority("retain original native factory binding"))?;
+        let result = self.begin_original_with_binding(
+            &binding,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            exact_checkpoint_root,
+        );
+        self.original_accounts = Some(binding);
+        if result.is_ok() {
+            self.poisoned = false;
+        }
+        result
+    }
+
+    pub(super) fn begin_original_with_binding(
+        &mut self,
+        binding: &OriginalNativeAccountFactoryBinding,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+        exact_checkpoint_root: Option<crucible::ContentHash>,
+    ) -> Result<LinuxQemuAttemptHostOwner, QemuVmRealizationError> {
+        let original = binding
             .claim(
                 maximum_vcpus,
                 maximum_resident_bytes,

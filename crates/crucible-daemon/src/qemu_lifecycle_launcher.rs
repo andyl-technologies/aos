@@ -29,6 +29,13 @@ mod parent_park_drain;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub(crate) use parent_park_drain::OriginalParkDrainDisposition;
 
+mod pending_construction;
+pub(crate) use pending_construction::retain_source_owner;
+mod failed_launch;
+use failed_launch::RetainedFailedLaunch;
+pub(crate) use pending_construction::PendingSourceConstruction;
+pub use pending_construction::SourceConstructionCustodyFailure;
+
 struct TerminalCheckpointImport {
     checkpoints: Arc<ExactCheckpointStore>,
     source: crucible::ScenarioDefForm,
@@ -39,7 +46,7 @@ struct TerminalCheckpointImport {
 
 /// Guarded production lifecycle launcher for one admitted QEMU attempt.
 #[must_use = "finish the lifecycle launcher or transfer its aggregate owner to quarantine"]
-pub(crate) struct QemuAttemptProductionVmNodeLauncher<G>
+pub(crate) struct QemuAttemptProductionVmNodeLauncher<G, F = ()>
 where
     G: QemuAttemptProcessResourceGuard,
 {
@@ -50,6 +57,12 @@ where
     parent_park_phase: Option<parent_park_drain::OriginalParkDrainPhase>,
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     parent_park_disposition: Option<OriginalParkDrainDisposition>,
+    // A real shared factory facade is inline: retaining it clones only its
+    // existing host Arc. The field itself exposes no permit or process contract.
+    fork_target_factory: Option<F>,
+    cleanup_reservation: Option<Box<dyn crucible_api::ProductionVmCleanupReservation>>,
+    construction_custody: Option<Box<crucible_api::ProductionVmConstructionCustody>>,
+    failed_launch: Option<RetainedFailedLaunch>,
     owner: QemuAttemptGenerationResourceOwner<G>,
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
     image_helpers: Arc<Mutex<ImageHelperCleanupDebt>>,
@@ -60,14 +73,31 @@ impl<G> QemuAttemptProductionVmNodeLauncher<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
-    /// Wraps one attempt-wide resource owner as a lifecycle generation launcher.
+    /// Wraps an owner without manufacturing a same-family target consumer.
     pub(crate) fn new(owner: QemuAttemptGenerationResourceOwner<G>) -> Self {
+        Self::with_fork_target_factory(owner, None)
+    }
+}
+
+impl<G, F> QemuAttemptProductionVmNodeLauncher<G, F>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    /// Retains the factory selected by the actual Source construction path.
+    pub(crate) fn with_fork_target_factory(
+        owner: QemuAttemptGenerationResourceOwner<G>,
+        fork_target_factory: Option<F>,
+    ) -> Self {
         Self {
             park_drain_registration: None,
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
             parent_park_phase: None,
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
             parent_park_disposition: None,
+            fork_target_factory,
+            cleanup_reservation: None,
+            construction_custody: None,
+            failed_launch: None,
             owner,
             run_directories: Arc::new(Mutex::new(BTreeMap::new())),
             image_helpers: Arc::new(Mutex::new(ImageHelperCleanupDebt::default())),
@@ -79,10 +109,78 @@ where
     pub(crate) fn new_registered(
         owner: QemuAttemptGenerationResourceOwner<G>,
         park_drain_registration: crate::qemu_campaign_lifecycle::ConfiguredParkDrainRegistration,
+        fork_target_factory: Option<F>,
     ) -> Self {
-        let mut launcher = Self::new(owner);
+        let mut launcher = Self::with_fork_target_factory(owner, fork_target_factory);
         launcher.park_drain_registration = Some(park_drain_registration);
         launcher
+    }
+
+    /// Returns the actual boxed Source-launcher extent before its allocation.
+    ///
+    /// The containing Main pool must debit this extent for every simultaneous
+    /// Source launcher. The result is a request size, never allocation credit.
+    ///
+    /// # Errors
+    /// Refuses a target whose pointer-sized layout cannot be expressed in bytes.
+    pub(crate) fn retained_control_bytes() -> Result<u64, LifecycleApiError> {
+        u64::try_from(std::mem::size_of::<Self>())
+            .map_err(|_| launcher_message("retained Source launcher extent overflows"))
+    }
+
+    /// Measures selected Source construction before any containing allocation.
+    ///
+    /// Includes the actual launcher Box, inline guard/factory, shared directory
+    /// and helper controls, selected generation rows, carrier, and temporary
+    /// Pending body. No Target directory is constructed by this Source path;
+    /// its later genuine producer must price its own before-birth peak.
+    ///
+    /// # Errors
+    /// Refuses an empty/excessive member set or layout/byte arithmetic overflow.
+    pub(crate) fn retained_source_launcher_control_bytes<'a>(
+        nodes: impl Clone + Iterator<Item = &'a crucible::NodeId>,
+    ) -> Result<u64, LifecycleApiError>
+    where
+        F: crate::QemuAttemptResourceGuardFactory,
+    {
+        let generations = crate::QemuAttemptGenerationStorage::control_bytes(nodes.clone())?;
+        let directories = launcher_arc_bytes::<
+            Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>,
+        >()?;
+        let helpers = launcher_arc_bytes::<Mutex<ImageHelperCleanupDebt>>()?;
+        let pending = pending_construction::PendingSourceConstruction::<F>::control_bytes()?;
+        let retained_launcher = Self::retained_control_bytes()?
+            .checked_add(directories)
+            .and_then(|bytes| bytes.checked_add(helpers))
+            .ok_or_else(|| launcher_message("retained Source launcher extent overflow"))?;
+        // The emptied Pending Box is destroyed before the concrete launcher
+        // Box and shared controls are built. The same carrier and selected
+        // generation rows remain live across both phases.
+        pending
+            .max(retained_launcher)
+            .checked_add(generations)
+            .and_then(|bytes| {
+                bytes.checked_add(crucible_api::ProductionVmConstructionCustody::allocation_bytes())
+            })
+            .ok_or_else(|| launcher_message("selected Source control extent overflow"))
+    }
+
+    /// Moves the exact claimed World's token into the successful launcher.
+    pub(crate) fn with_cleanup_reservation(
+        mut self,
+        reservation: Box<dyn crucible_api::ProductionVmCleanupReservation>,
+    ) -> Self {
+        self.cleanup_reservation = Some(reservation);
+        self
+    }
+
+    /// Moves the initialized same construction carrier into the actual launcher.
+    pub(crate) fn with_construction_custody(
+        mut self,
+        custody: Box<crucible_api::ProductionVmConstructionCustody>,
+    ) -> Self {
+        self.construction_custody = Some(custody);
+        self
     }
 
     /// Installs the selected campaign store for a recoverable terminal restart.
@@ -92,6 +190,17 @@ where
         source: crucible::ScenarioDefForm,
         cancellation: ExecutionCancellation,
     ) -> Self {
+        self.install_terminal_checkpoint_import(checkpoints, source, cancellation);
+        self
+    }
+
+    /// Moves already-admitted terminal metadata into the retained boxed owner.
+    pub(crate) fn install_terminal_checkpoint_import(
+        &mut self,
+        checkpoints: Arc<ExactCheckpointStore>,
+        source: crucible::ScenarioDefForm,
+        cancellation: ExecutionCancellation,
+    ) {
         self.terminal_checkpoint = Some(TerminalCheckpointImport {
             checkpoints,
             source,
@@ -99,7 +208,6 @@ where
             published_root: None,
             _decode_custody: crucible::owned_decode::current_custody(),
         });
-        self
     }
 
     #[cfg(target_os = "linux")]
@@ -113,14 +221,14 @@ where
         if let Err(error) = self.owner.check_operational_boundary() {
             return Err(abort_unspawned_generation(lease, error));
         }
-        let run_directory = match self
-            .owner
-            .prepare_generation_run_directory(request.launch().resource_requirements())
-        {
+        let run_directory = match self.owner.prepare_generation_run_directory_for_node(
+            request.node(),
+            request.launch().resource_requirements(),
+        ) {
             Ok(run_directory) => run_directory,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
-        let attempt_contract = match self.owner.child_process_contract() {
+        let attempt_contract = match self.owner.child_process_contract_for_node(request.node()) {
             Ok(contract) => contract,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
@@ -161,14 +269,16 @@ where
             Ok(atomic) => atomic,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
-        let (node, run_directory) = match atomic
-            .launch(|request| self.owner.launch_exact_node(request))
-        {
+        let (node, run_directory) = match atomic.launch(|restore| {
+            self.owner
+                .launch_exact_node_for_node(request.node(), restore)
+        }) {
             Ok(launched) => launched,
             Err(mut error) => {
                 let message = launch_error_chain(&error);
                 if let Some(child) = error.take_unreaped_child() {
-                    self.owner.retain_failed_launch_child(child);
+                    self.owner
+                        .retain_failed_launch_child_for_node(request.node(), child);
                     drop(lease);
                     self.owner.quarantine();
                     return Err(launcher_message(format!(
@@ -195,6 +305,10 @@ where
         )
     }
 
+    pub(crate) fn with_native_guard<T>(&mut self, apply: impl FnOnce(&mut G) -> T) -> T {
+        self.owner.with_guard_mut(apply)
+    }
+
     fn launch_fresh_generation(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
@@ -216,15 +330,16 @@ where
         if let Err(error) = self.owner.check_operational_boundary() {
             return Err(abort_unspawned_generation(lease, error));
         }
-        let mut run_directory = match self
-            .owner
-            .prepare_generation_run_directory(request.launch().resource_requirements())
-        {
+        let mut run_directory = match self.owner.prepare_generation_run_directory_for_node(
+            request.node(),
+            request.launch().resource_requirements(),
+        ) {
             Ok(run_directory) => run_directory,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
         let preparation = {
-            let process_contract = match self.owner.child_process_contract() {
+            let process_contract = match self.owner.child_process_contract_for_node(request.node())
+            {
                 Ok(contract) => contract,
                 Err(error) => return Err(abort_unspawned_generation(lease, error)),
             };
@@ -237,7 +352,8 @@ where
         if let Err(mut error) = preparation {
             let message = launch_error_chain(&error);
             if let Some(child) = error.take_unreaped_child() {
-                self.owner.retain_failed_launch_child(child);
+                self.owner
+                    .retain_failed_launch_child_for_node(request.node(), child);
                 drop(lease);
                 self.owner.quarantine();
                 return Err(launcher_message(format!(
@@ -267,7 +383,8 @@ where
             request.crash_detector(),
         );
         let (launched, retained_contract) = {
-            let process_contract = match self.owner.child_process_contract() {
+            let process_contract = match self.owner.child_process_contract_for_node(request.node())
+            {
                 Ok(contract) => contract,
                 Err(error) => return Err(abort_unspawned_generation(lease, error)),
             };
@@ -286,7 +403,10 @@ where
                 process_contract,
                 identity,
             )
-            .and_then(|admission| self.owner.launch_fresh_node(&launch, admission));
+            .and_then(|admission| {
+                self.owner
+                    .launch_fresh_node_for_node(request.node(), &launch, admission)
+            });
             (launched, retained_contract)
         };
         let node = match launched {
@@ -310,7 +430,8 @@ where
                 }
                 let message = launch_error_chain(&error);
                 if let Some(child) = error.take_unreaped_child() {
-                    self.owner.retain_failed_launch_child(child);
+                    self.owner
+                        .retain_failed_launch_child_for_node(request.node(), child);
                     drop(lease);
                     self.owner.quarantine();
                     return Err(launcher_message(format!(
@@ -339,7 +460,7 @@ where
     }
 
     fn record_launched_generation(
-        &self,
+        &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
         lease: QemuAttemptGenerationLease,
         run_directory: QemuPreparedRunDirectory,
@@ -360,7 +481,16 @@ where
             directory_released: false,
         };
 
-        ProductionVmNodeLaunch::new_in_run_directory(request, run_directory_path, node, lease)
+        match ProductionVmNodeLaunch::new_in_run_directory(request, run_directory_path, node, lease)
+        {
+            Ok(launch) => Ok(launch),
+            Err((first, launch)) => {
+                // Both launch methods exclude an earlier failed pairing before
+                // any effects, so this pre-existing slot cannot be overwritten.
+                self.failed_launch = Some(RetainedFailedLaunch::new(launch));
+                Err(first)
+            }
+        }
     }
 
     fn transfer_image_helper_debt(&mut self) {
@@ -371,13 +501,14 @@ where
         debt.closed = true;
 
         for (generation, child) in std::mem::take(&mut debt.children) {
+            self.owner
+                .retain_failed_launch_child_for_node(generation.node(), child);
             debt.transferred.insert(generation);
-            self.owner.retain_failed_launch_child(child);
         }
     }
 }
 
-impl<G> Drop for QemuAttemptProductionVmNodeLauncher<G>
+impl<G, F> Drop for QemuAttemptProductionVmNodeLauncher<G, F>
 where
     G: QemuAttemptProcessResourceGuard,
 {
@@ -395,10 +526,23 @@ where
     }
 }
 
-impl<G> ProductionVmNodeLauncher for QemuAttemptProductionVmNodeLauncher<G>
+impl<G, F> ProductionVmNodeLauncher for QemuAttemptProductionVmNodeLauncher<G, F>
 where
     G: QemuAttemptProcessResourceGuard + Send,
+    F: Send,
 {
+    fn take_construction_custody(
+        &mut self,
+    ) -> Option<Box<crucible_api::ProductionVmConstructionCustody>> {
+        self.construction_custody.take()
+    }
+
+    fn take_cleanup_reservation(
+        &mut self,
+    ) -> Option<Box<dyn crucible_api::ProductionVmCleanupReservation>> {
+        self.cleanup_reservation.take()
+    }
+
     #[cfg(target_os = "linux")]
     fn fork_target_is_owned(&self) -> bool {
         self.owner.fork_target_is_owned()
@@ -517,6 +661,11 @@ where
         qemu_executable: &std::path::Path,
         root_image: &std::path::Path,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        if self.failed_launch.is_some() {
+            return Err(launcher_message(
+                "a refused QEMU pairing retains generation cleanup",
+            ));
+        }
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if self.parent_park_phase.is_some() {
             return Err(LifecycleApiError::ParentParkHeld);
@@ -555,6 +704,11 @@ where
         request: ProductionVmNodeLaunchRequest<'_>,
         admission: ProductionVmExactNodeRestoreAdmission,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        if self.failed_launch.is_some() {
+            return Err(launcher_message(
+                "a refused QEMU pairing retains generation cleanup",
+            ));
+        }
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if self.parent_park_phase.is_some() {
             return Err(LifecycleApiError::ParentParkHeld);
@@ -604,8 +758,14 @@ where
         if self.parent_park_phase.is_some() {
             return Err(LifecycleApiError::ParentParkHeld);
         }
+        if let Some(failed) = self.failed_launch.as_mut() {
+            failed.finish()?;
+        }
+        self.failed_launch = None;
         self.transfer_image_helper_debt();
-        self.owner.finish()
+        self.owner.finish()?;
+        self.fork_target_factory = None;
+        Ok(())
     }
 }
 
@@ -927,12 +1087,16 @@ mod tests {
     #[test]
     fn abandoned_generation_transfers_original_helper_to_attempt_quarantine()
     -> Result<(), Box<dyn std::error::Error>> {
+        let selected = [crucible::NodeId {
+            name: String::from("source"),
+        }];
+        let storage = crate::QemuAttemptGenerationStorage::prepare(selected.iter())?;
         let receipts = Arc::new(Mutex::new(HelperGuardReceipts::default()));
         let guard = HelperGuard {
             receipts: Arc::clone(&receipts),
             cancellation: ExecutionCancellation::default(),
         };
-        let owner = QemuAttemptGenerationResourceOwner::new(guard, 1)?;
+        let owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
         let mut launcher = QemuAttemptProductionVmNodeLauncher::new(owner);
         let generation = ProductionVmNodeGeneration::new(
             crucible::NodeId {
@@ -1040,4 +1204,15 @@ mod tests {
             1024
         );
     }
+}
+
+fn launcher_arc_bytes<T>() -> Result<u64, LifecycleApiError> {
+    let (layout, _) = std::alloc::Layout::new::<(
+        std::sync::atomic::AtomicUsize,
+        std::sync::atomic::AtomicUsize,
+    )>()
+    .extend(std::alloc::Layout::new::<T>())
+    .map_err(|_| launcher_message("Source launcher Arc layout overflow"))?;
+    u64::try_from(layout.pad_to_align().size())
+        .map_err(|_| launcher_message("Source launcher Arc extent overflow"))
 }

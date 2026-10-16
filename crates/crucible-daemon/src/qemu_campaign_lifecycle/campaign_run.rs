@@ -1476,7 +1476,7 @@ pub(super) fn run_guarded_default_campaign_with_host<H>(
     host: H,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError>
 where
-    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory,
+    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
     H::Owner: Send + 'static,
 {
     validate_initial_replay(&request)?;
@@ -1542,7 +1542,7 @@ fn production_campaign_runner<H>(
     QemuAttemptExecutionEvidence,
 )
 where
-    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory,
+    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
     H::Owner: Send + 'static,
 {
     let lifecycle = lifecycle.into();

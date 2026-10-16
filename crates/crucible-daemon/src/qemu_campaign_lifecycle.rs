@@ -73,12 +73,30 @@ pub(crate) use failure_classification::{
 mod remote_observation_resume;
 pub use remote_observation_resume::RemoteObservationResumeFactory;
 
+mod source_construction;
+pub use source_construction::{SourceGenerationStorageRefusal, SourcePostInstallationRefusal};
+
 mod resume_admission;
 use resume_admission::validate_exact_resume_request;
+
+/// Labels the operation that refused; it does not attest physical absence.
+#[derive(Debug, Error)]
+enum NativeWorldBeginFailure {
+    #[error("configure native World: {0}")]
+    Configuration(#[from] QemuAttemptProductionVmLifecycleError),
+    #[error("begin native World: {0}")]
+    Native(#[from] QemuVmRealizationError),
+}
 
 /// Failure to bind an admitted attempt to a fresh production VM lifecycle.
 #[derive(Debug, Error)]
 pub enum QemuAttemptProductionVmLifecycleError {
+    /// The actual Source factory retains installation custody for later cleanup.
+    #[error("Source installation remains retained: {diagnostic}")]
+    SourceInstallRetained {
+        /// Diagnostic rendered only after the exact owning body was parked.
+        diagnostic: String,
+    },
     /// Original artifact metadata authority refused a model or configuration copy.
     #[error("copy admitted production lifecycle metadata: {0}")]
     ModelCopy(#[source] Box<dyn std::error::Error + Send + Sync>),
@@ -108,6 +126,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// Installing the attempt resource guard failed.
     #[error("install production VM attempt resources: {0}")]
     ResourceInstallation(#[source] QemuVmRealizationError),
+    /// Generation metadata refused before native effects, with boundary status.
+    #[error(transparent)]
+    SourceGenerationStorage(#[from] SourceGenerationStorageRefusal),
     /// The installed guard did not echo the exact admitted attempt contract.
     #[error(
         "production VM resource guard did not install the exact admitted limits and cancellation signal"
@@ -151,12 +172,14 @@ pub use resource_admission::{
 };
 
 /// Factory that binds one admitted attempt to the guarded production lifecycle.
-pub(crate) struct QemuAttemptProductionVmLifecycleFactory<R> {
+pub(crate) struct QemuAttemptProductionVmLifecycleFactory<R: QemuAttemptResourceGuardFactory> {
     config: Arc<ProductionVmLifecycleConfig>,
     resources: R,
     terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     continuations: Vec<OwnedQemuAttemptContinuation>,
     authenticated_network_selections: Vec<SelectionDecision>,
+    retained_install: Option<source_construction::RetainedSourceInstall<R::Guard>>,
+    lifecycle_outstanding: bool,
     // Retained model copies close before their original metadata credits.
     _decode_custody: Option<crucible::owned_decode::DecodeCustody>,
 }
@@ -976,6 +999,28 @@ pub(crate) trait QemuFreshAttemptLifecycleFactory {
     type Lifecycle: QemuFreshAttemptLifecycleOwner;
     /// Factory-specific admission or construction failure.
     type Error;
+
+    /// Returns the actual lifecycle to its same retained cleanup owner.
+    ///
+    /// # Errors
+    /// Operational factories retain the whole lifecycle on a refused handoff.
+    /// This default is only for resource-free lifecycle implementations.
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        drop(lifecycle);
+        Ok(())
+    }
+
+    /// Retries retained installation custody before the actual worker returns.
+    ///
+    /// # Errors
+    /// Refuses while the same factory still owns an unreturned installation.
+    /// Resource-free factories use the default; operational factories override it.
+    fn try_retire_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
 
     /// Selects modeled continuation control for the next semantic attempt.
     ///
@@ -2084,7 +2129,7 @@ pub(crate) fn config_for_assignment_host_watchdog(
     ))
 }
 
-impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
+impl<R: QemuAttemptResourceGuardFactory> QemuAttemptProductionVmLifecycleFactory<R> {
     /// Creates a factory from trusted lifecycle configuration and host resources.
     #[must_use]
     pub fn new(config: impl Into<Arc<ProductionVmLifecycleConfig>>, resources: R) -> Self {
@@ -2094,6 +2139,8 @@ impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
             terminal_checkpoints: None,
             continuations: Vec::new(),
             authenticated_network_selections: Vec::new(),
+            retained_install: None,
+            lifecycle_outstanding: false,
             _decode_custody: None,
         }
     }
@@ -2111,7 +2158,7 @@ impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
 
 impl<R> QemuAttemptProductionVmLifecycleFactory<R>
 where
-    R: QemuAttemptResourceGuardFactory,
+    R: QemuAttemptResourceGuardFactory + Send + 'static,
     R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
     pub(crate) fn begin_fresh(
@@ -2185,8 +2232,8 @@ where
             &ScenarioDefForm,
             &ProductionVmLifecycleConfig,
             crucible_api::DecodedProductionExactCheckpoint,
-            QemuAttemptProductionVmNodeLauncher<R::Guard>,
-        ) -> Result<T, LifecycleApiError>,
+            Box<dyn crucible_api::ProductionVmNodeLauncher>,
+        ) -> Result<T, crucible_api::ProductionVmConstructionFailure>,
     ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
         validate_exact_resume_request(checkpoint, basis, context)?;
         let QemuExactResumeBasis {
@@ -2334,35 +2381,6 @@ where
         )
     }
 
-    fn with_attempt_launcher<T>(
-        &mut self,
-        context: &AttemptExecutionContext,
-        source: &ScenarioDefForm,
-        maximum_nodes: usize,
-        config: &ProductionVmLifecycleConfig,
-        park_drain_registration: ConfiguredParkDrainRegistration,
-        build: impl FnOnce(
-            QemuAttemptProductionVmNodeLauncher<R::Guard>,
-        ) -> Result<T, LifecycleApiError>,
-    ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
-        let guard = self.begin_native_world_guard(context, source, config)?;
-
-        let owner = QemuAttemptGenerationResourceOwner::new(guard, maximum_nodes)
-            .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
-        let mut launcher =
-            QemuAttemptProductionVmNodeLauncher::new_registered(owner, park_drain_registration);
-        if let Some(checkpoints) = &self.terminal_checkpoints {
-            launcher = launcher.with_terminal_checkpoint_import(
-                Arc::clone(checkpoints),
-                source.try_clone_admitted().map_err(|source| {
-                    QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source))
-                })?,
-                context.cancellation().clone(),
-            );
-        }
-        build(launcher).map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)
-    }
-
     /// Retains the production native world guard under the current admitted owner.
     ///
     /// This shares complete topology, native partition, controller and optional
@@ -2372,12 +2390,13 @@ where
     /// # Errors
     /// Refuses missing operational authority, inconsistent resource partitions,
     /// native controller failure, or failed qualification before process launch.
-    pub(crate) fn begin_native_world_guard(
+    fn begin_native_world_guard(
         &mut self,
         context: &AttemptExecutionContext,
         source: &ScenarioDefForm,
         config: &ProductionVmLifecycleConfig,
-    ) -> Result<R::Guard, QemuAttemptProductionVmLifecycleError> {
+        before_effects: &mut crate::crucible_qemu_session::NativeWorldBeforeEffects<'_>,
+    ) -> Result<(R::Guard, crucible_campaign::AttemptResourceLimits), NativeWorldBeginFailure> {
         let original_remaining = context
             .process_resources()
             .map_err(QemuAttemptProductionVmLifecycleError::ResourceRefusal)?;
@@ -2420,64 +2439,84 @@ where
                 crucible_api::vm_lifecycle::HostRamAdmissionError::contract(error.to_string()),
             )
         })?;
+        let consumer_control_bytes = QemuAttemptProductionVmNodeLauncher::<R::Guard, R>::
+            retained_source_launcher_control_bytes(
+                source.world().vm_nodes().iter().map(|node| &node.id),
+            )
+            .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
         let selected_checkpoint = context.take_selected_checkpoint();
-        let guard = self.resources.begin(
+        let guard = self.resources.begin_world(
             process_resources,
             context.cancellation().clone(),
             selected_checkpoint,
+            consumer_control_bytes,
+            registration.as_ref(),
+            before_effects,
         );
-        let mut guard = match guard {
+        let guard = match guard {
             Ok(guard) => guard,
             Err(failure) => {
                 let (error, selected_checkpoint) = failure.into_parts();
                 if let Some(selected_checkpoint) = selected_checkpoint {
                     context.restore_selected_checkpoint(selected_checkpoint);
                 }
-                return Err(QemuAttemptProductionVmLifecycleError::ResourceInstallation(
-                    error,
-                ));
+                return Err(NativeWorldBeginFailure::Native(error));
             }
         };
+        Ok((guard, process_resources))
+    }
+
+    /// Completes publication only after the actual launcher retains the guard.
+    ///
+    /// # Errors
+    /// Preserves the initiating controller, contract, or qualification refusal.
+    /// The caller retains and cleans the same launcher on every error.
+    fn complete_native_world_guard_installation(
+        context: &AttemptExecutionContext,
+        source: &ScenarioDefForm,
+        config: &ProductionVmLifecycleConfig,
+        guard: &mut R::Guard,
+        process_resources: crucible_campaign::AttemptResourceLimits,
+    ) -> Result<(), SourcePostInstallationRefusal> {
+        let registration = config.host_ram_registration_factory().ok_or_else(|| {
+            SourcePostInstallationRefusal::HostRam(
+                crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+                    "native process limits require retained host RAM ownership",
+                ),
+            )
+        })?;
         if guard.resource_limits() != process_resources
             || !guard
                 .cancellation()
                 .same_incarnation(context.cancellation())
         {
-            guard
-                .finish()
-                .map_err(QemuAttemptProductionVmLifecycleError::ResourceContractCleanup)?;
-            return Err(QemuAttemptProductionVmLifecycleError::ResourceContractMismatch);
+            return Err(SourcePostInstallationRefusal::ContractMismatch);
         }
 
         if let Some(registry) = context.host_operational_registry() {
             guard
                 .retain_original_native_registry(registry.clone())
-                .map_err(QemuAttemptProductionVmLifecycleError::ResourceInstallation)?;
+                .map_err(SourcePostInstallationRefusal::Native)?;
         }
 
-        let _controller_resources = registration
-            .reserve_native_controller_resources()
-            .map_err(QemuAttemptProductionVmLifecycleError::HostRamAdmission)?;
-        let controller = guard
-            .native_resource_controller()
-            .map_err(QemuAttemptProductionVmLifecycleError::ResourceInstallation)?;
-        if let Err(error) = registration.bind_native_resource_controller(controller) {
-            guard
-                .finish()
-                .map_err(QemuAttemptProductionVmLifecycleError::ResourceContractCleanup)?;
-            return Err(QemuAttemptProductionVmLifecycleError::HostRamAdmission(
-                error,
-            ));
+        for node in source.world().vm_nodes() {
+            let _controller_resources = registration
+                .reserve_native_controller_resources(&node.id.name)
+                .map_err(SourcePostInstallationRefusal::HostRam)?;
+            let controller = guard
+                .native_resource_controller_for_node(&node.id)
+                .map_err(SourcePostInstallationRefusal::Native)?;
+            if let Err(error) =
+                registration.bind_native_resource_controller(&node.id.name, controller)
+            {
+                return Err(SourcePostInstallationRefusal::HostRam(error));
+            }
         }
 
         let qualification = (|| {
             if option_env!("CRUCIBLE_PAGING_QUALIFICATION_JSON").is_none() {
                 return Ok(());
             }
-            let credentials = guard
-                .child_process_contract()
-                .map_err(QemuAttemptProductionVmLifecycleError::ResourceInstallation)?
-                .effective_credentials();
             let mut operation = None;
             let mut boundary = || -> std::io::Result<()> {
                 if operation.is_none() {
@@ -2499,12 +2538,16 @@ where
                 Ok(())
             };
             for node in source.world().vm_nodes() {
+                let credentials = guard
+                    .child_process_contract_for_node(&node.id)
+                    .map_err(SourcePostInstallationRefusal::Native)?
+                    .effective_credentials();
                 let registrar = crate::paging_qualification::scoped_registrar(
                     context
                         .host_operational_registry()
                         .cloned()
                         .ok_or_else(|| {
-                            QemuAttemptProductionVmLifecycleError::HostRamAdmission(
+                            SourcePostInstallationRefusal::HostRam(
                                 crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
                                     "qualification lacks admitted registry",
                                 ),
@@ -2516,7 +2559,7 @@ where
                     &mut boundary,
                 )
                 .map_err(|error| {
-                    QemuAttemptProductionVmLifecycleError::HostRamAdmission(
+                    SourcePostInstallationRefusal::HostRam(
                         crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
                             error.to_string(),
                         ),
@@ -2525,38 +2568,47 @@ where
                 if let Some(registrar) = registrar {
                     registration
                         .bind_node_registrar(&node.id.name, registrar)
-                        .map_err(QemuAttemptProductionVmLifecycleError::HostRamAdmission)?;
+                        .map_err(SourcePostInstallationRefusal::HostRam)?;
                 }
             }
             if let Some(operation) = operation {
                 operation.complete().map_err(|error| {
-                    QemuAttemptProductionVmLifecycleError::HostRamAdmission(
+                    SourcePostInstallationRefusal::HostRam(
                         crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
                             error.to_string(),
                         ),
                     )
                 })?;
             }
-            Ok::<_, QemuAttemptProductionVmLifecycleError>(())
+            Ok::<_, SourcePostInstallationRefusal>(())
         })();
         if let Err(error) = qualification {
-            guard
-                .finish()
-                .map_err(QemuAttemptProductionVmLifecycleError::ResourceContractCleanup)?;
             return Err(error);
         }
 
-        Ok(guard)
+        Ok(())
     }
 }
 
 impl<R> QemuFreshAttemptLifecycleFactory for QemuAttemptProductionVmLifecycleFactory<R>
 where
-    R: QemuAttemptResourceGuardFactory,
+    R: QemuAttemptResourceGuardFactory + Send + 'static,
     R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
     type Lifecycle = ProductionVmLifecycleLoop;
     type Error = QemuAttemptProductionVmLifecycleError;
+
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        self.retain_returned_lifecycle(lifecycle)
+    }
+
+    fn try_retire_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        // Cleanup authority stays with the exact saved installation owner.
+        self.retry_retained_source_installation()
+    }
 
     fn configure_authenticated_start(&mut self, start: &CrucibleResolvedAttemptStart) {
         self.authenticated_network_selections = Vec::new();

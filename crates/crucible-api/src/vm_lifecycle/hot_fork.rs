@@ -1211,16 +1211,23 @@ impl ProductionVmHotForkWorldContinuation {
         Ok(())
     }
 
+    // A refusing config copy must leave the original continuation in custody.
+    pub(super) fn prepare_restore_config(
+        &self,
+        run_state_root: impl Into<PathBuf>,
+    ) -> Result<ProductionVmLifecycleConfig, ProductionVmLifecycleConfigCloneError> {
+        let _scope = self.config.enter_input_custody();
+        Ok(self
+            .config
+            .try_clone_admitted()?
+            .with_run_state_root(run_state_root))
+    }
+
     pub(super) fn into_restore_parts(
         self,
         node_generations: BTreeMap<NodeId, u64>,
-        run_state_root: impl Into<PathBuf>,
-    ) -> Result<ProductionVmHotForkRestoreParts, ProductionVmLifecycleConfigCloneError> {
-        let _scope = self.config.enter_input_custody();
-        let config = self
-            .config
-            .try_clone_admitted()?
-            .with_run_state_root(run_state_root);
+        config: ProductionVmLifecycleConfig,
+    ) -> ProductionVmHotForkRestoreParts {
         let checkpoint = ProductionVmExactCheckpointSet {
             identity: self.configuration.id(),
             configuration: self.configuration,
@@ -1242,7 +1249,7 @@ impl ProductionVmHotForkWorldContinuation {
             node_service_states: self.node_service_states,
             repository_restore: None,
         };
-        Ok(ProductionVmHotForkRestoreParts {
+        ProductionVmHotForkRestoreParts {
             config,
             checkpoint,
             immutable_root_images: self.immutable_root_images,
@@ -1250,7 +1257,7 @@ impl ProductionVmHotForkWorldContinuation {
             block_bindings: self.block_bindings,
             ninep_bindings: self.ninep_bindings,
             active_host_io: self.active_host_io,
-        })
+        }
     }
 }
 

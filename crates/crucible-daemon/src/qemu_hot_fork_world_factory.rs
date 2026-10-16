@@ -37,7 +37,10 @@ use crate::qemu_campaign_lifecycle::{
     QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
     validate_fresh_qemu_scenario_resources,
 };
-use crate::qemu_hot_fork_world::QemuHotForkProductionLifecycleContext;
+use crate::qemu_hot_fork_world::{
+    HotForkInstallationRetirementError, HotForkLifecycleInstallError,
+    QemuHotForkProductionLifecycleContext, RetainedHotForkInstallation,
+};
 use crate::supervision::ProcessDeadline;
 use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionDisposition,
@@ -631,6 +634,7 @@ where
     sources: S,
     resources: R,
     auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<R::Guard>>,
+    retained_installation: Option<RetainedHotForkInstallation<R::Guard>>,
     terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     run_state_root: PathBuf,
     shutdown_policy: QemuShutdownPolicy,
@@ -659,6 +663,7 @@ where
             sources,
             resources,
             auxiliary_resources: None,
+            retained_installation: None,
             terminal_checkpoints: None,
             run_state_root: run_state_root.into(),
             shutdown_policy,
@@ -750,6 +755,12 @@ pub(crate) enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
     /// The complete child world could not enter the production lifecycle.
     #[error("install production hot-fork lifecycle: {0}")]
     Lifecycle(#[source] crucible_api::LifecycleApiError),
+    /// The fixed factory slot retains the original typed construction cause.
+    #[error("production hot-fork installation retains its original cleanup owner")]
+    RetainedInstallation,
+    /// Physical retirement refused while the exact installation stays retained.
+    #[error("retire retained production hot-fork installation")]
+    InstallationRetirement(#[source] HotForkInstallationRetirementError),
 }
 
 type ProductionChild<G> = QemuHotForkAttemptReconciliation<
@@ -877,6 +888,13 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
+        // This factory has one exclusive worker. Refuse before checkout or any
+        // new native effect while its fixed installation slot is occupied.
+        if self.retained_installation.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                Self::Error::RetainedInstallation,
+            ));
+        }
         #[cfg(test)]
         self.node_launch_nanoseconds.clear();
 
@@ -1090,33 +1108,28 @@ where
                 Self::Error::ResourceContractMismatch,
             ));
         }
-        let controller = (|| {
-            // The retained pin and its serial readback descriptor consume the
-            // same host-service ceiling used by each native launch borrower.
-            let _lease = ram_factory
-                .reserve_native_controller_resources()
-                .map_err(|error| error.to_string())?;
-            guard
-                .native_resource_controller()
-                .map_err(|error| error.to_string())
-        })();
-        let controller = match controller {
-            Ok(controller) => controller,
-            Err(message) => {
-                guard.quarantine();
-                drop(source_world);
-                self.sources.restore(source_lease);
-                return Err(AttemptWorkerFailure::Terminal(Self::Error::Assembly(
-                    message,
-                )));
+        let bound = (|| {
+            for node in input.scenario().world().vm_nodes() {
+                // Each native member owns its controller and descriptor window;
+                // a World-wide alias cannot stand in for a sibling's allowance.
+                ram_factory
+                    .reserve_native_controller_resources(&node.id.name)
+                    .map_err(|error| error.to_string())?;
+                let controller = guard
+                    .native_resource_controller_for_node(&node.id)
+                    .map_err(|error| error.to_string())?;
+                ram_factory
+                    .bind_native_resource_controller(&node.id.name, controller)
+                    .map_err(|error| error.to_string())?;
             }
-        };
-        if let Err(error) = ram_factory.bind_native_resource_controller(controller) {
+            Ok::<(), String>(())
+        })();
+        if let Err(message) = bound {
             guard.quarantine();
             drop(source_world);
             self.sources.restore(source_lease);
             return Err(AttemptWorkerFailure::Terminal(Self::Error::Assembly(
-                error.to_string(),
+                message,
             )));
         }
         let maximum_nodes = input.scenario().world().vm_nodes().len();
@@ -1147,10 +1160,41 @@ where
         );
         if outcome.source == CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine
             && outcome.result.is_err()
+            && self.retained_installation.is_none()
         {
             self.sources.abandon();
         }
         outcome.result
+    }
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        let Some(retained) = self.retained_installation.as_mut() else {
+            return Ok(());
+        };
+        match retained.advance_original_retirement(original) {
+            Ok(Some((source, history))) => {
+                // Destroy the completed receipt and enclosing aliases before
+                // restoring the exact Source. History is a separate report,
+                // never an unfinished cleanup or another Source checkout.
+                self.retained_installation = None;
+                self.sources.restore(source);
+                if history.is_empty() {
+                    Ok(())
+                } else {
+                    Err(Self::Error::InstallationRetirement(
+                        HotForkInstallationRetirementError::Historical(history),
+                    ))
+                }
+            }
+            // Yield to Main so it can drain a carrier published by this step.
+            Ok(None) => Err(Self::Error::InstallationRetirement(
+                HotForkInstallationRetirementError::Pending,
+            )),
+            Err(error) => Err(Self::Error::InstallationRetirement(error)),
+        }
     }
 
     fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
@@ -1568,10 +1612,27 @@ where
         ) {
             Ok(lifecycle) => lifecycle,
             Err(error) => {
+                let error = match error {
+                    HotForkLifecycleInstallError::Lifecycle(error) => {
+                        QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(error)
+                    }
+                    HotForkLifecycleInstallError::Retained(retained) => {
+                        // try_start checked this slot before checkout. The
+                        // exclusive &mut factory cannot start another attempt
+                        // or replace this slot during this installation.
+                        let retained = self.retained_installation.insert(retained);
+                        match retained.publish_construction() {
+                            Ok(Some(first)) => {
+                                QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(first)
+                            }
+                            Ok(None) | Err(_) => {
+                                QemuProductionHotForkWorldLifecycleFactoryError::RetainedInstallation
+                            }
+                        }
+                    }
+                };
                 return ProductionLifecycleStartOutcome::failed(
-                    AttemptWorkerFailure::Terminal(
-                        QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(error),
-                    ),
+                    AttemptWorkerFailure::Terminal(error),
                     CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
                 );
             }

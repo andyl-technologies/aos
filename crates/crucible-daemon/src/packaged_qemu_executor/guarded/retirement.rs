@@ -100,12 +100,22 @@ pub enum GuardedCampaignOwnerRetirementError {
     /// The original actor cannot atomically close quiescent admission.
     #[error("guarded Main actor retirement refused: {0}")]
     Actor(#[source] HostOperationalError),
+    /// The same Main worker or queued lifecycle body remains retained.
+    #[error("guarded Main controls retirement refused: {0}")]
+    Controls(#[source] crate::campaign_process::ExecutorControlRetirementError),
     /// The same concrete native factory retains physical or uncertain custody.
     #[error("guarded Main native factory retirement refused: {0}")]
     Factory(#[source] QemuVmRealizationError),
+    /// The same Main queue still retains physical or uncertain lifecycle custody.
+    #[error("guarded Main lifecycle cleanup refused: {0}")]
+    LifecycleCleanup(#[source] crucible_api::LifecycleApiError),
 }
 
 impl GuardedCampaignOwner {
+    pub(crate) fn physically_retired(&self) -> bool {
+        self.inner.retirement == GuardedRetirementState::Closed
+    }
+
     /// Retires this actual standalone owner's native factory at its terminal boundary.
     ///
     /// Clone drops and campaign completion leave Main live. This borrowed
@@ -124,6 +134,23 @@ impl GuardedCampaignOwner {
         if !self.lifecycle_record || self.inner.facades.is_quarantined() {
             return Err(GuardedCampaignOwnerRetirementError::UncertainOwner);
         }
+        let controls = self.inner.config.normal_executor.as_ref().and_then(|main| {
+            crate::campaign_process::try_retire_executor_controls_for_main(main).err()
+        });
+        let lifecycle = self.inner.lifecycle_cleanup.as_ref().and_then(|queue| {
+            let work = queue.retry_pending();
+            let empty = queue.verify_empty();
+            work.and(empty).err()
+        });
+        let controls = match controls {
+            Some(error) if !error.physically_closed() => {
+                return Err(GuardedCampaignOwnerRetirementError::Controls(error));
+            }
+            other => other,
+        };
+        if let Some(error) = lifecycle {
+            return Err(GuardedCampaignOwnerRetirementError::LifecycleCleanup(error));
+        }
         let owner = Arc::get_mut(&mut self.inner)
             .ok_or(GuardedCampaignOwnerRetirementError::SharedOwner)?;
         let preparation = owner
@@ -131,7 +158,9 @@ impl GuardedCampaignOwner {
             .as_mut()
             .ok_or(GuardedCampaignOwnerRetirementError::BorrowedMain)?;
         if owner.retirement == GuardedRetirementState::Closed {
-            return Ok(());
+            return controls.map_or(Ok(()), |error| {
+                Err(GuardedCampaignOwnerRetirementError::Controls(error))
+            });
         }
         let factory = owner
             .host
@@ -150,7 +179,10 @@ impl GuardedCampaignOwner {
             .finish_target_dispatcher()
             .map_err(GuardedCampaignOwnerRetirementError::Factory)?;
         owner.retirement = GuardedRetirementState::Closed;
-        Ok(())
+        match controls {
+            Some(error) => Err(GuardedCampaignOwnerRetirementError::Controls(error)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -178,7 +210,7 @@ impl Drop for GuardedCampaignOwner {
         // Arc/actor/roster gates independently prove physical closure. Another
         // releasing facade may still hold the header: retain the same body on
         // that refusal rather than claiming guaranteed concurrent retirement.
-        if self.try_retire().is_err() {
+        if self.try_retire().is_err() && !self.physically_retired() {
             retain_same_uncertain_owner(&self.inner);
         }
     }

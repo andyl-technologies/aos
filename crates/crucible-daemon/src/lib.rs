@@ -151,6 +151,7 @@ pub mod executor_supervisor;
 pub mod executor_worker;
 pub mod host_operational_registry;
 pub mod imported_checkpoint;
+mod lifecycle_cleanup;
 mod provider_error_custody;
 pub use host_operational_registry::HostOperationalRegistry;
 pub mod finding_production_replay;
@@ -662,7 +663,8 @@ pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,
     LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner,
     MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptCancellationSignal, QemuAttemptGenerationLease,
-    QemuAttemptGenerationResourceOwner, QemuAttemptHostResourceFactory,
-    QemuAttemptHostResourceOwner, SharedQemuAttemptHostResourceFactory,
+    QemuAttemptGenerationResourceOwner, QemuAttemptGenerationStorage,
+    QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
+    SharedQemuAttemptHostResourceFactory,
 };
 pub use repository_admission::RepositoryAttemptAdmission;

@@ -97,14 +97,35 @@ hot-fork runner also refuses retirement while it retains an unreconciled world.
 Aggregate release readiness is observed without finishing or quarantining a
 pending owner, so a launcher can finish before actual aggregate release.
 
-The local default-feature daemon library run has 1,145 passes, 21 failures and
-43 ignored tests. All five new retirement/readiness controls pass, including
-same-descriptor retries and genuine registry contention and poison. Every
-failing test name was already present in the earlier workspace failure set;
-these failures still require repair. Main worker custody, constructor carrier
-publication and successful-lifecycle return remain separate integration work.
-The required application-target build passes for the preceding storage/API
-snapshot; these runner changes still require its final rebuild.
+Main now retains the actual worker bodies independently of their borrowing
+threads. Worker storage and the fixed cleanup queue are priced before model
+construction. Source construction retains its original factory, generation
+storage, launcher and preallocated partial/complete lifecycle carrier across
+refusal. Successful disposal returns the same carrier to its reserved cell.
+An exact-cell receipt remains with the factory until actual body destruction
+and containing-body lease closure; publication alone does not free a slot or
+certify aggregate resource return. Hot-fork retirement returns the original
+Source separately from its retained typed failure history. These operations use
+the existing supervision origin and preserve failed ownership for bounded retry.
+
+The normal Cargo workspace check passes with all targets. The local API library
+has 487 passes; the daemon library has 1,161 passes, 21 failures and 43 ignored
+tests. All three worker-custody, five cleanup-receipt and two status-ordering
+component controls pass, including 24 epochs through one physical cleanup cell
+and actual file destruction before an expired operation's final observation.
+The component worker destruction regression also passes without changing its
+assertions. The 21 failed names match the preceding daemon run; this does not
+establish identical causes or waive their required positive behavior. All ten
+shared-dispatcher controls pass; the QEMU library has 1,045 passes, five
+capture-related failures and three ignored probes. These component controls
+issue no Main or native Source and do not qualify deployed resource return.
+
+Native Source activation, genuine Target preparation, owner-driven capture,
+API backend separation and full qualification remain open. The normal-service
+VM target now uses the source-built client-script builder; its local evaluation
+reaches the QEMU build, whose dirty-iterator fixture still fails. No VM lane was
+executed. The required application-target rebuild for the integrated Rust source
+is running locally; its earlier storage/API snapshot passed.
 
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.

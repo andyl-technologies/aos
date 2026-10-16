@@ -177,6 +177,34 @@ pub struct ProductionHostRamLaunchRequirements {
     pub device_state_bytes: u64,
 }
 
+/// Identifies the retained owner and operational allocation epoch of one world.
+///
+/// These request coordinates grant no capacity or checkpoint authority. The
+/// native allocator independently checks the actual Main owner and admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProductionHostRamNativeWorldIdentity {
+    /// Exact admitted operational owner.
+    pub owner: [u8; 32],
+    /// Existing daemon allocation epoch, independent of checkpoint identity.
+    pub selection: [u8; 32],
+}
+
+/// Describes one node's disjoint native reservation request before process birth.
+///
+/// Resource and descriptor values are bounds, not permission or observations of
+/// physical return. The backend must derive them from its actual launch graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProductionHostRamNativeNodeLimits {
+    /// Exact host-local node identity under the admitted owner.
+    pub node: [u8; 32],
+    /// Native family vector after separately retained host ownership is removed.
+    pub resources: HostResourceVector,
+    /// Main descriptor peak retained while the Source incarnation exists.
+    pub source_host_descriptors: u64,
+    /// Main descriptor peak retained while the Target incarnation exists.
+    pub target_host_descriptors: u64,
+}
+
 /// Kernel-enforced native peaks after separately retained host owners are removed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProductionHostRamNativeWorldLimits {

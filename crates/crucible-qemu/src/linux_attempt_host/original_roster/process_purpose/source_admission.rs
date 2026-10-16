@@ -61,7 +61,7 @@ impl OriginalNativeNodeBinding {
             .roster
             .upgrade()
             .ok_or(InstalledProcessPurposeError::Identity)?;
-        let state = roster
+        let mut state = roster
             .lock()
             .map_err(|_| InstalledProcessPurposeError::Identity)?;
         let slot = state
@@ -103,7 +103,7 @@ impl OriginalNativeNodeBinding {
             .ok_or(InstalledProcessPurposeError::Identity)?;
         let (_, peak, descriptors) = source_host_peak()?;
         let host = normal
-            .reserve_source_host_purpose(peak, descriptors)
+            .reserve_source_host_purpose(peak, descriptors, original)
             .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
         let control = host
             .reserve_controls(3, crate::artifact_identity::installer_verifier_extent())
@@ -111,6 +111,14 @@ impl OriginalNativeNodeBinding {
         control
             .verify_original(original)
             .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+        let slot = state
+            .slots
+            .get_mut(self.index)
+            .filter(|slot| {
+                slot.active == Some(self.generation) && slot.source_control_payer.is_none()
+            })
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        slot.source_control_payer = Some(host.downgrade());
         self.source_host = Some(host);
         Ok(control)
     }
@@ -303,7 +311,8 @@ impl OriginalNativeNodeBinding {
 }
 
 /// Describes the one Main-paid peak shared across verification and process birth.
-fn source_host_peak() -> Result<(u64, u64, u64), InstalledProcessPurposeError> {
+pub(in crate::linux_attempt_host) fn source_host_peak()
+-> Result<(u64, u64, u64), InstalledProcessPurposeError> {
     let (layout, _) = std::alloc::Layout::new::<(
         std::sync::atomic::AtomicUsize,
         std::sync::atomic::AtomicUsize,

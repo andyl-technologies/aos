@@ -13,6 +13,7 @@ use crucible_qemu::{
 };
 
 use crate::ExecutionCancellation;
+use crate::executor_supervisor::SelectedExactCheckpointRoot;
 
 /// Read-only operational boundary available to a modeled attempt driver.
 ///
@@ -122,6 +123,252 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
 /// the same pinned physical reservation; neither capability releases cgroup,
 /// quota, watcher or quarantine ownership. Retirement closes their authority.
 pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
+    /// Pins this exact selected node's existing native kernel controller.
+    ///
+    /// # Errors
+    /// Refuses an unknown node or failed physical ownership; no other member
+    /// may substitute its controller.
+    fn native_resource_controller_for_node(
+        &mut self,
+        _node: &crucible::NodeId,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        self.native_resource_controller()
+    }
+
+    /// Routes Park through an explicitly selected member.
+    ///
+    /// # Errors
+    /// Preserves actual physical/original refusal.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn retain_parent_park_cleanup_for_node(
+        &self,
+        _node: &crucible::NodeId,
+    ) -> Result<crucible_qemu::OriginalParentParkCleanup, QemuVmRealizationError> {
+        self.retain_parent_park_cleanup()
+    }
+
+    /// Routes Park through an explicitly selected member.
+    ///
+    /// # Errors
+    /// Preserves actual physical/original refusal.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn verify_parent_park_binding_for_node(
+        &self,
+        _node: &crucible::NodeId,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<(), crucible_qemu::OriginalActorParkQuiescenceError> {
+        self.verify_parent_park_binding(source, original, decoder)
+    }
+
+    /// Routes Park through an explicitly selected member.
+    ///
+    /// # Errors
+    /// Preserves actual physical/original refusal.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn enter_parent_park_quiescence_for_node(
+        &self,
+        _node: &crucible::NodeId,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<
+        crucible_qemu::OriginalActorParkQuiescence,
+        crucible_qemu::OriginalActorParkQuiescenceError,
+    > {
+        self.enter_parent_park_quiescence(source, original, decoder)
+    }
+
+    /// Routes Park through an explicitly selected member.
+    ///
+    /// # Errors
+    /// Preserves actual physical/original refusal.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn prepare_parent_park_imports_for_node(
+        &self,
+        _node: &crucible::NodeId,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_qemu::OriginalActorParkImports, crucible_qemu::OriginalActorParkImportError>
+    {
+        self.prepare_parent_park_imports(source, original, decoder, actor, family)
+    }
+
+    /// Borrows the selected Target role for one actual registration callback.
+    ///
+    /// # Errors
+    /// Refuses before callback invocation if this guard has no matching Target.
+    #[cfg(target_os = "linux")]
+    fn with_fork_target_ram_admission_for_node(
+        &self,
+        _node: &crucible::NodeId,
+        _contract: &QemuChildProcessContract,
+        _prepare: &mut dyn FnMut(
+            &crucible_qemu::QemuForkTargetRamAdmission<'_>,
+        ) -> Result<
+            crucible_qemu::ram_control::RamControlRegistration,
+            QemuVmRealizationError,
+        >,
+    ) -> Result<crucible_qemu::ram_control::RamControlRegistration, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "borrow selected Target RAM admission",
+            message: String::from("guard has no retained Target role"),
+        })
+    }
+
+    /// Reserves real cloned-contract storage before duplicating its descriptors.
+    ///
+    /// # Errors
+    /// Refuses a foreign node/contract, absent Source payer or exhausted peak.
+    #[cfg(target_os = "linux")]
+    fn reserve_contract_controls_for_node(
+        &self,
+        _node: &crucible::NodeId,
+        _contract: &QemuChildProcessContract,
+        _descriptors: u64,
+        _bytes: u64,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
+        QemuVmRealizationError,
+    > {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "reserve selected contract control owner",
+            message: String::from("guard has no genuine Source control payer"),
+        })
+    }
+
+    /// Retains Target RAM with this exact selected member before resource birth.
+    ///
+    /// # Errors
+    /// Refuses a foreign node, contract or actual same-family custody.
+    #[cfg(target_os = "linux")]
+    fn bind_fork_target_ram_custody_for_node(
+        &mut self,
+        _node: &crucible::NodeId,
+        contract: &QemuChildProcessContract,
+        registration: &crucible_qemu::ram_control::RamControlRegistration,
+        supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        guest_ram_bytes: u64,
+        custody: &crucible_qemu::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.bind_fork_target_ram_custody(
+            contract,
+            registration,
+            supervisor,
+            guest_ram_bytes,
+            custody,
+        )
+    }
+
+    /// Lends the selected member's retained contract without another admission.
+    ///
+    /// # Errors
+    /// Refuses an unknown node or failed actual member ownership.
+    fn child_process_contract_for_node(
+        &self,
+        _node: &crucible::NodeId,
+    ) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        self.child_process_contract()
+    }
+
+    /// Prepares storage through the exact selected member's existing quota.
+    ///
+    /// # Errors
+    /// Refuses an unknown node, retired member or unavailable actual storage.
+    fn prepare_generation_run_directory_for_node(
+        &mut self,
+        _node: &crucible::NodeId,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        self.prepare_generation_run_directory(requirements)
+    }
+
+    /// Borrows the selected member's real installed issuer.
+    ///
+    /// # Errors
+    /// Refuses an unknown, absent or retired actual native member.
+    fn installed_node_issuer_for_node(
+        &self,
+        _node: &crucible::NodeId,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        self.installed_node_issuer()
+    }
+
+    /// Launches with the selected member's actual retained issuer and contract.
+    ///
+    /// # Errors
+    /// Refuses a foreign node or the genuine launch admission and its postcut.
+    fn launch_fresh_node_for_node(
+        &self,
+        _node: &crucible::NodeId,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        self.launch_fresh_node(config, admission)
+    }
+
+    /// Restores through the same selected member's retained issuer.
+    ///
+    /// # Errors
+    /// Refuses a foreign node or genuine restore admission and its postcut.
+    fn launch_exact_node_for_node(
+        &self,
+        _node: &crucible::NodeId,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        self.launch_exact_node(request)
+    }
+
+    /// Retains an unreaped child in the actual selected containing member.
+    fn retain_failed_launch_child_for_node(
+        &mut self,
+        _node: &crucible::NodeId,
+        child: QemuNodeChild,
+    ) {
+        self.retain_failed_launch_child(child);
+    }
+
+    /// Reports a selected member's separately retained same-family Target.
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned_for_node(&self, _node: &crucible::NodeId) -> bool {
+        self.fork_target_is_owned()
+    }
+
+    /// Moves only the selected member's genuine same-family Target permit.
+    ///
+    /// # Errors
+    /// Refuses an unknown node, unavailable Source or occupied Target.
+    #[cfg(target_os = "linux")]
+    fn lend_fork_target_permit_for_node(
+        &mut self,
+        _node: &crucible::NodeId,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+        self.lend_fork_target_permit()
+    }
+
+    /// Prepares Target storage under this selected Source's existing quota.
+    ///
+    /// # Errors
+    /// Refuses an unknown node, foreign Target or unavailable actual storage.
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory_for_node(
+        &mut self,
+        _node: &crucible::NodeId,
+        contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        self.prepare_fork_target_run_directory(contract, requirements)
+    }
+
     /// Retains the actual target purpose in its existing RAM cleanup custody.
     ///
     /// # Errors
@@ -348,8 +595,107 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild);
 }
 
+/// Transfers actual logical World custody before its first physical effect.
+///
+/// The production caller installs its prepaid pending construction owner here.
+/// An error must retain both exact holders or return them before any body birth.
+pub(crate) type NativeWorldBeforeEffects<'a> = dyn FnMut(
+        crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+        crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), QemuVmRealizationError>
+    + 'a;
+
 /// Factory for one pre-launch attempt resource guard.
 pub(crate) trait QemuAttemptResourceGuardFactory {
+    /// Retains the same actual backend factory, without a new allocation bank.
+    fn retain_fork_target_factory(&self) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
+    /// Returns only a canonically proven never-born World after body destruction.
+    ///
+    /// # Errors
+    /// Preserves attempted, foreign or incompletely returned custody.
+    fn abort_unborn_native_world(
+        &mut self,
+        _loan: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+    ) -> Result<(), QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "abort exact unborn World construction",
+            message: String::from("factory has no exact pending World owner"),
+        })
+    }
+
+    /// Retries only the exact retained pending World through its saved Cleanup.
+    ///
+    /// # Errors
+    /// Refuses absent actual construction custody; no sibling/global cleanup runs.
+    fn retry_native_world_construction(
+        &mut self,
+        _loan: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+    ) -> Result<(), QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "retry actual pending World construction",
+            message: String::from("factory has no exact pending World owner"),
+        })
+    }
+
+    /// Moves the exact World's containing charge into its prepaid cleanup cell.
+    ///
+    /// # Errors
+    /// Returns the same lease if no actual Main cleanup owner can accept it.
+    fn reserve_world_lifecycle_cleanup(
+        &self,
+        controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+    ) -> Result<Box<dyn crucible_api::ProductionVmCleanupReservation>, (crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease, QemuVmRealizationError)>{
+        Err((
+            controls,
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "reserve actual World cleanup cell",
+                message: String::from("factory has no genuine Main cleanup owner"),
+            },
+        ))
+    }
+
+    /// Installs the selected World's genuine disjoint node owners together.
+    ///
+    /// # Errors
+    /// Preserves selected checkpoint custody and all partial member effects.
+    fn begin_world(
+        &mut self,
+        resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+        selected_checkpoint: Option<SelectedExactCheckpointRoot>,
+        _consumer_control_bytes: u64,
+        _registration: &dyn crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory,
+        _before_effects: &mut NativeWorldBeforeEffects<'_>,
+    ) -> Result<Self::Guard, QemuAttemptResourceGuardBeginFailure> {
+        let _ = (resources, cancellation);
+        Err(
+            QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                QemuVmRealizationError::ExecutorUnavailable {
+                    operation: "begin authenticated native World",
+                    message: String::from("factory has no real before-effects Source owner"),
+                },
+                selected_checkpoint,
+            ),
+        )
+    }
+
+    /// Occupies existing Main cleanup storage before any lifecycle effect.
+    ///
+    /// # Errors
+    /// Refuses missing, busy or stale actual production cleanup custody.
+    fn reserve_lifecycle_cleanup(
+        &self,
+    ) -> Result<Option<Box<dyn crucible_api::ProductionVmCleanupReservation>>, QemuVmRealizationError>
+    {
+        Ok(None)
+    }
+
     /// Consumes one source permit through the same actual host factory.
     ///
     /// # Errors

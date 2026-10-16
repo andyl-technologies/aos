@@ -410,7 +410,6 @@ impl PromotionQueue {
     /// # Errors
     /// Refuses queued or active work, an occupied or poisoned queue lock, or
     /// the supplied same-owner commit without releasing any work resource.
-    #[cfg(feature = "private-measurement-domain")]
     pub(super) fn try_stop_quiescent(
         &self,
         commit: impl FnOnce() -> Result<(), ()>,

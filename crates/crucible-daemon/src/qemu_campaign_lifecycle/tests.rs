@@ -433,8 +433,33 @@ impl crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardO
         )
     }
 
+    fn native_world_identity(
+        &self,
+    ) -> Result<
+        crucible_api::vm_lifecycle::ProductionHostRamNativeWorldIdentity,
+        crucible_api::vm_lifecycle::HostRamAdmissionError,
+    > {
+        Err(crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+            "guard-only fixture has no native world assignment",
+        ))
+    }
+
+    fn visit_native_nodes(
+        &self,
+        _visitor: &mut dyn FnMut(
+            &str,
+            crucible_api::vm_lifecycle::ProductionHostRamNativeNodeLimits,
+        )
+            -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError>,
+    ) -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError> {
+        Err(crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+            "guard-only fixture has no native node reservations",
+        ))
+    }
+
     fn reserve_native_controller_resources(
         &self,
+        _node: &str,
     ) -> Result<
         Option<crucible_linux_resource::host_services::HostServiceLease>,
         crucible_api::vm_lifecycle::HostRamAdmissionError,
@@ -444,6 +469,7 @@ impl crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardO
 
     fn bind_native_resource_controller(
         &self,
+        _node: &str,
         _controller: Option<crucible_qemu::LinuxQemuNativeResourceController>,
     ) -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError> {
         Ok(())
@@ -498,16 +524,47 @@ impl QemuAttemptProductionVmLifecycleFactory<FakeResourceFactory> {
         &mut self,
         context: &AttemptExecutionContext,
         source: &ScenarioDefForm,
-        maximum_nodes: usize,
-        config: &ProductionVmLifecycleConfig,
+        _maximum_nodes: usize,
+        _config: &ProductionVmLifecycleConfig,
         build: impl FnOnce(
             QemuAttemptProductionVmNodeLauncher<FakeResourceGuard>,
         ) -> Result<T, LifecycleApiError>,
     ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
-        let guard = self.begin_native_world_guard(context, source, config)?;
-
-        let owner = QemuAttemptGenerationResourceOwner::new(guard, maximum_nodes)
-            .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
+        // These controls exercise ordinary guard transfer, not Source creation.
+        // Prepare the finite selected rows before obtaining the guard; no
+        // before-effects callback or native role capability is synthesized.
+        let storage = crate::QemuAttemptGenerationStorage::prepare(
+            source.world().vm_nodes().iter().map(|node| &node.id),
+        )
+        .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
+        let selected = context.take_selected_checkpoint();
+        let mut guard = match self.resources.begin(
+            context.resources(),
+            context.cancellation().clone(),
+            selected,
+        ) {
+            Ok(guard) => guard,
+            Err(failure) => {
+                let (error, selected) = failure.into_parts();
+                if let Some(selected) = selected {
+                    context.restore_selected_checkpoint(selected);
+                }
+                return Err(QemuAttemptProductionVmLifecycleError::ResourceInstallation(
+                    error,
+                ));
+            }
+        };
+        if guard.resource_limits() != context.resources()
+            || !guard
+                .cancellation()
+                .same_incarnation(context.cancellation())
+        {
+            guard
+                .finish()
+                .map_err(QemuAttemptProductionVmLifecycleError::ResourceInstallation)?;
+            return Err(QemuAttemptProductionVmLifecycleError::ResourceContractMismatch);
+        }
+        let owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
         let mut launcher = QemuAttemptProductionVmNodeLauncher::new(owner);
         if let Some(checkpoints) = &self.terminal_checkpoints {
             launcher = launcher.with_terminal_checkpoint_import(

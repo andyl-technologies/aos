@@ -92,6 +92,9 @@ impl InstalledProcessFamily {
         let mut containing_identity = [0; 32];
         containing_identity.copy_from_slice(&basis[16..48]);
 
+        let assignment_generation = normal
+            .assignment_epoch()
+            .ok_or(InstalledProcessPurposeError::Identity)?;
         let local = envelope.maximum_resident_bytes();
         let local_descriptors = envelope.maximum_file_descriptors();
         let aggregate = credit.native_parent_readback()?;
@@ -121,6 +124,7 @@ impl InstalledProcessFamily {
             identity.update(&containing_identity);
             identity.update(&account_index.to_be_bytes());
             identity.update(&account_generation.to_be_bytes());
+            identity.update(&assignment_generation.to_be_bytes());
             identity.update(&[role]);
             InstalledProcessReservation {
                 identity: *identity.finalize().as_bytes(),
@@ -145,7 +149,7 @@ impl InstalledProcessFamily {
             account_generation,
             // Binding occurs once in each genuinely occupied account generation.
             // Target incarnation reuse does not change that assignment event.
-            assignment_generation: account_generation,
+            assignment_generation,
             reservations,
         })
     }
@@ -187,7 +191,7 @@ impl InstalledProcessFamily {
             .get(usize::from(subdivision))
             .ok_or(InstalledProcessPurposeError::Identity)?;
         if self.account_generation != account_generation
-            || self.assignment_generation != account_generation
+            || self.assignment_generation == 0
             || self.containing_identity != containing_basis[16..48]
             || reservation.extent.checked_mul(2) != Some(assigned_extent)
             || !reservation.matches_envelope(envelope)

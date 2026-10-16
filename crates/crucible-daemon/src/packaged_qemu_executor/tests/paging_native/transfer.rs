@@ -488,6 +488,7 @@ fn restore(lane: RestoreLane<'_>) -> ReceiverEvidence {
         config: config.clone(),
         checkpoints: Arc::clone(&prepared.checkpoints),
         host: Some(host),
+        lifecycle_cleanup: None,
     };
     let owner = crate::qemu_campaign_lifecycle::GuardedCampaignOwner::from_packaged(
         &state,

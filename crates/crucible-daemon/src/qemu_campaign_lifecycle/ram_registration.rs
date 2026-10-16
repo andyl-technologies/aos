@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use crucible_api::vm_lifecycle::{
     HostRamAdmissionError, HostRamBootstrapLimits, HostRamProcessFamilyPartition,
     ProductionHostRamLaunchRequirements, ProductionHostRamLaunchShape,
+    ProductionHostRamNativeNodeLimits, ProductionHostRamNativeWorldIdentity,
     ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
     ProductionHostRamRegistrationFactory, partition_host_ram_launch_resources,
 };
@@ -46,6 +47,7 @@ struct PreparedWorld {
         Arc<dyn crucible_qemu::ram_control::RamControlRegistrar>,
     >,
     families: Vec<process_family::ConfiguredProcessFamily>,
+    controller_leases: Vec<Option<crucible_linux_resource::host_services::HostServiceLease>>,
     services: std::collections::BTreeMap<
         String,
         crucible_linux_resource::host_services::HostServiceAllocator,
@@ -53,6 +55,25 @@ struct PreparedWorld {
     // The new fixed family array is destroyed before this SAME host-service
     // lease; its inline supervisors never create another bank or deadline.
     _family_control_resources: crucible_linux_resource::host_services::HostServiceLease,
+}
+
+fn native_node_outside(
+    world: &PreparedWorld,
+    node: &str,
+    bootstrap: HostRamBootstrapLimits,
+) -> Result<(u64, u64), HostRamAdmissionError> {
+    let resources = world.partition.nodes.get(node).ok_or_else(|| {
+        HostRamAdmissionError::contract("native node has no retained resource partition")
+    })?;
+    let resident = resources
+        .paging_io_slots
+        .checked_mul(crucible_qemu::ram_admission::RAM_CAS_OPERATION_SCRATCH_BYTES)
+        .and_then(|bytes| bytes.checked_add(bootstrap.host_service_resident_bytes()))
+        .ok_or_else(|| HostRamAdmissionError::contract("outside resident overflow"))?;
+    let backing = world.partition.backing.get(node).ok_or_else(|| {
+        HostRamAdmissionError::contract("native node has no retained backing partition")
+    })?;
+    Ok((resident, backing.staging_bytes))
 }
 
 struct AdmittedRamRegistrationFactory {
@@ -68,7 +89,6 @@ struct AdmittedRamRegistrationFactory {
     bootstrap: HostRamBootstrapLimits,
     supervisor: HostOperationSupervisor,
     world: Mutex<Option<PreparedWorld>>,
-    controller_lease: Mutex<Option<crucible_linux_resource::host_services::HostServiceLease>>,
 }
 
 /// Creates the shared registration allocator for an existing admitted operational owner.
@@ -173,7 +193,6 @@ fn create_registration_factory(
         bootstrap,
         supervisor,
         world: Mutex::new(None),
-        controller_lease: Mutex::new(None),
     }))
 }
 
@@ -287,7 +306,12 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
         )?;
         let family_bytes = shapes
             .len()
-            .checked_mul(std::mem::size_of::<process_family::ConfiguredProcessFamily>())
+            .checked_mul(
+                std::mem::size_of::<process_family::ConfiguredProcessFamily>()
+                    + std::mem::size_of::<
+                        Option<crucible_linux_resource::host_services::HostServiceLease>,
+                    >(),
+            )
             .and_then(|bytes| u64::try_from(bytes).ok())
             .and_then(|bytes| {
                 bytes.checked_add(
@@ -300,7 +324,9 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
         let family_control_resources =
             diagnostic_allocator.reserve_resources(0, 0, family_bytes)?;
         let mut families = Vec::with_capacity(shapes.len());
+        let mut controller_leases = Vec::with_capacity(shapes.len());
         for shape in &shapes {
+            controller_leases.push(None);
             let resources = partition.nodes.get(&shape.node).copied().ok_or_else(|| {
                 HostRamAdmissionError::contract("configured family envelope is missing")
             })?;
@@ -319,6 +345,7 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
                 .map(|shape| (shape.node.clone(), self.initial_registrar()))
                 .collect(),
             families,
+            controller_leases,
             shapes,
             partition,
             services,
@@ -407,34 +434,117 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
         })
     }
 
+    fn native_world_identity(
+        &self,
+    ) -> Result<ProductionHostRamNativeWorldIdentity, HostRamAdmissionError> {
+        let world = self.world.lock().map_err(|_| {
+            HostRamAdmissionError::contract("host RAM world ownership is uncertain")
+        })?;
+        if world.is_none() || self.owner_id == [0; 32] || self.daemon_epoch == [0; 32] {
+            return Err(HostRamAdmissionError::contract(
+                "native world has no original assignment",
+            ));
+        }
+        Ok(ProductionHostRamNativeWorldIdentity {
+            owner: self.owner_id,
+            selection: self.daemon_epoch,
+        })
+    }
+
+    fn visit_native_nodes(
+        &self,
+        visitor: &mut dyn FnMut(
+            &str,
+            ProductionHostRamNativeNodeLimits,
+        ) -> Result<(), HostRamAdmissionError>,
+    ) -> Result<(), HostRamAdmissionError> {
+        let world = self.world.lock().map_err(|_| {
+            HostRamAdmissionError::contract("host RAM world ownership is uncertain")
+        })?;
+        let world = world.as_ref().ok_or_else(|| {
+            HostRamAdmissionError::contract("native world has not been partitioned")
+        })?;
+        // One physical contract clone has two mandatory descriptors and one
+        // optional directory descriptor; its other aliases duplicate no FDs.
+        let (source_host_descriptors, target_host_descriptors) =
+            crucible_qemu::LinuxQemuAttemptHostFactory::normal_node_host_descriptor_peaks(
+                self.bootstrap.native_file_descriptors(),
+                3,
+            )
+            .map_err(|error| HostRamAdmissionError::contract(error.to_string()))?;
+        for (name, complete) in &world.partition.nodes {
+            let outside = native_node_outside(world, name, self.bootstrap)?;
+            let resources = HostResourceVector {
+                resident_peak_bytes: complete
+                    .resident_peak_bytes
+                    .checked_sub(outside.0)
+                    .ok_or_else(|| {
+                        HostRamAdmissionError::contract("native resident partition exhausted")
+                    })?,
+                backing_peak_bytes: complete
+                    .backing_peak_bytes
+                    .checked_sub(outside.1)
+                    .ok_or_else(|| {
+                        HostRamAdmissionError::contract("native backing partition exhausted")
+                    })?,
+                task_slots: self.bootstrap.native_task_slots(),
+                file_descriptors: self.bootstrap.native_file_descriptors(),
+                ..*complete
+            };
+            visitor(
+                name,
+                ProductionHostRamNativeNodeLimits {
+                    node: node_identity(self.owner_id, name),
+                    resources,
+                    source_host_descriptors,
+                    target_host_descriptors,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn reserve_native_controller_resources(
         &self,
+        node: &str,
     ) -> Result<
         Option<crucible_linux_resource::host_services::HostServiceLease>,
         HostRamAdmissionError,
     > {
-        let world = self.world.lock().map_err(|_| {
+        let mut world = self.world.lock().map_err(|_| {
             HostRamAdmissionError::contract("host RAM world ownership is uncertain")
         })?;
-        let services = world
-            .as_ref()
-            .and_then(|world| world.services.values().next())
+        let world = world.as_mut().ok_or_else(|| {
+            HostRamAdmissionError::contract("native controller has no configured world")
+        })?;
+        let index = world
+            .shapes
+            .iter()
+            .position(|shape| shape.node == node)
             .ok_or_else(|| {
-                HostRamAdmissionError::contract(
-                    "controller has no retained node host-service entitlement",
-                )
+                HostRamAdmissionError::contract("native controller has no configured node")
             })?;
-        let mut retained = self.controller_lease.lock().map_err(|_| {
+        let services = world.services.get(node).ok_or_else(|| {
+            HostRamAdmissionError::contract(
+                "controller has no retained node host-service entitlement",
+            )
+        })?;
+        let retained = world.controller_leases.get_mut(index).ok_or_else(|| {
             HostRamAdmissionError::contract("controller descriptor custody is uncertain")
         })?;
         if retained.is_none() {
-            *retained = Some(services.reserve_resources(0, 2, 0)?);
+            *retained = Some(services.reserve_resources(
+                0,
+                2,
+                crucible_linux_resource::host_services::HostServiceLease::metadata_bytes(),
+            )?);
         }
         Ok(retained.clone())
     }
 
     fn bind_native_resource_controller(
         &self,
+        node: &str,
         controller: Option<crucible_qemu::LinuxQemuNativeResourceController>,
     ) -> Result<(), HostRamAdmissionError> {
         #[cfg(test)]
@@ -457,42 +567,35 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
         let world = world
             .as_ref()
             .ok_or_else(|| HostRamAdmissionError::contract("host RAM world was not partitioned"))?;
-        let mut outside = std::collections::BTreeMap::new();
-        for (node, resources) in &world.partition.nodes {
-            let resident = resources
-                .paging_io_slots
-                .checked_mul(crucible_qemu::ram_admission::RAM_CAS_OPERATION_SCRATCH_BYTES)
-                .and_then(|bytes| bytes.checked_add(self.bootstrap.host_service_resident_bytes()))
-                .ok_or_else(|| HostRamAdmissionError::contract("outside resident overflow"))?;
-            let backing = world.partition.backing.get(node).ok_or_else(|| {
-                HostRamAdmissionError::contract("node backing ownership is missing")
+        let index = world
+            .shapes
+            .iter()
+            .position(|shape| shape.node == node)
+            .ok_or_else(|| {
+                HostRamAdmissionError::contract("native controller has no configured node")
             })?;
-            outside.insert(
-                node_identity(self.owner_id, node),
-                (resident, backing.staging_bytes),
-            );
-        }
+        let resources = world.partition.nodes.get(node).copied().ok_or_else(|| {
+            HostRamAdmissionError::contract("native controller has no retained node partition")
+        })?;
+        let outside = native_node_outside(world, node, self.bootstrap)?;
+        let lease = world
+            .controller_leases
+            .get(index)
+            .and_then(Option::as_ref)
+            .cloned()
+            .ok_or_else(|| {
+                HostRamAdmissionError::contract("node controller descriptors were not reserved")
+            })?;
         self.registry
-            .bind_native_world_resources(
+            .bind_native_node_resources(
                 self.daemon_epoch,
                 self.owner_id,
+                node_identity(self.owner_id, node),
                 controller,
-                world.partition.ceiling,
+                lease,
+                resources,
                 outside,
             )
-            .map_err(HostRamAdmissionError::Authority)?;
-        let lease = self
-            .controller_lease
-            .lock()
-            .map_err(|_| {
-                HostRamAdmissionError::contract("controller descriptor custody is uncertain")
-            })?
-            .clone()
-            .ok_or_else(|| {
-                HostRamAdmissionError::contract("controller descriptor was not reserved")
-            })?;
-        self.registry
-            .retain_native_controller_resources(self.daemon_epoch, self.owner_id, lease)
             .map_err(HostRamAdmissionError::Authority)
     }
 

@@ -1072,6 +1072,15 @@ where
 {
     type Error = CrucibleExecutionModelError<R::Error>;
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.runner
+            .try_retire_original(original)
+            .map_err(CrucibleExecutionModelError::Runner)
+    }
+
     fn execute(
         &mut self,
         input: &AttemptExecutionInput,

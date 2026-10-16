@@ -529,14 +529,21 @@ impl LinuxQemuAttemptProcessFactory {
             return Err(invalid_config("Target dispatcher factory is terminal"));
         }
         if self.target_dispatcher.is_none() {
-            let peak = crate::linux_cgroup::TargetDispatcher::control_peak()
+            let capacity = original.target_dispatcher_capacity().map_err(|source| {
+                QemuVmRealizationError::ModelCopy {
+                    source: Box::new(source),
+                }
+            })?;
+            let peak = crate::linux_cgroup::TargetDispatcher::control_peak(capacity)
                 .ok_or_else(|| invalid_config("Target dispatcher control extent overflow"))?;
             let purpose = original
                 .reserve_target_dispatcher_purpose(peak)
                 .map_err(|source| QemuVmRealizationError::ModelCopy {
                     source: Box::new(source),
                 })?;
-            self.target_dispatcher = Some(crate::linux_cgroup::TargetDispatcher::reserved(purpose));
+            self.target_dispatcher = Some(crate::linux_cgroup::TargetDispatcher::reserved(
+                purpose, capacity,
+            ));
             let started = self
                 .target_dispatcher
                 .as_mut()

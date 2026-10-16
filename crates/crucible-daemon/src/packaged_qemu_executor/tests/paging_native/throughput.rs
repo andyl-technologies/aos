@@ -49,6 +49,7 @@ fn completed_campaign_throughput_matrix() {
                     LinuxQemuAttemptHostResourceFactory::open(config.host.clone())
                         .expect("actual Linux allocator"),
                 )),
+                lifecycle_cleanup: None,
             };
             let owner = GuardedCampaignOwner::from_packaged(
                 &state,

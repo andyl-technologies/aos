@@ -14,9 +14,22 @@ pub(crate) struct TargetWatcherOriginal {
     source_generation: u64,
     target_epoch: u64,
     original: Arc<HostOperationGuard>,
+    cleanup: Arc<fork_target::TargetCleanup>,
 }
 
 impl TargetWatcherOriginal {
+    /// Checks the same operation while a shared roster borrow is pending.
+    /// Once acquired, the actual Cleanup guard pins its slot through return.
+    pub(crate) fn wait_slice(
+        &mut self,
+        draining: bool,
+    ) -> Result<(std::time::Duration, bool), OriginalActorAccountError> {
+        if draining {
+            return Ok((self.cleanup.guard()?.wait_slice()?, true));
+        }
+        Ok((self.original.wait_slice()?, true))
+    }
+
     pub(crate) fn operation(&self) -> &Arc<HostOperationGuard> {
         &self.original
     }
@@ -71,6 +84,27 @@ impl TargetWatcherOriginal {
 }
 
 impl NativeAccountAttempt {
+    /// Observes the actual prepaid node capacity for this same Main dispatcher.
+    pub(crate) fn target_dispatcher_capacity(&self) -> Result<usize, OriginalActorAccountError> {
+        self.require_original()?;
+        let held = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = held
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let normal = state
+            .slots
+            .get(self.index)
+            .filter(|slot| slot.active == Some(self.generation))
+            .and_then(|slot| slot.credit.as_ref())
+            .and_then(|credit| credit.original.as_ref())
+            .and_then(|original| original.normal.as_ref())
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        normal.pool_node_capacity().map_err(Into::into)
+    }
+
     /// Borrows the actual normal Main payer before permanent worker birth.
     ///
     /// # Errors
@@ -95,8 +129,14 @@ impl NativeAccountAttempt {
             .and_then(|credit| credit.original.as_ref())
             .and_then(|original| original.normal.as_ref())
             .ok_or(OriginalActorAccountError::Unavailable)?;
+        let original = state
+            .slots
+            .get(self.index)
+            .and_then(|slot| slot.fork_target.watcher_preparation())
+            .map(|(_, original)| original)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
         normal
-            .reserve_target_dispatcher_purpose(control_peak)
+            .reserve_target_dispatcher_purpose(control_peak, original)
             .map_err(Into::into)
     }
 
@@ -158,6 +198,14 @@ impl NativeAccountAttempt {
             source_generation: self.generation,
             target_epoch: epoch,
             original: Arc::clone(original),
+            cleanup: Arc::clone(
+                state
+                    .slots
+                    .get(self.index)
+                    .ok_or(OriginalActorAccountError::Unavailable)?
+                    .fork_target
+                    .watcher_cleanup()?,
+            ),
         })
     }
 }

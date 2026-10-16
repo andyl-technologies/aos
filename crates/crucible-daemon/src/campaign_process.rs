@@ -9,8 +9,8 @@ use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use crucible_cas::content_store::{
     SqliteHeapAuthority, SqliteHeapIssuer, SqliteProcessBootstrapAuthority, SqliteProcessHeap,
@@ -23,6 +23,29 @@ use crucible_linux_resource::host_services::{
 
 #[path = "campaign_process/executor.rs"]
 mod executor;
+pub(crate) use executor::install_executor_lifecycle_cleanup;
+mod attached_retirement;
+pub(crate) use attached_retirement::{
+    install_attached_retirement, mark_attached_returned, retained_attached_report,
+    retry_attached_retirement, verify_attached_start,
+};
+mod worker_custody;
+pub use worker_custody::ExecutorControlRetirementError;
+#[cfg(test)]
+pub(crate) use worker_custody::{ExecutorWorkerRetirementError, retire_control_bodies};
+pub(crate) use worker_custody::{
+    install_executor_worker_custody, try_retire_executor_controls,
+    try_retire_executor_controls_for_main,
+};
+#[path = "campaign_process/retained_construction.rs"]
+mod retained_construction;
+pub use retained_construction::{
+    ExecutorConstructionCustodyFailure, RetainedExecutorCleanupError,
+    RetainedExecutorRetirementError,
+};
+pub(crate) use retained_construction::{
+    RetainedExecutorConstruction, retain_executor_construction,
+};
 #[path = "campaign_process/manager.rs"]
 mod manager;
 #[path = "campaign_process/policy.rs"]
@@ -42,6 +65,20 @@ struct ProcessActor {
     native_bootstrap_bytes: u64,
     heap_bytes: u64,
     _policy: File,
+    // These headers belong to the already priced permanent ProcessActor body.
+    executor: OnceLock<
+        Arc<crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose>,
+    >,
+    lifecycle_cleanup: OnceLock<Arc<crate::lifecycle_cleanup::LifecycleCleanupQueue>>,
+    executor_workers: OnceLock<Arc<crate::executor_pool::ExecutorWorkerCustody>>,
+    // The failed constructor or its active Attached successor uses one cell;
+    // all fields, including first reports, enter the actual structural query.
+    construction: std::sync::Mutex<Option<RetainedExecutorConstruction>>,
+    attached_first: OnceLock<crate::packaged_qemu_executor::PackagedQemuExecutorJoinError>,
+    attached_post: OnceLock<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    attached_started: std::sync::atomic::AtomicBool,
+    construction_first:
+        OnceLock<crucible_linux_resource::host_services::process_birth::ServiceBirthError>,
 }
 
 impl ProcessActor {
@@ -329,6 +366,14 @@ impl CampaignProcessOwner {
             native_bootstrap_bytes: policy.sqlite_bootstrap_bytes,
             heap_bytes: policy.sqlite_heap_bytes,
             _policy: policy_file,
+            executor: OnceLock::new(),
+            lifecycle_cleanup: OnceLock::new(),
+            executor_workers: OnceLock::new(),
+            construction: std::sync::Mutex::new(None),
+            construction_first: OnceLock::new(),
+            attached_first: OnceLock::new(),
+            attached_post: OnceLock::new(),
+            attached_started: std::sync::atomic::AtomicBool::new(false),
         });
         SqliteProcessHeap::prepare_bootstrap(&actor)
             .map_err(CampaignProcessAdmissionError::Store)?;

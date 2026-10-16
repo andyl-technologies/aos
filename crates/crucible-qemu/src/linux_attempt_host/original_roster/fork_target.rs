@@ -10,19 +10,77 @@ use crate::spawn::{ConfiguredProcessEnvelope, QemuProcessStageRetirement};
 #[derive(Default)]
 pub(super) struct ForkTargetSlot {
     next_epoch: u64,
+    last_reserved_process_generation: u64,
+    reserved_process_generation: Option<u64>,
     occupied: Option<u64>,
     born: bool,
     physical_closed: bool,
     envelope: Option<ConfiguredProcessEnvelope>,
     process_generation: Option<u64>,
+    ram_registration_generation: Option<u64>,
     process_binding: Option<QemuProcessStageRetirement>,
     control: Option<OriginalNativeControlRetirement>,
     preparation: Option<Arc<HostOperationGuard>>,
-    cleanup: Option<Arc<HostOperationGuard>>,
+    cleanup: Option<Arc<TargetCleanup>>,
     unsettled: Option<RetainedNativeHost>,
 }
 
+/// Shares this exact Target's once-entered Cleanup independently of roster locks.
+pub(super) struct TargetCleanup {
+    preparation: Arc<HostOperationGuard>,
+    entered: std::sync::OnceLock<
+        Result<
+            Arc<HostOperationGuard>,
+            crucible_linux_resource::host_supervision::HostSupervisionError,
+        >,
+    >,
+}
+
+impl TargetCleanup {
+    fn new(preparation: Arc<HostOperationGuard>) -> Self {
+        Self {
+            preparation,
+            entered: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub(super) fn guard(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
+        // The initializer has no user callback or roster borrow. All actual
+        // Target consumers share this one admission and its first refusal.
+        // Eligible terminal Preparation remains the origin of Cleanup; it is
+        // not renewed or checked as live work authority before this cut.
+        let entered = self.entered.get_or_init(|| {
+            self.preparation
+                .begin_original_cleanup_control()
+                .map(Arc::new)
+        });
+        let guard = entered
+            .as_ref()
+            .map_err(|source| OriginalActorAccountError::from(*source))?;
+        guard.wait_slice()?;
+        Ok(Arc::clone(guard))
+    }
+}
+
 impl ForkTargetSlot {
+    pub(super) fn cleanup(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
+        self.cleanup
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .guard()
+    }
+
+    pub(super) fn matches_live_contract(&self, contract: &crate::QemuChildProcessContract) -> bool {
+        self.is_owned()
+            && self.born
+            && !self.physical_closed
+            && self.unsettled.is_none()
+            && self
+                .envelope
+                .as_ref()
+                .is_some_and(|envelope| envelope.matches_contract(contract))
+    }
+
     pub(super) fn active_envelope(&self) -> Option<&ConfiguredProcessEnvelope> {
         (self.is_owned() && self.born && !self.physical_closed && self.unsettled.is_none())
             .then_some(self.envelope.as_ref())
@@ -33,7 +91,11 @@ impl ForkTargetSlot {
         &mut self,
         generation: u64,
     ) -> Result<(), OriginalActorAccountError> {
-        if !self.born || !self.is_owned() || self.process_generation.is_some() || generation == 0 {
+        if !self.born
+            || !self.is_owned()
+            || self.process_generation.is_some()
+            || self.reserved_process_generation != Some(generation)
+        {
             return Err(OriginalActorAccountError::Unavailable);
         }
         self.process_generation = Some(generation);
@@ -44,6 +106,14 @@ impl ForkTargetSlot {
         self.is_owned()
             .then_some(self.preparation.as_ref())
             .flatten()
+    }
+
+    pub(super) fn watcher_cleanup(&self) -> Result<&Arc<TargetCleanup>, OriginalActorAccountError> {
+        self.watcher_preparation()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        self.cleanup
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)
     }
 
     pub(super) fn watcher_preparation(&self) -> Option<(u64, &Arc<HostOperationGuard>)> {
@@ -73,6 +143,12 @@ pub(super) fn retained_control_extent() -> Result<u64, OriginalActorAccountError
     crate::QemuProcessStageBinding::retained_control_bytes()
         .and_then(|bytes| bytes.checked_add(OriginalNativeControlRetirement::allocation_extent()?))
         .and_then(|bytes| bytes.checked_add(cleanup_control_extent().ok()?.checked_mul(2)?))
+        .and_then(|bytes| {
+            let (layout, _) = std::alloc::Layout::new::<(usize, usize)>()
+                .extend(std::alloc::Layout::new::<TargetCleanup>())
+                .ok()?;
+            bytes.checked_add(u64::try_from(layout.pad_to_align().size()).ok()?)
+        })
         .and_then(|bytes| {
             bytes.checked_add(u64::try_from(std::mem::size_of::<TargetWatcherOriginal>()).ok()?)
         })
@@ -154,6 +230,14 @@ impl NativeAccountAttempt {
             .next_epoch
             .checked_add(1)
             .ok_or(OriginalActorAccountError::Unavailable)?;
+        let process_generation = slot
+            .installed_process
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .next_target_generation(slot.fork_target.last_reserved_process_generation)?;
+        // A failed admission burns this generation too; closing a role never
+        // rewinds the journal or permits replay of a prior request.
+        slot.fork_target.last_reserved_process_generation = process_generation;
         let normal = slot
             .credit
             .as_ref()
@@ -163,9 +247,25 @@ impl NativeAccountAttempt {
         // Claim prepays this exact guard allocation before a Target operation
         // enters the unchanged Main supervisor. Retries keep the same guard.
         let preparation = Arc::new(normal.begin_native_preparation()?);
+        slot.fork_target.cleanup = Some(Arc::new(TargetCleanup::new(Arc::clone(&preparation))));
         slot.fork_target.preparation = Some(preparation);
         slot.fork_target.next_epoch = epoch;
         slot.fork_target.occupied = Some(epoch);
+        slot.fork_target.reserved_process_generation = Some(process_generation);
+        // Publish the saved operation and occupied Target before its Main-table
+        // landing admission. A refused postcut retains the same node debt.
+        let normal = slot
+            .credit
+            .as_ref()
+            .and_then(|credit| credit.original.as_ref())
+            .and_then(|original| original.normal.as_ref())
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        normal.reserve_node_target_window(
+            slot.fork_target
+                .preparation
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?,
+        )?;
         Ok(ForkTargetReservation {
             attempt: NativeAccountAttempt {
                 roster: Weak::clone(&self.roster),
@@ -242,6 +342,109 @@ impl ForkTargetReservation {
             })
             .ok_or(OriginalActorAccountError::Unavailable)?;
         operation(slot)
+    }
+
+    pub(in crate::linux_attempt_host) fn belongs_to_factory(
+        &self,
+        binding: &OriginalNativeAccountFactoryBinding,
+    ) -> bool {
+        Weak::ptr_eq(&binding.roster, &self.attempt.roster)
+    }
+
+    pub(in crate::linux_attempt_host) fn check_logical_reservation(
+        &self,
+    ) -> Result<u64, OriginalActorAccountError> {
+        self.with_slot(|slot| {
+            let target = &slot.fork_target;
+            if target.born || target.physical_closed || target.unsettled.is_some() {
+                return Err(OriginalActorAccountError::Unavailable);
+            }
+            let generation = target
+                .reserved_process_generation
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            let original = target
+                .preparation
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            let credit = slot
+                .credit
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            credit.require_original()?;
+            credit
+                .original
+                .as_ref()
+                .and_then(|held| held.normal.as_ref())
+                .ok_or(OriginalActorAccountError::Unavailable)?
+                .verify_native_preparation(original)?;
+            original.wait_slice()?;
+            Ok(generation)
+        })
+    }
+
+    pub(in crate::linux_attempt_host) fn bind_ram_registration(
+        &self,
+        contract: &crate::QemuChildProcessContract,
+    ) -> Result<u64, OriginalActorAccountError> {
+        self.with_slot(|slot| {
+            let generation = slot
+                .fork_target
+                .reserved_process_generation
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            let target = &slot.fork_target;
+            if !target.matches_live_contract(contract)
+                || target
+                    .ram_registration_generation
+                    .is_some_and(|saved| saved != generation)
+                || target
+                    .process_generation
+                    .is_some_and(|saved| saved != generation)
+            {
+                return Err(OriginalActorAccountError::Unavailable);
+            }
+            let original = target
+                .preparation
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            process_purpose::verify_subdivision_preparation(slot, original, 1)?;
+            original.wait_slice()?;
+            slot.fork_target.ram_registration_generation = Some(generation);
+            Ok(generation)
+        })
+    }
+
+    pub(in crate::linux_attempt_host) fn check_ram_registration(
+        &self,
+        contract: &crate::QemuChildProcessContract,
+        generation: u64,
+        cleanup: bool,
+    ) -> Result<(), OriginalActorAccountError> {
+        self.with_slot(|slot| {
+            let target = &slot.fork_target;
+            if target.ram_registration_generation != Some(generation) {
+                return Err(OriginalActorAccountError::Unavailable);
+            }
+            if cleanup {
+                let entered = target
+                    .cleanup
+                    .as_ref()
+                    .and_then(|saved| saved.entered.get())
+                    .and_then(|entered| entered.as_ref().ok())
+                    .ok_or(OriginalActorAccountError::Unavailable)?;
+                entered.wait_slice()?;
+                return Ok(());
+            }
+            if !target.matches_live_contract(contract) {
+                return Err(OriginalActorAccountError::Unavailable);
+            }
+            let original = target
+                .preparation
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            process_purpose::verify_subdivision_preparation(slot, original, 1)?;
+            original.wait_slice()?;
+            Ok(())
+        })
     }
 
     pub(in crate::linux_attempt_host) fn verify_factory(
@@ -321,24 +524,7 @@ impl ForkTargetReservation {
     pub(in crate::linux_attempt_host) fn cleanup(
         &self,
     ) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
-        self.with_slot(|slot| {
-            let target = &mut slot.fork_target;
-            if target.cleanup.is_none() {
-                let preparation = target
-                    .preparation
-                    .as_ref()
-                    .ok_or(OriginalActorAccountError::Unavailable)?;
-                // Enter once from the actual Target operation. Source's
-                // completed admission and terminal Cleanup stay untouched.
-                target.cleanup = Some(Arc::new(preparation.begin_original_cleanup_control()?));
-            }
-            let cleanup = target
-                .cleanup
-                .as_ref()
-                .ok_or(OriginalActorAccountError::Unavailable)?;
-            cleanup.wait_slice()?;
-            Ok(Arc::clone(cleanup))
-        })
+        self.with_slot(|slot| slot.fork_target.cleanup())
     }
 
     pub(in crate::linux_attempt_host) fn mark_physical_closed(
@@ -377,11 +563,7 @@ impl ForkTargetReservation {
             if !target.physical_closed {
                 return Err(OriginalActorAccountError::Unavailable);
             }
-            let cleanup = target
-                .cleanup
-                .as_ref()
-                .ok_or(OriginalActorAccountError::Unavailable)?;
-            cleanup.wait_slice()?;
+            let cleanup = target.cleanup()?;
             let pin = target
                 .control
                 .as_mut()
@@ -443,6 +625,19 @@ impl Drop for ForkTargetReservation {
                 .as_mut()
                 .ok_or(OriginalActorAccountError::Unavailable)?;
             preparation.wait_slice()?;
+            let cleanup = slot
+                .fork_target
+                .cleanup
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            if Arc::strong_count(cleanup) != 1
+                || cleanup.entered.get().is_some()
+                || Arc::strong_count(preparation) != 2
+                || Arc::weak_count(preparation) != 0
+            {
+                return Err(OriginalActorAccountError::Unavailable);
+            }
+            drop(slot.fork_target.cleanup.take());
             Arc::get_mut(preparation).ok_or(OriginalActorAccountError::Unavailable)?;
             slot.fork_target.preparation = None;
             slot.fork_target.occupied = None;
@@ -474,20 +669,40 @@ fn close_target_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountEr
             .map_err(|_| OriginalActorAccountError::Unavailable)?;
     }
     target.process_binding = None;
-    let cleanup = target
+    let cell = target
         .cleanup
         .as_mut()
         .ok_or(OriginalActorAccountError::Unavailable)?;
-    let unique = Arc::get_mut(cleanup).ok_or(OriginalActorAccountError::Unavailable)?;
+    let unique = Arc::get_mut(cell).ok_or(OriginalActorAccountError::Unavailable)?;
+    let preparation = target
+        .preparation
+        .as_ref()
+        .ok_or(OriginalActorAccountError::Unavailable)?;
+    if !Arc::ptr_eq(preparation, &unique.preparation)
+        || Arc::strong_count(preparation) != 2
+        || Arc::weak_count(preparation) != 0
+    {
+        return Err(OriginalActorAccountError::Unavailable);
+    }
+    let cleanup = unique
+        .entered
+        .get_mut()
+        .ok_or(OriginalActorAccountError::Unavailable)?
+        .as_mut()
+        .map_err(|source| OriginalActorAccountError::from(*source))?;
+    Arc::get_mut(cleanup)
+        .ok_or(OriginalActorAccountError::Unavailable)?
+        .complete()?;
+    drop(target.cleanup.take());
     let preparation = target
         .preparation
         .as_mut()
         .ok_or(OriginalActorAccountError::Unavailable)?;
     Arc::get_mut(preparation).ok_or(OriginalActorAccountError::Unavailable)?;
-    unique.complete()?;
-    target.cleanup = None;
     target.preparation = None;
     target.process_generation = None;
+    target.reserved_process_generation = None;
+    target.ram_registration_generation = None;
     target.born = false;
     target.physical_closed = false;
     target.occupied = None;
@@ -499,25 +714,12 @@ pub(super) fn retry_unsettled_target(slot: &mut NativeSlot) -> Result<(), QemuVm
     if target.unsettled.is_none() {
         return Ok(());
     }
-    if target.cleanup.is_none() {
-        target.cleanup = Some(Arc::new(
-            target
-                .preparation
-                .as_ref()
-                .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
-                .begin_original_cleanup_control()
-                .map_err(|source| original_error(source.into()))?,
-        ));
-    }
-    let cleanup = target
-        .cleanup
-        .as_ref()
-        .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
+    let cleanup = target.cleanup().map_err(original_error)?;
     target
         .unsettled
         .as_mut()
         .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
-        .finish(cleanup)?;
+        .finish(&cleanup)?;
     target.unsettled = None;
     target.envelope = None;
     target.physical_closed = true;
@@ -531,5 +733,6 @@ pub(super) fn retry_unsettled_target(slot: &mut NativeSlot) -> Result<(), QemuVm
         })?;
     }
     target.control = None;
+    drop(cleanup);
     close_target_slot(slot).map_err(original_error)
 }

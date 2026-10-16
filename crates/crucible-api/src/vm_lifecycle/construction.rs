@@ -6,6 +6,14 @@
 //! early-return cleanup and the final ownership transfer auditable.
 
 use super::*;
+mod custody;
+#[cfg(target_os = "linux")]
+mod publication;
+pub(super) use custody::with_inputs as retain_construction_inputs;
+pub use custody::{
+    ProductionVmConstructionCleanupError, ProductionVmConstructionCustody,
+    ProductionVmConstructionFailure,
+};
 mod branch_sequence;
 pub(super) use branch_sequence::validate_configured_branch_sequence;
 use branch_sequence::{configured_branches, first_configured_branch};
@@ -105,7 +113,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
     node_launcher: Box<dyn ProductionVmNodeLauncher>,
     hot_fork_restore: Option<ProductionVmHotForkRestore>,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
     build_production_vm_lifecycle_loop_with_restore_exposure(
         scenario,
         source,
@@ -137,13 +145,75 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
-    mut restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
-    mut node_launcher: Box<dyn ProductionVmNodeLauncher>,
-    mut hot_fork_restore: Option<ProductionVmHotForkRestore>,
+    restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
+    node_launcher: Box<dyn ProductionVmNodeLauncher>,
+    hot_fork_restore: Option<ProductionVmHotForkRestore>,
     exposure: ExactRestoreExposure,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
+    let custody = retain_construction_inputs(
+        node_launcher,
+        restore_checkpoint,
+        hot_fork_restore,
+        None,
+        Vec::new(),
+    )?;
+    build_from_custody(scenario, source, config, custody, exposure)
+}
+
+pub(super) fn build_from_custody(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    mut custody: Box<ProductionVmConstructionCustody>,
+    exposure: ExactRestoreExposure,
+) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
+    let phase = match custody.partial_mut() {
+        Ok(phase) => phase,
+        Err(first) => return Err(custody.into_failure(first)),
+    };
+    let prepared = prepare_construction(scenario, source, config, phase, exposure);
+    let assemble = match prepared {
+        Ok(assemble) => assemble,
+        Err(first) => return Err(custody.into_failure(first)),
+    };
+    if let Err(first) = custody.complete_with(assemble) {
+        return Err(custody.into_failure(first));
+    }
+    let lifecycle = match custody.complete_mut() {
+        Ok(lifecycle) => lifecycle,
+        Err(first) => return Err(custody.into_failure(first)),
+    };
+    // Restore validation runs on the complete retained lifecycle. An error
+    // returns the same carrier, rather than dropping a refused cleanup.
+    if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
+        return Err(custody.into_failure(loop_factory_error(format!(
+            "capture initial debugger runtime evidence: {error}"
+        ))));
+    }
+    custody.into_loop().map_err(|custody| {
+        custody.into_failure(loop_factory_error(
+            "construction lost its complete lifecycle",
+        ))
+    })
+}
+
+fn prepare_construction(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    phase: &mut custody::Partial,
+    exposure: ExactRestoreExposure,
+) -> Result<
+    impl FnOnce(custody::Partial) -> Result<ProductionVmLifecycleLoop, custody::Partial> + use<>,
+    LifecycleApiError,
+> {
+    if source.scenario_def() != *scenario {
+        return Err(loop_factory_error(
+            "production source does not reconstruct the requested scenario",
+        ));
+    }
     if exposure == ExactRestoreExposure::AwaitingOwnershipCommit
-        && (restore_checkpoint.is_none() || hot_fork_restore.is_some())
+        && (phase.restore_checkpoint.is_none() || phase.hot_fork_restore.is_some())
     {
         return Err(loop_factory_error(
             "maintenance ownership preparation requires one complete exact restore",
@@ -161,10 +231,17 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         None
     };
     // Configuration ownership is admitted before any native launch effects.
-    let retained_config = config.try_clone_shared_admitted()?;
+    if phase.retained_config.is_none() {
+        phase.retained_config = Some(config.try_clone_shared_admitted()?);
+    }
+    let retained_config = phase
+        .retained_config
+        .as_ref()
+        .ok_or_else(|| loop_factory_error("construction lost its admitted configuration"))?;
     // Runtime replay buffers live as long as this world, so their copies use
     // the returned world's account rather than the caller's transient scope.
     let _world_input_scope = retained_config.enter_input_custody();
+    phase.input_decode_custody = crucible::owned_decode::current_custody();
 
     if config.branch.is_some() && !config.continuation_branches.is_empty() {
         return Err(loop_factory_error(
@@ -188,7 +265,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         ));
     }
     reject_fresh_fault_replay_on_restore(
-        restore_checkpoint.is_some(),
+        phase.restore_checkpoint.is_some(),
         config.signal_fault_replay.as_ref(),
     )?;
     let network_implementations = fault_implementation::network_effect_implementation_registry()
@@ -214,7 +291,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
     })?;
     let checkpoint_dag =
         checkpoint_store::checkpoint_dag_store(&config.run_state_root, scenario.id());
-    if let Some(checkpoint) = &restore_checkpoint
+    if let Some(checkpoint) = &phase.restore_checkpoint
         && (checkpoint.configuration.def.id() != scenario.id()
             || checkpoint.configuration.id()
                 != checkpoint
@@ -231,7 +308,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             "production exact checkpoint does not match the requested scenario and scheduler configuration",
         ));
     }
-    if let Some(checkpoint) = &restore_checkpoint {
+    if let Some(checkpoint) = &phase.restore_checkpoint {
         hydrate_checkpoint_event_log_dependencies(
             &checkpoint.scheduler,
             &checkpoint.event_log_objects,
@@ -246,7 +323,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
     let cold_branches = configured_branches(config).cloned().collect::<Vec<_>>();
     validate_configured_branch_sequence(scenario, &cold_branches)?;
     validate_app_random_branch_replay_config(nodes, config)?;
-    if let Some(checkpoint) = restore_checkpoint.as_ref() {
+    if let Some(checkpoint) = phase.restore_checkpoint.as_ref() {
         let expected_selectable_nodes = nodes
             .iter()
             .filter(|node| {
@@ -341,6 +418,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         config,
         source.plan().fault_signals().resource_limits(),
     )?;
+    phase.run_directory = Some(run_directory);
+    let run_directory = phase
+        .run_directory
+        .as_ref()
+        .ok_or_else(|| loop_factory_error("construction lost its admitted run directory"))?;
     let checkpoint_targets = checkpoint_recovery::recover_published_checkpoint_states(
         &config.run_state_root,
         scenario,
@@ -351,25 +433,33 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         .processes
         .try_reserve_exact(nodes.len())
         .map_err(|()| loop_factory_error("reserve initial QEMU process ownership"))?;
-    let mut backends = QemuNodeSet::new();
-    let mut launch_configs = BTreeMap::new();
+    phase.backends = Some(QemuNodeSet::new());
+    let mut backends = phase
+        .backends
+        .as_mut()
+        .ok_or_else(|| loop_factory_error("construction lost its backend set"))?;
+    let node_launcher = phase
+        .node_launcher
+        .as_mut()
+        .ok_or_else(|| loop_factory_error("construction lost its retained launcher"))?;
+
     let mut block_bindings = BTreeMap::new();
     let mut ninep_bindings = BTreeMap::new();
     let mut node_indexes = BTreeMap::new();
     let mut node_run_directories = BTreeMap::new();
-    let mut node_generations = BTreeMap::new();
-    let mut node_leases = BTreeMap::new();
+
     let mut node_service_states = BTreeMap::new();
     let mut immutable_root_images = BTreeMap::new();
-    let mut retained_hot_fork_disk_files = Vec::new();
+
     let mut hot_fork_backing_files = BTreeMap::new();
     let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
-    let mut repository_restore = restore_checkpoint
+    phase.repository_restore = phase
+        .restore_checkpoint
         .as_mut()
         .and_then(|checkpoint| checkpoint.repository_restore.take());
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(authority) = repository_restore.as_mut() {
+    if let Some(authority) = phase.repository_restore.as_mut() {
         authority.ram_source_decorator = config.ram_source_decorator.clone();
     }
     let mut repository_parent_targets = BTreeMap::new();
@@ -402,28 +492,34 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             ))
         })?;
         let node_directory = run_directory.path().join(format!("node-{index}"));
-        let restore_target = restore_checkpoint
+        let restore_target = phase
+            .restore_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.targets.get(&vm.id));
-        let hot_fork_expected_time = hot_fork_restore
+        let hot_fork_expected_time = phase
+            .hot_fork_restore
             .as_mut()
             .and_then(|restore| restore.expected_times.remove(&vm.id));
-        let hot_fork_adoption = hot_fork_restore
+        phase.pending_adoption = phase
+            .hot_fork_restore
             .as_mut()
             .and_then(|restore| restore.adoptions.remove(&vm.id));
-        let hot_fork_immutable_root = hot_fork_restore
+        let hot_fork_immutable_root = phase
+            .hot_fork_restore
             .as_mut()
             .and_then(|restore| restore.immutable_root_images.remove(&vm.id));
-        let hot_fork_disk_basis = hot_fork_restore
+        let hot_fork_disk_basis = phase
+            .hot_fork_restore
             .as_mut()
             .and_then(|restore| restore.disk_bases.remove(&vm.id));
-        let restored_service_state = restore_checkpoint
+        let restored_service_state = phase
+            .restore_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.node_service_states.get(&vm.id))
             .copied();
-        if restore_checkpoint.is_some()
+        if phase.restore_checkpoint.is_some()
             && restore_target.is_none()
-            && hot_fork_adoption.is_none()
+            && phase.pending_adoption.is_none()
             && restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed)
         {
             return Err(loop_factory_error(format!(
@@ -432,7 +528,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             )));
         }
         let repository_parent_identity = if let Some(target) = restore_target {
-            let fault_checkpoint = restore_checkpoint
+            let fault_checkpoint = phase
+                .restore_checkpoint
                 .as_ref()
                 .and_then(|checkpoint| checkpoint.fault_checkpoint.as_ref())
                 .ok_or_else(|| {
@@ -453,7 +550,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 fault_manifest_identity,
                 snapshot_identity,
             )?;
-            let checkpoint_set = restore_checkpoint.as_ref().ok_or_else(|| {
+            let checkpoint_set = phase.restore_checkpoint.as_ref().ok_or_else(|| {
                 loop_factory_error("exact RAM restore lost its authenticated checkpoint set")
             })?;
             let expected = exact_ram_checkpoint_qmp_identity(ExactRamCheckpointQmpIdentityBasis {
@@ -496,7 +593,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         } else {
             None
         };
-        if hot_fork_restore.is_some() {
+        if phase.hot_fork_restore.is_some() {
             let expected = hot_fork_immutable_root.ok_or_else(|| {
                 loop_factory_error(format!(
                     "hot-fork continuation has no immutable root identity for `{}`",
@@ -521,7 +618,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                         ))
                     })?;
                 hot_fork_backing_files.insert(vm.id.clone(), basis.immutable_backing_chain());
-                retained_hot_fork_disk_files.append(&mut files);
+                phase.retained_hot_fork_disk_files.append(&mut files);
             } else if !cfg!(any(test, feature = "test-support")) {
                 return Err(loop_factory_error(format!(
                     "rooted hot-fork child `{}` has no sealed current disk basis",
@@ -538,7 +635,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             _ => vm.cmdline.clone(),
         };
         let whitebox = production_whitebox_switch(vm.white_box);
-        let generation = restore_checkpoint
+        let generation = phase
+            .restore_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.node_generations.get(&vm.id))
             .copied()
@@ -582,6 +680,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 .map_err(|error| loop_factory_error(error.to_string()))?;
             launch = launch.with_ram_control_registration(registration);
         }
+        phase.launch_configs.insert(vm.id.clone(), launch.clone());
         #[cfg(any(test, feature = "test-support"))]
         if let Some(entitlement) = config.fault_actor_test_entitlement {
             launch = launch
@@ -676,7 +775,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                         vm.id.name
                     ))
                 })?;
-                let plan = if let Some(checkpoint) = restore_checkpoint.as_ref()
+                let plan = if let Some(checkpoint) = phase.restore_checkpoint.as_ref()
                     && restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed)
                 {
                     let restored = checkpoint.selectable_catalog_plans.get(&vm.id).ok_or_else(
@@ -707,7 +806,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 };
                 launch = launch.with_selectable_catalog_plan(plan);
             }
-            let app_random = if let Some(checkpoint) = &restore_checkpoint {
+            let app_random = if let Some(checkpoint) = &phase.restore_checkpoint {
                 production_app_random_checkpoint_config(
                     &checkpoint.scheduler,
                     scenario,
@@ -750,7 +849,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             })?;
             launch = launch.with_network_tx_next_sequence(next_sequence);
         }
-        let block = if let Some(restore) = hot_fork_restore.as_mut() {
+        let block = if let Some(restore) = phase.hot_fork_restore.as_mut() {
             restore.block_bindings.remove(&vm.id)
         } else {
             block_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
@@ -771,7 +870,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             }
             block_bindings.insert(vm.id.clone(), block);
         }
-        let ninep = if let Some(restore) = hot_fork_restore.as_mut() {
+        let ninep = if let Some(restore) = phase.hot_fork_restore.as_mut() {
             restore.ninep_bindings.remove(&vm.id)
         } else {
             ninep_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
@@ -806,11 +905,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             launch = launch.with_gdbstub(gdbstub);
             debug_backend_paths.insert(vm.id.clone(), backend_path);
         }
-        launch_configs.insert(vm.id.clone(), launch.clone());
         node_indexes.insert(vm.id.clone(), index);
         node_run_directories.insert(vm.id.clone(), node_directory.clone());
         let service_state = restored_service_state.unwrap_or(ProductionNodeServiceState::Running);
-        node_generations.insert(vm.id.clone(), generation);
+        phase.node_generations.insert(vm.id.clone(), generation);
         node_service_states.insert(vm.id.clone(), service_state);
         let crash_detector = format!("lifecycle-{}-generation-{generation}", vm.id.name);
         let preparation = match restore_target {
@@ -820,16 +918,21 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 root_image: &guest_assets.root_image,
             },
         };
-        let exact_admission = if restore_target.is_some() {
+        phase.pending_exact = if restore_target.is_some() {
             let snapshot = restore_target
                 .ok_or_else(|| loop_factory_error("exact restore target disappeared"))?
                 .snapshot
                 .clone();
-            let authority = repository_restore.as_mut().ok_or_else(|| {
+            let authority = phase.repository_restore.as_mut().ok_or_else(|| {
                 loop_factory_error("exact restore has no repository target authority")
             })?;
             let physically_paused = exposure.physical_pause(service_state)?;
             let admission = authority.take_node_admission(&vm.id, snapshot, physically_paused)?;
+            phase.pending_exact = Some(admission);
+            let admission = phase
+                .pending_exact
+                .as_ref()
+                .ok_or_else(|| loop_factory_error("exact restore admission disappeared"))?;
             if let Some(expected) = repository_parent_identity {
                 let (checkpoint, target, frontier) = admission.basis.target.ram_identity();
                 if QmpCheckpointIdentity::new(checkpoint, target, frontier) != expected {
@@ -839,11 +942,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                     )));
                 }
             }
-            Some(admission)
+            phase.pending_exact.take()
         } else {
             None
         };
-        let launched = if let Some(adoption) = hot_fork_adoption {
+        let launched = if phase.pending_adoption.is_some() {
             if restore_target.is_some()
                 || service_state == ProductionNodeServiceState::PermanentlyFailed
                 || hot_fork_expected_time.is_none()
@@ -853,13 +956,23 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                     vm.id.name
                 )));
             }
-            let (process, node, lease, run_directory) = adoption.into_parts();
-            if lease.identity().node() != &vm.id || lease.identity().generation() != generation {
+            let adoption = phase
+                .pending_adoption
+                .as_ref()
+                .ok_or_else(|| loop_factory_error("hot-fork adoption disappeared"))?;
+            if adoption.lease.identity().node() != &vm.id
+                || adoption.lease.identity().generation() != generation
+            {
                 return Err(loop_factory_error(format!(
                     "hot-fork child lease for `{}` changed before adoption",
                     vm.id.name
                 )));
             }
+            let adoption = phase
+                .pending_adoption
+                .take()
+                .ok_or_else(|| loop_factory_error("validated hot-fork adoption disappeared"))?;
+            let (process, node, lease, run_directory) = adoption.into_parts();
             Ok((
                 ProductionVmNodeLaunch {
                     node,
@@ -869,7 +982,15 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 Some(process),
             ))
         } else {
-            match (exact_admission, service_state) {
+            if service_state == ProductionNodeServiceState::PermanentlyFailed
+                && phase.pending_exact.is_some()
+            {
+                return Err(loop_factory_error(format!(
+                    "permanently failed node `{}` retains a live exact target",
+                    vm.id.name
+                )));
+            }
+            match (phase.pending_exact.take(), service_state) {
                 (Some(admission), ProductionNodeServiceState::Running) => {
                     launch_production_node_generation(
                         node_launcher.as_mut(),
@@ -917,7 +1038,17 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 .map(|launch| (launch, None)),
             }
         };
-        let (mut launched, adopted_process) = launched?;
+        let (launched, adopted_process) = launched?;
+        phase.pending_launch = Some(launched);
+        let launched = phase
+            .pending_launch
+            .as_mut()
+            .ok_or_else(|| loop_factory_error("construction lost the returned node and lease"))?;
+        if launched.run_directory().as_os_str().is_empty() {
+            return Err(loop_factory_error(
+                "returned QEMU node has an empty run directory",
+            ));
+        }
         if index == 0
             && let Some(evidence) = bounded_scheduler_preemption.take()
         {
@@ -928,31 +1059,30 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         let observed = SimulationBackend::now(launched.node()).ticks;
         if let Some(expected_time) = hot_fork_expected_time {
             if expected_time.ticks != observed {
-                let _ = launched.quarantine_and_finish();
                 return Err(loop_factory_error(format!(
                     "hot-fork QEMU node `{}` resumed at unauthenticated instruction boundary {observed}",
                     vm.id.name
                 )));
             }
         } else if let Some(target) = restore_target {
-            let restored_configuration = restore_checkpoint
+            let restored_configuration = phase
+                .restore_checkpoint
                 .as_ref()
                 .map(|checkpoint| checkpoint.configuration.id());
             if Some(target.configuration.id()) != restored_configuration
                 || target.counter != observed
             {
-                let _ = launched.quarantine_and_finish();
                 return Err(loop_factory_error(format!(
                     "QEMU node `{}` restored at unauthenticated instruction boundary {observed}",
                     vm.id.name
                 )));
             }
-            let Some(expected_fingerprint) = restore_checkpoint
+            let Some(expected_fingerprint) = phase
+                .restore_checkpoint
                 .as_ref()
                 .and_then(|checkpoint| checkpoint.fault_checkpoint.as_ref())
                 .and_then(|checkpoint| checkpoint.qemu_fingerprint(&vm.id))
             else {
-                let _ = launched.quarantine_and_finish();
                 return Err(loop_factory_error(format!(
                     "exact checkpoint for `{}` has no authenticated QEMU fingerprint",
                     vm.id.name
@@ -961,7 +1091,6 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             let restored_fingerprint = match launched.node_mut().execution_fingerprint() {
                 Ok(fingerprint) => fingerprint.hash,
                 Err(error) => {
-                    let _ = launched.quarantine_and_finish();
                     return Err(loop_factory_error(format!(
                         "read restored QEMU fingerprint for `{}`: {error}",
                         vm.id.name
@@ -969,7 +1098,6 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 }
             };
             if restored_fingerprint != expected_fingerprint {
-                let _ = launched.quarantine_and_finish();
                 return Err(loop_factory_error(format!(
                     "QEMU node `{}` restored with an unauthenticated execution fingerprint: expected {}, observed {}",
                     vm.id.name,
@@ -978,7 +1106,6 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 )));
             }
         } else if initial_ticks.is_some_and(|initial| initial != observed) {
-            let _ = launched.quarantine_and_finish();
             return Err(loop_factory_error(format!(
                 "QEMU node `{}` primed at {observed}, expected {}",
                 vm.id.name,
@@ -988,32 +1115,19 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         if restore_target.is_none() && hot_fork_expected_time.is_none() {
             initial_ticks.get_or_insert(observed);
         }
-        let process_identity = match launched.node().process_identity() {
-            Ok(identity) => identity,
-            Err(error) => {
-                let containment = launched.quarantine_and_finish();
-                return Err(loop_factory_error(format!(
-                    "capture initial QEMU identity for `{}`: {error}; process containment: {}",
-                    vm.id.name,
-                    containment.map_or_else(
-                        |failure| failure.to_string(),
-                        |()| String::from("reaped and lease released")
-                    )
-                )));
-            }
-        };
+        let process_identity = launched.node().process_identity().map_err(|error| {
+            loop_factory_error(format!(
+                "capture initial QEMU identity for `{}`: {error}",
+                vm.id.name
+            ))
+        })?;
         if adopted_process
             .as_ref()
             .is_some_and(|expected| expected != &process_identity)
         {
-            let containment = launched.quarantine_and_finish();
             return Err(loop_factory_error(format!(
-                "adopted hot-fork QEMU process for `{}` changed before lifecycle publication; process containment: {}",
-                vm.id.name,
-                containment.map_or_else(
-                    |failure| failure.to_string(),
-                    |()| String::from("reaped and lease released")
-                )
+                "adopted hot-fork QEMU process for `{}` changed before lifecycle publication",
+                vm.id.name
             )));
         }
         if let Some(identity) = repository_parent_identity
@@ -1021,14 +1135,13 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 .insert(vm.id.clone(), identity)
                 .is_some()
         {
-            let _ = launched.quarantine_and_finish();
             return Err(loop_factory_error(
                 "authenticated repository restore repeated a QEMU parent target",
             ));
         }
         let launched_run_directory = launched.run_directory().to_path_buf();
         node_run_directories.insert(vm.id.clone(), launched_run_directory.clone());
-        launch_configs.insert(
+        phase.launch_configs.insert(
             vm.id.clone(),
             launch.clone().with_run_directory(&launched_run_directory),
         );
@@ -1038,19 +1151,19 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 private_backend_gdbstub_path(&launched_run_directory),
             );
         }
+        if backends.contains(&vm.id) || phase.node_leases.contains_key(&vm.id) {
+            return Err(loop_factory_error(format!(
+                "duplicate QEMU node or lease identity `{}`",
+                vm.id.name
+            )));
+        }
+        let launched = phase
+            .pending_launch
+            .take()
+            .ok_or_else(|| loop_factory_error("validated QEMU node disappeared before transfer"))?;
         let (backend, lease) = launched.into_parts();
-        if backends.insert(vm.id.clone(), backend).is_some() {
-            return Err(loop_factory_error(format!(
-                "duplicate QEMU node identity `{}`",
-                vm.id.name
-            )));
-        }
-        if node_leases.insert(vm.id.clone(), lease).is_some() {
-            return Err(loop_factory_error(format!(
-                "duplicate QEMU node lease identity `{}`",
-                vm.id.name
-            )));
-        }
+        backends.insert(vm.id.clone(), backend);
+        phase.node_leases.insert(vm.id.clone(), lease);
         run_manifest
             .processes
             .insert_reserved(vm.id.name.clone(), process_identity)
@@ -1063,28 +1176,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             0,
             0,
         ) {
-            let backend_cleanup = backends.shutdown();
-            let lease_cleanup = if backend_cleanup.is_ok() {
-                let nodes = node_leases.keys().cloned().collect::<Vec<_>>();
-                finish_reaped_node_lease_map(&node_generations, &mut node_leases, &nodes)
-            } else {
-                Ok(())
-            };
-            let launcher_cleanup = if backend_cleanup.is_ok() && lease_cleanup.is_ok() {
-                node_launcher.finish()
-            } else {
-                Ok(())
-            };
             return Err(loop_factory_error(format!(
-                "persist initial QEMU process ownership: {error}; backend cleanup: {}; generation-lease cleanup: {}; launcher cleanup: {}",
-                backend_cleanup
-                    .map_or_else(|failure| failure.to_string(), |()| String::from("reaped")),
-                lease_cleanup.map_or_else(
-                    |failure| failure.to_string(),
-                    |()| String::from("released or retained")
-                ),
-                launcher_cleanup
-                    .map_or_else(|failure| failure.to_string(), |()| String::from("released"))
+                "persist initial QEMU process ownership: {error}"
             )));
         }
         #[cfg(any(test, feature = "test-support"))]
@@ -1093,7 +1186,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         }
     }
 
-    if hot_fork_restore.as_ref().is_some_and(|restore| {
+    if phase.hot_fork_restore.as_ref().is_some_and(|restore| {
         !restore.expected_times.is_empty()
             || !restore.adoptions.is_empty()
             || !restore.immutable_root_images.is_empty()
@@ -1107,7 +1200,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
     }
 
     let initial_ticks = initial_ticks.unwrap_or_default();
-    if restore_checkpoint.is_none() && config.run_ceiling_ticks <= initial_ticks {
+    if phase.restore_checkpoint.is_none() && config.run_ceiling_ticks <= initial_ticks {
         return Err(loop_factory_error(format!(
             "QEMU run ceiling {} does not exceed primed boundary {initial_ticks}",
             config.run_ceiling_ticks
@@ -1135,7 +1228,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         Arc::clone(&checkpoint_dag),
     )
     .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
-    if let Some(checkpoint) = &restore_checkpoint {
+    if let Some(checkpoint) = &phase.restore_checkpoint {
         scheduler
             .attach_world_network_links(source.world())
             .map_err(|error| loop_factory_error(format!("attach QEMU World network: {error}")))?;
@@ -1145,7 +1238,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             .map_err(|error| {
                 loop_factory_error(format!("restore exact scheduler continuation: {error}"))
             })?;
-        if hot_fork_restore.is_some() {
+        if phase.hot_fork_restore.is_some() {
             // Boot must reactivate the captured Halted state, not a fresh runnable node.
             for (node, state) in &node_service_states {
                 if *state == ProductionNodeServiceState::PoweredOff {
@@ -1193,7 +1286,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 ))
             })?;
     }
-    if let Some(restore) = hot_fork_restore.as_mut() {
+    if let Some(restore) = phase.hot_fork_restore.as_mut() {
         let scheduler_checkpoint = scheduler.checkpoint().map_err(|error| {
             loop_factory_error(format!(
                 "capture adopted hot-fork scheduler continuation: {error}"
@@ -1242,7 +1335,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         production_fault_search_overrides(config.signal_fault_replay.as_ref())?;
     let signal_artifact_objects = if signal_plan.programs().is_empty() {
         Arc::new(BTreeMap::new())
-    } else if let Some(checkpoint) = &restore_checkpoint {
+    } else if let Some(checkpoint) = &phase.restore_checkpoint {
         hydrate_checkpoint_signal_artifacts(
             &checkpoint.signal_artifact_objects,
             checkpoint_dag.as_ref(),
@@ -1263,7 +1356,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         if signal_plan.programs().is_empty() {
             None
         } else {
-            let store = if restore_checkpoint.is_some() {
+            let store = if phase.restore_checkpoint.is_some() {
                 Arc::clone(&checkpoint_dag)
             } else {
                 config.signal_artifacts.clone().ok_or_else(|| {
@@ -1331,7 +1424,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
         mut network_interceptor,
         pending_network_outputs,
         restored_committed_frontier,
-    ) = if let Some(checkpoint) = &mut restore_checkpoint {
+    ) = if let Some(checkpoint) = &mut phase.restore_checkpoint {
         for (node, target) in &checkpoint.targets {
             let scheduler_time = scheduler.scheduler_time_for_node(node).map_err(|error| {
                 loop_factory_error(format!(
@@ -1414,20 +1507,21 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
     network_interceptor
         .install_campaign_replay(
             network_replay,
-            restore_checkpoint
+            phase
+                .restore_checkpoint
                 .as_ref()
                 .map(|_| restored_committed_frontier),
         )
         .map_err(|error| loop_factory_error(format!("admit network fault replay: {error}")))?;
     network_interceptor
-        .install_campaign_effect_replay(campaign_effect_replay, restore_checkpoint.is_some())
+        .install_campaign_effect_replay(campaign_effect_replay, phase.restore_checkpoint.is_some())
         .map_err(|error| loop_factory_error(format!("admit network effect replay: {error}")))?;
     let fault_replay_installed = config.fault_replay.is_some() && signal_plan_active;
     let fault_search_overrides_installed = fault_runtime
         .lock()
         .map_err(|_| loop_factory_error("production fault runtime lock is poisoned"))?
         .has_search_overrides();
-    let mut block_device_map = BTreeMap::new();
+
     for (node, block) in &block_bindings {
         if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
             continue;
@@ -1438,7 +1532,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 node.name
             ))
         })?;
-        if block_device_map
+        if phase
+            .block_device_map
             .insert(block.device_hash(), handle)
             .is_some()
         {
@@ -1448,7 +1543,13 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             )));
         }
     }
-    let block_devices = Arc::new(std::sync::Mutex::new(block_device_map));
+    phase.block_devices = Some(Arc::new(std::sync::Mutex::new(std::mem::take(
+        &mut phase.block_device_map,
+    ))));
+    let block_devices = phase
+        .block_devices
+        .as_ref()
+        .ok_or_else(|| loop_factory_error("construction lost its block-device aliases"))?;
     for (node, block) in &block_bindings {
         if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
             continue;
@@ -1507,14 +1608,14 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             })?;
     }
 
-    let (active_branch, continuation_branches) = restore_checkpoint.as_ref().map_or_else(
+    let (active_branch, continuation_branches) = phase.restore_checkpoint.as_ref().map_or_else(
         || {
             let mut branches = configured_branches(config).cloned();
             (branches.next(), branches.collect())
         },
         |checkpoint| (checkpoint.branch.clone(), VecDeque::new()),
     );
-    let signal_fault_branches = if restore_checkpoint.is_some() {
+    let signal_fault_branches = if phase.restore_checkpoint.is_some() {
         VecDeque::new()
     } else {
         config
@@ -1524,7 +1625,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
                 replay.branches().iter().cloned().collect()
             })
     };
-    let inner = if restore_checkpoint.is_some() {
+    let backends = phase.backends.take().ok_or_else(|| {
+        loop_factory_error("construction lost its backend set before loop assembly")
+    })?;
+    phase.inner = Some(if phase.restore_checkpoint.is_some() {
         BackendQuantumLoop::from_restored_network_state(
             scheduler,
             backends,
@@ -1538,14 +1642,15 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             backends,
             network_interceptor,
         )
-    };
-    let failed_host_io = restore_checkpoint
+    });
+    let failed_host_io = phase
+        .restore_checkpoint
         .as_ref()
         .map_or_else(BTreeMap::new, |checkpoint| {
             checkpoint.failed_host_io.clone()
         });
-    let mut exact_ram_parents = BTreeMap::new();
-    if let Some(checkpoint) = &restore_checkpoint {
+
+    if let Some(checkpoint) = &phase.restore_checkpoint {
         let targets = checkpoint
             .targets
             .iter()
@@ -1557,7 +1662,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             })
             .collect::<BTreeMap<_, _>>();
         if !targets.is_empty() {
-            exact_ram_parents.insert(
+            phase.exact_ram_parents.insert(
                 checkpoint.configuration.id(),
                 ProductionExactRamPublishedParent {
                     closure: checkpoint.identity,
@@ -1566,108 +1671,127 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
             );
         }
     }
-    let mut lifecycle = ProductionVmLifecycleLoop {
-        runtime_progress: runtime::progress::RuntimeProgress::from_environment(),
-        inner,
-        trigger_graph,
-        trigger_state: restore_checkpoint
-            .as_ref()
-            .map_or_else(EventGraphState::default, |checkpoint| {
-                checkpoint.trigger_state.clone()
-            }),
-        trigger_world: source.world().clone(),
-        assertion_evaluator: HostAssertionEvaluator::new(source.properties())
-            .and_then(|evaluator| evaluator.with_world_white_box_policies(source.world()))
-            .map_err(|error| LifecycleApiError::BackendConstruction {
-                source: crate::lifecycle::LifecycleBackendConstructionError::new(error),
-            })?,
-        assertion_oracle: BlackBoxHostOracle,
-        terminal_verdict: restore_checkpoint
-            .as_ref()
-            .and_then(|checkpoint| checkpoint.terminal_verdict.clone()),
-        checkpoint_terminal_cause: restore_checkpoint
-            .as_ref()
-            .and_then(|checkpoint| checkpoint.terminal_cause.clone()),
-        initial_lifecycle_observations_pending: restore_checkpoint
-            .as_ref()
-            .is_none_or(|checkpoint| checkpoint.initial_lifecycle_observations_pending),
-        branch: active_branch,
-        continuation_branches,
-        signal_fault_branches,
-        promote_signal_fault_campaign_choices: false,
-        pending_live_network_prefix: None,
-        pending_held_host_outcomes: None,
-        launch_configs,
-        block_bindings,
-        ninep_bindings,
-        block_devices,
-        failed_host_io,
-        storage_fault_observations,
-        fault_runtime,
-        fault_replay_installed,
-        fault_search_overrides_installed,
-        node_indexes,
-        node_run_directories,
-        immutable_root_images,
-        node_generations,
-        node_leases,
-        node_lease_cleanup_failed: false,
-        node_service_states,
-        lifecycle_journal,
-        lifecycle_persistence: LifecycleStatePersistence::new(run_directory.path())
-            .map_err(loop_factory_error)?,
-        run_manifest,
-        scenario: scenario.clone(),
-        source: source.clone(),
-        config: retained_config,
-        checkpoint_targets,
-        exact_ram_parents,
-        repository_exact_ram_rebase,
-        recorded_controls: restore_checkpoint
-            .as_ref()
-            .map_or_else(Vec::new, |checkpoint| checkpoint.recorded_controls.clone()),
-        signal_artifact_objects,
-        debug_backend_paths,
-        debug_gateway: None,
-        debug_attach: None,
-        debug_gateway_teardown_required: false,
-        indeterminate_debug_candidate: None,
-        debug_runtime_evidence: Vec::new(),
-        node_launcher,
-        _run_directory: run_directory,
-        hot_fork_backing_files,
-        retained_hot_fork_disk_owners: retained_hot_fork_disk_files
-            .into_iter()
-            .map(|file| Box::new(file) as Box<dyn Send>)
-            .collect(),
-        retained_resource_owners: Vec::new(),
-        input_decode_custody: crucible::owned_decode::current_custody(),
-    };
-    if let Some(checkpoint) = &restore_checkpoint {
-        let prefix = lifecycle.inner.loop_impl().condition_event_log_prefix();
-        if let Err(error) = checkpoint
+    let mut assertion_evaluator = HostAssertionEvaluator::new(source.properties())
+        .and_then(|evaluator| evaluator.with_world_white_box_policies(source.world()))
+        .map_err(|error| LifecycleApiError::BackendConstruction {
+            source: crate::lifecycle::LifecycleBackendConstructionError::new(error),
+        })?;
+    if let Some(checkpoint) = &phase.restore_checkpoint {
+        let inner = phase.inner.as_ref().ok_or_else(|| {
+            loop_factory_error("construction lost its loop before assertion restore")
+        })?;
+        checkpoint
             .assertion_state
-            .restore_into(&mut lifecycle.assertion_evaluator, prefix)
-        {
-            let cleanup = QuantumLoop::shutdown(&mut lifecycle);
-            return Err(loop_factory_error(format!(
-                "restore host assertion continuation: {error}; lifecycle cleanup: {}",
-                cleanup.map_or_else(
-                    |failure| failure.to_string(),
-                    |_: Vec<_>| String::from("reaped and released")
-                )
-            )));
-        }
-    }
-    if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
-        let cleanup = QuantumLoop::shutdown(&mut lifecycle);
-        return Err(loop_factory_error(format!(
-            "capture initial debugger runtime evidence: {error}; lifecycle cleanup: {}",
-            cleanup.map_or_else(
-                |failure| failure.to_string(),
-                |_: Vec<_>| String::from("reaped and released")
+            .restore_into(
+                &mut assertion_evaluator,
+                inner.loop_impl().condition_event_log_prefix(),
             )
-        )));
+            .map_err(|error| {
+                loop_factory_error(format!("restore host assertion continuation: {error}"))
+            })?;
     }
-    Ok(lifecycle)
+    let lifecycle_persistence =
+        LifecycleStatePersistence::new(run_directory.path()).map_err(loop_factory_error)?;
+    let owned_scenario = scenario.clone();
+    let owned_source = source.clone();
+    let owned_world = source.world().clone();
+
+    Ok(move |partial: custody::Partial| {
+        let custody::Partial {
+            node_launcher: Some(node_launcher),
+            retained_config: Some(retained_config),
+            run_directory: Some(run_directory),
+            inner: Some(inner),
+            block_devices: Some(block_devices),
+            restore_checkpoint,
+            launch_configs,
+            node_generations,
+            node_leases,
+            retained_hot_fork_disk_files,
+            exact_ram_parents,
+            input_decode_custody,
+            pending_launch: None,
+            pending_adoption: None,
+            pending_exact: None,
+            ..
+        } = partial
+        else {
+            return Err(partial);
+        };
+        let lifecycle = ProductionVmLifecycleLoop {
+            runtime_progress: runtime::progress::RuntimeProgress::from_environment(),
+            inner,
+            trigger_graph,
+            trigger_state: restore_checkpoint
+                .as_ref()
+                .map_or_else(EventGraphState::default, |checkpoint| {
+                    checkpoint.trigger_state.clone()
+                }),
+            trigger_world: owned_world,
+            assertion_evaluator,
+            assertion_oracle: BlackBoxHostOracle,
+            terminal_verdict: restore_checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.terminal_verdict.clone()),
+            checkpoint_terminal_cause: restore_checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.terminal_cause.clone()),
+            initial_lifecycle_observations_pending: restore_checkpoint
+                .as_ref()
+                .is_none_or(|checkpoint| checkpoint.initial_lifecycle_observations_pending),
+            branch: active_branch,
+            continuation_branches,
+            signal_fault_branches,
+            promote_signal_fault_campaign_choices: false,
+            pending_live_network_prefix: None,
+            pending_held_host_outcomes: None,
+            launch_configs,
+            block_bindings,
+            ninep_bindings,
+            block_devices,
+            failed_host_io,
+            storage_fault_observations,
+            fault_runtime,
+            fault_replay_installed,
+            fault_search_overrides_installed,
+            node_indexes,
+            node_run_directories,
+            immutable_root_images,
+            node_generations,
+            node_leases,
+            node_lease_cleanup_failed: false,
+            node_service_states,
+            lifecycle_journal,
+            lifecycle_persistence,
+            run_manifest,
+            scenario: owned_scenario,
+            source: owned_source,
+            config: retained_config,
+            checkpoint_targets,
+            exact_ram_parents,
+            repository_exact_ram_rebase,
+            recorded_controls: restore_checkpoint
+                .as_ref()
+                .map_or_else(Vec::new, |checkpoint| checkpoint.recorded_controls.clone()),
+            signal_artifact_objects,
+            debug_backend_paths,
+            debug_gateway: None,
+            debug_attach: None,
+            debug_gateway_teardown_required: false,
+            indeterminate_debug_candidate: None,
+            retained_debug_construction: std::sync::Mutex::new(None),
+            construction_custody: None,
+            debug_runtime_evidence: Vec::new(),
+            node_launcher,
+            _run_directory: run_directory,
+            hot_fork_backing_files,
+            retained_hot_fork_disk_owners: retained_hot_fork_disk_files
+                .into_iter()
+                .map(|file| Box::new(file) as Box<dyn Send>)
+                .collect(),
+            retained_resource_owners: Vec::new(),
+            input_decode_custody,
+        };
+        Ok(lifecycle)
+    })
 }

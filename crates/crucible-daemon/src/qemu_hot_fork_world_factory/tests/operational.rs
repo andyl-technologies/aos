@@ -154,5 +154,9 @@ fn genuine_budget_owner_without_component_facts_requires_native_kernel_controlle
             vcpus: 1,
         }])
         .expect("complete admitted partition");
-    assert!(factory.bind_native_resource_controller(None).is_err());
+    assert!(
+        factory
+            .bind_native_resource_controller("component-node", None)
+            .is_err()
+    );
 }

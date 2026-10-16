@@ -36,7 +36,6 @@ use crate::{
     ExactPinRetentionAdmin, ExactPinRetentionError, MAX_LOCAL_EXECUTOR_WORKERS,
 };
 
-#[cfg(feature = "private-measurement-domain")]
 pub(super) mod original_retirement;
 
 /// Maximum distinct durable roots retained by one packaged materializer.

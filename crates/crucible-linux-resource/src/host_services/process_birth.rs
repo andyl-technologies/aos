@@ -13,8 +13,12 @@ mod executor_family;
 mod executor_purpose;
 pub use executor_family::AuthenticatedServiceFamily;
 pub use executor_purpose::{
-    AuthenticatedNativeSlotPurpose, AuthenticatedNativeSubdivision, AuthenticatedSourceChild,
-    AuthenticatedSourceHostPurpose, AuthenticatedTargetDispatcherPurpose, SourceHostControlLease,
+    AuthenticatedNativeNodeClaim, AuthenticatedNativeNodeHostWindow,
+    AuthenticatedNativePoolPurpose, AuthenticatedNativeSlotPurpose, AuthenticatedNativeSubdivision,
+    AuthenticatedNativeWorldClaim, AuthenticatedNativeWorldCleanupLoan,
+    AuthenticatedNativeWorldControlLease, AuthenticatedSourceChild, AuthenticatedSourceHostPurpose,
+    AuthenticatedTargetDispatcherPurpose, NativeNodeReservation, NativePoolRefusal,
+    NativeWorldIdentity, SourceHostControlLease, WeakSourceHostPurpose,
 };
 
 use super::{

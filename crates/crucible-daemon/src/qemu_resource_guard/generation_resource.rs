@@ -2,6 +2,11 @@
 
 use super::*;
 
+mod storage;
+
+use storage::GenerationNodeState;
+pub use storage::QemuAttemptGenerationStorage;
+
 /// Typed refusal lending the same attempt's process contract to its stage.
 #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
 #[derive(Debug, thiserror::Error)]
@@ -26,7 +31,7 @@ impl ProcessStageContractRefusal {
 /// Attempt-wide guard owner with exact linear process-generation leases.
 ///
 /// The owner seals one resource guard behind a bounded generation registry.
-/// Each scheduler node may advance only to a strictly newer positive generation.
+/// Only preselected scheduler nodes may advance to newer positive generations.
 /// The live set retains at most the active generation and one staged successor,
 /// matching the lifecycle's replace-before-reap transaction without permitting
 /// an unbounded generation chain. Finished leases leave only one latest-
@@ -62,38 +67,28 @@ impl<G> QemuAttemptGenerationResourceOwner<G>
 where
     G: QemuAttemptResourceGuard,
 {
-    /// Seals one live attempt guard behind a bounded generation registry.
+    pub(crate) fn with_guard_mut<T>(&mut self, apply: impl FnOnce(&mut G) -> T) -> T {
+        apply(&mut self.guard)
+    }
+
+    /// Moves a guard into its already validated and allocated selected storage.
     ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::LoopFactory`] when `maximum_nodes` is zero
-    /// or exceeds [`MAX_QEMU_ATTEMPT_GENERATION_NODES`]. The supplied guard is
-    /// quarantined before rejection.
-    pub fn new(mut guard: G, maximum_nodes: usize) -> Result<Self, LifecycleApiError> {
-        if maximum_nodes == 0 || maximum_nodes > MAX_QEMU_ATTEMPT_GENERATION_NODES {
-            guard.quarantine();
-            return Err(generation_error(format!(
-                "QEMU attempt generation-node bound {maximum_nodes} is outside 1..={MAX_QEMU_ATTEMPT_GENERATION_NODES}"
-            )));
-        }
-        Ok(Self {
+    /// No validation or allocation follows the guard move. Failure to prepare
+    /// storage must be handled while the caller still owns the original guard.
+    pub fn new(guard: G, storage: QemuAttemptGenerationStorage) -> Self {
+        Self {
             guard,
-            generations: Arc::new(Mutex::new(QemuAttemptGenerationState {
-                maximum_nodes,
-                latest: BTreeMap::new(),
-                active: BTreeSet::new(),
-                abandoned: false,
-            })),
+            generations: storage.generations,
             terminal: false,
             terminal_failure: None,
-        })
+        }
     }
 
     /// Registers one strictly newer node generation and returns its linear lease.
     ///
-    /// Registration is failure-atomic. A new node is retained only when the
-    /// fixed distinct-node bound has room, and a known node must advance beyond
-    /// its last issued generation. The lease must be finished only after its
+    /// Registration is failure-atomic and never allocates registry storage.
+    /// The node must belong to the preselected set and advance beyond its last
+    /// issued generation. The lease must be finished only after its
     /// exact QEMU child has been reaped.
     ///
     /// # Errors
@@ -119,41 +114,36 @@ where
                 "a QEMU attempt generation lease was abandoned",
             ));
         }
-        let node = identity.node().clone();
-        let previous_generation = state.latest.get(&node).copied();
-        let active_for_node = state
-            .active
-            .iter()
-            .filter(|active| active.node() == &node)
-            .count();
-        if active_for_node >= MAX_QEMU_ATTEMPT_GENERATIONS_PER_NODE {
-            return Err(generation_error(format!(
+        let index = state
+            .nodes
+            .binary_search_by(|row| row.node.cmp(identity.node()))
+            .map_err(|_| {
+                generation_error(format!(
+                    "QEMU node `{}` was not selected before Source construction",
+                    identity.node().name,
+                ))
+            })?;
+        let row = &mut state.nodes[index];
+        let free = row.active.iter().position(Option::is_none).ok_or_else(|| {
+            generation_error(format!(
                 "QEMU node `{}` already retains the active and staged generation leases",
-                node.name,
-            )));
-        }
-        if let Some(latest) = state.latest.get(&node) {
-            if identity.generation() <= *latest {
-                return Err(generation_error(format!(
-                    "QEMU node `{}` generation {} does not advance beyond {latest}",
-                    node.name,
-                    identity.generation()
-                )));
-            }
-        } else if state.latest.len() >= state.maximum_nodes {
+                row.node.name,
+            ))
+        })?;
+        if row
+            .latest
+            .is_some_and(|latest| identity.generation() <= latest)
+        {
             return Err(generation_error(format!(
-                "QEMU attempt generation-node bound {} is exhausted",
-                state.maximum_nodes
+                "QEMU node `{}` generation {} does not advance beyond {:?}",
+                row.node.name,
+                identity.generation(),
+                row.latest,
             )));
         }
-        if !state.active.insert(identity.clone()) {
-            return Err(generation_error(format!(
-                "QEMU node `{}` generation {} is already active",
-                node.name,
-                identity.generation()
-            )));
-        }
-        state.latest.insert(node, identity.generation());
+        let previous_generation = row.latest;
+        row.active[free] = Some(identity.generation());
+        row.latest = Some(identity.generation());
         drop(state);
         Ok(QemuAttemptGenerationLease {
             identity,
@@ -183,7 +173,13 @@ where
         let release_allowed = self
             .generations
             .lock()
-            .map(|state| !state.abandoned && state.active.is_empty())
+            .map(|state| {
+                !state.abandoned
+                    && state
+                        .nodes
+                        .iter()
+                        .all(|row| row.active.iter().all(Option::is_none))
+            })
             .map_err(|_| generation_error("QEMU attempt generation registry is poisoned"));
         match release_allowed {
             Ok(true) => {}
@@ -262,6 +258,148 @@ impl<G> QemuAttemptGenerationResourceOwner<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    /// Borrows this generation's exact node contract under the same guard.
+    #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
+    pub(crate) fn with_process_stage_contract_for_node<T>(
+        &mut self,
+        node: &NodeId,
+        cancellation: &ExecutionCancellation,
+        invoke: impl FnOnce(&QemuChildProcessContract) -> T,
+    ) -> Result<T, ProcessStageContractRefusal> {
+        if self.terminal || !self.guard.cancellation().same_incarnation(cancellation) {
+            return Err(ProcessStageContractRefusal::NotCurrent);
+        }
+        self.guard
+            .check_operational_boundary()
+            .map_err(ProcessStageContractRefusal::Owner)?;
+        let contract = self
+            .guard
+            .child_process_contract_for_node(node)
+            .map_err(ProcessStageContractRefusal::Owner)?;
+        Ok(invoke(contract))
+    }
+
+    /// Lends an exact member contract without selecting another physical node.
+    ///
+    /// # Errors
+    /// Refuses terminal custody, an unknown node or changed native ownership.
+    pub(crate) fn child_process_contract_for_node(
+        &self,
+        node: &NodeId,
+    ) -> Result<&QemuChildProcessContract, LifecycleApiError> {
+        if self.terminal {
+            return Err(generation_error("QEMU generation owner is terminal"));
+        }
+        self.guard
+            .child_process_contract_for_node(node)
+            .map_err(|error| attempt_operational_error("lend exact node contract", error))
+    }
+
+    /// Prepares this node's fresh directory in its actual retained quota.
+    pub(crate) fn prepare_generation_run_directory_for_node(
+        &mut self,
+        node: &NodeId,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, LifecycleApiError> {
+        self.check_operational_boundary()?;
+        self.guard
+            .prepare_generation_run_directory_for_node(node, requirements)
+            .map_err(|error| attempt_operational_error("prepare exact node directory", error))
+    }
+
+    /// Borrows the actual issuer attached to this selected node's family.
+    pub(crate) fn installed_node_issuer_for_node(
+        &self,
+        node: &NodeId,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        if self.terminal {
+            return Err(
+                crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crucible_qemu::OriginalActorAccountError::Unavailable,
+                },
+            );
+        }
+        self.guard.installed_node_issuer_for_node(node)
+    }
+
+    /// Launches under this node's retained physical owner without new credit.
+    pub(crate) fn launch_fresh_node_for_node(
+        &self,
+        node: &NodeId,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        if self.terminal {
+            return Err(
+                crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crucible_qemu::OriginalActorAccountError::Unavailable,
+                },
+            );
+        }
+        self.guard
+            .launch_fresh_node_for_node(node, config, admission)
+    }
+
+    /// Restores through this selected node's existing physical issuer.
+    pub(crate) fn launch_exact_node_for_node(
+        &self,
+        node: &NodeId,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        if self.terminal {
+            return Err(
+                crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crucible_qemu::OriginalActorAccountError::Unavailable,
+                },
+            );
+        }
+        self.guard.launch_exact_node_for_node(node, request)
+    }
+
+    /// Keeps an unreaped child with the same selected physical member.
+    pub(crate) fn retain_failed_launch_child_for_node(
+        &mut self,
+        node: &NodeId,
+        child: QemuNodeChild,
+    ) {
+        self.guard.retain_failed_launch_child_for_node(node, child);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fork_target_is_owned_for_node(&self, node: &NodeId) -> bool {
+        self.guard.fork_target_is_owned_for_node(node)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn lend_fork_target_permit_for_node(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
+        self.check_operational_boundary()?;
+        self.guard
+            .lend_fork_target_permit_for_node(node)
+            .map_err(|error| attempt_operational_error("lend exact node Target", error))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_fork_target_run_directory_for_node(
+        &mut self,
+        node: &NodeId,
+        contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, LifecycleApiError> {
+        self.check_operational_boundary()?;
+        self.guard
+            .prepare_fork_target_run_directory_for_node(node, contract, requirements)
+            .map_err(|error| {
+                attempt_operational_error("prepare exact node Target directory", error)
+            })
+    }
+
     // This fixed callback borrows the actual owner's process contract only.
     // It cannot select an event, descriptor, or independently supplied guard.
     #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
@@ -307,6 +445,32 @@ where
     ///
     /// # Errors
     /// Refuses terminal ownership, a foreign target or unavailable source storage.
+    /// Prepares RAM through the exact saved Target before a second birth.
+    ///
+    /// # Errors
+    /// Refuses terminal ownership or an unavailable matching Target role.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_fork_target_ram_admission_for_node(
+        &self,
+        node: &NodeId,
+        contract: &QemuChildProcessContract,
+        prepare: &mut dyn FnMut(
+            &crucible_qemu::QemuForkTargetRamAdmission<'_>,
+        ) -> Result<
+            crucible_qemu::ram_control::RamControlRegistration,
+            QemuVmRealizationError,
+        >,
+    ) -> Result<crucible_qemu::ram_control::RamControlRegistration, QemuVmRealizationError> {
+        if self.terminal {
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "borrow selected Target RAM admission",
+                message: String::from("generation owner is terminal"),
+            });
+        }
+        self.guard
+            .with_fork_target_ram_admission_for_node(node, contract, prepare)
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn prepare_fork_target_run_directory(
         &mut self,
@@ -431,9 +595,7 @@ where
 
 #[derive(Debug)]
 struct QemuAttemptGenerationState {
-    maximum_nodes: usize,
-    latest: BTreeMap<NodeId, u64>,
-    active: BTreeSet<ProductionVmNodeGeneration>,
+    nodes: Vec<GenerationNodeState>,
     abandoned: bool,
 }
 
@@ -482,24 +644,30 @@ impl QemuAttemptGenerationLease {
             .generations
             .lock()
             .map_err(|_| generation_error("QEMU attempt generation registry is poisoned"))?;
-        if state.latest.get(self.identity.node()).copied() != Some(self.identity.generation())
-            || !state.active.remove(&self.identity)
-        {
+        let index = state
+            .nodes
+            .binary_search_by(|row| row.node.cmp(self.identity.node()))
+            .ok();
+        let active = index.and_then(|index| {
+            let row = &state.nodes[index];
+            (row.latest == Some(self.identity.generation()))
+                .then(|| {
+                    row.active
+                        .iter()
+                        .position(|generation| *generation == Some(self.identity.generation()))
+                })
+                .flatten()
+        });
+        let (Some(index), Some(active)) = (index, active) else {
             state.abandoned = true;
             return Err(generation_error(format!(
                 "QEMU node `{}` generation {} is not the exact pending generation",
                 self.identity.node().name,
-                self.identity.generation()
+                self.identity.generation(),
             )));
-        }
-        match self.previous_generation {
-            Some(previous) => {
-                state.latest.insert(self.identity.node().clone(), previous);
-            }
-            None => {
-                state.latest.remove(self.identity.node());
-            }
-        }
+        };
+        state.nodes[index].active[active] = None;
+        state.nodes[index].latest = self.previous_generation;
         self.finished = true;
         Ok(())
     }
@@ -524,14 +692,26 @@ impl ProductionVmNodeLease for QemuAttemptGenerationLease {
             .generations
             .lock()
             .map_err(|_| generation_error("QEMU attempt generation registry is poisoned"))?;
-        if !state.active.remove(&self.identity) {
+        let active = state
+            .nodes
+            .binary_search_by(|row| row.node.cmp(self.identity.node()))
+            .ok()
+            .and_then(|index| {
+                state.nodes[index]
+                    .active
+                    .iter()
+                    .position(|generation| *generation == Some(self.identity.generation()))
+                    .map(|active| (index, active))
+            });
+        let Some((index, active)) = active else {
             state.abandoned = true;
             return Err(generation_error(format!(
                 "QEMU node `{}` generation {} has no active lease",
                 self.identity.node().name,
-                self.identity.generation()
+                self.identity.generation(),
             )));
-        }
+        };
+        state.nodes[index].active[active] = None;
         self.finished = true;
         Ok(())
     }
@@ -599,5 +779,106 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptGenerationResourceOwner<G> {
     {
         self.guard
             .prepare_parent_park_imports(source, original, decoder, actor, family)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl<G: QemuAttemptProcessResourceGuard> QemuAttemptGenerationResourceOwner<G> {
+    /// Reserves the selected Source's actual copied-contract control lease.
+    ///
+    /// # Errors
+    /// Refuses terminal ownership, a foreign node/contract or exhausted payer.
+    pub(crate) fn reserve_contract_controls_for_node(
+        &self,
+        node: &NodeId,
+        contract: &QemuChildProcessContract,
+        descriptors: u64,
+        bytes: u64,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
+        QemuVmRealizationError,
+    > {
+        if self.terminal {
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "reserve retired generation contract controls",
+                message: String::from("generation ownership is terminal"),
+            });
+        }
+        self.guard
+            .reserve_contract_controls_for_node(node, contract, descriptors, bytes)
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+impl<G: QemuAttemptProcessResourceGuard> QemuAttemptGenerationResourceOwner<G> {
+    /// Routes the saved Park phase through its actual selected member.
+    ///
+    /// # Errors
+    /// Preserves unavailable node/physical custody and the same original postcut.
+    pub(crate) fn retain_parent_park_cleanup_for_node(
+        &self,
+        node: &NodeId,
+    ) -> Result<crucible_qemu::OriginalParentParkCleanup, QemuVmRealizationError> {
+        self.guard.retain_parent_park_cleanup_for_node(node)
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+impl<G: QemuAttemptProcessResourceGuard> QemuAttemptGenerationResourceOwner<G> {
+    /// Routes the saved Park phase through its actual selected member.
+    ///
+    /// # Errors
+    /// Preserves unavailable node/physical custody and the same original postcut.
+    pub(crate) fn verify_parent_park_binding_for_node(
+        &self,
+        node: &NodeId,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<(), crucible_qemu::OriginalActorParkQuiescenceError> {
+        self.guard
+            .verify_parent_park_binding_for_node(node, source, original, decoder)
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+impl<G: QemuAttemptProcessResourceGuard> QemuAttemptGenerationResourceOwner<G> {
+    /// Routes the saved Park phase through its actual selected member.
+    ///
+    /// # Errors
+    /// Preserves unavailable node/physical custody and the same original postcut.
+    pub(crate) fn enter_parent_park_quiescence_for_node(
+        &self,
+        node: &NodeId,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<
+        crucible_qemu::OriginalActorParkQuiescence,
+        crucible_qemu::OriginalActorParkQuiescenceError,
+    > {
+        self.guard
+            .enter_parent_park_quiescence_for_node(node, source, original, decoder)
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+impl<G: QemuAttemptProcessResourceGuard> QemuAttemptGenerationResourceOwner<G> {
+    /// Routes the saved Park phase through its actual selected member.
+    ///
+    /// # Errors
+    /// Preserves unavailable node/physical custody and the same original postcut.
+    pub(crate) fn prepare_parent_park_imports_for_node(
+        &self,
+        node: &NodeId,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_qemu::OriginalActorParkImports, crucible_qemu::OriginalActorParkImportError>
+    {
+        self.guard
+            .prepare_parent_park_imports_for_node(node, source, original, decoder, actor, family)
     }
 }

@@ -564,3 +564,11 @@ mod registry_control_tail_tests {
         assert_eq!(unwrap_without_weak(control).unwrap(), 47);
     }
 }
+
+/// Compares a borrowed real owner to an existing registry controller.
+pub(super) fn controller_matches(
+    state: &Arc<NativeResourceState>,
+    controller: &LinuxQemuNativeResourceController,
+) -> bool {
+    std::ptr::eq(controller.state.as_ptr(), Arc::as_ptr(state))
+}

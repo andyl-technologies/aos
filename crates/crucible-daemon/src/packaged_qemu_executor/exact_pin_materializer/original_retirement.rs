@@ -27,6 +27,10 @@ pub enum OriginalMaterializerRetirementError {
 }
 
 impl PackagedExactPinMaterializerOwner {
+    pub(crate) fn physically_retired(&self) -> bool {
+        self.thread.is_none()
+    }
+
     /// Stops this existing owner and joins only after its actual thread exits.
     ///
     /// # Errors

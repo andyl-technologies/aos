@@ -7,7 +7,8 @@
 use super::*;
 
 const STACK_REQUEST_BYTES: u64 = 2 * 1024 * 1024;
-const DESCRIPTOR_WINDOW: u64 = 64;
+// One actual shared epoll, wake eventfd and pinned namespace descriptor.
+const DESCRIPTOR_WINDOW: u64 = 3;
 
 /// Retains the actual Main payer of one permanent Target dispatcher.
 ///
@@ -23,6 +24,7 @@ pub struct AuthenticatedTargetDispatcherPurpose {
     metadata: Option<HostServiceLeasePair>,
     worker: Option<std::thread::ThreadId>,
     birth_attempted: bool,
+    startup_original: Option<Arc<HostOperationGuard>>,
 }
 
 impl AuthenticatedNativeSubdivision {
@@ -37,44 +39,62 @@ impl AuthenticatedNativeSubdivision {
     pub fn reserve_target_dispatcher_purpose(
         &self,
         control_peak: u64,
-    ) -> Result<AuthenticatedTargetDispatcherPurpose, ServiceBirthError> {
-        self.check()?;
-        let extent = STACK_REQUEST_BYTES
-            .checked_add(control_peak)
-            .and_then(|bytes| bytes.checked_add(3 * HostServiceLease::metadata_bytes()))
-            .filter(|bytes| control_peak != 0 && *bytes > STACK_REQUEST_BYTES)
-            .ok_or_else(|| ServiceBirthError::policy("Target dispatcher extent is invalid"))?;
-        // Credit exists before lease controls, the descriptor census, eventfds,
-        // dispatcher state or the actual thread are constructed.
-        let metadata = self
-            .owner
-            .owner
-            .reserve_metadata(extent)
-            .map_err(ServiceBirthError::from)?;
-        let task = self
-            .owner
-            .owner
-            .reserve_resident(1, 0, 0)
-            .map_err(ServiceBirthError::from)?;
-        let (epoch, descriptors) = self
-            .owner
-            .host_descriptors
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("Target host descriptor custody is uncertain"))?
-            .as_mut()
-            .ok_or_else(|| ServiceBirthError::policy("Target host descriptor payer is absent"))?
-            .reserve_target_window(DESCRIPTOR_WINDOW, &self.owner.original)?;
-        let purpose = AuthenticatedTargetDispatcherPurpose {
-            issuer: Arc::clone(&self.owner),
-            epoch,
-            descriptors: Some(descriptors),
-            task: Some(task),
-            metadata: Some(metadata),
-            worker: None,
-            birth_attempted: false,
-        };
-        // The real caller retains this returned body before its later postcut.
-        Ok(purpose)
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<AuthenticatedTargetDispatcherPurpose, super::NativePoolRefusal> {
+        let result = (|| {
+            self.verify_native_preparation(original)?;
+            let extent = STACK_REQUEST_BYTES
+                .checked_add(control_peak)
+                .and_then(|bytes| bytes.checked_add(3 * HostServiceLease::metadata_bytes()))
+                .filter(|bytes| control_peak != 0 && *bytes > STACK_REQUEST_BYTES)
+                .ok_or_else(|| ServiceBirthError::policy("Target dispatcher extent is invalid"))?;
+            // Credit exists before lease controls, the descriptor census, eventfds,
+            // dispatcher state or the actual thread are constructed.
+            let metadata = self
+                .owner
+                .owner
+                .reserve_metadata(extent)
+                .map_err(ServiceBirthError::from)?;
+            let task = self
+                .owner
+                .owner
+                .reserve_resident(1, 0, 0)
+                .map_err(ServiceBirthError::from)?;
+            let (epoch, descriptors) = self
+                .owner
+                .host_descriptors
+                .lock()
+                .map_err(|_| {
+                    ServiceBirthError::policy("Target host descriptor custody is uncertain")
+                })?
+                .as_mut()
+                .ok_or_else(|| ServiceBirthError::policy("Target host descriptor payer is absent"))?
+                .reserve_target_window(DESCRIPTOR_WINDOW, original)?;
+            let purpose = AuthenticatedTargetDispatcherPurpose {
+                issuer: Arc::clone(&self.owner),
+                epoch,
+                descriptors: Some(descriptors),
+                task: Some(task),
+                metadata: Some(metadata),
+                worker: None,
+                birth_attempted: false,
+                startup_original: Some(Arc::clone(original)),
+            };
+            // Construct the nominal owner before the unconditional postcut.
+            Ok(purpose)
+        })();
+        let after = self.verify_native_preparation(original).err();
+        super::native_pool::finish_dispatcher(result, after)
+    }
+}
+
+impl std::fmt::Debug for AuthenticatedTargetDispatcherPurpose {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthenticatedTargetDispatcherPurpose")
+            .field("epoch", &self.epoch)
+            .field("birth_attempted", &self.birth_attempted)
+            .finish_non_exhaustive()
     }
 }
 
@@ -98,6 +118,34 @@ impl AuthenticatedTargetDispatcherPurpose {
             .as_ref()
             .ok_or_else(|| ServiceBirthError::policy("Target descriptor window is absent"))?
             .check_target_window(self.epoch)
+    }
+
+    /// Borrows a startup wait from the exact Target Preparation that paid birth.
+    ///
+    /// Main's initial Preparation may already be completed at this later first
+    /// Target. The retained borrow is that Target's existing operation; it is
+    /// neither a new guard nor a renewed interval.
+    ///
+    /// # Errors
+    /// Refuses changed Main custody, an absent startup borrow, or a completed,
+    /// cancelled or expired Target Preparation.
+    pub fn startup_wait_slice(&self) -> Result<std::time::Duration, ServiceBirthError> {
+        self.check()?;
+        self.startup_original
+            .as_ref()
+            .ok_or_else(|| {
+                ServiceBirthError::policy("Target dispatcher startup observation ended")
+            })?
+            .wait_slice()
+            .map_err(ServiceBirthError::from)
+    }
+
+    /// Releases the startup borrow after its independent post-observation.
+    ///
+    /// This drops only an alias of the saved Target Preparation. It neither
+    /// completes that operation nor returns worker, task or descriptor credit.
+    pub fn release_startup_observation(&mut self) {
+        self.startup_original = None;
     }
 
     /// Corroborates this payer against its actual retained native subdivision.

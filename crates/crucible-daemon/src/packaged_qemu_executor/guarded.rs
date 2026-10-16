@@ -37,6 +37,7 @@ pub(super) struct PackagedGuardedState {
     pub(super) checkpoints: Arc<ExactCheckpointStore>,
     pub(super) host:
         Option<SharedQemuAttemptHostResourceFactory<LinuxQemuAttemptHostResourceFactory>>,
+    pub(super) lifecycle_cleanup: Option<Arc<crate::lifecycle_cleanup::LifecycleCleanupQueue>>,
 }
 
 pub(crate) struct GuardedOwnerInner {
@@ -47,6 +48,7 @@ pub(crate) struct GuardedOwnerInner {
     debugger: Option<crucible_campaign::DebuggerAuthorityKey>,
     pub(crate) checkpoints: Arc<ExactCheckpointStore>,
     pub(crate) host: SharedQemuAttemptHostResourceFactory<LinuxQemuAttemptHostResourceFactory>,
+    pub(crate) lifecycle_cleanup: Option<Arc<crate::lifecycle_cleanup::LifecycleCleanupQueue>>,
     admission: PackagedAttemptAdmission,
     profile: Mutex<Option<ExecutorCompatibilityProfile>>,
     sequence: AtomicU64,
@@ -131,6 +133,7 @@ impl GuardedCampaignOwner {
             #[cfg(feature = "private-measurement-domain")]
             None,
         )?;
+        let lifecycle_cleanup = admitted_lifecycle_cleanup(&config, &host)?;
         let owner = Self {
             inner: Arc::new(GuardedOwnerInner {
                 actor: actor.campaign_port(),
@@ -140,6 +143,7 @@ impl GuardedCampaignOwner {
                 debugger: Some(debugger),
                 checkpoints,
                 host,
+                lifecycle_cleanup,
                 admission,
                 profile: Mutex::new(None),
                 sequence: AtomicU64::new(0),
@@ -154,8 +158,11 @@ impl GuardedCampaignOwner {
         if let Err(source) = normal.complete_preparation() {
             // Construction has already installed the actual namespaces and
             // roster. An uncertain original postcut retains the whole owner.
-            std::mem::forget(owner);
-            return Err(PackagedQemuExecutorError::NormalProcessPurpose(source));
+            return Err(super::retain_failed_constructor(
+                &normal,
+                crate::campaign_process::RetainedExecutorConstruction::Guarded(owner),
+                source,
+            ));
         }
         Ok(owner)
     }
@@ -191,6 +198,7 @@ impl GuardedCampaignOwner {
                 debugger: None,
                 checkpoints: state.checkpoints.clone(),
                 host,
+                lifecycle_cleanup: state.lifecycle_cleanup.clone(),
                 admission,
                 profile: Mutex::new(Some(profile)),
                 sequence: AtomicU64::new(0),

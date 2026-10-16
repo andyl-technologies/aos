@@ -206,8 +206,13 @@ where
             }
         });
         let cleanup = lifecycle.shutdown();
+        let retirement = self.lifecycles.retire_lifecycle(lifecycle);
         match (driven, cleanup) {
-            (Ok(proof), Ok(_)) => Ok(proof),
+            (Ok(proof), Ok(_)) => retirement.map(|()| proof).map_err(|error| {
+                Box::new(AttemptWorkerFailure::Terminal(
+                    QemuFreshExecutionRunnerError::Lifecycle(error),
+                ))
+            }),
             (Err(failure), Ok(_)) => Err(failure),
             (Ok(_), Err(cleanup)) => Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::Cleanup(cleanup),
@@ -399,6 +404,15 @@ where
 {
     type Error = QemuFreshExecutionRunnerError<F::Error, D::Error>;
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.lifecycles
+            .try_retire_original(original)
+            .map_err(QemuFreshExecutionRunnerError::Lifecycle)
+    }
+
     fn execute(
         &mut self,
         input: &CrucibleAttemptExecution,
@@ -588,6 +602,7 @@ where
             Ok(None)
         };
         let cleanup = lifecycle.shutdown();
+        let retirement = self.lifecycles.retire_lifecycle(lifecycle);
         crate::crucible_execution::record_execution_phase_diagnostic(
             "shutdown-return",
             format_args!(
@@ -613,6 +628,9 @@ where
                 ));
             }
         };
+        retirement.map_err(|error| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Lifecycle(error))
+        })?;
         let resolved_effect_trace = captured_trace.map_err(|error| {
             AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ResolvedEffectTraceCapture(error),
@@ -783,9 +801,12 @@ where
                 })
             });
         let cleanup = lifecycle.shutdown();
+        let retirement = self.lifecycles.retire_lifecycle(lifecycle);
 
         match (replay, cleanup) {
-            (Ok(proof), Ok(_)) => Ok(proof),
+            (Ok(proof), Ok(_)) => retirement.map(|()| proof).map_err(|error| {
+                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Lifecycle(error))
+            }),
             (Err(failure), Ok(_)) => Err(failure),
             (Ok(_), Err(cleanup)) => Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::Cleanup(cleanup),
@@ -907,9 +928,12 @@ where
                 Ok(proof)
             });
         let cleanup = lifecycle.shutdown();
+        let retirement = self.lifecycles.retire_lifecycle(lifecycle);
 
         match (replay, cleanup) {
-            (Ok(proof), Ok(_)) => Ok(proof),
+            (Ok(proof), Ok(_)) => retirement.map(|()| proof).map_err(|error| {
+                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Lifecycle(error))
+            }),
             (Err(failure), Ok(_)) => Err(failure),
             (Ok(_), Err(cleanup)) => Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::Cleanup(cleanup),

@@ -141,12 +141,12 @@ impl AuthenticatedQemuHotForkSourceBasis {
 }
 
 /// Production lifecycle factory fixed to one authenticated source basis.
-pub(crate) struct ProductionQemuHotForkSourceFactory<R> {
+pub(crate) struct ProductionQemuHotForkSourceFactory<R: QemuAttemptResourceGuardFactory> {
     basis: AuthenticatedQemuHotForkSourceBasis,
     lifecycles: QemuAttemptProductionVmLifecycleFactory<R>,
 }
 
-impl<R> ProductionQemuHotForkSourceFactory<R> {
+impl<R: QemuAttemptResourceGuardFactory> ProductionQemuHotForkSourceFactory<R> {
     /// Binds packaged lifecycle launch authority to one authenticated basis.
     ///
     /// The constructor remains crate-private so only the packaged composition
@@ -172,7 +172,7 @@ impl<R> ProductionQemuHotForkSourceFactory<R> {
 
 impl<R> ProductionQemuHotForkSourceFactory<R>
 where
-    R: QemuAttemptResourceGuardFactory,
+    R: QemuAttemptResourceGuardFactory + Send + 'static,
     R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
     /// Launches and prepares one canonical production source world.

@@ -20,6 +20,15 @@ use crate::ram_policy::HostResourceVector;
 mod source_host;
 pub use source_host::{
     AuthenticatedSourceChild, AuthenticatedSourceHostPurpose, SourceHostControlLease,
+    WeakSourceHostPurpose,
+};
+
+mod native_pool;
+pub use native_pool::{
+    AuthenticatedNativeNodeClaim, AuthenticatedNativeNodeHostWindow,
+    AuthenticatedNativePoolPurpose, AuthenticatedNativeWorldClaim,
+    AuthenticatedNativeWorldCleanupLoan, AuthenticatedNativeWorldControlLease,
+    NativeNodeReservation, NativePoolRefusal, NativeWorldIdentity,
 };
 
 mod host_descriptors;
@@ -36,6 +45,9 @@ use host_descriptors::HostDescriptorPartition;
 /// Physical backing must be bound by the existing Service before native birth.
 pub struct AuthenticatedNativeSlotPurpose {
     original: Arc<HostOperationGuard>,
+    cleanup: std::sync::OnceLock<
+        Result<Arc<HostOperationGuard>, crate::host_supervision::HostSupervisionError>,
+    >,
     supervisor: HostOperationSupervisor,
     family: Arc<AuthenticatedServiceFamily>,
     bounds: HostResourceVector,
@@ -53,6 +65,7 @@ pub struct AuthenticatedNativeSlotPurpose {
 /// Its assignment remains in the permanent main ledger even after this facade
 /// drops; process and native retirement cannot replenish the containing bank.
 pub struct AuthenticatedNativeSubdivision {
+    node: Option<AuthenticatedNativeNodeClaim>,
     owner: Arc<AuthenticatedNativeSlotPurpose>,
     bounds: HostResourceVector,
     local_file_descriptors: u64,
@@ -125,6 +138,7 @@ impl AuthenticatedProcessResources {
         );
         let purpose = Arc::new(AuthenticatedNativeSlotPurpose {
             original,
+            cleanup: std::sync::OnceLock::new(),
             supervisor,
             family,
             bounds,
@@ -179,6 +193,28 @@ impl AuthenticatedNativeSlotPurpose {
             .map_err(ServiceBirthError::from)
     }
 
+    /// Enters and retains this same Main's one outer Cleanup on first demand.
+    ///
+    /// Construction failure and service retirement call this only when actual
+    /// cleanup begins. It preserves the original Preparation as its origin,
+    /// including terminal-parent eligibility; it does not enter a fresh
+    /// Preparation, supervisor or interval on retry. Its controls were priced
+    /// at this Main purpose's own before-birth admission.
+    ///
+    /// # Errors
+    /// Retains the first genuine Cleanup admission refusal, or this same
+    /// Cleanup's cancellation, expiry or uncertain synchronization.
+    pub fn retained_cleanup(&self) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
+        let cleanup = self
+            .cleanup
+            .get_or_init(|| self.original.begin_original_cleanup_control().map(Arc::new));
+        let cleanup = cleanup
+            .as_ref()
+            .map_err(|source| ServiceBirthError::from(*source))?;
+        cleanup.wait_slice().map_err(ServiceBirthError::from)?;
+        Ok(Arc::clone(cleanup))
+    }
+
     /// Completes the actual initial preparation without ending main custody.
     ///
     /// Only the caller that finishes the entire prepared executor uses this
@@ -201,9 +237,10 @@ impl AuthenticatedNativeSlotPurpose {
     ///
     /// # Errors
     /// Refuses repeated claims, a failed original phase or changed main/family.
-    pub fn claim_native_roster(
+    fn claim_native_pool_root(
         self: &Arc<Self>,
         request: HostResourceVector,
+        shared_descriptors: u64,
     ) -> Result<AuthenticatedNativeSubdivision, ServiceBirthError> {
         if self
             .native_roster_claimed
@@ -217,7 +254,7 @@ impl AuthenticatedNativeSlotPurpose {
         validate_request(request)?;
         self.assign(request)?;
         self.family.install_native_limits(request, &self.original)?;
-        let local_file_descriptors = request.file_descriptors / 2;
+
         let mut retained = self
             .host_descriptors
             .lock()
@@ -231,7 +268,9 @@ impl AuthenticatedNativeSlotPurpose {
         // census effect. Failed admission leaves the same occupied owner held.
         *retained = Some(HostDescriptorPartition::new(
             self.owner.birth.descriptors,
-            local_file_descriptors,
+            request.file_descriptors,
+            shared_descriptors,
+            self._resident.clone(),
             self.owner
                 .resident
                 .retain_descriptor_remainder()
@@ -244,10 +283,79 @@ impl AuthenticatedNativeSlotPurpose {
         drop(retained);
         self.check()?;
         Ok(AuthenticatedNativeSubdivision {
+            node: None,
             owner: Arc::clone(self),
             bounds: request,
-            local_file_descriptors,
+            local_file_descriptors: 0,
         })
+    }
+
+    /// Observes the remaining authored Main vector after actual Service assignments.
+    ///
+    /// This copy is not credit. Only the once-only checked pool constructor can
+    /// occupy it; a concurrent assignment is rechecked there before effects.
+    ///
+    /// # Errors
+    /// Refuses changed Main, uncertain assignments or any inconsistent axis.
+    pub fn remaining_native_capacity(&self) -> Result<HostResourceVector, ServiceBirthError> {
+        self.check()?;
+        let held = self
+            .assigned
+            .lock()
+            .map_err(|_| ServiceBirthError::policy("normal Main assignments are uncertain"))?;
+        let sub = |left: u64, right: u64| {
+            left.checked_sub(right).ok_or_else(|| {
+                ServiceBirthError::policy("normal Main assignments exceed their original")
+            })
+        };
+        let remaining = HostResourceVector {
+            resident_peak_bytes: sub(self.bounds.resident_peak_bytes, held.resident_peak_bytes)?,
+            backing_peak_bytes: sub(self.bounds.backing_peak_bytes, held.backing_peak_bytes)?,
+            metadata_bytes: sub(self.bounds.metadata_bytes, held.metadata_bytes)?,
+            staging_bytes: sub(self.bounds.staging_bytes, held.staging_bytes)?,
+            cpu_slots: sub(self.bounds.cpu_slots, held.cpu_slots)?,
+            task_slots: sub(self.bounds.task_slots, held.task_slots)?,
+            file_descriptors: sub(self.bounds.file_descriptors, held.file_descriptors)?,
+            paging_io_slots: sub(self.bounds.paging_io_slots, held.paging_io_slots)?,
+        };
+        drop(held);
+        self.check()?;
+        Ok(remaining)
+    }
+
+    /// Claims the same once-only native subdivision as a checked node pool.
+    ///
+    /// The request is the aggregate simultaneous native obligation, not one
+    /// assignment multiplied after publication. Child issuance partitions this
+    /// real retained purpose; it never repeats the Main debit or root claim.
+    /// `consumer_control_bytes` is requested geometry for the actual containing
+    /// factory and all simultaneously retained World/node control storage. It
+    /// must be derived from those concrete types before their allocation, and
+    /// is occupied together with this pool's own storage before publication.
+    ///
+    /// # Errors
+    /// Refuses a foreign or inactive Preparation, an occupied root claim,
+    /// exhausted Main capacity, or an unrepresentable pool control extent.
+    /// Refused root/kernel/descriptor effects remain in the permanent Main.
+    pub fn claim_native_pool(
+        self: &Arc<Self>,
+        request: HostResourceVector,
+        consumer_control_bytes: u64,
+        consumer_file_descriptors: u64,
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<AuthenticatedNativePoolPurpose, NativePoolRefusal> {
+        let result = (|| {
+            self.verify_native_preparation(original)?;
+            let layout = native_pool::checked_layout(
+                request,
+                consumer_control_bytes,
+                consumer_file_descriptors,
+            )?;
+            let root = self.claim_native_pool_root(request, consumer_file_descriptors)?;
+            AuthenticatedNativePoolPurpose::publish(root, layout, original)
+        })();
+        let after = self.verify_native_preparation(original).err();
+        native_pool::finish_root(result, after)
     }
 
     /// Assigns an actual executor Service before its nested allocator is born.
@@ -345,7 +453,60 @@ impl AuthenticatedNativeSubdivision {
     /// # Errors
     /// Preserves expired, cancelled or uncertain containing custody.
     pub fn check(&self) -> Result<(), ServiceBirthError> {
-        self.owner.check()
+        self.owner.check()?;
+        if let Some(node) = &self.node {
+            node.bounds()?;
+        }
+        Ok(())
+    }
+
+    /// Returns the actual node assignment epoch, not a new reservation.
+    #[must_use]
+    pub fn assignment_epoch(&self) -> Option<u64> {
+        self.node.as_ref().map(|node| node.assignment_epoch())
+    }
+
+    /// Returns the fixed containing pool's node bound, not new resource credit.
+    ///
+    /// # Errors
+    /// Refuses a retired or absent node assignment.
+    pub fn pool_node_capacity(&self) -> Result<usize, ServiceBirthError> {
+        self.check()?;
+        self.node
+            .as_ref()
+            .ok_or_else(|| ServiceBirthError::policy("native node pool is absent"))?
+            .pool_capacity()
+    }
+
+    /// Closes this consumed node only after its real native controls are freed.
+    ///
+    /// This move remains refused while any issued Source/Target landing is
+    /// live. The genuine native roster invokes it after exclusive control free;
+    /// copied limits or an operation completion cannot return the assignment.
+    ///
+    /// # Errors
+    /// Retains the same assignment on live landing, changed Main or uncertainty.
+    pub fn retire_after_control_free(&mut self) -> Result<(), ServiceBirthError> {
+        if let Some(node) = self.node.as_mut() {
+            node.retire_after_control_free()?;
+        }
+        Ok(())
+    }
+
+    /// Retains this node's Target landing before its actual saved Preparation effects.
+    ///
+    /// # Errors
+    /// Refuses absent node custody, foreign/inactive Preparation or postcut.
+    pub fn reserve_node_target_window(
+        &self,
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<(), NativePoolRefusal> {
+        match self.node.as_ref() {
+            Some(node) => node.reserve_target_window(original),
+            None => native_pool::missing_node_window(
+                self.owner.verify_native_preparation(original).err(),
+            ),
+        }
     }
 
     /// Returns this subdivision's unchanged request bounds, not another grant.
@@ -476,6 +637,7 @@ fn control_extent() -> Result<u64, ServiceBirthError> {
     let mut bytes = HostSupervisionBootstrap::structure_bytes().map_err(ServiceBirthError::from)?;
     for layout in [
         std::alloc::Layout::new::<AuthenticatedNativeSlotPurpose>(),
+        std::alloc::Layout::new::<HostOperationGuard>(),
         std::alloc::Layout::new::<HostOperationGuard>(),
     ] {
         let (layout, _) = std::alloc::Layout::new::<(

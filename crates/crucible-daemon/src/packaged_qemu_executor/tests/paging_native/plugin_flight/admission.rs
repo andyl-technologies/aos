@@ -1,8 +1,9 @@
-//! Genuine accepted-worker admission for the native plugin assertion driver.
+//! Accepted-worker admission requirements for the native plugin assertion driver.
 //!
-//! Each generation uses the production world partition, original supervision,
-//! sealed native inventory handshake, and real process/quota guard. The node
-//! charges both the execution and physical guard before each modeled advance.
+//! The positive driver remains required, but its independent factory does not
+//! yet receive Main's authentic normal pool and cleanup owner. Entry refuses
+//! until that real composition is supplied; no callback fabricates Source
+//! custody. The retained node path charges both execution and physical guards.
 
 use super::super::super::*;
 use crate::qemu_campaign_lifecycle::config_for_assignment_host_watchdog;
@@ -119,18 +120,16 @@ impl<'a> AdmittedFlightFactory<'a> {
                 "flight launch differs from actual accepted shape or semantic limits".into(),
             );
         }
-        let guard =
-            self.factory
-                .begin_native_world_guard(self.context, self.source, &self.lifecycle)?;
-        Ok(AdmittedFlightOwner {
-            guard: Rc::new(RefCell::new(guard)),
-            lifecycle: self.lifecycle.clone(),
-            context: self.context.clone(),
-            node: node.id.name.clone(),
-            vcpus,
-            declared_ram_bytes: u64::from(node.memory_mib) * 1024 * 1024,
-            terminal: false,
-        })
+        // This fixture currently opens an independent host factory instead of
+        // receiving Main's authentic normal pool and pre-reserved cleanup path.
+        // Keep the positive driver unsatisfied until that real owner is wired;
+        // a no-op before-effects callback would discard born Source custody.
+        Err(crucible_qemu::QemuVmRealizationError::ExecutorUnavailable {
+            operation: "admit production plugin flight Source",
+            message: String::from(
+                "plugin flight requires the retained Main-bound Source factory and its actual before-effects construction owner",
+            ),
+        }.into())
     }
 
     pub(in crate::packaged_qemu_executor::tests::paging_native) fn create_trace_spool(

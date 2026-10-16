@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use crucible_linux_resource::host_services::process_birth::{
-    AuthenticatedNativeSubdivision, ServiceBirthError,
+    AuthenticatedNativeNodeClaim, AuthenticatedNativeSubdivision, NativePoolRefusal,
+    ServiceBirthError,
 };
 use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceError, HostServiceLeasePair,
@@ -27,6 +28,9 @@ pub enum OriginalActorAccountError {
     /// The same authenticated normal main refused its checked subdivision.
     #[error("normal native purpose refused: {0}")]
     NativePurpose(#[from] ServiceBirthError),
+    /// Preserves node/window birth custody and the independent Original postcut.
+    #[error("normal native pool refused: {0}")]
+    NativePool(#[from] NativePoolRefusal),
     /// The authenticated workflow refused before a separate original postcheck.
     #[error("original workflow refused: {source}; original: {original:?}")]
     #[cfg(feature = "private-measurement-domain")]
@@ -117,11 +121,12 @@ pub(in crate::linux_attempt_host) struct RetainedNativeCredit {
 }
 
 impl OriginalNativeAccountCredit {
-    pub(super) fn from_normal(
-        purpose: AuthenticatedNativeSubdivision,
+    pub(super) fn from_normal_node(
+        node: AuthenticatedNativeNodeClaim,
         preparation: &Arc<HostOperationGuard>,
         controls: u64,
     ) -> Result<Self, OriginalActorAccountError> {
+        let purpose = node.into_subdivision(preparation)?;
         purpose.verify_native_preparation(preparation)?;
         let bounds = purpose.bounds();
         if bounds.cpu_slots == 0 || controls > bounds.metadata_bytes {
@@ -154,6 +159,9 @@ impl OriginalNativeAccountCredit {
     /// Preserves the same preparation's original refusal before pair release.
     pub(super) fn retire_after_control_free(&mut self) -> Result<(), OriginalActorAccountError> {
         self.require_original()?;
+        if let Some(normal) = self.original.as_mut().and_then(|held| held.normal.as_mut()) {
+            normal.retire_after_control_free()?;
+        }
         drop(self.original.take());
         Ok(())
     }

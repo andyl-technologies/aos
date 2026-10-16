@@ -783,23 +783,47 @@ impl ProductionVmLifecycleLoop {
         &self,
         request: &DebugRuntimeRepositionRequest,
     ) -> Result<ProductionVmLifecycleLoop, SchedulerError> {
+        // Hold the single slot from the pre-effect exclusion check through
+        // publication. A second candidate cannot overwrite failed custody.
+        let mut retained = self.retained_debug_construction.try_lock().map_err(|_| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("debug construction custody is unavailable"),
+            }
+        })?;
+        if retained.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("a previous debug construction still owns cleanup"),
+            });
+        }
         let replay_config = self.config.clone();
         let replay_launcher = self.node_launcher.replay_candidate().map_err(|error| {
             SchedulerError::BoundaryViolation {
                 message: format!("admit whole-world debug replay launch authority: {error}"),
             }
         })?;
-        let mut replay = build_production_vm_lifecycle_loop_with_restore(
+        let mut replay = match build_production_vm_lifecycle_loop_with_restore(
             &self.scenario,
             &self.source,
             &replay_config,
             None,
             replay_launcher,
             None,
-        )
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("construct whole-world debug replay candidate: {error}"),
-        })?;
+        ) {
+            Ok(replay) => replay,
+            Err(failure) => {
+                *retained = Some(failure);
+                // Publish the actual owner before constructing a diagnostic.
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "construct whole-world debug replay candidate: {}",
+                        retained
+                            .as_ref()
+                            .map_or("missing retained failure".to_owned(), ToString::to_string)
+                    ),
+                });
+            }
+        };
+        drop(retained);
         let target = &request.target;
         let controls = self.recorded_controls.clone();
         let mut control_index = 0_usize;
@@ -939,6 +963,23 @@ impl ProductionVmLifecycleLoop {
                     ),
                 })?;
         }
+        Ok(())
+    }
+
+    pub(super) fn retry_retained_debug_construction(&mut self) -> Result<(), SchedulerError> {
+        let retained = self.retained_debug_construction.get_mut().map_err(|_| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("debug construction custody is poisoned"),
+            }
+        })?;
+        if let Some(failure) = retained.as_ref() {
+            failure
+                .retry_cleanup()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("retire retained debug construction: {error}"),
+                })?;
+        }
+        *retained = None;
         Ok(())
     }
 

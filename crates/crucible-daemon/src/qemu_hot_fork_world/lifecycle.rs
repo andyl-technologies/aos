@@ -39,6 +39,11 @@ use crate::{
     QemuHotForkWorldResourceOwner,
 };
 
+mod installation;
+pub(crate) use installation::{
+    HotForkInstallationRetirementError, HotForkLifecycleInstallError, RetainedHotForkInstallation,
+};
+
 type ProductionWorldChild<G> = QemuHotForkAttemptReconciliation<
     LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
 >;
@@ -642,7 +647,7 @@ where
         source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
         mut resources: QemuHotForkWorldResourceOwner<G>,
         auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
-    ) -> Result<QemuProductionHotForkWorldLifecycle<G>, LifecycleApiError> {
+    ) -> Result<QemuProductionHotForkWorldLifecycle<G>, HotForkLifecycleInstallError<G>> {
         let QemuHotForkProductionLifecycleContext {
             scenario,
             source,
@@ -703,7 +708,14 @@ where
         }
         let expected = self.children.keys().cloned().collect::<BTreeSet<NodeId>>();
         let completed = LinuxQemuHotForkWorldReconciliationSet::new(expected);
-        let maximum_nodes = source.world().vm_nodes().len();
+        let generation_storage = match crate::QemuAttemptGenerationStorage::prepare(
+            source.world().vm_nodes().iter().map(|node| &node.id),
+        ) {
+            Ok(storage) => storage,
+            Err(error) => {
+                return retain_complete_install_failure(source_world, resources, self, error);
+            }
+        };
         let lifecycle_guard = match resources.lifecycle_guard() {
             Ok(guard) => guard,
             Err(error) => {
@@ -718,12 +730,7 @@ where
             }
         };
         let generation_owner =
-            match QemuAttemptGenerationResourceOwner::new(lifecycle_guard, maximum_nodes) {
-                Ok(owner) => owner,
-                Err(error) => {
-                    return retain_complete_install_failure(source_world, resources, self, error);
-                }
-            };
+            QemuAttemptGenerationResourceOwner::new(lifecycle_guard, generation_storage);
         let mut launcher = QemuAttemptProductionVmNodeLauncher::new(generation_owner);
         if let (Some(checkpoints), Some(cancellation)) = (terminal_checkpoints, cancellation) {
             launcher =
@@ -742,7 +749,7 @@ where
                     let error =
                         lifecycle_error("assembled hot-fork child disappeared during adoption");
                     retain_remaining_install_failure(source_world, resources, completed, children);
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
             let generation = match boundaries
@@ -757,7 +764,7 @@ where
                     ));
                     child.quarantine_and_retain();
                     retain_remaining_install_failure(source_world, resources, completed, children);
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
             let identity = match ProductionVmNodeGeneration::new(node, generation) {
@@ -765,14 +772,14 @@ where
                 Err(error) => {
                     child.quarantine_and_retain();
                     retain_remaining_install_failure(source_world, resources, completed, children);
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
             let adoption = match child.into_world_node_adoption(identity, completed.clone()) {
                 Ok(adoption) => adoption,
                 Err(error) => {
                     retain_remaining_install_failure(source_world, resources, completed, children);
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
             adoptions.push(adoption);
@@ -783,12 +790,20 @@ where
             continuation,
             adoptions,
             run_state_root,
-            launcher,
+            Box::new(launcher),
         ) {
             Ok(lifecycle) => lifecycle,
-            Err(error) => {
-                retain_remaining_install_failure(source_world, resources, completed, children);
-                return Err(error);
+            Err(failure) => {
+                return Err(HotForkLifecycleInstallError::Retained(
+                    RetainedHotForkInstallation::new(
+                        failure,
+                        source_lease,
+                        source_world,
+                        completed,
+                        resources,
+                        auxiliary_resources,
+                    ),
+                ));
             }
         };
         Ok(QemuProductionHotForkWorldLifecycle {
@@ -826,7 +841,7 @@ fn retain_complete_install_failure<G>(
     mut resources: QemuHotForkWorldResourceOwner<G>,
     complete: QemuHotForkCompleteWorldAssembly<ProductionWorldChild<G>>,
     error: LifecycleApiError,
-) -> Result<QemuProductionHotForkWorldLifecycle<G>, LifecycleApiError>
+) -> Result<QemuProductionHotForkWorldLifecycle<G>, HotForkLifecycleInstallError<G>>
 where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {
@@ -839,7 +854,7 @@ where
         _resources: resources,
     };
     let _retained_for_process_lifetime = Box::leak(Box::new(quarantine));
-    Err(error)
+    Err(error.into())
 }
 
 fn retain_remaining_install_failure<G>(

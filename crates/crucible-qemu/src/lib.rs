@@ -204,9 +204,10 @@ pub use linux_attempt_host::OriginalParentParkCleanup;
 pub use linux_attempt_host::{
     AdmittedHostConfigurationError, InstalledNodeLaunchIssuer, LinuxQemuAttemptHostConfig,
     LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner, LinuxQemuForkTargetPermit,
-    LinuxQemuNativeResourceController, LinuxQemuNativeResourceError, OriginalActorAccountError,
-    OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
+    LinuxQemuNativeNodeHost, LinuxQemuNativeResourceController, LinuxQemuNativeResourceError,
+    OriginalActorAccountError, OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
     OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
+    QemuForkTargetLogicalReservation, QemuForkTargetRamAdmission,
 };
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 #[doc(hidden)]

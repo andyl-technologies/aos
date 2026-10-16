@@ -51,6 +51,11 @@ use crate::{
     stage_prepared_checkpoint_result,
 };
 
+mod worker_custody;
+pub(crate) use worker_custody::{
+    ExecutorWorkerCustody, PreparedExecutorWorkers, WorkerRetirementRefusal,
+};
+
 mod diagnostics;
 mod host_admission;
 #[cfg(feature = "private-measurement-domain")]
@@ -60,7 +65,6 @@ pub(crate) use host_admission::{CampaignActorPort, PreparedExecutorActor};
 
 mod checkpoint;
 mod completion;
-#[cfg(feature = "private-measurement-domain")]
 pub(crate) mod original_retirement;
 use checkpoint::{observe_promoted_checkpoint, reconcile_checkpoint_result};
 pub use completion::LocalExecutorPoolCompletion;
@@ -381,8 +385,7 @@ where
 /// Fixed owner of local execution threads and their shared supervisor actor.
 pub struct LocalExecutorWorkerPool<L, V> {
     service: LocalExecutorPoolService<L, V>,
-    workers: Vec<JoinHandle<()>>,
-    #[cfg(feature = "private-measurement-domain")]
+    worker_custody: Arc<ExecutorWorkerCustody>,
     original_retired: bool,
 }
 
@@ -417,12 +420,13 @@ where
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
+        W::Error: Send + 'static,
     {
         Self::start_inner(
             executor,
             store,
             checkpoints,
-            workers,
+            PreparedExecutorWorkers::component(workers, 0),
             Vec::<DisabledCheckpointPromotionWorker>::new(),
             PoolPublicationContext {
                 checkpoint_observer: None,
@@ -444,12 +448,13 @@ where
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
+        W::Error: Send + 'static,
     {
         Self::start_inner(
             executor,
             store,
             checkpoints,
-            workers,
+            PreparedExecutorWorkers::component(workers, 0),
             Vec::<DisabledCheckpointPromotionWorker>::new(),
             PoolPublicationContext {
                 checkpoint_observer: Some(checkpoint_observer),
@@ -468,13 +473,14 @@ where
         prepared: (PreparedExecutorActor<L, V>, ExecutorDescription),
         store: CampaignExecutorStore,
         checkpoints: Arc<ExactCheckpointStore>,
-        workers: Vec<W>,
+        workers: PreparedExecutorWorkers<W>,
         promotion_workers: Vec<P>,
         checkpoint_observer: Arc<dyn PausedCheckpointObserver>,
         prepared_results: Option<PreparedResultJournalConfig>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
+        W::Error: Send + 'static,
         P: LocalCheckpointPromotionWorker + Send + 'static,
     {
         let (prepared, description) = prepared;
@@ -497,12 +503,13 @@ where
         executor: impl Into<host_admission::ActorAllocation<L, V>>,
         store: CampaignExecutorStore,
         checkpoints: Arc<ExactCheckpointStore>,
-        workers: Vec<W>,
+        workers: PreparedExecutorWorkers<W>,
         promotion_workers: Vec<P>,
         publication: PoolPublicationContext<L, V>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
+        W::Error: Send + 'static,
         P: LocalCheckpointPromotionWorker + Send + 'static,
     {
         let PoolPublicationContext {
@@ -511,7 +518,9 @@ where
             prepared_admission,
         } = publication;
         let executor = executor.into();
-        let worker_count = workers.len();
+        let (worker_cells, worker_custody) = workers.into_cells();
+        let _startup = worker_custody::WorkerStartup(Arc::clone(&worker_custody));
+        let worker_count = worker_cells.len();
         if worker_count == 0 {
             return Err(LocalExecutorPoolConfigError::ZeroWorkers);
         }
@@ -586,29 +595,28 @@ where
                 .attach_admission(admission)
                 .map_err(|_| LocalExecutorPoolConfigError::HostOperationalAdmission)?;
         }
-        let total_workers = worker_count
-            .checked_add(promotion_worker_count)
-            .ok_or(LocalExecutorPoolConfigError::TooManyPromotionWorkers)?;
-        let mut joins: Vec<JoinHandle<()>> = Vec::with_capacity(total_workers);
-        for (slot, worker) in workers.into_iter().enumerate() {
+        for (slot, worker) in worker_cells.into_iter().enumerate() {
             let worker_shared = Arc::clone(&shared);
             let worker_store = store.clone();
+            worker.scheduled();
+            let worker_for_thread = Arc::clone(&worker);
+            let retained_by_main = worker_custody.has_funded_workers();
             let join = match thread::Builder::new()
                 .name(format!("crucible-executor-{slot}"))
                 .spawn(move || {
                     let _completion = WorkerCompletion::new(&worker_shared.completion);
-                    worker_loop(worker_shared, worker_store, worker);
+                    worker_for_thread.run(worker_shared, worker_store, retained_by_main);
                 }) {
                 Ok(join) => join,
                 Err(source) => {
+                    worker.spawn_failed();
                     shared.request_shutdown();
                     // Already-started workers own their exact state. A spawn
                     // failure must not wait forever on their reconciliation.
-                    drop(joins);
                     return Err(LocalExecutorPoolConfigError::Spawn { source });
                 }
             };
-            joins.push(join);
+            worker_custody.retain_thread(join);
         }
         for (slot, worker) in promotion_workers.into_iter().enumerate() {
             let worker_shared = Arc::clone(&shared);
@@ -621,11 +629,10 @@ where
                 Ok(join) => join,
                 Err(source) => {
                     shared.request_shutdown();
-                    drop(joins);
                     return Err(LocalExecutorPoolConfigError::Spawn { source });
                 }
             };
-            joins.push(join);
+            worker_custody.retain_thread(join);
         }
 
         Ok(Self {
@@ -634,8 +641,7 @@ where
                 #[cfg(feature = "private-measurement-domain")]
                 original: None,
             },
-            workers: joins,
-            #[cfg(feature = "private-measurement-domain")]
+            worker_custody,
             original_retired: false,
         })
     }
@@ -687,25 +693,32 @@ where
     }
 
     pub(crate) fn shutdown_and_join_with_timeout(
-        mut self,
+        self,
         timeout: Duration,
     ) -> Result<LocalExecutorPoolReport, LocalExecutorPoolShutdownError> {
         self.request_shutdown();
         if !self.service.shared.completion.wait_for_cleanup(timeout) {
             return Err(LocalExecutorPoolShutdownError::CleanupPending);
         }
-        let mut outer_panic = false;
-        for worker in self.workers.drain(..) {
-            if worker.join().is_err() {
-                outer_panic = true;
+        let outer_panic = if self.worker_custody.has_funded_workers() {
+            if !self.original_retired {
+                return Err(LocalExecutorPoolShutdownError::CleanupPending);
             }
-        }
+            self.worker_custody.thread_panicked()
+        } else {
+            self.worker_custody.join_components()?
+        };
         if outer_panic {
             return Err(LocalExecutorPoolShutdownError::ThreadPanicked);
         }
         let state = self.service.shared.state.load(Ordering::Acquire);
         if state == POOL_POISONED {
             return Err(LocalExecutorPoolShutdownError::WorkerPanicked);
+        }
+        if self.worker_custody.has_funded_workers() && !self.original_retired {
+            // Joining borrowing threads is not physical model/factory return.
+            // Production must use its same saved Original retirement path.
+            return Err(LocalExecutorPoolShutdownError::CleanupPending);
         }
         let executor = self
             .service
@@ -745,7 +758,6 @@ impl<L, V> LocalExecutorPoolShutdown<L, V> {
 
 impl<L, V> Drop for LocalExecutorWorkerPool<L, V> {
     fn drop(&mut self) {
-        #[cfg(feature = "private-measurement-domain")]
         if self.original_retired {
             // The bounded original path joined every real handle after draining
             // the actor. Reentering ordinary shutdown would reacquire its locks.
@@ -755,7 +767,8 @@ impl<L, V> Drop for LocalExecutorWorkerPool<L, V> {
         // Dropping a JoinHandle detaches without dropping the shared supervisor.
         // Each thread retains the Arc and exact reconciliation token until its
         // cancellation-aware worker exits.
-        self.workers.clear();
+        // Main retains both the actual W cells and same join handles; detached
+        // facade destruction never releases either physical owner.
     }
 }
 
@@ -765,6 +778,12 @@ pub enum LocalExecutorPoolConfigError {
     /// The live operational resource actor could not be attached safely.
     #[error("local executor host operational admission is unavailable")]
     HostOperationalAdmission,
+    /// Actual generic worker/control geometry could not be represented.
+    #[error("local executor worker control geometry overflows")]
+    WorkerControlGeometry,
+    /// The same Main refused the permanent worker bodies before construction.
+    #[error("local executor worker body admission refused: {0}")]
+    WorkerControlAdmission(#[source] crucible_qemu::QemuVmRealizationError),
     /// No execution can make progress without a worker.
     #[error("local executor worker count must be nonzero")]
     ZeroWorkers,
@@ -854,6 +873,9 @@ pub enum LocalExecutorPoolShutdownError {
         "local executor cleanup is pending; worker resources and endpoint ownership remain retained"
     )]
     CleanupPending,
+    /// Permanent worker model/factory cleanup remains occupied or reports history.
+    #[error("local executor worker model resources remain retained or reported failure")]
+    WorkerResources,
     /// A worker panicked outside the pool's guarded model call.
     #[error("local executor worker thread panicked")]
     ThreadPanicked,
@@ -1626,7 +1648,7 @@ where
 fn worker_loop<L, V, W>(
     shared: Arc<SharedExecutor<L, V>>,
     store: CampaignExecutorStore,
-    mut worker: W,
+    worker: &mut W,
 ) where
     L: AssignmentLedger + Send + 'static,
     V: AttemptAdmissionValidator + Send + Sync + 'static,
@@ -1669,14 +1691,14 @@ fn worker_loop<L, V, W>(
                 if produced_result {
                     reconcile_worker_execution(
                         &shared,
-                        &mut worker,
+                        worker,
                         AttemptExecutionDisposition::Canceled,
                     );
                 }
             }
             Ok(work) => {
                 if let Some(disposition) = reconcile_work_result(&shared, &store, work) {
-                    reconcile_worker_execution(&shared, &mut worker, disposition);
+                    reconcile_worker_execution(&shared, worker, disposition);
                 }
             }
             Err(_) => {

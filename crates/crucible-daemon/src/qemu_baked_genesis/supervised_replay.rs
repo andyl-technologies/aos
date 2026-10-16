@@ -398,13 +398,19 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
             }
         };
         let bind = (|| {
-            registration
-                .reserve_native_controller_resources()
-                .map_err(|source| replay_contract(source.to_string()))?;
-            let controller = native.native_resource_controller()?;
-            registration
-                .bind_native_resource_controller(controller)
-                .map_err(|source| replay_contract(source.to_string()))
+            let basis = self.replay_basis.as_ref().ok_or_else(|| {
+                replay_contract("replay execution basis disappeared before controller binding")
+            })?;
+            for node in basis.source().world().vm_nodes() {
+                registration
+                    .reserve_native_controller_resources(&node.id.name)
+                    .map_err(|source| replay_contract(source.to_string()))?;
+                let controller = native.native_resource_controller_for_node(&node.id)?;
+                registration
+                    .bind_native_resource_controller(&node.id.name, controller)
+                    .map_err(|source| replay_contract(source.to_string()))?;
+            }
+            Ok(())
         })();
         if let Err(error) = bind {
             let cleanup = native.finish();

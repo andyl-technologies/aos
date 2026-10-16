@@ -55,11 +55,64 @@ impl CampaignProcessOwner {
                 "normal production executor requires its authored delegated main",
             ));
         }
-        ACTOR
+        let actor = ACTOR
             .get()
-            .ok_or_else(|| CampaignProcessAdmissionError::policy("normal main is unpublished"))?
+            .ok_or_else(|| CampaignProcessAdmissionError::policy("normal main is unpublished"))?;
+        let executor = actor
             .accounts
             .admit_executor_purpose(bounds, budgets)
-            .map_err(CampaignProcessAdmissionError::ExecutorPurpose)
+            .map_err(CampaignProcessAdmissionError::ExecutorPurpose)?;
+        actor.executor.set(Arc::clone(&executor)).map_err(|_| {
+            CampaignProcessAdmissionError::policy("normal Main purpose is already installed")
+        })?;
+        Ok(executor)
+    }
+}
+
+/// Pins the actual once-admitted Main queue before any Source construction.
+///
+/// Repeated observation of the same queue is harmless; another Main or queue
+/// cannot replace it. The permanent actor keeps failed-constructor custody
+/// reachable independently of every weak factory/reservation handoff.
+///
+/// # Errors
+/// Refuses an absent or inactive Main, a different admitted purpose, or another
+/// queue already published in this same permanent actor.
+pub(crate) fn install_executor_lifecycle_cleanup(
+    main: &Arc<AuthenticatedNativeSlotPurpose>,
+    queue: Arc<crate::lifecycle_cleanup::LifecycleCleanupQueue>,
+) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+    let actor = ACTOR
+        .get()
+        .ok_or_else(|| anchor_refusal("normal Main is unpublished"))?;
+    actor
+        .verify()
+        .map_err(|_| anchor_refusal("normal Main is no longer live"))?;
+    let admitted = actor
+        .executor
+        .get()
+        .ok_or_else(|| anchor_refusal("normal executor purpose has not been admitted"))?;
+    if !Arc::ptr_eq(admitted, main) {
+        return Err(anchor_refusal(
+            "cleanup queue belongs to another Main purpose",
+        ));
+    }
+    if let Some(current) = actor.lifecycle_cleanup.get() {
+        return if Arc::ptr_eq(current, &queue) {
+            Ok(())
+        } else {
+            Err(anchor_refusal("normal Main retains another cleanup queue"))
+        };
+    }
+    actor
+        .lifecycle_cleanup
+        .set(queue)
+        .map_err(|_| anchor_refusal("normal Main cleanup publication raced another queue"))
+}
+
+fn anchor_refusal(message: &'static str) -> crucible_qemu::QemuVmRealizationError {
+    crucible_qemu::QemuVmRealizationError::ExecutorUnavailable {
+        operation: "retain Main lifecycle cleanup",
+        message: String::from(message),
     }
 }

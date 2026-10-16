@@ -60,6 +60,22 @@ impl QemuHotForkChildProcessBasis {
 
 /// Process owner that authenticates and retains one successful hot-fork child.
 pub trait QemuHotForkChildProcessOwner {
+    /// Retains a child through the exact selected member of an aggregate owner.
+    ///
+    /// Single owners preserve their existing authenticated route. Aggregate
+    /// owners must select the retained node rather than copy one child's
+    /// contract across the World. The coordinate itself issues no authority.
+    ///
+    /// # Errors
+    /// Refuses an unknown member or actual child ownership authentication.
+    fn retain_hot_fork_child_for_node(
+        &mut self,
+        _node: &crucible::NodeId,
+        basis: QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        self.retain_hot_fork_child(basis)
+    }
+
     /// Nonduplicable authority retained in the successful launch token.
     type Authority;
 
