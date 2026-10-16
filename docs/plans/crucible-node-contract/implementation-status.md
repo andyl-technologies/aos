@@ -858,7 +858,10 @@ full Core suite passes 1,723 tests, with zero failures and 32 ignored, in 17.01
 seconds using the real installed provider; the later complete-coordinator Source follow-up
 rerun also passes all 1,723 in 18.03 seconds. The launched guard still refuses the
 unlaunched shape; neither a fake process nor an executable is inserted. All six
-new current-observation and retained-dispatch controls pass.
+new current-observation and retained-dispatch controls pass. The later
+fresh-runtime, facet and recorded-repeatability checkpoint passes all 1,728 Core
+tests, with zero failures and 32 ignored native controls, in 5.82 seconds using
+eight test threads. This is correctness validation, not a performance comparison.
 
 The ordinary native Complete four-owner initial-scene fixture compiles and runs,
 but refuses before Child creation. Its complete immutable coordinator declaration
@@ -895,17 +898,43 @@ fixtures and refusal limits. The publisher remains retained through reclamation.
 A separate fresh-holder baseline driver retains the same cleanup supervisor.
 Commit `a48cc8c721` corrects its native-slot reservation and descriptor census;
 four focused schema and supervisor controls pass in 6.38 seconds. The broader
-Complete daemon suite passes 106 tests with two explicit native tests ignored
-before these final corrections. No fresh native qualification is claimed.
+Complete daemon suite passes 109 tests with zero failures and two explicit native
+tests ignored in 249.19 seconds after these corrections. No fresh native
+qualification is claimed.
 
 Commit `717e7a7093` adds construction projections for the same archived Host and
 callback-free transfer of the actual three prepared peers, Host and cleanup slot
 into a retained preparation. Six-crate all-feature/all-target checking and two
 geometry/missing-owner controls pass. These helpers do not create graph admission
-or restoration authority; their genuine retained-owner caller remains under
-implementation. Restored nodes also need the full ordinary operation path beyond
-current-state Observe, including pre-effect admission, progressed native evidence
-and durable outcome publication.
+or restoration authority. Commit `fa60f20e67` supplies the genuine retained-owner
+caller and early-failure cleanup, with formatting separately in `7517198ad1`.
+Six-crate all-feature/all-target checking passes. Twelve selected controls pass;
+the same run's real native startup case still fails while projecting the
+FreshCompletedAdmit13 publication, before Child creation. Its original-observation
+projection passes, and outer resource credit is not exhausted.
+
+Commit `8471bf6d02` exposes the actual selected Complete CNP preservation
+description while retaining generic Capture refusal and ticketed capture checks.
+Its three pure controls pass in the full Core suite. Live admitted acquisition
+remains part of the currently failing native fixture.
+
+Commit `768237293a` shares the real effective-repeatability calculation between
+admission and recorded-request recovery, including causal and shared-owner taint.
+A genuine connected-world restart test passes: the same completed request returns
+identical result bytes twice, preserves five durable namespaces and remains
+ineligible for deterministic cache reuse. The paired fresh-owner declaration
+control also passes; both finish in 5.31 seconds. These results do not qualify
+complete native preservation. Restored nodes still need the ordinary operation
+path beyond current-state Observe, including pre-effect admission, progressed
+native evidence and durable outcome publication.
+
+Commit `65edc1c024` adds the provider side of bounded recurring Producer work:
+separate completed and post-retirement correspondence, independently spent native
+and ingress scopes, retained SDK attempts and method-aware ACK completion. The
+Provider suite passes 1,031 tests with zero failures and thirteen ignored in
+10.06 seconds, including seven new controls. Its main action selector remains
+closed until common-runtime admission and the actual durable publisher are
+connected. Component recurrence does not qualify the full installed restoration.
 
 ## Known gaps and exit criteria
 
