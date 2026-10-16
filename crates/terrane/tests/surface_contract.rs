@@ -310,34 +310,36 @@ chunk_seed = "{}"
 }
 
 #[test]
-fn native_host_configuration_preserves_explicit_runtime_inputs() {
-    let config =
-        Config::parse(&native_host_configuration()).expect("explicit native configuration");
-    let host = config.host_tier().expect("host tier");
-    let publisher = host.publisher.as_ref().expect("publisher config");
+fn native_host_configuration_preserves_explicit_runtime_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::parse(&native_host_configuration())?;
+    let host = config.host_tier().ok_or("host tier")?;
+    let publisher = host.publisher.as_ref().ok_or("publisher config")?;
     assert_eq!((publisher.serve_uid, publisher.publish_uid), (1001, 1002));
     assert_eq!(publisher.max_connections, 32);
     assert_eq!(
         host.quota
             .as_ref()
-            .expect("quota config")
+            .ok_or("quota config")?
             .configuration_epoch,
         [1; 16]
     );
 
     let domain = &host.domains["public"];
     assert_eq!(domain.quota_owner_id.as_deref(), Some("public-owner"));
-    let policy = domain.publisher.as_ref().expect("domain policy");
+    let policy = domain.publisher.as_ref().ok_or("domain policy")?;
     assert_eq!(policy.retirement_grace_ms, 30_000);
     assert_eq!(policy.chunk_seed, [2; 32]);
     assert_eq!(
-        policy.profile().expect("registered actual profile"),
+        policy.profile()?,
         terrane_core::chunking::ChunkProfile::cdc_1m([2; 32])
     );
+    Ok(())
 }
 
 #[test]
-fn native_host_configuration_rejects_missing_or_ambiguous_operator_inputs() {
+fn native_host_configuration_rejects_missing_or_ambiguous_operator_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
     let valid = native_host_configuration();
     for (from, to) in [
         ("serve_uid = 1001", "serve_uid = 1002"),
@@ -367,11 +369,12 @@ fn native_host_configuration_rejects_missing_or_ambiguous_operator_inputs() {
         let line = valid
             .lines()
             .find(|line| line.starts_with(field))
-            .expect("hex field");
+            .ok_or("hex field")?;
         assert!(Config::parse(&valid.replace(line, &format!("{field} = \"AA\""))).is_err());
         let width = if field == "chunk_seed" { 32 } else { 16 };
         let uppercase = format!("{field} = \"{}\"", "AB".repeat(width));
         assert!(Config::parse(&valid.replace(line, &uppercase)).is_err());
         assert!(Config::parse(&valid.replace(line, "")).is_err());
     }
+    Ok(())
 }
