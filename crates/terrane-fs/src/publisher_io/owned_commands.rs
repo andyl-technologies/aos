@@ -9,12 +9,14 @@ use terrane::store::{LocalFs, TokioClock, TokioLocalFs};
 use terrane_core::chunking::ChunkProfile;
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
+use super::super::NativeManifestWitness;
 use super::super::bodies::{BodyIo, EncodedUnit};
 use super::{
     NativePublishedObject, NativePublisher, NativePublisherConfig, NativeRetirementPolicy,
     NativeSealProbe, WorkerState,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 use terrane::host::publication::Publisher;
 use terrane::host::publication::{FsPublicationState, RetirementInode, RetirementLeaseRequest};
 
@@ -99,6 +101,28 @@ pub enum NativeOperation {
     Adopt {
         /// The immutable reconstruction witness.
         claim: PublicationClaim,
+    },
+    /// Publishes from an actual received metadata witness, without pin authority.
+    ///
+    /// The registered receiver remains closed until native cache composition
+    /// establishes genuine durable retention before submitting this operation.
+    PublishManifest {
+        /// The verified actual metadata-pack descriptor and canonical claim.
+        witness: NativeManifestWitness,
+        /// The owned read-only plaintext source descriptor.
+        source: File,
+    },
+    /// Adopts using an actual received reconstruction witness.
+    AdoptManifest {
+        /// The verified actual metadata-pack descriptor and canonical claim.
+        witness: NativeManifestWitness,
+    },
+    /// Adopts and binds a sealed key using actual reconstruction metadata.
+    InspectManifest {
+        /// The registered sealed key, checked against the exact witness.
+        key: NativeBodyKey,
+        /// The verified received reconstruction witness.
+        witness: NativeManifestWitness,
     },
     /// Retains an inode incarnation for a checked registered key.
     InspectBody {
@@ -221,6 +245,7 @@ struct RetainedBody {
     file: File,
     location: Location,
     encoded: Option<EncodedUnit>,
+    manifest: Option<Arc<NativeManifestWitness>>,
 }
 
 pub(super) struct CommandOwner {
@@ -239,6 +264,9 @@ pub(super) struct CommandOwner {
     profile: ChunkProfile,
     inventory: super::inventory::NativeInventory,
 }
+
+#[path = "manifest_commands.rs"]
+mod manifest_commands;
 
 impl CommandOwner {
     pub(super) fn new(
@@ -312,6 +340,15 @@ impl CommandOwner {
         claim: PublicationClaim,
         object: NativePublishedObject,
     ) -> io::Result<NativeCommandResult> {
+        self.retain_with_manifest(claim, object, None).await
+    }
+
+    async fn retain_with_manifest(
+        &mut self,
+        claim: PublicationClaim,
+        object: NativePublishedObject,
+        manifest: Option<Arc<NativeManifestWitness>>,
+    ) -> io::Result<NativeCommandResult> {
         let metadata = object.object.handle().metadata()?;
         let key = NativeBodyKey::Sealed {
             descriptor: claim.descriptor().clone(),
@@ -324,6 +361,9 @@ impl CommandOwner {
                 && previous.ino() == metadata.ino()
             {
                 retained.claim = Some(claim.clone());
+                if manifest.is_some() {
+                    retained.manifest = manifest;
+                }
                 return Ok(NativeCommandResult::Published {
                     object,
                     incarnation: NativeBodyIncarnation(retained.token),
@@ -348,6 +388,7 @@ impl CommandOwner {
             file,
             location: Location::Canonical,
             encoded: None,
+            manifest,
         });
         Ok(NativeCommandResult::Published {
             object,
@@ -393,7 +434,9 @@ impl CommandOwner {
         if self.recovery
             && matches!(
                 operation,
-                NativeOperation::Publish { .. } | NativeOperation::Retire { .. }
+                NativeOperation::Publish { .. }
+                    | NativeOperation::PublishManifest { .. }
+                    | NativeOperation::Retire { .. }
             )
         {
             return Err(io::Error::new(
@@ -425,6 +468,15 @@ impl CommandOwner {
                 self.retain(claim, NativePublishedObject { object }).await
             }
             NativeOperation::Adopt { claim } => self.adopt(claim).await,
+            NativeOperation::PublishManifest { witness, source } => {
+                self.consume_manifest(witness, Some(source), None).await
+            }
+            NativeOperation::AdoptManifest { witness } => {
+                self.consume_manifest(witness, None, None).await
+            }
+            NativeOperation::InspectManifest { key, witness } => {
+                self.consume_manifest(witness, None, Some(key)).await
+            }
             NativeOperation::InspectBody {
                 key: NativeBodyKey::Sealed { descriptor },
                 claim: Some(claim),
@@ -504,6 +556,7 @@ impl CommandOwner {
             file,
             location: Location::Pending,
             encoded: None,
+            manifest: None,
         });
         Ok(NativeCommandResult::Pending {
             incarnation: NativeBodyIncarnation(token),
@@ -588,6 +641,7 @@ impl CommandOwner {
                 Location::Canonical
             },
             encoded: Some(unit),
+            manifest: None,
         });
         Ok(if pending {
             NativeCommandResult::Pending {
