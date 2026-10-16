@@ -242,6 +242,9 @@ impl Registry {
                 bytes,
             )?;
             open_host_path(&target, false)?.sync_all()?;
+            self.directory.sync_all()?;
+            #[cfg(test)]
+            super::provisioning_test_checkpoint("claim-durable")?;
         }
         self.directory.sync_all()
     }
@@ -599,3 +602,7 @@ mod tests {
         fs::write(ANCHOR_PATH, anchor_bytes).expect("VM administrator restoration");
     }
 }
+
+#[cfg(test)]
+#[path = "claim_provision_tests.rs"]
+mod provision_tests;

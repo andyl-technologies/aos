@@ -695,6 +695,8 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
             };
             registry.ensure(&ledger, &owners)?;
             persist_ledger(ledger_path, &ledger)?;
+            #[cfg(test)]
+            provisioning_test_checkpoint("ledger-durable")?;
             ledger
         }
         Err(error) => return Err(error),
@@ -707,6 +709,8 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     for directory in &directories {
         terrane_fs::host_quota::set_directory_custody(directory, 0, 0, 0o700)?;
     }
+    #[cfg(test)]
+    provisioning_test_checkpoint("custody-taken")?;
     // Re-enumeration under root custody closes creation and rename races from
     // the initial snapshot, including creation through old directory FDs.
     // Existing open file custody is excluded by quiescent native factory guards;
@@ -812,4 +816,26 @@ pub fn query(
     let mut client =
         terrane_fs::host_quota::HostQuotaClient::connect(&config.socket, 0, epoch(&config.epoch)?)?;
     client.query(owner_id, domain)
+}
+
+// The production binary contains no fault-injection environment surface. The
+// explicit VM unit-test executable alone can pause at durable transitions so
+// its supervising test can kill the real provisioning process.
+#[cfg(test)]
+fn provisioning_test_checkpoint(stage: &str) -> io::Result<()> {
+    if std::env::var("TERRANE_QUOTA_TEST_STOP").as_deref() != Ok(stage) {
+        return Ok(());
+    }
+    let marker = std::env::var_os("TERRANE_QUOTA_TEST_MARKER")
+        .ok_or_else(|| io::Error::other("test checkpoint lacks marker"))?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(marker)?;
+    file.write_all(stage.as_bytes())?;
+    file.sync_all()?;
+    loop {
+        std::thread::park();
+    }
 }

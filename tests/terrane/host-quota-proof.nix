@@ -46,6 +46,8 @@
               "host::claims::tests::stale_temporary_name_is_preserved_and_skipped",
               "host::claims::tests::concurrent_claims_publish_one_complete_record",
               "host::claims::tests::host_global_claims_preserve_crash_custody_vm",
+              "host::claims::provision_tests::host_global_provision_worker_vm",
+              "host::claims::provision_tests::host_global_provision_kill_restart_and_broker_vm",
           },
           "host_quota_config": {
               "configuration_rejects_mutation_command_fields",
@@ -125,6 +127,9 @@
       setpriv --bounding-set=-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid \
         --clear-groups --inh-caps=-all --ambient-caps=-all \
         ${image}/bin/aos_terrane --exact host::claims::tests::host_global_claims_preserve_crash_custody_vm --ignored --nocapture
+      setpriv --bounding-set=-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid \
+        --clear-groups --inh-caps=-all --ambient-caps=-all \
+        ${image}/bin/aos_terrane --exact host::claims::provision_tests::host_global_provision_kill_restart_and_broker_vm --ignored --nocapture
     '';
   };
 in {
