@@ -10,10 +10,12 @@ use std::{fs::File, io::Read, os::unix::fs::MetadataExt, path::Path};
 
 const MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const STREAM_BUFFER_BYTES: usize = 8192;
+const CONFORMANCE_STREAM_BUFFER_BYTES: usize = 256 * 1024;
 
 // Legacy probes finish their bounded read before comparing the original length
 // and post-read metadata. Prepare already refuses immediately on growth. Keep
-// both existing error-order contracts while sharing the same hash/read bank.
+// both existing error-order contracts while sharing the hash/read loop. The
+// generic bank batches larger BLAKE3 updates; selected Prepare retains8KiB.
 #[derive(Clone, Copy)]
 enum GrowthPolicy {
     RefuseImmediately,
@@ -29,9 +31,24 @@ struct MeasuredExecutableStream {
 ///
 /// Path/ContentRef child heaps, kernel resources, error custody, compiler frames
 /// and allocator physical overhead remain separate caller terms. The actual
-/// read buffer comes from the SAME STREAM_BUFFER_BYTES constant below.
+/// Prepare read buffer comes from the SAME STREAM_BUFFER_BYTES constant below.
 pub(crate) const fn original_prepare_executable_measurement_counter_scratch_data() -> usize {
-    STREAM_BUFFER_BYTES
+    measurement_counter_scratch_data::<STREAM_BUFFER_BYTES>()
+}
+
+/// Reports the complete larger generic bank and the same conservative headers.
+///
+/// CompleteBirth uses this public conformance path before service dispatch.
+/// Its256KiB local array is distinct from the selected Prepare8KiB array; the
+/// calls are sequential, and neither function returns or stores its read bank.
+/// Compiler spills/copies and physical stack overhead remain outside this
+/// explicit requested-layout census, as they do for the existing Prepare path.
+pub(crate) const fn original_conformance_executable_measurement_counter_scratch_data() -> usize {
+    measurement_counter_scratch_data::<CONFORMANCE_STREAM_BUFFER_BYTES>()
+}
+
+const fn measurement_counter_scratch_data<const BUFFER_BYTES: usize>() -> usize {
+    std::mem::size_of::<[u8; BUFFER_BYTES]>()
         + std::mem::size_of::<blake3::Hasher>()
         + std::mem::size_of::<File>()
         + 2 * std::mem::size_of::<std::fs::Metadata>()
@@ -145,7 +162,9 @@ pub(crate) fn measure_conformance_executable(path: &Path) -> Result<ContentRef, 
             "probe executable measurement",
         ));
     }
-    let measured = measure_bounded_stream(&mut file, before.len(), GrowthPolicy::ReadToBound)?;
+    let measured = measure_bounded_stream::<CONFORMANCE_STREAM_BUFFER_BYTES>(
+        &mut file, before.len(), GrowthPolicy::ReadToBound,
+    )?;
     let after = file.metadata()?;
     if measured.length != before.len() {
         return Err(ProviderError::Correlation(
@@ -180,11 +199,11 @@ fn authenticate_metadata(
     Ok(())
 }
 
-fn next_read_capacity(length: u64) -> Result<usize, ProviderError> {
+fn next_read_capacity<const BUFFER_BYTES: usize>(length: u64) -> Result<usize, ProviderError> {
     let remaining = (MAXIMUM_EXECUTABLE_BYTES + 1).checked_sub(length).ok_or(
         ProviderError::ResourceExhausted("probe executable measurement"),
     )?;
-    Ok(STREAM_BUFFER_BYTES.min(
+    Ok(BUFFER_BYTES.min(
         usize::try_from(remaining)
             .map_err(|_| ProviderError::ResourceExhausted("probe executable measurement"))?,
     ))
@@ -195,7 +214,7 @@ fn measure_stream(
     expected_length: u64,
 ) -> Result<ContentRef, ProviderError> {
     let measured =
-        measure_bounded_stream(reader, expected_length, GrowthPolicy::RefuseImmediately)?;
+        measure_bounded_stream::<STREAM_BUFFER_BYTES>(reader, expected_length, GrowthPolicy::RefuseImmediately)?;
     if measured.length != expected_length {
         return Err(ProviderError::Correlation(
             "executable changed during measurement",
@@ -204,7 +223,7 @@ fn measure_stream(
     reference_from_stream(measured)
 }
 
-fn measure_bounded_stream(
+fn measure_bounded_stream<const BUFFER_BYTES: usize>(
     reader: &mut impl Read,
     expected_length: u64,
     growth: GrowthPolicy,
@@ -223,11 +242,11 @@ fn measure_bounded_stream(
     hasher.update(&11u32.to_be_bytes());
     hasher.update(DOMAIN);
     hasher.update(&expected_length.to_be_bytes());
-    let mut bytes = [0u8; STREAM_BUFFER_BYTES];
+    let mut bytes = [0u8; BUFFER_BYTES];
     let mut length = 0u64;
     loop {
         // Preserve the existing Take(MAX+1) boundary even on refused growth.
-        let maximum = next_read_capacity(length)?;
+        let maximum = next_read_capacity::<BUFFER_BYTES>(length)?;
         let count = match reader.read(&mut bytes[..maximum]) {
             Ok(0) => break,
             Ok(count) => count,
@@ -329,11 +348,16 @@ mod tests {
     }
     #[test]
     fn actual_read_slice_keeps_exact_cap_plus_one_boundary() -> TestResult {
-        assert_eq!(next_read_capacity(0)?, STREAM_BUFFER_BYTES);
-        assert_eq!(next_read_capacity(MAXIMUM_EXECUTABLE_BYTES - 3)?, 4);
-        assert_eq!(next_read_capacity(MAXIMUM_EXECUTABLE_BYTES)?, 1);
-        assert!(next_read_capacity(MAXIMUM_EXECUTABLE_BYTES + 2).is_err());
-        Ok(())
+        fn check<const BUFFER_BYTES: usize>() -> TestResult {
+            assert_eq!(next_read_capacity::<BUFFER_BYTES>(0)?, BUFFER_BYTES);
+            assert_eq!(next_read_capacity::<BUFFER_BYTES>(MAXIMUM_EXECUTABLE_BYTES - 3)?, 4);
+            assert_eq!(next_read_capacity::<BUFFER_BYTES>(MAXIMUM_EXECUTABLE_BYTES)?, 1);
+            assert!(next_read_capacity::<BUFFER_BYTES>(MAXIMUM_EXECUTABLE_BYTES + 2).is_err());
+            Ok(())
+        }
+
+        check::<STREAM_BUFFER_BYTES>()?;
+        check::<CONFORMANCE_STREAM_BUFFER_BYTES>()
     }
 
     #[test]
@@ -375,12 +399,12 @@ mod tests {
             }
         }
 
-        let prepare = measure_bounded_stream(
+        let prepare = measure_bounded_stream::<STREAM_BUFFER_BYTES>(
             &mut GrowthThenError { first: true },
             1,
             GrowthPolicy::RefuseImmediately,
         );
-        let generic = measure_bounded_stream(
+        let generic = measure_bounded_stream::<CONFORMANCE_STREAM_BUFFER_BYTES>(
             &mut GrowthThenError { first: true },
             1,
             GrowthPolicy::ReadToBound,
@@ -432,6 +456,43 @@ mod tests {
             crate::conformance::measure_executable(&_created.0)?,
             canonical::content_ref(b"originalgrown", "application/octet-stream")?
         );
+        Ok(())
+    }
+
+
+    #[test]
+    fn generic_and_prepare_banks_keep_distinct_slices_and_identical_content() -> TestResult {
+        struct ObservedRead<'a> {
+            input: Cursor<&'a [u8]>,
+            largest_slice: usize,
+        }
+
+        impl Read for ObservedRead<'_> {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                self.largest_slice = self.largest_slice.max(output.len());
+                self.input.read(output)
+            }
+        }
+
+        let bytes: Vec<_> = (0..CONFORMANCE_STREAM_BUFFER_BYTES + 37)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let expected = canonical::content_ref(&bytes, "application/octet-stream")?;
+        let mut prepare = ObservedRead { input: Cursor::new(bytes.as_slice()), largest_slice: 0 };
+        let mut generic = ObservedRead { input: Cursor::new(bytes.as_slice()), largest_slice: 0 };
+
+        let selected = measure_stream(&mut prepare, expected.length.get())?;
+        let measured = measure_bounded_stream::<CONFORMANCE_STREAM_BUFFER_BYTES>(
+            &mut generic, expected.length.get(), GrowthPolicy::ReadToBound,
+        )?;
+        let ordinary = reference_from_stream(measured)?;
+
+        assert_eq!(selected, expected);
+        assert_eq!(ordinary, expected);
+        assert_eq!(prepare.largest_slice, STREAM_BUFFER_BYTES);
+        assert_eq!(generic.largest_slice, CONFORMANCE_STREAM_BUFFER_BYTES);
+        assert_eq!(prepare.input.position(), expected.length.get());
+        assert_eq!(generic.input.position(), expected.length.get());
         Ok(())
     }
 

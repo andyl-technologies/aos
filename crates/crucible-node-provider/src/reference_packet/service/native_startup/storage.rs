@@ -370,9 +370,11 @@ fn birth_storage_with_source(
         ],
         maximum,
     )?;
+    // CompleteBirth::prepare calls the generic measurement path. Charge its
+    // entire bank here; selected Prepare/restore retain their separate8KiB bank.
     let maximum_simultaneous_transient_bytes =
         birth_work.max(lifecycle_work).max(admit.transient).max(
-            super::super::ack_emitter::original_prepare_executable_measurement_counter_scratch_data(
+            super::super::ack_emitter::original_conformance_executable_measurement_counter_scratch_data(
             ),
         );
     let scratch = original_native_birth_startup_counter_scratch_data();

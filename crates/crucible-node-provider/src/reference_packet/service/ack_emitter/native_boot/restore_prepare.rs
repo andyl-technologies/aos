@@ -25,6 +25,7 @@ mod prepare_measurement;
 pub(crate) use prepare_measurement::{
     measure_conformance_executable as measure_conformance_executable_data,
     measure_executable as measure_original_prepare_executable_data,
+    original_conformance_executable_measurement_counter_scratch_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
 pub(super) use prepare_measurement::{
