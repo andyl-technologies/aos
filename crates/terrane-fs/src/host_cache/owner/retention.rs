@@ -118,9 +118,15 @@ impl NativeMetadataOwner {
                     }
                 }
             })?;
-        startup
+        let initialized = startup
             .recv()
-            .map_err(|_| io::Error::other("metadata owner startup terminated"))??;
+            .map_err(|_| io::Error::other("metadata owner startup terminated"))
+            .and_then(|result| result);
+        if let Err(error) = initialized {
+            drop(commands);
+            let _ = worker.join();
+            return Err(error);
+        }
         Ok(Self {
             commands: Some(commands),
             worker: Some(worker),
