@@ -9,18 +9,13 @@ pub use terrane_core::surface::{
     ViewTarget, WriterMode,
 };
 
-#[cfg(all(feature = "surface-sdk", unix))]
-pub(crate) mod presentation;
-
 #[cfg(feature = "std")]
 mod exposure;
 #[cfg(feature = "std")]
 pub use exposure::{PreparedExposures, TokenResolver};
 
 #[cfg(feature = "std")]
-mod schema;
-#[cfg(feature = "std")]
-pub use schema::{ViewMetadata, validate_schema};
+pub use crate::repository::schema::{ViewMetadata, validate_schema};
 
 mod registry;
 pub use registry::{SurfaceRegistration, registration};

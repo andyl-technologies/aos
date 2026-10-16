@@ -6,7 +6,7 @@ use terrane_core::{
     cbor,
     identity::Digest,
     provenance::Selector,
-    surface::{View, ViewTarget},
+    surface::{TreeSchema, View, ViewTarget},
     tree_format::{self, EntryKind},
 };
 
@@ -15,7 +15,7 @@ use crate::{
     store::{Clock, LocalFs, Store},
 };
 
-use super::{Error, Repository};
+use super::{Error, Repository, schema};
 
 /// Owned canonical metadata and plaintext, with no identity lookup capability.
 pub(crate) struct ReadEntry {
@@ -77,8 +77,8 @@ where
         view: &View,
         token: &[u8],
         surface: &str,
-        schema: &crate::surface::TreeSchema,
-    ) -> Result<crate::surface::ViewMetadata, Error> {
+        schema: &TreeSchema,
+    ) -> Result<schema::ViewMetadata, Error> {
         Ok(self
             .prepare_schema_metadata(view, token, surface, schema)
             .await?
@@ -91,7 +91,7 @@ where
         view: &View,
         token: &[u8],
         surface: &str,
-        schema: &crate::surface::TreeSchema,
+        schema: &TreeSchema,
     ) -> Result<PreparedView, Error> {
         Ok(self
             .prepare_schema_metadata(view, token, surface, schema)
@@ -105,8 +105,8 @@ where
         view: &View,
         token: &[u8],
         surface: &str,
-        schema: &crate::surface::TreeSchema,
-    ) -> Result<(PreparedView, crate::surface::ViewMetadata), Error> {
+        schema: &TreeSchema,
+    ) -> Result<(PreparedView, schema::ViewMetadata), Error> {
         let (snapshot, entries) = self.metadata(view, token, surface).await?;
         let minimum = self.chunk_profile().minimum() as u64;
         let mut path = b"/".to_vec();
@@ -166,7 +166,7 @@ where
                 .map(|attribute| (attribute.name.to_owned(), attribute.value.to_vec()))
                 .collect()
         };
-        let metadata = crate::surface::ViewMetadata {
+        let metadata = schema::ViewMetadata {
             commit: snapshot.commit.identity(),
             minimum_chunk_size: minimum,
             entries: entries
@@ -185,7 +185,7 @@ where
             root_attributes,
             properties,
         };
-        crate::surface::validate_schema(schema, &metadata)?;
+        schema::validate_schema(schema, &metadata)?;
         drop(effective);
         drop(layers);
         drop(occurrences);
@@ -289,7 +289,7 @@ where
         surface: &str,
     ) -> Result<ReadView, Error> {
         let prepared = self
-            .prepare_view_schema(view, token, surface, &crate::surface::TreeSchema::default())
+            .prepare_view_schema(view, token, surface, &TreeSchema::default())
             .await?;
         self.read_prepared_view(prepared).await
     }

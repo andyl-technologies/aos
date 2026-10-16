@@ -16,6 +16,8 @@ use crate::{
 
 use super::path::{validate_destination, validate_symlink, validate_symlink_targets};
 
+mod presentation;
+
 /// Validates the entire presentation before creating its destination.
 fn validate(entries: &[ReadEntry], minimum: u64) -> Result<(), Error> {
     let mut ancestors = BTreeMap::new();
@@ -37,8 +39,8 @@ fn validate(entries: &[ReadEntry], minimum: u64) -> Result<(), Error> {
         }
 
         let entry = tree_format::decode_entry_bytes(&item.encoded, minimum)?;
-        crate::surface::presentation::ownership(&entry.attrs, "uid")?;
-        crate::surface::presentation::ownership(&entry.attrs, "gid")?;
+        presentation::ownership(&entry.attrs, "uid")?;
+        presentation::ownership(&entry.attrs, "gid")?;
         match &entry.kind {
             EntryKind::Directory { .. } => {
                 if item.plaintext.is_some() {
@@ -150,7 +152,7 @@ pub(crate) async fn materialize<F: LocalFs + Sync>(
         for xattr in entry
             .xattrs
             .into_iter()
-            .filter(|xattr| crate::surface::presentation::visible_xattr(xattr.name))
+            .filter(|xattr| presentation::visible_xattr(xattr.name))
         {
             fs.set_xattr(&target, OsStr::from_bytes(xattr.name), xattr.value)
                 .await?;
@@ -167,7 +169,7 @@ pub(crate) async fn materialize<F: LocalFs + Sync>(
             for xattr in entry
                 .xattrs
                 .into_iter()
-                .filter(|xattr| crate::surface::presentation::visible_xattr(xattr.name))
+                .filter(|xattr| presentation::visible_xattr(xattr.name))
             {
                 fs.set_xattr(&link, OsStr::from_bytes(xattr.name), xattr.value)
                     .await?;
@@ -196,8 +198,8 @@ pub(crate) async fn materialize<F: LocalFs + Sync>(
             &path(destination, &item.key),
             created.remove(&item.key).ok_or(Error::Unrealizable)?,
             mode,
-            crate::surface::presentation::ownership(&entry.attrs, "uid")?,
-            crate::surface::presentation::ownership(&entry.attrs, "gid")?,
+            presentation::ownership(&entry.attrs, "uid")?,
+            presentation::ownership(&entry.attrs, "gid")?,
         )
         .await?;
     }
