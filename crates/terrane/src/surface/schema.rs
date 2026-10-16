@@ -1,7 +1,10 @@
 //! Evaluates declared schemas using authenticated metadata without content I/O.
 //!
 //! Schema paths are root relative. `*` matches one path component and `**`
-//! matches zero or more components. A literal `/` selects root attributes.
+//! matches zero or more components. A literal `/` selects the root. Required
+//! literal entries establish existence; wildcard kinds and entry attributes
+//! constrain matches and permit empty collections. Malformed patterns fail even
+//! when the view has no entries.
 
 use super::{SchemaEntryKind, TreeSchema};
 use crate::repository::Error;
@@ -11,7 +14,10 @@ use terrane_core::{
     tree_format::{self, EntryKind},
 };
 
-/// Holds authorized metadata for one resolved view, with no object reader.
+/// Holds a view metadata projection without an object reader.
+///
+/// These data fields confer no repository authority; exposure preparation obtains
+/// its separate opaque authority binding from the repository.
 #[derive(Clone, Debug)]
 pub struct ViewMetadata {
     /// Exact immutable commit supplying this projection.
@@ -22,7 +28,7 @@ pub struct ViewMetadata {
     pub entries: Vec<(Vec<u8>, Vec<u8>)>,
     /// Root attributes in their existing canonical CBOR encoding.
     pub root_attributes: Vec<(String, Vec<u8>)>,
-    /// Explicit effective root property values in existing canonical encoding.
+    /// Validated effective property values requested by the schema.
     pub properties: Vec<(String, Vec<u8>)>,
 }
 
@@ -32,6 +38,15 @@ pub struct ViewMetadata {
 /// Returns a schema error for absent, forbidden or mistyped metadata and a tree
 /// error for invalid canonical entries. No object content is fetched.
 pub fn validate_schema(schema: &TreeSchema, metadata: &ViewMetadata) -> Result<(), Error> {
+    for pattern in schema
+        .required_entries
+        .iter()
+        .map(|(path, _)| path)
+        .chain(schema.required_attributes.iter().map(|(path, _, _)| path))
+        .chain(schema.forbidden_entries.iter())
+    {
+        validate_pattern(pattern)?;
+    }
     let entries = metadata
         .entries
         .iter()
@@ -42,7 +57,7 @@ pub fn validate_schema(schema: &TreeSchema, metadata: &ViewMetadata) -> Result<(
         .collect::<Result<Vec<_>, _>>()?;
 
     for (pattern, required) in &schema.required_entries {
-        if pattern == b"/" || pattern.is_empty() {
+        if pattern == b"/" {
             if !matches!(required, SchemaEntryKind::Root | SchemaEntryKind::Directory) {
                 return Err(Error::Schema);
             }
@@ -52,7 +67,7 @@ pub fn validate_schema(schema: &TreeSchema, metadata: &ViewMetadata) -> Result<(
             .iter()
             .filter(|(path, _)| path_matches(pattern, path))
             .collect::<Vec<_>>();
-        if matches.is_empty()
+        if (matches.is_empty() && !has_wildcard(pattern))
             || matches
                 .iter()
                 .any(|(_, entry)| !kind_matches(*required, &entry.kind))
@@ -61,7 +76,7 @@ pub fn validate_schema(schema: &TreeSchema, metadata: &ViewMetadata) -> Result<(
         }
     }
     for pattern in &schema.forbidden_entries {
-        if pattern == b"/" || pattern.is_empty() {
+        if pattern == b"/" {
             return Err(Error::Schema);
         }
         if entries.iter().any(|(path, _)| path_matches(pattern, path)) {
@@ -69,7 +84,10 @@ pub fn validate_schema(schema: &TreeSchema, metadata: &ViewMetadata) -> Result<(
         }
     }
     for (pattern, name, major) in &schema.required_attributes {
-        if pattern == b"/" || pattern.is_empty() {
+        if *major > 7 {
+            return Err(Error::Schema);
+        }
+        if pattern == b"/" {
             let value = metadata
                 .root_attributes
                 .iter()
@@ -82,9 +100,6 @@ pub fn validate_schema(schema: &TreeSchema, metadata: &ViewMetadata) -> Result<(
             .iter()
             .filter(|(path, _)| path_matches(pattern, path))
             .collect::<Vec<_>>();
-        if matches.is_empty() {
-            return Err(Error::Schema);
-        }
         for (_, entry) in matches {
             check_type(
                 entry
@@ -107,6 +122,28 @@ pub fn validate_schema(schema: &TreeSchema, metadata: &ViewMetadata) -> Result<(
         }
     }
     Ok(())
+}
+
+fn validate_pattern(pattern: &[u8]) -> Result<(), Error> {
+    if pattern == b"/" {
+        return Ok(());
+    }
+    let relative = pattern.strip_prefix(b"/").unwrap_or(pattern);
+    if relative.is_empty()
+        || relative.contains(&0)
+        || relative
+            .split(|byte| *byte == b'/')
+            .any(|component| component.is_empty() || component == b"." || component == b"..")
+    {
+        return Err(Error::Schema);
+    }
+    Ok(())
+}
+
+fn has_wildcard(pattern: &[u8]) -> bool {
+    pattern
+        .split(|byte| *byte == b'/')
+        .any(|component| component == b"*" || component == b"**")
 }
 
 fn check_type(value: Option<&[u8]>, major: u8) -> Result<(), Error> {

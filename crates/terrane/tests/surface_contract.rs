@@ -185,4 +185,95 @@ fn schemas_check_entry_kinds_attributes_root_and_forbidden_matches() {
     schema.forbidden_entries.clear();
     schema.required_attributes[0].1 = "gid".into();
     assert!(surface::validate_schema(&schema, &metadata).is_err());
+    schema.required_attributes.clear();
+    schema.required_entries = vec![(b"cas/sha*".to_vec(), SchemaEntryKind::Directory)];
+    assert!(
+        surface::validate_schema(&schema, &metadata).is_err(),
+        "embedded stars are literal"
+    );
+    schema.required_entries = vec![(b"cas/**/sha256".to_vec(), SchemaEntryKind::Directory)];
+    assert!(surface::validate_schema(&schema, &metadata).is_ok());
+}
+
+#[test]
+fn schema_collections_allow_empty_matches_but_literal_entries_establish_existence() {
+    use terrane::surface::SchemaEntryKind;
+
+    let metadata = ViewMetadata {
+        commit: [1; 32],
+        minimum_chunk_size: 65536,
+        entries: Vec::new(),
+        root_attributes: Vec::new(),
+        properties: Vec::new(),
+    };
+    for pattern in [b"*".as_slice(), b"**", b"cas/*", b"cas/**/file"] {
+        let schema = TreeSchema {
+            required_entries: vec![(pattern.to_vec(), SchemaEntryKind::File)],
+            required_attributes: vec![(pattern.to_vec(), "uid".into(), 0)],
+            ..TreeSchema::default()
+        };
+        assert!(surface::validate_schema(&schema, &metadata).is_ok());
+    }
+    let mut schema = TreeSchema {
+        required_attributes: vec![(b"missing".to_vec(), "uid".into(), 0)],
+        ..TreeSchema::default()
+    };
+    assert!(surface::validate_schema(&schema, &metadata).is_ok());
+    schema
+        .required_entries
+        .push((b"missing".to_vec(), SchemaEntryKind::File));
+    assert!(surface::validate_schema(&schema, &metadata).is_err());
+    schema.required_entries = vec![(b"/".to_vec(), SchemaEntryKind::Root)];
+    schema.required_attributes.clear();
+    assert!(surface::validate_schema(&schema, &metadata).is_ok());
+    schema
+        .required_attributes
+        .push((b"/".to_vec(), "uid".into(), 0));
+    assert!(surface::validate_schema(&schema, &metadata).is_err());
+}
+
+#[test]
+fn malformed_schema_patterns_fail_independently_of_tree_matches() {
+    use terrane::surface::SchemaEntryKind;
+
+    let metadata = ViewMetadata {
+        commit: [1; 32],
+        minimum_chunk_size: 65536,
+        entries: Vec::new(),
+        root_attributes: Vec::new(),
+        properties: Vec::new(),
+    };
+    for pattern in [
+        b"".as_slice(),
+        b"//a",
+        b"a//b",
+        b"/a/",
+        b".",
+        b"a/../b",
+        b"a\0b",
+        b"a/./b",
+        b"///",
+        b"/..",
+    ] {
+        let schemas = [
+            TreeSchema {
+                required_entries: vec![(pattern.to_vec(), SchemaEntryKind::File)],
+                ..TreeSchema::default()
+            },
+            TreeSchema {
+                required_attributes: vec![(pattern.to_vec(), "uid".into(), 0)],
+                ..TreeSchema::default()
+            },
+            TreeSchema {
+                forbidden_entries: vec![pattern.to_vec()],
+                ..TreeSchema::default()
+            },
+        ];
+        for schema in schemas {
+            assert!(
+                surface::validate_schema(&schema, &metadata).is_err(),
+                "{pattern:?}"
+            );
+        }
+    }
 }

@@ -215,7 +215,7 @@ async fn sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs() 
     cbor::write_uint(&mut gid, u64::from(source_metadata.gid()));
     let mut entry =
         tree_format::decode_entry_bytes(&metadata.entries[0].1, metadata.minimum_chunk_size)?;
-    entry.attrs = vec![
+    entry.attrs.extend([
         Attribute {
             name: "gid",
             value: &gid,
@@ -224,7 +224,7 @@ async fn sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs() 
             name: "uid",
             value: &uid,
         },
-    ];
+    ]);
     entry.attrs_present = true;
     entry.xattrs = vec![
         ExtendedAttribute {
@@ -298,6 +298,19 @@ async fn sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs() 
     );
     request.commit.tree = staged.root();
     request.commit.parents = vec![old];
+    // The modified entry introduces this reference again. Supply real plaintext
+    // admission evidence instead of bypassing the guarded domain-reference check.
+    let profile = fixture.repository.chunk_profile();
+    request
+        .uploads
+        .push(terrane::ref_advance::StagedUpload::Chunk {
+            encoded: terrane::codec::encode_chunk(OLD, profile.maximum(), 3, None)?,
+            identity: terrane_core::identity::TERRANE_V1
+                .calculate(terrane_core::identity::IdentityKind::Chunk, OLD)?,
+            declared_plaintext_len: OLD.len(),
+            position: terrane::store::ChunkPosition::Final,
+            profile: Box::new(profile.clone()),
+        });
     fixture
         .repository
         .commit(&mut session, staged, request)

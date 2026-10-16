@@ -30,7 +30,7 @@ in {
   '';
   surface-schema = sourceGate "surface-schema" ''
     cd crates
-    ${runTests "surface_contract" ["metadata_schema_checks_root_types_properties_and_forbidden_paths" "schemas_check_entry_kinds_attributes_root_and_forbidden_matches"]}
+    ${runTests "surface_contract" ["metadata_schema_checks_root_types_properties_and_forbidden_paths" "schemas_check_entry_kinds_attributes_root_and_forbidden_matches" "schema_collections_allow_empty_matches_but_literal_entries_establish_existence" "malformed_schema_patterns_fail_independently_of_tree_matches"]}
     ${runTests "surface_runtime" ["schema_refusal_precedes_sdk_directory_creation"]}
     cargo test --frozen --offline -p terrane --no-default-features \
       --features tokio,surface-sdk --lib \

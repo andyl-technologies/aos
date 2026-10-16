@@ -217,13 +217,13 @@ pub enum SchemaEntryKind {
 /// Declares metadata requirements without reading object content (SURF-14).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TreeSchema {
-    /// Required paths and their entry kinds.
+    /// Literal required paths, or universal wildcard entry-kind constraints.
     pub required_entries: Vec<(Vec<u8>, SchemaEntryKind)>,
-    /// Required paths, attribute names, and canonical CBOR major types.
+    /// Path patterns, required attribute names, and canonical CBOR major types.
     pub required_attributes: Vec<(Vec<u8>, String, u8)>,
     /// Required property names and permitted canonical CBOR values.
     pub required_properties: Vec<(String, Vec<Vec<u8>>)>,
-    /// Forbidden root-relative paths.
+    /// Forbidden root-relative path patterns; `/` always denotes an existing root.
     pub forbidden_entries: Vec<Vec<u8>>,
 }
 
