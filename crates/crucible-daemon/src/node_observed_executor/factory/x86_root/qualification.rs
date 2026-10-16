@@ -7,12 +7,12 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    node_adapters::x86_root::{X86RootPreparationQualification, AuthenticatedX86RootContinuation},
+    node_adapters::x86_root::{AuthenticatedX86RootContinuation, X86RootPreparationQualification},
     node_admission::AdmittedGraph,
     node_contract::{EffectKnowledge, OperationFailure},
 };
 use crucible_node_contract::{ContentRef, HashRef, Id, NodeBinding, NodeDescriptor, canonical};
-use crucible_node_provider::gem5::{X86RootExactAuthority, X86RootNativeProcess, Gem5Boundary};
+use crucible_node_provider::gem5::{Gem5Boundary, X86RootExactAuthority, X86RootNativeProcess};
 use serde::{Deserialize, Serialize};
 
 use super::super::{NodeObservedError, refused};
@@ -231,8 +231,9 @@ impl X86RootPreparationQualification for X86RootPreparedQualification {
         {
             return Err(OperationFailure {
                 effects: EffectKnowledge::None,
-                reason: "X86Root actual preparation names another admitted world or original binding"
-                    .into(),
+                reason:
+                    "X86Root actual preparation names another admitted world or original binding"
+                        .into(),
             });
         }
         self.peer

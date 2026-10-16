@@ -17,31 +17,53 @@ use crate::protocol_snapshot::owned11::{
 fn element_slot() -> usize {
     coordinator_decode::typed_slot()
         .max(size_of::<crate::reference_packet::PacketEvent>())
-        .max(size_of::<crate::reference_packet::connected::PacketInputConnection>())
+        .max(size_of::<
+            crate::reference_packet::connected::PacketInputConnection,
+        >())
         .max(size_of::<u8>())
 }
 
 const FIELDS: &[&str] = &[
-    "schema_version", "selection", "program", "controller_pid", "controller_uid",
-    "controller_executable", "admission_token", "initial_coordinator", "limits",
-    "storage", "effects", "capture_profile", "confirmation_selection",
-    "ack_emitter_selection", "native_codec_metadata_extent", "protocol_metadata_limits",
-    "complete_restore_selection", "restore_input_emitter_selection",
-    "capture_allocation_selection", "fresh_restore_allocation_selection",
+    "schema_version",
+    "selection",
+    "program",
+    "controller_pid",
+    "controller_uid",
+    "controller_executable",
+    "admission_token",
+    "initial_coordinator",
+    "limits",
+    "storage",
+    "effects",
+    "capture_profile",
+    "confirmation_selection",
+    "ack_emitter_selection",
+    "native_codec_metadata_extent",
+    "protocol_metadata_limits",
+    "complete_restore_selection",
+    "restore_input_emitter_selection",
+    "capture_allocation_selection",
+    "fresh_restore_allocation_selection",
 ];
 
 fn definition(bytes: &[u8], names: &[&str]) -> Result<(), ProviderError> {
     let mut fields = Fields::object(bytes)?;
     let mut seen = 0u8;
     while let Some((key, _)) = fields.pair()? {
-        let index = names.iter().position(|name| plain_string(key).is_ok_and(|key| key == *name))
+        let index = names
+            .iter()
+            .position(|name| plain_string(key).is_ok_and(|key| key == *name))
             .ok_or_else(refused)?;
         let bit = 1u8.checked_shl(index as u32).ok_or_else(refused)?;
-        if seen & bit != 0 { return Err(refused()); }
+        if seen & bit != 0 {
+            return Err(refused());
+        }
         seen |= bit;
     }
     fields.finish()?;
-    if seen != (1 << names.len()) - 1 { return Err(refused()); }
+    if seen != (1 << names.len()) - 1 {
+        return Err(refused());
+    }
     Ok(())
 }
 
@@ -70,9 +92,14 @@ fn recognized(bytes: &[u8]) -> Result<(), ProviderError> {
     let mut seen = 0u32;
     while let Some((key, value)) = fields.pair()? {
         let name = plain_string(key)?;
-        let index = FIELDS.iter().position(|field| *field == name).ok_or_else(refused)?;
+        let index = FIELDS
+            .iter()
+            .position(|field| *field == name)
+            .ok_or_else(refused)?;
         let bit = 1u32.checked_shl(index as u32).ok_or_else(refused)?;
-        if seen & bit != 0 { return Err(refused()); }
+        if seen & bit != 0 {
+            return Err(refused());
+        }
         seen |= bit;
         match name {
             "schema_version" if value != b"5" => return Err(refused()),
@@ -84,7 +111,9 @@ fn recognized(bytes: &[u8]) -> Result<(), ProviderError> {
     // The first eleven fields are required by the actual native-five DTO;
     // the remaining fields have the original serde defaults. This recognizes
     // the decoder's class, not the values or authority of an untrusted launch.
-    if seen & ((1 << 11) - 1) != (1 << 11) - 1 { return Err(refused()); }
+    if seen & ((1 << 11) - 1) != (1 << 11) - 1 {
+        return Err(refused());
+    }
     Ok(())
 }
 
@@ -100,8 +129,13 @@ pub(super) fn quote(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError
     // array minimum/spare capacity, borrowed/owned rebuilding, canonical output
     // and collect/sort banks remain; only the unrelated Control per-token tax
     // disappears. This result never includes or replaces launch.validate work.
-    decoded::quote(bytes, size_of::<PacketNative5SourceLaunch>(), element_slot(), maximum)?
-        .total(maximum)
+    decoded::quote(
+        bytes,
+        size_of::<PacketNative5SourceLaunch>(),
+        element_slot(),
+        maximum,
+    )?
+    .total(maximum)
 }
 
 pub(super) fn counter_scratch_data() -> usize {
@@ -111,7 +145,8 @@ pub(super) fn counter_scratch_data() -> usize {
     3 * size_of::<Fields<'static>>()
         + size_of::<[usize; 29]>()
         + size_of::<[usize; 7]>()
-        + size_of::<u32>() + size_of::<u8>()
+        + size_of::<u32>()
+        + size_of::<u8>()
         + 3 * size_of::<Option<&'static [u8]>>()
         + size_of::<Option<&'static str>>()
         + 3 * size_of::<Option<(&'static [u8], &'static [u8])>>()

@@ -17,10 +17,10 @@ use std::{fs, path::Path};
 use crucible_node_contract::Id;
 use serde_json::json;
 
-use super::x86_root_process::{connect, read, selection};
 use super::images::{Gem5CapturedModelImage, validate_private_directory};
 use super::x86_root_model::Gem5X86RootNativeReady;
-use super::{X86RootLaunch, X86RootNativeProcess, Gem5Boundary};
+use super::x86_root_process::{connect, read, selection};
+use super::{Gem5Boundary, X86RootLaunch, X86RootNativeProcess};
 use crate::ProviderError;
 
 /// Retains original model-aware prefix bytes and typed serial birth custody.

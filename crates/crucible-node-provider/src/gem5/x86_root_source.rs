@@ -24,7 +24,7 @@ use crucible_node_contract::{ContentRef, Id, U64, Validate};
 use serde::{Deserialize, Serialize};
 
 use super::x86_root_installed::InstalledX86RootModel;
-use super::{X86RootLaunch, Gem5LaunchArtifact, Gem5ProcessImageTools};
+use super::{Gem5LaunchArtifact, Gem5ProcessImageTools, X86RootLaunch};
 use crate::ProviderError;
 
 /// Retains a complete inert original source binding beneath an authenticated archive.

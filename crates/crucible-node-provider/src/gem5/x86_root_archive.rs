@@ -722,10 +722,9 @@ fn validate_preparation_source(
                     && session.packet.verify(&packet.bytes).is_ok()
             })
             .ok_or(ProviderError::Correlation("x86 preparation Ready omitted"))?;
-        let ready: crate::gem5::Gem5X86RootNativeReady = serde_json::from_value(canonical::parse_json(
-            &packet.bytes,
-            crate::gem5::GEM5_NATIVE_FRAME_BYTES,
-        )?)
+        let ready: crate::gem5::Gem5X86RootNativeReady = serde_json::from_value(
+            canonical::parse_json(&packet.bytes, crate::gem5::GEM5_NATIVE_FRAME_BYTES)?,
+        )
         .map_err(|_| ProviderError::Frame("x86 historical Ready shape"))?;
         ready.validate_selection(
             &selection,

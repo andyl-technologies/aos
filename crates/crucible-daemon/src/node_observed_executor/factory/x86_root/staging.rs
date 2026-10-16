@@ -329,7 +329,9 @@ impl NativeRestoreStaging for X86RootStaging {
         } else if node.as_str() == "root" {
             self.prepare_root(capture, node)?;
         } else {
-            return Err(refusal("X86Root capsule refuses an uninstalled native owner"));
+            return Err(refusal(
+                "X86Root capsule refuses an uninstalled native owner",
+            ));
         }
         let actual = self
             .nodes

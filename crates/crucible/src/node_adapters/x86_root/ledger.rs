@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use crucible_node_contract::{ContentRef, canonical};
-use crucible_node_provider::gem5::{X86RootRunOutcome, GEM5_NATIVE_FRAME_BYTES};
+use crucible_node_provider::gem5::{GEM5_NATIVE_FRAME_BYTES, X86RootRunOutcome};
 
 use crate::{
     node_contract::{OperationAdmission, OperationFailure, OperationOutcome, OperationToken},

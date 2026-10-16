@@ -30,8 +30,8 @@ pub(in crate::reference_packet::service) use bootstrap::{
 };
 
 pub(crate) use boot::{
-    OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,
-    measure_conformance_executable_data,
+    OriginalNativePrepareStartupAllocation, measure_conformance_executable_data,
+    measure_original_prepare_executable_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
 pub use boot::{

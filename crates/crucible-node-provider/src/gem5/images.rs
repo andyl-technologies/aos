@@ -792,6 +792,5 @@ mod private_directories {
 #[path = "arm_root_archive.rs"]
 pub(crate) mod arm_root_archive;
 
-
 #[path = "x86_root_archive.rs"]
 pub(crate) mod x86_root_archive;

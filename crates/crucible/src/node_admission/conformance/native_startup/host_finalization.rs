@@ -6,9 +6,17 @@
 //! issued. Successful completion is an allocation-phase barrier, not a native
 //! startup, activation, Report or Capture permission.
 
-use std::{cell::Cell, mem::size_of, rc::{Rc, Weak}, thread::ThreadId};
+use std::{
+    cell::Cell,
+    mem::size_of,
+    rc::{Rc, Weak},
+    thread::ThreadId,
+};
 
-use super::{InstalledConformancePlan, PacketCompleteSemanticSource, RuntimeError, WeakInstalledConformancePlan};
+use super::{
+    InstalledConformancePlan, PacketCompleteSemanticSource, RuntimeError,
+    WeakInstalledConformancePlan,
+};
 
 const COMPLETE: u8 = 0b111;
 
@@ -77,7 +85,10 @@ struct HostOrigin {
 
 impl HostOrigin {
     fn current() -> Self {
-        Self { process: std::process::id(), thread: std::thread::current().id() }
+        Self {
+            process: std::process::id(),
+            thread: std::thread::current().id(),
+        }
     }
 
     fn authenticate(&self) -> Result<(), RuntimeError> {
@@ -124,7 +135,8 @@ impl OriginalHostFinalizationBarrier {
     }
 
     pub(super) fn counter_scratch_data() -> usize {
-        size_of::<Self>() + size_of::<OriginalHostFinalizationLease>()
+        size_of::<Self>()
+            + size_of::<OriginalHostFinalizationLease>()
             + size_of::<Result<OriginalHostFinalizationLease, RuntimeError>>()
             + size_of::<[Weak<PacketCompleteSemanticSource>; 3]>()
             + size_of::<OriginalHostFinalizationSource>()
@@ -137,7 +149,10 @@ impl OriginalHostFinalizationBarrier {
         source: &PacketCompleteSemanticSource,
     ) -> Result<(), RuntimeError> {
         self.origin.authenticate()?;
-        let expected = self.sources.get(index).ok_or(RuntimeError::ForeignAuthority)?;
+        let expected = self
+            .sources
+            .get(index)
+            .ok_or(RuntimeError::ForeignAuthority)?;
         if self.plan.0.strong_count() == 0 || !same_owner(expected, source) {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -161,17 +176,28 @@ impl OriginalHostFinalizationBarrier {
             self.phase.abandon();
             return Err(error);
         }
-        Ok(OriginalHostFinalizationLease { barrier: Rc::clone(self), index, finished: false })
+        Ok(OriginalHostFinalizationLease {
+            barrier: Rc::clone(self),
+            index,
+            finished: false,
+        })
     }
 
-    pub(super) fn authenticate_ready(&self, index: usize, source: &PacketCompleteSemanticSource) -> Result<(), RuntimeError> {
+    pub(super) fn authenticate_ready(
+        &self,
+        index: usize,
+        source: &PacketCompleteSemanticSource,
+    ) -> Result<(), RuntimeError> {
         self.authenticate_source(index, source)?;
         self.phase.ready()
     }
 
     // Called only during infallible attachment of the three validated slots.
     pub(crate) fn source_link(self: &Rc<Self>, index: usize) -> OriginalHostFinalizationSource {
-        OriginalHostFinalizationSource { barrier: Rc::downgrade(self), index }
+        OriginalHostFinalizationSource {
+            barrier: Rc::downgrade(self),
+            index,
+        }
     }
 
     pub(super) fn abandon(&self) {
@@ -214,7 +240,10 @@ impl OriginalHostFinalizationSource {
         &self,
         source: &PacketCompleteSemanticSource,
     ) -> Result<(), RuntimeError> {
-        let barrier = self.barrier.upgrade().ok_or(RuntimeError::OwnerUnavailable)?;
+        let barrier = self
+            .barrier
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         barrier.authenticate_ready(self.index, source)
     }
 }
@@ -260,7 +289,10 @@ mod tests {
             phase.finish(index).unwrap();
         }
         phase.ready().unwrap();
-        assert!(matches!(phase.begin(1), Err(RuntimeError::DuplicateOperation)));
+        assert!(matches!(
+            phase.begin(1),
+            Err(RuntimeError::DuplicateOperation)
+        ));
         phase.ready().unwrap();
     }
 
@@ -315,9 +347,13 @@ mod tests {
             barrier.phase.begin(0).unwrap();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _lease = OriginalHostFinalizationLease {
-                    barrier: Rc::clone(&barrier), index: 0, finished: false,
+                    barrier: Rc::clone(&barrier),
+                    index: 0,
+                    finished: false,
                 };
-                if unwind { panic!("modeled finalization callback unwind"); }
+                if unwind {
+                    panic!("modeled finalization callback unwind");
+                }
             }));
 
             assert_eq!(result.is_err(), unwind);
@@ -334,8 +370,12 @@ mod tests {
         for index in 0..3 {
             barrier.phase.begin(index).unwrap();
             OriginalHostFinalizationLease {
-                barrier: Rc::clone(&barrier), index, finished: false,
-            }.finish().unwrap();
+                barrier: Rc::clone(&barrier),
+                index,
+                finished: false,
+            }
+            .finish()
+            .unwrap();
             assert_eq!(barrier.phase.ready().is_ok(), index == 2);
         }
         // A completed gate is not revoked by dropping its Core admission.
@@ -352,8 +392,11 @@ mod tests {
         barrier.phase.begin(0).unwrap();
 
         let result = OriginalHostFinalizationLease {
-            barrier: Rc::clone(&barrier), index: 1, finished: false,
-        }.finish();
+            barrier: Rc::clone(&barrier),
+            index: 1,
+            finished: false,
+        }
+        .finish();
 
         assert!(result.is_err());
         assert!(barrier.phase.begin(2).is_err());
@@ -372,8 +415,15 @@ mod tests {
 
         let mut origin = HostOrigin::current();
         origin.process = origin.process.wrapping_add(1);
-        assert!(matches!(origin.authenticate(), Err(RuntimeError::ForeignAuthority)));
+        assert!(matches!(
+            origin.authenticate(),
+            Err(RuntimeError::ForeignAuthority)
+        ));
         let origin = HostOrigin::current();
-        assert!(std::thread::spawn(move || origin.authenticate().is_err()).join().unwrap());
+        assert!(
+            std::thread::spawn(move || origin.authenticate().is_err())
+                .join()
+                .unwrap()
+        );
     }
 }

@@ -24,7 +24,7 @@ use crucible_node_contract::{
     FacetSelection, GuaranteeProfile, Id, LaneDescriptor, NodeBindingRef, NodeDescriptor,
     OwnerBinding, PortDescriptor, SchemaRef, WorldBinding,
 };
-use crucible_node_provider::gem5::{X86RootLaunch, InstalledX86RootModel};
+use crucible_node_provider::gem5::{InstalledX86RootModel, X86RootLaunch};
 
 use super::super::{
     InstalledNodeKind, InstalledNodeSelection, NodeObservedError,
@@ -424,7 +424,9 @@ fn root_node_profile(
         "text/plain",
     )? != continuation.definition
     {
-        return Err(refused("X86Root continuation specification identity changed"));
+        return Err(refused(
+            "X86Root continuation specification identity changed",
+        ));
     }
     binding.implementation.formats = vec![continuation];
     let guarantee: GuaranteeProfile =

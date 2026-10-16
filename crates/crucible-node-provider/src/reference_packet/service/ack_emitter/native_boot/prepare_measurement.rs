@@ -141,12 +141,16 @@ pub(crate) fn measure_conformance_executable(path: &Path) -> Result<ContentRef, 
     let mut file = File::open(path)?;
     let before = file.metadata()?;
     if before.len() > MAXIMUM_EXECUTABLE_BYTES {
-        return Err(ProviderError::ResourceExhausted("probe executable measurement"));
+        return Err(ProviderError::ResourceExhausted(
+            "probe executable measurement",
+        ));
     }
     let measured = measure_bounded_stream(&mut file, before.len(), GrowthPolicy::ReadToBound)?;
     let after = file.metadata()?;
     if measured.length != before.len() {
-        return Err(ProviderError::Correlation("executable changed during measurement"));
+        return Err(ProviderError::Correlation(
+            "executable changed during measurement",
+        ));
     }
     authenticate_metadata(&before, &after)?;
     reference_from_stream(measured)
@@ -190,9 +194,12 @@ fn measure_stream(
     reader: &mut impl Read,
     expected_length: u64,
 ) -> Result<ContentRef, ProviderError> {
-    let measured = measure_bounded_stream(reader, expected_length, GrowthPolicy::RefuseImmediately)?;
+    let measured =
+        measure_bounded_stream(reader, expected_length, GrowthPolicy::RefuseImmediately)?;
     if measured.length != expected_length {
-        return Err(ProviderError::Correlation("executable changed during measurement"));
+        return Err(ProviderError::Correlation(
+            "executable changed during measurement",
+        ));
     }
     reference_from_stream(measured)
 }
@@ -247,7 +254,10 @@ fn measure_bounded_stream(
         }
         hasher.update(&bytes[..count]);
     }
-    Ok(MeasuredExecutableStream { length, digest: hasher.finalize() })
+    Ok(MeasuredExecutableStream {
+        length,
+        digest: hasher.finalize(),
+    })
 }
 
 fn reference_from_stream(measured: MeasuredExecutableStream) -> Result<ContentRef, ProviderError> {
@@ -351,7 +361,9 @@ mod tests {
 
     #[test]
     fn growth_policy_preserves_prepare_refusal_and_generic_read_error_precedence() {
-        struct GrowthThenError { first: bool }
+        struct GrowthThenError {
+            first: bool,
+        }
         impl Read for GrowthThenError {
             fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
                 if std::mem::replace(&mut self.first, false) {
@@ -363,13 +375,26 @@ mod tests {
             }
         }
 
-        let prepare = measure_bounded_stream(&mut GrowthThenError { first: true }, 1,
-            GrowthPolicy::RefuseImmediately);
-        let generic = measure_bounded_stream(&mut GrowthThenError { first: true }, 1,
-            GrowthPolicy::ReadToBound);
+        let prepare = measure_bounded_stream(
+            &mut GrowthThenError { first: true },
+            1,
+            GrowthPolicy::RefuseImmediately,
+        );
+        let generic = measure_bounded_stream(
+            &mut GrowthThenError { first: true },
+            1,
+            GrowthPolicy::ReadToBound,
+        );
 
-        assert!(matches!(prepare, Err(ProviderError::Correlation("executable changed during measurement"))));
-        assert!(matches!(generic, Err(ProviderError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe));
+        assert!(matches!(
+            prepare,
+            Err(ProviderError::Correlation(
+                "executable changed during measurement"
+            ))
+        ));
+        assert!(
+            matches!(generic, Err(ProviderError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe)
+        );
     }
 
     #[test]
@@ -397,12 +422,16 @@ mod tests {
         file.write_all(b"original")?;
         let before = file.metadata()?;
         authenticate_metadata(&before, &file.metadata()?)?;
-        assert_eq!(crate::conformance::measure_executable(&_created.0)?,
-            canonical::content_ref(b"original", "application/octet-stream")?);
+        assert_eq!(
+            crate::conformance::measure_executable(&_created.0)?,
+            canonical::content_ref(b"original", "application/octet-stream")?
+        );
         file.write_all(b"grown")?;
         assert!(authenticate_metadata(&before, &file.metadata()?).is_err());
-        assert_eq!(crate::conformance::measure_executable(&_created.0)?,
-            canonical::content_ref(b"originalgrown", "application/octet-stream")?);
+        assert_eq!(
+            crate::conformance::measure_executable(&_created.0)?,
+            canonical::content_ref(b"originalgrown", "application/octet-stream")?
+        );
         Ok(())
     }
 

@@ -7,9 +7,9 @@
 //! Native gem5 preparation retains real resources beneath a qualification gate.
 
 pub mod arm_root;
-pub mod x86_root;
 pub mod cnp;
 mod condition_debug_model;
+pub mod x86_root;
 pub use condition_debug_model::{
     ConditionDebugDefinition, ConditionDebugModel, ConditionHitCandidate,
 };

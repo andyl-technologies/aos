@@ -19,7 +19,8 @@ fn input(reactive: bool) -> Result<Value, ProviderError> {
                 "id":"event-a","evaluation":{"time_ps":"0","microstep":"0","phase":3},
                 "completion":{"time_ps":"0","microstep":"0","phase":1},"payload":"AAEC"}]}})
     };
-    Ok(json!({"schema_version":5,"selection":selection,"program":program,
+    Ok(
+        json!({"schema_version":5,"selection":selection,"program":program,
         "controller_pid":"1","controller_uid":"0","controller_executable":coordinator.reference,
         "admission_token":Bytes::new(vec![7;32]),"initial_coordinator":coordinator,
         "limits":{"frame_bytes":"65536","nesting":"64","requests":"64",
@@ -27,7 +28,8 @@ fn input(reactive: bool) -> Result<Value, ProviderError> {
         "storage":{"snapshot_bytes":"16384","control_snapshot_bytes":"8192",
             "protocol_snapshot_bytes":"65536","frame_bank_bytes":"65536",
             "frames_per_direction":"256","hello_bytes":"131080","settlement_bytes":"65536"},
-        "effects":"/not-opened-by-data-control"}))
+        "effects":"/not-opened-by-data-control"}),
+    )
 }
 
 #[test]
@@ -82,7 +84,7 @@ fn raw_launch_array_occurrences_are_counted_before_semantic_rejection() -> TestR
     let first = input(false)?;
     let mut second = first.clone();
     let event = second["program"]["program"]["events"][0].clone();
-    second["program"]["program"]["events"] = Value::Array(vec![event;37]);
+    second["program"]["program"]["events"] = Value::Array(vec![event; 37]);
     let first_raw = canonical::canonical_json(&first)?;
     let second_raw = canonical::canonical_json(&second)?;
     assert!(recognized(&second_raw).is_ok());

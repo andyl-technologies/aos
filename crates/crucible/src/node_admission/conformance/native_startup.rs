@@ -19,7 +19,9 @@ use super::{InstalledConformancePlan, WeakInstalledConformancePlan};
 use crate::{node_adapters::cnp::PacketCompleteSemanticSource, node_contract::RuntimeError};
 
 mod host_finalization;
-pub(crate) use host_finalization::{OriginalHostFinalizationBarrier, OriginalHostFinalizationSource};
+pub(crate) use host_finalization::{
+    OriginalHostFinalizationBarrier, OriginalHostFinalizationSource,
+};
 
 /// Borrows the actual original policy roster and both retained launch views.
 ///
@@ -262,8 +264,11 @@ impl InstalledConformancePlan {
         )?;
         // This same allocation remains owned by Core and each issued member.
         // Source links are weak; the complete shared allocation is charged once.
-        observed = add(observed, OriginalHostFinalizationBarrier::allocation_requested_bytes(),
-            policy.maximum_requested_bytes)?;
+        observed = add(
+            observed,
+            OriginalHostFinalizationBarrier::allocation_requested_bytes(),
+            policy.maximum_requested_bytes,
+        )?;
         let mut pending = [None, None, None];
         for index in 0..3 {
             if (0..index).any(|previous| Rc::ptr_eq(&sources[previous], &sources[index])) {
@@ -395,7 +400,11 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
         }
         self.spent[index] = true;
         let member = OriginalNativeStartupMember {
-            host_finalization: Rc::clone(self.host_finalization.as_ref().ok_or(RuntimeError::OwnerUnavailable)?),
+            host_finalization: Rc::clone(
+                self.host_finalization
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?,
+            ),
             host_finalization_index: index,
             edition: NativeStartupMemberEdition::Startup14,
             process: self.process,
@@ -423,8 +432,14 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
         phase.finish()
     }
 
-    fn begin_host_finalization(&self, index: usize) -> Result<host_finalization::OriginalHostFinalizationLease, RuntimeError> {
-        let barrier = self.host_finalization.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+    fn begin_host_finalization(
+        &self,
+        index: usize,
+    ) -> Result<host_finalization::OriginalHostFinalizationLease, RuntimeError> {
+        let barrier = self
+            .host_finalization
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         let source = self.scope.sources.get(index).ok_or_else(|| {
             barrier.abandon();
             RuntimeError::DuplicateOperation
@@ -527,10 +542,15 @@ impl OriginalNativeStartupMember {
     ///
     /// # Errors
     /// Refuses a foreign/spent member or incomplete, aborted or abandoned roster.
-    pub(crate) fn authenticate_boot_ready(&self, source: &PacketCompleteSemanticSource) -> Result<(), RuntimeError> {
-        self.host_finalization.authenticate_ready(self.host_finalization_index, source)?;
+    pub(crate) fn authenticate_boot_ready(
+        &self,
+        source: &PacketCompleteSemanticSource,
+    ) -> Result<(), RuntimeError> {
+        self.host_finalization
+            .authenticate_ready(self.host_finalization_index, source)?;
         self.authenticate(source)?;
-        self.host_finalization.authenticate_ready(self.host_finalization_index, source)
+        self.host_finalization
+            .authenticate_ready(self.host_finalization_index, source)
     }
 
     pub(crate) fn requires_original_invocation_data(&self) -> Result<bool, RuntimeError> {
@@ -557,7 +577,9 @@ impl OriginalNativeStartupMember {
                     PacketCompleteSemanticSource,
                 >(),
             )
-            .and_then(|bytes| bytes.checked_add(Self::host_finalization_allocation_requested_data()))
+            .and_then(|bytes| {
+                bytes.checked_add(Self::host_finalization_allocation_requested_data())
+            })
             .ok_or(RuntimeError::ResourceLimit)
     }
 

@@ -100,7 +100,9 @@ impl Drop for FailedWitnessSupervision<'_> {
                     return;
                 }
                 Err(_) => {
-                    eprintln!("X86Root original failed-witness cleanup remains retained after unwind");
+                    eprintln!(
+                        "X86Root original failed-witness cleanup remains retained after unwind"
+                    );
                     return;
                 }
             }

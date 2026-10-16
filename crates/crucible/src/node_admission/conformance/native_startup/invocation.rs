@@ -292,7 +292,12 @@ impl CompleteOriginalNativeInvocationAdmission<'_> {
         // moved to Source. No public numeric/purpose DATA can reach this constructor.
         self.baseline.spent[index] = true;
         Ok(OriginalNativeStartupMember {
-            host_finalization: Rc::clone(self.baseline.host_finalization.as_ref().ok_or(RuntimeError::OwnerUnavailable)?),
+            host_finalization: Rc::clone(
+                self.baseline
+                    .host_finalization
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?,
+            ),
             host_finalization_index: index,
             edition: NativeStartupMemberEdition::Invocation15,
             process: self.baseline.process,

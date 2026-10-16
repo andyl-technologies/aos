@@ -7,8 +7,8 @@ use crucible_node_contract::{Id, U64, Validate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Gem5Boundary, Gem5ConfigurationTree, Gem5ModelAsset, Gem5ModelDialect};
 use super::refusal::Gem5DiagnosticCreditPolicy;
+use super::{Gem5Boundary, Gem5ConfigurationTree, Gem5ModelAsset, Gem5ModelDialect};
 use crate::ProviderError;
 
 pub(crate) struct X86RootSelection {
@@ -87,10 +87,14 @@ impl Gem5X86RootNativeReady {
         generation: U64,
     ) -> Result<(), ProviderError> {
         validate_loader_data(&selection.loader)?;
-        if loader_integer(&selection.loader["kernel_bytes"])? != selection.kernel.content.length.get()
-            || loader_integer(&selection.loader["initramfs_bytes"])? != selection.initramfs.content.length.get()
+        if loader_integer(&selection.loader["kernel_bytes"])?
+            != selection.kernel.content.length.get()
+            || loader_integer(&selection.loader["initramfs_bytes"])?
+                != selection.initramfs.content.length.get()
         {
-            return Err(ProviderError::Correlation("x86 loader and original guest extents differ"));
+            return Err(ProviderError::Correlation(
+                "x86 loader and original guest extents differ",
+            ));
         }
         owner.validate()?;
         incarnation.validate()?;
@@ -102,7 +106,10 @@ impl Gem5X86RootNativeReady {
             || &self.owner != owner
             || &self.incarnation != incarnation
             || self.generation != generation
-            || !matches!(self.continuation.as_str(), "original" | "reconnected" | "captured" | "restored")
+            || !matches!(
+                self.continuation.as_str(),
+                "original" | "reconnected" | "captured" | "restored"
+            )
             || policy.schema != "crucible.gem5.diagnostic-credit-policy.v1"
             || policy.refusal_schema != "crucible.gem5.run-refused.v1"
             || policy.maximum_object_bytes.get() != 64 * 1024 * 1024
@@ -118,11 +125,17 @@ impl Gem5X86RootNativeReady {
             || scope.configuration_tree != selection.configuration
             || scope.loader != selection.loader
         {
-            return Err(ProviderError::Correlation("x86 root Ready differs from original installed custody"));
+            return Err(ProviderError::Correlation(
+                "x86 root Ready differs from original installed custody",
+            ));
         }
         for (observed, original, basename) in [
             (&scope.guest_assets.kernel, &selection.kernel, "kernel.elf"),
-            (&scope.guest_assets.initramfs, &selection.initramfs, "initrd.img"),
+            (
+                &scope.guest_assets.initramfs,
+                &selection.initramfs,
+                "initrd.img",
+            ),
         ] {
             original.content.validate()?;
             if original.file != basename
@@ -130,33 +143,51 @@ impl Gem5X86RootNativeReady {
                 || observed.bytes != original.content.length
                 || observed.sha256 != original.sha256
             {
-                return Err(ProviderError::Correlation("x86 root native guest asset differs"));
+                return Err(ProviderError::Correlation(
+                    "x86 root native guest asset differs",
+                ));
             }
         }
         Ok(())
     }
 }
 
-
 fn loader_integer(value: &Value) -> Result<u64, ProviderError> {
-    let text = value.as_str().ok_or(ProviderError::Frame("x86 loader integer is not a string"))?;
-    if text.is_empty() || text.len() > 20 || (text.len() > 1 && text.starts_with('0'))
+    let text = value
+        .as_str()
+        .ok_or(ProviderError::Frame("x86 loader integer is not a string"))?;
+    if text.is_empty()
+        || text.len() > 20
+        || (text.len() > 1 && text.starts_with('0'))
         || !text.bytes().all(|byte| byte.is_ascii_digit())
     {
         return Err(ProviderError::Frame("x86 loader integer is not canonical"));
     }
-    text.parse().map_err(|_| ProviderError::Frame("x86 loader integer overflows"))
+    text.parse()
+        .map_err(|_| ProviderError::Frame("x86 loader integer overflows"))
 }
 
 pub(crate) fn validate_loader_data(loader: &Value) -> Result<(), ProviderError> {
     const KEYS: [&str; 12] = [
-        "schema", "ram_bytes", "kernel_bytes", "entry_point", "load_addr_mask",
-        "load_addr_offset", "native_reserved_range", "kernel_load_segments",
-        "initramfs_address", "initramfs_bytes", "boot_parameters", "linux_boot_protocol",
+        "schema",
+        "ram_bytes",
+        "kernel_bytes",
+        "entry_point",
+        "load_addr_mask",
+        "load_addr_offset",
+        "native_reserved_range",
+        "kernel_load_segments",
+        "initramfs_address",
+        "initramfs_bytes",
+        "boot_parameters",
+        "linux_boot_protocol",
     ];
-    let fields = loader.as_object().ok_or(ProviderError::Frame("x86 loader data is not an object"))?;
+    let fields = loader
+        .as_object()
+        .ok_or(ProviderError::Frame("x86 loader data is not an object"))?;
     let keys = &KEYS;
-    if fields.len() != keys.len() || keys.iter().any(|key| !fields.contains_key(*key))
+    if fields.len() != keys.len()
+        || keys.iter().any(|key| !fields.contains_key(*key))
         || loader["schema"] != "crucible.gem5.x86-linux-loader.v1"
         || loader["linux_boot_protocol"] != "x86-boot-params-initrd-low32-v1"
         || loader_integer(&loader["ram_bytes"])? != 256 * 1024 * 1024
@@ -165,39 +196,59 @@ pub(crate) fn validate_loader_data(loader: &Value) -> Result<(), ProviderError> 
         || loader_integer(&loader["initramfs_address"])? != 192 * 1024 * 1024
         || loader_integer(&loader["boot_parameters"])? != 0x90200
     {
-        return Err(ProviderError::Frame("x86 loader differs from the fixed native boot ABI"));
+        return Err(ProviderError::Frame(
+            "x86 loader differs from the fixed native boot ABI",
+        ));
     }
     let kernel_bytes = loader_integer(&loader["kernel_bytes"])?;
     let initramfs_bytes = loader_integer(&loader["initramfs_bytes"])?;
     let entry = loader_integer(&loader["entry_point"])?;
-    let reserved = loader["native_reserved_range"].as_array()
+    let reserved = loader["native_reserved_range"]
+        .as_array()
         .filter(|range| range.len() == 2)
         .ok_or(ProviderError::Frame("x86 reserved range geometry"))?;
-    if kernel_bytes == 0 || kernel_bytes > 1024 * 1024 * 1024
-        || initramfs_bytes == 0 || initramfs_bytes > 32 * 1024 * 1024
-        || loader_integer(&reserved[0])? != 0 || loader_integer(&reserved[1])? != 1024 * 1024
+    if kernel_bytes == 0
+        || kernel_bytes > 1024 * 1024 * 1024
+        || initramfs_bytes == 0
+        || initramfs_bytes > 32 * 1024 * 1024
+        || loader_integer(&reserved[0])? != 0
+        || loader_integer(&reserved[1])? != 1024 * 1024
     {
-        return Err(ProviderError::Frame("x86 loader guest extent or reserved region differs"));
+        return Err(ProviderError::Frame(
+            "x86 loader guest extent or reserved region differs",
+        ));
     }
-    let segments = loader["kernel_load_segments"].as_array()
+    let segments = loader["kernel_load_segments"]
+        .as_array()
         .filter(|segments| !segments.is_empty() && segments.len() <= 128)
         .ok_or(ProviderError::Frame("x86 kernel load segment census"))?;
     let mut entry_backed = false;
     for (index, segment) in segments.iter().enumerate() {
-        let row = segment.as_array().filter(|row| row.len() == 2)
+        let row = segment
+            .as_array()
+            .filter(|row| row.len() == 2)
             .ok_or(ProviderError::Frame("x86 kernel load segment geometry"))?;
         let start = loader_integer(&row[0])?;
         let bytes = loader_integer(&row[1])?;
-        let end = start.checked_add(bytes).ok_or(ProviderError::Frame("x86 kernel load segment overflow"))?;
-        if start < 1024 * 1024 || bytes == 0 || end > 256 * 1024 * 1024
+        let end = start
+            .checked_add(bytes)
+            .ok_or(ProviderError::Frame("x86 kernel load segment overflow"))?;
+        if start < 1024 * 1024
+            || bytes == 0
+            || end > 256 * 1024 * 1024
             || (start < 192 * 1024 * 1024 + initramfs_bytes && 192 * 1024 * 1024 < end)
         {
-            return Err(ProviderError::Frame("x86 kernel load backing overlaps reserved bytes"));
+            return Err(ProviderError::Frame(
+                "x86 kernel load backing overlaps reserved bytes",
+            ));
         }
         for previous in &segments[..index] {
-            let previous = previous.as_array().ok_or(ProviderError::Frame("x86 kernel prior segment geometry"))?;
+            let previous = previous
+                .as_array()
+                .ok_or(ProviderError::Frame("x86 kernel prior segment geometry"))?;
             let old_start = loader_integer(&previous[0])?;
-            let old_end = old_start.checked_add(loader_integer(&previous[1])?)
+            let old_end = old_start
+                .checked_add(loader_integer(&previous[1])?)
                 .ok_or(ProviderError::Frame("x86 kernel prior segment overflow"))?;
             if start < old_end && old_start < end {
                 return Err(ProviderError::Frame("x86 kernel load segment aliases"));
@@ -206,11 +257,12 @@ pub(crate) fn validate_loader_data(loader: &Value) -> Result<(), ProviderError> 
         entry_backed |= start <= entry && entry < end;
     }
     if !entry_backed {
-        return Err(ProviderError::Frame("x86 native entry lacks selected segment backing"));
+        return Err(ProviderError::Frame(
+            "x86 native entry lacks selected segment backing",
+        ));
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -257,9 +309,13 @@ mod tests {
                 maximum_files: 1024.into(),
             },
             boundary: Gem5Boundary {
-                tick: 0.into(), ordinal: 0.into(), tick_ordinal: 0.into(),
+                tick: 0.into(),
+                ordinal: 0.into(),
+                tick_ordinal: 0.into(),
                 logical_position: Position::new(0.into(), 0.into(), Phase::BoundaryControl),
-                has_next_event: true, next_tick: 1.into(), next_priority: 0,
+                has_next_event: true,
+                next_tick: 1.into(),
+                next_priority: 0,
                 inventory: json!({"complete": false}),
             },
             model_scope: Gem5X86RootNativeScope {
@@ -271,7 +327,8 @@ mod tests {
                 guest_readiness_qualified: false,
                 device_parity_qualified: false,
                 guest_assets: Gem5X86RootNativeAssets {
-                    kernel: binding(&selection.kernel), initramfs: binding(&selection.initramfs),
+                    kernel: binding(&selection.kernel),
+                    initramfs: binding(&selection.initramfs),
                 },
                 configuration_tree: selection.configuration.clone(),
                 loader: selection.loader.clone(),
@@ -280,7 +337,8 @@ mod tests {
     }
 
     #[test]
-    fn original_x86_root_data_binds_two_assets_without_minting_live_authority() -> Result<(), ProviderError> {
+    fn original_x86_root_data_binds_two_assets_without_minting_live_authority()
+    -> Result<(), ProviderError> {
         let selection = selection()?;
         let ready = ready(&selection)?;
         ready.validate_selection(&selection, &ready.owner, &ready.incarnation, 1.into())?;
@@ -308,7 +366,17 @@ mod tests {
                 8 => changed.model_scope.loader["entry_point"] = json!("2097153"),
                 _ => changed.model_scope.configuration_tree.files = 167.into(),
             }
-            assert!(changed.validate_selection(&selection, &original.owner, &original.incarnation, 1.into()).is_err(), "change {change}");
+            assert!(
+                changed
+                    .validate_selection(
+                        &selection,
+                        &original.owner,
+                        &original.incarnation,
+                        1.into()
+                    )
+                    .is_err(),
+                "change {change}"
+            );
         }
         Ok(())
     }
@@ -322,7 +390,9 @@ mod tests {
             match change {
                 0 => loader["kernel_load_segments"] = json!([["0", "4096"]]),
                 1 => loader["kernel_load_segments"] = json!([["201326591", "2"]]),
-                2 => loader["kernel_load_segments"] = json!([["2097152", "4096"], ["2097153", "1"]]),
+                2 => {
+                    loader["kernel_load_segments"] = json!([["2097152", "4096"], ["2097153", "1"]])
+                }
                 3 => loader["entry_point"] = json!("2101248"),
                 4 => loader["kernel_load_segments"] = json!([["18446744073709551615", "1"]]),
                 5 => loader["initramfs_bytes"] = json!("33554433"),
@@ -334,7 +404,11 @@ mod tests {
         let mut unfunded = selection()?;
         unfunded.kernel.content.length = 4095.into();
         let observed = ready(&selected)?;
-        assert!(observed.validate_selection(&unfunded, &observed.owner, &observed.incarnation, 1.into()).is_err());
+        assert!(
+            observed
+                .validate_selection(&unfunded, &observed.owner, &observed.incarnation, 1.into())
+                .is_err()
+        );
         Ok(())
     }
 }

@@ -295,11 +295,7 @@ impl X86RootNativeProcess {
             .env("PYTHONNOUSERSITE", "1")
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .arg("-B")
-            .arg(
-                launch
-                    .resource_root
-                    .join("x86-root-process-image-audit.py"),
-            )
+            .arg(launch.resource_root.join("x86-root-process-image-audit.py"))
             .current_dir(&launch.tools.temporary_root)
             .process_group(0)
             .stdin(Stdio::from(input))
@@ -309,9 +305,11 @@ impl X86RootNativeProcess {
         // Storage was reserved before spawn. Retain first, then measure while
         // the original Child remains owned through errors and unwinding.
         custody.unenrolled_helpers.push(child);
-        custody.audit_workers.push(StoppedProcessGroup::enroll_helper(
-            &mut custody.unenrolled_helpers,
-        )?);
+        custody
+            .audit_workers
+            .push(StoppedProcessGroup::enroll_helper(
+                &mut custody.unenrolled_helpers,
+            )?);
         super::arm_root_io::NativeDeadlineIo::new(&mut stream, original_deadline)
             .write_all(&bytes)?;
         stream.shutdown(Shutdown::Write)?;

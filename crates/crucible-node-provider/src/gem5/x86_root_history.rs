@@ -16,7 +16,7 @@ use crucible_node_contract::{ContentRef, HashRef, Id, U64, Validate, canonical};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{X86RootPreparedSession, GEM5_NATIVE_FRAME_BYTES};
+use super::{GEM5_NATIVE_FRAME_BYTES, X86RootPreparedSession};
 use crate::ProviderError;
 
 const MAX_PACKETS: usize = 4096;

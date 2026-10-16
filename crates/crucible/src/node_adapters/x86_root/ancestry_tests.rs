@@ -6,7 +6,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use crucible_node_contract::{ContentRef, Id, Phase, Position, U64, canonical};
-use crucible_node_provider::gem5::{X86RootHistoricalSource, Gem5Boundary};
+use crucible_node_provider::gem5::{Gem5Boundary, X86RootHistoricalSource};
 
 use crate::{node_contract::*, node_scheduling::InputPayload};
 

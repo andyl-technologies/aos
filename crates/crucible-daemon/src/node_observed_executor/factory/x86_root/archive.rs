@@ -23,9 +23,8 @@ use crucible_node_contract::Id;
 use crucible_node_provider::{
     ProviderError,
     gem5::{
+        Gem5ArchiveArtifact, Gem5CapturedArtifactRole, Gem5LaunchArtifact, InstalledX86RootModel,
         X86RootArchiveImport, X86RootArchiveSourceVerifier, X86RootCapturedImage,
-        Gem5ArchiveArtifact, Gem5CapturedArtifactRole, Gem5LaunchArtifact,
-        InstalledX86RootModel,
     },
 };
 
@@ -83,7 +82,11 @@ impl MaterializedX86RootArchive {
             let (role, directory) = match artifact.role().as_str() {
                 "image" => (Gem5CapturedArtifactRole::Image, &image_root),
                 "resource" => (Gem5CapturedArtifactRole::Resource, &resource_root),
-                _ => return Err(refusal("X86Root original artifact uses an unsupported role")),
+                _ => {
+                    return Err(refusal(
+                        "X86Root original artifact uses an unsupported role",
+                    ));
+                }
             };
             let relative = native_relative(artifact.role().as_str(), artifact.name())?;
             let path = directory.join(&relative);

@@ -7,7 +7,7 @@ use crucible_node_contract::U64;
 use serde_json::json;
 
 use super::{
-    X86RootExactAuthority, X86RootNativeProcess, X86RootPrefix, X86RootRunOutcome, Gem5Run,
+    Gem5Run, X86RootExactAuthority, X86RootNativeProcess, X86RootPrefix, X86RootRunOutcome,
 };
 use crate::ProviderError;
 
@@ -263,7 +263,11 @@ pub(crate) fn validate(
             .checked_add(1)
             .ok_or(ProviderError::Frame("x86 original serial ID exhausted"))?;
         publication.validate_birth_at_terminal(
-            before, &prefix.after, output_id.into(), 0.into(), "system.pc.com_1.device",
+            before,
+            &prefix.after,
+            output_id.into(),
+            0.into(),
+            "system.pc.com_1.device",
         )?;
         let reaction = callback(
             publication.tick,

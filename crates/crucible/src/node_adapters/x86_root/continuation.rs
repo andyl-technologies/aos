@@ -11,7 +11,7 @@ use std::{
 
 use crucible_node_contract::{ContentRef, HashRef, Id, U64, Validate, canonical};
 use crucible_node_provider::gem5::{
-    X86RootControlHistory, X86RootControlPacket, X86RootPreparationRecord, Gem5X86RootNativeReady,
+    Gem5X86RootNativeReady, X86RootControlHistory, X86RootControlPacket, X86RootPreparationRecord,
 };
 use serde::Deserialize;
 
@@ -22,7 +22,7 @@ use crate::{
 
 use super::{
     X86_ROOT_DIALECT, X86_ROOT_IMPLEMENTATION, X86_ROOT_MODEL,
-    capture::{X86_ROOT_PRESERVATION_PROFILE, RootWire, x86_root_continuation_schema},
+    capture::{RootWire, X86_ROOT_PRESERVATION_PROFILE, x86_root_continuation_schema},
     refusal,
 };
 

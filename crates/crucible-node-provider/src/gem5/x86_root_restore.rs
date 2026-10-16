@@ -20,10 +20,10 @@ use serde_json::json;
 
 // Reuses only original waitable kernel-group custody; model/peer authority is x86-owned.
 use super::arm_root_group::ArmRootGroup as StoppedProcessGroup;
+use super::images::validate_private_directory;
 use super::x86_root_process::{
     X86RootConstruction, X86RootOrigin, connect, read_with_deadline, selection,
 };
-use super::images::validate_private_directory;
 use super::{
     X86RootCapturedImage, X86RootCustodySlot, X86RootNativeCustody, X86RootNativeProcess,
     X86RootPreparedSession,
@@ -177,7 +177,9 @@ impl X86RootNativeProcess {
         let mut construction = X86RootConstruction::new(custody, slot);
         let outcome = (|| {
             let custody = construction.custody_mut()?;
-            custody.group = Some(StoppedProcessGroup::enroll_retained(&mut custody.unenrolled)?);
+            custody.group = Some(StoppedProcessGroup::enroll_retained(
+                &mut custody.unenrolled,
+            )?);
             custody.stream = Some(connect(custody, true)?);
             let original_deadline = super::arm_root_io::deadline(custody.launch.timeout)?;
             let stream = custody
@@ -199,8 +201,9 @@ impl X86RootNativeProcess {
                 .history
                 .push(super::X86RootControlKind::Ready, frame.1.clone())?;
             custody.received_ready = Some(frame.1);
-            let ready: super::x86_root_model::Gem5X86RootNativeReady = serde_json::from_value(frame.0)
-                .map_err(|_| ProviderError::Frame("x86 reconstructed typed Ready shape"))?;
+            let ready: super::x86_root_model::Gem5X86RootNativeReady =
+                serde_json::from_value(frame.0)
+                    .map_err(|_| ProviderError::Frame("x86 reconstructed typed Ready shape"))?;
             ready.validate_selection(
                 &selection(&custody.launch)?,
                 &custody.launch.owner,

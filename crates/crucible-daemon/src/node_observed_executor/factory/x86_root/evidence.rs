@@ -23,11 +23,13 @@ use crucible_node_contract::{
     canonical,
 };
 use crucible_node_provider::gem5::{
-    X86RootExactAuthority, X86RootNativeProcess, InstalledX86RootModel,
+    InstalledX86RootModel, X86RootExactAuthority, X86RootNativeProcess,
 };
 
 use super::super::{NodeObservedError, measure_executable, refused};
-use super::{custody::X86RootCustodyQueue, profile::X86RootWorldProfile, qualification::X86RootPeer};
+use super::{
+    custody::X86RootCustodyQueue, profile::X86RootWorldProfile, qualification::X86RootPeer,
+};
 use crate::node_scenario::ScenarioContent;
 
 mod admission;
@@ -322,8 +324,9 @@ impl HostModelQualification for X86RootEvidence {
         {
             return Err(OperationFailure {
                 effects: EffectKnowledge::None,
-                reason: "X86Root world Clock differs from its original actually owned integer model"
-                    .into(),
+                reason:
+                    "X86Root world Clock differs from its original actually owned integer model"
+                        .into(),
             });
         }
         self.authenticate_scope().map_err(|error| OperationFailure {

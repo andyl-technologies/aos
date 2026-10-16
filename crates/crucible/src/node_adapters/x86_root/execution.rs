@@ -10,7 +10,7 @@ use std::{
 };
 
 use crucible_node_contract::{Id, Phase, Position, U64, canonical};
-use crucible_node_provider::gem5::{X86RootRunOutcome, Gem5ExactRange, Gem5Run};
+use crucible_node_provider::gem5::{Gem5ExactRange, Gem5Run, X86RootRunOutcome};
 
 use crate::{node_contract::*, node_scheduling::NativePublication};
 

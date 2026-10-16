@@ -31,7 +31,7 @@ use super::arm_root_io::{NativeDeadlineIo, deadline};
 use super::images::{measure_file, measure_image_file};
 use super::model::Gem5ModelAsset;
 use super::x86_root_model::{Gem5X86RootNativeReady, X86RootSelection};
-use super::{X86RootLaunch, GEM5_NATIVE_FRAME_BYTES, Gem5Boundary};
+use super::{GEM5_NATIVE_FRAME_BYTES, Gem5Boundary, X86RootLaunch};
 use crate::{
     ProviderError,
     transport::{FrameReader, write_frame},
@@ -140,8 +140,9 @@ impl X86RootNativeCustody {
             self.audit_workers.try_reserve(1).map_err(|_| {
                 ProviderError::ResourceExhausted("x86 reserved helper retirement storage")
             })?;
-            self.audit_workers
-                .push(StoppedProcessGroup::enroll_helper(&mut self.unenrolled_helpers)?);
+            self.audit_workers.push(StoppedProcessGroup::enroll_helper(
+                &mut self.unenrolled_helpers,
+            )?);
         }
         for worker in &mut self.audit_workers {
             worker.begin_retirement()?;
@@ -370,7 +371,9 @@ impl X86RootNativeProcess {
         let mut construction = X86RootConstruction::new(custody, slot);
         let outcome = (|| {
             let custody = construction.custody_mut()?;
-            custody.group = Some(StoppedProcessGroup::enroll_retained(&mut custody.unenrolled)?);
+            custody.group = Some(StoppedProcessGroup::enroll_retained(
+                &mut custody.unenrolled,
+            )?);
             let native_bootstrap = json!({"schema":"crucible.gem5.x86-linux-native/1",
                 "owner":custody.launch.owner,"incarnation":custody.launch.incarnation,
                 "generation":custody.launch.generation,"controller_uid":rustix::process::getuid().as_raw().to_string(),

@@ -14,7 +14,9 @@ use std::{
 
 use crucible::node_contract::{ActivationRecord, QuarantinedRuntime, RuntimeCustodyQueue};
 
-use super::{custody::X86RootCustodyQueue, factory::X86RootNativeFactory, installed::X86RootColdPlan};
+use super::{
+    custody::X86RootCustodyQueue, factory::X86RootNativeFactory, installed::X86RootColdPlan,
+};
 use crate::node_observed_executor::{NodeObservedError, factory::refused};
 
 pub(super) struct X86RootRetirementScope {
@@ -103,7 +105,9 @@ impl InstalledX86RootRetirement {
     ///
     /// # Errors
     /// Refuses an absent original queue entry; the same owning handle is retained.
-    pub fn cleanup_status(&self) -> Result<super::InstalledX86RootCleanupStatus, NodeObservedError> {
+    pub fn cleanup_status(
+        &self,
+    ) -> Result<super::InstalledX86RootCleanupStatus, NodeObservedError> {
         self.scope.cleanup_status()
     }
 

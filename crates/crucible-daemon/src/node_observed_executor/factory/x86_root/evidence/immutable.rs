@@ -310,7 +310,9 @@ impl X86RootEvidence {
                             || !publication.causal_parents.is_empty()
                             || verified(content, &publication.payload)? != publication.payload_bytes
                         {
-                            return Err(state_error("X86Root original publication payload differs"));
+                            return Err(state_error(
+                                "X86Root original publication payload differs",
+                            ));
                         }
                     }
                     if let Some(input) = &observation.input_progress {
@@ -351,7 +353,9 @@ impl X86RootEvidence {
                 || input.acknowledgement != batch.acknowledgement
                 || !batch.consumed.is_empty()
             {
-                return Err(state_error("X86Root original native input inventory changed"));
+                return Err(state_error(
+                    "X86Root original native input inventory changed",
+                ));
             }
         }
         Ok(())

@@ -3,7 +3,6 @@
 mod acceptance;
 mod archive_artifacts;
 mod arm_root;
-mod x86_root;
 mod cached_artifacts;
 mod capabilities;
 mod clock_label;
@@ -17,6 +16,7 @@ pub(super) mod recorded_ingress;
 mod vendor_selection;
 mod vendors;
 mod vendors_mixed;
+mod x86_root;
 
 mod condition_debug;
 mod controlled;
@@ -83,7 +83,8 @@ pub(super) use transcript::replay_stepper::{ReplayStep, ReplayStepper};
 
 pub use x86_root::public_catalog::{
     InstalledPreparedX86RootWorld, InstalledX86RootPreservation, InstalledX86RootRestore,
-    X86RootInitialRetirementFailure, X86RootRestoredRetirementFailure, X86RootUnstartedRetirementFailure,
+    X86RootInitialRetirementFailure, X86RootRestoredRetirementFailure,
+    X86RootUnstartedRetirementFailure,
 };
 pub use x86_root::{
     InstalledX86RootCleanupFailure, InstalledX86RootCleanupStatus, InstalledX86RootRetirement,
@@ -909,7 +910,8 @@ impl InstalledNodeCatalog {
             self.require_behavioral_host_scope()?;
             return Ok(x86_root::public_catalog::prepare_native(
                 self, selections, scenario, execution,
-            )?.world);
+            )?
+            .world);
         }
         if selections
             .iter()

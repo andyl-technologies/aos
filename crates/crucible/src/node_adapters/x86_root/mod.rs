@@ -26,8 +26,8 @@ pub use capture::{
 };
 pub use continuation::{AuthenticatedX86RootContinuation, authenticate_x86_root_continuation};
 pub use node::{
-    X86_ROOT_SERIAL_INTERFACE, X86_ROOT_SERIAL_SCHEMA, X86_ROOT_SERIAL_SPECIFICATION,
-    X86RootNodeResources, X86RootQualifiedFailure, QualifiedX86RootNode,
+    QualifiedX86RootNode, X86_ROOT_SERIAL_INTERFACE, X86_ROOT_SERIAL_SCHEMA,
+    X86_ROOT_SERIAL_SPECIFICATION, X86RootNodeResources, X86RootQualifiedFailure,
 };
 
 pub use preparation::{

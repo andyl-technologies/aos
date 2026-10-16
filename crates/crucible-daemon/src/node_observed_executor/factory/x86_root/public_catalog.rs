@@ -14,7 +14,8 @@ use super::super::{
 };
 use super::{
     custody::X86RootCustodyQueue, factory::X86RootNativeFactory, installed::X86RootInstalledEngine,
-    profile::X86RootWorldProfile, publication::X86RootPublisher, retirement::X86RootRetirementScope,
+    profile::X86RootWorldProfile, publication::X86RootPublisher,
+    retirement::X86RootRetirementScope,
 };
 use crate::node_scenario::NodeScenario;
 
@@ -43,7 +44,9 @@ impl InstalledX86RootPreservation {
     ///
     /// # Errors
     /// Refuses an absent original queue entry; the same owning handle is retained.
-    pub fn cleanup_status(&self) -> Result<super::InstalledX86RootCleanupStatus, NodeObservedError> {
+    pub fn cleanup_status(
+        &self,
+    ) -> Result<super::InstalledX86RootCleanupStatus, NodeObservedError> {
         self.retirement.cleanup_status()
     }
 
@@ -83,7 +86,9 @@ impl InstalledX86RootPreservation {
     ) -> Result<super::InstalledX86RootRetirement, Box<X86RootInitialRetirementFailure>> {
         let validate = (|| {
             if activation.record() != &self.target {
-                return Err(refused("X86Root retirement names another original activation"));
+                return Err(refused(
+                    "X86Root retirement names another original activation",
+                ));
             }
             self.factory
                 .check_graph(graph)
@@ -165,8 +170,10 @@ pub(in super::super) fn prepare_native(
             "authored X86Root world differs from its independently installed selection",
         ));
     }
-    let engine =
-        X86RootInstalledEngine::with_runtime(catalog.socket_parent.clone(), catalog.custody.clone())?;
+    let engine = X86RootInstalledEngine::with_runtime(
+        catalog.socket_parent.clone(),
+        catalog.custody.clone(),
+    )?;
     let live = engine.prepare_initial()?;
     if live.profile.scenario.canonical_bytes()? != selected.canonical_bytes()? {
         return Err(refused(
@@ -230,7 +237,9 @@ impl InstalledX86RootRestore {
     ///
     /// # Errors
     /// Refuses an absent original queue entry; the same owning handle is retained.
-    pub fn cleanup_status(&self) -> Result<super::InstalledX86RootCleanupStatus, NodeObservedError> {
+    pub fn cleanup_status(
+        &self,
+    ) -> Result<super::InstalledX86RootCleanupStatus, NodeObservedError> {
         self.retirement.cleanup_status()
     }
 
@@ -359,8 +368,10 @@ pub(in super::super) fn prepare_restore(
             "X86Root restore source differs from ordinary installed selection",
         ));
     }
-    let engine =
-        X86RootInstalledEngine::with_runtime(catalog.socket_parent.clone(), catalog.custody.clone())?;
+    let engine = X86RootInstalledEngine::with_runtime(
+        catalog.socket_parent.clone(),
+        catalog.custody.clone(),
+    )?;
     let plan = engine.prepare_cold(archive.clone())?;
     let graph = plan.graph.clone();
     let target = plan.target.clone();

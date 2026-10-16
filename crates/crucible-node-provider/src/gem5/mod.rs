@@ -72,32 +72,31 @@ mod arm_root_source;
 pub use arm_root_source::ArmRootHistoricalSource;
 pub use images::arm_root_archive::{ArmRootArchiveImport, ArmRootArchiveSourceVerifier};
 
-
-mod x86_root_installed;
-mod x86_root_launch;
-mod x86_root_process;
-mod x86_root_model;
 mod x86_root_capture;
 mod x86_root_closure;
 mod x86_root_exact;
-mod x86_root_run;
-mod x86_root_restore;
 mod x86_root_history;
+mod x86_root_installed;
+mod x86_root_launch;
+mod x86_root_model;
+mod x86_root_process;
+mod x86_root_restore;
+mod x86_root_run;
 mod x86_root_source;
 
-pub use x86_root_installed::InstalledX86RootModel;
-pub use x86_root_launch::X86RootLaunch;
-pub use x86_root_process::{
-    X86RootCustodySlot, X86RootHostLedger, X86RootNativeCustody,
-    X86RootNativeProcess, X86RootPreparedSession,
-};
-pub use x86_root_model::{Gem5X86RootNativeReady, Gem5X86RootNativeScope, Gem5X86RootNativeAssets};
+pub use images::x86_root_archive::{X86RootArchiveImport, X86RootArchiveSourceVerifier};
 pub use x86_root_capture::{X86RootCapturedImage, X86RootPrefix, X86RootRunOutcome};
 pub use x86_root_closure::X86RootProcessClosure;
 pub use x86_root_exact::X86RootExactAuthority;
-pub use x86_root_restore::X86RootRestoreTarget;
 pub use x86_root_history::{
     X86RootControlHistory, X86RootControlKind, X86RootControlPacket, X86RootPreparationRecord,
 };
+pub use x86_root_installed::InstalledX86RootModel;
+pub use x86_root_launch::X86RootLaunch;
+pub use x86_root_model::{Gem5X86RootNativeAssets, Gem5X86RootNativeReady, Gem5X86RootNativeScope};
+pub use x86_root_process::{
+    X86RootCustodySlot, X86RootHostLedger, X86RootNativeCustody, X86RootNativeProcess,
+    X86RootPreparedSession,
+};
+pub use x86_root_restore::X86RootRestoreTarget;
 pub use x86_root_source::X86RootHistoricalSource;
-pub use images::x86_root_archive::{X86RootArchiveImport, X86RootArchiveSourceVerifier};

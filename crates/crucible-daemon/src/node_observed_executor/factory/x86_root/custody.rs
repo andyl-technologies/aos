@@ -109,7 +109,8 @@ impl X86RootCustodyQueue {
         match &scope.backing {
             X86RootBacking::Fresh(files)
                 if files.len()
-                    == crucible_node_provider::gem5::InstalledX86RootModel::artifact_roles().len() => {}
+                    == crucible_node_provider::gem5::InstalledX86RootModel::artifact_roles()
+                        .len() => {}
             X86RootBacking::Archived { source, artifacts }
                 if source.manifest().world_binding_hash == scope.activation.world_binding_hash
                     && source
@@ -140,7 +141,9 @@ impl X86RootCustodyQueue {
             .slots
             .iter()
             .position(Option::is_none)
-            .ok_or_else(|| refused("X86Root process-lifetime native custody credits are exhausted"))?;
+            .ok_or_else(|| {
+                refused("X86Root process-lifetime native custody credits are exhausted")
+            })?;
         registry.slots[index] = Some(Entry {
             scope,
             custody: None,
@@ -228,7 +231,9 @@ impl X86RootCustodyQueue {
         if entry.scope.publication == PublicationKnowledge::Committed
             && status != PublicationKnowledge::Committed
         {
-            return Err(refused("X86Root committed publication cannot be downgraded"));
+            return Err(refused(
+                "X86Root committed publication cannot be downgraded",
+            ));
         }
         entry.scope.publication = status;
         Ok(())

@@ -13,8 +13,8 @@ use std::{
 use crucible_node_contract::{ContentRef, Id, U64, canonical};
 use serde_json::Value;
 
-use super::x86_root_installed::InstalledX86RootModel;
 use super::images::{Gem5ImageSource, sealed, validate_private_directory};
+use super::x86_root_installed::InstalledX86RootModel;
 use super::{Gem5LaunchArtifact, Gem5ProcessImageTools};
 use crate::ProviderError;
 

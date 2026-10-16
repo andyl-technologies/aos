@@ -14,8 +14,8 @@ use std::{
 
 use crucible_node_contract::{ContentRef, Extensions, Id, SchemaRef, U64, canonical};
 use crucible_node_provider::gem5::{
-    X86RootCapturedImage, X86RootControlKind, X86RootHistoricalSource, X86RootProcessClosure,
-    Gem5CapturedArtifactRole,
+    Gem5CapturedArtifactRole, X86RootCapturedImage, X86RootControlKind, X86RootHistoricalSource,
+    X86RootProcessClosure,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ use crate::{
     node_scheduling::InputPayload,
 };
 
-use super::{X86_ROOT_IMPLEMENTATION, QualifiedX86RootNode, encoding, refusal};
+use super::{QualifiedX86RootNode, X86_ROOT_IMPLEMENTATION, encoding, refusal};
 
 /// Names the distinct preparation-bearing Root process preservation profile.
 pub const X86_ROOT_PRESERVATION_PROFILE: &str = "gem5/x86-root-public-preservation-v2";

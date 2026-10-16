@@ -110,8 +110,8 @@ pub(crate) use native_boot::{
     original_native_report_startup_scope_layout_data,
 };
 pub(crate) use native_boot::{
-    OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,
-    measure_conformance_executable_data,
+    OriginalNativePrepareStartupAllocation, measure_conformance_executable_data,
+    measure_original_prepare_executable_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
 

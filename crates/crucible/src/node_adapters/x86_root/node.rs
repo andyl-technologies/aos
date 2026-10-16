@@ -28,7 +28,7 @@ use crate::{
 use super::{
     X86_ROOT_EXACT_PROFILE, X86RootNodePreparation,
     capture::{
-        X86_ROOT_PRESERVATION_PROFILE, X86RootArchiveInstallation, RootCapture,
+        RootCapture, X86_ROOT_PRESERVATION_PROFILE, X86RootArchiveInstallation,
         x86_root_continuation_schema,
     },
     encoding,

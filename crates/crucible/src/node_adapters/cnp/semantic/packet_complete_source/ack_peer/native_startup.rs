@@ -10,7 +10,8 @@ use crate::node_adapters::cnp::semantic::packet_complete_source::{
     CompletePacketOriginal, PacketCompleteSemanticSource, retained_values,
 };
 use crate::node_admission::{
-    NativeStartupRows, OriginalHostFinalizationBarrier, OriginalNativeStartupMember, OriginalNativeStartupQuote,
+    NativeStartupRows, OriginalHostFinalizationBarrier, OriginalNativeStartupMember,
+    OriginalNativeStartupQuote,
 };
 use crate::node_contract::{NodeRuntime, RuntimeError};
 use crucible_node_contract::{U64, canonical};
@@ -136,10 +137,16 @@ impl PacketCompleteSemanticSource {
     pub(crate) fn original_native_host_barrier_slots(
         sources: &[Rc<Self>; 3],
     ) -> Result<OriginalNativeHostBarrierSlots<'_>, RuntimeError> {
-        fn original_birth(source: &PacketCompleteSemanticSource) -> Result<RefMut<'_, OriginalAckPeerBirth>, RuntimeError> {
+        fn original_birth(
+            source: &PacketCompleteSemanticSource,
+        ) -> Result<RefMut<'_, OriginalAckPeerBirth>, RuntimeError> {
             source.storage_origin_with_error::<RuntimeError>()?;
-            let slot = source.ack_peer_birth.try_borrow_mut().map_err(|_| RuntimeError::OwnerBusy)?;
-            let birth = RefMut::filter_map(slot, Option::as_mut).map_err(|_| RuntimeError::OwnerUnavailable)?;
+            let slot = source
+                .ack_peer_birth
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let birth = RefMut::filter_map(slot, Option::as_mut)
+                .map_err(|_| RuntimeError::OwnerUnavailable)?;
             birth.authenticate_unstarted_storage_phase_with_error::<RuntimeError>()?;
             if birth.native_host_finalization.is_some() || birth.native_startup.is_some() {
                 return Err(RuntimeError::DuplicateOperation);
@@ -149,7 +156,9 @@ impl PacketCompleteSemanticSource {
         let first = original_birth(&sources[0])?;
         let second = original_birth(&sources[1])?;
         let third = original_birth(&sources[2])?;
-        Ok(OriginalNativeHostBarrierSlots { births: [first, second, third] })
+        Ok(OriginalNativeHostBarrierSlots {
+            births: [first, second, third],
+        })
     }
 
     /// Counts the original birth loan and fixed shared-gate authentication views.
@@ -173,10 +182,16 @@ impl PacketCompleteSemanticSource {
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_original_native_host_barrier(
         &self,
     ) -> Result<(), OperationFailure> {
-        let slot = self.ack_peer_birth.try_borrow()
+        let slot = self
+            .ack_peer_birth
+            .try_borrow()
             .map_err(|_| refused("original host finalization birth is busy"))?;
-        if let Some(barrier) = slot.as_ref().and_then(|birth| birth.native_host_finalization.as_ref()) {
-            barrier.authenticate_ready(self)
+        if let Some(barrier) = slot
+            .as_ref()
+            .and_then(|birth| birth.native_host_finalization.as_ref())
+        {
+            barrier
+                .authenticate_ready(self)
                 .map_err(|_| refused("original host finalization roster is incomplete"))?;
         }
         Ok(())
@@ -529,7 +544,9 @@ impl OriginalAckPeerBirth {
         // Incomplete, aborted or abandoned admissions therefore block aliases
         // even when this Source has not yet installed native_startup state.
         if let Some(barrier) = &self.native_host_finalization {
-            barrier.authenticate_ready(source).map_err(|_| refused("original host finalization roster is incomplete"))?;
+            barrier
+                .authenticate_ready(source)
+                .map_err(|_| refused("original host finalization roster is incomplete"))?;
         }
         if let Some(state) = &self.native_startup {
             if !state.complete || self.failed {

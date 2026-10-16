@@ -20,9 +20,6 @@ mod staging;
 #[cfg(test)]
 mod tests;
 
-
 pub use queue_diagnostics::{InstalledX86RootCleanupFailure, InstalledX86RootCleanupStatus};
 
 pub use retirement::{InstalledX86RootRetirement, X86RootNamespaceReleaseFailure};
-
-

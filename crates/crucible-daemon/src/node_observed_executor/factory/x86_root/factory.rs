@@ -62,10 +62,9 @@ impl X86RootNativeFactory {
         archive: &NativeArchiveRecord,
         namespace: &std::path::Path,
     ) -> Result<X86RootColdPlan, super::super::NodeObservedError> {
-        let mut pending = self
-            .cold
-            .try_borrow_mut()
-            .map_err(|_| super::super::refused("X86Root original cold lease is currently borrowed"))?;
+        let mut pending = self.cold.try_borrow_mut().map_err(|_| {
+            super::super::refused("X86Root original cold lease is currently borrowed")
+        })?;
         let plan = pending.as_ref().ok_or_else(|| {
             super::super::refused("X86Root original cold lease has already entered staging")
         })?;
