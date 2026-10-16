@@ -18,7 +18,7 @@ mod verification;
 pub use fetch::{FetchRequirement, fetch_verified};
 pub use kernel::{HostInspection, HostKernel, SealInspection};
 pub use layout::{DomainHostLayout, HostDomainLocation, HostReadLocation};
-pub use metadata::HostMetadataReader;
+pub use metadata::{HostMetadataEntry, HostMetadataReader};
 pub use policy::{CacheEntry, CachePolicy, CircuitBreaker, PolicyConfig};
 pub use readonly::{HostReadLimits, HostReadOnlyContent};
 pub use reassembly::ReassemblyMode;
