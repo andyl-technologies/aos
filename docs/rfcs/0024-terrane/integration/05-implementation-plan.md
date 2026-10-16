@@ -8720,7 +8720,7 @@ remain in progress; an earlier source passes the metadata-only schema observer
 with a positive content-read control. The host-cache branch
 builds and passes 19 focused tests with unchanged source inputs. Native admission,
 sealed-residence reads, and complete task gates remain pending.
-The separate module branch has 81 passing declarative checks, 40 positive
+The separate module branch has 86 passing declarative checks, 40 positive
 checks of actual rendered TOML through the built CLI across four roles and
 ten configuration shapes, and six negative parser cases. These establish
 syntax parsing, not backend or
@@ -8757,6 +8757,16 @@ alias coverage and service-identity isolation pass the quota gate. The quota
 helper's build and eight focused tests pass, as do twelve shared-directory
 and nineteen publisher-transport baseline tests; these do not establish
 native confinement, VM execution or T2 acceptance.
+
+The source-bound confinement proof image builds with identical Cargo and
+installed executable hashes. Its guest check is still building the AOS Linux
+dependency; no guest execution is credited yet. Source review corrected a
+publisher fixture helper reference and quota fixture synchronization races.
+The quota claim implementation now permanently binds each filesystem/project
+pair before ledger publication or native mutation; full process-crash and
+broker scenarios await execution. Configured SDK runtime composition and
+actual durable host metadata pins are being implemented separately. Current
+surface gates and complete trunk qualification remain pending.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
