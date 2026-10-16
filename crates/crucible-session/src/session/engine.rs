@@ -897,11 +897,23 @@ impl<L> Engine<L> {
             return Ok(());
         }
 
-        let Some(prefix) =
+        let Some(mut prefix) =
             self.breakpoint_condition_prefix(event_log_entries, emitted_event_log_entries)?
         else {
             return Ok(());
         };
+        // The prefix is rebuilt from the session's whole log, so declaring a
+        // matcher here folds every console byte the breakpoint could match.
+        let console_patterns = crucible::predicate_console_patterns(
+            self.breakpoints.iter().map(|(_, spec, _)| &spec.predicate),
+        );
+        for (node, pattern) in &console_patterns {
+            prefix
+                .declare_console_pattern(node, pattern)
+                .map_err(|error| SessionError::BreakpointConditionPrefix {
+                    reason: error.to_string(),
+                })?;
+        }
         let evaluations = self
             .breakpoints
             .iter()
@@ -917,16 +929,20 @@ impl<L> Engine<L> {
                 if let Some(quiescence) = self.scheduler_quiescence.clone() {
                     pass = pass.with_scheduler_quiescence(quiescence);
                 }
-                let is_true = pass.evaluate_assertion_condition(&spec.predicate);
-                (
+                let is_true =
+                    pass.evaluate_assertion_condition(&spec.predicate)
+                        .map_err(|undeclared| SessionError::BreakpointConditionPrefix {
+                            reason: undeclared.to_string(),
+                        })?;
+                Ok((
                     id,
                     spec.clone(),
                     was_true,
                     is_true,
                     pass.once_latches().to_vec(),
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, SessionError>>()?;
 
         for (id, spec, was_true, is_true, once_latches) in evaluations {
             if is_true && !was_true {
@@ -2027,10 +2043,7 @@ impl<L: QuantumLoop> Engine<L> {
         let step_completion = if let Some(step) = self.active_step.as_ref() {
             Some((
                 step.mode,
-                step.is_complete(&outcome, current_event_log_len)
-                    .map_err(|error| SessionError::BreakpointConditionPrefix {
-                        reason: error.to_string(),
-                    })?,
+                step.is_complete(&outcome, current_event_log_len)?,
             ))
         } else {
             None

@@ -201,6 +201,16 @@ unanchored byte automaton.
   state index. Restore MUST rebuild the automaton from the pattern, MUST verify
   its content hash, and MUST fail closed on a mismatch.
 
+**Declaration.** A matcher exists before the first byte it could match, so
+no declaration ever needs console history. The assertion evaluator declares a
+matcher for every `console_match` leaf in its properties when it is built,
+folds those matchers once per scheduler entry alongside its named-leaf states
+([§15.5](#155-named-predicate-accumulators)), and carries them in its checkpoint;
+property matchers do not depend on what the observed prefix declares. A
+scheduler declares the matchers its trigger graph evaluates at admission. A
+`console_match` leaf evaluated without a declared matcher fails closed with a
+typed error; it is never answered by rescanning console bytes.
+
 ## 15.7 Measurement replay evidence
 
 `crucible.executor.measurement-replay-evidence` version 3 replaces the

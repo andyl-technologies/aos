@@ -755,21 +755,6 @@ impl OfflineAssertionChecker {
     }
 }
 
-/// Declares every property console pattern on an offline prefix.
-pub(super) fn declare_console_patterns(
-    prefix: &mut ConditionEventLogPrefix,
-    patterns: &std::collections::BTreeSet<(NodeId, String)>,
-) -> Result<(), OfflineAssertionCheckError> {
-    for (node, pattern) in patterns {
-        prefix
-            .declare_console_pattern(node, pattern)
-            .map_err(|error| OfflineAssertionCheckError::InvalidConsolePattern {
-                reason: error.to_string(),
-            })?;
-    }
-    Ok(())
-}
-
 /// Retained assertion-checking view of a recorded scheduler event log.
 ///
 /// Custom-oracle checks evaluate exactly the prefixes the run published, and
@@ -941,15 +926,10 @@ pub enum OfflineAssertionCheckError {
         /// Events appended by the segment.
         appended_events: u64,
     },
-    /// A property console pattern cannot become a streaming automaton.
-    InvalidConsolePattern {
-        /// Pattern compiler diagnostic.
-        reason: String,
-    },
     /// A streamed log's entries differ from its declared count or final time.
     RecordedLogShapeMismatch,
-    /// A named host predicate failed closed, so the log has no verdict.
-    NamedPredicate(NamedPredicateFailure),
+    /// The assertion fold failed closed, so the log has no verdict.
+    Fold(AssertionFoldFailure),
 }
 
 impl fmt::Display for OfflineAssertionCheckError {
@@ -989,14 +969,11 @@ impl fmt::Display for OfflineAssertionCheckError {
                 formatter,
                 "offline assertion log event count overflow: events={events} appended_events={appended_events}"
             ),
-            Self::InvalidConsolePattern { reason } => {
-                write!(formatter, "offline assertion console pattern: {reason}")
-            }
             Self::RecordedLogShapeMismatch => write!(
                 formatter,
                 "offline assertion log entries differ from the declared count or final time"
             ),
-            Self::NamedPredicate(failure) => write!(formatter, "{failure}"),
+            Self::Fold(failure) => write!(formatter, "{failure}"),
         }
     }
 }
@@ -1005,14 +982,13 @@ impl Error for OfflineAssertionCheckError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::ConditionEvaluation(error) => Some(error),
-            Self::NamedPredicate(failure) => Some(failure),
+            Self::Fold(failure) => Some(failure),
             Self::MissingEventLogOffset { .. }
             | Self::EventLogOffsetMismatch { .. }
             | Self::PrefixLengthOverflow { .. }
             | Self::EventLogSegmentLengthOverflow { .. }
             | Self::EventLogByteOffsetOverflow { .. }
             | Self::EventLogEventCountOverflow { .. }
-            | Self::InvalidConsolePattern { .. }
             | Self::RecordedLogShapeMismatch => None,
         }
     }
@@ -1037,7 +1013,7 @@ pub struct HostAssertionEvaluator {
     last_position: Option<HostAssertionPrefixPosition>,
     guest_marker_cursor: Option<ObservableEventCursor>,
     deadline_base: Option<ConditionEventLogPrefix>,
-    pub(super) named: NamedPredicateFold,
+    pub(super) fold: AssertionFold,
 }
 
 // Deadline crossing needs only the prior point; checkpoint binding needs its
@@ -1075,7 +1051,7 @@ struct HostAssertionEvaluatorWire {
     once_latches: Vec<Vec<u8>>,
     terminal_quiescence: Option<SchedulerQuiescence>,
     last_prefix: Option<EventLogOffset>,
-    named_predicates: NamedPredicateFoldWire,
+    assertion_fold: AssertionFoldWire,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1119,7 +1095,7 @@ impl HostAssertionEvaluator {
                     .collect(),
                 terminal_quiescence: self.terminal_quiescence.clone(),
                 last_prefix: self.last_position.map(|position| position.offset),
-                named_predicates: self.named.to_wire(),
+                assertion_fold: self.fold.to_wire(),
             },
         }
     }
@@ -1199,10 +1175,10 @@ impl HostAssertionEvaluatorCheckpoint {
             .map(|bytes| Predicate::from_compact_binary(bytes))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| HostAssertionCheckpointError::Malformed)?;
-        let named = evaluator
-            .named
+        let fold = evaluator
+            .fold
             .restored_from(
-                &self.wire.named_predicates,
+                &self.wire.assertion_fold,
                 self.wire.last_prefix.map(|offset| offset.events),
             )
             .ok_or(HostAssertionCheckpointError::Binding)?;
@@ -1225,7 +1201,7 @@ impl HostAssertionEvaluatorCheckpoint {
             .map(|_| HostAssertionPrefixPosition::from_prefix(current_prefix));
         staged.guest_marker_cursor = None;
         staged.deadline_base = None;
-        staged.named = named;
+        staged.fold = fold;
         *evaluator = staged;
         Ok(())
     }
@@ -1242,7 +1218,7 @@ fn validate_host_assertion_wire(
             .guest_marker_states
             .windows(2)
             .all(|pair| pair[0].id < pair[1].id)
-        || !wire.named_predicates.is_canonical()
+        || !wire.assertion_fold.is_canonical()
     {
         return Err(HostAssertionCheckpointError::Noncanonical);
     }
@@ -1287,7 +1263,7 @@ impl HostAssertionEvaluator {
     #[must_use]
     pub fn new(properties: &Properties) -> Self {
         let (states, guest_marker_states) = partition_declared_assertions(properties);
-        let named = NamedPredicateFold::declared_by(
+        let fold = AssertionFold::declared_by(
             states
                 .iter()
                 .flat_map(|state| property_predicates(&state.assertion.property)),
@@ -1303,7 +1279,7 @@ impl HostAssertionEvaluator {
             last_position: None,
             guest_marker_cursor: None,
             deadline_base: None,
-            named,
+            fold,
         }
     }
 
@@ -1312,8 +1288,8 @@ impl HostAssertionEvaluator {
     /// Once set, every named leaf evaluates false, so the evaluator's
     /// outcomes and reports must not be used as a verdict.
     #[must_use]
-    pub fn named_predicate_failure(&self) -> Option<&NamedPredicateFailure> {
-        self.named.failure()
+    pub fn assertion_fold_failure(&self) -> Option<&AssertionFoldFailure> {
+        self.fold.failure()
     }
 
     /// Adds authoritative white-box opt-in policies for guest marker evaluation.
@@ -1387,8 +1363,8 @@ impl HostAssertionEvaluator {
     {
         let mut outcomes = Vec::new();
         outcomes.extend(self.observe_due_eventually_deadlines(prefix, oracle));
-        self.named.fold_to(prefix, oracle);
-        let mut leaves = NamedLeafStates::new(oracle, self.named.states());
+        self.fold.fold_to(prefix, oracle);
+        let mut leaves = FoldedLeafStates::new(oracle, self.fold.states(), self.fold.console());
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
             if let Some(outcome) = observe_host_assertion_state(
@@ -1404,7 +1380,7 @@ impl HostAssertionEvaluator {
             }
         }
         let failure = leaves.into_failure();
-        self.named.record_failure(failure);
+        self.fold.record_failure(failure);
         let resume = ObservableEventCursor::resume_index(
             self.guest_marker_cursor.as_ref(),
             prefix.observable_events(),
@@ -1489,9 +1465,9 @@ impl HostAssertionEvaluator {
             };
             // Entries through the deadline are folded for good; the empty
             // step at the deadline itself is discarded after evaluation.
-            self.named.fold_to(&deadline_prefix, oracle);
-            let deadline_states = self.named.stepped_at(deadline_prefix.point(), oracle);
-            let mut leaves = NamedLeafStates::new(oracle, &deadline_states);
+            self.fold.fold_to(&deadline_prefix, oracle);
+            let deadline_states = self.fold.stepped_at(deadline_prefix.point(), oracle);
+            let mut leaves = FoldedLeafStates::new(oracle, &deadline_states, self.fold.console());
             let once_latches = &mut self.once_latches;
             for state in &mut self.states {
                 if let Some(outcome) = observe_eventually_deadline_state(
@@ -1507,7 +1483,7 @@ impl HostAssertionEvaluator {
                 }
             }
             let failure = leaves.into_failure();
-            self.named.record_failure(failure);
+            self.fold.record_failure(failure);
         }
         outcomes
     }
@@ -1553,7 +1529,7 @@ impl HostAssertionEvaluator {
         O: HostAssertionOracle + ?Sized,
     {
         self.observe_prefix(prefix, oracle);
-        let mut leaves = NamedLeafStates::new(oracle, self.named.states());
+        let mut leaves = FoldedLeafStates::new(oracle, self.fold.states(), self.fold.console());
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
             finalize_host_assertion_state(
@@ -1569,7 +1545,7 @@ impl HostAssertionEvaluator {
             );
         }
         let failure = leaves.into_failure();
-        self.named.record_failure(failure);
+        self.fold.record_failure(failure);
         for state in &mut self.guest_marker_states {
             finalize_guest_marker_assertion_state(state, prefix.point().at(), end);
         }
@@ -1862,7 +1838,7 @@ pub(super) fn observe_host_assertion_state<O>(
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> Option<HostAssertionOutcome>
 where
-    O: NamedLeafResolver + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     if state.terminal.is_some() {
         return None;
@@ -1993,7 +1969,7 @@ pub(super) fn observe_eventually_assertion<O>(
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> Option<HostAssertionOutcome>
 where
-    O: NamedLeafResolver + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     let at = prefix.point().at();
     state.evaluated = true;
@@ -2114,7 +2090,7 @@ pub(super) fn observe_eventually_deadline_state<O>(
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> Option<HostAssertionOutcome>
 where
-    O: NamedLeafResolver + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     if state.terminal.is_some() || state.pending_eventually.is_empty() {
         return None;
@@ -2193,7 +2169,7 @@ pub(super) fn observe_reachability_assertion<O>(
     expectation: ReachabilityExpectation,
 ) -> Option<HostAssertionOutcome>
 where
-    O: NamedLeafResolver + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     state.evaluated = true;
     state.lifecycle = PropertyLifecycleState::Passing;
@@ -2260,7 +2236,7 @@ pub(super) fn finalize_host_assertion_state<O>(
     terminal_quiescence: Option<&SchedulerQuiescence>,
     end: AssertionPrefixEnd,
 ) where
-    O: NamedLeafResolver + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     if state.terminal.is_some() {
         return;

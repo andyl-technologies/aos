@@ -537,6 +537,12 @@ pub enum SchedulerError {
         /// The current frontier virtual time, in ticks.
         frontier: u64,
     },
+    /// A trigger `console_match` leaf has no matcher declared at admission.
+    ///
+    /// Trigger matchers are declared on the genesis condition prefix through
+    /// [`SchedulerLivenessScenario::with_trigger_console_matchers`]; console
+    /// history is never rescanned for a late declaration.
+    UndeclaredConsoleMatcher(crate::UndeclaredConsoleMatcher),
 }
 
 impl fmt::Display for SchedulerError {
@@ -544,6 +550,12 @@ impl fmt::Display for SchedulerError {
         match self {
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
+            Self::UndeclaredConsoleMatcher(undeclared) => {
+                write!(
+                    f,
+                    "scheduler trigger evaluation failed closed: {undeclared}"
+                )
+            }
             Self::OperationalBoundary { message, .. } => f.write_str(message),
             Self::ResourceLimit {
                 field,

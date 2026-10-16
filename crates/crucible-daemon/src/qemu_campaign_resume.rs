@@ -755,7 +755,8 @@ fn map_resume_checkpoint_capture_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuProductionExactResumeExecutionRunnerError::CheckpointCapture(error);
     match class {
@@ -777,7 +778,8 @@ fn map_resume_terminal_fingerprint_capture_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuProductionExactResumeExecutionRunnerError::TerminalFingerprintCapture(error);
     match class {

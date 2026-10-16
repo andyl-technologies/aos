@@ -36,13 +36,13 @@ impl HostConditionLeafKey {
 }
 
 impl<O> condition_evaluator_sealed::Sealed for HostConditionEvaluation<'_, '_, O> where
-    O: NamedLeafResolver + ?Sized
+    O: AssertionLeafResolver + ?Sized
 {
 }
 
 impl<O> ConditionEvaluator for HostConditionEvaluation<'_, '_, O>
 where
-    O: NamedLeafResolver + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     fn evaluation_point(&self) -> EventEvaluationPoint {
         self.observed.point()
@@ -81,8 +81,10 @@ where
         self.observed.coverage_seen_before(node, address)
     }
 
-    fn console_match_reported(&self, node: &NodeId, pattern: &str) -> Option<bool> {
-        self.observed.console_match_reported(node, pattern)
+    fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool {
+        // Assertion matchers are folded by the evaluator itself, entry by
+        // entry, so the answer never depends on the prefix's declarations.
+        self.oracle.console_match(node, pattern, self.observed.at())
     }
 
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
@@ -141,7 +143,7 @@ pub(super) fn host_condition_is_true<O>(
     scheduler_quiescence: Option<&SchedulerQuiescence>,
 ) -> bool
 where
-    O: NamedLeafResolver + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     let mut leaf_cache = HostConditionEvaluationCache::new();
     host_condition_is_true_with_cache(
@@ -171,7 +173,7 @@ pub(super) fn host_condition_is_true_with_cache<O>(
     scheduler_quiescence: Option<&SchedulerQuiescence>,
 ) -> bool
 where
-    O: NamedLeafResolver + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     let mut evaluator = HostConditionEvaluation {
         observed: prefix.observed_state(),
@@ -229,7 +231,7 @@ pub(super) fn host_condition_distance_to_satisfaction<O>(
     scheduler_quiescence: Option<&SchedulerQuiescence>,
 ) -> u128
 where
-    O: NamedLeafResolver + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     let mut local_once_latches = once_latches.to_vec();
     let mut evaluator = HostConditionEvaluation {
@@ -609,16 +611,7 @@ where
                 network_event_matches(event, link.as_ref(), predicate)
             })
         }
-        Condition::ConsoleMatch { node, regex } => evaluator
-            .console_match_reported(node, &regex.pattern)
-            .unwrap_or_else(|| {
-                console_stream_matches(
-                    evaluator.evaluation_point().at(),
-                    evaluator.observable_events(),
-                    node,
-                    regex,
-                )
-            }),
+        Condition::ConsoleMatch { node, regex } => evaluator.console_match(node, &regex.pattern),
         Condition::CoveragePoint { node, point } => coverage_point_matches(evaluator, node, point),
         Condition::MemoryPredicate {
             node,
@@ -707,36 +700,6 @@ pub(super) fn frame_predicate_matches(predicate: &FramePredicate, payload: &[u8]
         }
         FramePredicate::Prefix(prefix) => payload.starts_with(prefix),
     }
-}
-
-/// Folds an undeclared console pattern over the visible console bytes.
-///
-/// Declared patterns are answered by the prefix's streaming matcher state;
-/// this fallback compiles the pattern and applies the same every-match-end
-/// semantics to the retained history.
-pub(super) fn console_stream_matches(
-    at: VirtualTime,
-    events: &crate::History<ObservableEvent>,
-    expected_node: &NodeId,
-    regex: &RegexProgram,
-) -> bool {
-    let Ok(automaton) = crate::ConsoleAutomaton::compile(&regex.pattern) else {
-        return false;
-    };
-    let mut state = automaton.start();
-    let mut matched_at_point = false;
-    for event in events {
-        let Some((node, bytes)) = event.console_bytes() else {
-            continue;
-        };
-        if node != expected_node || event.at() > at {
-            continue;
-        }
-        let advance = automaton.advance(state, bytes);
-        state = advance.state;
-        matched_at_point |= advance.matched && event.at() == at;
-    }
-    matched_at_point
 }
 
 pub(super) fn coverage_point_matches<E>(
@@ -997,7 +960,6 @@ impl<O> ConditionEvaluation<O> {
             observable_events: &self.observable_events,
             point_events: &self.point_events,
             ordering_facts: &self.ordering_facts,
-            console_folds: &self.console_folds,
         }
     }
 
@@ -1188,23 +1150,39 @@ impl<O> ConditionEvaluationPass<O> {
     }
 
     /// Evaluates an assertion predicate in this deterministic pass.
-    pub fn evaluate_assertion_condition(&mut self, condition: &Condition) -> bool
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UndeclaredConsoleMatcher`] when `condition` contains a
+    /// `console_match` leaf whose matcher the prefix did not declare.
+    pub fn evaluate_assertion_condition(
+        &mut self,
+        condition: &Condition,
+    ) -> Result<bool, UndeclaredConsoleMatcher>
     where
         O: ConditionLeafOracle,
     {
-        self.evaluation.evaluate_condition(condition)
+        self.require_console_matchers([condition])?;
+        Ok(self.evaluation.evaluate_condition(condition))
     }
 
     /// Evaluates trigger conditions in this deterministic pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UndeclaredConsoleMatcher`] when a trigger contains a
+    /// `console_match` leaf whose matcher the prefix did not declare. The
+    /// check runs before any trigger is evaluated, so `state` is unchanged.
     pub fn evaluate_event_graph(
         &mut self,
         graph: &EventGraph,
         state: &mut EventGraphState,
-    ) -> EventFirings
+    ) -> Result<EventFirings, UndeclaredConsoleMatcher>
     where
         O: ConditionLeafOracle,
     {
-        state.evaluate(graph, &mut self.evaluation)
+        self.require_console_matchers(graph_triggers(graph))?;
+        Ok(state.evaluate(graph, &mut self.evaluation))
     }
 
     /// Evaluates triggers while deferring time predicates ahead of the shared frontier.
@@ -1213,17 +1191,40 @@ impl<O> ConditionEvaluationPass<O> {
     /// than the shared scheduler frontier. Time-conditioned events retain their
     /// one-shot, edge, and latch state until the frontier reaches that prefix.
     /// Pure observational triggers keep their ordinary causal evaluation points.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UndeclaredConsoleMatcher`] under the same conditions as
+    /// [`Self::evaluate_event_graph`], again before `state` changes.
     pub fn evaluate_event_graph_at_frontier(
         &mut self,
         graph: &EventGraph,
         state: &mut EventGraphState,
         frontier: VirtualTime,
-    ) -> EventFirings
+    ) -> Result<EventFirings, UndeclaredConsoleMatcher>
     where
         O: ConditionLeafOracle,
     {
-        state.evaluate_with_frontier(graph, &mut self.evaluation, Some(frontier))
+        self.require_console_matchers(graph_triggers(graph))?;
+        Ok(state.evaluate_with_frontier(graph, &mut self.evaluation, Some(frontier)))
     }
+
+    fn require_console_matchers<'condition>(
+        &self,
+        conditions: impl IntoIterator<Item = &'condition Condition>,
+    ) -> Result<(), UndeclaredConsoleMatcher> {
+        match self.evaluation.console_folds.first_undeclared(conditions) {
+            Some(undeclared) => Err(undeclared),
+            None => Ok(()),
+        }
+    }
+}
+
+fn graph_triggers(graph: &EventGraph) -> impl Iterator<Item = &Condition> {
+    graph
+        .events()
+        .iter()
+        .filter_map(|event| event.trigger.as_ref())
 }
 
 impl<O> condition_evaluator_sealed::Sealed for ConditionEvaluation<O> where O: ConditionLeafOracle {}
@@ -1274,8 +1275,13 @@ where
         )
     }
 
-    fn console_match_reported(&self, node: &NodeId, pattern: &str) -> Option<bool> {
-        self.console_folds.reported(node, pattern, self.point.at())
+    fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool {
+        // The public pass checks every console leaf against the prefix's
+        // declarations before evaluating, so an undeclared matcher is never
+        // reached through it.
+        self.console_folds
+            .reported(node, pattern, self.point.at())
+            .unwrap_or(false)
     }
 
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {

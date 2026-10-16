@@ -110,7 +110,7 @@ fn proxy_completion_requires_request_and_exact_body_on_both_legs() -> Result<(),
         let mut pass =
             ConditionEvaluationPass::from_log_prefix(prefix, |_: ConditionLeaf<'_>| false)
                 .with_world_white_box_policies(form.world());
-        Ok(pass.evaluate_assertion_condition(condition))
+        Ok(pass.evaluate_assertion_condition(condition)?)
     };
 
     assert!(evaluate(evidence.clone())?);

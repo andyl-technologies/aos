@@ -289,7 +289,7 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         // World-bound I/O ledger, and the v3 host-assertion continuation.
         // Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "95363ff58719537da736a5d72656828619d7df688496f22472621b484783b274"
+        "48d8cb9730a0de3aeda5d50850019937c4b96f08fce1bb31500c022e3bebc8c0"
     );
     drop(store);
 

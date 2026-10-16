@@ -1507,6 +1507,7 @@ fn run_example_scenario_material(
             Vec::new(),
         )
         .with_trigger_world(scenario.world())
+        .with_trigger_console_matchers(graph)
         .with_effective_topology_edges(scheduler_edges),
     )?;
     let mut canonical_event_log = Vec::new();
@@ -1700,7 +1701,10 @@ fn evaluate_example_graph(
     .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
     .with_scheduler_quiescence(scheduler.quiescence()?)
     .with_world_white_box_policies(world);
-    Ok(pass.evaluate_event_graph(graph, state))
+    pass.evaluate_event_graph(graph, state)
+        .map_err(|undeclared| {
+            ExampleCorpusError::Scheduler(SchedulerError::UndeclaredConsoleMatcher(undeclared))
+        })
 }
 
 fn scenario_run_time_limit(steps: &[ExampleReplayStep]) -> u64 {

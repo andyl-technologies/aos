@@ -67,7 +67,6 @@ pub struct AssertionLogCheck {
     require_offsets: bool,
     validation: TerminalValidation,
     trace: ExternalFormalTraceHash,
-    pattern_error: Option<OfflineAssertionCheckError>,
     received: u64,
     last_received_at: Option<VirtualTime>,
     evaluation: Evaluation,
@@ -219,12 +218,9 @@ impl AssertionLogCheck {
         offsets: Arc<BTreeMap<u64, EventLogOffset>>,
         require_offsets: bool,
     ) -> Self {
-        let mut prefix =
-            ConditionEventLogPrefix::genesis().with_prefix_offsets(Arc::clone(&offsets));
-        // A pattern error is reported only after terminal validation, which
-        // takes precedence; evaluation is skipped meanwhile.
-        let pattern_error =
-            declare_console_patterns(&mut prefix, &property_console_patterns(properties)).err();
+        // Property console matchers live in the evaluator's own fold, so the
+        // replayed prefix declares none.
+        let prefix = ConditionEventLogPrefix::genesis().with_prefix_offsets(Arc::clone(&offsets));
         Self {
             evaluator: checker.build_evaluator(properties),
             prefix_end: checker.prefix_end,
@@ -233,7 +229,6 @@ impl AssertionLogCheck {
             require_offsets,
             validation: TerminalValidation::new(shape.final_at),
             trace: ExternalFormalTraceHash::new(shape.entries),
-            pattern_error,
             received: 0,
             last_received_at: None,
             evaluation: Evaluation {
@@ -262,7 +257,7 @@ impl AssertionLogCheck {
         }
         self.validation.observe(&entry);
         self.trace.update(&entry);
-        if self.pattern_error.is_some() || self.evaluation.failure.is_some() {
+        if self.evaluation.failure.is_some() {
             return;
         }
 
@@ -276,9 +271,9 @@ impl AssertionLogCheck {
     ///
     /// Returns [`OfflineAssertionCheckError::RecordedLogShapeMismatch`] when
     /// the entries differ from the declared shape, then, in this order, the
-    /// terminal prefix's validation or offset error, an invalid console
-    /// pattern, the first intermediate-prefix error, or a named predicate
-    /// that failed closed.
+    /// terminal prefix's validation or offset error, the first
+    /// intermediate-prefix error, or an assertion fold that failed closed,
+    /// including a property console pattern that did not compile.
     pub fn finish<O>(
         mut self,
         oracle: &mut O,
@@ -293,9 +288,6 @@ impl AssertionLogCheck {
             return Err(error.into());
         }
         let terminal_offset = self.recorded_offset(self.shape.entries)?;
-        if let Some(error) = self.pattern_error.take() {
-            return Err(error);
-        }
 
         // A batch still open at the end never reached its boundary.
         let evaluation = &mut self.evaluation;
@@ -318,8 +310,8 @@ impl AssertionLogCheck {
             self.prefix_end,
             self.trace.finish(),
         );
-        match self.evaluator.named_predicate_failure() {
-            Some(failure) => Err(OfflineAssertionCheckError::NamedPredicate(failure.clone())),
+        match self.evaluator.assertion_fold_failure() {
+            Some(failure) => Err(OfflineAssertionCheckError::Fold(failure.clone())),
             None => Ok(report),
         }
     }

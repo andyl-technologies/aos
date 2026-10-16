@@ -155,7 +155,9 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
 
     let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, false_condition_leaf)
         .with_world_white_box_policies(&world);
-    let firings = pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut EventGraphState::new())
+        .expect("console matchers are declared");
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "marker-received");
 }

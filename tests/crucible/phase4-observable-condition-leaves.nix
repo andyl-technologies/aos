@@ -148,16 +148,20 @@
         needle = "ObservableEventPayload::NetworkDelivered";
       }
       {
-        label = "regex byte matching";
-        needle = "regex::bytes::Regex::new";
+        label = "streaming console automaton";
+        needle = "pub fn compile(pattern: &str) -> Result<Self, ConsolePatternError>";
       }
       {
-        label = "console stream matcher";
-        needle = "fn console_stream_matches";
+        label = "console match answered by a declared matcher";
+        needle = "fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool;";
       }
       {
-        label = "console stream only fires on current chunk";
-        needle = "matched.end() > current_start";
+        label = "console match only fires where a match ends";
+        needle = ".map(|fold| fold.last_match_at == Some(at))";
+      }
+      {
+        label = "undeclared console matcher fails closed";
+        needle = "pub struct UndeclaredConsoleMatcher";
       }
       {
         label = "invalid regex event graph error";

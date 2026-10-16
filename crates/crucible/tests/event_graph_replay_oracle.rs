@@ -624,9 +624,11 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
     );
 
     let graph = scenario_form.plan().event_graph().clone();
-    let mut scheduler =
-        SingleScheduler::new(scenario("event-graph-replay-oracle", scenario_form.world()))
-            .expect("scheduler builds");
+    let mut scheduler = SingleScheduler::new(
+        scenario("event-graph-replay-oracle", scenario_form.world())
+            .with_trigger_console_matchers(&graph),
+    )
+    .expect("scheduler builds");
     assert_eq!(&scheduler.configuration().schedule, &Schedule::empty());
     let mut graph_state = EventGraphState::new();
     let mut segment_bytes = Vec::new();
@@ -645,7 +647,9 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
             }
         }
 
-        let firings = scheduler.evaluate_event_graph(&graph, &mut graph_state, NoGuestLeaves);
+        let firings = scheduler
+            .evaluate_event_graph(&graph, &mut graph_state, NoGuestLeaves)
+            .expect("console matchers are declared");
         if !firings.is_empty() {
             let append = scheduler
                 .apply_trigger_firings(&firings)

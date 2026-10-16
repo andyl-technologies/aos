@@ -460,6 +460,15 @@ pub enum EngineError {
         /// Configuration whose runtime was inspected.
         configuration: ContentHash,
     },
+    /// A reverse-continue condition names a console pattern with no matcher.
+    DebugReverseContinueInvalidConsolePattern {
+        /// Node whose console stream the pattern matches.
+        node: NodeId,
+        /// The refused pattern.
+        pattern: String,
+        /// Why no streaming matcher exists for the pattern.
+        reason: String,
+    },
     /// A reverse-continue scan could not build a checked condition prefix.
     DebugReverseContinueInvalidPrefix {
         /// Event-log sequence at the attempted prefix boundary.
@@ -826,6 +835,9 @@ impl fmt::Display for EngineError {
             }
             Self::DebugReverseContinueInvalidPrefix { reason, .. } => {
                 write!(f, "debug reverse-continue condition prefix is invalid: {reason}")
+            }
+            Self::DebugReverseContinueInvalidConsolePattern { reason, .. } => {
+                write!(f, "debug reverse-continue console pattern is invalid: {reason}")
             }
             Self::ScenarioFamilyInvalidSpace { reason } => {
                 write!(f, "scenario family parameter space is invalid: {reason}")

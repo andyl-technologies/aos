@@ -48,7 +48,9 @@ fn selected_guest_marker_stops_before_the_completion_action() {
         |_: crucible::ConditionLeaf<'_>| false,
     )
     .with_world_white_box_policies(input.scenario().world());
-    let firings = pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut EventGraphState::new())
+        .expect("console matchers are declared");
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "single.selected");
     assert_eq!(firings[0].action(), &Action::Group(Vec::new()));
@@ -103,7 +105,9 @@ fn completion_action_pass_preempts_the_same_quantum_marker_stop() {
         |_: crucible::ConditionLeaf<'_>| false,
     )
     .with_world_white_box_policies(input.scenario().world());
-    let firings = pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut EventGraphState::new())
+        .expect("console matchers are declared");
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "single.complete");
     assert_eq!(firings[0].action(), &Action::Pass);

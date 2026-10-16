@@ -102,6 +102,7 @@ impl SingleScheduler {
     ) -> Result<Self, SchedulerError> {
         let timeline = SharedTimeline::new();
         let configuration = scenario.canonical_configuration();
+        let trigger_console_patterns = scenario.trigger_console_patterns.clone();
         let ready_point_counters = scenario.ready_point_counters;
         let mut nodes = scenario
             .nodes
@@ -143,7 +144,7 @@ impl SingleScheduler {
             .map(|topology| topology.scheduling_nodes.iter().cloned().collect())
             .unwrap_or_default();
         let decision_seed = configuration.def.seed();
-        let scheduler = Self {
+        let mut scheduler = Self {
             configuration,
             timeline,
             quantum_budget: scenario.quantum_budget,
@@ -198,6 +199,13 @@ impl SingleScheduler {
             last_advance: None,
             last_topology_recompute: false,
         };
+        // Trigger matchers exist before the first console byte, so no
+        // trigger ever needs console history.
+        scheduler.declare_console_patterns(
+            trigger_console_patterns
+                .iter()
+                .map(|(node, pattern)| (node, pattern.as_str())),
+        )?;
         Ok(scheduler)
     }
 
@@ -1132,12 +1140,18 @@ impl SingleScheduler {
     /// Armed trigger timers are made visible to `Timer` leaves from the
     /// scheduler-owned [`TriggerActionState`], so a timer fires exactly at the
     /// virtual time produced by the `ArmTimer` action that armed it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::UndeclaredConsoleMatcher`] when a trigger's
+    /// `console_match` matcher was not declared at admission; `state` is
+    /// unchanged.
     pub fn evaluate_event_graph<O>(
         &self,
         graph: &EventGraph,
         state: &mut EventGraphState,
         oracle: O,
-    ) -> EventFirings
+    ) -> Result<EventFirings, SchedulerError>
     where
         O: ConditionLeafOracle,
     {
@@ -1145,6 +1159,7 @@ impl SingleScheduler {
             ConditionEvaluationPass::from_log_prefix_ref(self.event_log.condition_prefix(), oracle)
                 .with_timer_fires(self.trigger_actions.armed_timers.clone());
         pass.evaluate_event_graph(graph, state)
+            .map_err(SchedulerError::UndeclaredConsoleMatcher)
     }
 
     /// Applies deterministic trigger firings and their action effects atomically.

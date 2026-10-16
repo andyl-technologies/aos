@@ -8,9 +8,10 @@ mod host_oracle;
 mod point_index;
 
 pub(crate) use append::AppendedEntryCheck;
-pub(crate) use console_folds::ConsoleMatchFolds;
-pub(crate) use console_folds::property_console_patterns;
-pub use console_folds::scenario_console_patterns;
+pub(crate) use console_folds::{ConsoleMatchFolds, ConsoleMatchStateWire};
+pub use console_folds::{
+    UndeclaredConsoleMatcher, event_graph_console_patterns, predicate_console_patterns,
+};
 
 pub(crate) use host_oracle::SearchScheduleNamedPredicateHostOracle;
 #[cfg(any(debug_assertions, feature = "test-support"))]
@@ -963,14 +964,12 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
         BTreeMap::new()
     }
 
-    /// Reports a declared console matcher's verdict at the evaluation point.
+    /// Answers `console_match(node, pattern)` from a declared streaming matcher.
     ///
-    /// Returns `None` when the pattern was not declared, in which case the
-    /// shared evaluator folds the visible console bytes itself.
-    fn console_match_reported(&self, node: &NodeId, pattern: &str) -> Option<bool> {
-        let _ = (node, pattern);
-        None
-    }
+    /// Implementations never rescan console history. An implementation whose
+    /// matcher is undeclared answers `false` and records the miss so its
+    /// caller fails closed.
+    fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool;
 
     /// Returns the observable events at the evaluation point's virtual time.
     ///
@@ -1504,8 +1503,18 @@ impl ConditionEventLogPrefix {
             observable_events: &self.observable_events,
             point_events: &self.point_events,
             ordering_facts: &self.ordering_facts,
-            console_folds: &self.console_folds,
         }
+    }
+
+    /// Replaces this prefix's console matchers with `matchers` refolded over
+    /// its console bytes.
+    ///
+    /// The compiled automata are shared, never recompiled. Used where a
+    /// prefix is rebuilt from scratch anyway, so the refold adds no pass over
+    /// history the rebuild did not already make.
+    pub(crate) fn with_console_matchers(mut self, matchers: &ConsoleMatchFolds) -> Self {
+        self.console_folds = matchers.refold(self.observable_events.iter());
+        self
     }
 
     /// Declares one console pattern so `console_match` folds it as bytes arrive.
@@ -1540,7 +1549,6 @@ pub struct ObservedState<'log> {
     pub(super) observable_events: &'log crate::History<ObservableEvent>,
     pub(super) point_events: &'log PointObservationIndex,
     pub(super) ordering_facts: &'log crate::History<ObservedOrderingFact>,
-    pub(super) console_folds: &'log ConsoleMatchFolds,
 }
 
 impl<'log> ObservedState<'log> {
@@ -1590,11 +1598,6 @@ impl<'log> ObservedState<'log> {
             address,
             self.at(),
         )
-    }
-
-    /// Reports whether a declared console matcher saw a match end at this point.
-    pub(crate) fn console_match_reported(self, node: &NodeId, pattern: &str) -> Option<bool> {
-        self.console_folds.reported(node, pattern, self.at())
     }
 }
 

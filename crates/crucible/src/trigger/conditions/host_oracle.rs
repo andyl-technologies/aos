@@ -1,8 +1,8 @@
 //! Host assertion predicates, oracle adapters, and harness-source lint.
 
 use super::*;
-use crate::trigger::named_predicates::{decode_named_state, encode_named_state};
-use crate::trigger::{NamedLeaf, NamedPredicateError, NamedPredicateFailure, ObservedBatch};
+use crate::trigger::assertion_fold::{decode_named_state, encode_named_state};
+use crate::trigger::{AssertionFoldFailure, NamedLeaf, NamedPredicateError, ObservedBatch};
 
 /// Host-authored named predicate, folded as a pure accumulator.
 ///
@@ -175,33 +175,33 @@ pub trait HostAssertionOracle: host_assertion_oracle_sealed::Sealed {
     ///
     /// # Errors
     ///
-    /// Returns [`NamedPredicateFailure`] when the state cannot be encoded
+    /// Returns [`AssertionFoldFailure`] when the state cannot be encoded
     /// within its bound.
-    fn initial_named_state(&self, leaf: NamedLeaf<'_>) -> Result<Vec<u8>, NamedPredicateFailure>;
+    fn initial_named_state(&self, leaf: NamedLeaf<'_>) -> Result<Vec<u8>, AssertionFoldFailure>;
 
     /// Folds one batch into an encoded state.
     ///
     /// # Errors
     ///
-    /// Returns [`NamedPredicateFailure`] when the predicate refuses the batch
+    /// Returns [`AssertionFoldFailure`] when the predicate refuses the batch
     /// or the state does not decode or encode within its bound.
     fn step_named_state(
         &self,
         leaf: NamedLeaf<'_>,
         state: &[u8],
         batch: &ObservedBatch<'_>,
-    ) -> Result<Vec<u8>, NamedPredicateFailure>;
+    ) -> Result<Vec<u8>, AssertionFoldFailure>;
 
     /// Returns whether `leaf` holds in an encoded state.
     ///
     /// # Errors
     ///
-    /// Returns [`NamedPredicateFailure`] when the state does not decode.
+    /// Returns [`AssertionFoldFailure`] when the state does not decode.
     fn named_leaf_is_true(
         &mut self,
         leaf: NamedLeaf<'_>,
         state: &[u8],
-    ) -> Result<bool, NamedPredicateFailure>;
+    ) -> Result<bool, AssertionFoldFailure>;
 
     /// Returns whether states change with batches.
     ///
@@ -222,7 +222,7 @@ pub struct BlackBoxHostOracle;
 impl host_assertion_oracle_sealed::Sealed for BlackBoxHostOracle {}
 
 impl HostAssertionOracle for BlackBoxHostOracle {
-    fn initial_named_state(&self, _leaf: NamedLeaf<'_>) -> Result<Vec<u8>, NamedPredicateFailure> {
+    fn initial_named_state(&self, _leaf: NamedLeaf<'_>) -> Result<Vec<u8>, AssertionFoldFailure> {
         Ok(Vec::new())
     }
 
@@ -231,7 +231,7 @@ impl HostAssertionOracle for BlackBoxHostOracle {
         _leaf: NamedLeaf<'_>,
         state: &[u8],
         _batch: &ObservedBatch<'_>,
-    ) -> Result<Vec<u8>, NamedPredicateFailure> {
+    ) -> Result<Vec<u8>, AssertionFoldFailure> {
         Ok(state.to_vec())
     }
 
@@ -239,7 +239,7 @@ impl HostAssertionOracle for BlackBoxHostOracle {
         &mut self,
         _leaf: NamedLeaf<'_>,
         _state: &[u8],
-    ) -> Result<bool, NamedPredicateFailure> {
+    ) -> Result<bool, AssertionFoldFailure> {
         Ok(false)
     }
 
@@ -341,7 +341,7 @@ impl<'truths> SearchScheduleNamedPredicateHostOracle<'truths> {
 impl host_assertion_oracle_sealed::Sealed for SearchScheduleNamedPredicateHostOracle<'_> {}
 
 impl HostAssertionOracle for SearchScheduleNamedPredicateHostOracle<'_> {
-    fn initial_named_state(&self, _leaf: NamedLeaf<'_>) -> Result<Vec<u8>, NamedPredicateFailure> {
+    fn initial_named_state(&self, _leaf: NamedLeaf<'_>) -> Result<Vec<u8>, AssertionFoldFailure> {
         Ok(Vec::new())
     }
 
@@ -350,7 +350,7 @@ impl HostAssertionOracle for SearchScheduleNamedPredicateHostOracle<'_> {
         _leaf: NamedLeaf<'_>,
         state: &[u8],
         _batch: &ObservedBatch<'_>,
-    ) -> Result<Vec<u8>, NamedPredicateFailure> {
+    ) -> Result<Vec<u8>, AssertionFoldFailure> {
         Ok(state.to_vec())
     }
 
@@ -358,7 +358,7 @@ impl HostAssertionOracle for SearchScheduleNamedPredicateHostOracle<'_> {
         &mut self,
         leaf: NamedLeaf<'_>,
         _state: &[u8],
-    ) -> Result<bool, NamedPredicateFailure> {
+    ) -> Result<bool, AssertionFoldFailure> {
         let key =
             SearchScheduleNamedPredicateKey::new(leaf.name().to_owned(), leaf.nodes().to_vec());
         Ok(match self.truths.truth_for(&key) {
@@ -384,7 +384,7 @@ impl<O> HostAssertionOracle for LintedHostAssertionOracle<O>
 where
     O: HostAssertionPredicate,
 {
-    fn initial_named_state(&self, leaf: NamedLeaf<'_>) -> Result<Vec<u8>, NamedPredicateFailure> {
+    fn initial_named_state(&self, leaf: NamedLeaf<'_>) -> Result<Vec<u8>, AssertionFoldFailure> {
         encode_named_state(leaf, &self.oracle.initial(leaf))
     }
 
@@ -393,12 +393,12 @@ where
         leaf: NamedLeaf<'_>,
         state: &[u8],
         batch: &ObservedBatch<'_>,
-    ) -> Result<Vec<u8>, NamedPredicateFailure> {
+    ) -> Result<Vec<u8>, AssertionFoldFailure> {
         let state = decode_named_state::<O::State>(leaf, state)?;
         let next = self
             .oracle
             .step(leaf, &state, batch)
-            .map_err(|error| NamedPredicateFailure::refused(leaf, error))?;
+            .map_err(|error| AssertionFoldFailure::refused(leaf, error))?;
         encode_named_state(leaf, &next)
     }
 
@@ -406,7 +406,7 @@ where
         &mut self,
         leaf: NamedLeaf<'_>,
         state: &[u8],
-    ) -> Result<bool, NamedPredicateFailure> {
+    ) -> Result<bool, AssertionFoldFailure> {
         let state = decode_named_state::<O::State>(leaf, state)?;
         Ok(self.oracle.leaf_is_true(leaf, &state))
     }

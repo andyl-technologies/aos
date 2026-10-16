@@ -658,7 +658,7 @@ fn envoy_completion_requires_routed_request_exact_response_and_guest_marker()
         let mut pass =
             ConditionEvaluationPass::from_log_prefix(prefix, |_: ConditionLeaf<'_>| false)
                 .with_world_white_box_policies(form.world());
-        Ok(pass.evaluate_assertion_condition(condition))
+        Ok(pass.evaluate_assertion_condition(condition)?)
     };
 
     assert!(evaluate(vec![

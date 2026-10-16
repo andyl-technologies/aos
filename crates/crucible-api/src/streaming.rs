@@ -1041,9 +1041,9 @@ fn schedule_error_rejection_kind(error: &crucible::ScheduleError) -> CommandReje
 fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKind {
     match error {
         SchedulerError::Backend(error) => backend_error_rejection_kind(error),
-        SchedulerError::TimeConversion(_) | SchedulerError::TopologyActivationInPast { .. } => {
-            CommandRejectionKind::InvalidArgument
-        }
+        SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => CommandRejectionKind::InvalidArgument,
         SchedulerError::BoundaryViolation { .. }
         | SchedulerError::OperationalBoundary { .. }
         | SchedulerError::ResourceLimit { .. } => CommandRejectionKind::Internal,

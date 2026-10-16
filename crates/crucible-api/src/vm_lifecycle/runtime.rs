@@ -1149,7 +1149,9 @@ impl ProductionVmLifecycleLoop {
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
-        let firings = pass.evaluate_event_graph(&entrypoints, &mut self.trigger_state);
+        let firings = pass
+            .evaluate_event_graph(&entrypoints, &mut self.trigger_state)
+            .map_err(SchedulerError::UndeclaredConsoleMatcher)?;
         if firings.is_empty() {
             return Ok(None);
         }
@@ -1216,7 +1218,7 @@ impl ProductionVmLifecycleLoop {
                 self.inner.loop_impl().condition_event_log_prefix(),
                 &mut self.assertion_oracle,
             );
-            if let Some(failure) = self.assertion_evaluator.named_predicate_failure() {
+            if let Some(failure) = self.assertion_evaluator.assertion_fold_failure() {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!("assertion evaluation failed closed: {failure}"),
                 });
@@ -1242,11 +1244,13 @@ impl ProductionVmLifecycleLoop {
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
-            let firings = pass.evaluate_event_graph_at_frontier(
-                &self.trigger_graph,
-                &mut self.trigger_state,
-                scheduler.frontier(),
-            );
+            let firings = pass
+                .evaluate_event_graph_at_frontier(
+                    &self.trigger_graph,
+                    &mut self.trigger_state,
+                    scheduler.frontier(),
+                )
+                .map_err(SchedulerError::UndeclaredConsoleMatcher)?;
             if firings.is_empty() && !assertions_changed {
                 return Ok(appends);
             }

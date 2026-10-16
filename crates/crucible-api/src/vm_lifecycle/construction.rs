@@ -1147,7 +1147,9 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .lower_to_event_graph_for_world(source.world())
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
-    let console_patterns = crucible::scenario_console_patterns(source.properties(), &trigger_graph);
+    // Property matchers are folded by the assertion evaluator itself; the
+    // scheduler prefix declares only the matchers its triggers evaluate.
+    let console_patterns = crucible::event_graph_console_patterns(&trigger_graph);
     scheduler
         .declare_console_patterns(
             console_patterns

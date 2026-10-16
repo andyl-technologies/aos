@@ -103,7 +103,9 @@ pub(in super::super) const fn is_recoverable_scheduler_rejection(error: &Schedul
         SchedulerError::BoundaryViolation { .. }
         | SchedulerError::TimeConversion(_)
         | SchedulerError::TopologyActivationInPast { .. } => true,
-        SchedulerError::ResourceLimit { .. } => false,
+        // A missing matcher is a scenario admission defect; the same
+        // evaluation fails again however the request is repeated.
+        SchedulerError::ResourceLimit { .. } | SchedulerError::UndeclaredConsoleMatcher(_) => false,
         SchedulerError::Backend(error) => is_recoverable_backend_rejection(error),
         SchedulerError::OperationalBoundary { .. } => false,
     }

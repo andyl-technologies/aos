@@ -487,6 +487,18 @@ impl TemporalGraph {
     where
         F: for<'leaf> FnMut(&SchedulerEventLogEntry, ConditionLeaf<'leaf>) -> bool,
     {
+        // Console matchers are compiled once for the scan and refolded over
+        // each candidate prefix, which is rebuilt from its entries anyway.
+        let console_matchers = crate::trigger::ConsoleMatchFolds::declared(
+            crate::trigger::predicate_console_patterns([&request.condition]),
+        )
+        .map_err(
+            |refused| EngineError::DebugReverseContinueInvalidConsolePattern {
+                node: refused.node,
+                pattern: refused.pattern,
+                reason: refused.error.to_string(),
+            },
+        )?;
         for index in (0..request.event_log.len()).rev() {
             let entry = &request.event_log[index];
             if entry.sequence() > request.current_event_sequence_limit() {
@@ -499,13 +511,23 @@ impl TemporalGraph {
             .map_err(|error| EngineError::DebugReverseContinueInvalidPrefix {
                 sequence: entry.sequence(),
                 reason: format!("{error:?}"),
-            })?;
+            })?
+            .with_console_matchers(&console_matchers);
             let oracle = DebugReverseContinueLeafOracle {
                 entry,
                 leaf_oracle: &mut leaf_oracle,
             };
             let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, oracle);
-            if pass.evaluate_assertion_condition(&request.condition) {
+            let matched = pass
+                .evaluate_assertion_condition(&request.condition)
+                .map_err(
+                    |undeclared| EngineError::DebugReverseContinueInvalidConsolePattern {
+                        reason: undeclared.to_string(),
+                        node: undeclared.node,
+                        pattern: undeclared.pattern,
+                    },
+                )?;
+            if matched {
                 let target = request
                     .event_coordinates
                     .get(&entry.sequence())

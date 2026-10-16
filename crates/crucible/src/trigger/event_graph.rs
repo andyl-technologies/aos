@@ -1086,6 +1086,10 @@ where
         self.inner.coverage_seen_before(node, address)
     }
 
+    fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool {
+        self.inner.console_match(node, pattern)
+    }
+
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
         self.inner.scheduler_quiescence()
     }

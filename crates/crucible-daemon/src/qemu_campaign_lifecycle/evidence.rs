@@ -701,7 +701,8 @@ fn map_terminal_evidence_snapshot_failure<E>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuTerminalEvidenceExecutionRunnerError::Evidence(error);
     match class {

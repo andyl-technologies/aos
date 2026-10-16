@@ -1,7 +1,9 @@
-//! Named predicate folds are partition-independent and fail closed.
+//! Assertion folds of named leaves and console matchers are
+//! partition-independent, checkpointed, and fail closed.
 
-use super::named_predicates::encode_named_state;
+use super::assertion_fold::{AssertionFold, FoldedLeafStates, encode_named_state};
 use super::*;
+use crate::model::{NodeTemplate, VmArchitecture, WorldNode};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -149,9 +151,9 @@ fn fold_states_do_not_depend_on_which_prefixes_are_observed() -> TestResult {
     terminal_only.finalize_prefix(&prefix(&entries)?, &mut oracle);
 
     let expected = encode_named_state(NamedLeaf::new("two-events", &[]), &(2_u64, 5_u64))?;
-    assert_eq!(every_prefix.named.to_wire(), terminal_only.named.to_wire());
+    assert_eq!(every_prefix.fold.to_wire(), terminal_only.fold.to_wire());
     assert_eq!(
-        every_prefix.named.states().values().collect::<Vec<_>>(),
+        every_prefix.fold.states().values().collect::<Vec<_>>(),
         vec![&expected],
         "every entry is folded exactly once"
     );
@@ -166,6 +168,7 @@ fn live_and_offline_folds_reach_the_same_verdict() -> TestResult {
 
     let mut live = HostAssertionEvaluator::new(&properties);
     live.observe_prefix(&prefix(&entries[..3])?, &mut oracle);
+    live.observe_prefix(&prefix(&entries[..5])?, &mut oracle);
     let live_report = live.finalize_prefix(&prefix(&entries)?, &mut oracle);
     let mut check =
         OfflineAssertionChecker::new().start_check(&properties, RecordedLogShape::of(&entries));
@@ -195,8 +198,8 @@ fn oversized_states_fail_the_offline_check_closed() -> TestResult {
     assert!(
         matches!(
             result,
-            Err(OfflineAssertionCheckError::NamedPredicate(
-                NamedPredicateFailure::StateLimit { ref name, bytes, .. }
+            Err(OfflineAssertionCheckError::Fold(
+                AssertionFoldFailure::StateLimit { ref name, bytes, .. }
             )) if name == "growing" && bytes > MAX_NAMED_PREDICATE_STATE_BYTES
         ),
         "{result:?}"
@@ -212,15 +215,15 @@ fn refused_batches_stop_the_fold_and_answer_false() -> TestResult {
     let mut oracle = unchecked_host_assertion_oracle_for_test(RefuseEvents);
 
     evaluator.observe_prefix(&prefix(&entries[..1])?, &mut oracle);
-    assert_eq!(evaluator.named_predicate_failure(), None);
+    assert_eq!(evaluator.assertion_fold_failure(), None);
     evaluator.observe_prefix(&prefix(&entries[..2])?, &mut oracle);
 
     assert!(matches!(
-        evaluator.named_predicate_failure(),
-        Some(NamedPredicateFailure::Refused { name, error, .. })
+        evaluator.assertion_fold_failure(),
+        Some(AssertionFoldFailure::Refused { name, error, .. })
             if name == "no-events" && error.message() == "events are not expected"
     ));
-    assert!(evaluator.named.states().is_empty());
+    assert!(evaluator.fold.states().is_empty());
     Ok(())
 }
 
@@ -240,8 +243,8 @@ fn a_prefix_of_another_log_fails_closed() -> TestResult {
     evaluator.observe_prefix(&prefix(&other)?, &mut oracle);
 
     assert_eq!(
-        evaluator.named_predicate_failure(),
-        Some(&NamedPredicateFailure::Discontinuous {
+        evaluator.assertion_fold_failure(),
+        Some(&AssertionFoldFailure::Discontinuous {
             folded: 2,
             base_sequence: 0,
             end_sequence: 3,
@@ -263,7 +266,7 @@ fn checkpoints_carry_states_and_bind_to_declared_leaves() -> TestResult {
     let checkpoint = HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&bytes)?;
     let mut restored = HostAssertionEvaluator::new(&properties);
     checkpoint.restore_into(&mut restored, &checkpoint_prefix)?;
-    assert_eq!(restored.named, evaluator.named);
+    assert_eq!(restored.fold, evaluator.fold);
 
     let terminal = prefix(&entries)?;
     assert_eq!(
@@ -278,4 +281,176 @@ fn checkpoints_carry_states_and_bind_to_declared_leaves() -> TestResult {
         Err(HostAssertionCheckpointError::Binding)
     );
     Ok(())
+}
+
+fn console_entry(sequence: u64, at: u64, bytes: &[u8]) -> SchedulerEventLogEntry {
+    let event = ObservableEvent::console_output(VirtualTime { ticks: at }, node(), bytes.to_vec());
+    SchedulerEventLogEntry::with_payload_for_test(
+        sequence,
+        event.at(),
+        SchedulerEventLogPayload::Observable(event.payload().clone()),
+    )
+}
+
+fn node() -> NodeId {
+    NodeId {
+        name: String::from("server"),
+    }
+}
+
+/// A line split across two console writes, then an unrelated write.
+///
+/// A console match is true only at the instant it ends, so the boundary at
+/// tick 3 is where an evaluator can observe it.
+fn console_log() -> Vec<SchedulerEventLogEntry> {
+    vec![
+        boundary_entry(0, 1),
+        console_entry(1, 2, b"rea"),
+        boundary_entry(2, 2),
+        console_entry(3, 3, b"dy\n"),
+        boundary_entry(4, 3),
+        console_entry(5, 5, b"later\n"),
+        boundary_entry(6, 6),
+    ]
+}
+
+fn console_world() -> TestResult<World> {
+    Ok(World::from_nodes(vec![WorldNode {
+        id: node(),
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])?)
+}
+
+fn console_ready(pattern: &str) -> TestResult<Properties> {
+    Ok(Properties::from_assertions_for_world(
+        &console_world()?,
+        vec![AssertionDef {
+            id: AssertionId::from_name("console"),
+            message: String::from("console assertion"),
+            property: Property::Sometimes {
+                predicate: Predicate::console_match(node(), RegexProgram::from_pattern(pattern)),
+            },
+        }],
+    )?)
+}
+
+#[test]
+fn console_matchers_fold_once_per_entry_without_a_declaring_prefix() -> TestResult {
+    let properties = console_ready("ready\\n")?;
+    let entries = console_log();
+    let mut oracle = BlackBoxHostOracle;
+
+    // The prefixes declare no console matcher; the evaluator folds its own.
+    let mut every_prefix = HostAssertionEvaluator::new(&properties);
+    for len in 1..entries.len() {
+        every_prefix.observe_prefix(&prefix(&entries[..len])?, &mut oracle);
+    }
+    let every_report = every_prefix.finalize_prefix(&prefix(&entries)?, &mut oracle);
+
+    let mut terminal_only = HostAssertionEvaluator::new(&properties);
+    terminal_only.finalize_prefix(&prefix(&entries)?, &mut oracle);
+
+    assert_eq!(every_prefix.fold.to_wire(), terminal_only.fold.to_wire());
+    assert_eq!(every_report.verdict(), &AssertionRunVerdict::Passed);
+    assert_eq!(every_prefix.assertion_fold_failure(), None);
+    Ok(())
+}
+
+#[test]
+fn console_matchers_reach_the_offline_verdict() -> TestResult {
+    let properties = console_ready("ready\\n")?;
+    let entries = console_log();
+    let mut oracle = BlackBoxHostOracle;
+
+    let mut live = HostAssertionEvaluator::new(&properties);
+    live.observe_prefix(&prefix(&entries[..3])?, &mut oracle);
+    live.observe_prefix(&prefix(&entries[..5])?, &mut oracle);
+    let live_report = live.finalize_prefix(&prefix(&entries)?, &mut oracle);
+    let mut check =
+        OfflineAssertionChecker::new().start_check(&properties, RecordedLogShape::of(&entries));
+    for entry in &entries {
+        check.push(entry.clone(), &mut oracle);
+    }
+    let offline_report = check.finish(&mut oracle)?;
+
+    assert_eq!(offline_report.verdict(), live_report.verdict());
+    Ok(())
+}
+
+#[test]
+fn checkpoints_carry_console_matchers_and_bind_to_their_patterns() -> TestResult {
+    let properties = console_ready("ready\\n")?;
+    let entries = console_log();
+    let mut oracle = BlackBoxHostOracle;
+    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    // Checkpoint between the two halves of the line.
+    let checkpoint_prefix = prefix(&entries[..3])?;
+    evaluator.observe_prefix(&checkpoint_prefix, &mut oracle);
+
+    let bytes = evaluator.checkpoint().canonical_bytes()?;
+    let checkpoint = HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&bytes)?;
+    let mut restored = HostAssertionEvaluator::new(&properties);
+    checkpoint.restore_into(&mut restored, &checkpoint_prefix)?;
+    assert_eq!(restored.fold, evaluator.fold);
+
+    let matched = prefix(&entries[..5])?;
+    restored.observe_prefix(&matched, &mut oracle);
+    evaluator.observe_prefix(&matched, &mut oracle);
+    let terminal = prefix(&entries)?;
+    let restored_report = restored.finalize_prefix(&terminal, &mut oracle);
+    assert_eq!(restored_report.verdict(), &AssertionRunVerdict::Passed);
+    assert_eq!(
+        restored_report,
+        evaluator.finalize_prefix(&terminal, &mut oracle)
+    );
+
+    let other_pattern = console_ready("later\\n")?;
+    let mut mismatched = HostAssertionEvaluator::new(&other_pattern);
+    assert_eq!(
+        checkpoint.restore_into(&mut mismatched, &checkpoint_prefix),
+        Err(HostAssertionCheckpointError::Binding)
+    );
+    Ok(())
+}
+
+#[test]
+fn unstreamable_console_patterns_fail_the_fold_at_declaration() {
+    let refused = Predicate::console_match(node(), RegexProgram::from_pattern("ready$"));
+
+    let fold = AssertionFold::declared_by([&refused]);
+
+    assert!(matches!(
+        fold.failure(),
+        Some(AssertionFoldFailure::ConsolePattern { pattern, .. }) if pattern == "ready$"
+    ));
+}
+
+#[test]
+fn undeclared_console_matchers_answer_false_and_fail_closed() {
+    let fold = AssertionFold::declared_by(std::iter::empty());
+    let mut oracle = BlackBoxHostOracle;
+    let mut leaves = FoldedLeafStates::new(&mut oracle, fold.states(), fold.console());
+
+    let matched = leaves.console_match(&node(), "ready", VirtualTime { ticks: 3 });
+
+    assert!(!matched);
+    assert_eq!(
+        leaves.into_failure(),
+        Some(AssertionFoldFailure::UndeclaredConsoleMatcher(
+            UndeclaredConsoleMatcher {
+                node: node(),
+                pattern: String::from("ready"),
+            }
+        ))
+    );
 }
