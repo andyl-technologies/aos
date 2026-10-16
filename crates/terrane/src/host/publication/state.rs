@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::LocalFs;
 use super::{PublicationClaim, PublicationState, VerityBinding};
+use crate::store::LocalFs;
 
 const MAX_RECORD: u64 = 65536;
 
@@ -54,7 +54,9 @@ impl<F: LocalFs> FsPublicationState<F> {
     ///
     /// The native command owner supplies independently verified directory
     /// custody. This constructor grants no ownership or create-root authority.
-    pub fn new(fs: F, directory: PathBuf) -> Self { Self { fs, directory } }
+    pub fn new(fs: F, directory: PathBuf) -> Self {
+        Self { fs, directory }
+    }
 
     /// Removes incomplete private binding records before processing commands.
     ///
@@ -64,7 +66,10 @@ impl<F: LocalFs> FsPublicationState<F> {
     /// Returns directory scan, removal or synchronization failures.
     pub async fn recover_temporary(&self) -> io::Result<()> {
         for path in self.fs.read_dir(&self.directory).await? {
-            if path.file_name().is_some_and(|name| name.as_encoded_bytes().starts_with(b".binding-")) {
+            if path
+                .file_name()
+                .is_some_and(|name| name.as_encoded_bytes().starts_with(b".binding-"))
+            {
                 self.fs.remove_file(&path).await?;
             }
         }
@@ -74,11 +79,18 @@ impl<F: LocalFs> FsPublicationState<F> {
     fn path(&self, claim: &PublicationClaim) -> PathBuf {
         // This digest is only an internal filename, never a content identity.
         let domain = blake3::hash(claim.domain().as_bytes());
-        self.directory.join(format!("{}-{}.toml", hexadecimal(domain.as_bytes()),
-            hexadecimal(claim.descriptor().digest())))
+        self.directory.join(format!(
+            "{}-{}.toml",
+            hexadecimal(domain.as_bytes()),
+            hexadecimal(claim.descriptor().digest())
+        ))
     }
 
-    async fn load(&self, path: &Path, claim: &PublicationClaim) -> io::Result<Option<VerityBinding>> {
+    async fn load(
+        &self,
+        path: &Path,
+        claim: &PublicationClaim,
+    ) -> io::Result<Option<VerityBinding>> {
         let metadata = match self.fs.metadata(path).await {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -88,14 +100,25 @@ impl<F: LocalFs> FsPublicationState<F> {
             return Err(invalid("invalid publication binding record size or type"));
         }
         let bytes = self.fs.read_nofollow(path).await?;
-        if bytes.len() as u64 > MAX_RECORD { return Err(invalid("oversized publication binding")); }
-        let record: Record = toml::from_str(std::str::from_utf8(&bytes).map_err(invalid)?).map_err(invalid)?;
-        if record.version != 1 || record.domain != claim.domain()
+        if bytes.len() as u64 > MAX_RECORD {
+            return Err(invalid("oversized publication binding"));
+        }
+        let record: Record =
+            toml::from_str(std::str::from_utf8(&bytes).map_err(invalid)?).map_err(invalid)?;
+        if record.version != 1
+            || record.domain != claim.domain()
             || record.descriptor != claim.descriptor().encode()
-            || !matches!((record.verity_algorithm, record.verity_digest.len()), (1, 32) | (2, 64)) {
+            || !matches!(
+                (record.verity_algorithm, record.verity_digest.len()),
+                (1, 32) | (2, 64)
+            )
+        {
             return Err(invalid("publication binding context or digest mismatch"));
         }
-        Ok(Some(VerityBinding { algorithm: record.verity_algorithm, digest: record.verity_digest }))
+        Ok(Some(VerityBinding {
+            algorithm: record.verity_algorithm,
+            digest: record.verity_digest,
+        }))
     }
 }
 
@@ -106,34 +129,48 @@ impl<F: LocalFs + Send + Sync> PublicationState for FsPublicationState<F> {
         self.load(&self.path(claim), claim).await
     }
 
-    async fn record(&mut self, claim: &PublicationClaim, binding: &VerityBinding) -> io::Result<()> {
+    async fn record(
+        &mut self,
+        claim: &PublicationClaim,
+        binding: &VerityBinding,
+    ) -> io::Result<()> {
         if !matches!((binding.algorithm, binding.digest.len()), (1, 32) | (2, 64)) {
             return Err(invalid("invalid publication kernel digest"));
         }
         let path = self.path(claim);
         if let Some(existing) = self.load(&path, claim).await? {
-            if existing != *binding { return Err(invalid("conflicting existing publication binding")); }
+            if existing != *binding {
+                return Err(invalid("conflicting existing publication binding"));
+            }
             self.fs.sync_file(&path).await?;
             return self.fs.sync_directory(&self.directory).await;
         }
 
-        let record = Record { version: 1, domain: claim.domain().to_owned(),
-            descriptor: claim.descriptor().encode(), verity_algorithm: binding.algorithm,
-            verity_digest: binding.digest.clone() };
+        let record = Record {
+            version: 1,
+            domain: claim.domain().to_owned(),
+            descriptor: claim.descriptor().encode(),
+            verity_algorithm: binding.algorithm,
+            verity_digest: binding.digest.clone(),
+        };
         let bytes = toml::to_string(&record).map_err(invalid)?;
-        if bytes.len() as u64 > MAX_RECORD { return Err(invalid("oversized publication context")); }
+        if bytes.len() as u64 > MAX_RECORD {
+            return Err(invalid("oversized publication context"));
+        }
         let random = self.fs.random_bytes(16).await?;
-        let temporary = self.directory.join(format!(".binding-{}", hexadecimal(&random)));
+        let temporary = self
+            .directory
+            .join(format!(".binding-{}", hexadecimal(&random)));
         self.fs.write_new(&temporary, bytes.as_bytes()).await?;
         self.fs.sync_file(&temporary).await?;
         match self.fs.rename_no_replace(&temporary, &path).await {
-            Ok(()) => {},
+            Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 if self.load(&path, claim).await?.as_ref() != Some(binding) {
                     return Err(invalid("concurrent conflicting publication binding"));
                 }
                 self.fs.remove_file(&temporary).await?;
-            },
+            }
             Err(error) => return Err(error),
         }
         self.fs.sync_file(&path).await?;

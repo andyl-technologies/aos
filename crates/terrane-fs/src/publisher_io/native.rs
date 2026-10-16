@@ -17,13 +17,23 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 pub(super) fn open_directory(path: &Path) -> io::Result<File> {
-    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput,
-            "publisher directory must be an absolute path without parent traversal"));
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "publisher directory must be an absolute path without parent traversal",
+        ));
     }
-    let descriptor = fs::openat2(fs::CWD, path,
+    let descriptor = fs::openat2(
+        fs::CWD,
+        path,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(), ResolveFlags::NO_SYMLINKS)?;
+        Mode::empty(),
+        ResolveFlags::NO_SYMLINKS,
+    )?;
     let file = File::from(descriptor);
     check_directory(&file)?;
     Ok(file)
@@ -31,16 +41,22 @@ pub(super) fn open_directory(path: &Path) -> io::Result<File> {
 
 fn check_directory(file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
-    if !metadata.is_dir() || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o022 != 0 {
-        return Err(invalid("publisher directory must be owned by publisher without other writers"));
+    if !metadata.is_dir()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o022 != 0
+    {
+        return Err(invalid(
+            "publisher directory must be owned by publisher without other writers",
+        ));
     }
     // Explicitly admit native filesystems supporting fs-verity. A seal ioctl
     // subsequently proves support for the particular inode and superblock.
     let stat = fs::fstatfs(file)?;
     if !matches!(stat.f_type as u64, 0xef53 | 0xf2f5_2010 | 0x9123_683e) {
-        return Err(io::Error::new(io::ErrorKind::Unsupported,
-            "sealed directory requires native ext4, f2fs or btrfs"));
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "sealed directory requires native ext4, f2fs or btrfs",
+        ));
     }
     Ok(())
 }
@@ -48,12 +64,15 @@ fn check_directory(file: &File) -> io::Result<()> {
 fn child_directory(parent: &File, name: &str) -> io::Result<File> {
     match fs::mkdirat(parent, name, Mode::from_raw_mode(0o755)) {
         Ok(()) => parent.sync_all()?,
-        Err(error) if error == rustix::io::Errno::EXIST => {},
+        Err(error) if error == rustix::io::Errno::EXIST => {}
         Err(error) => return Err(error.into()),
     }
-    let file = File::from(fs::openat(parent, name,
+    let file = File::from(fs::openat(
+        parent,
+        name,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty())?);
+        Mode::empty(),
+    )?);
     check_directory(&file)?;
     Ok(file)
 }
@@ -77,13 +96,19 @@ pub struct StagedFile {
 }
 
 impl Read for StagedFile {
-    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> { self.reader.read(bytes) }
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.reader.read(bytes)
+    }
 }
 
 impl Drop for StagedFile {
     fn drop(&mut self) {
         // Unserved scratch files are safe to clean on restart if unlink fails.
-        let _result = fs::unlinkat(self.directory.as_ref(), self.name.as_str(), AtFlags::empty());
+        let _result = fs::unlinkat(
+            self.directory.as_ref(),
+            self.name.as_str(),
+            AtFlags::empty(),
+        );
     }
 }
 
@@ -107,20 +132,29 @@ impl NativePublisher {
     /// Returns private creation, writer close, genuine seal, sync or open errors.
     pub fn probe_seal(&mut self) -> io::Result<File> {
         loop {
-            self.next_staging = self.next_staging.checked_add(1)
+            self.next_staging = self
+                .next_staging
+                .checked_add(1)
                 .ok_or_else(|| io::Error::other("staging sequence exhausted"))?;
             let temporary = format!("probe-{}-{}", std::process::id(), self.next_staging);
-            let descriptor = match fs::openat(self.staging.as_ref(), temporary.as_str(),
+            let descriptor = match fs::openat(
+                self.staging.as_ref(),
+                temporary.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o400)) {
+                Mode::from_raw_mode(0o400),
+            ) {
                 Ok(descriptor) => descriptor,
                 Err(error) if error == rustix::io::Errno::EXIST => continue,
                 Err(error) => return Err(error.into()),
             };
             let result = (|| {
                 close_writer(File::from(descriptor))?;
-                let reader = File::from(fs::openat(self.staging.as_ref(), temporary.as_str(),
-                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())?);
+                let reader = File::from(fs::openat(
+                    self.staging.as_ref(),
+                    temporary.as_str(),
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?);
                 verity::enable(&reader)?;
                 reader.sync_all()?;
                 Ok(reader)
@@ -141,25 +175,38 @@ impl NativePublisher {
     /// Rejects unsafe ownership, permissions, filesystem types, cross-device
     /// paths, symlinks and an already-running publisher for this directory.
     pub fn open(domain: String, sealed: &Path, staging: &Path, pending: &Path) -> io::Result<Self> {
-        Domain::parse(&domain).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        Domain::parse(&domain)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let sealed = open_directory(sealed)?;
         let staging = open_directory(staging)?;
         let pending = open_directory(pending)?;
         if staging.metadata()?.mode() & 0o777 != 0o700 {
-            return Err(invalid("publisher staging directory must be private mode 0700"));
+            return Err(invalid(
+                "publisher staging directory must be private mode 0700",
+            ));
         }
         let device = sealed.metadata()?.dev();
         if staging.metadata()?.dev() != device || pending.metadata()?.dev() != device {
             return Err(invalid("publisher directories must share one filesystem"));
         }
-        let inodes = [sealed.metadata()?.ino(), staging.metadata()?.ino(), pending.metadata()?.ino()];
+        let inodes = [
+            sealed.metadata()?.ino(),
+            staging.metadata()?.ino(),
+            pending.metadata()?.ino(),
+        ];
         if inodes[0] == inodes[1] || inodes[0] == inodes[2] || inodes[1] == inodes[2] {
             return Err(invalid("publisher directories must be distinct"));
         }
         fs::flock(&sealed, fs::FlockOperation::NonBlockingLockExclusive)?;
         fs::flock(&staging, fs::FlockOperation::NonBlockingLockExclusive)?;
         fs::flock(&pending, fs::FlockOperation::NonBlockingLockExclusive)?;
-        let publisher = Self { domain, sealed, staging: Arc::new(staging), pending, next_staging: 0 };
+        let publisher = Self {
+            domain,
+            sealed,
+            staging: Arc::new(staging),
+            pending,
+            next_staging: 0,
+        };
         publisher.recover_staging()?;
         Ok(publisher)
     }
@@ -169,11 +216,16 @@ impl NativePublisher {
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name();
-            if name.to_bytes() == b"." || name.to_bytes() == b".." { continue; }
+            if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                continue;
+            }
             let metadata = fs::statat(self.staging.as_ref(), name, AtFlags::SYMLINK_NOFOLLOW)?;
             if metadata.st_uid != rustix::process::geteuid().as_raw()
-                || metadata.st_mode & libc::S_IFMT == libc::S_IFDIR {
-                return Err(invalid("unexpected staging owner or directory during recovery"));
+                || metadata.st_mode & libc::S_IFMT == libc::S_IFDIR
+            {
+                return Err(invalid(
+                    "unexpected staging owner or directory during recovery",
+                ));
             }
             fs::unlinkat(self.staging.as_ref(), name, AtFlags::empty())?;
         }
@@ -181,7 +233,9 @@ impl NativePublisher {
     }
 
     fn check_claim(&self, claim: &PublicationClaim) -> io::Result<()> {
-        if claim.domain() != self.domain { return Err(invalid("publisher disclosure domain mismatch")); }
+        if claim.domain() != self.domain {
+            return Err(invalid("publisher disclosure domain mismatch"));
+        }
         Ok(())
     }
 
@@ -200,7 +254,13 @@ impl NativePublisher {
     pub fn retire(&mut self, claim: &PublicationClaim) -> io::Result<()> {
         let shard = self.shard(claim)?;
         let name = name(claim);
-        fs::renameat_with(&shard, name.as_str(), &self.pending, name.as_str(), fs::RenameFlags::NOREPLACE)?;
+        fs::renameat_with(
+            &shard,
+            name.as_str(),
+            &self.pending,
+            name.as_str(),
+            fs::RenameFlags::NOREPLACE,
+        )?;
         shard.sync_all()?;
         self.pending.sync_all()
     }
@@ -214,7 +274,13 @@ impl NativePublisher {
     pub fn restore(&mut self, claim: &PublicationClaim) -> io::Result<()> {
         let shard = self.shard(claim)?;
         let name = name(claim);
-        fs::renameat_with(&self.pending, name.as_str(), &shard, name.as_str(), fs::RenameFlags::NOREPLACE)?;
+        fs::renameat_with(
+            &self.pending,
+            name.as_str(),
+            &shard,
+            name.as_str(),
+            fs::RenameFlags::NOREPLACE,
+        )?;
         self.pending.sync_all()?;
         shard.sync_all()
     }
@@ -240,16 +306,28 @@ impl NativePublisher {
     /// # Errors
     /// Returns invalid target custody, cross-device, missing source, conflicting
     /// quarantine name or directory synchronization errors.
-    pub fn quarantine_rejected(&mut self, claim: &PublicationClaim, quarantine: &File) -> io::Result<()> {
+    pub fn quarantine_rejected(
+        &mut self,
+        claim: &PublicationClaim,
+        quarantine: &File,
+    ) -> io::Result<()> {
         self.check_claim(claim)?;
         let target = quarantine.metadata()?;
-        if !target.is_dir() || target.mode() & 0o002 != 0
-            || target.dev() != self.sealed.metadata()?.dev() {
+        if !target.is_dir()
+            || target.mode() & 0o002 != 0
+            || target.dev() != self.sealed.metadata()?.dev()
+        {
             return Err(invalid("unsafe quarantine directory or filesystem"));
         }
         let shard = self.shard(claim)?;
         let name = name(claim);
-        fs::renameat_with(&shard, name.as_str(), quarantine, name.as_str(), fs::RenameFlags::NOREPLACE)?;
+        fs::renameat_with(
+            &shard,
+            name.as_str(),
+            quarantine,
+            name.as_str(),
+            fs::RenameFlags::NOREPLACE,
+        )?;
         shard.sync_all()?;
         quarantine.sync_all()
     }
@@ -264,7 +342,9 @@ impl PublicationKernel for NativePublisher {
         self.check_claim(claim)?;
         let source_metadata = source.metadata()?;
         if !source_metadata.is_file() || source_metadata.len() != claim.plaintext_size() {
-            return Err(invalid("publication source must be an exact-length regular file"));
+            return Err(invalid(
+                "publication source must be an exact-length regular file",
+            ));
         }
         let flags = fs::fcntl_getfl(&source)?;
         if flags.intersects(OFlags::WRONLY | OFlags::RDWR) {
@@ -272,54 +352,88 @@ impl PublicationKernel for NativePublisher {
         }
         source.seek(SeekFrom::Start(0))?;
         loop {
-            self.next_staging = self.next_staging.checked_add(1)
+            self.next_staging = self
+                .next_staging
+                .checked_add(1)
                 .ok_or_else(|| io::Error::other("staging sequence exhausted"))?;
             let temporary = format!("{}-{}", std::process::id(), self.next_staging);
-            let descriptor = match fs::openat(self.staging.as_ref(), temporary.as_str(),
+            let descriptor = match fs::openat(
+                self.staging.as_ref(),
+                temporary.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o400)) {
+                Mode::from_raw_mode(0o400),
+            ) {
                 Ok(descriptor) => descriptor,
                 Err(error) if error == rustix::io::Errno::EXIST => continue,
                 Err(error) => return Err(error.into()),
             };
             let mut writer = File::from(descriptor);
-            let copied = io::copy(&mut source.take(claim.plaintext_size().saturating_add(1)), &mut writer);
+            let copied = io::copy(
+                &mut source.take(claim.plaintext_size().saturating_add(1)),
+                &mut writer,
+            );
             if let Err(error) = copied.and_then(|copied| {
-                if copied != claim.plaintext_size() { Err(invalid("source length changed during copy")) }
-                else { Ok(()) }
+                if copied != claim.plaintext_size() {
+                    Err(invalid("source length changed during copy"))
+                } else {
+                    Ok(())
+                }
             }) {
-                let _cleanup = fs::unlinkat(self.staging.as_ref(), temporary.as_str(), AtFlags::empty());
+                let _cleanup =
+                    fs::unlinkat(self.staging.as_ref(), temporary.as_str(), AtFlags::empty());
                 return Err(error);
             }
-            let reader = File::from(fs::openat(self.staging.as_ref(), temporary.as_str(),
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())?);
-            return Ok(StagedFile { reader, writer: Some(writer), directory: Arc::clone(&self.staging), name: temporary });
+            let reader = File::from(fs::openat(
+                self.staging.as_ref(),
+                temporary.as_str(),
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+            return Ok(StagedFile {
+                reader,
+                writer: Some(writer),
+                directory: Arc::clone(&self.staging),
+                name: temporary,
+            });
         }
     }
 
     fn close_writers(&mut self, staged: &mut StagedFile) -> io::Result<()> {
-        if let Some(writer) = staged.writer.take() { close_writer(writer)?; }
+        if let Some(writer) = staged.writer.take() {
+            close_writer(writer)?;
+        }
         Ok(())
     }
 
     fn seal(&mut self, staged: &StagedFile) -> io::Result<VerityBinding> {
-        if staged.writer.is_some() { return Err(invalid("private inode still has a writer")); }
+        if staged.writer.is_some() {
+            return Err(invalid("private inode still has a writer"));
+        }
         verity::enable(&staged.reader)
     }
 
-    fn sync_staged(&mut self, staged: &StagedFile) -> io::Result<()> { staged.reader.sync_all() }
+    fn sync_staged(&mut self, staged: &StagedFile) -> io::Result<()> {
+        staged.reader.sync_all()
+    }
 
     fn insert(&mut self, claim: &PublicationClaim, staged: &StagedFile) -> io::Result<bool> {
         let shard = self.shard(claim)?;
-        match fs::linkat(staged.directory.as_ref(), staged.name.as_str(), &shard,
-            name(claim).as_str(), AtFlags::empty()) {
+        match fs::linkat(
+            staged.directory.as_ref(),
+            staged.name.as_str(),
+            &shard,
+            name(claim).as_str(),
+            AtFlags::empty(),
+        ) {
             Ok(()) => Ok(true),
             Err(error) if error == rustix::io::Errno::EXIST => Ok(false),
             Err(error) => Err(error.into()),
         }
     }
 
-    fn sync_parent(&mut self, claim: &PublicationClaim) -> io::Result<()> { self.shard(claim)?.sync_all() }
+    fn sync_parent(&mut self, claim: &PublicationClaim) -> io::Result<()> {
+        self.shard(claim)?.sync_all()
+    }
 
     fn rollback(&mut self, claim: &PublicationClaim, staged: &StagedFile) -> io::Result<()> {
         let current = self.open(claim)?;
@@ -335,19 +449,30 @@ impl PublicationKernel for NativePublisher {
 
     fn open(&mut self, claim: &PublicationClaim) -> io::Result<File> {
         let shard = self.shard(claim)?;
-        let file = File::from(fs::openat(&shard, name(claim).as_str(),
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty())?);
+        let file = File::from(fs::openat(
+            &shard,
+            name(claim).as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
         let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.uid() != rustix::process::geteuid().as_raw()
-            || metadata.mode() & 0o222 != 0 || metadata.len() != claim.plaintext_size() {
+        if !metadata.is_file()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o222 != 0
+            || metadata.len() != claim.plaintext_size()
+        {
             return Err(invalid("unsafe canonical publisher inode"));
         }
         Ok(file)
     }
 
-    fn measure(&mut self, handle: &File) -> io::Result<VerityBinding> { verity::measure(handle) }
+    fn measure(&mut self, handle: &File) -> io::Result<VerityBinding> {
+        verity::measure(handle)
+    }
 
-    fn sync_handle(&mut self, handle: &File) -> io::Result<()> { handle.sync_all() }
+    fn sync_handle(&mut self, handle: &File) -> io::Result<()> {
+        handle.sync_all()
+    }
 }
 
 fn close_writer(writer: File) -> io::Result<()> {
@@ -357,5 +482,9 @@ fn close_writer(writer: File) -> io::Result<()> {
     // Linux releases the descriptor even on close failure; retrying could close
     // a descriptor reused by another thread and is intentionally forbidden.
     let result = unsafe { libc::close(descriptor) };
-    if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }

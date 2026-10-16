@@ -9,5 +9,7 @@ mod sequence;
 mod state;
 
 pub use claim::{PublicationClaim, PublicationRecipe};
-pub use sequence::{PublicationKernel, PublicationState, PublishedObject, Publisher, VerityBinding};
+pub use sequence::{
+    PublicationKernel, PublicationState, PublishedObject, Publisher, VerityBinding,
+};
 pub use state::FsPublicationState;

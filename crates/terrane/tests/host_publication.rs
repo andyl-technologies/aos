@@ -2,18 +2,22 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::sync::{Arc, Mutex};
 use std::io::{self, Cursor};
+use std::sync::{Arc, Mutex};
 
-use terrane::host::publication::{PublicationClaim, PublicationKernel, PublicationRecipe,
-    PublicationState, Publisher, VerityBinding};
+use terrane::host::publication::{
+    PublicationClaim, PublicationKernel, PublicationRecipe, PublicationState, Publisher,
+    VerityBinding,
+};
 use terrane_core::chunking::ChunkProfile;
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
     struct WakeThread(std::thread::Thread);
     impl std::task::Wake for WakeThread {
-        fn wake(self: std::sync::Arc<Self>) { self.0.unpark(); }
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
     }
     let waker = std::task::Waker::from(std::sync::Arc::new(WakeThread(std::thread::current())));
     let mut context = std::task::Context::from_waker(&waker);
@@ -31,13 +35,26 @@ type Events = Arc<Mutex<Vec<&'static str>>>;
 fn claim(bytes: &[u8]) -> PublicationClaim {
     let identity = TERRANE_V1.calculate(IdentityKind::Chunk, bytes).unwrap();
     let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, bytes).unwrap();
-    PublicationClaim::new("public".into(), PublicationRecipe::Inline { chunk: descriptor },
-        &ChunkProfile::cdc_1m([0; 32])).unwrap()
+    PublicationClaim::new(
+        "public".into(),
+        PublicationRecipe::Inline { chunk: descriptor },
+        &ChunkProfile::cdc_1m([0; 32]),
+    )
+    .unwrap()
 }
 
-fn binding() -> VerityBinding { VerityBinding { algorithm: 1, digest: vec![1; 32] } }
+fn binding() -> VerityBinding {
+    VerityBinding {
+        algorithm: 1,
+        digest: vec![1; 32],
+    }
+}
 
-struct State { events: Events, fail: bool, recorded: Option<VerityBinding> }
+struct State {
+    events: Events,
+    fail: bool,
+    recorded: Option<VerityBinding>,
+}
 
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
@@ -48,7 +65,9 @@ impl PublicationState for State {
 
     async fn record(&mut self, _: &PublicationClaim, value: &VerityBinding) -> io::Result<()> {
         self.events.lock().unwrap().push("state");
-        if self.fail { return Err(io::Error::other("state fault")); }
+        if self.fail {
+            return Err(io::Error::other("state fault"));
+        }
         self.recorded = Some(value.clone());
         Ok(())
     }
@@ -65,7 +84,9 @@ struct Kernel {
 impl Kernel {
     fn event(&self, event: &'static str) -> io::Result<()> {
         self.events.lock().unwrap().push(event);
-        if self.fail == Some(event) { return Err(io::Error::other(event)); }
+        if self.fail == Some(event) {
+            return Err(io::Error::other(event));
+        }
         Ok(())
     }
 }
@@ -81,7 +102,9 @@ impl PublicationKernel for Kernel {
         Ok(Cursor::new(bytes))
     }
 
-    fn close_writers(&mut self, _: &mut Self::Staged) -> io::Result<()> { self.event("close") }
+    fn close_writers(&mut self, _: &mut Self::Staged) -> io::Result<()> {
+        self.event("close")
+    }
 
     fn seal(&mut self, _: &Self::Staged) -> io::Result<VerityBinding> {
         self.event("seal")?;
@@ -89,7 +112,9 @@ impl PublicationKernel for Kernel {
         Ok(binding())
     }
 
-    fn sync_staged(&mut self, _: &Self::Staged) -> io::Result<()> { self.event("file-sync") }
+    fn sync_staged(&mut self, _: &Self::Staged) -> io::Result<()> {
+        self.event("file-sync")
+    }
 
     fn insert(&mut self, _: &PublicationClaim, _: &Self::Staged) -> io::Result<bool> {
         self.event("insert")?;
@@ -98,7 +123,9 @@ impl PublicationKernel for Kernel {
         Ok(inserted)
     }
 
-    fn sync_parent(&mut self, _: &PublicationClaim) -> io::Result<()> { self.event("parent-sync") }
+    fn sync_parent(&mut self, _: &PublicationClaim) -> io::Result<()> {
+        self.event("parent-sync")
+    }
 
     fn rollback(&mut self, _: &PublicationClaim, _: &Self::Staged) -> io::Result<()> {
         self.event("rollback")?;
@@ -113,18 +140,31 @@ impl PublicationKernel for Kernel {
 
     fn measure(&mut self, _: &Self::Handle) -> io::Result<VerityBinding> {
         self.event("measure")?;
-        if !self.sealed { return Err(io::Error::other("not sealed")); }
+        if !self.sealed {
+            return Err(io::Error::other("not sealed"));
+        }
         Ok(binding())
     }
 
-    fn sync_handle(&mut self, _: &Self::Handle) -> io::Result<()> { self.event("adopt-file-sync") }
+    fn sync_handle(&mut self, _: &Self::Handle) -> io::Result<()> {
+        self.event("adopt-file-sync")
+    }
 }
 
 fn publisher(fail: Option<&'static str>, state_fail: bool) -> (Publisher<Kernel, State>, Events) {
     let events = Arc::new(Mutex::new(Vec::new()));
-    let kernel = Kernel { events: Arc::clone(&events), bytes: Vec::new(), exists: false,
-        sealed: false, fail };
-    let state = State { events: Arc::clone(&events), fail: state_fail, recorded: None };
+    let kernel = Kernel {
+        events: Arc::clone(&events),
+        bytes: Vec::new(),
+        exists: false,
+        sealed: false,
+        fail,
+    };
+    let state = State {
+        events: Arc::clone(&events),
+        fail: state_fail,
+        recorded: None,
+    };
     (Publisher::new(kernel, state), events)
 }
 
@@ -132,8 +172,20 @@ fn publisher(fail: Option<&'static str>, state_fail: bool) -> (Publisher<Kernel,
 fn publication_orders_close_seal_sync_link_parent_and_state() {
     let (mut publisher, events) = publisher(None, false);
     run(publisher.publish(&claim(b"hello"), b"hello".to_vec())).unwrap();
-    assert_eq!(*events.lock().unwrap(), ["stage", "close", "seal", "file-sync", "insert",
-        "parent-sync", "state", "open", "measure"]);
+    assert_eq!(
+        *events.lock().unwrap(),
+        [
+            "stage",
+            "close",
+            "seal",
+            "file-sync",
+            "insert",
+            "parent-sync",
+            "state",
+            "open",
+            "measure"
+        ]
+    );
 }
 
 #[test]
@@ -181,7 +233,10 @@ fn adoption_rejects_unsealed_and_conflicting_bindings() {
     let (mut kernel, old_state) = publisher.into_parts();
     state = old_state;
     kernel.sealed = true;
-    state.recorded = Some(VerityBinding { algorithm: 1, digest: vec![9; 32] });
+    state.recorded = Some(VerityBinding {
+        algorithm: 1,
+        digest: vec![9; 32],
+    });
     let mut publisher = Publisher::new(kernel, state);
     assert!(run(publisher.adopt(&claim(b"hello"))).is_err());
 }
@@ -196,7 +251,10 @@ fn lost_state_adoption_revalidates_plaintext_and_rewinds_handle() {
     let mut publisher = Publisher::new(kernel, state);
     let published = run(publisher.adopt(&claim(b"hello"))).unwrap();
     assert_eq!(published.into_handle().position(), 0);
-    assert_eq!(*events.lock().unwrap(), ["open", "measure", "adopt-file-sync", "parent-sync", "state"]);
+    assert_eq!(
+        *events.lock().unwrap(),
+        ["open", "measure", "adopt-file-sync", "parent-sync", "state"]
+    );
 }
 
 fn manifest_recipe(bytes: &[u8], lengths: &[usize]) -> (PublicationRecipe, ChunkProfile) {
@@ -209,24 +267,42 @@ fn manifest_recipe(bytes: &[u8], lengths: &[usize]) -> (PublicationRecipe, Chunk
     secondary.update(bytes).unwrap();
     let hashes = secondary.finish().unwrap();
     let mut offset = 0;
-    let chunks = lengths.iter().map(|&length| {
-        let identity = TERRANE_V1.calculate(IdentityKind::Chunk, &bytes[offset..offset + length]).unwrap();
-        offset += length;
-        ChunkRef { digest: identity.terrane_v1_digest().unwrap(), length: length as u64 }
-    }).collect();
+    let chunks = lengths
+        .iter()
+        .map(|&length| {
+            let identity = TERRANE_V1
+                .calculate(IdentityKind::Chunk, &bytes[offset..offset + length])
+                .unwrap();
+            offset += length;
+            ChunkRef {
+                digest: identity.terrane_v1_digest().unwrap(),
+                length: length as u64,
+            }
+        })
+        .collect();
     assert_eq!(offset, bytes.len());
-    let manifest = Manifest { size: bytes.len() as u64, chunks, media_type: None,
+    let manifest = Manifest {
+        size: bytes.len() as u64,
+        chunks,
+        media_type: None,
         hashes: BTreeMap::from([
             ("blake3".into(), blake3::hash(bytes).as_bytes().to_vec()),
             ("sha256".into(), hashes.sha256.to_vec()),
             ("sha512".into(), hashes.sha512.to_vec()),
             ("git-blob-sha1".into(), hashes.git_blob_sha1.to_vec()),
             ("git-blob-sha256".into(), hashes.git_blob_sha256.to_vec()),
-        ]) };
+        ]),
+    };
     let canonical_manifest = manifest.encode(&profile).unwrap();
     let identity = manifest.identity(&profile).unwrap();
     let object = Descriptor::from_identity(&TERRANE_V1, &identity, &canonical_manifest).unwrap();
-    (PublicationRecipe::Manifest { object, canonical_manifest }, profile)
+    (
+        PublicationRecipe::Manifest {
+            object,
+            canonical_manifest,
+        },
+        profile,
+    )
 }
 
 #[test]
@@ -256,7 +332,10 @@ fn one_chunk_above_inline_threshold_retains_manifest_identity() {
 fn manifest_and_claim_domain_are_checked_before_plaintext() {
     let bytes = vec![7; 40];
     let (mut recipe, profile) = manifest_recipe(&bytes, &[40]);
-    if let PublicationRecipe::Manifest { canonical_manifest, .. } = &mut recipe {
+    if let PublicationRecipe::Manifest {
+        canonical_manifest, ..
+    } = &mut recipe
+    {
         canonical_manifest.push(0);
     }
     assert!(PublicationClaim::new("public".into(), recipe, &profile).is_err());

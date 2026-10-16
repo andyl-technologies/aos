@@ -27,7 +27,8 @@ pub trait PublicationState {
     ///
     /// # Errors
     /// Returns write or synchronization failures without acknowledging success.
-    async fn record(&mut self, claim: &PublicationClaim, binding: &VerityBinding) -> io::Result<()>;
+    async fn record(&mut self, claim: &PublicationClaim, binding: &VerityBinding)
+    -> io::Result<()>;
 }
 
 /// Supplies inode-retaining operations unavailable through portable path I/O.
@@ -47,7 +48,8 @@ pub trait PublicationKernel {
     ///
     /// # Errors
     /// Returns invalid source, copy or private inode creation failures.
-    fn stage(&mut self, claim: &PublicationClaim, source: Self::Source) -> io::Result<Self::Staged>;
+    fn stage(&mut self, claim: &PublicationClaim, source: Self::Source)
+    -> io::Result<Self::Staged>;
 
     /// Closes every private-inode writer, reporting deferred close errors.
     ///
@@ -114,10 +116,14 @@ pub struct PublishedObject<H> {
 
 impl<H> PublishedObject<H> {
     /// Returns the independently measured kernel binding.
-    pub fn binding(&self) -> &VerityBinding { &self.binding }
+    pub fn binding(&self) -> &VerityBinding {
+        &self.binding
+    }
 
     /// Transfers the read-only canonical handle to its consumer.
-    pub fn into_handle(self) -> H { self.handle }
+    pub fn into_handle(self) -> H {
+        self.handle
+    }
 }
 
 /// Coordinates a sole-writer adapter and durable binding state.
@@ -128,7 +134,9 @@ pub struct Publisher<K, S> {
 
 impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
     /// Constructs a publisher from already authorized adapters.
-    pub fn new(kernel: K, state: S) -> Self { Self { kernel, state } }
+    pub fn new(kernel: K, state: S) -> Self {
+        Self { kernel, state }
+    }
 
     /// Verifies, seals and durably publishes content from an owned descriptor.
     ///
@@ -138,8 +146,11 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
     ///
     /// # Errors
     /// Returns claim, sealing, publication or durable-state failures.
-    pub async fn publish(&mut self, claim: &PublicationClaim, source: K::Source)
-        -> io::Result<PublishedObject<K::Handle>> {
+    pub async fn publish(
+        &mut self,
+        claim: &PublicationClaim,
+        source: K::Source,
+    ) -> io::Result<PublishedObject<K::Handle>> {
         let mut staged = self.kernel.stage(claim, source)?;
         claim.verify_reader(&mut staged)?;
 
@@ -154,18 +165,25 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
         let finish = async {
             self.kernel.sync_parent(claim)?;
             self.state.record(claim, &binding).await?;
+
             let handle = self.kernel.open(claim)?;
             if self.kernel.measure(&handle)? != binding {
-                return Err(io::Error::new(io::ErrorKind::InvalidData,
-                    "canonical seal changed before publication acknowledgment"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "canonical seal changed before publication acknowledgment",
+                ));
             }
+
             Ok(PublishedObject { handle, binding })
-        }.await;
+        }
+        .await;
+
         if finish.is_err() {
             // Cleanup is best effort: its failure cannot turn an unacknowledged
             // publication into a servable object. Recovery verifies independently.
             let _cleanup = self.kernel.rollback(claim, &staged);
         }
+
         finish
     }
 
@@ -175,13 +193,24 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
     ///
     /// # Errors
     /// Returns unsafe inode, seal, plaintext, binding or synchronization failures.
-    pub async fn adopt(&mut self, claim: &PublicationClaim) -> io::Result<PublishedObject<K::Handle>> {
+    pub async fn adopt(
+        &mut self,
+        claim: &PublicationClaim,
+    ) -> io::Result<PublishedObject<K::Handle>> {
         let mut handle = self.kernel.open(claim)?;
         let binding = self.kernel.measure(&handle)?;
         claim.verify_reader(&mut handle)?;
 
-        if self.state.binding(claim).await?.is_some_and(|existing| existing != binding) {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "recorded verity binding mismatch"));
+        if self
+            .state
+            .binding(claim)
+            .await?
+            .is_some_and(|existing| existing != binding)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recorded verity binding mismatch",
+            ));
         }
 
         handle.seek(SeekFrom::Start(0))?;
@@ -193,5 +222,7 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
     }
 
     /// Returns the owned adapters for shutdown or administrative maintenance.
-    pub fn into_parts(self) -> (K, S) { (self.kernel, self.state) }
+    pub fn into_parts(self) -> (K, S) {
+        (self.kernel, self.state)
+    }
 }

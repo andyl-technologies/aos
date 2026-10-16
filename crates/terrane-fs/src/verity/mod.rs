@@ -57,7 +57,9 @@ pub fn enable(file: impl AsFd) -> io::Result<VerityBinding> {
     // argument has its exact repr(C) layout, is initialized, and contains no
     // userspace pointers because both optional buffers have zero length.
     let result = unsafe { libc::ioctl(file.as_fd().as_raw_fd(), ENABLE_VERITY, &argument) };
-    if result != 0 { return Err(io::Error::last_os_error()); }
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
     measure(file)
 }
 
@@ -67,15 +69,24 @@ pub fn enable(file: impl AsFd) -> io::Result<VerityBinding> {
 /// Returns an error for an unsealed inode, unsupported filesystem, ioctl
 /// failure or a measurement outside the supported SHA-256/SHA-512 profiles.
 pub fn measure(file: impl AsFd) -> io::Result<VerityBinding> {
-    let mut measurement = Measurement { algorithm: 0, size: 64, digest: [0; 64] };
+    let mut measurement = Measurement {
+        algorithm: 0,
+        size: 64,
+        digest: [0; 64],
+    };
     // SAFETY: the repr(C) buffer contains the UAPI header plus the full declared
     // writable digest capacity. The borrowed descriptor and buffer remain live
     // for the synchronous ioctl; no kernel-written pointer is dereferenced.
     let result = unsafe { libc::ioctl(file.as_fd().as_raw_fd(), MEASURE_VERITY, &mut measurement) };
-    if result != 0 { return Err(io::Error::last_os_error()); }
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
     let valid = matches!((measurement.algorithm, measurement.size), (1, 32) | (2, 64));
     if !valid {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid kernel verity measurement"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid kernel verity measurement",
+        ));
     }
     Ok(VerityBinding {
         algorithm: measurement.algorithm,

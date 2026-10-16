@@ -10,7 +10,9 @@ use std::sync::{Mutex, mpsc};
 use std::task::Poll;
 use std::time::Duration;
 
-use terrane::host::publication::{FsPublicationState, PublicationClaim, PublicationRecipe, PublicationState, Publisher};
+use terrane::host::publication::{
+    FsPublicationState, PublicationClaim, PublicationRecipe, PublicationState, Publisher,
+};
 use terrane::store::TokioLocalFs;
 use terrane_core::chunking::ChunkProfile;
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
@@ -18,10 +20,16 @@ use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 use super::{NativePublicationWorker, NativePublisher, WorkerGate};
 
 fn fixture(name: &str) -> [PathBuf; 4] {
-    let root = PathBuf::from(std::env::var_os("TERRANE_PUBLISH_VM_ROOT").expect("disk-backed VM fixture"));
+    let root =
+        PathBuf::from(std::env::var_os("TERRANE_PUBLISH_VM_ROOT").expect("disk-backed VM fixture"));
     let root = root.join(name);
     fs::create_dir(&root).unwrap();
-    let paths = [root.join("sealed"), root.join("staging"), root.join("pending"), root.join("state")];
+    let paths = [
+        root.join("sealed"),
+        root.join("staging"),
+        root.join("pending"),
+        root.join("state"),
+    ];
     for path in &paths {
         fs::create_dir(path).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -32,9 +40,14 @@ fn fixture(name: &str) -> [PathBuf; 4] {
 fn claim() -> PublicationClaim {
     let bytes = b"cancel-safe";
     let identity = TERRANE_V1.calculate(IdentityKind::Chunk, bytes).unwrap();
-    PublicationClaim::new("public".into(), PublicationRecipe::Inline {
-        chunk: Descriptor::from_identity(&TERRANE_V1, &identity, bytes).unwrap(),
-    }, &ChunkProfile::cdc_1m([0; 32])).unwrap()
+    PublicationClaim::new(
+        "public".into(),
+        PublicationRecipe::Inline {
+            chunk: Descriptor::from_identity(&TERRANE_V1, &identity, bytes).unwrap(),
+        },
+        &ChunkProfile::cdc_1m([0; 32]),
+    )
+    .unwrap()
 }
 
 fn source(path: &Path) -> File {
@@ -51,20 +64,37 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability() {
     fs::write(&stale, b"unfinished metadata").unwrap();
     let (arrived_sender, arrived) = mpsc::sync_channel(1);
     let (release, released) = mpsc::sync_channel(1);
-    let gate = WorkerGate { arrived: arrived_sender, release: Mutex::new(released) };
-    let (worker, owner) = NativePublicationWorker::start_thread("public".into(),
-        &paths[0], &paths[1], &paths[2], &paths[3], Some(gate)).unwrap();
-    assert!(!stale.exists(), "successful start must finish actual state recovery");
+    let gate = WorkerGate {
+        arrived: arrived_sender,
+        release: Mutex::new(released),
+    };
+    let (worker, owner) = NativePublicationWorker::start_thread(
+        "public".into(),
+        &paths[0],
+        &paths[1],
+        &paths[2],
+        &paths[3],
+        Some(gate),
+    )
+    .unwrap();
+    assert!(
+        !stale.exists(),
+        "successful start must finish actual state recovery"
+    );
 
     let claim = claim();
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     runtime.block_on(async {
         let request = worker.publish(claim.clone(), source(paths[0].parent().unwrap()));
         let mut request = std::pin::pin!(request);
         poll_fn(|context| {
             assert!(request.as_mut().poll(context).is_pending());
             Poll::Ready(())
-        }).await;
+        })
+        .await;
         arrived.recv_timeout(Duration::from_secs(20)).unwrap();
         // Leaving this scope drops the actual request future while the owned
         // publisher has already sealed, linked and synchronized its inode.
@@ -72,12 +102,17 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability() {
     drop(worker);
     drop(runtime);
 
-    assert!(NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err(),
-        "canceling every client must not release the active publisher exclusion");
+    assert!(
+        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err(),
+        "canceling every client must not release the active publisher exclusion"
+    );
     release.send(()).unwrap();
     owner.join().unwrap();
 
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let state = FsPublicationState::new(TokioLocalFs, paths[3].clone());
     assert!(runtime.block_on(state.binding(&claim)).unwrap().is_some());
     let native = NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).unwrap();
@@ -91,6 +126,8 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability() {
 fn startup_reports_actual_private_state_recovery_failure() {
     let paths = fixture("worker-startup-failure");
     fs::create_dir(paths[3].join(".binding-invalid-directory")).unwrap();
-    assert!(NativePublicationWorker::start("public".into(), &paths[0], &paths[1],
-        &paths[2], &paths[3]).is_err());
+    assert!(
+        NativePublicationWorker::start("public".into(), &paths[0], &paths[1], &paths[2], &paths[3])
+            .is_err()
+    );
 }
