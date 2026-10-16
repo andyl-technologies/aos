@@ -108,7 +108,8 @@ impl std::error::Error for HotForkInstallationHistory {
 /// Keeps the exact API failure, source lease and aggregate resources together.
 pub(crate) struct RetainedHotForkInstallation<G: QemuAttemptProcessResourceGuard> {
     construction: Option<ProductionVmConstructionFailure>,
-    cleanup_handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
+    cleanup_handoff:
+        Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
     source_lease: Option<QemuHotForkSourceWorldLease>,
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
     reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,

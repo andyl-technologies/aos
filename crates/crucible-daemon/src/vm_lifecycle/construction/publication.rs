@@ -19,7 +19,7 @@ impl ProductionVmConstructionFailure {
     ) -> Result<
         (
             LifecycleApiError,
-            Box<dyn crucible_api::ProductionVmCleanupHandoff>,
+            Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
         ),
         Self,
     > {
@@ -122,7 +122,12 @@ impl ProductionVmConstructionFailure {
     /// attest physical cleanup or release the containing World charge.
     pub fn retry_reserved_publication(
         &mut self,
-    ) -> Result<Option<Box<dyn crucible_api::ProductionVmCleanupHandoff>>, &'static str> {
+    ) -> Result<
+        Option<
+            Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+        >,
+        &'static str,
+    > {
         let FailureStorage::Rejected { returned, .. } = &mut self.storage else {
             return Err("construction has no returned canonical handoff");
         };
@@ -155,8 +160,10 @@ impl ProductionVmConstructionCustody {
     /// on missing or refused authenticated custody. Success proves handoff only.
     pub fn publish_for_cleanup(
         mut self: Box<Self>,
-    ) -> Result<Box<dyn crucible_api::ProductionVmCleanupHandoff>, ProductionVmConstructionFailure>
-    {
+    ) -> Result<
+        Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+        ProductionVmConstructionFailure,
+    > {
         if self.reservation.is_none() {
             let phase = match self.phase.get_mut() {
                 Ok(phase) => phase,

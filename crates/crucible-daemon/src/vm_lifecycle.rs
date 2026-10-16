@@ -2026,10 +2026,14 @@ impl ProductionVmNodeLaunch {
 /// after the initial generation. Implementations must also retain or transfer
 /// containment authority from their `Drop` path when lifecycle construction,
 /// unwinding, or caller abandonment prevents an explicit [`Self::finish`].
-pub trait ProductionVmNodeLauncher: ProductionVmCleanupOwner {
+pub trait ProductionVmNodeLauncher:
+    ProductionVmCleanupOwner<Failure = crucible::SchedulerError>
+{
     /// Moves the exact cleanup reservation without claiming physical return.
     #[cfg(target_os = "linux")]
-    fn take_cleanup_reservation(&mut self) -> Option<Box<dyn ProductionVmCleanupReservation>> {
+    fn take_cleanup_reservation(
+        &mut self,
+    ) -> Option<Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>> {
         None
     }
 
@@ -2235,6 +2239,8 @@ struct PackagedProductionVmNodeLauncher;
 
 #[cfg(any(test, feature = "test-support"))]
 impl crucible_api::ProductionVmCleanupOwner for PackagedProductionVmNodeLauncher {
+    type Failure = crucible::SchedulerError;
+
     fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
         ProductionVmNodeLauncher::finish(self).map_err(|error| {
             crucible::SchedulerError::BoundaryViolation {

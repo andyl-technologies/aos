@@ -456,7 +456,13 @@ pub trait QemuAttemptHostResourceFactory {
     fn reserve_world_lifecycle_cleanup(
         &self,
         controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-    ) -> Result<Box<dyn crucible_api::ProductionVmCleanupReservation>, (crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease, QemuVmRealizationError)>{
+    ) -> Result<
+        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        (
+            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+            QemuVmRealizationError,
+        ),
+    >{
         Err((
             controls,
             QemuVmRealizationError::ExecutorUnavailable {
@@ -743,7 +749,13 @@ where
     fn reserve_world_lifecycle_cleanup(
         &self,
         controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-    ) -> Result<Box<dyn crucible_api::ProductionVmCleanupReservation>, (crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease, QemuVmRealizationError)>{
+    ) -> Result<
+        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        (
+            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+            QemuVmRealizationError,
+        ),
+    >{
         let Some(cleanup) = self.cleanup.as_ref() else {
             return Err((
                 controls,
@@ -1753,7 +1765,13 @@ where
     fn reserve_world_lifecycle_cleanup(
         &self,
         controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-    ) -> Result<Box<dyn crucible_api::ProductionVmCleanupReservation>, (crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease, QemuVmRealizationError)>{
+    ) -> Result<
+        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        (
+            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+            QemuVmRealizationError,
+        ),
+    >{
         self.host.reserve_world_lifecycle_cleanup(controls)
     }
 

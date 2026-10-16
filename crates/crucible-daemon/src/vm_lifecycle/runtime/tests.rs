@@ -172,6 +172,8 @@ impl ProductionVmNodeLease for RecordingNodeLease {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for FailingFinishLauncher {
+    type Failure = crucible::SchedulerError;
+
     fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
         ProductionVmNodeLauncher::finish(self).map_err(|error| {
             crucible::SchedulerError::BoundaryViolation {
@@ -253,6 +255,8 @@ struct SelectablePlanRecordingLauncher {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for RecordingFinishLauncher {
+    type Failure = crucible::SchedulerError;
+
     fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
         ProductionVmNodeLauncher::finish(self).map_err(|error| {
             crucible::SchedulerError::BoundaryViolation {
@@ -302,6 +306,8 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for PreparationBoundaryLauncher {
+    type Failure = crucible::SchedulerError;
+
     fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
         ProductionVmNodeLauncher::finish(self).map_err(|error| {
             crucible::SchedulerError::BoundaryViolation {
@@ -371,6 +377,8 @@ impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for SelectablePlanRecordingLauncher {
+    type Failure = crucible::SchedulerError;
+
     fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
         ProductionVmNodeLauncher::finish(self).map_err(|error| {
             crucible::SchedulerError::BoundaryViolation {

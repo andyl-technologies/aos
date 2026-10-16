@@ -17,26 +17,26 @@ pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall<
     ),
     Api {
         owner: crate::ProductionVmConstructionFailure,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
+        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
     },
-    Handoff(Box<dyn ProductionVmCleanupHandoff>),
+    Handoff(Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>),
     ResourceBegin {
         owner: SourceConstructionCustodyFailure<
             crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
         >,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
+        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
     },
     Begin {
         owner: SourceConstructionCustodyFailure,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
+        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
     },
     Storage {
         owner: SourceConstructionCustodyFailure<SourceGenerationStorageRefusal>,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
+        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
     },
     Post {
         owner: SourceConstructionCustodyFailure<SourcePostInstallationRefusal>,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
+        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
     },
     MissingRetirementCarrier {
         lifecycle: ProductionVmLifecycleLoop,
@@ -92,7 +92,9 @@ where
         Ok(false)
     }
 
-    fn handoff_mut(&mut self) -> Option<&mut Box<dyn ProductionVmCleanupHandoff>> {
+    fn handoff_mut(
+        &mut self,
+    ) -> Option<&mut Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>> {
         match self {
             Self::Handoff(receipt) => Some(receipt),
             Self::Api { handoff, .. }
@@ -297,7 +299,10 @@ where
         self.retry_retained_source_installation()
     }
 
-    pub(super) fn retain_cleanup_handoff(&mut self, handoff: Box<dyn ProductionVmCleanupHandoff>) {
+    pub(super) fn retain_cleanup_handoff(
+        &mut self,
+        handoff: Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+    ) {
         // The exclusive factory borrow spans its checked vacancy and handoff;
         // no callback can install another value in this fixed prepaid slot.
         self.retained_install = Some(RetainedSourceInstall::Handoff(handoff));
