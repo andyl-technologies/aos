@@ -8696,11 +8696,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 Status: in progress (2026-10-16). T1's 22 tasks and 89 current gates are
 complete; its identity, encoding, bucket-key and Store-trait freeze applies.
-Eight separate implementation worktrees cover the five T2 tasks, including
-dedicated publisher-transport, host-quota and native confinement components.
+Nine separate implementation worktrees cover the five T2 tasks, including
+dedicated publisher-transport, host-quota, native confinement and recovery
+inspection components.
 Shared module declarations,
 dependency edges, kernel prerequisites and check wiring precede worker edits.
-No T2 task or gate is complete yet.
+No T2 task is accepted; full current-trunk qualification remains pending.
 
 Contract review identifies a blocking conflict for zero-wipe sealed files:
 HOST-3 requires permanent kernel immutability, while HOST-25 and DOM-18
@@ -8768,9 +8769,17 @@ startup and alternate-ABI scenarios were not reached. Source review corrected a
 publisher fixture helper reference and quota fixture synchronization races.
 The quota claim implementation now permanently binds each filesystem/project
 pair before ledger publication or native mutation; full process-crash and
-broker scenarios await execution. Configured SDK runtime composition and
-actual durable host metadata pins are being implemented separately. Current
-surface gates and complete trunk qualification remain pending.
+broker scenarios await execution. Configured SDK runtime composition and its
+separate unit/native proof harness pass source review; compilation and guest
+execution remain pending. The actual durable metadata-pin producer passes
+source review for consumer integration, without native qualification. Recovery
+inspection review found plaintext-allocation and retained-custody defects;
+their corrections precede integration. Publisher review likewise found a
+shared-claim field type mismatch before compilation. The frozen surface
+candidate passes its interface gate; its schema gate is compiling. Remaining
+surface gates and complete trunk qualification remain pending. These source
+reviews and component results do not establish configured role operation,
+completed recovery or task acceptance.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
