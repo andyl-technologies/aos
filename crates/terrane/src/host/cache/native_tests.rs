@@ -24,8 +24,13 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new() -> Self {
-        let path = PathBuf::from(format!(
-            "/var/tmp/terrane-host-cache-{}-{}",
+        // VM gates select their writable disk explicitly; the headless harness
+        // otherwise mounts its ordinary temporary directory on tmpfs.
+        let base = std::env::var_os("TERRANE_HOST_CACHE_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let path = base.join(format!(
+            "terrane-host-cache-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

@@ -174,12 +174,14 @@ impl CachePolicy {
     /// The caller must restore the canonical name before returning actual bytes.
     pub fn touch(&mut self, key: &str) {
         if let Some(entry) = self.entries.get_mut(key) {
-            if entry.retiring {
-                if entry.main {
-                    self.main.push_back(key.to_owned());
-                } else {
-                    self.probation.push_back(key.to_owned());
-                }
+            if !entry.main {
+                // Promotion occurs on the read, preserving actual promotion
+                // order rather than the order of a later eviction scan.
+                self.probation.retain(|candidate| candidate != key);
+                self.main.push_back(key.to_owned());
+                entry.main = true;
+            } else if entry.retiring {
+                self.main.push_back(key.to_owned());
             }
             entry.retiring = false;
             entry.referenced = true;
@@ -228,10 +230,22 @@ impl CachePolicy {
     /// Pinned and grace-protected entries remain charged and are never selected.
     /// Main-queue hits get a second pass; probationary hits promote to main.
     pub fn eviction_candidates(&mut self, now: Duration) -> Vec<String> {
+        self.eviction_candidates_for(0, now)
+    }
+
+    /// Plans enough retirement for the low watermark and an incoming reservation.
+    ///
+    /// Outstanding reservations remain charged even when their writes have not
+    /// started. An oversized incoming reservation cannot make pins evictable.
+    pub fn eviction_candidates_for(&mut self, incoming: u64, now: Duration) -> Vec<String> {
+        let target = self
+            .config
+            .low_watermark
+            .min(self.config.capacity.saturating_sub(incoming));
         let mut victims = Vec::new();
-        let mut projected = self.resident_bytes();
+        let mut projected = self.charged_bytes();
         for _ in 0..self.config.scan_limit {
-            if projected <= self.config.low_watermark {
+            if projected <= target {
                 break;
             }
             let probation_size: u64 = self

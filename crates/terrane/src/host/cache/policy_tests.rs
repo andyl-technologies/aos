@@ -107,3 +107,24 @@ fn host_cache_circuit_probes_once_per_interval_and_recovers() {
     circuit.success();
     assert!(circuit.allow(Duration::from_secs(3)));
 }
+
+#[test]
+fn host_cache_eviction_counts_reservations_and_large_incoming_allocations() {
+    let mut cache = cache();
+    insert(&mut cache, "resident", 40);
+    cache
+        .reserve("inflight".into(), "other-owner".into(), 50)
+        .unwrap();
+
+    assert_eq!(
+        cache.eviction_candidates_for(50, Duration::ZERO),
+        ["resident"]
+    );
+    assert_eq!(cache.charged_bytes(), 90);
+    cache.finish_retirement("resident").unwrap();
+    assert_eq!(cache.charged_bytes(), 50);
+    cache
+        .reserve("incoming".into(), "tenant".into(), 50)
+        .unwrap();
+    assert_eq!(cache.charged_bytes(), 100);
+}

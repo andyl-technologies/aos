@@ -3,12 +3,14 @@
 //! Encoded content and plaintext sealed handles remain separate interfaces.
 //! Persistent policy state contains no chunk index or sealed-read lock.
 
+mod fetch;
 mod kernel;
 mod layout;
 mod policy;
 mod readonly;
 mod state;
 
+pub use fetch::{FetchRequirement, fetch_verified};
 pub use kernel::{HostInspection, HostKernel, SealInspection};
 pub use layout::DomainHostLayout;
 pub use policy::{CacheEntry, CachePolicy, CircuitBreaker, PolicyConfig};
@@ -22,3 +24,6 @@ mod policy_tests;
 
 #[cfg(all(test, feature = "tokio", unix))]
 mod native_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod fetch_tests;
