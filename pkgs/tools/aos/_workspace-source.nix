@@ -4,6 +4,7 @@
   selectedCrates ? null,
   extraPaths ? [],
 }: let
+  isCargoBuildDirectory = import ../../build-support/_cargo-build-directory.nix;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   cratesRoot = "${repoRootString}/crates";
@@ -42,8 +43,7 @@ in
           || base == "result"
           || lib.hasPrefix "result-" base
           || base == "__pycache__"
-          || base == "target"
-          || lib.hasPrefix "target-" base
+          || isCargoBuildDirectory repoRoot path
         );
       # Cargo builds need the workspace, JSON fixtures included by Rust tests,
       # and API manifests consumed by build scripts. Nix-only test edits must

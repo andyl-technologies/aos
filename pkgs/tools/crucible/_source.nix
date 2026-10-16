@@ -1,4 +1,5 @@
 {lib}: let
+  isCargoBuildDirectory = import ../../build-support/_cargo-build-directory.nix;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
 in
@@ -14,7 +15,7 @@ in
       && base != ".crucible"
       # Local daemon journals are runtime state, never package source.
       && base != "run-state"
-      && base != "target"
+      && !(base == "target" && isCargoBuildDirectory repoRoot path)
       && base != "__pycache__"
       && !lib.hasSuffix ".pyc" base
       && pathString != "${repoRootString}/result"
@@ -32,6 +33,8 @@ in
         || lib.hasPrefix "${repoRootString}/docs" pathString
         || pathString == "${repoRootString}/pkgs"
         || pathString == "${repoRootString}/pkgs/default.nix"
+        || pathString == "${repoRootString}/pkgs/build-support"
+        || pathString == "${repoRootString}/pkgs/build-support/_cargo-build-directory.nix"
         || pathString == "${repoRootString}/pkgs/emulation"
         || pathString == "${repoRootString}/pkgs/emulation/crucible-qemu-plugin.nix"
         || pathString == "${repoRootString}/pkgs/emulation/qemu.nix"

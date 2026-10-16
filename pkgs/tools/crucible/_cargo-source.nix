@@ -1,5 +1,6 @@
 ##! Cargo-only Crucible workspace source.
 {lib}: let
+  isCargoBuildDirectory = import ../../build-support/_cargo-build-directory.nix;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
 in
@@ -16,7 +17,7 @@ in
       && base != ".crucible"
       # Local daemon journals must not perturb Cargo source identities.
       && base != "run-state"
-      && base != "target"
+      && !(base == "target" && isCargoBuildDirectory repoRoot path)
       && pathString != "${repoRootString}/result"
       && (
         pathString

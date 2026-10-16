@@ -1,5 +1,18 @@
 ##! Regression checks for reusable Cargo dependency artifacts.
 {pkgs}: let
+  isCargoBuildDirectory = import ../../pkgs/build-support/_cargo-build-directory.nix;
+  buildDirectories = [
+    "target"
+    "target-debug"
+    "member/target"
+    "member/target-release"
+  ];
+  sourceDirectories = [
+    "src/target"
+    "member/src/target"
+    "member/src/nested/target"
+    "member/src/target-specific"
+  ];
   cachePermissions = import ./cache-permissions.nix {inherit pkgs;};
   sourceA = builtins.path {
     path = ./source-a;
@@ -27,7 +40,9 @@
   };
   cargoDeps = pkgs.fetchCargoDeps {
     src = sourceA;
-    hash = "sha256-8KYbFEUyYG3jH3ro0ZhRyqbdeWnj44reziNvTTdFd1Q=";
+    # Cargo includes its format comment in .cargo-checksum.json; the locked
+    # itoa archive and all vendored package bytes remain unchanged.
+    hash = "sha256-O70O+WRN7Er7JDh1EVJFFqkPzQu5kmJ8DLX/gxCoavQ=";
   };
   contract = {family = "fixture-native-release";};
   artifacts = pkgs.mkCargoArtifacts {
@@ -50,6 +65,8 @@
     doCheck = false;
   };
 in
+  assert builtins.all (relative: isCargoBuildDirectory "/workspace" "/workspace/${relative}") buildDirectories;
+  assert builtins.all (relative: !isCargoBuildDirectory "/workspace" "/workspace/${relative}") sourceDirectories;
   assert toString dummyA == toString dummyB;
   assert toString dummyA != toString dummyManifestChange;
     pkgs.mkDerivation {
@@ -61,6 +78,8 @@ in
         {
           name = "check";
           script = ''
+            test -f ${dummyA}/src/target/phase.rs
+            test -f ${dummyB}/src/target/phase.rs
             test -x ${consumer}/bin/artifact-fixture
             ${consumer}/bin/artifact-fixture | grep -qx 'answer=42'
             jq -e 'select(.reason == "compiler-artifact" and (.package_id | startswith("registry+") and contains("itoa@1.0.18")) and .fresh == true)' \
