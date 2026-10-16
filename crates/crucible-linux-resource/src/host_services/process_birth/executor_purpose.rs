@@ -28,7 +28,7 @@ pub use native_pool::{
     AuthenticatedNativeNodeClaim, AuthenticatedNativeNodeHostWindow,
     AuthenticatedNativePoolPurpose, AuthenticatedNativeWorldClaim,
     AuthenticatedNativeWorldCleanupLoan, AuthenticatedNativeWorldControlLease,
-    NativeNodeReservation, NativePoolRefusal, NativeWorldIdentity,
+    NativeNodeReservation, NativePoolRefusal, NativeWorldIdentity, NativeWorldReturn,
 };
 
 mod host_descriptors;

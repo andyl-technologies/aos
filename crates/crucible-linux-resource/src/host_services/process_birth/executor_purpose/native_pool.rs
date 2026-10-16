@@ -17,6 +17,7 @@ use super::{
 mod ledger;
 mod node;
 mod window;
+mod world_return;
 use ledger::{NodeSlot, PoolLedger, WorldSlot};
 
 /// Names a selected operational owner and authenticated immutable World input.
@@ -66,6 +67,19 @@ pub struct AuthenticatedNativeWorldClaim {
     held: Option<Arc<PoolState>>,
     epoch: u64,
     original: Arc<HostOperationGuard>,
+}
+
+/// Reports whether an exact World has returned or still owns its paid body.
+///
+/// Pending body custody is an accounting observation, not a cleanup grant or a
+/// failed admission. Every issued native member must already have returned
+/// consistently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeWorldReturn {
+    /// Retains the same World and its complete remaining containing-body debit.
+    PendingBody,
+    /// Records the actual descriptor/ledger return of this exact assignment.
+    Returned,
 }
 
 /// Retains the selected containing-body charge through actual owner destruction.
@@ -131,6 +145,9 @@ pub struct NativePoolRefusal {
     cause: ServiceBirthError,
     after: Option<ServiceBirthError>,
     _retained: Option<RetainedClaim>,
+    // True only when the World ledger refused before publication and its
+    // independent Original postcut succeeded. Other issuers remain conservative.
+    world_assignment_refused: bool,
 }
 
 #[derive(Debug)]
@@ -142,6 +159,18 @@ struct RetainedClaim {
     _world: Option<AuthenticatedNativeWorldClaim>,
     _node: Option<AuthenticatedNativeNodeClaim>,
     _window: Option<AuthenticatedNativeNodeHostWindow>,
+}
+
+impl NativePoolRefusal {
+    /// Reports a proven World admission refusal before any assignment published.
+    ///
+    /// This factual classification grants no retry authority. Callback refusal,
+    /// poisoned synchronization, descriptor effects and negative postcuts never
+    /// acquire it, even when no issued holder is present in this error.
+    #[must_use]
+    pub fn world_assignment_was_refused(&self) -> bool {
+        self.world_assignment_refused && self.after.is_none() && self._retained.is_none()
+    }
 }
 
 impl RetainedClaim {
@@ -222,6 +251,7 @@ pub(super) fn missing_node_window(
     after: Option<ServiceBirthError>,
 ) -> Result<(), NativePoolRefusal> {
     Err(NativePoolRefusal {
+        world_assignment_refused: false,
         cause: ServiceBirthError::policy("Target host needs its consumed node claim"),
         after,
         _retained: None,
@@ -235,11 +265,13 @@ pub(super) fn finish_dispatcher(
     match (result, after) {
         (Ok(purpose), None) => Ok(purpose),
         (Err(cause), after) => Err(NativePoolRefusal {
+            world_assignment_refused: false,
             cause,
             after,
             _retained: None,
         }),
         (Ok(purpose), Some(after)) => Err(NativePoolRefusal {
+            world_assignment_refused: false,
             cause: ServiceBirthError::policy("Target dispatcher postcut refused"),
             after: Some(after),
             _retained: Some(RetainedClaim {
@@ -262,11 +294,13 @@ pub(super) fn finish_source(
     match (result, after) {
         (Ok(source), None) => Ok(source),
         (Err(cause), after) => Err(NativePoolRefusal {
+            world_assignment_refused: false,
             cause,
             after,
             _retained: None,
         }),
         (Ok(source), Some(after)) => Err(NativePoolRefusal {
+            world_assignment_refused: false,
             cause: ServiceBirthError::policy("Source host postcut refused"),
             after: Some(after),
             _retained: Some(RetainedClaim::source(source)),
@@ -282,11 +316,13 @@ pub(super) fn finish_root(
     match (result, after) {
         (Ok(pool), None) => Ok(pool),
         (Err(cause), after) => Err(NativePoolRefusal {
+            world_assignment_refused: false,
             cause,
             after,
             _retained: None,
         }),
         (Ok(pool), Some(after)) => Err(NativePoolRefusal {
+            world_assignment_refused: false,
             cause: ServiceBirthError::policy("native pool postcut refused"),
             after: Some(after),
             _retained: Some(RetainedClaim::pool(pool)),
@@ -485,6 +521,7 @@ impl AuthenticatedNativePoolPurpose {
         match snapshot {
             Ok(rows) => self.claim_world(identity, &rows, consumer_control_bytes, original),
             Err(cause) => Err(NativePoolRefusal {
+                world_assignment_refused: false,
                 cause,
                 after: self.held.root.verify_native_preparation(original).err(),
                 _retained: None,
@@ -510,6 +547,7 @@ impl AuthenticatedNativePoolPurpose {
         original: &Arc<HostOperationGuard>,
     ) -> Result<AuthenticatedNativeWorldClaim, NativePoolRefusal> {
         let mut born = None;
+        let mut assignment_refused = false;
         let result = (|| {
             self.held.root.verify_native_preparation(original)?;
             let mut ledger = self
@@ -518,7 +556,16 @@ impl AuthenticatedNativePoolPurpose {
                 .lock()
                 .map_err(|_| ServiceBirthError::policy("native pool ledger is uncertain"))?;
             let (epoch, peak, tables) =
-                ledger.assign(identity, nodes, consumer_control_bytes, original)?;
+                match ledger.assign(identity, nodes, consumer_control_bytes, original) {
+                    Ok(assigned) => assigned,
+                    Err(cause) => {
+                        // assign checks all fallible arithmetic before its
+                        // publication cut. A failed snapshot callback never
+                        // reaches this cut; no descriptor window has run.
+                        assignment_refused = true;
+                        return Err(cause);
+                    }
+                };
             let claim = AuthenticatedNativeWorldClaim {
                 held: Some(Arc::clone(&self.held)),
                 epoch,
@@ -540,13 +587,16 @@ impl AuthenticatedNativePoolPurpose {
             Ok(())
         })();
         let after = self.held.root.verify_native_preparation(original).err();
+        let assignment_refused = assignment_refused && after.is_none();
         match (result, after) {
             (Ok(()), None) => born.ok_or_else(|| NativePoolRefusal {
+                world_assignment_refused: false,
                 cause: ServiceBirthError::policy("native World publication is absent"),
                 after: None,
                 _retained: None,
             }),
             (result, after) => Err(NativePoolRefusal {
+                world_assignment_refused: assignment_refused,
                 cause: result
                     .err()
                     .unwrap_or_else(|| ServiceBirthError::policy("native World postcut refused")),
@@ -637,38 +687,6 @@ impl AuthenticatedNativeWorldClaim {
             .next_node(self.epoch)
     }
 
-    /// Returns an empty World after all taken members' real controls are freed.
-    ///
-    /// Members never taken cannot have entered any node constructor. Those
-    /// unissued reservations return atomically; any issued member still held
-    /// refuses the complete return. Dropping this owner cannot do this work.
-    ///
-    /// # Errors
-    /// Retains the same World on live members, changed Main or uncertain ledger.
-    pub fn finish_after_members_returned(&mut self) -> Result<(), ServiceBirthError> {
-        let Some(held) = self.held.as_ref() else {
-            return Ok(());
-        };
-        held.root.check()?;
-        let mut ledger = held
-            .ledger
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("native World retirement is uncertain"))?;
-        let (index, used, peak, tables) = ledger.prepare_world_return(self.epoch)?;
-        held.root
-            .owner
-            .host_descriptors
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("Main descriptor owner is uncertain"))?
-            .as_mut()
-            .ok_or_else(|| ServiceBirthError::policy("Main descriptor owner is absent"))?
-            .close_pool_assignment(peak, tables)?;
-        ledger.commit_world_return(index, self.epoch, used);
-        drop(ledger);
-        drop(self.held.take());
-        Ok(())
-    }
-
     /// Takes one member once, retaining its actual global assignment epoch.
     ///
     /// # Errors
@@ -703,11 +721,13 @@ impl AuthenticatedNativeWorldClaim {
         let after = postcut(self.held.as_ref(), &self.original);
         match (result, after) {
             (Ok(()), None) => born.ok_or_else(|| NativePoolRefusal {
+                world_assignment_refused: false,
                 cause: ServiceBirthError::policy("native node publication is absent"),
                 after: None,
                 _retained: None,
             }),
             (result, after) => Err(NativePoolRefusal {
+                world_assignment_refused: false,
                 cause: result
                     .err()
                     .unwrap_or_else(|| ServiceBirthError::policy("native node postcut refused")),

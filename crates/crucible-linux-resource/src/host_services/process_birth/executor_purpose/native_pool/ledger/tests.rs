@@ -252,7 +252,26 @@ fn selected_ledger() -> (PoolLedger, u64) {
             &original,
         )
         .unwrap();
+    let window = crate::host_services::HostServiceAllocator::new(1, 26, 1)
+        .unwrap()
+        .reserve_resources(0, 26, 0)
+        .unwrap();
+    ledger.bind_window(epoch, window).unwrap();
     (ledger, epoch)
+}
+
+fn ready_return(ledger: &PoolLedger, epoch: u64) -> (usize, HostResourceVector, u64, u64) {
+    match ledger.prepare_world_return(epoch).unwrap() {
+        WorldReturnPreparation::Ready {
+            index,
+            used,
+            peak,
+            tables,
+        } => (index, used, peak, tables),
+        WorldReturnPreparation::PendingBody => {
+            panic!("actual containing-body custody is still open")
+        }
+    }
 }
 
 #[test]
@@ -262,12 +281,15 @@ fn never_born_return_keeps_body_debt_until_explicit_owner_destruction() {
     ledger.take_consumer(epoch).unwrap();
 
     ledger.verify_never_born(epoch).unwrap();
-    assert!(ledger.prepare_world_return(epoch).is_err());
+    assert!(matches!(
+        ledger.prepare_world_return(epoch).unwrap(),
+        WorldReturnPreparation::PendingBody
+    ));
     assert_eq!(ledger.used, charged);
     assert!(ledger.verify_never_born(epoch + 1).is_err());
 
     ledger.close_consumer(epoch).unwrap();
-    let (index, remaining, windows, tables) = ledger.prepare_world_return(epoch).unwrap();
+    let (index, remaining, windows, tables) = ready_return(&ledger, epoch);
     assert_eq!(windows, 26);
     assert_eq!(tables, 20);
     assert_eq!(remaining.metadata_bytes, 8);
@@ -284,11 +306,6 @@ fn never_born_return_keeps_body_debt_until_explicit_owner_destruction() {
 #[test]
 fn actual_node_entry_cannot_become_never_born_after_physical_return() {
     let (mut ledger, epoch) = selected_ledger();
-    let window = crate::host_services::HostServiceAllocator::new(1, 26, 1)
-        .unwrap()
-        .reserve_resources(0, 26, 0)
-        .unwrap();
-    ledger.bind_window(epoch, window).unwrap();
     ledger.verify_never_born(epoch).unwrap();
 
     let (index, assignment) = ledger.take_node(epoch, requests()[0].node).unwrap();
@@ -308,3 +325,5 @@ fn actual_node_entry_cannot_become_never_born_after_physical_return() {
     assert!(ledger.verify_never_born(epoch).is_err());
     assert_eq!(ledger.unissued_node_count(epoch).unwrap(), 1);
 }
+
+mod pending_worlds;
