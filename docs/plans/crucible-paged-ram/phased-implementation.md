@@ -61,8 +61,9 @@ enable native receiver activation or qualify physical resource return. The
 package exit criteria and coordinated release gates below remain required.
 
 The private-feature QEMU test targets also compile independently of the
-test-support feature. A complete private-feature QEMU library run has 1,123
-passing tests, six failures and four ignored probes. The six capture/fault
+test-support feature. A complete private-feature QEMU library run has 1,131
+passing tests, six failures and four ignored probes. Its failed-name set matches
+the preceding full private-feature run. The six capture/fault
 fixtures lack the genuine Source-backed control lifecycle, including paired
 capture; their intended positive assertions remain required. All 32 confinement
 lint tests pass, including controls that reject changed export visibility,
@@ -125,6 +126,17 @@ typed reports. An open owner or control still retains the complete body. A late
 report neither starts another Cleanup nor requires a retry before releasing
 already-closed resources.
 
+Normal World sweeps distinguish an outstanding containing-body lease from an
+invalid return. They validate the exact epoch, member and descriptor custody,
+and return arithmetic before reporting pending body custody. Pending bodies
+retain their complete remaining debt and physical leases while independent
+Worlds can use genuinely available capacity. Ledger assignment validates all
+fallible arithmetic before publishing rows or advancing epochs. Admission
+refusal clears temporary factory poison only when no assignment was published
+and the independent preparation postcheck succeeded, or when the local World
+directory was already full before preparation. Committed or uncertain claims
+retain their existing poison and owners.
+
 Concrete VM construction, runtime, checkpoint and cleanup ownership now live in
 `crucible-daemon`. The API owns transport-neutral operational data and cleanup
 operations; it no longer depends on the QEMU implementation. Handoff upcasts the
@@ -150,8 +162,11 @@ the actual retained thread table. The input alias control proves last strong-ali
 closure and credit retention; its test-only Weak witness does not prove Arc
 backing deallocation. Production keeps the body graph free of Weak/raw escapes
 and drops that allocation before its decoder custody. The full private-feature
-library run has 1,658 passes, the same 17 native integration failures and
-43 ignored tests; its complete failed-name set matches the preceding run.
+library run has 1,662 passes, 18 failures and 43 ignored tests. Seventeen
+failures match the preceding native integration failures. The additional
+cancellation control calibrates progress-callback ordinals on one SQLite read
+and assumes them on another; staging contention makes that assumption invalid.
+Its deterministic semantic-boundary replacement remains under review.
 
 The supplemental service VM checks build the actual private controller into the
 installed Main policy and retain the original guest/request vectors. Ordinary
@@ -188,14 +203,21 @@ negative mutation controls remain required. The Nix scheduler boundary checks th
 production adapter in the daemon; its separate raw source scan still incorrectly
 includes CLI test-only delegation, while the Rust production-aware scan passes.
 
-Remaining cleanup review must preserve collected component failures when a
-later pre-dispatch check or dispatcher fails, separately from its independent
-postcheck. Attached cleanup history must coexist with the initiating service
-failure in its already-priced Main. A healthy pending World body must retain
-its debt while allowing independent admission within the existing limits;
-uncertain published claims must remain poisoned and owned. Terminal-parent
-cleanup also needs same-owner join and debit-return eligibility, a retained
-first admission refusal, and physical closure distinct from historical panic.
+Packaged retirement now preserves component failures beside later pre-dispatch,
+dispatcher and independent post failures. Attached retirement retains the
+initiating service cause separately from each cleanup phase's first typed
+failure in its existing Main. The finite inline report fields enter the actual
+actor size query before structural admission; no report carrier or owner slot
+is allocated on failure. All five new component controls pass, along with the
+existing cleanup-cell controls. Workspace checking and source hygiene pass.
+A temporary stable-compiler layout probe measures the actor at 4,048 bytes, its
+inline attached history at 752 bytes and a temporary report at 504 bytes. The
+probe is removed and the exact tested source hashes are restored. These are
+Rust object extents, not whole-stack, allocator-overhead or policy-fit proofs.
+
+Authentic whole-factory recovery for pending World bodies remains unqualified.
+Terminal-parent cleanup still needs same-owner join and debit-return eligibility,
+a retained first admission refusal, and physical closure distinct from historical panic.
 These are implementation obligations before those routes receive source or
 native qualification, not additional allowances for their retry names.
 
@@ -213,8 +235,13 @@ The required application-target build passes locally for the backend-cutover
 snapshot, including every application's unit and integration target compilation,
 with remote builders disabled. A new local packaged run covers the observation
 and constructor-finalization code; its result remains pending. The workspace,
-feature and full private-library results are recorded above. All 148 Linux
-resource tests passed in the preceding never-born return cohort. A fully
+feature and full private-library results are recorded above. The pending-aware
+World cohort passes normal all-target workspace checking and all 229 Linux
+resource tests, with one ignored probe. Its six new controls use actual ledger
+transitions and physical resource leases, without claiming authenticated Main
+issuance. ABI, license and scheduler boundary checks and engineering hygiene
+also pass. The complete private QEMU library run has the unchanged six capture/fault
+failures recorded above. A fully
 passing integrated suite and VM
 performance parity are not claimed.
 
