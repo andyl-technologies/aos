@@ -4,7 +4,7 @@
 
 use std::fs::{self, File};
 use std::future::{Future, poll_fn};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, mpsc};
 use std::task::Poll;
