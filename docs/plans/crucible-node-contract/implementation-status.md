@@ -607,6 +607,29 @@ are requested-storage accounting values, not measured RAM. Neither the
 component controls nor this reduction establishes constructor fit, native
 restoration, device parity or runtime performance improvement.
 
+### Restored World activation and first observation
+
+Commit `00db7a389c` connects whole-roster World activation and the first restored
+Observe continuation, with layout changes separately in `9264dca2c3`. The route
+retains the actual World, original Source and controller owners, complete roster
+and scheduling custody. Admission precedes preparation and publication; failed
+attempts retain their partial owners and consume their original attempt rights.
+Selected outcomes authenticate the current runtime and complete terminal and
+scheduling evidence before acceptance.
+
+Normal six-crate, all-feature/all-target checking and three fresh normal
+library-test producers pass. All 131 selected Core, provider and daemon controls
+pass with no failures or ignored tests in 15.16 seconds. Independent review
+checks the captured source, executable dependency closures, exact selectors and
+all 134 original child waits and releases. Three earlier CAS controls retain an
+unchanged 48-file dependency closure; their execution remains a historical
+result, not a fresh run on this checkpoint.
+
+These are component results. The unchanged SDK constructor failures above
+remain unresolved and were not rerun here. Complete native Capture, restored
+execution with nonempty operations and inputs, fresh recapture, device parity
+and final-source application qualification remain outstanding.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
