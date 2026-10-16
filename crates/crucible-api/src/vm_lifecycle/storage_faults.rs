@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use super::*;
 
 mod bindings;
+mod media_retirement;
 mod observation_journal;
 mod resource_limits;
 
@@ -63,6 +64,7 @@ type StorageArrayDestinations = Vec<(ContentHash, QemuSharedBlockDevice, Vec<Blo
 type StorageArrayDirtyRanges = Vec<crucible_device::block::BlockArrayDirtyRange>;
 type StorageArrayWriteDestinations = (StorageArrayDestinations, StorageArrayDirtyRanges);
 type DeviceRuntimeError = QemuAsyncDriverRuntimeError;
+type LiveBlockServicer = QemuLiveBlockIoServicer;
 
 /// Globally sequenced fault-observation journal shared by every live adapter.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -1188,6 +1190,7 @@ impl ProductionBlockFaultCoordinator {
                         directive,
                     }),
                 )?;
+                self.retire_inactive_media(servicer)?;
                 installed = true;
             }
             while let Some(opportunity) = servicer
@@ -1293,6 +1296,7 @@ impl ProductionBlockFaultCoordinator {
                                 "install failed storage array persistence",
                                 servicer.install_storage_request_persistence_directive(failed),
                             )?;
+                            self.retire_inactive_media(servicer)?;
                             installed = true;
                             continue;
                         }
@@ -1353,6 +1357,7 @@ impl ProductionBlockFaultCoordinator {
                         servicer.install_storage_request_persistence_directive(resolved),
                     )?;
                 }
+                self.retire_inactive_media(servicer)?;
                 installed = true;
             }
             while let Some(opportunity) = servicer
@@ -1397,6 +1402,7 @@ impl ProductionBlockFaultCoordinator {
                     .map_err(|error| {
                         storage_error("install physical persistence directive", error)
                     })?;
+                self.retire_inactive_media(servicer)?;
                 installed = true;
             }
             let delivery = servicer

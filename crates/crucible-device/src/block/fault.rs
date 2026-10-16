@@ -37,6 +37,7 @@ pub(in crate::block) use helpers::{keyed_discard_bytes, request_in_capacity};
 mod observation_effects;
 mod state_admission;
 pub use state_admission::BlockExecutionServiceSummary;
+mod media_retirement;
 mod observation_revision;
 mod state_execution;
 

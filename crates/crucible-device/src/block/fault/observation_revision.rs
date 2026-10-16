@@ -419,6 +419,32 @@ impl BlockFaultState {
         })
     }
 
+    /// Retires media and flash continuations that can never be named again.
+    ///
+    /// `live` holds the contributor identity of every persistent media or flash
+    /// action the host currently applies to this device. A continuation outside
+    /// `live` that no retained directive names is retired: its contributor can
+    /// never reach this device again, because a replaced or removed action
+    /// never returns. Media counters are dropped; flash changed cells fold into
+    /// the device residual. Pruned and unpruned state behave identically.
+    ///
+    /// The host must call this at a deterministic point, such as right after
+    /// installing a directive resolved from the same live action state, so the
+    /// retained state and its checkpoint identity stay deterministic. Returns
+    /// the number of retired continuations.
+    ///
+    /// # Errors
+    ///
+    /// Refuses before mutation when the retained observation revision is exhausted.
+    pub fn retire_inactive_media_contributors(
+        &mut self,
+        live: &BTreeSet<[u8; 32]>,
+    ) -> Result<usize, DeviceError> {
+        self.with_observation_mutation(|state| {
+            Ok(state.retire_inactive_media_contributors_untracked(live))
+        })
+    }
+
     /// Drains contributor-level service evidence in canonical completion order.
     ///
     /// # Errors

@@ -151,6 +151,21 @@ Large media/flash state uses sparse interval/counter structures; declaring
 geometry does not allocate one object per healthy block. Worst-case sparse
 entries remain bounded by media-interval and state-byte limits.
 
+Media and flash continuations are keyed by the identity of one resolved
+binding action, so a re-upserted binding starts a new continuation. A replaced
+or removed action never returns, and an existing continuation is consulted
+again only through a retained directive that already names it. After the
+storage adapter installs a directive, it passes the identities of every live
+persistent media and flash action to the device, which retires each
+continuation that is neither live nor named by a retained directive.
+`storage_media_intervals_per_device` therefore counts live and in-flight
+contributors, not every contributor installed during the run. Retired media
+counters are dropped because no later request reads them. A retired flash
+continuation folds its changed-cell XOR masks into a device-level residual that
+every read applies, so reads stay bit-identical; like the masks of an inactive
+continuation, the residual is never cleared by a later program or erase. A
+continuation with an in-progress erase decision is never retired.
+
 ## 13.6 Node and QEMU limits
 
 | Field | Default | Hard ceiling |

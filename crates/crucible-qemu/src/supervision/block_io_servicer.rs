@@ -1732,6 +1732,28 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
+    /// Retires media and flash continuations that can never be named again.
+    ///
+    /// `live` holds the contributor identity of every persistent media or flash
+    /// action currently applied to this device. Call it right after installing
+    /// a directive resolved from that same action state, so retirement happens
+    /// at a deterministic point. Returns the number of retired continuations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when the
+    /// device lock is poisoned, or [`QemuLiveBlockIoServicerError::Device`]
+    /// when the storage observation revision is exhausted.
+    pub fn retire_inactive_storage_media(
+        &mut self,
+        live: &std::collections::BTreeSet<[u8; 32]>,
+    ) -> Result<usize, QemuLiveBlockIoServicerError> {
+        self.device
+            .lock()?
+            .retire_inactive_storage_media(live)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
     /// Drops exact controller-buffer entries at a scheduler-authorized boundary.
     ///
     /// # Errors
