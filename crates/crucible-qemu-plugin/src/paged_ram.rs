@@ -8,14 +8,14 @@
 
 mod control;
 pub(crate) mod controller;
-mod engine;
+pub(crate) mod engine;
 mod fork;
 mod kernel;
 mod lifecycle;
 mod performance;
 #[cfg(feature = "kernel-swap-measurement")]
 pub(crate) mod research_resident;
-mod source;
+pub(crate) mod source;
 mod storage;
 mod supervision;
 

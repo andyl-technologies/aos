@@ -8,6 +8,8 @@
 //!
 //! These pointer-free observations corroborate existing owners. Decoding never
 //! issues an operation, Root child, descriptor, progress unit, or physical loan.
+//! Park publications use CRUCPRK1 and a distinct ParentParkReturn codec. Their correlation
+//! replaces the control-token/sample union; it never advances a control ACK.
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 /// Number of primary producers supported by the actual boundary callers.
@@ -38,6 +40,11 @@ pub struct ActionBinding {
     pub token: u32,
     /// Optional odd sample request generation, with absence distinct from zero.
     pub capture: Option<u32>,
+    /// Actual Park request correlation, absent for a control-boundary action.
+    ///
+    /// A Park request has no control token or capture selector. Its separately
+    /// retained physical lifetime ends only at the matching Park return.
+    pub park_request: Option<u64>,
     /// Immutable command producer ordinal.
     pub frontier: u64,
 }
@@ -149,6 +156,9 @@ impl ActionBinding {
             || self.loan_sequence == u64::MAX
             || self.token & 1 != 0
             || self.capture.is_some_and(|value| value & 1 == 0)
+            || self.park_request.is_some_and(|value| {
+                value == 0 || value == u64::MAX || self.token != 0 || self.capture.is_some()
+            })
         {
             return Err(ActionDecodeError);
         }
@@ -176,8 +186,29 @@ impl ActionObservation {
         {
             return Err(ActionDecodeError);
         }
+        if self.binding.park_request.is_some() {
+            if self.primary_count != 2
+                || (0..2).any(|index| {
+                    self.projected_mask & (1 << index) != 0 && self.parents[index].class != 6
+                })
+            {
+                return Err(ActionDecodeError);
+            }
+            if self.projected_mask & 3 == 3
+                && self.parents[0].cap == self.parents[1].cap
+                && self.parents[0].budget_owner == self.parents[1].budget_owner
+                && self.parents[0].operation == self.parents[1].operation
+            {
+                return Err(ActionDecodeError);
+            }
+        }
         let mut bytes = [0; ACTION_BYTES];
-        header(&mut bytes, *b"CRUCACT2", self.binding);
+        let magic = if self.binding.park_request.is_some() {
+            *b"CRUCPRK1"
+        } else {
+            *b"CRUCACT2"
+        };
+        header(&mut bytes, magic, self.binding);
         put32(
             &mut bytes,
             120,
@@ -264,7 +295,12 @@ impl ActionObservation {
     /// # Errors
     /// Refuses predecessor geometry, malformed ownership coordinates or padding.
     pub fn decode(bytes: &[u8]) -> Result<Self, ActionDecodeError> {
-        let binding = read_header(bytes, *b"CRUCACT2", ACTION_BYTES)?;
+        let magic = if bytes.get(..8) == Some(b"CRUCPRK1".as_slice()) {
+            *b"CRUCPRK1"
+        } else {
+            *b"CRUCACT2"
+        };
+        let binding = read_header(bytes, magic, ACTION_BYTES)?;
         let mut parents = [ActionParent::default(); ACTION_PARENT_CAPACITY];
         for (index, row) in parents.iter_mut().enumerate() {
             let offset = 128 + index * ACTION_PARENT_BYTES;
@@ -313,7 +349,8 @@ impl ActionReturn {
     /// unused-row masks and an incomplete Returned disposition.
     pub fn encode(self) -> Result<[u8; ACTION_RETURN_BYTES], ActionDecodeError> {
         self.binding.validate()?;
-        if self.first > 0
+        if self.binding.park_request.is_some()
+            || self.first > 0
             || self.post > 0
             || self.physical_state > 2
             || !(1..=4).contains(&self.row_count)
@@ -383,8 +420,12 @@ fn header(bytes: &mut [u8], magic: [u8; 8], binding: ActionBinding) {
     bytes[48..80].copy_from_slice(&binding.reservation);
     put64(bytes, 80, binding.account_generation);
     put64(bytes, 88, binding.process_generation);
-    put32(bytes, 96, binding.token);
-    put32(bytes, 100, binding.capture.unwrap_or(0));
+    if let Some(correlation) = binding.park_request {
+        put64(bytes, 96, correlation);
+    } else {
+        put32(bytes, 96, binding.token);
+        put32(bytes, 100, binding.capture.unwrap_or(0));
+    }
     put64(bytes, 104, binding.frontier);
     put64(bytes, 112, binding.loan_sequence);
 }
@@ -405,14 +446,16 @@ fn read_header(
     cap.copy_from_slice(&bytes[16..48]);
     let mut reservation = [0; 32];
     reservation.copy_from_slice(&bytes[48..80]);
+    let park = magic == *b"CRUCPRK1";
     let capture = get32(bytes, 100);
     let binding = ActionBinding {
         cap,
         reservation,
         account_generation: get64(bytes, 80),
         process_generation: get64(bytes, 88),
-        token: get32(bytes, 96),
-        capture: (capture != 0).then_some(capture),
+        token: if park { 0 } else { get32(bytes, 96) },
+        capture: (!park && capture != 0).then_some(capture),
+        park_request: park.then(|| get64(bytes, 96)),
         frontier: get64(bytes, 104),
         loan_sequence: get64(bytes, 112),
     };

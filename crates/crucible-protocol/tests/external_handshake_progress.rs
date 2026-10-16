@@ -9,14 +9,14 @@ use crucible_protocol::{
 fn config() -> PluginHandshakeConfig {
     PluginHandshakeConfig {
         proto_version: CONTROL_PROTOCOL_VERSION,
-        abi_version: 32,
+        abi_version: 33,
     }
 }
 
 fn reply() -> NegotiatedHandshake {
     NegotiatedHandshake {
         proto_version: CONTROL_PROTOCOL_VERSION,
-        abi_version: 32,
+        abi_version: 33,
         slot_index: 0,
         node_count: 1,
     }

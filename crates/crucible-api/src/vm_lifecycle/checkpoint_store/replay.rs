@@ -220,7 +220,9 @@ fn ram_backing_failure_kind(error: &RamStoreError) -> crucible::BackendOperation
                 HostSupervisionError::Terminal {
                     state: HostOperationState::Expired,
                 } => Kind::Expired,
-                HostSupervisionError::Terminal { .. } => Kind::Terminal,
+                HostSupervisionError::Terminal { .. } | HostSupervisionError::BorrowedOperation => {
+                    Kind::Terminal
+                }
                 HostSupervisionError::DeadlineExpired { .. } => Kind::Expired,
                 HostSupervisionError::CapacityExhausted => Kind::CapacityExhausted,
                 HostSupervisionError::IdentityExhausted => Kind::IdentityExhausted,

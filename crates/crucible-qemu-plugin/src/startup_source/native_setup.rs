@@ -169,7 +169,7 @@ impl InstallerStartupSource {
         self.check()
     }
 
-    pub(super) fn retained_native_setup(&self) -> Option<&NativeSetupBorrow> {
+    pub(crate) fn retained_native_setup(&self) -> Option<&NativeSetupBorrow> {
         self.native_setup.as_ref()
     }
 

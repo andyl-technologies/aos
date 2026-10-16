@@ -205,8 +205,10 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// hot-fork admission, coverage reset, timer witnesses, and advance-stop
 /// publication. Version 30 binds selectable marker and reply coordinates to
 /// picosecond ticks; raw retirement remains in the versioned pending payload.
+/// Version 33 separates protected ParentPark returns from ordinary control
+/// returns and expands each node slot to 768 bytes.
 /// The generated C view and golden vectors pin every offset.
-pub const ABI_VERSION: u32 = 32;
+pub const ABI_VERSION: u32 = 33;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of simulation ticks in one QEMU virtual nanosecond.
 pub const TICKS_PER_NS: u64 = 1_000;

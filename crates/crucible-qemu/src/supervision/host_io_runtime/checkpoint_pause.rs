@@ -7,13 +7,30 @@
 use super::*;
 
 impl QemuLiveHostIoRuntime {
+    // A failed paired request remains owned by the enclosing phase. Clearing
+    // Pause or publishing a fresh wake token would escape that retained loan.
+    fn fail_checkpoint_pause_under_budget(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+        first: QemuAsyncDriverRuntimeError,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if deadline.is_paired_quiescence() {
+            Err(first)
+        } else {
+            self.fail_checkpoint_pause(first)
+        }
+    }
+
     pub(super) fn probe_checkpoint_device_boundary(
         &mut self,
         deadline: &OperationPollBudget<'_>,
         timeout: Duration,
     ) -> Result<bool, QemuAsyncDriverRuntimeError> {
         check_borrowed_quiescence(deadline)?;
+        let action = self.lend_paired_pause_action(deadline)?;
+        check_borrowed_quiescence(deadline)?;
         let request = self.signal_wake(None)?;
+        super::action::validate_control_action_request(request, action)?;
         let mut last_observed = None;
         loop {
             if deadline
@@ -30,6 +47,9 @@ impl QemuLiveHostIoRuntime {
                 "probe checkpoint device boundary",
             )?;
             check_borrowed_quiescence(deadline)?;
+            if action.is_some() {
+                self.refresh_control_action()?;
+            }
             self.service_console_output()?;
             let snapshot = self
                 .region
@@ -53,7 +73,9 @@ impl QemuLiveHostIoRuntime {
                 snapshot.device_io_active,
                 device_progress,
             ));
-            if control_boundary_request_is_acknowledged(request, &snapshot) {
+            if control_boundary_request_is_acknowledged(request, &snapshot)
+                && (action.is_none() || self.finish_control_action()?)
+            {
                 deadline.complete("probe checkpoint device boundary")?;
                 return Ok(!device_progress && snapshot.device_io_active == 0);
             }
@@ -122,6 +144,13 @@ impl QemuLiveHostIoRuntime {
                 "pre-pause control fence exhausted the checkpoint pause timeout",
             ));
         }
+        check_borrowed_quiescence(deadline)?;
+        // Enroll before borrowing the mapped slot and before any Pause effect.
+        // Any preceding probe has already returned its distinct physical loan.
+        let action = self.lend_paired_pause_action(deadline)?;
+        // Enrollment can publish terminal observations without granting more
+        // execution. Recheck both originals before exposing the Pause request.
+        check_borrowed_quiescence(deadline)?;
         let slot = self
             .region
             .as_ref()
@@ -129,7 +158,6 @@ impl QemuLiveHostIoRuntime {
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?;
         let initial_publish_gen = initial_snapshot.publish_gen;
-        check_borrowed_quiescence(deadline)?;
         if let Err(source) = self
             .region
             .as_ref()
@@ -137,10 +165,10 @@ impl QemuLiveHostIoRuntime {
             .header()
             .request_pause([slot])
         {
-            return self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
-                "request checkpoint pause",
-                source.to_string(),
-            ));
+            return self.fail_checkpoint_pause_under_budget(
+                deadline,
+                QemuAsyncDriverRuntimeError::new("request checkpoint pause", source.to_string()),
+            );
         }
         // Revoke the unused tail of the preceding quantum. Publishing this
         // ceiling also wakes the scheduler futex, so the plugin observes the
@@ -156,19 +184,19 @@ impl QemuLiveHostIoRuntime {
         });
         let checkpoint_ceiling = match checkpoint_ceiling {
             Ok(ceiling) => ceiling,
-            Err(source) => return self.fail_checkpoint_pause(source),
+            Err(source) => return self.fail_checkpoint_pause_under_budget(deadline, source),
         };
         if let Err(source) = check_borrowed_quiescence(deadline) {
-            return self.fail_checkpoint_pause(source);
+            return self.fail_checkpoint_pause_under_budget(deadline, source);
         }
         if let Err(source) = slot.publish_scheduler_advance(
             checkpoint_ceiling,
             crucible_shmem::AdvanceStopCondition::Ceiling,
         ) {
-            return self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
-                "publish checkpoint ceiling",
-                source.to_string(),
-            ));
+            return self.fail_checkpoint_pause_under_budget(
+                deadline,
+                QemuAsyncDriverRuntimeError::new("publish checkpoint ceiling", source.to_string()),
+            );
         }
         let device_servicers_attached =
             self.block.is_some() || self.ninep.is_some() || self.accelerator.is_some();
@@ -177,7 +205,9 @@ impl QemuLiveHostIoRuntime {
             && initial_snapshot.idle_wake_icount == initial_snapshot.current_icount;
         let tokenized_checkpoint_control_wake =
             reached_boundary_control_wake || zero_length_idle_control_wake;
-        if tokenized_checkpoint_control_wake
+        let mut paired_request = None;
+        if action.is_some()
+            || tokenized_checkpoint_control_wake
             || checkpoint_pause_requires_control_doorbell(
                 &initial_snapshot,
                 device_servicers_attached,
@@ -196,17 +226,23 @@ impl QemuLiveHostIoRuntime {
             // idle publication has no futex edge left to observe pause and uses
             // the same tokenized two-pass handoff as a reached boundary.
             if let Err(source) = check_borrowed_quiescence(deadline) {
-                return self.fail_checkpoint_pause(source);
+                return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
-            let wake = if tokenized_checkpoint_control_wake {
+            let wake = if action.is_some() || tokenized_checkpoint_control_wake {
                 // The paired token makes a vCPU resume callback yield without
                 // interpreting this control edge as guest authorization.
-                self.signal_wake(None).map(|_request| ())
+                self.signal_wake(None).and_then(|request| {
+                    super::action::validate_control_action_request(request, action)?;
+                    if action.is_some() {
+                        paired_request = Some(request);
+                    }
+                    Ok(())
+                })
             } else {
                 self.write_wake_doorbell()
             };
             if let Err(source) = wake {
-                return self.fail_checkpoint_pause(source);
+                return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
         }
         let mut last_observed = None;
@@ -215,7 +251,12 @@ impl QemuLiveHostIoRuntime {
             match deadline.remaining("quiesce for checkpoint") {
                 Ok(Some(_)) => {}
                 Ok(None) => break,
-                Err(source) => return self.fail_checkpoint_pause(source),
+                Err(source) => return self.fail_checkpoint_pause_under_budget(deadline, source),
+            }
+            if action.is_some()
+                && let Err(source) = self.refresh_control_action()
+            {
+                return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
 
             let snapshot = match self
@@ -226,7 +267,7 @@ impl QemuLiveHostIoRuntime {
                 .map_err(map_slot_error)
             {
                 Ok(slot) => slot.snapshot(),
-                Err(source) => return self.fail_checkpoint_pause(source),
+                Err(source) => return self.fail_checkpoint_pause_under_budget(deadline, source),
             };
             // A request can enter QEMU's device coroutine in the main-loop
             // slice between the plugin's exact pause publication and native
@@ -234,32 +275,32 @@ impl QemuLiveHostIoRuntime {
             // further guest dispatch, while servicing here lets QEMU's normal
             // block/ninep/accelerator drain reach the same quiescent boundary.
             if let Err(source) = check_borrowed_quiescence(deadline) {
-                return self.fail_checkpoint_pause(source);
+                return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
             let block_progress = match self.service_block_io(&snapshot) {
                 Ok(progress) => progress,
-                Err(source) => return self.fail_checkpoint_pause(source),
+                Err(source) => return self.fail_checkpoint_pause_under_budget(deadline, source),
             };
             if let Err(source) = check_borrowed_quiescence(deadline) {
-                return self.fail_checkpoint_pause(source);
+                return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
             let ninep_progress = match self.service_ninep_io(&snapshot) {
                 Ok(progress) => progress,
-                Err(source) => return self.fail_checkpoint_pause(source),
+                Err(source) => return self.fail_checkpoint_pause_under_budget(deadline, source),
             };
             if let Err(source) = check_borrowed_quiescence(deadline) {
-                return self.fail_checkpoint_pause(source);
+                return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
             let accelerator_progress = match self.service_accelerator_io(&snapshot) {
                 Ok(progress) => progress,
-                Err(source) => return self.fail_checkpoint_pause(source),
+                Err(source) => return self.fail_checkpoint_pause_under_budget(deadline, source),
             };
             let device_progress = block_progress || ninep_progress || accelerator_progress;
             if let Err(source) = check_borrowed_quiescence(deadline) {
-                return self.fail_checkpoint_pause(source);
+                return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
             if let Err(source) = self.publish_device_completion_deadline() {
-                return self.fail_checkpoint_pause(source);
+                return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
             // Servicing a device or publishing its next completion deadline can
             // wake QEMU and cause a fresh plugin boundary after `snapshot` was
@@ -274,7 +315,7 @@ impl QemuLiveHostIoRuntime {
                 .map_err(map_slot_error)
             {
                 Ok(slot) => slot.snapshot(),
-                Err(source) => return self.fail_checkpoint_pause(source),
+                Err(source) => return self.fail_checkpoint_pause_under_budget(deadline, source),
             };
             last_observed = Some((
                 settled_snapshot.publish_gen,
@@ -294,6 +335,9 @@ impl QemuLiveHostIoRuntime {
                 && settled_snapshot.status == crucible_shmem::STATUS_IDLE
                 && settled_snapshot.idle_wake_icount == settled_snapshot.current_icount
                 && settled_snapshot.device_io_active == 0
+                && paired_request.is_none_or(|request| {
+                    control_boundary_request_is_acknowledged(request, &settled_snapshot)
+                })
             {
                 // The plugin has queued native VM stop from the exact futex
                 // callback. Wake QEMU's main loop so it can consume that
@@ -301,8 +345,15 @@ impl QemuLiveHostIoRuntime {
                 // suppresses request-coroutine wakeups while this stop is
                 // pending, so the handoff cannot admit post-pause I/O.
                 self.write_wake_doorbell()?;
+                // The stop handoff above can be required for the Native
+                // callback to return. Observe physical return afterward,
+                // without publishing another token or completing either guard.
+                if action.is_some() && !self.finish_control_action()? {
+                    deadline.wait(self.poll_interval, "return paired Pause action")?;
+                    continue;
+                }
                 if let Err(source) = deadline.complete("quiesce for checkpoint") {
-                    return self.fail_checkpoint_pause(source);
+                    return self.fail_checkpoint_pause_under_budget(deadline, source);
                 }
                 return Ok(());
             }
@@ -316,15 +367,23 @@ impl QemuLiveHostIoRuntime {
                 // consumed the coalesced callback token just before the pause
                 // request. Re-publish its acknowledged token periodically so
                 // coalescing cannot lose the required handoff.
-                if tokenized_checkpoint_control_wake
-                    && attempt % 16 == 15
-                    && let Err(source) = self.signal_wake(None)
-                {
-                    return self.fail_checkpoint_pause(source);
+                if attempt % 16 == 15 {
+                    let wake = if action.is_some() {
+                        // Re-ring this owned immutable request only. Its ACK
+                        // cannot authorize publication of a successor token.
+                        self.write_wake_doorbell()
+                    } else if tokenized_checkpoint_control_wake {
+                        self.signal_wake(None).map(|_| ())
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(source) = wake {
+                        return self.fail_checkpoint_pause_under_budget(deadline, source);
+                    }
                 }
                 self.performance.pending_sleep();
                 if let Err(source) = deadline.wait(self.poll_interval, "quiesce for checkpoint") {
-                    return self.fail_checkpoint_pause(source);
+                    return self.fail_checkpoint_pause_under_budget(deadline, source);
                 }
                 attempt = attempt.wrapping_add(1);
             }
@@ -345,23 +404,26 @@ impl QemuLiveHostIoRuntime {
                 )
             },
         );
-        self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
-            "await checkpoint pause",
-            format!("plugin did not acknowledge an exact boundary within {remaining:?}: {detail}"),
-        ))
+        self.fail_checkpoint_pause_under_budget(
+            deadline,
+            QemuAsyncDriverRuntimeError::new(
+                "await checkpoint pause",
+                format!(
+                    "plugin did not acknowledge an exact boundary within {remaining:?}: {detail}"
+                ),
+            ),
+        )
     }
 }
 
 fn check_borrowed_quiescence(
     deadline: &OperationPollBudget<'_>,
 ) -> Result<(), QemuAsyncDriverRuntimeError> {
-    if let OperationPollBudget::Borrowed(original) = deadline {
-        original.wait_slice().map_err(|source| {
-            QemuAsyncDriverRuntimeError::operational_supervision("quiesce for checkpoint", source)
-        })?;
-    }
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    if let OperationPollBudget::BorrowedPair(_, _) = deadline {
+    if matches!(
+        deadline,
+        OperationPollBudget::Borrowed(_) | OperationPollBudget::BorrowedCheckpoint(_)
+    ) || deadline.is_paired_quiescence()
+    {
         deadline.remaining("quiesce for checkpoint")?;
     }
     Ok(())

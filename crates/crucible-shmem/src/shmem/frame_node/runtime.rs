@@ -55,6 +55,8 @@ impl NodeSlot {
             boundary_action_hold: AtomicU64::new(0),
             boundary_action_return: [const { AtomicU64::new(0) }; 24],
             _pad5: [0; 56],
+            parent_park_return: [const { AtomicU64::new(0) }; 24],
+            _pad6: [0; 64],
         }
     }
 
@@ -513,6 +515,7 @@ impl NodeSlot {
             && self._pad3.iter().all(|byte| *byte == 0)
             && self._pad4.iter().all(|byte| *byte == 0)
             && self._pad5.iter().all(|byte| *byte == 0)
+            && self._pad6.iter().all(|byte| *byte == 0)
     }
 
     /// Requests one QEMU main-loop control boundary and wakes an idle plugin.

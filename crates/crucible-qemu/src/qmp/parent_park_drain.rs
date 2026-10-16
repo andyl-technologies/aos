@@ -6,7 +6,8 @@
 //!
 //! ```text
 //! command: crucible-parent-park-drain
-//! schema-version: 1; action: acquire | query | relinquish
+//! schema-version: 2; action: acquire | query | relinquish
+//! all actions: source-action binding to the actual retained canonical Park cohort
 //! acquire: request-correlation, stopped-generation, basis-fdname, cancellation-fdname
 //! query/relinquish: request-correlation, stopped-generation, generation
 //! sealed basis: CRUCPDR1 + BE schema/length + actor CRUCPAU1/80 + family CRUCPAU1/80
@@ -17,11 +18,37 @@
 //! held. The accepting native command and authentic plugin owner are separate
 //! source-qualified counterparts.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{QmpClient, QmpCommandKind, QmpDescriptorName, QmpError, QmpTimeoutStream};
 use crucible_linux_resource::host_supervision::HostOperationGuard;
+use crucible_protocol::boundary_action::ActionBinding;
+
+/// Corroborates the canonical Source request; these copied facts issue no loan.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct ParentParkSourceAction {
+    cap: [u8; 32],
+    reservation: [u8; 32],
+    account_generation: u64,
+    process_generation: u64,
+    loan_sequence: u64,
+    frontier: u64,
+}
+
+impl From<ActionBinding> for ParentParkSourceAction {
+    fn from(binding: ActionBinding) -> Self {
+        Self {
+            cap: binding.cap,
+            reservation: binding.reservation,
+            account_generation: binding.account_generation,
+            process_generation: binding.process_generation,
+            loan_sequence: binding.loan_sequence,
+            frontier: binding.frontier,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -74,21 +101,25 @@ pub struct QmpParentParkDrainReceipt {
     pub post_status: i32,
     /// Whether native still retains the phase owner.
     pub retained: bool,
+    source_action: ParentParkSourceAction,
 }
 
 pub(crate) enum ParentParkDrainRequest<'a> {
     Acquire {
+        source_action: ActionBinding,
         correlation: u64,
         stopped: u64,
         basis: &'a QmpDescriptorName,
         cancellation: &'a QmpDescriptorName,
     },
     Query {
+        source_action: ActionBinding,
         correlation: u64,
         stopped: u64,
         generation: u64,
     },
     Relinquish {
+        source_action: ActionBinding,
         correlation: u64,
         stopped: u64,
         generation: u64,
@@ -96,6 +127,14 @@ pub(crate) enum ParentParkDrainRequest<'a> {
 }
 
 impl ParentParkDrainRequest<'_> {
+    fn source_action(&self) -> ActionBinding {
+        match self {
+            Self::Acquire { source_action, .. }
+            | Self::Query { source_action, .. }
+            | Self::Relinquish { source_action, .. } => *source_action,
+        }
+    }
+
     fn identity(&self) -> (ParentParkDrainAction, u64, u64, Option<u64>) {
         match self {
             Self::Acquire {
@@ -107,6 +146,7 @@ impl ParentParkDrainRequest<'_> {
                 correlation,
                 stopped,
                 generation,
+                ..
             } => (
                 ParentParkDrainAction::Query,
                 *correlation,
@@ -117,6 +157,7 @@ impl ParentParkDrainRequest<'_> {
                 correlation,
                 stopped,
                 generation,
+                ..
             } => (
                 ParentParkDrainAction::Relinquish,
                 *correlation,
@@ -129,7 +170,8 @@ impl ParentParkDrainRequest<'_> {
     pub(super) fn request(&self) -> Value {
         let (action, correlation, stopped, generation) = self.identity();
         let mut arguments = json!({
-            "schema-version": 1,
+            "schema-version": 2,
+            "source-action": ParentParkSourceAction::from(self.source_action()),
             "action": action.wire_name(),
             "request-correlation": correlation,
             "stopped-generation": stopped,
@@ -151,10 +193,21 @@ impl ParentParkDrainRequest<'_> {
 
     fn validate(&self) -> Result<(), QmpError> {
         let (_, correlation, stopped, generation) = self.identity();
+        let source = self.source_action();
         if correlation == 0
             || stopped == 0
             || stopped == u64::MAX
             || generation.is_some_and(|value| value == 0 || value == u64::MAX)
+            || source.park_request != Some(correlation)
+            || source.token != 0
+            || source.capture.is_some()
+            || source.cap == [0; 32]
+            || source.reservation == [0; 32]
+            || source.account_generation == 0
+            || source.process_generation == 0
+            || source.loan_sequence == 0
+            || source.loan_sequence & 1 != 0
+            || source.loan_sequence == u64::MAX
         {
             return Err(QmpError::InvalidBound {
                 operation: "parent park/drain identity",
@@ -182,7 +235,8 @@ impl ParentParkDrainRequest<'_> {
         let receipt: QmpParentParkDrainReceipt =
             serde_json::from_value(value.clone()).map_err(|_| invalid())?;
         let (action, correlation, stopped, generation) = self.identity();
-        if receipt.schema_version != 1
+        if receipt.schema_version != 2
+            || receipt.source_action != ParentParkSourceAction::from(self.source_action())
             || receipt.action != action
             || receipt.request_correlation != correlation
             || receipt.stopped_generation != stopped
@@ -270,16 +324,10 @@ pub(super) fn complete_pair(
     family: &HostOperationGuard,
     operation: &'static str,
 ) -> Result<(), QmpError> {
-    let actor_progress = actor.progress(1);
-    let family_progress = family.progress(1);
-    let post = paired_wait_slice(actor, family, operation);
-    actor_progress
-        .and(family_progress)
-        .map_err(|error| QmpError::OperationalSupervision {
-            operation,
-            message: error.to_string(),
-        })?;
-    post.map(|_| ())
+    // A QMP response proves neither a physical borrower return nor a required
+    // unit of either lender's work. Keep their real clocks and progress intact;
+    // only the separately authenticated physical journal can settle this pair.
+    paired_wait_slice(actor, family, operation).map(|_| ())
 }
 
 impl<S: QmpTimeoutStream> QmpClient<S> {
@@ -541,14 +589,31 @@ mod tests {
 
     fn held_receipt() -> Value {
         json!({
-            "schema-version":1, "action":"query", "request-correlation":9,
+            "schema-version":2, "action":"query", "request-correlation":9,
+            "source-action": ParentParkSourceAction::from(request_binding()),
             "generation":7, "stopped-generation":11, "state":"held",
             "first-status":0, "post-status":0, "retained":true,
         })
     }
 
+    // Factual wire fixture only; no Source publisher or lender is constructed.
+    fn request_binding() -> ActionBinding {
+        ActionBinding {
+            cap: [1; 32],
+            reservation: [2; 32],
+            account_generation: 1,
+            process_generation: 1,
+            loan_sequence: 2,
+            token: 0,
+            capture: None,
+            park_request: Some(9),
+            frontier: 7,
+        }
+    }
+
     fn query() -> ParentParkDrainRequest<'static> {
         ParentParkDrainRequest::Query {
+            source_action: request_binding(),
             correlation: 9,
             stopped: 11,
             generation: 7,
@@ -670,6 +735,8 @@ mod tests {
         assert_eq!(receipt.state, QmpParentParkDrainState::Held);
         assert_eq!(receipt.generation, 7);
         assert!(!accepted.poisoned);
+        assert_eq!(pair.actor.status().unwrap().completed_work_units, 0);
+        assert_eq!(pair.family.status().unwrap().completed_work_units, 0);
 
         let mut malformed = held_receipt();
         malformed["retained"] = json!(false);
@@ -682,5 +749,28 @@ mod tests {
         assert!(refused.poisoned);
         assert!(second.is_err());
         assert_eq!(refused.stream.get_ref().written.len(), written);
+    }
+
+    #[test]
+    fn old_or_foreign_canonical_binding_refuses_without_retiring_the_pair() {
+        for old_schema in [false, true] {
+            let pair = Pair::new();
+            let mut malformed = held_receipt();
+            if old_schema {
+                malformed["schema-version"] = json!(1);
+            } else {
+                malformed["source-action"]["loan-sequence"] = json!(4);
+            }
+            let mut client = QmpClient::connect(Stream::new(malformed, None)).unwrap();
+
+            assert!(
+                client
+                    .parent_park_drain_under_originals(&query(), &pair.actor, &pair.family,)
+                    .is_err()
+            );
+            assert!(client.poisoned);
+            assert!(pair.actor.check_original_quiescence_cancellation().is_ok());
+            assert!(pair.family.check_original_quiescence_cancellation().is_ok());
+        }
     }
 }

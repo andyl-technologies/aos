@@ -41,7 +41,7 @@ impl RuntimeAllocationRequests {
     /// # Errors
     /// Refuses zero vCPUs or unrepresentable array/shared allocation layouts.
     /// Resource eligibility remains the authentic containing issuer's decision.
-    pub(super) fn configured(
+    pub(crate) fn configured(
         vcpu_count: u32,
         fingerprint: bool,
     ) -> Result<Self, StartupSourceError> {

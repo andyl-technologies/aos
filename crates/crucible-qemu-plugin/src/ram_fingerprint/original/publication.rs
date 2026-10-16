@@ -338,7 +338,7 @@ fn finish_cache_return(state: &mut State) -> Result<(), RamError> {
 }
 
 /// Synchronizes prior settlement before this genuine Root obtains its view.
-pub(super) fn synchronize_root() -> Result<(), RamError> {
+pub(in crate::ram_fingerprint) fn synchronize_root() -> Result<(), RamError> {
     if let Some(owner) = OBSERVER.get().and_then(|observer| observer.original) {
         owner.owner().synchronize()?;
     }

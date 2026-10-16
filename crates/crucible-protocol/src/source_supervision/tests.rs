@@ -4,8 +4,8 @@ use super::*;
 
 fn payload() -> [u8; 1496] {
     let mut bytes = [0; 1496];
-    bytes[..8].copy_from_slice(b"CRUCSRV2");
-    bytes[8..12].copy_from_slice(&2_u32.to_be_bytes());
+    bytes[..8].copy_from_slice(b"CRUCSRV3");
+    bytes[8..12].copy_from_slice(&3_u32.to_be_bytes());
     bytes[12..16].copy_from_slice(&1496_u32.to_be_bytes());
     bytes[16..48].fill(7);
     bytes[88..120].fill(7);
@@ -23,6 +23,15 @@ fn payload() -> [u8; 1496] {
         bytes[offset + 10..offset + 18].copy_from_slice(&500_000_u64.to_be_bytes());
     }
     bytes
+}
+
+#[test]
+fn predecessor_source_cannot_supply_a_typed_park_lender() {
+    let mut bytes = payload();
+    bytes[..8].copy_from_slice(b"CRUCSRV2");
+    bytes[8..12].copy_from_slice(&2_u32.to_be_bytes());
+
+    assert!(decode_source_supervision_payload(&bytes).is_err());
 }
 
 #[test]

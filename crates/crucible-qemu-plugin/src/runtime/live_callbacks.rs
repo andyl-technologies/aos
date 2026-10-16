@@ -56,6 +56,10 @@ mod checkpoint_stop_witness;
 mod control_callback_stage;
 mod control_callback_witness;
 mod control_facts;
+mod park_return;
+pub(super) use park_return::{
+    WriteProgress as ParkReturnWriteProgress, protected_park_return_writer,
+};
 #[cfg(not(test))]
 mod registration;
 pub(super) use control_callback_witness::ControlCallbackWitness;
@@ -769,6 +773,7 @@ struct RequiredLiveVcpuTimeCapabilities {
 struct StableNodeSlotHandle {
     slot: NonNull<NodeSlot>,
     request_reader: control_facts::ProtectedReader,
+    park_writer: park_return::ProtectedWriter,
 }
 
 /// Stable mapped-region header retained by the setup mapping owner.
@@ -796,6 +801,7 @@ impl StableNodeSlotHandle {
         Self {
             slot: NonNull::from(slot),
             request_reader: control_facts::ProtectedReader::new(),
+            park_writer: park_return::ProtectedWriter::new(),
         }
     }
 

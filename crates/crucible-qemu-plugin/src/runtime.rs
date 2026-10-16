@@ -32,7 +32,7 @@ pub(crate) mod prebirth;
 mod teardown_latch;
 mod worker_quiescence;
 mod workspace_mapping;
-pub(super) use teardown_latch::LiveRuntimeTeardownRouter;
+use teardown_latch::LiveRuntimeTeardownRouter;
 use teardown_latch::{TriggerConsumer, TriggerPublisher};
 
 use callback_quiescence::LiveCallbackQuiescence;
@@ -909,6 +909,7 @@ impl OwnedCallbackRuntimeState {
                     plugin_id,
                     component,
                     live_callbacks::protected_request_snapshot,
+                    live_callbacks::protected_park_return_writer,
                 )
             };
             drop(receiver);

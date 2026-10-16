@@ -78,6 +78,8 @@ pub struct QemuLiveHostIoRuntime {
         Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     region: Option<MappedSetupRegion>,
     source_supervision: Option<crate::spawn::source_supervision::OriginalSourceSupervision>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    parent_park_action: Option<crucible_protocol::boundary_action::ActionBinding>,
     wake: Arc<File>,
     vm_slot: u32,
     poll_interval: Duration,
@@ -326,6 +328,8 @@ impl QemuLiveHostIoRuntime {
         Ok(Self {
             region: Some(region),
             source_supervision: None,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            parent_park_action: None,
             wake: Arc::new(wake),
             vm_slot,
             poll_interval,
@@ -1173,6 +1177,30 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             QemuAsyncDriverRuntimeError::new(operation, "original pair has expired")
         })?;
         self.pause_checkpoint_boundary(&deadline, remaining, Some(actor))
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn begin_parent_park_action(
+        &mut self,
+        correlation: u64,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_protocol::boundary_action::ActionBinding, QemuAsyncDriverRuntimeError>
+    {
+        self.retain_parent_park_request(correlation, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn current_parent_park_action(
+        &self,
+    ) -> Result<crucible_protocol::boundary_action::ActionBinding, QemuAsyncDriverRuntimeError>
+    {
+        self.observe_parent_park_request()
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn finish_parent_park_action(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        self.return_parent_park_request()
     }
 
     fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {

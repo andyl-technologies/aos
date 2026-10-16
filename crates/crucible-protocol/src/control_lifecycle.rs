@@ -346,6 +346,28 @@ impl<S> ControlLifecycleStream<S> {
         }
     }
 
+    /// Borrows the transport for plugin run-phase bookkeeping.
+    ///
+    /// The caller may update transport-local phase state after the shared-memory
+    /// boot barrier. This borrow performs no I/O, lifecycle transition, or
+    /// operation admission. Runtime synchronization continues through shared
+    /// memory; terminal frames use the existing run-control methods.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlLifecycleIoError`] outside the shared-memory run phase,
+    /// including after the terminal `Quit` frame.
+    pub fn plugin_run_io_mut(&mut self) -> Result<&mut S, ControlLifecycleIoError> {
+        match self.lifecycle.state() {
+            ControlLifecycleState::RunningViaSharedMemory => Ok(&mut self.stream),
+            state => Err(ControlLifecycleError::UnexpectedEvent {
+                state,
+                event: ControlLifecycleEvent::RunViaSharedMemory,
+            }
+            .into()),
+        }
+    }
+
     /// Records a complete `Hello` already written on the retained endpoint.
     ///
     /// This advances protocol bookkeeping only. The caller retains the actual

@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 32
+abi_version = 33
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -150,7 +150,7 @@ golden_fixture = "../tests/fixtures/shmem_abi_golden.fixture"
 header_generator = "../src/abi_header.rs"
 
 [boundary_action]
-forward = "CRUCSRV2/action-CRUCACT2"
+forward = "CRUCSRV3/control-CRUCACT2/park-CRUCPRK1"
 standing_live_bytes = 1504
 standing_payload_bytes = 1496
 standing_corroboration_bytes = 1520
@@ -162,7 +162,7 @@ cohort_dirty_bit = 31
 borrowed_mask_shift = 8
 projected_mask_shift = 16
 action_schema = 2
-node_slot_bytes = 512
+node_slot_bytes = 768
 host_frontier_hold_offset = 256
 native_return_sequence_offset = 264
 native_return_payload_offset = 272
@@ -172,3 +172,18 @@ old_reserved_40_remain_zero = true
 tail_padding_offset = 456
 tail_padding_bytes = 56
 physical_return_is_ack = false
+
+[parent_park_return]
+schema = 2
+record = "CRUCPRR2"
+request = "CRUCPRK1/schema1"
+sequence_offset = 512
+payload_offset = 520
+payload_bytes = 184
+tail_padding_offset = 704
+tail_padding_bytes = 64
+writer = "first-bound-protected-module-member"
+control_writer_accepts_park = false
+physical_return_is_ack = false
+physical_resolution_mask = 255
+pair_view_return_retires_standing_memberships = false

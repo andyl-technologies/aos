@@ -12,6 +12,17 @@ use crucible_protocol::boundary_action::{
     ActionBinding, ActionObservation, ActionParent, ActionReturn,
 };
 
+enum RequestIdentity {
+    Control {
+        token: u32,
+        capture: Option<u32>,
+    },
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    Park {
+        correlation: u64,
+    },
+}
+
 #[derive(Debug)]
 pub(super) struct PendingAction {
     pub(super) observation: ActionObservation,
@@ -97,11 +108,6 @@ impl OriginalSourceSupervision {
         if expected != Some((mapping.backing_identity(), slot)) {
             return Err(HostSupervisionError::Unavailable);
         }
-        let journal = mapping
-            .node_slot(slot)
-            .map_err(|_| HostSupervisionError::Unavailable)?
-            .observe_action_return()
-            .map_err(|_| HostSupervisionError::InvalidBudget)?;
         let state = self
             .publisher
             .state
@@ -112,7 +118,18 @@ impl OriginalSourceSupervision {
             .as_ref()
             .map(|action| action.observation.binding)
             .ok_or(HostSupervisionError::Unavailable)?;
-        // Another epoch's retained journal cannot retire a reused control token.
+        let slot = mapping
+            .node_slot(slot)
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        if binding.park_request.is_some() {
+            // The Park record returns local received views, not these standing
+            // memberships. Keep them until a real same-owner settlement exists.
+            return Err(HostSupervisionError::Unavailable);
+        }
+        let journal = slot
+            .observe_action_return()
+            .map_err(|_| HostSupervisionError::InvalidBudget)?;
+        // A journal from another request cannot retire this retained cohort.
         Ok(journal.filter(|journal| journal.binding == binding))
     }
 
@@ -246,12 +263,105 @@ impl OriginalSourceSupervision {
         capture: Option<u32>,
         primary: [Option<&HostOperationGuard>; 2],
     ) -> Result<ActionBinding, HostSupervisionError> {
+        self.begin_request(
+            mapping,
+            slot,
+            frontier,
+            RequestIdentity::Control { token, capture },
+            primary,
+        )
+    }
+
+    /// Enrolls the actual Park pair without publishing a control token or wake.
+    ///
+    /// The caller has already finished every Pause action physically. The same
+    /// Source then owns both real lender memberships through Park disposition.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn begin_parent_park_action(
+        &self,
+        mapping: &crucible_shmem::MappedSetupRegion,
+        slot: u32,
+        correlation: u64,
+        actor: &HostOperationGuard,
+        family: &HostOperationGuard,
+    ) -> Result<ActionBinding, HostSupervisionError> {
+        if correlation == 0 || correlation == u64::MAX {
+            return Err(HostSupervisionError::InvalidBudget);
+        }
+        let actor_before = actor.check_original_quiescence_cancellation();
+        let family_before = family.check_original_quiescence_cancellation();
+        actor_before.and(family_before)?;
+        let frontier = mapping
+            .fault_command_write_index(slot)
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        self.begin_request(
+            mapping,
+            slot,
+            frontier,
+            RequestIdentity::Park { correlation },
+            [Some(actor), Some(family)],
+        )
+    }
+
+    /// Refreshes only this still-owned typed pair before another Park action.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn check_parent_park_action(
+        &self,
+        binding: ActionBinding,
+    ) -> Result<(), HostSupervisionError> {
+        {
+            let state = self
+                .publisher
+                .state
+                .lock()
+                .map_err(|_| HostSupervisionError::Unavailable)?;
+            if !state.action.as_ref().is_some_and(|action| {
+                binding.park_request.is_some() && action.observation.binding == binding
+            }) {
+                return Err(HostSupervisionError::BorrowedOperation);
+            }
+        }
+        self.refresh_action()?;
+        let state = self
+            .publisher
+            .state
+            .lock()
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let action = state
+            .action
+            .as_ref()
+            .ok_or(HostSupervisionError::Unavailable)?;
+        if binding.park_request.is_none()
+            || action.observation.binding != binding
+            || action.observation.primary_count != 2
+            || !action.observation.cohort_current
+            || action.returning
+            || action.refused
+        {
+            return Err(HostSupervisionError::BorrowedOperation);
+        }
+        Ok(())
+    }
+
+    fn begin_request(
+        &self,
+        mapping: &crucible_shmem::MappedSetupRegion,
+        slot: u32,
+        frontier: u64,
+        request: RequestIdentity,
+        primary: [Option<&HostOperationGuard>; 2],
+    ) -> Result<ActionBinding, HostSupervisionError> {
+        let (token, capture, park_request) = match request {
+            RequestIdentity::Control { token, capture } => (token, capture, None),
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            RequestIdentity::Park { correlation } => (0, None, Some(correlation)),
+        };
         self.publisher
             ._admission
             .check()
             .map_err(|_| HostSupervisionError::Unavailable)?;
         let primary_count = if primary[1].is_some() { 2 } else { 1 };
-        if primary[0].is_none() {
+        if primary[0].is_none() || (park_request.is_some() && primary_count != 2) {
             return Err(HostSupervisionError::InvalidBudget);
         }
         let mut lenders: [Option<&HostOperationGuard>; 4] = [primary[0], primary[1], None, None];
@@ -286,7 +396,7 @@ impl OriginalSourceSupervision {
         // loan retrospectively, even when its tuple happens to match.
         let acknowledged = node.control_boundary_token();
         if acknowledged & 1 == 0
-            || acknowledged.wrapping_add(1) != token
+            || (park_request.is_none() && acknowledged.wrapping_add(1) != token)
             || node.action_frontier_is_retained()
             || mapping
                 .fault_command_write_index(slot)
@@ -317,6 +427,7 @@ impl OriginalSourceSupervision {
                 token,
                 frontier,
                 capture,
+                park_request,
             };
             state.action = Some(PendingAction {
                 observation: ActionObservation {

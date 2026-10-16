@@ -133,7 +133,7 @@ pub(super) fn check_hot_fork_network_rx(
 }
 
 /// Checks RX ownership before and after acquiring the barrier's factual state.
-fn collect_hot_fork_state_with_network_rx_check<T>(
+pub(super) fn collect_hot_fork_state_with_network_rx_check<T>(
     live: Option<&live_callbacks::LiveVcpuTimeCallbackState>,
     action: u32,
     collect: impl FnOnce() -> Result<T, std::os::raw::c_int>,
