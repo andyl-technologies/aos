@@ -223,6 +223,24 @@ where
             attempt_operational_error("check QEMU attempt operational boundary", error)
         })
     }
+
+    /// Stops attempt cancellation from reaching a world that outlives the attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::AttemptOperational`] after terminal
+    /// cleanup, after the attempt was canceled, or when the guard cannot
+    /// detach. The owner then remains bound to the attempt.
+    pub fn detach_execution_cancellation(&mut self) -> Result<(), LifecycleApiError> {
+        if self.terminal {
+            return Err(terminal_attempt_operational_error(
+                "QEMU attempt generation owner is already terminal",
+            ));
+        }
+        self.guard
+            .detach_execution_cancellation()
+            .map_err(|error| attempt_operational_error("detach QEMU attempt cancellation", error))
+    }
 }
 
 impl<G> QemuAttemptGenerationResourceOwner<G>
