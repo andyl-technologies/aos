@@ -578,7 +578,12 @@ fn failed_second_unlink_recovers_orphan_index_without_pack_authority(
     let key = NativeBodyKey::Pack { pack_id: id };
     let (pack, index, pack_name, index_name, _) = pack_fixture(root, id);
     let survivor = root.join("index-survivor");
-    fs::hard_link(&index, &survivor).unwrap();
+    assert_eq!(
+        fs::metadata(&index).unwrap().ino(),
+        fs::metadata(&survivor)
+            .expect("supervisor retained the real index hardlink")
+            .ino(),
+    );
     let make_config = || {
         let mut config = configuration(root, NativeWipePolicy::None);
         config.retirement = NativeRetirementPolicy::new(Duration::from_millis(1)).unwrap();
