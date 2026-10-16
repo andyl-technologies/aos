@@ -17,6 +17,11 @@ way natural to it, and each is normalized at the edge into the same
 [capability token](02-glossary.md#security-vocabulary). Everything past the
 edge sees only tokens.
 
+This describes access to stores and repositories. The registered host-local
+publisher transport (PROTO-56 to PROTO-59) authenticates role custody with
+kernel peer credentials instead. It grants no store or repository authority
+and cannot substitute for the token checks on the request being served.
+
 A token carries [grants](02-glossary.md#security-vocabulary). A grant is a
 pair of a pattern over ref names or root paths and a verb. Because write
 authority in the tree model is already per root
@@ -65,6 +70,10 @@ holds them and a realized mount is itself the capability.
   MUST be one capability token as defined in §Capability tokens. No component
   past the `guard` combinator MAY inspect an OIDC token, a session cookie, a
   client certificate, or a surface-specific credential.
+
+  AUTH-4 and AUTH-5 apply to service access to stores and repositories; the
+  host-local publisher role channel uses PROTO-57's kernel authentication.
+  No such exception applies to an intertier request or a surface request.
 - **[AUTH-6]** A protocol surface that accepts a foreign credential (for
   example a Nix `netrc` entry, a Remote Execution API header, or a cache
   service token) MUST map it to a capability token at the surface boundary

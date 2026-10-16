@@ -87,6 +87,13 @@ tier's fetch and reassembly paths.
   surfaces, and sandboxes MUST NOT hold a writable descriptor to any sealed
   inode or write permission on the directory.
   *Gate:* `gate:host-publisher-sole-writer`.
+
+  Publisher descriptor handoff uses PROTO-56 to PROTO-59. The publisher also
+  owns namespace effects involving sealed files during quarantine,
+  retirement, restoration and recovery. The cache owns pin and eviction
+  decisions, retaining their exclusion until the native operation and its
+  coordinated state transition actually complete. Other roles cannot mutate
+  publisher-owned directories to implement HOST-28 or HOST-32.
 - **[HOST-7]** Publication MUST follow this sequence: create a new inode
   under `staging/` owned by the publisher; copy or reflink the content from
   the passed descriptor; verify the written plaintext against the claimed

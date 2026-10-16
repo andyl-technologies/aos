@@ -12,6 +12,214 @@ Hashes are 32-byte binary values of the content-model digest domain in
 binary values per [`12-pack-format.md`](../12-pack-format.md). Commit ids are
 hashes.
 
+## `publisher-local-v1`
+
+This registered host-local transport implements PROTO-56 to PROTO-59. Its
+only endpoints are the configured `serve` and `publish` roles on one host.
+It cannot carry Distribution service calls or act as a surface. The socket
+is Linux `AF_UNIX`, `SOCK_SEQPACKET`; its configured parent is protected
+against replacement by either unauthorized users or consumers. Only the
+configured role identities may connect. Both peers verify `SO_PEERCRED`
+against the configured opposite identity; claimed UID or PID fields are not
+credentials. A connection MUST NOT be inherited or forwarded to consumers.
+
+One packet is one protobuf `PublisherPacket`, at most 65,536 payload bytes,
+with at most two `SCM_RIGHTS` descriptors. Receivers use close-on-exec
+descriptor reception. Truncated payload or ancillary data, excess or missing
+descriptors, unknown ancillary types, unknown protocol versions, unknown
+operations, zero request IDs, duplicate active request IDs and invalid field
+combinations are rejected before effects. All descriptors received with a
+rejected packet are closed. Version 1 rejects unknown message fields rather
+than applying Distribution's PROTO-51 permissive-field rule; extending this
+closed native-command vocabulary requires a new transport version. No
+message contains a filesystem path, process pointer or executable callback.
+
+```protobuf
+syntax = "proto3";
+package terrane.publisher.local.v1;
+
+enum PublisherOperation {
+  PUBLISHER_UNSPECIFIED = 0;
+  PUBLISHER_PROBE = 1;
+  PUBLISHER_PUBLISH = 2;
+  PUBLISHER_ADOPT = 3;
+  PUBLISHER_INSPECT_BODY = 4;
+  PUBLISHER_RETIRE = 5;
+  PUBLISHER_RESTORE = 6;
+  PUBLISHER_FINISH_RETIREMENT = 7;
+  PUBLISHER_DRAIN = 8;
+  PUBLISHER_INVENTORY = 9;
+  PUBLISHER_RESUME = 10;
+}
+
+enum PublisherBodyKind {
+  PUBLISHER_BODY_UNSPECIFIED = 0;
+  PUBLISHER_BODY_SEALED = 1;
+  PUBLISHER_BODY_CHUNK = 2;
+  PUBLISHER_BODY_PACK = 3;
+}
+
+message PublisherBodyKey {
+  PublisherBodyKind kind = 1;
+  bytes descriptor = 2;       // existing canonical descriptor, sealed/chunk
+  uint32 codec = 3;           // existing codec identifier, chunk only
+  bytes pack_id = 4;          // existing 16-byte pack ID, pack only
+}
+
+message PublisherClaim {
+  bytes descriptor = 1;       // existing canonical inline/manifest descriptor
+  string chunk_profile = 2;   // configured registered profile
+  uint64 plaintext_size = 3;
+  uint64 manifest_offset = 4; // range in optional read-only metadata-pack FD
+  uint64 manifest_length = 5;
+  bytes retention_id = 6;     // 16-byte cache-owned reconstruction pin ID
+}
+
+enum PublisherResult {
+  PUBLISHER_OK = 0;
+  PUBLISHER_INVALID = 1;
+  PUBLISHER_DENIED = 2;
+  PUBLISHER_NOT_FOUND = 3;
+  PUBLISHER_CONFLICT = 4;
+  PUBLISHER_UNSUPPORTED = 5;
+  PUBLISHER_RESOURCE_EXHAUSTED = 6;
+  PUBLISHER_UNAVAILABLE = 7;
+}
+
+message PublisherPacket {
+  uint32 version = 1;         // exactly 1
+  uint64 request_id = 2;      // nonzero, scoped to connection
+  PublisherOperation operation = 3;
+  string domain = 4;          // canonical configured disclosure-domain label
+  bytes cache_incarnation = 5; // 16-byte random owner incarnation
+  uint64 wait_budget_ms = 6;  // bounded wait, never effect cancellation
+  PublisherClaim claim = 7;
+  PublisherBodyKey body = 8;
+  bytes body_incarnation = 9; // 32-byte opaque publisher-issued token
+  bool response = 10;
+  PublisherResult result = 11; // responses only; requests have zero
+  uint32 verity_algorithm = 12; // successful sealed/probe responses only
+  bytes verity_digest = 13;
+  bytes inventory_cursor = 14; // opaque connection/domain/incarnation cursor
+  repeated PublisherBodyKey inventory = 15; // at most 64 keys, responses only
+}
+```
+
+The configured domain selects physical roots, never a request path or another
+domain's fallback. Invalid combinations are rejected: a chunk key has a
+chunk descriptor and registered codec but no pack ID; a sealed key has a
+chunk or manifest descriptor but no codec or pack ID; a pack key has only a
+pack ID. A pack incarnation covers its associated detached index as one
+retirement unit. Keys use existing identity and layout rules unchanged.
+
+| Operation | Request descriptors | Success descriptors | Meaning |
+| --- | --- | --- | --- |
+| Probe | none | one read-only probe inode | Independently establish kernel seal capability on the configured filesystem |
+| Publish, inline | one read-only regular source | one read-only canonical inode | Copy, verify and complete HOST-7 |
+| Publish, manifest | source, then read-only metadata pack | one read-only canonical inode | Verify manifest range and exact plaintext under HOST-7 |
+| Adopt, inline | none | one read-only canonical inode | Independently verify existing content, seal and durable binding |
+| Adopt, manifest | one read-only metadata pack | one read-only canonical inode | Adopt using verified retained reconstruction metadata |
+| InspectBody, chunk or pack | none | one read-only existing body | Bind a checked configured key to a publisher-issued inode incarnation |
+| InspectBody, sealed | as Adopt | one read-only canonical inode | Adopt and bind a checked sealed-body incarnation |
+| Retire | none | none | Move that exact body incarnation to pending-delete without replacement |
+| Restore | none | none | Restore that exact pending incarnation without replacement; no service until adoption |
+| FinishRetirement | none | none | Complete the authorized wipe policy and removal of that exact pending incarnation |
+| Drain | none | none | Complete earlier accepted work and establish the owner-incarnation barrier |
+| Inventory | none | none | Enumerate at most 64 configured body keys for recovery; no content or serving authority |
+| Resume | none | none | Leave recovery custody after actual cache state reconciliation |
+
+Error responses carry no descriptors, binding or body-incarnation token.
+Replies echo version, request ID, operation, domain and cache incarnation.
+Only successful Probe, Publish, Adopt and InspectBody replies carry a
+descriptor. Body-incarnation tokens are unguessable, scoped to the publisher
+instance, domain, key, retained inode and lifecycle state; callers cannot mint
+them by supplying device/inode numbers. They are invalid after publisher
+restart. A fresh InspectBody or verified Adopt is required after recovery.
+The same token follows that retained inode through canonical, pending-delete
+and restored states; each command checks legality against the publisher's
+current state. Retirement does not consume the token. Final removal or
+replacement of the inode invalidates it.
+
+Only `serve` sends requests and only `publish` sends responses. Clients
+reject unsolicited replies, mismatched correlation fields and wrong response
+direction, closing all received descriptors. All packets require version,
+nonzero request ID, operation, domain and a 16-byte cache incarnation.
+Request wait budgets are 1 to 300,000 milliseconds. Response wait budgets
+are zero. Claims, bodies and tokens are absent unless required below.
+
+| Operation | Additional request fields | Additional successful response fields |
+| --- | --- | --- |
+| Probe | none | verity binding |
+| Publish, Adopt | claim and sealed body with identical descriptors | body-incarnation token and verity binding |
+| InspectBody, sealed | claim and matching sealed body | body-incarnation token and verity binding |
+| InspectBody, chunk or pack | body | body-incarnation token |
+| Retire, Restore, FinishRetirement | body and body-incarnation token | none |
+| Drain, Resume | none | none |
+| Inventory | optional inventory cursor | inventory and optional next cursor |
+
+Claim profile and plaintext size must agree with configured profile and
+verified content. Inline claims have zero manifest offset/length and no
+retention ID. Manifest claims have a nonzero manifest length and a 16-byte
+retention ID. Only manifest claims carry the metadata descriptor indicated
+above. Claims, body keys and request tokens are not echoed in responses.
+Verity bindings are exactly algorithm 1 with 32 bytes or algorithm 2 with
+64 bytes. Tokens are exactly 32 bytes. Inventory cursors are opaque bounded
+values of at most 64 bytes, issued by this publisher for this connection,
+domain and cache incarnation; they cannot contain caller paths. An absent
+next cursor marks the final inventory page. Inventory lists key names only;
+they are not verified content, incarnation tokens or permission to serve.
+All operation-specific fields are absent on errors. Unexpected fields or
+descriptor combinations are invalid, including a verity binding for an
+unsealed chunk or pack.
+
+Probe creates an empty private inode, closes every writer, enables and
+measures real fs-verity, synchronizes it, and removes its private name before
+replying. The receiver independently measures the returned descriptor and
+checks its device against retained host-layout descriptors. A probe is not a
+canonical backing handle and grants no content access.
+
+For Publish and Adopt, the claim descriptor and active chunk profile are
+verified using the existing content formats. A manifest range is canonical
+metadata from an ordinary cached metadata pack, not assembled plaintext.
+The receiver checks range bounds and manifest identity before using it. The
+cache MUST durably retain and pin that metadata under HOST-31 before sending
+the command, and retain it while any dependent sealed body remains. The
+retention ID identifies this actual cache-owned pin; a random ID or claimed
+boolean alone is not a retention receipt. Native composition validates the
+pin's domain, descriptor and physical completion before submission. Passing
+the pack descriptor does not itself prove retention or synchronization.
+Configured metadata resource bounds may produce RESOURCE_EXHAUSTED before
+publication; no partial metadata can be acknowledged. Incoming descriptors
+are read-only regular files. Read-only access does not imply immutable
+content: copy into private staging and verify the destination, or establish
+HOST-8's genuine source immutability before reflinking.
+
+The publisher derives all body paths from trusted roots and registered keys.
+InspectBody verifies the actual key and inode before issuing its token;
+sealed bodies also pass adoption. Retire, Restore and FinishRetirement
+compare their retained inode incarnation before mutation. The cache retains
+pin, reservation, grace and recovery exclusion until the actual namespace
+effect and coordinated state are durable. No retirement method silently
+substitutes unlinking for zero wiping. Neither returning a descriptor nor
+unlinking its name revokes existing open descriptors or mappings.
+
+Dropping a waiter, expiring its wait budget, losing a connection or shutting
+down a caller runtime does not release an accepted operation's physical
+ownership. The native owner finishes or cleans up before releasing its holds;
+late reply descriptors are closed. A new cache incarnation MUST first use
+Drain; the publisher rejects conflicting work until all prior-incarnation
+commands finish. Drain then grants the new incarnation exclusive recovery
+custody: Inventory, Probe, InspectBody and Adopt are permitted, while ordinary
+publication and retirement remain blocked. The cache reconstructs its real
+durable state and pins before sending Resume. Resume succeeds only for that
+incarnation after its recovery native operations complete; the native cache
+owner MUST validate actual reconciliation completion before submission.
+Resume does not itself prove cache durability. A lost reply is
+resolved by inspection/adoption and durable recovery, never assumed success
+or rollback. A publisher restart invalidates all tokens and requires the
+same recovery before new work. The channel conveys no capability tokens and
+cannot bypass repository authorization performed by `serve`.
+
 ## Common types
 
 ```protobuf

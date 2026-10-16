@@ -8717,6 +8717,13 @@ actual parser integration, full trunk qualification and task acceptance remain
 pending. No worker branch is accepted by these preparation checks.
 Other T2 implementation continues. T3 and branch worklines remain unopened.
 
+D-121 registers the host-local publisher descriptor boundary required by
+ARCH-5 and HOST-7. Its PROTO-56 to PROTO-59 implementation belongs to
+T-HOST-2, jointly coordinating native completion and retirement with
+T-HOST-1. This is not Distribution protocol implementation or T3 acceptance.
+D-122 defines schema path syntax and literal-existence versus collection
+constraints before T2's interface freeze; SDK's empty schema is unaffected.
+
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
 `realize`, `publish`, and `gc` roles as systemd units. No FUSE yet.
@@ -8741,8 +8748,9 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
   `checks.terrane.gates.host-verify-before-admit`,
   `checks.terrane.gates.host-crash-recovery`.
 - [ ] **T-HOST-2** `publish` role: networkless sealer with fs-verity,
-  no-replace publication, adoption on recovery. — satisfies HOST-6 to
-  HOST-9, ARCH-8; `checks.terrane.gates.publisher-sole-writer`,
+  no-replace publication, adoption on recovery and the registered host-local
+  descriptor channel. — satisfies HOST-6 to HOST-9, ARCH-5, ARCH-8,
+  PROTO-56 to PROTO-59; `checks.terrane.gates.publisher-sole-writer`,
   `checks.terrane.gates.host-publish-sequence`.
 - [ ] **T-STORE-3** `shared-dir` backend and per-domain object directories.
   — satisfies STORE-14, DOM-12 to DOM-15, HOST-27;
@@ -9277,7 +9285,7 @@ the MVP conformance claim (PLAN-3) says so explicitly.
 | 15 redundancy | B-redundancy | T-RED-1 |
 | 16 block-device backend | B-redundancy | T-BLK-1 |
 | 17 garbage collection | T1, B-jobs, B-topology | T-GC-1, T-GC-2, T-TOPO-2 |
-| 18 protocol | T3 | T-PROTO-1 |
+| 18 protocol | T2, T3 | T-HOST-2 (PROTO-56 to PROTO-59), T-PROTO-1 (PROTO-1 to PROTO-55) |
 | 19 tiering and topology | T3, B-topology | T-TOPO-1, T-TOPO-2 |
 | 20 consistency | T3, T5, B-consistency | T-CONS-1, T-FUSE-3, T-CONS-2, T-FUSE-4 |
 | 21 bandwidth | T3, B-bandwidth | T-BW-1, T-BW-2 |

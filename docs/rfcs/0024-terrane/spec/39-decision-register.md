@@ -2568,6 +2568,67 @@ is added rather than editing history.
     it does not qualify any implementation or gate.
   - **Affects:** TREE-10, SURF-1/27 and the SDK checkout surface.
 
+- **[D-121] Register the host-local publisher descriptor transport.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Register `publisher-local-v1` in the wire schema as a
+    narrowly scoped Unix sequenced-packet/protobuf transport with exact
+    descriptor counts, fixed commands and kernel role authentication. It
+    conveys publisher operations only, not an alternative store API.
+    Distribution retains its existing HTTP, encoding, TLS and token rules.
+    All publisher namespace operations retain actual native ownership through
+    completion and cache-incarnation drain barriers.
+  - **Rationale:** HOST-7 requires a passed content descriptor and ARCH-8
+    returns read-only descriptors across distinct role processes. HTTP,
+    protobuf JSON and Authorization headers cannot transfer kernel descriptor
+    custody. ARCH-5 required registration while the wire schema registered
+    none. A documented branch of the one protocol makes the boundary
+    implementable without inventing a private intertier API or pretending a
+    lost waiter cancels physical work. The publisher must own sealed-file
+    retirement and recovery effects as well as initial insertion.
+  - **Alternatives considered:** Undocumented ancillary frames (rejected:
+    violates ARCH-5); send caller paths (rejected: loses descriptor custody);
+    merge identities or grant other roles sealed-directory writes (rejected:
+    violates sole-writer separation); send descriptors through ordinary HTTP
+    or remote TLS (rejected: not a kernel descriptor transfer); accept caller
+    completion booleans (rejected: no physical completion evidence).
+  - **Compatibility:** Advance the specification to 1.1-draft-1 for the new
+    local transport version 1, in package `terrane.publisher.local.v1`;
+    retain all existing media-type versions. No existing wire
+    message field, content identity, encoding, bucket key, Store or LocalFs
+    signature, requirement ID or gate name changes. Registering this host
+    mechanism before the protocol freeze does not implement Distribution or
+    reopen T1's format freeze. No zero-wipe requirement is relaxed. Runtime
+    conformance and T2 acceptance still require real multi-process gates.
+  - **Affects:** ARCH-5/8, HOST-6/7/9/28/32, AUTH-4/5, PROTO-1 to
+    PROTO-5 and new PROTO-56 to PROTO-59.
+
+- **[D-122] Define schema path patterns and empty-collection constraints.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** SURF-13 uses component-wise byte patterns: `*` is one
+    component and `**` is zero or more. Literal required entries establish
+    existence; wildcard kind and attribute constraints apply to every
+    existing match and permit empty collections. Malformed patterns fail
+    regardless of tree contents. Root attributes remain authenticated
+    metadata, never invented encoded fields or content-derived substitutes.
+  - **Rationale:** The schema interface named path patterns without defining
+    syntax or quantification. Treating collection constraints as existence
+    requirements prevents an empty cache from starting; accepting a malformed
+    pattern only because the tree is empty creates content-dependent schema
+    semantics. Literal entry requirements express necessary directories while
+    universal collection constraints validate each object that is present.
+  - **Alternatives considered:** Host filesystem globbing (rejected:
+    platform-dependent and may perform I/O); require one match for every
+    collection (rejected: disallows empty caches); silently accept malformed
+    patterns (rejected: hides configuration errors); add root fields to tree
+    bytes (rejected: violates the format freeze and is not a schema fix).
+  - **Compatibility:** Clarifies the previously unspecified schema language
+    before T2's interface freeze. No existing content identity, encoding,
+    bucket key, Store or LocalFs trait, requirement ID, gate name or golden
+    byte changes. SDK's empty schema is unaffected. Protocol surfaces remain
+    unimplemented; representing their full-tree root attributes still requires
+    a separate normative resolution before those surfaces can be claimed.
+  - **Affects:** SURF-13/14/15 and the surface schema interface.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

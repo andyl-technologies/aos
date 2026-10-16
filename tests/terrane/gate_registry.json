@@ -97,7 +97,7 @@
   {
     "name": "one-protocol",
     "owner": "03",
-    "requirements": "ARCH-5"
+    "requirements": "ARCH-5, PROTO-56"
   },
   {
     "name": "property-domain-reference",
@@ -357,12 +357,12 @@
   {
     "name": "host-publish-sequence",
     "owner": "14",
-    "requirements": "HOST-7"
+    "requirements": "HOST-7, PROTO-59"
   },
   {
     "name": "host-publisher-sole-writer",
     "owner": "14",
-    "requirements": "HOST-6"
+    "requirements": "HOST-6, PROTO-57"
   },
   {
     "name": "host-quarantine",
@@ -1107,7 +1107,7 @@
   {
     "name": "host-crash-recovery",
     "owner": "36",
-    "requirements": "HOST-32, TEST-9"
+    "requirements": "HOST-32, PROTO-58, TEST-9"
   },
   {
     "name": "job-fold",

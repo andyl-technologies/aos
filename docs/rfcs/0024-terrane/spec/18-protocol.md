@@ -37,6 +37,11 @@ wire:
 
 ## Transport
 
+PROTO-1 through PROTO-55 apply to Distribution services, including their HTTP
+transport, versioning, metadata and error rules. The narrowly scoped
+publisher-role transport below is a registered part of this protocol, not an
+alternative transport for those services; PROTO-56 to PROTO-59 govern it.
+
 - **[PROTO-1]** The protocol MUST be served as ConnectRPC over HTTP/2, with
   the Connect, gRPC, and gRPC-Web wire encodings all accepted. *Gate:*
   `gate:proto-transport`. *See:* §Transport.
@@ -55,6 +60,40 @@ wire:
   [`22-authentication-and-authorization.md`](22-authentication-and-authorization.md)
   in the `Authorization` header, except `Capabilities` which MAY be called
   anonymously. *Gate:* `gate:auth-enforcement`.
+
+### Host-local publisher transport
+
+- **[PROTO-56]** Descriptor exchange between `serve` and `publish` on one
+  host MUST use `publisher-local-v1` as registered in
+  [`reference/protocol.md`](reference/protocol.md#publisher-local-v1).
+  It MUST NOT expose a store, ref, repository, surface or intertier API,
+  accept remote connections, or forward requests. This transport uses
+  connected Unix sequenced-packet sockets, protobuf control messages and
+  passed descriptors; HTTP, JSON, TLS and Authorization headers do not apply
+  to it. *Gate:* `gate:one-protocol`.
+- **[PROTO-57]** Both endpoints MUST authenticate the connected peer's
+  kernel-supplied credentials against configured, distinct role identities
+  before processing commands or descriptors. Socket custody, descriptor
+  counts, message bounds and rejection behavior MUST follow the registered
+  transport. A caller-supplied identity field MUST NOT establish authority.
+  Kernel role authentication grants no repository read or write authority:
+  `serve` MUST first obtain the existing repository authorization for the
+  operation, and `publish` MUST independently verify publication claims.
+  *Gate:* `gate:host-publisher-sole-writer`.
+- **[PROTO-58]** Accepted commands MUST retain their source descriptors,
+  directory and inode custody, reservations and decision exclusion through
+  actual physical completion, durability and cleanup, including after a
+  caller cancels, times out, disconnects or loses its runtime. A lost reply
+  MUST NOT be treated as rollback or success. A new cache incarnation MUST
+  establish the registered drain barrier before making conflicting recovery
+  or eviction decisions. *Gate:* `gate:host-crash-recovery`.
+- **[PROTO-59]** Publisher commands MUST be restricted to the registered
+  fixed operations and domain-bound content keys. They MUST NOT accept
+  caller filesystem paths, arbitrary filesystem operations or executable
+  callbacks. Backing descriptors MUST be read-only and MUST be returned only
+  after HOST-7 or independently verified adoption has completed. Retirement
+  MUST compare the publisher-issued inode incarnation and MUST NOT remove a
+  replacement inode. *Gate:* `gate:host-publish-sequence`.
 
 ## Services
 

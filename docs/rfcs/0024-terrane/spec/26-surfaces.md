@@ -189,6 +189,35 @@ TreeSchema {
   as a normative table, and an implementation's `schema()` MUST return a
   value equivalent to it.
 
+Schema path patterns operate on canonical root-relative path bytes, without
+Unicode normalization. An optional single leading `/` is ignored, except
+that `/` alone selects the presented root. Empty patterns, empty components,
+`.` and `..` components, NUL bytes and trailing separators are invalid. A
+component `*` matches exactly one nonempty component; `**` matches zero or
+more complete components. Every other component is literal, including any
+embedded `*`; there are no character classes or escape sequences. Patterns
+match the complete path, not a prefix. The registry's angle-bracket names
+describe collection members; implementations translate them into these
+component patterns or validate their additional naming constraints through
+repository metadata.
+
+Under SURF-13, a literal `required_entries` path MUST exist with the given
+kind. A wildcard `required_entries` pattern constrains every matching entry
+to that kind but MAY match no entries; this permits an empty cache
+collection. `required_attributes` constrains every matching entry and MAY
+also match no entries. A schema that requires an attributed entry to exist
+therefore lists its literal path in `required_entries` as well. Root `/`
+always exists; its attributes are checked explicitly. A forbidden pattern
+MUST match no entry, and forbidding `/` always fails. Required properties
+MUST be present with an allowed value. Malformed patterns fail validation
+even against an empty tree. *Gate:* `gate:surface-schema`.
+
+Root-attribute checks use authenticated metadata of the presented root;
+an absent attribute fails its constraint. Implementations MUST NOT invent
+root attributes, fetch content to derive them, or introduce an implicit
+encoded root entry to satisfy a schema. These rules do not add fields to
+the frozen tree encoding.
+
 ### The write path
 
 A writable surface accepts mutations in its own protocol and turns them into

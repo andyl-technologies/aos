@@ -100,7 +100,7 @@ server (spec ARCH-11, FUSE-4).
 | Unit | Role | Slice | Sandboxing |
 | --- | --- | --- | --- |
 | `terrane-serve.service` | `serve` | `aos-control.slice` | `DynamicUser=no`, dedicated user `terrane`, network allowed, `ProtectSystem=strict`, `ReadWritePaths=/var/lib/terrane/state /var/lib/terrane/chunks` |
-| `terrane-publish.service` | `publish` | `aos-view-services.slice` | `PrivateNetwork=yes`, sole writer of `/var/lib/terrane/sealed`, `CAP_FSETID` only if the filesystem requires it for fs-verity enablement |
+| `terrane-publish.service` | `publish` | `aos-view-services.slice` | `PrivateNetwork=yes`, `RestrictAddressFamilies=AF_UNIX`, sole writer of `/var/lib/terrane/sealed`, no capabilities; probe genuine fs-verity enablement under its actual dedicated identity |
 | `terrane-fuse-worker@.service` | `fuse-worker` | `aos-view-services.slice` | `PrivateNetwork=yes`, `/dev/fuse` device access, memory, tasks, and descriptor limits per spec FUSE-5 |
 | `terrane-gc.service` + `.timer` | `gc` | `aos-view-services.slice` | host-local collector (spec GC-25); the bucket collector runs where the authority runs |
 | `terrane-job@.service` | `job` | `aos-view-services.slice` | tree jobs started through exposures (spec JOB-33) |

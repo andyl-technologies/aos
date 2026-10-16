@@ -175,7 +175,7 @@ here is a conformance error of this document.
 | `gate:no-duplicate-tiers` | 01 | INV-4 |
 | `gate:no-privileged-mounts` | 03 | ARCH-9 |
 | `gate:object-identity-from-manifest` | 04 | OBJ-13 |
-| `gate:one-protocol` | 03 | ARCH-5 |
+| `gate:one-protocol` | 03 | ARCH-5, PROTO-56 |
 | `gate:property-domain-reference` | 08 | PROP-26 |
 | `gate:property-required-attrs` | 08 | PROP-21, DRV-27 |
 | `gate:property-resolution` | 08 | PROP-1, PROP-29, PROP-30, PROP-31 |
@@ -232,8 +232,8 @@ here is a conformance error of this document.
 | `gate:host-pin-durable` | 14 | HOST-22 |
 | `gate:host-pin-never-evicted` | 14 | HOST-18 |
 | `gate:host-publish-no-replace` | 14 | HOST-9 |
-| `gate:host-publish-sequence` | 14 | HOST-7 |
-| `gate:host-publisher-sole-writer` | 14 | HOST-6 |
+| `gate:host-publish-sequence` | 14 | HOST-7, PROTO-59 |
+| `gate:host-publisher-sole-writer` | 14 | HOST-6, PROTO-57 |
 | `gate:host-quarantine` | 14 | HOST-15 |
 | `gate:host-quota-exact` | 14 | HOST-23 |
 | `gate:host-reassembly-heuristic` | 14 | HOST-10 |
@@ -403,7 +403,7 @@ here is a conformance error of this document.
 | --- | --- | --- |
 | `gate:blockdev-crash-recovery` | 36 | TEST-10 |
 | `gate:gc-reflog-roots` | 33 | MIG-33 |
-| `gate:host-crash-recovery` | 36 | HOST-32, TEST-9 |
+| `gate:host-crash-recovery` | 36 | HOST-32, PROTO-58, TEST-9 |
 | `gate:job-fold` | 32 | JOB-19 |
 | `gate:job-follow` | 32 | JOB-23 |
 | `gate:job-idempotent` | 32 | JOB-15 |
