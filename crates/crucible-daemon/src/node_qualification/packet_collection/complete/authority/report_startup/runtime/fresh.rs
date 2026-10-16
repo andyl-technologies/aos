@@ -12,7 +12,8 @@ use std::{
     mem::{align_of, size_of, size_of_val},
 };
 
-pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) struct FreshRuntimeOwners {
+pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) struct FreshRuntimeOwners
+{
     graph: RefCell<Option<Rc<ConformanceGraph>>>,
     prepared: RefCell<Option<PreparedRealization>>,
     in_progress: Cell<bool>,
@@ -550,7 +551,8 @@ impl PacketCompleteReportStartupHolder {
     }
 }
 
-pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn counter_scratch_data() -> Result<usize, RuntimeError> {
+pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn counter_scratch_data()
+-> Result<usize, RuntimeError> {
     use super::super::restoration::{FreshLifecycleOwners, PacketCompleteFreshRestorationInputs};
     let terms = [
         super::family::counter_scratch_data(),
