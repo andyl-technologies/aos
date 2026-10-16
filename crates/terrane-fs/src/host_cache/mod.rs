@@ -17,7 +17,7 @@ use std::{
     collections::BTreeMap,
     io,
     os::fd::OwnedFd,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 use terrane::host::cache::DomainHostLayout;
 
@@ -26,6 +26,7 @@ pub struct NativeHostLayout {
     layout: DomainHostLayout,
     root: OwnedFd,
     directories: BTreeMap<&'static str, OwnedFd>,
+    administrative_root: Option<(PathBuf, OwnedFd)>,
 }
 
 impl NativeHostLayout {
@@ -39,6 +40,23 @@ impl NativeHostLayout {
     /// Refuses symlink roots, unsupported filesystems, missing directories,
     /// cross-filesystem directories, or kernel inspection errors.
     pub fn inspect(layout: DomainHostLayout) -> io::Result<Self> {
+        Self::inspect_with_administrative_root(layout, None)
+    }
+
+    /// Inspects a domain layout and optional explicitly configured host scaffold.
+    ///
+    /// The administrative root is trusted host configuration, never inferred
+    /// from path ancestry. It must use the same filesystem as this domain's
+    /// single owner project. This inspection assigns no project identifiers and
+    /// grants no admission authority without fresh authenticated quota queries.
+    ///
+    /// # Errors
+    /// Refuses unsafe/missing roots, another filesystem, a redundant domain-root
+    /// alias and failed native directory inspection.
+    pub fn inspect_with_administrative_root(
+        layout: DomainHostLayout,
+        administrative_root: Option<&Path>,
+    ) -> io::Result<Self> {
         let root = open_directory_chain(layout.root())?;
         let root_stat = fstat(&root)?;
         let mut directories = BTreeMap::new();
@@ -72,10 +90,24 @@ impl NativeHostLayout {
             }
             directories.insert(name, descriptor);
         }
+        let administrative_root = administrative_root
+            .map(|path| {
+                let descriptor = open_directory_chain(path)?;
+                let metadata = fstat(&descriptor)?;
+                if metadata.st_dev != root_stat.st_dev || metadata.st_ino == root_stat.st_ino {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "administrative root must be distinct on the domain filesystem",
+                    ));
+                }
+                Ok((path.to_path_buf(), descriptor))
+            })
+            .transpose()?;
         Ok(Self {
             layout,
             root,
             directories,
+            administrative_root,
         })
     }
 
@@ -95,7 +127,12 @@ impl NativeHostLayout {
     /// Refuses unknown labels, replaced roots and failed native metadata reads.
     pub fn directory_binding(&self, label: &str) -> io::Result<(u64, u64)> {
         self.recheck()?;
-        let descriptor = self.directories.get(label).ok_or_else(|| {
+        let descriptor = match label {
+            "layout-root" => Some(&self.root),
+            "administrative-root" => self.administrative_root.as_ref().map(|(_, file)| file),
+            _ => self.directories.get(label),
+        }
+        .ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "unknown host allocation root")
         })?;
         let metadata = fstat(descriptor)?;
@@ -116,6 +153,17 @@ impl NativeHostLayout {
                 io::ErrorKind::InvalidData,
                 "host cache root was replaced",
             ));
+        }
+        if let Some((path, descriptor)) = &self.administrative_root {
+            let current = open_directory_chain(path)?;
+            let expected = fstat(descriptor)?;
+            let actual = fstat(&current)?;
+            if expected.st_dev != actual.st_dev || expected.st_ino != actual.st_ino {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "host administrative root was replaced",
+                ));
+            }
         }
         for (name, descriptor) in &self.directories {
             let current = openat(
