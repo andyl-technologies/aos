@@ -64,6 +64,7 @@ pub struct Server {
     listener: Listener,
     config: Arc<ServerConfig>,
     domains: Arc<BTreeMap<String, DomainPublisher>>,
+    custody: Option<Arc<crate::configured::ConfiguredPublisherCustody>>,
 }
 
 impl Server {
@@ -94,7 +95,17 @@ impl Server {
             listener,
             config: Arc::new(config),
             domains: Arc::new(registered),
+            custody: None,
         })
+    }
+
+    /// Retains genuine configured quota custody through accepted native work.
+    pub(crate) fn with_configured_custody(
+        mut self,
+        custody: Arc<crate::configured::ConfiguredPublisherCustody>,
+    ) -> Self {
+        self.custody = Some(custody);
+        self
     }
 
     /// Runs bounded connection owners until a listener or thread creation fails.
@@ -125,10 +136,12 @@ impl Server {
             }
             let permit = ConnectionPermit(Arc::clone(&active));
             let domains = Arc::clone(&self.domains);
+            let custody = self.custody.clone();
             thread::Builder::new()
                 .name("publisher-local-owner".into())
                 .spawn(move || {
                     let _permit = permit;
+                    let _custody = custody;
                     // Connection failures close all retained packet/reply files.
                     let _ = run_connection(connection, &domains);
                 })?;

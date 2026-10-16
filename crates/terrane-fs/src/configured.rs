@@ -11,7 +11,9 @@ use std::{
     collections::BTreeSet,
     fs::File,
     io,
+    os::fd::OwnedFd,
     path::{Component, Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -47,6 +49,17 @@ struct CheckedQuota {
     observation: VerifiedQuotaObservation,
     roots: Vec<File>,
     _guard: DomainProvisioningGuard,
+}
+
+/// Retains actual configured-role enforcement and allocation-root custody.
+///
+/// Only this module constructs the value after native checks. Concrete socket
+/// owners retain it until all accepted physical work finishes, even if the
+/// listening service exits first.
+pub(crate) struct ConfiguredPublisherCustody {
+    confinement: Arc<crate::quota_confinement::Installed>,
+    quotas: Vec<CheckedQuota>,
+    _socket_ancestors: Vec<OwnedFd>,
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -88,6 +101,11 @@ fn preflight(host: &HostTier) -> io::Result<Preflight> {
     let administrative_root = normalized_path(&host.path)?;
     let socket_path = normalized_path(&publisher.socket_path)?;
     let quota_path = normalized_path(&quota.socket_path)?;
+    rustix::net::SocketAddrUnix::new(&socket_path)?;
+    rustix::net::SocketAddrUnix::new(&quota_path)?;
+    if socket_path == quota_path {
+        return Err(invalid("publisher and quota endpoints must be distinct"));
+    }
     let mut domains = Vec::with_capacity(host.domains.len());
     let mut paths = Vec::<PathBuf>::new();
     let mut owners = BTreeSet::new();
@@ -155,7 +173,8 @@ fn preflight(host: &HostTier) -> io::Result<Preflight> {
 fn normalized_path(text: &str) -> io::Result<PathBuf> {
     let path = Path::new(text);
     let normalized: PathBuf = path.components().collect();
-    if !path.is_absolute()
+    if text.as_bytes().contains(&0)
+        || !path.is_absolute()
         || path == Path::new("/")
         || normalized.as_os_str() != path.as_os_str()
         || path
@@ -256,4 +275,119 @@ fn check_quotas(config: &Preflight) -> io::Result<Vec<CheckedQuota>> {
         ));
     }
     Ok(checked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use terrane::config::host::{DomainDirectory, DomainPublisher, Publisher, Quota, Reassembly};
+
+    fn configuration() -> HostTier {
+        let publish_uid = rustix::process::geteuid().as_raw();
+        let serve_uid = if publish_uid == 1001 { 1002 } else { 1001 };
+        HostTier {
+            path: "/var/lib/terrane".into(),
+            size_bytes: 1 << 30,
+            reassembly: Reassembly::Never,
+            domains: ["public", "private:fixture"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, label)| {
+                    (
+                        label.into(),
+                        DomainDirectory {
+                            path: format!("/var/lib/terrane/domain-{index}"),
+                            wipe: Wipe::None,
+                            publisher: Some(DomainPublisher {
+                                retirement_grace_ms: 30_000,
+                                chunk_profile: "cdc-1m".into(),
+                                chunk_seed: [index as u8; 32],
+                            }),
+                            quota_owner_id: Some(format!("owner-{index}")),
+                        },
+                    )
+                })
+                .collect(),
+            publisher: Some(Publisher {
+                socket_path: "/run/terrane-publish/publisher.sock".into(),
+                serve_uid,
+                publish_uid,
+                content_uid: serve_uid,
+                content_gid: 1003,
+                max_connections: 32,
+            }),
+            quota: Some(Quota {
+                socket_path: "/run/terrane-host-helper/quota.sock".into(),
+                configuration_epoch: [1; 16],
+            }),
+        }
+    }
+
+    #[test]
+    fn configured_preflight_requires_real_quota_inputs_before_startup() {
+        let mut config = configuration();
+        assert!(preflight(&config).is_ok());
+        config.quota = None;
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let mut config = configuration();
+        config.domains.get_mut("public").unwrap().quota_owner_id = None;
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn configured_preflight_rejects_later_domain_policy_before_any_open() {
+        let mut config = configuration();
+        config
+            .domains
+            .get_mut("public")
+            .unwrap()
+            .publisher
+            .as_mut()
+            .unwrap()
+            .chunk_profile = "unknown".into();
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::Other
+        );
+
+        let mut config = configuration();
+        config.domains.get_mut("public").unwrap().wipe = Wipe::Zero;
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn configured_preflight_refuses_overlapping_roots_and_aliasing_endpoints() {
+        let mut config = configuration();
+        let private_path = config.domains["private:fixture"].path.clone();
+        config.domains.get_mut("public").unwrap().path = format!("{private_path}/child");
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let mut config = configuration();
+        config.publisher.as_mut().unwrap().socket_path =
+            config.quota.as_ref().unwrap().socket_path.clone();
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn configured_preflight_rejects_unrepresentable_unix_socket() {
+        let mut config = configuration();
+        config.publisher.as_mut().unwrap().socket_path = format!("/run/{}", "x".repeat(128));
+        assert!(preflight(&config).is_err());
+    }
 }
