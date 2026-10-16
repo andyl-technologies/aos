@@ -11,8 +11,8 @@ mod custody;
 mod publication;
 pub(super) use custody::with_inputs as retain_construction_inputs;
 pub use custody::{
-    ProductionVmConstructionCleanupError, ProductionVmConstructionCustody,
-    ProductionVmConstructionFailure,
+    ProductionVmCleanupEarlierFailure, ProductionVmConstructionCleanupError,
+    ProductionVmConstructionCustody, ProductionVmConstructionFailure,
 };
 mod branch_sequence;
 pub(super) use branch_sequence::validate_configured_branch_sequence;
@@ -1760,6 +1760,7 @@ fn prepare_construction(
             node_generations,
             node_leases,
             node_lease_cleanup_failed: false,
+            retained_cleanup_failure: None,
             node_service_states,
             lifecycle_journal,
             lifecycle_persistence,

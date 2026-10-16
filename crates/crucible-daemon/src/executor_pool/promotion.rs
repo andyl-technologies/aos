@@ -227,6 +227,19 @@ fn classify_preparation_failure(
         PausedCheckpointPromotionPreparationError::Realization(error) => {
             classify_realization_failure(error)
         }
+        PausedCheckpointPromotionPreparationError::ResourceCleanup(report)
+        | PausedCheckpointPromotionPreparationError::RealizationCleanup {
+            cleanup: report, ..
+        } => {
+            if report.reports_terminal_quarantine() {
+                PromotionFailureClass::Terminal
+            } else {
+                classify_realization_failure(report.error())
+            }
+        }
+        PausedCheckpointPromotionPreparationError::ComparisonCleanup { .. } => {
+            PromotionFailureClass::Terminal
+        }
         PausedCheckpointPromotionPreparationError::ResourceBegin(report) => {
             if report.was_quarantined() {
                 PromotionFailureClass::Terminal
@@ -971,5 +984,112 @@ mod tests {
             classify_realization_failure(&error),
             PromotionFailureClass::Terminal
         ));
+    }
+
+    #[test]
+    fn typed_guard_cleanup_preserves_generic_and_original_reporting_policy() {
+        // Classifier transport only; no native registry or Original is issued.
+        let raw = || QemuVmRealizationError::ExecutorUnavailable {
+            operation: "component cleanup classification",
+            message: String::from("same raw refusal"),
+        };
+        let original_policy = PausedCheckpointPromotionPreparationError::ResourceCleanup(
+            crate::QemuAttemptResourceGuardCleanupFailure::retained(raw()),
+        );
+        let generic_policy = PausedCheckpointPromotionPreparationError::ResourceCleanup(
+            crate::QemuAttemptResourceGuardCleanupFailure::retained(raw()).terminal_category(),
+        );
+
+        assert!(matches!(
+            classify_preparation_failure(&original_policy),
+            PromotionFailureClass::Retryable
+        ));
+        assert!(matches!(
+            classify_preparation_failure(&generic_policy),
+            PromotionFailureClass::Terminal
+        ));
+        let PausedCheckpointPromotionPreparationError::ResourceCleanup(report) = &generic_policy
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            report.error(),
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "component cleanup classification",
+                ..
+            }
+        ));
+        assert!(
+            !report.was_quarantined(),
+            "policy does not manufacture observed custody"
+        );
+
+        let both = PausedCheckpointPromotionPreparationError::RealizationCleanup {
+            first: QemuVmRealizationError::Canceled {
+                operation: "component initiating failure",
+            },
+            cleanup: crate::QemuAttemptResourceGuardCleanupFailure::retained(raw()),
+        };
+        assert!(matches!(
+            classify_preparation_failure(&both),
+            PromotionFailureClass::Retryable
+        ));
+        let PausedCheckpointPromotionPreparationError::RealizationCleanup { first, cleanup } = both
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            first,
+            QemuVmRealizationError::Canceled {
+                operation: "component initiating failure"
+            }
+        ));
+        assert!(matches!(
+            cleanup.error(),
+            QemuVmRealizationError::ExecutorUnavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn comparison_and_typed_cleanup_remain_independent_with_terminal_precedence() {
+        let comparison = QemuVmRealizationError::Canceled {
+            operation: "component comparison",
+        };
+        let cleanup = crate::QemuAttemptResourceGuardCleanupFailure::retained(
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "component cleanup",
+                message: String::from("independent cleanup cause"),
+            },
+        );
+        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = cleanup.error() else {
+            unreachable!()
+        };
+        let address = message.as_ptr();
+        let report = PausedCheckpointPromotionPreparationError::ComparisonCleanup {
+            comparison,
+            cleanup,
+        };
+
+        assert!(matches!(
+            classify_preparation_failure(&report),
+            PromotionFailureClass::Terminal
+        ));
+        let PausedCheckpointPromotionPreparationError::ComparisonCleanup {
+            comparison,
+            cleanup,
+        } = report
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            comparison,
+            QemuVmRealizationError::Canceled {
+                operation: "component comparison"
+            }
+        ));
+        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = cleanup.error() else {
+            unreachable!()
+        };
+        assert_eq!(message.as_ptr(), address);
     }
 }

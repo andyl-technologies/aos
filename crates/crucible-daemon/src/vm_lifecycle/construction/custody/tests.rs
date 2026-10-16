@@ -9,6 +9,8 @@ struct RetainedLauncher {
     drops: Arc<AtomicUsize>,
     refuse_once: AtomicBool,
     custody: Option<Box<ProductionVmConstructionCustody>>,
+    raw_failure: Option<crate::QemuAttemptResourceGuardCleanupFailure>,
+    retained_failure: Option<ProductionVmConstructionFailure>,
 }
 
 impl Drop for RetainedLauncher {
@@ -18,14 +20,10 @@ impl Drop for RetainedLauncher {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for RetainedLauncher {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -63,10 +61,16 @@ impl ProductionVmNodeLauncher for RetainedLauncher {
         Err(LifecycleApiError::ConstructionCustodyUnavailable)
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(failure) = self.retained_failure.as_ref() {
+            return failure.retry_cleanup();
+        }
+        if let Some(failure) = self.raw_failure.take() {
+            return Err(failure.into());
+        }
         if self.refuse_once.swap(false, Ordering::SeqCst) {
-            Err(LifecycleApiError::ConstructionCustodyUnavailable)
+            Err((LifecycleApiError::ConstructionCustodyUnavailable).into())
         } else {
             Ok(())
         }
@@ -88,6 +92,8 @@ fn launcher(
             drops: Arc::clone(&drops),
             refuse_once: AtomicBool::new(true),
             custody,
+            raw_failure: None,
+            retained_failure: None,
         }),
         calls,
         drops,
@@ -199,4 +205,138 @@ fn missing_retirement_carrier_returns_the_same_lifecycle_and_resources() {
     assert!(lifecycle.construction_custody.is_none());
     drop(lifecycle);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[derive(Debug)]
+struct OwnedComponentCause {
+    file: File,
+    name: &'static str,
+}
+
+impl fmt::Display for OwnedComponentCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name)
+    }
+}
+
+impl Error for OwnedComponentCause {}
+
+struct CauseProbe {
+    descriptor: std::os::fd::RawFd,
+    identity: (u64, u64),
+    address: *const OwnedComponentCause,
+}
+
+impl CauseProbe {
+    fn is_open(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(format!("/proc/self/fd/{}", self.descriptor))
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == self.identity)
+    }
+
+    fn assert_same_leaf(&self, failure: &crate::QemuAttemptResourceGuardCleanupFailure) {
+        let crucible_qemu::QemuVmRealizationError::ModelCopy { source } = failure.error() else {
+            panic!("the actual owned component leaf was erased");
+        };
+        let actual = source.downcast_ref::<OwnedComponentCause>().unwrap();
+        assert!(std::ptr::eq(actual, self.address));
+        assert!(self.is_open());
+        assert!(
+            !failure.was_quarantined(),
+            "a refusal did not transfer this owner"
+        );
+    }
+}
+
+fn raw_launcher(
+    name: &'static str,
+    custody: Option<Box<ProductionVmConstructionCustody>>,
+) -> (
+    Box<dyn ProductionVmNodeLauncher>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+    CauseProbe,
+) {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    let cause = Box::new(OwnedComponentCause {
+        file: tempfile::tempfile().unwrap(),
+        name,
+    });
+    let metadata = cause.file.metadata().unwrap();
+    let probe = CauseProbe {
+        descriptor: cause.file.as_raw_fd(),
+        identity: (metadata.dev(), metadata.ino()),
+        address: std::ptr::from_ref(&*cause),
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let launcher = Box::new(RetainedLauncher {
+        calls: Arc::clone(&calls),
+        drops: Arc::clone(&drops),
+        refuse_once: AtomicBool::new(false),
+        custody,
+        raw_failure: Some(crate::QemuAttemptResourceGuardCleanupFailure::retained(
+            crucible_qemu::QemuVmRealizationError::ModelCopy { source: cause },
+        )),
+        retained_failure: None,
+    });
+    (launcher, calls, drops, probe)
+}
+
+#[test]
+fn rejected_two_body_cleanup_keeps_both_leaves_through_actual_queued_destruction() {
+    // Local launchers own real files but refuse all execution operations. This
+    // exercises existing carrier/cell custody, not Main or native admission.
+    let (existing_launcher, existing_calls, existing_drops, existing_cause) =
+        raw_launcher("existing carrier", None);
+    let mut existing = Box::new(ProductionVmConstructionCustody::new());
+    existing.first = Some(LifecycleApiError::ConstructionCustodyUnavailable);
+    existing.partial_mut().unwrap().node_launcher = Some(existing_launcher);
+    let (incoming_launcher, incoming_calls, incoming_drops, incoming_cause) =
+        raw_launcher("incoming partial", Some(existing));
+    let failure = with_inputs(incoming_launcher, None, None, None, Vec::new()).unwrap_err();
+    let wrapper_calls = Arc::new(AtomicUsize::new(0));
+    let wrapper_drops = Arc::new(AtomicUsize::new(0));
+    let wrapper = Box::new(RetainedLauncher {
+        calls: Arc::clone(&wrapper_calls),
+        drops: Arc::clone(&wrapper_drops),
+        refuse_once: AtomicBool::new(false),
+        custody: None,
+        raw_failure: None,
+        retained_failure: Some(failure),
+    });
+
+    let history = crate::lifecycle_cleanup::component_owner_history_for_test(wrapper, || {
+        assert_eq!(incoming_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(existing_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(incoming_drops.load(Ordering::SeqCst), 0);
+        assert_eq!(existing_drops.load(Ordering::SeqCst), 0);
+        assert!(incoming_cause.is_open());
+        assert!(existing_cause.is_open());
+    });
+
+    assert_eq!(wrapper_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(wrapper_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(incoming_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(existing_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(incoming_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(existing_drops.load(Ordering::SeqCst), 1);
+    let ProductionVmConstructionCleanupError::GuardPair {
+        first:
+            Some(ProductionVmCleanupEarlierFailure::Scheduler(SchedulerError::BoundaryViolation {
+                message,
+            })),
+        first_guard,
+        second_guard,
+    } = &history
+    else {
+        panic!("both independently owned bodies must retain their actual leaves: {history:?}");
+    };
+    assert_eq!(message, "retained lifecycle cleanup cell was poisoned");
+    incoming_cause.assert_same_leaf(first_guard);
+    existing_cause.assert_same_leaf(second_guard);
+    drop(history);
+    assert!(!incoming_cause.is_open());
+    assert!(!existing_cause.is_open());
 }

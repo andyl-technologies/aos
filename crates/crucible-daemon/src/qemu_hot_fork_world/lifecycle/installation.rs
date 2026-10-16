@@ -8,7 +8,6 @@ use super::*;
 use crate::{ProductionVmConstructionCleanupError, ProductionVmConstructionFailure};
 use crucible_api::{ProductionVmCleanupHandoff, ProductionVmCleanupStage};
 use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
-use crucible_qemu::QemuVmRealizationError;
 
 use crate::qemu_hot_fork_world_resource::{
     QemuHotForkWorldReleaseReadiness, QemuHotForkWorldReleaseReadinessError,
@@ -53,7 +52,7 @@ pub(crate) enum HotForkInstallationRetirementError {
     Readiness(#[source] QemuHotForkWorldReleaseReadinessError),
     /// The actual aggregate guard refused physical release.
     #[error("retained installation aggregate release refused")]
-    Aggregate(#[source] QemuVmRealizationError),
+    Aggregate(#[source] crate::QemuAttemptResourceGuardCleanupFailure),
     /// Physical return completed while earlier real cleanup reports remain.
     #[error("retained installation physically returned after earlier failures: {0}")]
     Historical(#[source] HotForkInstallationHistory),
@@ -75,7 +74,7 @@ pub(crate) enum HotForkInstallationRetirementError {
 #[derive(Debug, Default)]
 pub(crate) struct HotForkInstallationHistory {
     construction: Option<LifecycleApiError>,
-    cleanup: Option<SchedulerError>,
+    cleanup: Option<crate::ProductionVmConstructionCleanupError>,
 }
 
 impl HotForkInstallationHistory {
@@ -108,11 +107,12 @@ impl std::error::Error for HotForkInstallationHistory {
 /// Keeps the exact API failure, source lease and aggregate resources together.
 pub(crate) struct RetainedHotForkInstallation<G: QemuAttemptProcessResourceGuard> {
     construction: Option<ProductionVmConstructionFailure>,
-    cleanup_handoff:
-        Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
+    cleanup_handoff: Option<
+        Box<dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>>,
+    >,
     source_lease: Option<QemuHotForkSourceWorldLease>,
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-    reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
     resources: QemuHotForkWorldResourceOwner<G>,
     auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
     handoff_confirmed: bool,
@@ -126,7 +126,7 @@ impl<G: QemuAttemptProcessResourceGuard> RetainedHotForkInstallation<G> {
         construction: ProductionVmConstructionFailure,
         source_lease: QemuHotForkSourceWorldLease,
         source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-        reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+        reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
         resources: QemuHotForkWorldResourceOwner<G>,
         auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
     ) -> Self {

@@ -736,15 +736,26 @@ fn failed_reap_quarantines_process_and_filesystem_authority_once() {
         .begin(resources, ExecutionCancellation::default(), None)
         .expect("resource guard");
 
+    let first = guard.finish().expect_err("actual cleanup refused");
     assert!(matches!(
-        guard.finish(),
-        Err(QemuVmRealizationError::ReapQuarantined { .. })
+        first.error(),
+        QemuVmRealizationError::ExecutorUnavailable {
+            operation: "finish fake host resources",
+            ..
+        }
     ));
+    assert!(first.was_quarantined());
+    assert!(first.reports_terminal_quarantine());
     for _ in 0..3 {
+        let repeated = guard.finish().expect_err("quarantine remains retained");
         assert!(matches!(
-            guard.finish(),
-            Err(QemuVmRealizationError::ReapQuarantined { .. })
+            repeated.error(),
+            QemuVmRealizationError::Canceled {
+                operation: "repeat quarantined attempt host retirement"
+            }
         ));
+        assert!(repeated.was_quarantined());
+        assert!(repeated.reports_terminal_quarantine());
     }
     assert!(guard.check_operational_boundary().is_err());
     assert!(guard.charge_execution_quantum().is_err());
@@ -766,10 +777,15 @@ fn explicit_quarantine_cannot_become_successful_finish() {
     guard.quarantine();
     guard.quarantine();
     for _ in 0..3 {
+        let repeated = guard.finish().expect_err("quarantine remains retained");
         assert!(matches!(
-            guard.finish(),
-            Err(QemuVmRealizationError::ReapQuarantined { .. })
+            repeated.error(),
+            QemuVmRealizationError::Canceled {
+                operation: "repeat quarantined attempt host retirement"
+            }
         ));
+        assert!(repeated.was_quarantined());
+        assert!(repeated.reports_terminal_quarantine());
     }
     assert!(guard.check_operational_boundary().is_err());
     assert!(guard.charge_execution_quantum().is_err());
@@ -903,13 +919,23 @@ fn original_generation_quarantine_never_attests_aggregate_return() {
     // This exercises retained component custody, not Main or native issuance.
     // The enclosing launch/park owner keeps its initiating typed cause.
     owner.quarantine_original_launch();
-    assert_eq!(owner.finish(), Err(LifecycleApiError::CleanupRetained));
+    assert!(matches!(
+        owner.finish(),
+        Err(crate::ProductionVmConstructionCleanupError::Authority(
+            LifecycleApiError::CleanupRetained
+        ))
+    ));
     lease
         .finish()
         .expect("close the exact local generation body");
     owner.quarantine_original_launch();
     owner.quarantine();
-    assert_eq!(owner.finish(), Err(LifecycleApiError::CleanupRetained));
+    assert!(matches!(
+        owner.finish(),
+        Err(crate::ProductionVmConstructionCleanupError::Authority(
+            LifecycleApiError::CleanupRetained
+        ))
+    ));
     assert!(owner.register_generation(generation("vm-a", 2)).is_err());
     assert!(owner.check_operational_boundary().is_err());
     drop(owner);
@@ -931,6 +957,9 @@ fn generation_quarantine_preserves_its_existing_failure_presentation() {
 
     owner.quarantine();
     let first = owner.finish().expect_err("quarantine cannot attest return");
+    let crate::ProductionVmConstructionCleanupError::Authority(first) = first else {
+        panic!("local aggregate quarantine must remain an API status");
+    };
     assert_eq!(
         first,
         LifecycleApiError::LoopFactory {
@@ -940,7 +969,9 @@ fn generation_quarantine_preserves_its_existing_failure_presentation() {
         }
     );
     owner.quarantine_original_launch();
-    assert_eq!(owner.finish().expect_err("same quarantine"), first);
+    assert!(
+        matches!(owner.finish(), Err(crate::ProductionVmConstructionCleanupError::Authority(ref repeated)) if repeated == &first)
+    );
     drop(owner);
 
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
@@ -960,11 +991,26 @@ fn generation_guard_finish_failure_never_retries_or_attests_return() {
         QemuAttemptGenerationResourceOwner::new(guard, test_generation_storage(&["vm-a"]));
 
     let first = owner.finish().expect_err("actual component host refusal");
-    assert!(matches!(&first, LifecycleApiError::LoopFactory { message }
-        if message.contains("reap is unavailable")));
+    let raw = first
+        .guard_failure()
+        .expect("actual guard leaf survives generation owner");
+    assert!(matches!(
+        raw.error(),
+        QemuVmRealizationError::ExecutorUnavailable {
+            operation: "finish fake host resources",
+            ..
+        }
+    ));
+    assert!(raw.was_quarantined());
+    assert!(raw.reports_terminal_quarantine());
     owner.quarantine_original_launch();
     owner.quarantine();
-    assert_eq!(owner.finish().expect_err("same retained failure"), first);
+    assert!(matches!(
+        owner.finish(),
+        Err(crate::ProductionVmConstructionCleanupError::Authority(
+            LifecycleApiError::CleanupRetained
+        ))
+    ));
     assert!(owner.check_operational_boundary().is_err());
     drop(owner);
 
@@ -1131,7 +1177,7 @@ fn original_composed_retirement_returns_first_control_and_post_original_unchange
 
     let first = guard.finish().expect_err("actual host control refused");
 
-    let QemuVmRealizationError::ModelCopy { source } = &first else {
+    let QemuVmRealizationError::ModelCopy { source } = first.error() else {
         panic!("actual first error must not be converted to string quarantine");
     };
     let actual = source
@@ -1169,14 +1215,14 @@ fn original_composed_retirement_cannot_retry_or_attest_terminal_containment() {
     let first = guard.finish().expect_err("first real finish refusal");
 
     assert!(matches!(
-        guard.finish(),
+        guard.finish().as_ref().map_err(|failure| failure.error()),
         Err(QemuVmRealizationError::Canceled {
             operation: "repeat quarantined original native retirement"
         })
     ));
     guard.quarantine();
     assert!(matches!(
-        guard.finish(),
+        guard.finish().as_ref().map_err(|failure| failure.error()),
         Err(QemuVmRealizationError::Canceled {
             operation: "repeat quarantined original native retirement"
         })
@@ -1234,7 +1280,7 @@ fn original_explicit_quarantine_never_attests_return() {
     guard.quarantine();
     for _ in 0..3 {
         assert!(matches!(
-            guard.finish(),
+            guard.finish().as_ref().map_err(|failure| failure.error()),
             Err(QemuVmRealizationError::Canceled {
                 operation: "repeat quarantined original native retirement"
             })

@@ -79,7 +79,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.issued.contains(&self.identity)
         {
             return Err(world_resource_error(
@@ -133,7 +133,7 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if state.terminal
+        if state.retirement != WorldResourceRetirement::Active
             || state.released.contains(&self.identity)
             || !state.issued.remove(&self.identity)
         {
@@ -145,20 +145,27 @@ where
         Ok(())
     }
 
-    fn finish_node(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.retirement.already_returned()? {
-            return Ok(());
+    pub(crate) fn finish_member(&mut self) -> Result<(), QemuWorldMemberCleanupStatus> {
+        match self.retirement {
+            WorldMemberRetirement::Active => {}
+            WorldMemberRetirement::Returned => return Ok(()),
+            WorldMemberRetirement::Quarantined => {
+                return Err(QemuWorldMemberCleanupStatus::Retained {
+                    operation: "finish hot-fork World member",
+                });
+            }
         }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        let mut state = self.state.lock().map_err(|_| {
+            QemuWorldMemberCleanupStatus::registry("hot-fork world resource registry is poisoned")
+        })?;
         if state.released.contains(&self.identity) {
             self.retirement = WorldMemberRetirement::Returned;
             return Ok(());
         }
-        if state.terminal || !state.issued.contains(&self.identity) {
-            return Err(world_resource_error(
+        if state.retirement != WorldResourceRetirement::Active
+            || !state.issued.contains(&self.identity)
+        {
+            return Err(QemuWorldMemberCleanupStatus::registry(
                 "hot-fork node target is not active in its aggregate owner",
             ));
         }
@@ -171,7 +178,7 @@ where
             registration
                 .registrar
                 .retire_unpublished_after_cleanup(registration.target, registration.resources)
-                .map_err(|error| world_resource_error(error.to_string()))?;
+                .map_err(|error| QemuWorldMemberCleanupStatus::registry(error.to_string()))?;
         }
         state.released.insert(self.identity.clone());
         self.retirement = WorldMemberRetirement::Returned;
@@ -197,7 +204,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.issued.contains(&self.identity)
         {
             return Err(world_resource_error(
@@ -213,7 +220,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.issued.contains(&self.identity)
         {
             return Err(world_resource_error(
@@ -228,8 +235,15 @@ impl<G> QemuAttemptResourceGuard for QemuHotForkWorldNodeTarget<G>
 where
     G: QemuAttemptResourceGuard,
 {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
-        self.finish_node()
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
+        self.finish_member().map_err(|status| {
+            let failure = crate::QemuAttemptResourceGuardCleanupFailure::member_status(status);
+            if self.retirement == WorldMemberRetirement::Quarantined {
+                failure.after_quarantine()
+            } else {
+                failure
+            }
+        })
     }
 
     fn quarantine(&mut self) {
@@ -253,7 +267,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.issued.contains(&self.identity)
         {
             return Err(world_resource_error(
@@ -283,7 +297,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.issued.contains(&self.identity)
         {
             return Err(world_resource_error(
@@ -301,7 +315,7 @@ where
             Ok(mut state) => {
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
-                state.terminal = true;
+                state.retirement = WorldResourceRetirement::Retained;
                 state.terminal_failure.get_or_insert_with(|| {
                     String::from("concurrent hot-fork node retained an unreaped launch child")
                 });
@@ -310,7 +324,7 @@ where
                 let mut state = poisoned.into_inner();
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
-                state.terminal = true;
+                state.retirement = WorldResourceRetirement::Retained;
                 state.terminal_failure.get_or_insert_with(|| {
                     String::from("concurrent hot-fork node resource registry was poisoned")
                 });
@@ -338,7 +352,7 @@ where
             )
         })?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.issued.contains(&self.identity)
         {
             return Err(QemuNodeChannelError::new(

@@ -490,6 +490,7 @@ fn lifecycle_without_backends(
         node_generations: BTreeMap::new(),
         node_leases: BTreeMap::new(),
         node_lease_cleanup_failed: false,
+        retained_cleanup_failure: None,
         node_service_states: BTreeMap::new(),
         lifecycle_journal: ProductionLifecycleJournal {
             version: 1,

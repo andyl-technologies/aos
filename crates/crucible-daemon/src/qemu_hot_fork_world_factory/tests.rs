@@ -150,7 +150,7 @@ impl QemuAttemptOperationalBoundary for ScriptedWorldGuard {
 }
 
 impl QemuAttemptResourceGuard for ScriptedWorldGuard {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         if !self.terminal {
             self.finishes.fetch_add(1, Ordering::SeqCst);
             self.terminal = true;
@@ -162,7 +162,7 @@ impl QemuAttemptResourceGuard for ScriptedWorldGuard {
             })
             .is_ok()
         {
-            return Err(test_realization_error("scripted target cleanup failure"));
+            return Err((test_realization_error("scripted target cleanup failure")).into());
         }
         Ok(())
     }
@@ -684,7 +684,8 @@ impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
     fn reconcile_execution_disposition(
         &mut self,
         _disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
 }
@@ -927,7 +928,8 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
     fn reconcile_execution_disposition(
         &mut self,
         _disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
 }

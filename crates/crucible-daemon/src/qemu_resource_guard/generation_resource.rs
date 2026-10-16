@@ -169,21 +169,22 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`LifecycleApiError::LoopFactory`] when a lease remains active or
-    /// abandoned, the registry is poisoned, or underlying guard cleanup fails.
-    /// Returns [`LifecycleApiError::CleanupRetained`] after original launch
-    /// quarantine, whose actual cause remains with the enclosing owner.
-    pub fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    /// Retains a local API status when a lease remains active or abandoned, or
+    /// the registry is poisoned. Underlying guard cleanup moves its actual leaf
+    /// to the enclosing typed history. Later quarantine observations preserve
+    /// the existing presentation without repeating cleanup or attesting return.
+    pub fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         match self.retirement {
             GenerationResourceRetirement::Active => {}
             GenerationResourceRetirement::Returned => return Ok(()),
             GenerationResourceRetirement::Quarantined => {
-                return Err(self
+                return Err((self
                     .terminal_failure
                     .as_ref()
                     .map_or(LifecycleApiError::CleanupRetained, |message| {
                         generation_error(message.clone())
-                    }));
+                    }))
+                .into());
             }
         }
         let release_allowed = self
@@ -206,14 +207,14 @@ where
                 self.guard.quarantine();
                 self.retirement = GenerationResourceRetirement::Quarantined;
                 self.terminal_failure = Some(message.clone());
-                return Err(generation_error(message));
+                return Err((generation_error(message)).into());
             }
             Err(error) => {
                 let message = error.to_string();
                 self.guard.quarantine();
                 self.retirement = GenerationResourceRetirement::Quarantined;
                 self.terminal_failure = Some(message);
-                return Err(error);
+                return Err((error).into());
             }
         }
         let result = self.guard.finish();
@@ -225,11 +226,10 @@ where
                 self.retirement = GenerationResourceRetirement::Returned;
                 Ok(())
             }
-            Err(error) => {
-                let message = format!("finish QEMU attempt aggregate resources: {error}");
-                self.terminal_failure = Some(message.clone());
-                Err(generation_error(message))
-            }
+            // The actual leaf moves before any presentation. Subsequent
+            // terminal observations use the existing allocation-free status;
+            // the enclosing cleanup history retains this first cause.
+            Err(error) => Err(error.into()),
         }
     }
 

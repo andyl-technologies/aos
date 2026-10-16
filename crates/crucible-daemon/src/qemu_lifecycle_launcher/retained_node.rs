@@ -47,7 +47,7 @@ impl RetainedNodeLaunch {
             .ok_or_else(|| launcher_message("observed native node channels already closed"))
     }
 
-    pub(super) fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    pub(super) fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         if let Some(node) = self.node.as_mut() {
             node.force_quarantine_and_reap().map_err(|error| {
                 launcher_message(format!("reap retained QEMU node pairing: {error}"))
@@ -57,9 +57,9 @@ impl RetainedNodeLaunch {
             self.channels_closed = true;
         }
         if !self.channels_closed {
-            return Err(launcher_message(
-                "retained QEMU node channel return is uncertain",
-            ));
+            return Err(
+                (launcher_message("retained QEMU node channel return is uncertain")).into(),
+            );
         }
         if let Some(lease) = self.lease.as_mut() {
             match lease {

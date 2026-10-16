@@ -131,7 +131,11 @@ fn unavailable_token_contract_rejects_acceptance_and_custody_changes()
     }
 
     for (index, obligation, replacement) in [
-        (0, "queue: Weak::new()", "queue: accepting_queue()"),
+        (
+            0,
+            "Box::new(CleanupReservation { queue: Weak::new(), index: usize::MAX,",
+            "Box::new(CleanupReservation { queue: accepting_queue(), index: usize::MAX,",
+        ),
         (
             0,
             "return Err((self, owner));",

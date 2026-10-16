@@ -1203,6 +1203,7 @@ pub struct ProductionVmLifecycleLoop {
     node_generations: BTreeMap<NodeId, u64>,
     node_leases: BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
     node_lease_cleanup_failed: bool,
+    retained_cleanup_failure: Option<ProductionVmConstructionCleanupError>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     lifecycle_journal: ProductionLifecycleJournal,
     lifecycle_persistence: LifecycleStatePersistence,
@@ -2027,13 +2028,19 @@ impl ProductionVmNodeLaunch {
 /// containment authority from their `Drop` path when lifecycle construction,
 /// unwinding, or caller abandonment prevents an explicit [`Self::finish`].
 pub trait ProductionVmNodeLauncher:
-    ProductionVmCleanupOwner<Failure = crucible::SchedulerError>
+    ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>
 {
     /// Moves the exact cleanup reservation without claiming physical return.
     #[cfg(target_os = "linux")]
     fn take_cleanup_reservation(
         &mut self,
-    ) -> Option<Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>> {
+    ) -> Option<
+        Box<
+            dyn ProductionVmCleanupReservation<
+                Failure = crate::ProductionVmConstructionCleanupError,
+            >,
+        >,
+    > {
         None
     }
 
@@ -2230,7 +2237,7 @@ pub trait ProductionVmNodeLauncher:
     /// Returns [`LifecycleApiError`] when reap or containment release cannot be
     /// attested. The caller reports this failure even when node shutdown also
     /// failed.
-    fn finish(&mut self) -> Result<(), LifecycleApiError>;
+    fn finish(&mut self) -> Result<(), ProductionVmConstructionCleanupError>;
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -2239,14 +2246,10 @@ struct PackagedProductionVmNodeLauncher;
 
 #[cfg(any(test, feature = "test-support"))]
 impl crucible_api::ProductionVmCleanupOwner for PackagedProductionVmNodeLauncher {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -2287,7 +2290,7 @@ impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
         ))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         Ok(())
     }
 }
@@ -2391,8 +2394,8 @@ pub use crucible_api::{
 mod construction;
 use construction::build_production_vm_lifecycle_loop_with_restore;
 pub use construction::{
-    ProductionVmConstructionCleanupError, ProductionVmConstructionCustody,
-    ProductionVmConstructionFailure,
+    ProductionVmCleanupEarlierFailure, ProductionVmConstructionCleanupError,
+    ProductionVmConstructionCustody, ProductionVmConstructionFailure,
 };
 mod helpers;
 mod network_faults;

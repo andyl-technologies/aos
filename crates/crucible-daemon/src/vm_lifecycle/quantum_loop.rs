@@ -1047,6 +1047,11 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Moves retained cleanup history without asserting physical closure.
+    pub(crate) fn take_cleanup_failure(&mut self) -> Option<ProductionVmConstructionCleanupError> {
+        self.retained_cleanup_failure.take()
+    }
+
     /// Reaps native custody without deciding whether modeled replay completed.
     /// Only the opaque, never-exposed stopped owner uses this independently of
     /// the ordinary shutdown's unchanged semantic exhaustion checks.
@@ -1079,18 +1084,17 @@ impl ProductionVmLifecycleLoop {
             // quota usage: unlinked open inodes remain charged to it.
             self.retained_hot_fork_disk_owners.clear();
 
-            self.node_launcher
-                .finish()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("finish production node-launch authority: {error}"),
-                })
+            match self.node_launcher.finish() {
+                Ok(()) => Ok(()),
+                Err(error) => Err(self.retain_cleanup_failure(error)),
+            }
         } else {
             Ok(())
         };
 
         let mut failures = Vec::new();
         if let Err(error) = construction_shutdown {
-            failures.push(error);
+            failures.push(self.retain_cleanup_failure(error));
         }
         if let Some(Err(error)) = gateway_shutdown {
             failures.push(error);
@@ -1617,6 +1621,19 @@ impl ProductionVmLifecycleLoop {
             self.node_lease_cleanup_failed = true;
         }
         result
+    }
+
+    fn retain_cleanup_failure(
+        &mut self,
+        error: ProductionVmConstructionCleanupError,
+    ) -> SchedulerError {
+        let first = ProductionVmConstructionCleanupError::retain_first(
+            &mut self.retained_cleanup_failure,
+            error,
+        );
+        SchedulerError::BoundaryViolation {
+            message: first.to_string(),
+        }
     }
 
     fn finish_all_reaped_node_leases(&mut self) -> Result<(), SchedulerError> {

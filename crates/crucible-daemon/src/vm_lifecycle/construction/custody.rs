@@ -22,7 +22,11 @@ pub struct ProductionVmConstructionCustody {
     physically_closed: AtomicBool,
     #[cfg(target_os = "linux")]
     pub(super) reservation: Option<
-        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<
+            dyn crucible_api::ProductionVmCleanupReservation<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+        >,
     >,
 }
 
@@ -350,10 +354,14 @@ pub(super) enum FailureStorage {
             Option<(
                 Box<
                     dyn crucible_api::ProductionVmCleanupReservation<
-                            Failure = crucible::SchedulerError,
+                            Failure = crate::ProductionVmConstructionCleanupError,
                         >,
                 >,
-                Box<dyn crucible_api::ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+                Box<
+                    dyn crucible_api::ProductionVmCleanupOwner<
+                            Failure = crate::ProductionVmConstructionCleanupError,
+                        >,
+                >,
             )>,
         >,
     },
@@ -423,7 +431,11 @@ impl ProductionVmConstructionFailure {
                     Some(custody) => custody.retry_cleanup(),
                     None => Ok(()),
                 };
-                first.and(existing)
+                match (first, existing) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(first), Ok(())) | (Ok(()), Err(first)) => Err(first),
+                    (Err(first), Err(existing)) => Err(first.with_later_failure(existing)),
+                }
             }
             #[cfg(target_os = "linux")]
             FailureStorage::Rejected { returned, .. } => {
@@ -431,9 +443,7 @@ impl ProductionVmConstructionFailure {
                 // its real cell can later authenticate reservation completion.
                 let mut returned = returned.try_lock().map_err(phase_lock_error)?;
                 match returned.as_mut() {
-                    Some((_, owner)) => owner
-                        .retry_cleanup()
-                        .map_err(ProductionVmConstructionCleanupError::Leases),
+                    Some((_, owner)) => owner.retry_cleanup(),
                     None => Ok(()),
                 }
             }
@@ -483,6 +493,26 @@ pub enum ProductionVmConstructionCleanupError {
     Leases(SchedulerError),
     /// Actual aggregate launcher or pending lease retirement refused.
     Authority(LifecycleApiError),
+    /// A guard retained its actual cleanup leaf and observed custody.
+    Guard(crate::QemuAttemptResourceGuardCleanupFailure),
+    /// Existing scheduler cleanup retained its typed cause.
+    Scheduler(SchedulerError),
+    /// The two independent bodies of a rejected carrier both refused cleanup.
+    GuardPair {
+        /// The earlier non-host-cleanup report, if it preceded both leaves.
+        first: Option<ProductionVmCleanupEarlierFailure>,
+        /// The first body's actual host cleanup leaf, in observation order.
+        first_guard: crate::QemuAttemptResourceGuardCleanupFailure,
+        /// The other body's independently owned host cleanup leaf.
+        second_guard: crate::QemuAttemptResourceGuardCleanupFailure,
+    },
+    /// An earlier report and the independently retained first guard leaf.
+    GuardHistory {
+        /// The unchanged report that preceded the guard refusal.
+        first: ProductionVmCleanupEarlierFailure,
+        /// The first guard cleanup cause, with its actual custody observation.
+        guard: crate::QemuAttemptResourceGuardCleanupFailure,
+    },
 }
 
 impl fmt::Display for ProductionVmConstructionCleanupError {
@@ -497,6 +527,24 @@ impl fmt::Display for ProductionVmConstructionCleanupError {
             Self::Authority(source) => {
                 write!(formatter, "construction authority retirement: {source}")
             }
+            Self::Guard(source) => write!(formatter, "guard retirement: {source}"),
+            Self::Scheduler(source) => std::fmt::Display::fmt(source, formatter),
+            Self::GuardHistory { first, guard } => {
+                write!(formatter, "{first}; guard cleanup: {guard}")
+            }
+            Self::GuardPair {
+                first,
+                first_guard,
+                second_guard,
+            } => {
+                if let Some(first) = first {
+                    write!(formatter, "{first}; ")?;
+                }
+                write!(
+                    formatter,
+                    "first body cleanup: {first_guard}; other body cleanup: {second_guard}"
+                )
+            }
         }
     }
 }
@@ -508,8 +556,163 @@ impl Error for ProductionVmConstructionCleanupError {
             Self::Backend(source) => Some(source),
             Self::Leases(source) => Some(source),
             Self::Authority(source) => Some(source),
+            Self::Guard(source) => Some(source),
+            Self::Scheduler(source) => Some(source),
+            Self::GuardHistory { first, .. } => Some(first),
+            Self::GuardPair {
+                first, first_guard, ..
+            } => first
+                .as_ref()
+                .map(|first| first as &dyn Error)
+                .or(Some(first_guard)),
             Self::Poisoned | Self::Pending | Self::Retained(_) => None,
         }
+    }
+}
+
+/// Retains the unchanged earlier diagnostic beside the first guard cleanup leaf.
+///
+/// This finite diagnostic union owns no new cleanup allowance or containing body.
+#[derive(Debug, thiserror::Error)]
+pub enum ProductionVmCleanupEarlierFailure {
+    /// A prior unwind made the phase uncertain.
+    #[error("construction custody is poisoned")]
+    Poisoned,
+    /// Another invocation still borrows the same phase.
+    #[error("construction cleanup is already borrowed")]
+    Pending,
+    /// The earlier owning phase was incomplete.
+    #[error("{0}")]
+    Retained(&'static str),
+    /// Actual node reap refused.
+    #[error("construction node reap: {0}")]
+    Node(#[source] crucible_qemu::QemuNodeError),
+    /// Actual backend shutdown refused.
+    #[error("construction backend retirement: {0}")]
+    Backend(#[source] crucible::BackendError),
+    /// Exact lease retirement refused.
+    #[error("construction lease retirement: {0}")]
+    Leases(#[source] SchedulerError),
+    /// An earlier launcher or lease check refused.
+    #[error("construction authority retirement: {0}")]
+    Authority(#[source] LifecycleApiError),
+    /// Existing scheduler cleanup retained its typed cause.
+    #[error(transparent)]
+    Scheduler(SchedulerError),
+    /// The earlier local-role report, retained beside aggregate cleanup.
+    #[error(transparent)]
+    Guard(crate::QemuAttemptResourceGuardCleanupFailure),
+}
+
+impl ProductionVmConstructionCleanupError {
+    /// Borrows the independently retained first guard cleanup cause.
+    #[must_use]
+    pub fn guard_failure(&self) -> Option<&crate::QemuAttemptResourceGuardCleanupFailure> {
+        match self {
+            Self::Guard(guard) | Self::GuardHistory { guard, .. } => Some(guard),
+            Self::GuardPair { first_guard, .. } => Some(first_guard),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn retain_first(slot: &mut Option<Self>, source: Self) -> &Self {
+        let first = match slot.take() {
+            Some(first) => first.with_later_failure(source),
+            None => source,
+        };
+        slot.insert(first)
+    }
+
+    pub(crate) fn with_later_failure(self, source: Self) -> Self {
+        match source {
+            Self::Guard(guard) | Self::GuardHistory { guard, .. } => self.with_guard_history(guard),
+            Self::GuardPair {
+                first_guard,
+                second_guard,
+                ..
+            } => self
+                .with_guard_history(first_guard)
+                .with_guard_history(second_guard),
+            _ => self,
+        }
+    }
+
+    fn with_guard_history(self, guard: crate::QemuAttemptResourceGuardCleanupFailure) -> Self {
+        let first = match self {
+            Self::Poisoned => ProductionVmCleanupEarlierFailure::Poisoned,
+            Self::Pending => ProductionVmCleanupEarlierFailure::Pending,
+            Self::Retained(message) => ProductionVmCleanupEarlierFailure::Retained(message),
+            Self::Node(source) => ProductionVmCleanupEarlierFailure::Node(source),
+            Self::Backend(source) => ProductionVmCleanupEarlierFailure::Backend(source),
+            Self::Leases(source) => ProductionVmCleanupEarlierFailure::Leases(source),
+            Self::Authority(source) => ProductionVmCleanupEarlierFailure::Authority(source),
+            Self::Scheduler(source) => ProductionVmCleanupEarlierFailure::Scheduler(source),
+            Self::Guard(first) => {
+                if !guard.has_raw_cause() {
+                    return Self::Guard(first);
+                }
+                if first.has_raw_cause() {
+                    return Self::GuardPair {
+                        first: None,
+                        first_guard: first,
+                        second_guard: guard,
+                    };
+                }
+                ProductionVmCleanupEarlierFailure::Guard(first)
+            }
+            Self::GuardHistory {
+                first,
+                guard: retained,
+            } => {
+                if !guard.has_raw_cause() {
+                    return Self::GuardHistory {
+                        first,
+                        guard: retained,
+                    };
+                }
+                if retained.has_raw_cause() {
+                    return Self::GuardPair {
+                        first: Some(first),
+                        first_guard: retained,
+                        second_guard: guard,
+                    };
+                }
+                return Self::GuardHistory { first, guard };
+            }
+            Self::GuardPair {
+                first,
+                first_guard,
+                second_guard,
+            } => {
+                // The actual Missing carrier contains exactly two bodies. Each
+                // aggregate close is one-shot; subsequent reports are local
+                // status. No selected-node lease calls an aggregate close.
+                return Self::GuardPair {
+                    first,
+                    first_guard,
+                    second_guard,
+                };
+            }
+        };
+        Self::GuardHistory { first, guard }
+    }
+}
+
+impl From<LifecycleApiError> for ProductionVmConstructionCleanupError {
+    fn from(source: LifecycleApiError) -> Self {
+        Self::Authority(source)
+    }
+}
+
+impl From<SchedulerError> for ProductionVmConstructionCleanupError {
+    fn from(source: SchedulerError) -> Self {
+        Self::Scheduler(source)
+    }
+}
+
+impl From<crate::QemuAttemptResourceGuardCleanupFailure> for ProductionVmConstructionCleanupError {
+    fn from(source: crate::QemuAttemptResourceGuardCleanupFailure) -> Self {
+        Self::Guard(source)
     }
 }
 
@@ -636,9 +839,7 @@ fn retire_partial(partial: &mut Partial) -> Result<(), ProductionVmConstructionC
     partial.hot_fork_continuation = None;
     partial.exact_ram_parents.clear();
     if let Some(launcher) = partial.node_launcher.as_mut() {
-        launcher
-            .finish()
-            .map_err(ProductionVmConstructionCleanupError::Authority)?;
+        launcher.finish()?;
     }
     partial.cleanup_complete = true;
     Ok(())
@@ -647,9 +848,10 @@ fn retire_partial(partial: &mut Partial) -> Result<(), ProductionVmConstructionC
 fn retire_complete(
     lifecycle: &mut ProductionVmLifecycleLoop,
 ) -> Result<(), ProductionVmConstructionCleanupError> {
-    lifecycle
-        .retry_retained_debug_construction()
-        .map_err(ProductionVmConstructionCleanupError::Leases)?;
+    if let Some(first) = lifecycle.retained_cleanup_failure.take() {
+        return Err(first);
+    }
+    lifecycle.retry_retained_debug_construction()?;
     if lifecycle.debug_gateway.is_some() || lifecycle.indeterminate_debug_candidate.is_some() {
         return Err(ProductionVmConstructionCleanupError::Retained(
             "construction contains a live external debugger owner",
@@ -667,10 +869,7 @@ fn retire_complete(
     lifecycle.exact_ram_parents.clear();
     // This private failed-construction route preserves the ordinary Loop's
     // sticky latch as history, while proving actual map retirement directly.
-    lifecycle
-        .node_launcher
-        .finish()
-        .map_err(ProductionVmConstructionCleanupError::Authority)
+    lifecycle.node_launcher.finish()
 }
 
 /// Visits the existing map without allocating a second node roster on refusal.
@@ -745,13 +944,9 @@ impl ProductionVmLifecycleLoop {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for ProductionVmConstructionCustody {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), SchedulerError> {
-        ProductionVmConstructionCustody::retry_cleanup(self).map_err(|error| {
-            SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmConstructionCustody::retry_cleanup(self)
     }
 }

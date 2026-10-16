@@ -14,6 +14,7 @@ use crucible_protocol::selectable_catalog_plan::{
 use crucible_protocol::{SelectionReply, SelectionRequest};
 
 use super::*;
+use crucible_qemu::QemuVmRealizationError;
 
 #[path = "tests/durable_run_state.rs"]
 mod durable_run_state;
@@ -134,6 +135,7 @@ fn checkpoint_selectable_plan(continuation: SelectablePlanContinuation) -> Selec
 struct FailingFinishLauncher {
     finish_calls: Arc<std::sync::atomic::AtomicUsize>,
     fail_boundary: bool,
+    raw_failure: Option<crate::QemuAttemptResourceGuardCleanupFailure>,
 }
 
 struct RecordingNodeLease {
@@ -172,14 +174,10 @@ impl ProductionVmNodeLease for RecordingNodeLease {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for FailingFinishLauncher {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -217,10 +215,13 @@ impl ProductionVmNodeLauncher for FailingFinishLauncher {
         Err(loop_factory_error("test launcher does not admit replay"))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         self.finish_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(loop_factory_error("test launcher retained quarantine"))
+        if let Some(first) = self.raw_failure.take() {
+            return Err(first.into());
+        }
+        Err((loop_factory_error("test launcher retained quarantine")).into())
     }
 }
 
@@ -255,14 +256,10 @@ struct SelectablePlanRecordingLauncher {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for RecordingFinishLauncher {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -296,7 +293,7 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
         Err(loop_factory_error("test launcher does not admit replay"))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         self.finish_order
             .lock()
             .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy"))
@@ -306,14 +303,10 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for PreparationBoundaryLauncher {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -371,20 +364,16 @@ impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
         Err(loop_factory_error("test launcher does not admit replay"))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         Ok(())
     }
 }
 
 impl crucible_api::ProductionVmCleanupOwner for SelectablePlanRecordingLauncher {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -442,7 +431,7 @@ impl ProductionVmNodeLauncher for SelectablePlanRecordingLauncher {
         ))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         Ok(())
     }
 }
@@ -1115,6 +1104,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         node_generations: BTreeMap::new(),
         node_leases: BTreeMap::new(),
         node_lease_cleanup_failed: false,
+        retained_cleanup_failure: None,
         node_service_states: BTreeMap::new(),
         lifecycle_journal: ProductionLifecycleJournal {
             version: 1,
@@ -1713,6 +1703,7 @@ fn production_failed_boundary_cannot_publish_a_queued_reservation() {
     lifecycle.node_launcher = Box::new(FailingFinishLauncher {
         finish_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         fail_boundary: true,
+        raw_failure: None,
     });
     let parent = lifecycle.inner.loop_impl().configuration().clone();
     let error = lifecycle
@@ -1926,6 +1917,7 @@ fn lifecycle_reports_launch_authority_cleanup_after_backend_shutdown() {
     lifecycle.node_launcher = Box::new(FailingFinishLauncher {
         finish_calls: Arc::clone(&finish_calls),
         fail_boundary: false,
+        raw_failure: None,
     });
 
     let error = QuantumLoop::shutdown(&mut lifecycle)
@@ -2540,4 +2532,41 @@ fn production_debug_evidence_restores_the_recorded_scheduler_frontier() {
         recorded.scheduler_frontier(VirtualTime { ticks: 99 }),
         VirtualTime { ticks: 99 }
     );
+}
+
+#[test]
+fn shutdown_presentation_keeps_actual_guard_leaf_for_owning_extraction() {
+    let source = crucible::crash_restart_scenario().unwrap().scenario;
+    let mut lifecycle = production_loop_without_backends(&source);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let message = String::from("original component guard leaf");
+    let address = message.as_ptr();
+    lifecycle.node_launcher = Box::new(FailingFinishLauncher {
+        finish_calls: Arc::clone(&calls),
+        fail_boundary: false,
+        raw_failure: Some(crate::QemuAttemptResourceGuardCleanupFailure::retained(
+            QemuVmRealizationError::ModelCopy {
+                source: Box::new(SchedulerError::BoundaryViolation { message }),
+            },
+        )),
+    });
+
+    assert!(lifecycle.shutdown().is_err());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let history = lifecycle
+        .take_cleanup_failure()
+        .expect("scheduler presentation must leave the actual leaf owned");
+    assert!(lifecycle.take_cleanup_failure().is_none());
+    drop(lifecycle);
+
+    let QemuVmRealizationError::ModelCopy { source } = history.guard_failure().unwrap().error()
+    else {
+        panic!("the actual cleanup leaf was formatted or replaced");
+    };
+    let SchedulerError::BoundaryViolation { message } =
+        source.downcast_ref::<SchedulerError>().unwrap()
+    else {
+        panic!("the original component cause was replaced");
+    };
+    assert_eq!(message.as_ptr(), address);
 }

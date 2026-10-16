@@ -523,7 +523,7 @@ pub(crate) trait QemuHotForkWorldLifecycleOwner:
     fn reconcile_execution_disposition(
         &mut self,
         disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError>;
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>;
 }
 
 impl<G> QemuHotForkWorldLifecycleOwner for QemuProductionHotForkWorldLifecycle<G>
@@ -543,7 +543,8 @@ where
     fn reconcile_execution_disposition(
         &mut self,
         disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         QemuProductionHotForkWorldLifecycle::reconcile_execution_disposition(self, disposition)
     }
 }
@@ -565,7 +566,8 @@ where
     fn reconcile_execution_disposition(
         &mut self,
         disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         self.lifecycle_mut()
             .reconcile_execution_disposition(disposition)
     }
@@ -755,6 +757,15 @@ pub(crate) enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
     /// One child launch or atomic assembly phase failed.
     #[error("assemble production hot-fork child world: {0}")]
     Assembly(String),
+    /// Assembly's unchanged initiating report and independent typed cleanup.
+    #[error("assemble production hot-fork child world: {message}; cleanup: {cleanup}")]
+    AssemblyCleanup {
+        /// Existing initiating assembly and rollback diagnostics.
+        message: String,
+        /// Actual moved cleanup cause, without a replacement diagnostic Box.
+        #[source]
+        cleanup: crate::ProductionVmConstructionCleanupError,
+    },
     /// The complete child world could not enter the production lifecycle.
     #[error("install production hot-fork lifecycle: {0}")]
     Lifecycle(#[source] crucible_api::LifecycleApiError),
@@ -766,9 +777,8 @@ pub(crate) enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
     InstallationRetirement(#[source] HotForkInstallationRetirementError),
 }
 
-type ProductionChild<G> = QemuHotForkAttemptReconciliation<
-    LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
->;
+type ProductionChild<G> =
+    QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>;
 
 type ProductionAssembly<G> = QemuHotForkWorldAssembly<ProductionChild<G>>;
 
@@ -1558,16 +1568,23 @@ where
                 errors: launch_failures,
             };
             let mut failure_message = message;
+            let mut cleanup_failure = None;
             let source = self.recover_proven_no_child_launch(
                 recovery,
                 resources,
                 assembly,
                 &mut failure_message,
+                &mut cleanup_failure,
             );
+            let failure = match cleanup_failure {
+                Some(cleanup) => QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup {
+                    message: failure_message,
+                    cleanup,
+                },
+                None => QemuProductionHotForkWorldLifecycleFactoryError::Assembly(failure_message),
+            };
             return ProductionLifecycleStartOutcome::failed(
-                AttemptWorkerFailure::Retryable(
-                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(failure_message),
-                ),
+                AttemptWorkerFailure::Retryable(failure),
                 source,
             );
         }
@@ -1659,6 +1676,7 @@ where
         mut message: String,
     ) -> ProductionLifecycleStartOutcome<R::Guard, S::Error> {
         let mut rollback_failed = false;
+        let mut cleanup_failure = None;
         if let Some(target) = rejected_target
             && let Err(error) = target.abort_without_child()
         {
@@ -1678,17 +1696,22 @@ where
         }
         if !rollback_failed && let Err(error) = resources.finish() {
             rollback_failed = true;
-            message.push_str(&format!(
-                "; aggregate target release failed after preflight rejection: {error}"
-            ));
+            message.push_str("; aggregate target release failed after preflight rejection");
+            cleanup_failure = Some(error.into());
         }
         if rollback_failed {
             let Some(source_lease) = source_lease else {
                 quarantine_failed_assembly(source_world, resources, assembly, None);
                 return ProductionLifecycleStartOutcome::failed(
-                    AttemptWorkerFailure::Retryable(
-                        QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
-                    ),
+                    AttemptWorkerFailure::Retryable(match cleanup_failure {
+                        Some(cleanup) => {
+                            QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup {
+                                message,
+                                cleanup,
+                            }
+                        }
+                        None => QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                    }),
                     CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
                 );
             };
@@ -1696,9 +1719,15 @@ where
             let _retained_for_process_lifetime = Box::leak(Box::new(retained));
             drop(assembly);
             return ProductionLifecycleStartOutcome::failed(
-                AttemptWorkerFailure::Retryable(
-                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
-                ),
+                AttemptWorkerFailure::Retryable(match cleanup_failure {
+                    Some(cleanup) => {
+                        QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup {
+                            message,
+                            cleanup,
+                        }
+                    }
+                    None => QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                }),
                 CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
             );
         }
@@ -1707,9 +1736,15 @@ where
         drop(source_world);
         let Some(source_lease) = source_lease else {
             return ProductionLifecycleStartOutcome::failed(
-                AttemptWorkerFailure::Retryable(
-                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
-                ),
+                AttemptWorkerFailure::Retryable(match cleanup_failure {
+                    Some(cleanup) => {
+                        QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup {
+                            message,
+                            cleanup,
+                        }
+                    }
+                    None => QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                }),
                 CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
             );
         };
@@ -1719,9 +1754,15 @@ where
             );
             let _retained_for_process_lifetime = Box::leak(Box::new(source_lease));
             return ProductionLifecycleStartOutcome::failed(
-                AttemptWorkerFailure::Retryable(
-                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
-                ),
+                AttemptWorkerFailure::Retryable(match cleanup_failure {
+                    Some(cleanup) => {
+                        QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup {
+                            message,
+                            cleanup,
+                        }
+                    }
+                    None => QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                }),
                 CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
             );
         }
@@ -1730,17 +1771,27 @@ where
                 .push_str("; exact source-world reauthentication failed after preflight rollback");
             let _retained_for_process_lifetime = Box::leak(Box::new(source_lease));
             return ProductionLifecycleStartOutcome::failed(
-                AttemptWorkerFailure::Retryable(
-                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
-                ),
+                AttemptWorkerFailure::Retryable(match cleanup_failure {
+                    Some(cleanup) => {
+                        QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup {
+                            message,
+                            cleanup,
+                        }
+                    }
+                    None => QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                }),
                 CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
             );
         }
         self.sources.restore(source_lease);
         ProductionLifecycleStartOutcome::failed(
-            AttemptWorkerFailure::Retryable(
-                QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
-            ),
+            AttemptWorkerFailure::Retryable(match cleanup_failure {
+                Some(cleanup) => QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup {
+                    message,
+                    cleanup,
+                },
+                None => QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+            }),
             CheckedOutSourceDisposition::Restored,
         )
     }
@@ -1751,6 +1802,7 @@ where
         mut resources: QemuHotForkWorldResourceOwner<R::Guard>,
         assembly: ProductionAssembly<R::Guard>,
         failure_message: &mut String,
+        cleanup_failure: &mut Option<crate::ProductionVmConstructionCleanupError>,
     ) -> CheckedOutSourceDisposition {
         let ProvenNoChildLaunchRecovery {
             checkout_identity,
@@ -1810,9 +1862,11 @@ where
         }
 
         if let Err(error) = resources.finish() {
-            failure_message.push_str(&format!(
-                "; aggregate target release failed after rollback: {error}"
-            ));
+            failure_message.push_str("; aggregate target release failed after rollback");
+            crate::ProductionVmConstructionCleanupError::retain_first(
+                cleanup_failure,
+                error.into(),
+            );
             drop(recovered_sources);
             quarantine_failed_rollback(source_world, None, resources, BTreeMap::new());
             return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
@@ -2012,11 +2066,7 @@ fn quarantine_failed_assembly<G>(
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
     mut resources: QemuHotForkWorldResourceOwner<G>,
     mut assembly: ProductionAssembly<G>,
-    child: Option<
-        QemuHotForkAttemptReconciliation<
-            LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
-        >,
-    >,
+    child: Option<QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>>,
 ) where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {

@@ -20,8 +20,13 @@ pub(crate) struct PendingSourceConstruction<F: QemuAttemptResourceGuardFactory> 
     generation_storage: Option<crate::QemuAttemptGenerationStorage>,
     factory: Option<F>,
     world: Option<AuthenticatedNativeWorldCleanupLoan>,
-    reservation:
-        Option<Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>>,
+    reservation: Option<
+        Box<
+            dyn ProductionVmCleanupReservation<
+                Failure = crate::ProductionVmConstructionCleanupError,
+            >,
+        >,
+    >,
     construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
     // Remains here on genuine cell-admission refusal; no charge is discarded.
     controls: Option<AuthenticatedNativeWorldControlLease>,
@@ -109,7 +114,7 @@ where
         }
     }
 
-    /// Moves the same token and factory into the successful actual launcher.
+    /// Moves the same token, factory and World loan into the actual launcher.
     ///
     /// The caller retains this Box unchanged if its expected fields are absent.
     pub(crate) fn into_launcher_parts(
@@ -120,8 +125,13 @@ where
             F::Guard,
             crate::QemuAttemptGenerationStorage,
             F,
-            Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+            Box<
+                dyn ProductionVmCleanupReservation<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+            >,
             Box<crate::ProductionVmConstructionCustody>,
+            AuthenticatedNativeWorldCleanupLoan,
         ),
         Box<Self>,
     > {
@@ -132,10 +142,11 @@ where
             || self.reservation.is_none()
             || self.controls.is_some()
             || self.construction_custody.is_none()
+            || self.world.is_none()
         {
             return Err(self);
         }
-        // Both fields were checked together before either ownership move.
+        // Validate every required part before moving any of their ownership.
         let Some(factory) = self.factory.take() else {
             return Err(self);
         };
@@ -148,8 +159,6 @@ where
             self.reservation = Some(reservation);
             return Err(self);
         };
-        // Dropping this emptied temporary Box closes its World cleanup borrow.
-        // The cell's body lease and returned launcher continue to retain Main.
         let Some(guard) = self.returned_guard.take() else {
             self.factory = Some(factory);
             self.reservation = Some(reservation);
@@ -163,7 +172,15 @@ where
             self.construction_custody = Some(custody);
             return Err(self);
         };
-        Ok((guard, storage, factory, reservation, custody))
+        let Some(world) = self.world.take() else {
+            self.returned_guard = Some(guard);
+            self.generation_storage = Some(storage);
+            self.factory = Some(factory);
+            self.reservation = Some(reservation);
+            self.construction_custody = Some(custody);
+            return Err(self);
+        };
+        Ok((guard, storage, factory, reservation, custody, world))
     }
 
     /// Identifies the no-cell branch without asserting absence of Source effects.
@@ -181,7 +198,11 @@ where
     ) -> Result<
         (
             C,
-            Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+            Box<
+                dyn crucible_api::ProductionVmCleanupHandoff<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                    >,
+            >,
         ),
         SourceConstructionCustodyFailure<C>,
     > {
@@ -398,14 +419,10 @@ where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: Send + 'static,
 {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -416,7 +433,13 @@ where
 {
     fn take_cleanup_reservation(
         &mut self,
-    ) -> Option<Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>> {
+    ) -> Option<
+        Box<
+            dyn ProductionVmCleanupReservation<
+                Failure = crate::ProductionVmConstructionCleanupError,
+            >,
+        >,
+    > {
         self.reservation.take()
     }
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
@@ -458,14 +481,15 @@ where
         ))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         if self.physically_closed {
             return Ok(());
         }
         if self.controls.is_some() {
-            return Err(launcher_message(
+            return Err((launcher_message(
                 "unreserved World body remains retained; consuming never-born return is required",
-            ));
+            ))
+            .into());
         }
         let factory = self
             .factory
@@ -484,12 +508,7 @@ where
             Ok(()) => {
                 self.members_closed = true;
                 if let Some(guard) = self.returned_guard.as_mut() {
-                    if let Err(source) = guard.finish() {
-                        self.record_first(source);
-                        return Err(launcher_message(
-                            "same returned Source guard retains cleanup",
-                        ));
-                    }
+                    guard.finish()?;
                 }
                 self.returned_guard = None;
                 self.generation_storage = None;
@@ -498,12 +517,13 @@ where
             }
             Err(source) => {
                 self.record_first(source);
-                Err(launcher_message(format!(
+                Err((launcher_message(format!(
                     "same World construction cleanup remains retained: {}",
                     self.first_failure
                         .as_ref()
                         .map_or("unknown refusal".to_owned(), ToString::to_string),
                 )))
+                .into())
             }
         }
     }
@@ -518,8 +538,16 @@ pub struct SourceConstructionCustodyFailure<C = QemuVmRealizationError> {
     source: C,
     custody: Mutex<
         Option<(
-            Option<Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>>,
-            Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+            Option<
+                Box<
+                    dyn ProductionVmCleanupReservation<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                    >,
+                >,
+            >,
+            Box<
+                dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+            >,
         )>,
     >,
 }
@@ -528,9 +556,15 @@ impl<C: std::error::Error + Send + Sync + 'static> SourceConstructionCustodyFail
     fn new(
         source: C,
         reservation: Option<
-            Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+            Box<
+                dyn ProductionVmCleanupReservation<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+            >,
         >,
-        owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+        owner: Box<
+            dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+        >,
     ) -> Self {
         Self {
             source,
@@ -565,7 +599,11 @@ impl<C: std::error::Error + Send + Sync + 'static> SourceConstructionCustodyFail
         &mut self,
     ) -> Result<
         Option<
-            Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+            Box<
+                dyn crucible_api::ProductionVmCleanupHandoff<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                    >,
+            >,
         >,
         &'static str,
     > {
@@ -631,14 +669,22 @@ fn missing_pending(message: &'static str) -> QemuVmRealizationError {
 /// Publishes custody without executing or renewing any operation.
 pub(crate) fn retain_source_owner<C: std::error::Error + Send + Sync + 'static>(
     reservation: Option<
-        Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<
+            dyn ProductionVmCleanupReservation<
+                Failure = crate::ProductionVmConstructionCleanupError,
+            >,
+        >,
     >,
-    owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+    owner: Box<dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>>,
     source: C,
 ) -> Result<
     (
         C,
-        Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+        Box<
+            dyn crucible_api::ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+        >,
     ),
     SourceConstructionCustodyFailure<C>,
 > {
@@ -813,11 +859,19 @@ mod published_error_tests {
 /// Publishes normal disposal without constructing a speculative first error.
 pub(crate) fn publish_source_owner(
     reservation: Option<
-        Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<
+            dyn ProductionVmCleanupReservation<
+                Failure = crate::ProductionVmConstructionCleanupError,
+            >,
+        >,
     >,
-    owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+    owner: Box<dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>>,
 ) -> Result<
-    Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+    Box<
+        dyn crucible_api::ProductionVmCleanupHandoff<
+                Failure = crate::ProductionVmConstructionCleanupError,
+            >,
+    >,
     SourceConstructionCustodyFailure,
 > {
     let Some(reservation) = reservation else {

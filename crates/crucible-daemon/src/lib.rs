@@ -197,6 +197,8 @@ mod qemu_hot_fork_world;
 mod qemu_hot_fork_world_factory;
 #[cfg(target_os = "linux")]
 mod qemu_hot_fork_world_resource;
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_world_resource::QemuWorldMemberCleanupStatus;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
 pub mod repository_admission;
@@ -371,7 +373,7 @@ pub use crucible_qemu_runner::{
 pub(crate) use crucible_qemu_session::QemuAttemptResourceGuardFactory;
 pub use crucible_qemu_session::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
-    QemuExecutionQuantumCounter,
+    QemuAttemptResourceGuardCleanupFailure, QemuExecutionQuantumCounter,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use exact_checkpoint_restore::{
@@ -692,18 +694,18 @@ pub use vm_lifecycle::{
     ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
     ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
     ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionPagedRamSource,
-    ProductionStoppedLifecycleError, ProductionVmConstructionCleanupError,
-    ProductionVmConstructionCustody, ProductionVmConstructionFailure,
-    ProductionVmExactNodeRestoreAdmission, ProductionVmExactNodeRestoreAdmissions,
-    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState,
-    ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
-    ProductionVmNodeLauncher, ProductionVmNodeLease, ProductionVmNodeReplayLaunchProfile,
-    ProductionVmPortableReplayAssetPaths, ProductionVmPortableReplayGuestAssetPaths,
-    ProductionVmReplayExactNodeRestoreAdmission, ProductionVmStoppedLifecycle,
-    build_production_vm_exact_resume_lifecycle, build_production_vm_exact_stopped_lifecycle,
-    build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
-    collect_signal_artifact_objects_bounded, collect_signal_artifact_objects_with_budget,
-    decode_authenticated_production_exact_checkpoint,
+    ProductionStoppedLifecycleError, ProductionVmCleanupEarlierFailure,
+    ProductionVmConstructionCleanupError, ProductionVmConstructionCustody,
+    ProductionVmConstructionFailure, ProductionVmExactNodeRestoreAdmission,
+    ProductionVmExactNodeRestoreAdmissions, ProductionVmLifecycleConfig, ProductionVmLifecycleLoop,
+    ProductionVmLifecycleResumeState, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
+    ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher, ProductionVmNodeLease,
+    ProductionVmNodeReplayLaunchProfile, ProductionVmPortableReplayAssetPaths,
+    ProductionVmPortableReplayGuestAssetPaths, ProductionVmReplayExactNodeRestoreAdmission,
+    ProductionVmStoppedLifecycle, build_production_vm_exact_resume_lifecycle,
+    build_production_vm_exact_stopped_lifecycle, build_production_vm_lifecycle_loop_with_launcher,
+    collect_signal_artifact_objects, collect_signal_artifact_objects_bounded,
+    collect_signal_artifact_objects_with_budget, decode_authenticated_production_exact_checkpoint,
     decode_authenticated_production_exact_checkpoint_under_original, open_exact_checkpoint_closure,
     production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
 };
