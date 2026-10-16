@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 
 sys.path.insert(0, sys.argv[1])
 from native_sdk_test_image import allowed_directory, require, runtime_closure, source_hashes
@@ -29,6 +30,12 @@ selected = [item for item in records if item.get("reason") == "compiler-artifact
 require(len(selected) == 1, "ambiguous confinement executable")
 artifact = selected[0]
 executable = pathlib.Path(artifact.get("executable") or "")
+manifest = tomllib.loads((workspace / "Cargo.toml").read_text())
+# This workspace leaves Cargo's development profile unchanged: opt-level zero,
+# debug assertions enabled and full debug information (level two). Refuse an
+# override rather than silently publishing a different qualification artifact.
+require(manifest.get("profile", {}).get("dev", {}) == {},
+        "unreviewed development profile override")
 require(artifact["package_id"] == package[0]["id"]
         and artifact["target"]["kind"] == ["example"]
         and artifact["target"]["crate_types"] == ["bin"]
@@ -36,11 +43,13 @@ require(artifact["package_id"] == package[0]["id"]
         and artifact["profile"]["test"] is False
         and artifact["profile"]["opt_level"] == "0"
         and artifact["profile"]["debug_assertions"] is True
+        and artifact["profile"]["debuginfo"] == 2
         and sorted(artifact["features"]) == ["tokio"]
         and executable.is_file() and os.access(executable, os.X_OK)
         and executable.resolve().is_relative_to(target.resolve()),
         "confinement artifact source/profile mismatch")
 hashes = source_hashes(workspace, source)
+executable_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
 target_libraries = pathlib.Path((temporary / "confinement-target-libdir").read_text().strip())
 require(target_libraries.is_dir() and target_libraries.resolve().is_relative_to("/nix/store"),
         "untrusted Rust target libraries")
@@ -63,6 +72,8 @@ with (temporary / "confinement-cargo-discovery.log").open("w") as log:
                     "--features", "tokio", "--example", "quota_confinement_fixture",
                     "--", "--discover"], env=environment,
                    stdout=log, stderr=subprocess.STDOUT, check=True)
+require(hashlib.sha256(executable.read_bytes()).hexdigest() == executable_hash,
+        "Cargo discovery replaced the selected confinement executable")
 captured = capture.read_text()
 require(captured.endswith("\n") and captured.count("\n") == 1 and captured.strip(),
         "missing Cargo runtime environment")
@@ -75,6 +86,8 @@ for directory in ["bin", "libexec", "lib", "share"]:
     (output / directory).mkdir()
 installed = output / "libexec/quota-confinement-fixture"
 shutil.copy2(executable, installed)
+require(hashlib.sha256(installed.read_bytes()).hexdigest() == executable_hash,
+        "installed confinement executable differs from the selected artifact")
 for name, library in libraries.items():
     shutil.copy2(library, output / "lib" / name)
 library_path = ":".join(map(str, [output / "lib", *store_directories]))
@@ -85,10 +98,11 @@ wrapper.write_text("\n".join([
     "exec " + shlex.quote(str(installed)) + ' "$@"', "",
 ]))
 wrapper.chmod(0o755)
-identity = {"source": str(source), "package_id": artifact["package_id"],
+identity = {"schema_version": 1, "source": str(source), "package_id": artifact["package_id"],
+            "cargo_profile": "dev", "requested_features": ["tokio"],
             "target": artifact["target"], "profile": artifact["profile"],
             "features": artifact["features"], "input_sha256": hashes,
-            "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+            "executable_sha256": executable_hash,
             "copied_runtime_libraries": sorted(libraries), "runtime_library_path": library_path}
 (output / "share/identity.json").write_text(json.dumps(identity, indent=2) + "\n")
 for name in ["confinement-artifacts.jsonl", "confinement-packages.json",

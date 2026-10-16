@@ -10,6 +10,7 @@
     sourceGateWithInputs {
       runtimeDeps = [pkgs.rust pkgs.rust.dev] ++ (pkgs.rust.runtimeDeps or []);
       nukeRefsKeep = [pkgs.terrane.src];
+      extraBuildDeps = [pkgs.binutils];
     } "quota-confinement-proof-image" ''
       cd crates
       cargo build --frozen --offline -p terrane-fs --features tokio \
