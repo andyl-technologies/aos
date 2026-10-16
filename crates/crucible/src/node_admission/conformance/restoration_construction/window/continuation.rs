@@ -199,7 +199,7 @@ impl CompleteOriginalRestorationWindow {
             runtime.inspect_original_restoration_continuation(inspection)?;
         }
         self.authenticate_original_runtime_member_current_data(&activation.world_binding_hash)?;
-        attempt.complete();
+        attempt.complete()?;
         Ok(())
     }
 

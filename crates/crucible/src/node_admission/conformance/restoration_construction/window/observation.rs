@@ -33,6 +33,26 @@ impl OriginalRestorationWholeObservation {
     }
 }
 
+// A swallowed reentrant error must never reopen a failed window at an outer
+// success tail. The exact in-progress stage is checked after the final callback.
+pub(super) fn authenticate_started_stage_data(
+    stage: &Cell<WindowStage>, expected: WindowStage,
+) -> Result<(), RuntimeError> {
+    if stage.get() != expected {
+        return Err(RuntimeError::OutstandingObligations);
+    }
+    Ok(())
+}
+
+// Each concrete caller names its actual payload type. Both the defining borrow
+// Result and the mapped RuntimeError Result remain explicit logical views.
+pub(in crate::node_admission::conformance::restoration_construction) fn owner_loan_result_counter_scratch_data<T: 'static>() -> usize {
+    size_of::<Result<std::cell::Ref<'static, T>, std::cell::BorrowError>>()
+        + size_of::<Result<std::cell::Ref<'static, T>, RuntimeError>>()
+        + size_of::<Result<std::cell::RefMut<'static, T>, std::cell::BorrowMutError>>()
+        + size_of::<Result<std::cell::RefMut<'static, T>, RuntimeError>>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,4 +86,20 @@ mod tests {
             assert!(observation.authenticate_dispatch_data().is_ok());
         }
     }
+
+    #[test]
+    fn swallowed_reentrant_failure_cannot_complete_an_outer_started_stage() {
+        for started in [WindowStage::ColdStarted, WindowStage::TransactionStarted,
+            WindowStage::TransactionChecking, WindowStage::TransactionAdmitted] {
+            let stage = Cell::new(started);
+            assert!(authenticate_started_stage_data(&stage, started).is_ok());
+
+            // An inner invalid public transition marks this actual shared gate
+            // failed even if the callback swallows its returned error.
+            stage.set(WindowStage::Failed);
+            assert!(matches!(authenticate_started_stage_data(&stage, started), Err(RuntimeError::OutstandingObligations)));
+            assert!(matches!(stage.get(), WindowStage::Failed));
+        }
+    }
+
 }

@@ -46,11 +46,16 @@ impl<'a> RestorationDispatchAttempt<'a> {
         })
     }
 
-    pub(super) fn complete(mut self) {
+    pub(super) fn complete(mut self) -> Result<(), RuntimeError> {
+        super::observation::authenticate_started_stage_data(&self.window.stage, WindowStage::TransactionAdmitted)?;
+        if !self.window.phase_in_flight.get() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
         // Group success retains new actual owners. Receipt verification alone
         // cannot authorize the next phase without the complete owning walk.
         self.window.whole_observation.require_observation();
         self.completed = true;
+        Ok(())
     }
 }
 
@@ -270,7 +275,7 @@ impl CompleteOriginalRestorationWindow {
             )?;
             runtime.execute_original_restoration_transaction(dispatch)?;
         }
-        attempt.complete();
+        attempt.complete()?;
         Ok(())
     }
 
@@ -295,7 +300,7 @@ impl CompleteOriginalRestorationWindow {
             )?;
             runtime.execute_original_restoration_transaction(dispatch)?;
         }
-        attempt.complete();
+        attempt.complete()?;
         Ok(())
     }
 
@@ -323,7 +328,7 @@ impl CompleteOriginalRestorationWindow {
             )?;
             runtime.execute_original_restoration_transaction(dispatch)?;
         }
-        attempt.complete();
+        attempt.complete()?;
         Ok(())
     }
 }

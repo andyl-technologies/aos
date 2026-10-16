@@ -220,6 +220,10 @@ impl InstalledConformancePlan {
             CompleteOriginalRestorationWindow::continuation_counter_scratch_data(),
             size_of::<dispatch::RestorationDispatchAttempt<'static>>(),
             size_of::<observation::OriginalRestorationWholeObservation>(),
+            observation::owner_loan_result_counter_scratch_data::<Option<OriginalRestorationColdGroup>>(),
+            observation::owner_loan_result_counter_scratch_data::<[Option<OriginalRestorationNodeConstructionData>; 3]>(),
+            observation::owner_loan_result_counter_scratch_data::<Option<Rc<super::transaction_group::OriginalRestorationTransactionGroup>>>(),
+            observation::owner_loan_result_counter_scratch_data::<Option<CompleteOriginalRestorationTransactionTarget>>(),
             size_of::<Result<(), RuntimeError>>(),
         ], usize::MAX)
     }
@@ -441,6 +445,7 @@ impl CompleteOriginalRestorationWindow {
             return Err(RuntimeError::ResourceLimit);
         }
         self.authenticate_registered_member(plan, inputs)?;
+        observation::authenticate_started_stage_data(&self.stage, WindowStage::ColdStarted)?;
         self.stage.set(WindowStage::ColdComplete);
         Ok(())
     }
@@ -532,11 +537,11 @@ impl CompleteOriginalRestorationWindow {
         let requested = observe(&scope, policy, storage)?;
         let current = observed_current(&scope, policy, storage)?;
         self.authenticate_registered_member(plan, inputs)?;
+        observation::authenticate_started_stage_data(&self.stage, WindowStage::TransactionStarted)?;
         self.transaction_requested_peak.set(Some(requested));
         // Future rows remain funded in requested. Constructors separately add
         // their own future row to this actual current owning observation.
         self.observed_other_retained.set(Some(current));
-        self.whole_observation.complete_observation();
         self.stage.set(WindowStage::TransactionAdmitted);
         Ok(())
     }
@@ -1055,8 +1060,10 @@ impl CompleteOriginalRestorationWindow {
         }
         let current = observed_current(&scope, policy, storage)?;
         self.authenticate_registered_member(plan, &inputs)?;
+        observation::authenticate_started_stage_data(&self.stage, WindowStage::TransactionChecking)?;
         // No callback, allocation or I/O follows the terminal live fence.
         self.observed_other_retained.set(Some(current));
+        self.whole_observation.complete_observation();
         self.stage.set(WindowStage::TransactionAdmitted);
         Ok(requested)
     }

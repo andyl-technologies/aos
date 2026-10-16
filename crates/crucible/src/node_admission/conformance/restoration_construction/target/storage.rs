@@ -136,7 +136,14 @@ impl CompleteOriginalRestorationTransactionTarget {
             },
             retained_metadata::RetainedProtocolMetadataFacts,
         };
-        size_of::<std::cell::Ref<'static, Option<PreparedArchivedProtocolMapping>>>()
+        super::super::window::observation::owner_loan_result_counter_scratch_data::<Option<PreparedArchivedProtocolMapping>>()
+            + super::super::window::observation::owner_loan_result_counter_scratch_data::<Option<OriginalCompleteRestoreInputUploadProspectiveStorageData>>()
+            + super::super::window::observation::owner_loan_result_counter_scratch_data::<Option<serde_json::Value>>()
+            + super::super::window::observation::owner_loan_result_counter_scratch_data::<Option<Vec<u8>>>()
+            + super::super::window::observation::owner_loan_result_counter_scratch_data::<Option<ResponseBody>>()
+            + super::super::window::observation::owner_loan_result_counter_scratch_data::<Option<crucible_node_provider::client::OriginalCompleteRestoreInputUploadStorageData>>()
+            + super::super::window::observation::owner_loan_result_counter_scratch_data::<Option<OriginalCompleteRestoreInputUpload>>()
+            + size_of::<std::cell::Ref<'static, Option<PreparedArchivedProtocolMapping>>>()
             + size_of::<std::cell::RefMut<'static, Option<PreparedArchivedProtocolMapping>>>()
             + size_of::<std::cell::Ref<'static, Option<OriginalCompleteRestoreInputUploadProspectiveStorageData>>>()
             + size_of::<std::cell::RefMut<'static, Option<OriginalCompleteRestoreInputUploadProspectiveStorageData>>>()
