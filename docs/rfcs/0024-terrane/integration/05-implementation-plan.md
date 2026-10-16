@@ -8759,13 +8759,14 @@ helper's build and eight focused tests pass, as do twelve shared-directory
 and nineteen publisher-transport baseline tests; these do not establish
 native confinement, VM execution or T2 acceptance.
 
-The source-bound confinement proof image builds with identical Cargo and
-installed executable hashes. Its guest check boots and reaches actual setter,
-thread/fork inheritance and finite-quota assertions, then fails its fs-verity
-positive control. The fixture used an invalid zero Merkle block size and a
-filesystem block size smaller than the native 4096-byte profile. Corrections
-are committed on the task branch; a fresh guest run remains required. Later
-startup and alternate-ABI scenarios were not reached. Source review corrected a
+The corrected source-bound confinement proof image builds with identical Cargo
+and installed executable hashes. Its actual AOS ext4 guest passes setter
+refusals, thread/fork inheritance, finite-quota enforcement, fs-verity, startup
+refusals and both alternate-ABI assertions, with unchanged source guards.
+An earlier guest failed before the fixture's zero Merkle block size and small
+filesystem block size were corrected to the native 4096-byte profile. This
+component pass does not establish complete native admission or HOST-23.
+Source review corrected a
 publisher fixture helper reference and quota fixture synchronization races.
 The quota claim implementation now permanently binds each filesystem/project
 pair before ledger publication or native mutation; full process-crash and
@@ -8776,7 +8777,12 @@ source review for consumer integration, without native qualification. Recovery
 inspection review found plaintext-allocation and retained-custody defects;
 their corrections precede integration. Publisher review likewise found a
 shared-claim field type mismatch before compilation. The frozen surface
-candidate passes its interface gate; its schema gate is compiling. Remaining
+candidate passes its interface and schema gates. Its status gate fails on
+required xattrs; a finite probe confirms the actual Nix fixture filesystem
+rejects regular-file user xattrs both before and inside the protected namespace.
+The owning gate must run that presentation case on actual capable storage;
+unsupported metadata is not skipped. A separate native cache proof executable
+and image/guest selectors are declared but fail until implemented. Remaining
 surface gates and complete trunk qualification remain pending. These source
 reviews and component results do not establish configured role operation,
 completed recovery or task acceptance.
