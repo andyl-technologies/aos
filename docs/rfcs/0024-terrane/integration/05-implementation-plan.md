@@ -8739,6 +8739,13 @@ D-124 closes pending-inode token recovery and pack/index retirement naming
 without changing frozen key grammar. D-125 includes actual layout and
 administrative directory inodes in the quota observer's explicit custody.
 Their implementations and real gates remain pending.
+D-126 closes a separate native project-quota bypass: inode ownership can
+permit changing project assignments without an administrative capability.
+Native writable admission remains stopped until actual writer confinement,
+alias coverage and service-identity isolation pass the quota gate. The quota
+helper's build and eight focused tests pass, as do twelve shared-directory
+and nineteen publisher-transport baseline tests; these do not establish
+native confinement, VM execution or T2 acceptance.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
