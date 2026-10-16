@@ -16,8 +16,8 @@ use serde::Deserialize;
 
 use crate::role::{Role, RoleError};
 
-pub mod expression;
 pub mod exposure;
+pub mod expression;
 pub mod host;
 pub mod token;
 
@@ -47,7 +47,9 @@ impl Config {
         let store = expression::StoreExpression::parse(&raw.store).map_err(ConfigError::Store)?;
 
         let exposures = exposure::parse(raw.expose)?;
-        if let Some(host) = &raw.host_tier { host.validate()?; }
+        if let Some(host) = &raw.host_tier {
+            host.validate()?;
+        }
         raw.tokens.validate()?;
 
         Ok(Self {
@@ -73,26 +75,39 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`RoleError::Mismatch`] when the requested role differs from
-    /// the configured role.
+    /// the configured role, or [`RoleError::Missing`] when neither source selects one.
     pub fn select_role(&self, requested: Option<Role>) -> Result<Role, RoleError> {
         match (self.role, requested) {
-            (Some(configured), Some(requested)) if configured != requested => Err(RoleError::Mismatch { configured, requested }),
+            (Some(configured), Some(requested)) if configured != requested => {
+                Err(RoleError::Mismatch {
+                    configured,
+                    requested,
+                })
+            }
             (Some(role), _) | (None, Some(role)) => Ok(role),
             (None, None) => Err(RoleError::Missing),
         }
     }
 
     /// Returns exposures in configuration order, without opening their endpoints.
-    pub fn exposures(&self) -> &[exposure::ConfiguredExposure] { &self.exposures }
+    pub fn exposures(&self) -> &[exposure::ConfiguredExposure] {
+        &self.exposures
+    }
 
     /// Returns the configured topology labels.
-    pub fn locality(&self) -> &host::Locality { &self.locality }
+    pub fn locality(&self) -> &host::Locality {
+        &self.locality
+    }
 
     /// Returns optional host-tier policy without claiming runtime availability.
-    pub fn host_tier(&self) -> Option<&host::HostTier> { self.host_tier.as_ref() }
+    pub fn host_tier(&self) -> Option<&host::HostTier> {
+        self.host_tier.as_ref()
+    }
 
     /// Returns configured credential locators without reading their secrets.
-    pub fn tokens(&self) -> &token::Tokens { &self.tokens }
+    pub fn tokens(&self) -> &token::Tokens {
+        &self.tokens
+    }
 
     /// Returns the immutable, parsed store-expression tree (ARCH-6).
     pub fn store(&self) -> &expression::StoreExpression {
@@ -117,7 +132,10 @@ struct RawConfig {
 pub(super) fn absolute_path(path: &str) -> bool {
     std::path::Path::new(path).is_absolute()
         && !path.as_bytes().contains(&0)
-        && path.split('/').skip(1).all(|part| !matches!(part, "." | ".."))
+        && path
+            .split('/')
+            .skip(1)
+            .all(|part| !matches!(part, "." | ".."))
         && !path.contains("//")
         && (path == "/" || !path.ends_with('/'))
 }
@@ -174,7 +192,10 @@ mod tests {
     fn each_role_loads_through_the_same_vocabulary() {
         for role in Role::ALL {
             let text = format!("role = '{role}'\nstore = 'bucket(file:///tmp/store)'\n");
-            assert_eq!(Config::parse(&text).expect("valid syntax").role(), Some(role));
+            assert_eq!(
+                Config::parse(&text).expect("valid syntax").role(),
+                Some(role)
+            );
         }
     }
 

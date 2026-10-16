@@ -125,7 +125,7 @@ impl core::error::Error for ViewError {}
 /// Names the kind of address accepted by a surface (SURF-10).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EndpointKind {
-    /// A directory used for SDK checkout or a kernel mount.
+    /// A new directory used for SDK checkout.
     Directory,
     /// A kernel filesystem mount directory.
     MountPath,
@@ -202,6 +202,8 @@ pub struct Exposure<Options = ()> {
 /// Names the metadata kind required at a schema path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchemaEntryKind {
+    /// The selected view root.
+    Root,
     /// A regular file.
     File,
     /// A directory.

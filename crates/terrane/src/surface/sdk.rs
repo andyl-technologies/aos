@@ -38,13 +38,31 @@ where
         if endpoint.kind != EndpointKind::Directory {
             return Err(Error::Unrealizable);
         }
-        let metadata = self.repository.validate_view_schema(&view, self.token, "sdk", &self.schema()).await?;
-        let mut pinned = view;
-        pinned.target = super::ViewTarget::Commit(metadata.commit);
-        let resolved = self.repository.read_view(&pinned, self.token, "sdk").await?;
-        self.repository
-            .materialize_checkout(Path::new(&endpoint.address), &resolved)
+        let prepared = self
+            .repository
+            .prepare_view_schema(&view, self.token, "sdk", &self.schema())
             .await?;
-        Ok(Serving::checkout(resolved.commit))
+        serve_prepared(self.repository, prepared, endpoint).await
     }
+}
+
+/// Materializes an exact repository-owned preparation without rebinding its ref.
+pub(super) async fn serve_prepared<S, C, F>(
+    repository: &Repository<S, C, F>,
+    prepared: crate::repository::read::PreparedView,
+    endpoint: Endpoint,
+) -> Result<Serving, Error>
+where
+    S: Store + Sync,
+    C: Clock + Sync,
+    F: LocalFs + Sync,
+{
+    if endpoint.kind != EndpointKind::Directory {
+        return Err(Error::Unrealizable);
+    }
+    let resolved = repository.read_prepared_view(prepared).await?;
+    repository
+        .materialize_checkout(Path::new(&endpoint.address), &resolved)
+        .await?;
+    Ok(Serving::checkout(resolved.commit))
 }

@@ -10,9 +10,9 @@
 //! wipe = "none"
 //! ```
 
-use std::collections::BTreeMap;
-use serde::Deserialize;
 use super::ConfigError;
+use serde::Deserialize;
+use std::collections::BTreeMap;
 
 /// Labels the configured placement of this instance.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -77,13 +77,20 @@ pub enum Wipe {
 impl HostTier {
     pub(super) fn validate(&self) -> Result<(), ConfigError> {
         if !super::absolute_path(&self.path) || self.size_bytes == 0 {
-            return Err(ConfigError::Invalid("host tier requires an absolute path and positive size_bytes"));
+            return Err(ConfigError::Invalid(
+                "host tier requires an absolute path and positive size_bytes",
+            ));
         }
         let mut paths = std::collections::BTreeSet::new();
         for (domain, directory) in &self.domains {
             let canonical = terrane_core::properties::Domain::parse(domain).is_ok();
-            if !canonical || !super::absolute_path(&directory.path) || !paths.insert(&directory.path) {
-                return Err(ConfigError::Invalid("invalid or duplicate domain directory"));
+            if !canonical
+                || !super::absolute_path(&directory.path)
+                || !paths.insert(&directory.path)
+            {
+                return Err(ConfigError::Invalid(
+                    "invalid or duplicate domain directory",
+                ));
             }
         }
         Ok(())

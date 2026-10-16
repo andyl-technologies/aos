@@ -10,10 +10,10 @@
 //! mode = { reader = "pinned" }
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
-use serde::Deserialize;
-use crate::surface::{self, Endpoint, Exposure, ReaderMode, View, ViewTarget, WriterMode};
 use super::{ConfigError, absolute_path, token};
+use crate::surface::{self, Endpoint, Exposure, ReaderMode, View, ViewTarget, WriterMode};
+use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Holds an exposure with its surface-specific TOML options intact.
 pub type ConfiguredExposure = Exposure<BTreeMap<String, toml::Value>>;
@@ -54,7 +54,9 @@ pub(super) fn parse(raw: Vec<RawExposure>) -> Result<Vec<ConfiguredExposure>, Co
         // T2 compiles only SDK checkout. Future surfaces add their own endpoint
         // parser together with their implementation rather than accepting guesses.
         if raw.surface != "sdk" || !absolute_path(&raw.at) {
-            return Err(ConfigError::Invalid("SDK endpoint requires an absolute directory path"));
+            return Err(ConfigError::Invalid(
+                "SDK endpoint requires an absolute directory path",
+            ));
         }
         if !endpoints.insert(raw.at.clone()) {
             return Err(ConfigError::Invalid("duplicate exposure endpoint"));
@@ -69,7 +71,9 @@ pub(super) fn parse(raw: Vec<RawExposure>) -> Result<Vec<ConfiguredExposure>, Co
             },
         };
         if raw.surface == "sdk" && raw.mode.reader.as_deref() != Some("pinned") {
-            return Err(ConfigError::Invalid("SDK checkout requires explicit reader = pinned"));
+            return Err(ConfigError::Invalid(
+                "SDK checkout requires explicit reader = pinned",
+            ));
         }
         let writer = match raw.mode.writer.as_deref() {
             Some("manual") => Some(WriterMode::Manual),
@@ -80,15 +84,25 @@ pub(super) fn parse(raw: Vec<RawExposure>) -> Result<Vec<ConfiguredExposure>, Co
             None => None,
         };
         if !registered.writable && writer.is_some() {
-            return Err(ConfigError::Invalid("read-only surface cannot select writer mode"));
+            return Err(ConfigError::Invalid(
+                "read-only surface cannot select writer mode",
+            ));
         }
         if !raw.options.is_empty() {
             return Err(ConfigError::Invalid("SDK checkout has no surface options"));
         }
         output.push(Exposure {
-            id: raw.id, view, surface: raw.surface,
-            endpoint: Endpoint { kind: registered.endpoints[0], address: raw.at },
-            token: raw.token, reader, writer, options: raw.options,
+            id: raw.id,
+            view,
+            surface: raw.surface,
+            endpoint: Endpoint {
+                kind: registered.endpoints[0],
+                address: raw.at,
+            },
+            token: raw.token,
+            reader,
+            writer,
+            options: raw.options,
         });
     }
     Ok(output)

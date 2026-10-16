@@ -75,6 +75,28 @@ where
     }
 }
 
+/// Starts an exact repository preparation through the compiled registry.
+pub(super) async fn realize_prepared<S, C, F>(
+    repository: &crate::repository::Repository<S, C, F>,
+    prepared: crate::repository::read::PreparedView,
+    hints: RealizationHints,
+) -> Result<Serving, Error>
+where
+    S: crate::store::Store + Sync,
+    C: crate::store::Clock + Sync,
+    F: crate::store::LocalFs + Sync,
+{
+    #[cfg(not(all(feature = "surface-sdk", unix)))]
+    let _ = (repository, prepared);
+    match hints.surface.as_str() {
+        #[cfg(all(feature = "surface-sdk", unix))]
+        "sdk" if hints.reader == ReaderMode::Pinned => {
+            super::sdk::serve_prepared(repository, prepared, hints.endpoint).await
+        }
+        _ => Err(Error::UnavailableSurface(hints.surface)),
+    }
+}
+
 /// Maps a repository view to one registered external interface (SURF-1).
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]

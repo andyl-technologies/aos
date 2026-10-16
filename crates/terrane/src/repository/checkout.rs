@@ -142,7 +142,11 @@ pub(crate) async fn materialize<F: LocalFs + Sync>(
             EntryKind::Symlink { .. } => continue,
             _ => return Err(Error::Unrealizable),
         }
-        for xattr in entry.xattrs.into_iter().filter(|xattr| crate::surface::presentation::visible_xattr(xattr.name)) {
+        for xattr in entry
+            .xattrs
+            .into_iter()
+            .filter(|xattr| crate::surface::presentation::visible_xattr(xattr.name))
+        {
             fs.set_xattr(&target, OsStr::from_bytes(xattr.name), xattr.value)
                 .await?;
         }
@@ -154,7 +158,11 @@ pub(crate) async fn materialize<F: LocalFs + Sync>(
             let link = path(destination, &item.key);
             fs.symlink(Path::new(OsStr::from_bytes(target)), &link)
                 .await?;
-            for xattr in entry.xattrs.into_iter().filter(|xattr| crate::surface::presentation::visible_xattr(xattr.name)) {
+            for xattr in entry
+                .xattrs
+                .into_iter()
+                .filter(|xattr| crate::surface::presentation::visible_xattr(xattr.name))
+            {
                 fs.set_xattr(&link, OsStr::from_bytes(xattr.name), xattr.value)
                     .await?;
             }

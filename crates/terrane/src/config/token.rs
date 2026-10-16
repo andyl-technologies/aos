@@ -25,7 +25,9 @@ impl Tokens {
     pub(super) fn validate(&self) -> Result<(), ConfigError> {
         for key in &self.issuer_public_keys {
             if !key.strip_prefix("file:").is_some_and(super::absolute_path) {
-                return Err(ConfigError::Invalid("issuer keys require absolute file references"));
+                return Err(ConfigError::Invalid(
+                    "issuer keys require absolute file references",
+                ));
             }
         }
         if let Some(token) = &self.host_token {
@@ -40,18 +42,39 @@ impl Tokens {
 /// # Errors
 /// Rejects inline credentials, empty locators, and malformed anonymous grants.
 pub fn validate_reference(reference: &str) -> Result<(), ConfigError> {
-    let valid = if let Some(path) = reference.strip_prefix("file:") {
+    let valid = if super::absolute_path(reference) {
+        true
+    } else if let Some(path) = reference.strip_prefix("file:") {
         super::absolute_path(path)
     } else if let Some(locator) = reference.strip_prefix("secret:") {
-        !locator.is_empty() && !locator.chars().any(char::is_whitespace)
+        !locator.is_empty()
+            && !locator
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
     } else if let Some(grant) = reference.strip_prefix("anonymous:") {
         grant.rsplit_once(':').is_some_and(|(target, verbs)| {
-            terrane_core::refs::RefName::parse(target).is_ok()
-                && !verbs.is_empty()
-                && verbs.split(',').all(|verb| matches!(verb, "read" | "fork" | "commit" | "tag" | "admin"))
+            use terrane_core::auth::{Grant, Verb, Verbs};
+            let mut mask = 0;
+            for verb in verbs.split(',') {
+                mask |= match verb {
+                    "read" => Verb::Read as u8,
+                    "fork" => Verb::Fork as u8,
+                    "commit" => Verb::Commit as u8,
+                    "tag" => Verb::Tag as u8,
+                    "admin" => Verb::Admin as u8,
+                    _ => return false,
+                };
+            }
+            Verbs::new(mask)
+                .and_then(|verbs| Grant::new(target.to_owned(), verbs))
+                .is_ok()
         })
     } else {
         false
     };
-    if valid { Ok(()) } else { Err(ConfigError::Invalid("invalid token reference")) }
+    if valid {
+        Ok(())
+    } else {
+        Err(ConfigError::Invalid("invalid token reference"))
+    }
 }

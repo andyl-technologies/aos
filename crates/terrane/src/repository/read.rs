@@ -23,6 +23,8 @@ pub(crate) struct ReadEntry {
     pub(crate) key: Vec<u8>,
     /// Canonical core entry encoding authenticated by the selected snapshot.
     pub(crate) encoded: Vec<u8>,
+    /// Original graft metadata, before checkout maps it to a directory.
+    schema_graft: Option<Vec<u8>>,
     #[cfg(all(feature = "surface-sdk", unix))]
     /// Verified plaintext for files; absent for other entry kinds.
     pub(crate) plaintext: Option<Vec<u8>>,
@@ -37,6 +39,15 @@ pub(crate) struct ReadView {
     pub(crate) minimum: u64,
     /// Scoped entries with verified file plaintext and relative keys.
     pub(crate) entries: Vec<ReadEntry>,
+}
+
+/// Retains repository-owned authority and metadata until exact-snapshot presentation.
+///
+/// Surfaces cannot inspect history, credentials or storage witnesses through it.
+pub(crate) struct PreparedView {
+    snapshot: AuthorizedSnapshot,
+    entries: Vec<ReadEntry>,
+    metadata: crate::surface::ViewMetadata,
 }
 
 impl<S, C, F> Repository<S, C, F>
@@ -60,20 +71,49 @@ where
         surface: &str,
         schema: &crate::surface::TreeSchema,
     ) -> Result<crate::surface::ViewMetadata, Error> {
+        Ok(self
+            .prepare_view_schema(view, token, surface, schema)
+            .await?
+            .metadata)
+    }
+
+    /// Retains the original authority binding alongside the validated commit.
+    pub(crate) async fn prepare_view_schema(
+        &self,
+        view: &View,
+        token: &[u8],
+        surface: &str,
+        schema: &crate::surface::TreeSchema,
+    ) -> Result<PreparedView, Error> {
         let (snapshot, entries) = self.metadata(view, token, surface).await?;
         let minimum = self.chunk_profile().minimum() as u64;
         let mut path = b"/".to_vec();
         path.extend_from_slice(&view.subtree);
         let occurrences = snapshot.evidence.occurrences(minimum)?;
-        let occurrence = occurrences.iter()
-            .filter(|occurrence| path == occurrence.path || path.strip_prefix(&occurrence.path)
-                .is_some_and(|suffix| occurrence.path == b"/" || suffix.starts_with(b"/")))
-            .max_by_key(|occurrence| occurrence.path.len()).ok_or(Error::Absent)?;
-        let layers = occurrence.layers.iter().map(|(properties, overrides)| {
-            terrane_core::properties::RootLayer { properties, overrides }
-        }).collect::<Vec<_>>();
+        let occurrence = occurrences
+            .iter()
+            .filter(|occurrence| {
+                path == occurrence.path
+                    || path
+                        .strip_prefix(&occurrence.path)
+                        .is_some_and(|suffix| occurrence.path == b"/" || suffix.starts_with(b"/"))
+            })
+            .max_by_key(|occurrence| occurrence.path.len())
+            .ok_or(Error::Absent)?;
+        let layers = occurrence
+            .layers
+            .iter()
+            .map(
+                |(properties, overrides)| terrane_core::properties::RootLayer {
+                    properties,
+                    overrides,
+                },
+            )
+            .collect::<Vec<_>>();
         let guard = self.coordinator.guard();
-        let effective = snapshot.interpretation.resolve(&layers, guard.defaults_for(&snapshot.evidence))?;
+        let effective = snapshot
+            .interpretation
+            .resolve(&layers, guard.defaults_for(&snapshot.evidence))?;
         let mut properties = Vec::new();
         for (name, allowed) in &schema.required_properties {
             let mut matched = None;
@@ -81,25 +121,57 @@ where
                 let property = tree_format::Property { name, value };
                 let (key, candidate) = terrane_core::properties::validate_property(&property)
                     .map_err(|_| Error::Schema)?;
-                if effective.get(key) == Some(&candidate) { matched = Some(value.clone()); break; }
+                if effective.get(key) == Some(&candidate) {
+                    matched = Some(value.clone());
+                    break;
+                }
             }
             properties.push((name.clone(), matched.ok_or(Error::Schema)?));
         }
         let root_attributes = if view.subtree.is_empty() {
             Vec::new()
         } else {
-            let (location, _) = snapshot.history.locate(snapshot.commit.identity(), &view.subtree)
+            let (location, _) = snapshot
+                .history
+                .locate(snapshot.commit.identity(), &view.subtree)
                 .map_err(|_| Error::Absent)?;
-            snapshot.history.entry(&location).map_err(|_| Error::Absent)?.attrs
-                .iter().map(|attribute| (attribute.name.to_owned(), attribute.value.to_vec())).collect()
+            snapshot
+                .history
+                .entry(&location)
+                .map_err(|_| Error::Absent)?
+                .attrs
+                .iter()
+                .map(|attribute| (attribute.name.to_owned(), attribute.value.to_vec()))
+                .collect()
         };
         let metadata = crate::surface::ViewMetadata {
-            commit: snapshot.commit.identity(), minimum_chunk_size: minimum,
-            entries: entries.into_iter().map(|entry| (entry.key, entry.encoded)).collect(),
-            root_attributes, properties,
+            commit: snapshot.commit.identity(),
+            minimum_chunk_size: minimum,
+            entries: entries
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.key.clone(),
+                        entry
+                            .schema_graft
+                            .as_ref()
+                            .unwrap_or(&entry.encoded)
+                            .clone(),
+                    )
+                })
+                .collect(),
+            root_attributes,
+            properties,
         };
         crate::surface::validate_schema(schema, &metadata)?;
-        Ok(metadata)
+        drop(effective);
+        drop(layers);
+        drop(occurrences);
+        Ok(PreparedView {
+            snapshot,
+            entries,
+            metadata,
+        })
     }
 
     /// Reads one authenticated file under the view's current authority.
@@ -178,7 +250,7 @@ where
         Ok((snapshot.commit.identity(), bytes))
     }
 
-    #[cfg(all(feature = "surface-sdk", unix))]
+    #[cfg(all(test, feature = "surface-sdk", unix))]
     /// Reads scoped metadata and file plaintext under current view authority.
     ///
     /// # Errors
@@ -190,17 +262,32 @@ where
         token: &[u8],
         surface: &str,
     ) -> Result<ReadView, Error> {
-        if view.policy.is_some() {
-            return Err(Error::UnavailableOperation("unregistered view policy"));
-        }
-        let mut scope = b"/".to_vec();
-        scope.extend_from_slice(&view.subtree);
-        let (snapshot, mut entries) = self.metadata(view, token, surface).await?;
+        let prepared = self
+            .prepare_view_schema(view, token, surface, &crate::surface::TreeSchema::default())
+            .await?;
+        self.read_prepared_view(prepared).await
+    }
+
+    #[cfg(all(feature = "surface-sdk", unix))]
+    /// Requests plaintext only after rechecking the original selected authority.
+    pub(crate) async fn read_prepared_view(
+        &self,
+        prepared: PreparedView,
+    ) -> Result<ReadView, Error> {
+        let PreparedView {
+            snapshot,
+            mut entries,
+            metadata,
+        } = prepared;
         let guard = self.coordinator.guard();
-        let minimum = self.chunk_profile().minimum() as u64;
+        for item in &entries {
+            let path = absolute_path(&snapshot.scope, &item.key);
+            guard.authorize_snapshot_path(&snapshot, &path).await?;
+        }
         for item in &mut entries {
-            let full_path = absolute_path(&scope, &item.key);
-            let entry = tree_format::decode_entry_bytes(&item.encoded, minimum)?;
+            let full_path = absolute_path(&snapshot.scope, &item.key);
+            let entry =
+                tree_format::decode_entry_bytes(&item.encoded, metadata.minimum_chunk_size)?;
             if let EntryKind::File { content, size, .. } = entry.kind {
                 item.plaintext = Some(
                     guard
@@ -209,9 +296,13 @@ where
                 );
             }
         }
+        // An empty tree still requires a fresh current-authority check.
+        guard
+            .authorize_snapshot_path(&snapshot, &snapshot.scope)
+            .await?;
         Ok(ReadView {
-            commit: snapshot.commit.identity(),
-            minimum,
+            commit: metadata.commit,
+            minimum: metadata.minimum_chunk_size,
             entries,
         })
     }
@@ -321,6 +412,11 @@ fn project(
                 continue;
             }
             let mut entry = item.entry.clone();
+            let schema_graft = if matches!(&entry.kind, EntryKind::Tree { .. }) {
+                Some(tree_format::encode_entry(&entry, minimum)?)
+            } else {
+                None
+            };
             if let EntryKind::Tree { root, .. } = &entry.kind {
                 pending.push((*root, full.clone(), ancestors.clone()));
                 // A graft has no source inode or permission field. Its virtual
@@ -360,6 +456,7 @@ fn project(
             }
             output.push(ReadEntry {
                 key: relative,
+                schema_graft,
                 encoded: tree_format::encode_entry(&entry, minimum)?,
                 #[cfg(all(feature = "surface-sdk", unix))]
                 plaintext: None,
@@ -399,3 +496,7 @@ fn project(
     super::path::validate_symlink_targets(&links)?;
     Ok(output)
 }
+
+#[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
+#[path = "read/schema_tests.rs"]
+mod schema_tests;

@@ -1,7 +1,11 @@
 //! Prepares every configured exposure before ordered, repository-only startup.
 
-use crate::{config::exposure::ConfiguredExposure, repository::{Error, Repository}, store::{Clock, LocalFs, Store}};
-use super::{RealizationHints, Serving, ViewTarget};
+use super::{RealizationHints, Serving};
+use crate::{
+    config::exposure::ConfiguredExposure,
+    repository::{Error, Repository},
+    store::{Clock, LocalFs, Store},
+};
 
 /// Resolves credential locators without granting any repository authority.
 ///
@@ -20,6 +24,7 @@ pub trait TokenResolver {
 struct PreparedExposure {
     exposure: ConfiguredExposure,
     token: Vec<u8>,
+    prepared: crate::repository::read::PreparedView,
 }
 
 /// Owns fully validated exposures in configuration order without open endpoints.
@@ -40,23 +45,49 @@ impl PreparedExposures {
         exposures: &[ConfiguredExposure],
         resolver: &R,
     ) -> Result<Self, Error>
-    where S: Store + Sync, C: Clock + Sync, F: LocalFs + Sync, R: TokenResolver + Sync,
+    where
+        S: Store + Sync,
+        C: Clock + Sync,
+        F: LocalFs + Sync,
+        R: TokenResolver + Sync,
     {
+        let mut identifiers = std::collections::BTreeSet::new();
+        let mut endpoints = std::collections::BTreeSet::new();
+        for exposure in exposures {
+            if exposure.id.is_empty()
+                || !identifiers.insert(&exposure.id)
+                || !crate::config::absolute_path(&exposure.endpoint.address)
+                || !endpoints.insert(&exposure.endpoint.address)
+                || crate::config::token::validate_reference(&exposure.token).is_err()
+            {
+                return Err(Error::Unrealizable);
+            }
+        }
         let mut entries = Vec::new();
         for exposure in exposures {
             let registration = super::registration(&exposure.surface)
                 .ok_or_else(|| Error::UnavailableSurface(exposure.surface.clone()))?;
-            if !registration.endpoints.contains(&exposure.endpoint.kind) || exposure.writer.is_some()
-                || exposure.reader != super::ReaderMode::Pinned || !exposure.options.is_empty() {
+            if !registration.endpoints.contains(&exposure.endpoint.kind)
+                || exposure.writer.is_some()
+                || exposure.reader != super::ReaderMode::Pinned
+                || !exposure.options.is_empty()
+            {
                 return Err(Error::Unrealizable);
             }
             let token = resolver.resolve(&exposure.token).await?;
-            let metadata = repository.validate_view_schema(&exposure.view, &token, &exposure.surface, &registration.schema).await?;
-            let mut exposure = exposure.clone();
-            // SDK is explicitly pinned. Immutable selection keeps validation
-            // and ordered startup on the exact same tree despite ref advances.
-            exposure.view.target = ViewTarget::Commit(metadata.commit);
-            entries.push(PreparedExposure { exposure, token });
+            let prepared = repository
+                .prepare_view_schema(
+                    &exposure.view,
+                    &token,
+                    &exposure.surface,
+                    &registration.schema,
+                )
+                .await?;
+            entries.push(PreparedExposure {
+                exposure: exposure.clone(),
+                token,
+                prepared,
+            });
         }
         Ok(Self { entries })
     }
@@ -68,19 +99,35 @@ impl PreparedExposures {
     ///
     /// # Errors
     /// Preserves live authority rechecks and physical presentation failures.
-    pub async fn start<S, C, F>(self, repository: &Repository<S, C, F>) -> Result<Vec<Serving>, Error>
-    where S: Store + Sync, C: Clock + Sync, F: LocalFs + Sync,
+    pub async fn start<S, C, F>(
+        self,
+        repository: &Repository<S, C, F>,
+    ) -> Result<Vec<Serving>, Error>
+    where
+        S: Store + Sync,
+        C: Clock + Sync,
+        F: LocalFs + Sync,
     {
         let mut serving: Vec<Serving> = Vec::new();
         for prepared in self.entries {
             let exposure = prepared.exposure;
-            let result = repository.realize(exposure.view, RealizationHints {
-                surface: exposure.surface, endpoint: exposure.endpoint, token: prepared.token, reader: exposure.reader,
-            }).await;
+            let result = super::native::realize_prepared(
+                repository,
+                prepared.prepared,
+                RealizationHints {
+                    surface: exposure.surface,
+                    endpoint: exposure.endpoint,
+                    token: prepared.token,
+                    reader: exposure.reader,
+                },
+            )
+            .await;
             match result {
                 Ok(handle) => serving.push(handle),
                 Err(error) => {
-                    for handle in &serving { handle.stop()?; }
+                    for handle in &serving {
+                        handle.stop()?;
+                    }
                     return Err(error);
                 }
             }
