@@ -8806,6 +8806,17 @@ provide live content serving or final native custody. Manifest recovery, genuine
 fresh-bucket enrollment and native admission remain incomplete. No T2 task is
 accepted by these component reviews.
 
+The fresh-only bucket enrollment producer now passes source review after fixing
+special-file classification before readable opens. It retains the actual creator
+event, original exclusion and complete bounded inode preimages; its nine tests
+remain unrun. Native administrative claim and setter consumers are still pending.
+Manifest recovery's resource-custody layer also passes source review, including
+cancelled effects and adopted-body retention before fallible completion. Actual
+publisher response correlation and owner dispatch remain pending. The cache proof
+image now builds and verifies its three actual executables and retained guest
+supervisor. Earlier guest attempts stopped before actor cases because that script
+was absent from the guest closure. Corrected guest execution is in progress.
+
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
 `realize`, `publish`, and `gc` roles as systemd units. No FUSE yet.
