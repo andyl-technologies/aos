@@ -1,0 +1,457 @@
+//! Owns domain-bound native command authority and retained body incarnations.
+
+use std::fs::File;
+use std::io;
+use std::os::unix::fs::MetadataExt;
+
+use terrane::host::publication::{PublicationClaim, VerityBinding};
+use terrane::store::{LocalFs, TokioLocalFs};
+use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
+
+use super::{NativePublishedObject, NativePublisher, WorkerState};
+use terrane::host::publication::Publisher;
+
+/// Selects a configured domain and one cache owner's current incarnation.
+#[derive(Clone, Debug)]
+pub struct NativeCommandContext {
+    /// The configured disclosure-domain label, never a filesystem path.
+    pub domain: String,
+    /// The cache owner's random incarnation, authenticated by the transport.
+    pub cache_incarnation: [u8; 16],
+}
+
+/// Names one existing body through registered identities and layout rules.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeBodyKey {
+    /// A plaintext canonical backing inode.
+    Sealed {
+        /// Its inline chunk or manifest descriptor.
+        descriptor: Descriptor,
+    },
+    /// A compressed individual chunk body.
+    Chunk {
+        /// The plaintext chunk descriptor.
+        descriptor: Descriptor,
+        /// Its registered decimal codec identifier.
+        codec: u8,
+    },
+    /// A pack and its detached index, retired as one unit.
+    Pack {
+        /// Its existing 16-byte random pack identifier.
+        pack_id: [u8; 16],
+    },
+}
+
+impl NativeBodyKey {
+    fn validate(&self) -> io::Result<()> {
+        let descriptor = match self {
+            Self::Sealed { descriptor } => descriptor,
+            Self::Chunk { descriptor, codec } => {
+                if *codec > 2 {
+                    return Err(invalid("unregistered chunk codec"));
+                }
+                if descriptor.domain()
+                    != TERRANE_V1
+                        .domain(IdentityKind::Chunk)
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                {
+                    return Err(invalid("chunk body has a non-chunk descriptor"));
+                }
+                descriptor
+            }
+            Self::Pack { .. } => return Ok(()),
+        };
+        Descriptor::decode(&TERRANE_V1, &descriptor.encode())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        if matches!(self, Self::Sealed { .. })
+            && !matches!(
+                TERRANE_V1
+                    .kind(descriptor.domain())
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+                IdentityKind::Chunk | IdentityKind::Manifest
+            )
+        {
+            return Err(invalid("sealed body has a non-content descriptor"));
+        }
+        Ok(())
+    }
+}
+
+/// Supplies a fixed operation; token bytes remain untrusted until native lookup.
+pub enum NativeOperation {
+    /// Creates a non-serving seal-capability probe.
+    Probe,
+    /// Publishes copied and independently verified plaintext.
+    Publish {
+        /// The validated immutable witness in this domain.
+        claim: PublicationClaim,
+        /// An owned read-only regular source descriptor.
+        source: File,
+    },
+    /// Independently adopts an existing canonical inode.
+    Adopt {
+        /// The immutable reconstruction witness.
+        claim: PublicationClaim,
+    },
+    /// Retains an inode incarnation for a checked registered key.
+    InspectBody {
+        /// The requested registered body key.
+        key: NativeBodyKey,
+        /// Required only for sealed-body independent adoption.
+        claim: Option<PublicationClaim>,
+    },
+    /// Begins two-phase deletion of an exact retained incarnation.
+    Retire {
+        /// Its configured domain's body key.
+        key: NativeBodyKey,
+        /// Untrusted opaque bytes matched against the owner's retained table.
+        incarnation: [u8; 32],
+    },
+    /// Restores an exact pending incarnation without replacement.
+    Restore {
+        /// Its configured domain's body key.
+        key: NativeBodyKey,
+        /// Untrusted opaque bytes matched against the owner's retained table.
+        incarnation: [u8; 32],
+    },
+    /// Completes the configured wipe policy for an exact pending incarnation.
+    FinishRetirement {
+        /// Its configured domain's body key.
+        key: NativeBodyKey,
+        /// Untrusted opaque bytes matched against the owner's retained table.
+        incarnation: [u8; 32],
+    },
+    /// Drains prior accepted effects and establishes recovery custody.
+    Drain,
+    /// Enumerates bounded key names without granting content authority.
+    Inventory {
+        /// An opaque owner-issued continuation for this incarnation.
+        cursor: Option<Vec<u8>>,
+    },
+    /// Leaves recovery after the native cache owner has reconciled durable state.
+    Resume,
+}
+
+/// Carries an incarnation issued only after retaining its actual native inode.
+pub struct NativeBodyIncarnation([u8; 32]);
+
+impl NativeBodyIncarnation {
+    /// Borrows the issued token for transport encoding.
+    pub fn bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Retains an unsealed body without claiming verified bytes or serving authority.
+pub struct NativeBodyHandle(File);
+
+impl NativeBodyHandle {
+    /// Transfers the unsealed descriptor for independent cache verification.
+    pub fn into_handle(self) -> File {
+        self.0
+    }
+}
+
+/// Contains only results completed by the fixed native command owner.
+pub enum NativeCommandResult {
+    /// An unnamed private capability probe, never a canonical backing object.
+    Probe {
+        /// Its read-only probe descriptor.
+        file: File,
+        /// The actual kernel measurement, independently checked by the cache.
+        binding: VerityBinding,
+    },
+    /// A canonical backing object and its retained native incarnation.
+    Published {
+        /// A privately minted native publication/adoption result.
+        object: NativePublishedObject,
+        /// Its unguessable retained-inode token.
+        incarnation: NativeBodyIncarnation,
+    },
+    /// An unsealed inode requiring independent content verification.
+    Inspected {
+        /// A namespace-bound descriptor with no verified-byte authority.
+        body: NativeBodyHandle,
+        /// Its retained-inode token.
+        incarnation: NativeBodyIncarnation,
+    },
+    /// A completed fixed lifecycle or barrier operation.
+    Complete,
+    /// A bounded unverified key-name inventory page.
+    Inventory {
+        /// At most 64 keys, never backing handles or incarnation authority.
+        keys: Vec<NativeBodyKey>,
+        /// The owner-issued continuation, if more names remain.
+        next_cursor: Option<Vec<u8>>,
+    },
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Location {
+    Canonical,
+    Pending,
+}
+
+struct RetainedBody {
+    key: NativeBodyKey,
+    claim: PublicationClaim,
+    token: [u8; 32],
+    file: File,
+    location: Location,
+}
+
+pub(super) struct CommandOwner {
+    domain: String,
+    publisher: Option<Publisher<NativePublisher, WorkerState>>,
+    cache: Option<[u8; 16]>,
+    recovery: bool,
+    bodies: Vec<RetainedBody>,
+}
+
+impl CommandOwner {
+    pub(super) fn new(domain: String, publisher: Publisher<NativePublisher, WorkerState>) -> Self {
+        Self {
+            domain,
+            publisher: Some(publisher),
+            cache: None,
+            recovery: true,
+            bodies: Vec::new(),
+        }
+    }
+
+    pub(super) fn publisher(&mut self) -> io::Result<&mut Publisher<NativePublisher, WorkerState>> {
+        self.publisher
+            .as_mut()
+            .ok_or_else(|| io::Error::other("native publisher unavailable"))
+    }
+
+    fn kernel<T>(
+        &mut self,
+        operation: impl FnOnce(&mut NativePublisher) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let publisher = self
+            .publisher
+            .take()
+            .ok_or_else(|| io::Error::other("native publisher unavailable"))?;
+        let (mut native, state) = publisher.into_parts();
+        let result = operation(&mut native);
+        self.publisher = Some(Publisher::new(native, state));
+        result
+    }
+
+    async fn retain(
+        &mut self,
+        claim: PublicationClaim,
+        object: NativePublishedObject,
+    ) -> io::Result<NativeCommandResult> {
+        let metadata = object.object.handle().metadata()?;
+        let key = NativeBodyKey::Sealed {
+            descriptor: claim.descriptor().clone(),
+        };
+        for retained in &self.bodies {
+            let previous = retained.file.metadata()?;
+            if retained.key == key
+                && retained.location == Location::Canonical
+                && previous.dev() == metadata.dev()
+                && previous.ino() == metadata.ino()
+            {
+                return Ok(NativeCommandResult::Published {
+                    object,
+                    incarnation: NativeBodyIncarnation(retained.token),
+                });
+            }
+        }
+        if self.bodies.len() >= 4096 {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "publisher incarnation budget exhausted",
+            ));
+        }
+        let bytes = TokioLocalFs.random_bytes(32).await?;
+        let token: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| io::Error::other("invalid native random length"))?;
+        let file = object.object.handle().try_clone()?;
+        self.bodies.push(RetainedBody {
+            key,
+            claim,
+            token,
+            file,
+            location: Location::Canonical,
+        });
+        Ok(NativeCommandResult::Published {
+            object,
+            incarnation: NativeBodyIncarnation(token),
+        })
+    }
+
+    pub(super) async fn execute(
+        &mut self,
+        context: NativeCommandContext,
+        operation: NativeOperation,
+    ) -> io::Result<NativeCommandResult> {
+        if context.domain != self.domain {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "publisher domain mismatch",
+            ));
+        }
+        match &operation {
+            NativeOperation::InspectBody { key, .. }
+            | NativeOperation::Retire { key, .. }
+            | NativeOperation::Restore { key, .. }
+            | NativeOperation::FinishRetirement { key, .. } => key.validate()?,
+            _ => {}
+        }
+        if matches!(operation, NativeOperation::Drain) {
+            // The single owner reaches this command only after earlier physical
+            // effects, their state writes and cleanup have actually completed.
+            self.cache = Some(context.cache_incarnation);
+            self.recovery = true;
+            self.bodies.clear();
+            return Ok(NativeCommandResult::Complete);
+        }
+        if self.cache != Some(context.cache_incarnation) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "cache incarnation requires drain",
+            ));
+        }
+        if self.recovery
+            && matches!(
+                operation,
+                NativeOperation::Publish { .. }
+                    | NativeOperation::Retire { .. }
+                    | NativeOperation::Restore { .. }
+                    | NativeOperation::FinishRetirement { .. }
+            )
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "publisher is under recovery custody",
+            ));
+        }
+        match operation {
+            NativeOperation::Drain => unreachable_operation(),
+            NativeOperation::Resume => {
+                self.recovery = false;
+                Ok(NativeCommandResult::Complete)
+            }
+            NativeOperation::Probe => self.kernel(|native| {
+                let file = native.probe_seal()?;
+                let binding = crate::verity::measure(&file)?;
+                Ok(NativeCommandResult::Probe { file, binding })
+            }),
+            NativeOperation::Publish { claim, source } => {
+                if claim.domain() != self.domain {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "publisher claim domain mismatch",
+                    ));
+                }
+                if claim.manifest().is_some() {
+                    return Err(unsupported(
+                        "manifest publication requires actual metadata retention custody",
+                    ));
+                }
+                let object = self.publisher()?.publish(&claim, source).await?;
+                self.retain(claim, NativePublishedObject { object }).await
+            }
+            NativeOperation::Adopt { claim } => self.adopt(claim).await,
+            NativeOperation::InspectBody {
+                key: NativeBodyKey::Sealed { descriptor },
+                claim: Some(claim),
+            } => {
+                if claim.descriptor() != &descriptor {
+                    return Err(invalid("sealed inspection claim mismatch"));
+                }
+                self.adopt(claim).await
+            }
+            NativeOperation::InspectBody {
+                key: NativeBodyKey::Sealed { .. },
+                claim: None,
+            } => Err(invalid("sealed inspection requires its content claim")),
+            NativeOperation::InspectBody { claim: Some(_), .. } => {
+                Err(invalid("unsealed inspection cannot carry a content claim"))
+            }
+            NativeOperation::InspectBody { .. } => Err(unsupported(
+                "unsealed inspection awaits configured content roots",
+            )),
+            NativeOperation::Retire { key, incarnation } => {
+                self.transition(key, incarnation, false, false)
+            }
+            NativeOperation::Restore { key, incarnation } => {
+                self.transition(key, incarnation, true, false)
+            }
+            NativeOperation::FinishRetirement { key, incarnation } => {
+                self.transition(key, incarnation, false, true)
+            }
+            NativeOperation::Inventory { .. } => Err(unsupported(
+                "inventory requires complete recovery metadata and pending-body rules",
+            )),
+        }
+    }
+
+    async fn adopt(&mut self, claim: PublicationClaim) -> io::Result<NativeCommandResult> {
+        if claim.domain() != self.domain {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "publisher claim domain mismatch",
+            ));
+        }
+        if claim.manifest().is_some() {
+            return Err(unsupported(
+                "manifest adoption requires actual metadata retention custody",
+            ));
+        }
+        let object = self.publisher()?.adopt(&claim).await?;
+        self.retain(claim, NativePublishedObject { object }).await
+    }
+
+    fn transition(
+        &mut self,
+        key: NativeBodyKey,
+        token: [u8; 32],
+        restore: bool,
+        finish: bool,
+    ) -> io::Result<NativeCommandResult> {
+        let index = self
+            .bodies
+            .iter()
+            .position(|body| body.key == key && body.token == token)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::PermissionDenied, "unknown body incarnation")
+            })?;
+        let body = &self.bodies[index];
+        let claim = body.claim.clone();
+        let expected = body.file.try_clone()?;
+        if finish || restore {
+            if body.location != Location::Pending {
+                return Err(invalid("body is not pending retirement"));
+            }
+        } else if body.location != Location::Canonical {
+            return Err(invalid("body is not canonical"));
+        }
+        if restore {
+            self.kernel(|native| native.restore_checked(&claim, &expected))?;
+            self.bodies[index].location = Location::Canonical;
+        } else if finish {
+            self.kernel(|native| native.finish_none_checked(&claim, &expected))?;
+            self.bodies.remove(index);
+        } else {
+            self.kernel(|native| native.retire_checked(&claim, &expected))?;
+            self.bodies[index].location = Location::Pending;
+        }
+        Ok(NativeCommandResult::Complete)
+    }
+}
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+fn unsupported(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, message)
+}
+fn unreachable_operation() -> io::Result<NativeCommandResult> {
+    Err(invalid("drain dispatch state mismatch"))
+}

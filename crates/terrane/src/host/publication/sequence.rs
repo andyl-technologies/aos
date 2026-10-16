@@ -4,6 +4,49 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 use super::PublicationClaim;
 
+/// Classifies adoption failures without losing their underlying I/O cause.
+#[derive(Debug)]
+pub enum AdoptionFailure {
+    /// The recorded measurement contradicts an independently verified inode.
+    RecordedBindingMismatch,
+    /// The retained canonical inode could not supply its kernel seal.
+    KernelSeal(io::Error),
+    /// The sealed inode failed independent plaintext verification.
+    Plaintext(io::Error),
+    /// A rejected binding could not be moved into owned quarantine.
+    Quarantine {
+        /// The independently classified verification failure.
+        cause: Box<AdoptionFailure>,
+        /// The actual quarantine namespace or synchronization failure.
+        failure: io::Error,
+    },
+}
+
+impl std::fmt::Display for AdoptionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RecordedBindingMismatch => {
+                formatter.write_str("recorded verity binding mismatch")
+            }
+            Self::KernelSeal(error) => write!(formatter, "canonical kernel seal: {error}"),
+            Self::Plaintext(error) => write!(formatter, "canonical plaintext: {error}"),
+            Self::Quarantine { cause, failure } => {
+                write!(formatter, "{cause}; quarantine failed: {failure}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AdoptionFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::RecordedBindingMismatch => None,
+            Self::KernelSeal(error) | Self::Plaintext(error) => Some(error),
+            Self::Quarantine { failure, .. } => Some(failure),
+        }
+    }
+}
+
 /// Records the kernel measurement independently of the content identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerityBinding {
@@ -106,6 +149,21 @@ pub trait PublicationKernel {
     /// # Errors
     /// Returns inode synchronization failures.
     fn sync_handle(&mut self, handle: &Self::Handle) -> io::Result<()>;
+
+    /// Moves an independently rejected canonical entry into owned quarantine.
+    ///
+    /// # Errors
+    /// Returns unsupported quarantine or actual namespace/durability failures.
+    fn quarantine_adoption_failure(
+        &mut self,
+        _claim: &PublicationClaim,
+        _cause: &AdoptionFailure,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "owned publication quarantine unavailable",
+        ))
+    }
 }
 
 /// Contains a backing handle only after complete publication or adoption.
@@ -115,6 +173,11 @@ pub struct PublishedObject<H> {
 }
 
 impl<H> PublishedObject<H> {
+    /// Borrows the verified canonical handle without changing its ownership.
+    pub fn handle(&self) -> &H {
+        &self.handle
+    }
+
     /// Returns the independently measured kernel binding.
     pub fn binding(&self) -> &VerityBinding {
         &self.binding
@@ -198,8 +261,13 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
         claim: &PublicationClaim,
     ) -> io::Result<PublishedObject<K::Handle>> {
         let mut handle = self.kernel.open(claim)?;
-        let binding = self.kernel.measure(&handle)?;
-        claim.verify_reader(&mut handle)?;
+        let binding = match self.kernel.measure(&handle) {
+            Ok(binding) => binding,
+            Err(error) => return self.reject_adoption(claim, AdoptionFailure::KernelSeal(error)),
+        };
+        if let Err(error) = claim.verify_reader(&mut handle) {
+            return self.reject_adoption(claim, AdoptionFailure::Plaintext(error));
+        }
 
         if self
             .state
@@ -207,10 +275,7 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
             .await?
             .is_some_and(|existing| existing != binding)
         {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "recorded verity binding mismatch",
-            ));
+            return self.reject_adoption(claim, AdoptionFailure::RecordedBindingMismatch);
         }
 
         handle.seek(SeekFrom::Start(0))?;
@@ -219,6 +284,27 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
         self.state.record(claim, &binding).await?;
 
         Ok(PublishedObject { handle, binding })
+    }
+
+    fn reject_adoption<T>(
+        &mut self,
+        claim: &PublicationClaim,
+        cause: AdoptionFailure,
+    ) -> io::Result<T> {
+        if let Err(failure) = self.kernel.quarantine_adoption_failure(claim, &cause) {
+            return Err(io::Error::new(
+                failure.kind(),
+                AdoptionFailure::Quarantine {
+                    cause: Box::new(cause),
+                    failure,
+                },
+            ));
+        }
+        let kind = match &cause {
+            AdoptionFailure::KernelSeal(error) | AdoptionFailure::Plaintext(error) => error.kind(),
+            _ => io::ErrorKind::InvalidData,
+        };
+        Err(io::Error::new(kind, cause))
     }
 
     /// Returns the owned adapters for shutdown or administrative maintenance.

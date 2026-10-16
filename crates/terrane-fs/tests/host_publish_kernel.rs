@@ -59,6 +59,7 @@ fn claim(domain: &str, bytes: &[u8]) -> PublicationClaim {
 fn directories(root: &Path, name: &str) -> [PathBuf; 3] {
     let base = root.join(name);
     fs::create_dir(&base).unwrap();
+    fs::create_dir(base.join("quarantine")).unwrap();
     let paths = [
         base.join("sealed"),
         base.join("staging"),
@@ -177,6 +178,15 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
         );
         let mut publisher = Publisher::new(native, state);
         assert!(publisher.adopt(&claim).await.is_err());
+        assert!(!canonical.exists());
+        assert!(
+            paths[0]
+                .parent()
+                .unwrap()
+                .join("quarantine")
+                .join(&hex)
+                .exists()
+        );
         drop(publisher);
 
         let other_paths = directories(&root, "private");
@@ -214,13 +224,48 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
         fs::set_permissions(&unsealed, fs::Permissions::from_mode(0o400)).unwrap();
         let mut unsealed_publisher =
             Publisher::new(adapter("public", &unsealed_paths), State::default());
-        assert!(unsealed_publisher.adopt(&claim).await.is_err());
+        let rejected_inode = fs::metadata(&unsealed).unwrap().ino();
         assert!(
             unsealed_publisher
                 .publish(&claim, source(&root, b"immutable content"))
                 .await
                 .is_err()
         );
-        assert_eq!(fs::read(&unsealed).unwrap(), b"immutable content");
+        assert!(!unsealed.exists());
+        let quarantined = unsealed_paths[0]
+            .parent()
+            .unwrap()
+            .join("quarantine")
+            .join(&hex);
+        assert_eq!(fs::metadata(&quarantined).unwrap().ino(), rejected_inode);
+        assert_eq!(fs::read(&quarantined).unwrap(), b"immutable content");
+        let retried = unsealed_publisher
+            .publish(&claim, source(&root, b"immutable content"))
+            .await
+            .unwrap();
+        assert_ne!(
+            retried.into_handle().metadata().unwrap().ino(),
+            rejected_inode
+        );
+
+        let wrong_size = Descriptor::from_wire(
+            &TERRANE_V1,
+            claim.descriptor().algorithm(),
+            claim.descriptor().domain(),
+            claim.descriptor().digest(),
+            claim.plaintext_size() + 1,
+        )
+        .unwrap();
+        let wrong_claim = PublicationClaim::new(
+            "public".into(),
+            PublicationRecipe::Inline { chunk: wrong_size },
+            &ChunkProfile::cdc_1m([0; 32]),
+        )
+        .unwrap();
+        assert!(unsealed_publisher.adopt(&wrong_claim).await.is_err());
+        assert!(
+            unsealed.exists(),
+            "bad request metadata must not quarantine a valid canonical inode"
+        );
     });
 }

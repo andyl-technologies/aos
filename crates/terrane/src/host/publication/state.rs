@@ -35,8 +35,12 @@ struct Record {
     verity_digest: Vec<u8>,
 }
 
-fn invalid(message: impl ToString) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.to_string())
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn source(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
 fn hexadecimal(bytes: &[u8]) -> String {
@@ -104,7 +108,7 @@ impl<F: LocalFs> FsPublicationState<F> {
             return Err(invalid("oversized publication binding"));
         }
         let record: Record =
-            toml::from_str(std::str::from_utf8(&bytes).map_err(invalid)?).map_err(invalid)?;
+            toml::from_str(std::str::from_utf8(&bytes).map_err(source)?).map_err(source)?;
         if record.version != 1
             || record.domain != claim.domain()
             || record.descriptor != claim.descriptor().encode()
@@ -153,7 +157,7 @@ impl<F: LocalFs + Send + Sync> PublicationState for FsPublicationState<F> {
             verity_algorithm: binding.algorithm,
             verity_digest: binding.digest.clone(),
         };
-        let bytes = toml::to_string(&record).map_err(invalid)?;
+        let bytes = toml::to_string(&record).map_err(source)?;
         if bytes.len() as u64 > MAX_RECORD {
             return Err(invalid("oversized publication context"));
         }

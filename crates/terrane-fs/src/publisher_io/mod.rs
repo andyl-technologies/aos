@@ -10,4 +10,7 @@ mod worker;
 
 pub use native::{NativePublisher, StagedFile};
 #[cfg(feature = "tokio")]
-pub use worker::{NativePublicationWorker, NativePublishedObject};
+pub use worker::{
+    NativeBodyHandle, NativeBodyIncarnation, NativeBodyKey, NativeCommandContext,
+    NativeCommandResult, NativeOperation, NativePublicationWorker, NativePublishedObject,
+};

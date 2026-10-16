@@ -7,7 +7,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rustix::fs::{self, AtFlags, Mode, OFlags, ResolveFlags};
-use terrane::host::publication::{PublicationClaim, PublicationKernel, VerityBinding};
+use terrane::host::publication::{
+    AdoptionFailure, PublicationClaim, PublicationKernel, VerityBinding,
+};
 use terrane_core::properties::Domain;
 
 use crate::verity;
@@ -118,6 +120,7 @@ pub struct NativePublisher {
     sealed: File,
     staging: Arc<File>,
     pending: File,
+    quarantine: File,
     next_staging: u64,
 }
 
@@ -177,6 +180,10 @@ impl NativePublisher {
     pub fn open(domain: String, sealed: &Path, staging: &Path, pending: &Path) -> io::Result<Self> {
         Domain::parse(&domain)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let quarantine_path = sealed
+            .parent()
+            .ok_or_else(|| invalid("sealed root has no parent"))?
+            .join("quarantine");
         let sealed = open_directory(sealed)?;
         let staging = open_directory(staging)?;
         let pending = open_directory(pending)?;
@@ -186,6 +193,17 @@ impl NativePublisher {
             ));
         }
         let device = sealed.metadata()?.dev();
+        let quarantine = File::from(fs::openat2(
+            fs::CWD,
+            &quarantine_path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS,
+        )?);
+        let quarantine_metadata = quarantine.metadata()?;
+        if quarantine_metadata.mode() & 0o002 != 0 || quarantine_metadata.dev() != device {
+            return Err(invalid("unsafe domain quarantine directory"));
+        }
         if staging.metadata()?.dev() != device || pending.metadata()?.dev() != device {
             return Err(invalid("publisher directories must share one filesystem"));
         }
@@ -205,6 +223,7 @@ impl NativePublisher {
             sealed,
             staging: Arc::new(staging),
             pending,
+            quarantine,
             next_staging: 0,
         };
         publisher.recover_staging()?;
@@ -285,6 +304,50 @@ impl NativePublisher {
         shard.sync_all()
     }
 
+    pub(super) fn retire_checked(
+        &mut self,
+        claim: &PublicationClaim,
+        expected: &File,
+    ) -> io::Result<()> {
+        let current = self.open(claim)?;
+        compare_inode(expected, &current)?;
+        self.retire(claim)
+    }
+
+    pub(super) fn restore_checked(
+        &mut self,
+        claim: &PublicationClaim,
+        expected: &File,
+    ) -> io::Result<()> {
+        let current = self.open_pending(claim)?;
+        compare_inode(expected, &current)?;
+        self.restore(claim)
+    }
+
+    pub(super) fn finish_none_checked(
+        &mut self,
+        claim: &PublicationClaim,
+        expected: &File,
+    ) -> io::Result<()> {
+        let current = self.open_pending(claim)?;
+        compare_inode(expected, &current)?;
+        self.complete_unlink_none(claim)
+    }
+
+    fn open_pending(&self, claim: &PublicationClaim) -> io::Result<File> {
+        self.check_claim(claim)?;
+        let current = File::from(fs::openat(
+            &self.pending,
+            name(claim).as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        if !current.metadata()?.is_file() {
+            return Err(invalid("pending body is not a regular inode"));
+        }
+        Ok(current)
+    }
+
     /// Unlinks an expired pending inode for a domain with `wipe = none`.
     ///
     /// This operation does not implement zero, discard or volatile wiping.
@@ -331,6 +394,17 @@ impl NativePublisher {
         shard.sync_all()?;
         quarantine.sync_all()
     }
+}
+
+fn compare_inode(expected: &File, actual: &File) -> io::Result<()> {
+    let expected = expected.metadata()?;
+    let actual = actual.metadata()?;
+    if expected.dev() != actual.dev() || expected.ino() != actual.ino() {
+        return Err(invalid(
+            "retained body incarnation no longer names this inode",
+        ));
+    }
+    Ok(())
 }
 
 impl PublicationKernel for NativePublisher {
@@ -472,6 +546,31 @@ impl PublicationKernel for NativePublisher {
 
     fn sync_handle(&mut self, handle: &File) -> io::Result<()> {
         handle.sync_all()
+    }
+
+    fn quarantine_adoption_failure(
+        &mut self,
+        claim: &PublicationClaim,
+        cause: &AdoptionFailure,
+    ) -> io::Result<()> {
+        let corrupt = match cause {
+            AdoptionFailure::RecordedBindingMismatch => true,
+            AdoptionFailure::KernelSeal(error) => matches!(
+                error.raw_os_error(),
+                Some(libc::ENODATA | libc::EBADMSG | libc::EIO)
+            ),
+            AdoptionFailure::Plaintext(error) => {
+                error.kind() == io::ErrorKind::InvalidData
+                    || error.kind() == io::ErrorKind::UnexpectedEof
+                    || error.raw_os_error() == Some(libc::EIO)
+            }
+            AdoptionFailure::Quarantine { .. } => false,
+        };
+        if !corrupt {
+            return Ok(());
+        }
+        let quarantine = self.quarantine.try_clone()?;
+        self.quarantine_rejected(claim, &quarantine)
     }
 }
 

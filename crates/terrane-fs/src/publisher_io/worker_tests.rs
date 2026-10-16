@@ -24,6 +24,7 @@ fn fixture(name: &str) -> [PathBuf; 4] {
         PathBuf::from(std::env::var_os("TERRANE_PUBLISH_VM_ROOT").expect("disk-backed VM fixture"));
     let root = root.join(name);
     fs::create_dir(&root).unwrap();
+    fs::create_dir(root.join("quarantine")).unwrap();
     let paths = [
         root.join("sealed"),
         root.join("staging"),

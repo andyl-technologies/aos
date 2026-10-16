@@ -13,6 +13,13 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::NativePublisher;
 
+#[path = "owned_commands.rs"]
+mod owned_commands;
+pub use owned_commands::{
+    NativeBodyHandle, NativeBodyIncarnation, NativeBodyKey, NativeCommandContext,
+    NativeCommandResult, NativeOperation,
+};
+
 type Response = oneshot::Sender<io::Result<NativePublishedObject>>;
 
 /// Carries a native backing descriptor minted only by the concrete worker.
@@ -44,6 +51,11 @@ enum Command {
     Adopt {
         claim: PublicationClaim,
         response: Response,
+    },
+    Execute {
+        context: NativeCommandContext,
+        operation: NativeOperation,
+        response: oneshot::Sender<io::Result<NativeCommandResult>>,
     },
 }
 
@@ -137,7 +149,7 @@ impl NativePublicationWorker {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let native = NativePublisher::open(domain, sealed, staging, pending)?;
+        let native = NativePublisher::open(domain.clone(), sealed, staging, pending)?;
         let retained_state = super::native::open_directory(state_directory)?;
         use std::os::unix::fs::PermissionsExt;
         if retained_state.metadata()?.permissions().mode() & 0o777 != 0o700 {
@@ -170,7 +182,8 @@ impl NativePublicationWorker {
                         #[cfg(test)]
                         before_record,
                     };
-                    let mut publisher = Publisher::new(native, state);
+                    let publisher = Publisher::new(native, state);
+                    let mut owner = owned_commands::CommandOwner::new(domain, publisher);
                     while let Some(command) = receiver.recv().await {
                         match command {
                             Command::Publish {
@@ -178,17 +191,27 @@ impl NativePublicationWorker {
                                 source,
                                 response,
                             } => {
-                                let result = publisher
-                                    .publish(&claim, source)
-                                    .await
-                                    .map(|object| NativePublishedObject { object });
+                                let result = async {
+                                    let object = owner.publisher()?.publish(&claim, source).await?;
+                                    Ok(NativePublishedObject { object })
+                                }
+                                .await;
                                 let _disconnected = response.send(result);
                             }
                             Command::Adopt { claim, response } => {
-                                let result = publisher
-                                    .adopt(&claim)
-                                    .await
-                                    .map(|object| NativePublishedObject { object });
+                                let result = async {
+                                    let object = owner.publisher()?.adopt(&claim).await?;
+                                    Ok(NativePublishedObject { object })
+                                }
+                                .await;
+                                let _disconnected = response.send(result);
+                            }
+                            Command::Execute {
+                                context,
+                                operation,
+                                response,
+                            } => {
+                                let result = owner.execute(context, operation).await;
                                 let _disconnected = response.send(result);
                             }
                         }
@@ -202,6 +225,38 @@ impl NativePublicationWorker {
             )
         })??;
         Ok((Self { sender }, thread))
+    }
+
+    /// Submits a fixed domain-bound native lifecycle command.
+    ///
+    /// Accepted work remains owned after cancellation or disconnection. Native
+    /// cache composition must retain its actual decision exclusion and validate
+    /// reconciliation before sending Resume; a wire request is not that proof.
+    ///
+    /// # Errors
+    /// Returns worker shutdown, domain/incarnation/lifecycle rejection, failed
+    /// verification or physical-operation failures. Unimplemented affected paths
+    /// fail closed instead of issuing an inode or state-completion receipt.
+    pub async fn execute(
+        &self,
+        context: NativeCommandContext,
+        operation: NativeOperation,
+    ) -> io::Result<NativeCommandResult> {
+        let (response, received) = oneshot::channel();
+        self.sender
+            .send(Command::Execute {
+                context,
+                operation,
+                response,
+            })
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "publisher worker stopped"))?;
+        received.await.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "publisher worker stopped before command acknowledgment",
+            )
+        })?
     }
 
     /// Queues descriptor-only publication and awaits its durable result.

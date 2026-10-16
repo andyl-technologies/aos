@@ -34,8 +34,12 @@ pub struct PublicationClaim {
     canonical_manifest: Option<Vec<u8>>,
 }
 
-fn invalid(message: impl ToString) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.to_string())
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn source(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
 impl PublicationClaim {
@@ -49,12 +53,12 @@ impl PublicationClaim {
         recipe: PublicationRecipe,
         profile: &ChunkProfile,
     ) -> io::Result<Self> {
-        Domain::parse(&domain).map_err(invalid)?;
+        Domain::parse(&domain).map_err(source)?;
 
         let (descriptor, manifest, canonical_manifest) = match recipe {
             PublicationRecipe::Inline { chunk } => {
-                Descriptor::decode(&TERRANE_V1, &chunk.encode()).map_err(invalid)?;
-                if chunk.domain() != TERRANE_V1.domain(IdentityKind::Chunk).map_err(invalid)?
+                Descriptor::decode(&TERRANE_V1, &chunk.encode()).map_err(source)?;
+                if chunk.domain() != TERRANE_V1.domain(IdentityKind::Chunk).map_err(source)?
                     || chunk.size() > profile.minimum() as u64
                 {
                     return Err(invalid("invalid inline publication descriptor"));
@@ -67,8 +71,8 @@ impl PublicationClaim {
             } => {
                 object
                     .verify_bytes(&TERRANE_V1, IdentityKind::Manifest, &canonical_manifest)
-                    .map_err(invalid)?;
-                let manifest = Manifest::decode(&canonical_manifest, profile).map_err(invalid)?;
+                    .map_err(source)?;
+                let manifest = Manifest::decode(&canonical_manifest, profile).map_err(source)?;
                 if manifest.size <= profile.minimum() as u64 {
                     return Err(invalid("inline content cannot use a manifest publication"));
                 }
@@ -122,19 +126,19 @@ impl PublicationClaim {
         let mut secondary = PlaintextHashes::new(self.plaintext_size());
         if let Some(manifest) = &self.manifest {
             for chunk in &manifest.chunks {
-                let size = usize::try_from(chunk.length).map_err(invalid)?;
+                let size = usize::try_from(chunk.length).map_err(source)?;
                 let mut bytes = vec![0; size];
                 reader.read_exact(&mut bytes)?;
                 let identity = TERRANE_V1
                     .calculate(IdentityKind::Chunk, &bytes)
-                    .map_err(invalid)?;
+                    .map_err(source)?;
                 if identity.digest() != chunk.digest {
                     return Err(invalid("assembled chunk identity mismatch"));
                 }
                 whole.update(&bytes);
-                secondary.update(&bytes).map_err(invalid)?;
+                secondary.update(&bytes).map_err(source)?;
             }
-            let secondary = secondary.finish().map_err(invalid)?;
+            let secondary = secondary.finish().map_err(source)?;
             let blake3 = whole.finalize();
             for (name, expected) in &manifest.hashes {
                 let actual: &[u8] = match name.as_str() {
@@ -150,12 +154,12 @@ impl PublicationClaim {
                 }
             }
         } else {
-            let size = usize::try_from(self.descriptor.size()).map_err(invalid)?;
+            let size = usize::try_from(self.descriptor.size()).map_err(source)?;
             let mut bytes = vec![0; size];
             reader.read_exact(&mut bytes)?;
             self.descriptor
                 .verify_bytes(&TERRANE_V1, IdentityKind::Chunk, &bytes)
-                .map_err(invalid)?;
+                .map_err(source)?;
         }
         let mut extra = [0];
         if reader.read(&mut extra)? != 0 {
