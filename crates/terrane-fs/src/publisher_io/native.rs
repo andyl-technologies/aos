@@ -223,6 +223,29 @@ impl NativePublisher {
         fs::unlinkat(&self.pending, name(claim).as_str(), AtFlags::empty())?;
         self.pending.sync_all()
     }
+
+    /// Moves an independently rejected canonical entry to scoped quarantine.
+    ///
+    /// The retained target directory must come from trusted configuration, not
+    /// a request pathname. Cache policy retains quarantine until scrub confirms
+    /// another good copy or the configured retention expires.
+    ///
+    /// # Errors
+    /// Returns invalid target custody, cross-device, missing source, conflicting
+    /// quarantine name or directory synchronization errors.
+    pub fn quarantine_rejected(&mut self, claim: &PublicationClaim, quarantine: &File) -> io::Result<()> {
+        self.check_claim(claim)?;
+        let target = quarantine.metadata()?;
+        if !target.is_dir() || target.mode() & 0o002 != 0
+            || target.dev() != self.sealed.metadata()?.dev() {
+            return Err(invalid("unsafe quarantine directory or filesystem"));
+        }
+        let shard = self.shard(claim)?;
+        let name = name(claim);
+        fs::renameat_with(&shard, name.as_str(), quarantine, name.as_str(), fs::RenameFlags::NOREPLACE)?;
+        shard.sync_all()?;
+        quarantine.sync_all()
+    }
 }
 
 impl PublicationKernel for NativePublisher {
