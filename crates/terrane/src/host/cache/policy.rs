@@ -1,7 +1,8 @@
 //! Plans S3-FIFO eviction without confusing a plan with durable retirement.
 //!
-//! Callers reserve physical allocation before writing, durably retire victims,
-//! and only then acknowledge their removal. All deadlines are injected ticks.
+//! Callers hold future capacity before writing, durably retire victims, and
+//! only then acknowledge their removal. Holds are policy budgets, not measured
+//! allocation or kernel reservations. All deadlines are injected ticks.
 
 use crate::store::{StoreErrorKind, StoreFailure};
 use std::{
@@ -12,7 +13,7 @@ use std::{
 /// Configures exact allocation and bounded eviction policy.
 #[derive(Clone, Copy, Debug)]
 pub struct PolicyConfig {
-    /// Maximum charged physical allocation, including reservations.
+    /// Combined budget for measured allocation and future-capacity holds.
     pub capacity: u64,
     /// Allocation to target before retrying admission at the high watermark.
     pub low_watermark: u64,
@@ -56,7 +57,7 @@ impl CacheEntry {
     }
 }
 
-/// Keeps reconstructible eviction queues and exact reservation accounting.
+/// Keeps reconstructible eviction queues and future-capacity hold accounting.
 ///
 /// This is planning state, not durable pin authority. A caller must persist pin
 /// increments before acknowledging them and rebuild this inventory on restart.

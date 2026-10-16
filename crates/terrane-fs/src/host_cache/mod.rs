@@ -13,7 +13,12 @@ pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
 pub use source::NativeChunkSource;
 
-use std::{collections::BTreeMap, io, os::fd::OwnedFd};
+use std::{
+    collections::BTreeMap,
+    io,
+    os::fd::OwnedFd,
+    path::{Component, Path},
+};
 use terrane::host::cache::DomainHostLayout;
 
 /// Holds inspected directory descriptors for one host layout.
@@ -34,11 +39,7 @@ impl NativeHostLayout {
     /// Refuses symlink roots, unsupported filesystems, missing directories,
     /// cross-filesystem directories, or kernel inspection errors.
     pub fn inspect(layout: DomainHostLayout) -> io::Result<Self> {
-        let root = open(
-            layout.root(),
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
+        let root = open_directory_chain(layout.root())?;
         let root_stat = fstat(&root)?;
         let mut directories = BTreeMap::new();
         for name in [
@@ -86,11 +87,7 @@ impl NativeHostLayout {
     /// # Errors
     /// Refuses renamed/replaced directories and failed kernel metadata reads.
     pub fn recheck(&self) -> io::Result<()> {
-        let current_root = open(
-            self.layout.root(),
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
+        let current_root = open_directory_chain(self.layout.root())?;
         let expected_root = fstat(&self.root)?;
         let actual_root = fstat(&current_root)?;
         if expected_root.st_dev != actual_root.st_dev || expected_root.st_ino != actual_root.st_ino
@@ -117,5 +114,58 @@ impl NativeHostLayout {
             }
         }
         Ok(())
+    }
+}
+
+// O_NOFOLLOW on a multi-component path protects only its final component.
+// Walking from the retained filesystem root prevents following an ancestor
+// symlink before the final directory's incarnation can be inspected.
+fn open_directory_chain(path: &Path) -> io::Result<OwnedFd> {
+    let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "host directory must have an absolute canonical path",
+        ));
+    }
+    let mut directory = open("/", flags, Mode::empty())?;
+    for component in components {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "host directory contains a noncanonical component",
+            ));
+        };
+        directory = openat(&directory, name, flags, Mode::empty())?;
+    }
+    Ok(directory)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::open_directory_chain;
+    use std::{fs, os::unix::fs::symlink, time::SystemTime};
+
+    #[test]
+    fn native_host_cache_rejects_symlink_ancestors() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "terrane-native-host-chain-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("real/leaf")).unwrap();
+        symlink(root.join("real"), root.join("alias")).unwrap();
+
+        let ordinary = open_directory_chain(&root.join("real/leaf"));
+        let aliased = open_directory_chain(&root.join("alias/leaf"));
+
+        assert!(ordinary.is_ok());
+        assert!(aliased.is_err());
+        drop(ordinary);
+        fs::remove_dir_all(root).unwrap();
     }
 }

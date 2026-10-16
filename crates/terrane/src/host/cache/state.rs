@@ -36,7 +36,7 @@ pub struct PinRecord {
     pub expires: u64,
 }
 
-/// Records allocation held before an admission can write bytes.
+/// Records a durable future-capacity hold before admission writes bytes.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReservationRecord {
@@ -44,7 +44,10 @@ pub struct ReservationRecord {
     pub id: String,
     /// Account charged for reserved allocation.
     pub owner: String,
-    /// Maximum reserved physical allocation.
+    /// Future-capacity budget held for all simultaneous admission copies.
+    ///
+    /// This is neither measured inode allocation nor a kernel reservation, and
+    /// does not guarantee that later allocation or seal enablement succeeds.
     pub bytes: u64,
 }
 
@@ -79,7 +82,7 @@ pub struct CacheState {
     version: u32,
     /// Consumer promises acknowledged after durable synchronization.
     pub pins: Vec<PinRecord>,
-    /// Admissions whose allocation remains charged after restart.
+    /// Future-capacity holds retained until recovery reconciles actual custody.
     pub reservations: Vec<ReservationRecord>,
     /// Owner liveness deadlines used by periodic pin sweeping.
     pub leases: Vec<LeaseRecord>,
