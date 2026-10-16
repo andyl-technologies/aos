@@ -4,7 +4,10 @@ use super::*;
 use crate::qemu_lifecycle_launcher::SourceConstructionCustodyFailure;
 use crucible_api::{ProductionVmCleanupHandoff, ProductionVmCleanupStage};
 
-pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall<G> {
+pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall<
+    F: QemuAttemptResourceGuardFactory,
+> {
+    Unborn(crate::qemu_lifecycle_launcher::UnbornSourceConstruction<F>),
     Api {
         owner: crucible_api::ProductionVmConstructionFailure,
         handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
@@ -26,15 +29,20 @@ pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall<G> {
         lifecycle: ProductionVmLifecycleLoop,
     },
     MissingCallback {
-        guard: G,
+        guard: F::Guard,
         first_cleanup: Option<QemuVmRealizationError>,
     },
 }
 
-impl<G: QemuAttemptResourceGuard> RetainedSourceInstall<G> {
-    /// Returns true only for a callback-less guard that finished without a cell.
+impl<F> RetainedSourceInstall<F>
+where
+    F: QemuAttemptResourceGuardFactory + Send + 'static,
+    F::Guard: Send + 'static,
+{
+    /// Returns true only after physical closure without a queue receipt.
     fn retry_publication(&mut self) -> Result<bool, &'static str> {
         let (slot, published) = match self {
+            Self::Unborn(owner) => return owner.retry(),
             Self::Api { owner, handoff } => (handoff, owner.retry_reserved_publication()?),
             Self::Begin { owner, handoff } => (handoff, owner.retry_publication()?),
             Self::Storage { owner, handoff } => (handoff, owner.retry_publication()?),
@@ -73,12 +81,133 @@ impl<G: QemuAttemptResourceGuard> RetainedSourceInstall<G> {
             | Self::Begin { handoff, .. }
             | Self::Storage { handoff, .. }
             | Self::Post { handoff, .. } => handoff.as_mut(),
-            Self::MissingRetirementCarrier { .. } | Self::MissingCallback { .. } => None,
+            Self::Unborn(_)
+            | Self::MissingRetirementCarrier { .. }
+            | Self::MissingCallback { .. } => None,
         }
+    }
+
+    /// Consumes only a physically completed retainer, moving its actual causes.
+    fn into_history(mut self) -> Result<SourceCleanupHistory, Self> {
+        if let Some(handoff) = self.handoff_mut()
+            && !matches!(handoff.stage(), Ok(ProductionVmCleanupStage::Complete))
+        {
+            return Err(self);
+        }
+        let history = match self {
+            Self::Unborn(owner) => match owner.into_causes() {
+                Ok((first, cleanup, cleanup_post)) => SourceCleanupHistory {
+                    first: Some(SourceInstallationFirst::Native(first)),
+                    cleanup,
+                    cleanup_post,
+                },
+                Err(owner) => return Err(Self::Unborn(owner)),
+            },
+            Self::Handoff(mut handoff) => SourceCleanupHistory {
+                first: None,
+                cleanup: handoff
+                    .take_first_failure()
+                    .map(SourceCleanupCause::Scheduler),
+                cleanup_post: None,
+            },
+            Self::Api {
+                owner,
+                handoff: Some(mut handoff),
+            } => match owner.into_published_error() {
+                Ok(first) => SourceCleanupHistory {
+                    first: Some(SourceInstallationFirst::Api(first)),
+                    cleanup: handoff
+                        .take_first_failure()
+                        .map(SourceCleanupCause::Scheduler),
+                    cleanup_post: None,
+                },
+                Err(owner) => {
+                    return Err(Self::Api {
+                        owner,
+                        handoff: Some(handoff),
+                    });
+                }
+            },
+            Self::Begin {
+                owner,
+                handoff: Some(mut handoff),
+            } => match owner.into_published_error() {
+                Ok(first) => SourceCleanupHistory {
+                    first: Some(SourceInstallationFirst::Native(first)),
+                    cleanup: handoff
+                        .take_first_failure()
+                        .map(SourceCleanupCause::Scheduler),
+                    cleanup_post: None,
+                },
+                Err(owner) => {
+                    return Err(Self::Begin {
+                        owner,
+                        handoff: Some(handoff),
+                    });
+                }
+            },
+            Self::Storage {
+                owner,
+                handoff: Some(mut handoff),
+            } => match owner.into_published_error() {
+                Ok(first) => SourceCleanupHistory {
+                    first: Some(SourceInstallationFirst::Storage(first)),
+                    cleanup: handoff
+                        .take_first_failure()
+                        .map(SourceCleanupCause::Scheduler),
+                    cleanup_post: None,
+                },
+                Err(owner) => {
+                    return Err(Self::Storage {
+                        owner,
+                        handoff: Some(handoff),
+                    });
+                }
+            },
+            Self::Post {
+                owner,
+                handoff: Some(mut handoff),
+            } => match owner.into_published_error() {
+                Ok(first) => SourceCleanupHistory {
+                    first: Some(SourceInstallationFirst::Post(first)),
+                    cleanup: handoff
+                        .take_first_failure()
+                        .map(SourceCleanupCause::Scheduler),
+                    cleanup_post: None,
+                },
+                Err(owner) => {
+                    return Err(Self::Post {
+                        owner,
+                        handoff: Some(handoff),
+                    });
+                }
+            },
+            Self::MissingCallback {
+                guard,
+                first_cleanup,
+            } => {
+                // The caller established actual guard.finish before this cut.
+                drop(guard);
+                return Ok(first_cleanup.map_or(
+                    SourceCleanupHistory {
+                        first: None,
+                        cleanup: None,
+                        cleanup_post: None,
+                    },
+                    SourceCleanupHistory::from_native,
+                ));
+            }
+            retained => return Err(retained),
+        };
+        Ok(history)
     }
 
     pub(super) fn report(&self) -> QemuAttemptProductionVmLifecycleError {
         let diagnostic = match self {
+            Self::Unborn(owner) => match owner.cleanup_failure() {
+                Some(cleanup) => format!("{}; cleanup: {cleanup}", owner.first()),
+                None => owner.first().to_string(),
+            },
             Self::Api { owner, .. } => owner.to_string(),
             Self::Handoff(_) => {
                 String::from("same Source cleanup receipt has not reached Complete")
@@ -130,7 +259,7 @@ where
 
     pub(super) fn park_install_from_checked_vacancy(
         &mut self,
-        owner: RetainedSourceInstall<R::Guard>,
+        owner: RetainedSourceInstall<R>,
     ) -> QemuAttemptProductionVmLifecycleError {
         // with_attempt_launcher holds the sole &mut factory from the vacancy
         // check through this terminal error cut. Its callback borrows only
@@ -142,6 +271,34 @@ where
             ),
             RetainedSourceInstall::report,
         )
+    }
+
+    /// Clears physical custody before reporting once-only historical causes.
+    fn take_completed_install_history(
+        &mut self,
+    ) -> Result<(), QemuAttemptProductionVmLifecycleError> {
+        let Some(owner) = self.retained_install.take() else {
+            return Ok(());
+        };
+        let history = match owner.into_history() {
+            Ok(history) => history,
+            Err(owner) => {
+                self.retained_install = Some(owner);
+                return Err(self.retained_install.as_ref().map_or(
+                    QemuAttemptProductionVmLifecycleError::Lifecycle(
+                        LifecycleApiError::ConstructionCustodyUnavailable,
+                    ),
+                    RetainedSourceInstall::report,
+                ));
+            }
+        };
+        // Every completed receipt/empty shell was destroyed by into_history.
+        // The exact factory is vacant before this historical report escapes.
+        if history.is_empty() {
+            Ok(())
+        } else {
+            Err(history.into())
+        }
     }
 
     pub(crate) fn retry_retained_source_installation(
@@ -161,10 +318,9 @@ where
                 match owner.retry_publication() {
                     Ok(false) => {}
                     Ok(true) => {
-                        // Only the callback-less concrete guard has no queue
-                        // receipt. Its actual finish succeeded above.
-                        self.retained_install = None;
-                        return Ok(());
+                        // Both no-receipt paths established actual physical
+                        // closure before extracting their original typed cause.
+                        return self.take_completed_install_history();
                     }
                     Err(_) => return Err(owner.report()),
                 }
@@ -190,26 +346,7 @@ where
                 QemuAttemptProductionVmLifecycleError::SourceInstallRetained { diagnostic },
             );
         }
-        let historical = receipt.first_failure().map(|first| first.to_string());
-        let construction = if matches!(owner, RetainedSourceInstall::Handoff(_)) {
-            None
-        } else {
-            // The rejected-publication shell kept its original typed first
-            // cause throughout physical progress, alongside the same receipt.
-            Some(owner.report())
-        };
-        // Complete has already transferred the real first cause into this
-        // token and acknowledged exact-cell closure. Drop it before new birth.
-        self.retained_install = None;
-        if let Some(first) = construction {
-            return Err(first);
-        }
-        if let Some(diagnostic) = historical {
-            return Err(
-                QemuAttemptProductionVmLifecycleError::SourceInstallRetained { diagnostic },
-            );
-        }
-        Ok(())
+        self.take_completed_install_history()
     }
 }
 
@@ -243,5 +380,170 @@ where
                 RetainedSourceInstall::MissingRetirementCarrier { lifecycle },
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use std::error::Error;
+
+    fn native(message: &str) -> QemuVmRealizationError {
+        QemuVmRealizationError::ExecutorUnavailable {
+            operation: "component history transport",
+            message: message.to_owned(),
+        }
+    }
+
+    fn message(cause: &SourceCleanupCause) -> &str {
+        match cause {
+            SourceCleanupCause::Native(QemuVmRealizationError::ExecutorUnavailable {
+                message,
+                ..
+            })
+            | SourceCleanupCause::Scheduler(SchedulerError::BoundaryViolation { message })
+            | SourceCleanupCause::Body(
+                crucible_linux_resource::host_services::process_birth::ServiceBirthError::Policy(
+                    message,
+                ),
+            ) => message,
+            _ => panic!("unexpected component error variant"),
+        }
+    }
+
+    #[test]
+    fn history_keeps_constructor_and_each_typed_cleanup_allocation() {
+        // Error transport only: no World, closure or cleanup permission is issued.
+        let causes = [
+            SourceCleanupCause::Scheduler(SchedulerError::BoundaryViolation {
+                message: String::from("scheduler cleanup"),
+            }),
+            SourceCleanupCause::Native(native("native cleanup")),
+            SourceCleanupCause::Body(
+                crucible_linux_resource::host_services::process_birth::ServiceBirthError::Policy(
+                    String::from("body cleanup"),
+                ),
+            ),
+        ];
+        for cleanup in causes {
+            let cleanup_pointer = message(&cleanup).as_ptr();
+            let first = native("constructor first");
+            let QemuVmRealizationError::ExecutorUnavailable {
+                message: first_message,
+                ..
+            } = &first
+            else {
+                panic!("unexpected constructor variant");
+            };
+            let first_pointer = first_message.as_ptr();
+            let history = SourceCleanupHistory {
+                first: Some(SourceInstallationFirst::Native(first)),
+                cleanup: Some(cleanup),
+                cleanup_post: None,
+            };
+
+            let original = history
+                .source()
+                .unwrap()
+                .downcast_ref::<QemuVmRealizationError>()
+                .unwrap();
+            let QemuVmRealizationError::ExecutorUnavailable {
+                message: first_message,
+                ..
+            } = original
+            else {
+                panic!("constructor source was replaced");
+            };
+            assert_eq!(first_message.as_ptr(), first_pointer);
+            let retained_cleanup = history.cleanup.as_ref().unwrap();
+            assert_eq!(message(retained_cleanup).as_ptr(), cleanup_pointer);
+            // Trait-object vtables may be duplicated across codegen units.
+            assert!(std::ptr::addr_eq(
+                history.cleanup_error().unwrap(),
+                retained_cleanup.as_error()
+            ));
+            assert!(!history.is_empty());
+        }
+    }
+
+    #[test]
+    fn cleanup_only_history_exposes_the_underlying_scheduler_error() {
+        let history = SourceCleanupHistory {
+            first: None,
+            cleanup: Some(SourceCleanupCause::Scheduler(
+                SchedulerError::BoundaryViolation {
+                    message: String::from("actual scheduler cleanup cause"),
+                },
+            )),
+            cleanup_post: None,
+        };
+
+        let source = history
+            .source()
+            .unwrap()
+            .downcast_ref::<SchedulerError>()
+            .unwrap();
+        let cleanup = history
+            .cleanup_error()
+            .unwrap()
+            .downcast_ref::<SchedulerError>()
+            .unwrap();
+
+        assert!(std::ptr::eq(source, cleanup));
+        assert!(!history.is_empty());
+    }
+
+    #[test]
+    fn independent_cleanup_post_survives_beside_both_first_causes() {
+        use crucible_linux_resource::host_supervision::{HostOperationState, HostSupervisionError};
+
+        // Typed history only; this constructs no World or closure evidence.
+        let history = SourceCleanupHistory {
+            first: Some(SourceInstallationFirst::Native(native("constructor first"))),
+            cleanup: Some(SourceCleanupCause::Native(native("cleanup first"))),
+            cleanup_post: Some(HostSupervisionError::Terminal {
+                state: HostOperationState::Completed,
+            }),
+        };
+
+        let original = history
+            .source()
+            .unwrap()
+            .downcast_ref::<QemuVmRealizationError>()
+            .unwrap();
+        assert!(
+            matches!(original, QemuVmRealizationError::ExecutorUnavailable { message, .. }
+            if message == "constructor first")
+        );
+        let cleanup = history
+            .cleanup_error()
+            .unwrap()
+            .downcast_ref::<QemuVmRealizationError>()
+            .unwrap();
+        assert!(
+            matches!(cleanup, QemuVmRealizationError::ExecutorUnavailable { message, .. }
+            if message == "cleanup first")
+        );
+        assert_eq!(
+            history.cleanup_post_error(),
+            Some(&HostSupervisionError::Terminal {
+                state: HostOperationState::Completed,
+            })
+        );
+        assert!(!history.is_empty());
+
+        let post_only = SourceCleanupHistory {
+            first: None,
+            cleanup: None,
+            cleanup_post: history.cleanup_post,
+        };
+        assert!(
+            post_only
+                .source()
+                .unwrap()
+                .downcast_ref::<HostSupervisionError>()
+                .is_some()
+        );
+        assert!(!post_only.is_empty());
     }
 }

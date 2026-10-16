@@ -1,7 +1,9 @@
 //! Joins actual before-effects custody to the boxed Source launcher and API.
 
 use super::*;
-use crate::qemu_lifecycle_launcher::{PendingSourceConstruction, retain_source_owner};
+use crate::qemu_lifecycle_launcher::{
+    PendingSourceConstruction, UnbornSourceConstruction, retain_source_owner,
+};
 use crucible_api::{ProductionVmCleanupOwner, ProductionVmNodeLauncher};
 mod retained;
 pub(super) use retained::RetainedSourceInstall;
@@ -133,6 +135,13 @@ where
                     return Err(first.into());
                 }
                 let first = match pending {
+                    Some(owner) if owner.has_unreserved_controls() => {
+                        return Err(self.park_install_from_checked_vacancy(
+                            RetainedSourceInstall::Unborn(UnbornSourceConstruction::new(
+                                owner, boundary,
+                            )),
+                        ));
+                    }
                     Some(owner) => match owner.retain_after_begin_error(boundary) {
                         Ok((first, handoff)) => {
                             self.retain_cleanup_handoff(handoff);

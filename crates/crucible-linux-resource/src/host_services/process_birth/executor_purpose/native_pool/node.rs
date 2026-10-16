@@ -113,11 +113,8 @@ impl AuthenticatedNativeNodeClaim {
             .ledger
             .lock()
             .map_err(|_| ServiceBirthError::policy("native node retirement is uncertain"))?;
-        let peak = ledger.returnable_window_peak(
-            self.world_epoch,
-            self.assignment_epoch,
-            self.node_index,
-        )?;
+        let prepared =
+            ledger.prepare_node_return(self.world_epoch, self.assignment_epoch, self.node_index)?;
         held.root
             .owner
             .host_descriptors
@@ -125,19 +122,8 @@ impl AuthenticatedNativeNodeClaim {
             .map_err(|_| ServiceBirthError::policy("Main descriptor owner is uncertain"))?
             .as_mut()
             .ok_or_else(|| ServiceBirthError::policy("Main descriptor owner is absent"))?
-            .close_pool_windows(peak)?;
-        let tables = ledger
-            .node_bounds(self.world_epoch, self.assignment_epoch, self.node_index)?
-            .file_descriptors;
-        held.root
-            .owner
-            .host_descriptors
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("Main descriptor owner is uncertain"))?
-            .as_mut()
-            .ok_or_else(|| ServiceBirthError::policy("Main descriptor owner is absent"))?
-            .close_pool_tables(tables)?;
-        ledger.return_node(self.world_epoch, self.assignment_epoch, self.node_index)?;
+            .close_pool_assignment(prepared.windows, prepared.tables)?;
+        ledger.commit_node_return(prepared);
         drop(ledger);
         drop(self.held.take());
         Ok(())

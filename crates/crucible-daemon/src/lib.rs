@@ -608,6 +608,7 @@ pub use qemu_campaign_lifecycle::{
     QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshDriveOutcome,
     QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
+    SourceCleanupHistory,
 };
 pub(crate) use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,

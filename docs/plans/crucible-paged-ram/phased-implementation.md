@@ -108,14 +108,26 @@ certify aggregate resource return. Hot-fork retirement returns the original
 Source separately from its retained typed failure history. These operations use
 the existing supervision origin and preserve failed ownership for bounded retry.
 
+If construction fails before a cleanup cell is reserved, the same inline factory
+slot retains the pending body, its canonical never-born journal and its body
+lease. Physical destruction precedes the paired descriptor-table/window return
+and ledger credit. Retry borrows the same cached World Cleanup; it does not
+renew its origin or replace its deadline. Constructor, cleanup and independent
+post-check errors remain separate typed history after physical closure. The
+component executor's separate no-Main shutdown path closes any saved dispatcher
+without requiring a native dispatcher to have been created.
+
 The normal Cargo workspace check passes with all targets. The local API library
-has 487 passes; the daemon library has 1,161 passes, 21 failures and 43 ignored
-tests. All three worker-custody, five cleanup-receipt and two status-ordering
-component controls pass, including 24 epochs through one physical cleanup cell
-and actual file destruction before an expired operation's final observation.
-The component worker destruction regression also passes without changing its
-assertions. The 21 failed names match the preceding daemon run; this does not
-establish identical causes or waive their required positive behavior. All ten
+has 487 passes. The latest full daemon run has 1,172 passes, 18 failures and
+43 ignored tests. Four component executor shutdown regressions now pass,
+along with all eight Source history and saved-Cleanup controls. One of the
+18 failures exposed a GC fixture observation error; after its correction all
+seven membership controls pass. The other 17 failed names are native lifecycle
+and Target integration controls; their required positive behavior remains open.
+All three worker-custody, five cleanup-receipt and two status-ordering controls
+pass, including 24 epochs through one physical cleanup cell and actual file
+destruction before an expired operation's final observation. The component
+worker destruction regression passes without changing its assertions. All ten
 shared-dispatcher controls pass; the QEMU library has 1,045 passes, five
 capture-related failures and three ignored probes. These component controls
 issue no Main or native Source and do not qualify deployed resource return.
@@ -124,8 +136,13 @@ Native Source activation, genuine Target preparation, owner-driven capture,
 API backend separation and full qualification remain open. The normal-service
 VM target now uses the source-built client-script builder; its local evaluation
 reaches the QEMU build, whose dirty-iterator fixture still fails. No VM lane was
-executed. The required application-target rebuild for the integrated Rust source
-is running locally; its earlier storage/API snapshot passed.
+executed. The required application-target build passed locally for commit
+`f11edff9846b31dfec36633f8ad06c8ce73d7e5a`, including all application unit and
+integration targets. The subsequent never-born return changes pass the normal
+Cargo workspace/all-targets check, all 148 Linux resource tests, source-shape
+review and formatting. The daemon results above distinguish the full run from
+the final fixture correction's focused rerun; a fully passing integrated suite
+is not claimed.
 
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.

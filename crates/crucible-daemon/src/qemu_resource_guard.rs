@@ -405,6 +405,21 @@ pub trait QemuAttemptHostResourceFactory {
         None
     }
 
+    /// Authenticates the same unreturned body and canonical no-birth journal.
+    ///
+    /// # Errors
+    /// Refuses foreign, attempted or uncertain Worlds without consuming custody.
+    fn verify_unborn_native_world(
+        &self,
+        _loan: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+        _controls: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "verify exact unborn World construction",
+            message: String::from("factory has no exact pending World owner"),
+        })
+    }
+
     /// Returns only a canonically proven never-born World after body destruction.
     ///
     /// # Errors
@@ -464,19 +479,6 @@ pub trait QemuAttemptHostResourceFactory {
             operation: "begin same-family QEMU target host",
             message: String::from("factory has no genuine target consumer"),
         })
-    }
-
-    /// Reserves a containing Main cleanup cell before lifecycle effects.
-    ///
-    /// Ordinary component factories have no retained cleanup service.
-    ///
-    /// # Errors
-    /// Refuses a stale or occupied real cleanup queue before launch begins.
-    fn reserve_lifecycle_cleanup(
-        &self,
-    ) -> Result<Option<Box<dyn crucible_api::ProductionVmCleanupReservation>>, QemuVmRealizationError>
-    {
-        Ok(None)
     }
 
     /// Exact owner returned for one accepted attempt.
@@ -684,6 +686,20 @@ impl<H> QemuAttemptHostResourceFactory for SharedQemuAttemptHostResourceFactory<
 where
     H: QemuAttemptHostResourceFactory,
 {
+    fn verify_unborn_native_world(
+        &self,
+        loan: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+        controls: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.host
+            .try_lock()
+            .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
+                operation: "verify exact unborn World construction",
+                message: String::from("actual factory custody is busy or poisoned"),
+            })?
+            .verify_unborn_native_world(loan, controls)
+    }
+
     /// Returns only a canonically proven never-born World after body destruction.
     ///
     /// # Errors
@@ -744,16 +760,6 @@ where
 
     fn retain_fork_target_factory(&self) -> Option<Self> {
         Some(self.clone())
-    }
-
-    fn reserve_lifecycle_cleanup(
-        &self,
-    ) -> Result<Option<Box<dyn crucible_api::ProductionVmCleanupReservation>>, QemuVmRealizationError>
-    {
-        self.cleanup
-            .as_ref()
-            .map(|handle| handle.reserve().map_err(cleanup_reservation_error))
-            .transpose()
     }
 
     #[cfg(target_os = "linux")]
@@ -1015,6 +1021,14 @@ fn effective_linux_limits(
 }
 
 impl QemuAttemptHostResourceFactory for LinuxQemuAttemptHostResourceFactory {
+    fn verify_unborn_native_world(
+        &self,
+        loan: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+        controls: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.host.verify_unborn_native_world(loan, controls)
+    }
+
     /// Returns only a canonically proven never-born World after body destruction.
     ///
     /// # Errors
@@ -1684,6 +1698,14 @@ impl<H> QemuAttemptResourceGuardFactory for ComposedQemuAttemptResourceGuardFact
 where
     H: QemuAttemptSelectedHostResourceFactory,
 {
+    fn verify_unborn_native_world(
+        &self,
+        loan: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+        controls: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.host.verify_unborn_native_world(loan, controls)
+    }
+
     /// Returns only a canonically proven never-born World after body destruction.
     ///
     /// # Errors
@@ -1737,13 +1759,6 @@ where
 
     fn retain_fork_target_factory(&self) -> Option<Self> {
         self.host.retain_fork_target_factory().map(Self::new)
-    }
-
-    fn reserve_lifecycle_cleanup(
-        &self,
-    ) -> Result<Option<Box<dyn crucible_api::ProductionVmCleanupReservation>>, QemuVmRealizationError>
-    {
-        self.host.reserve_lifecycle_cleanup()
     }
 
     #[cfg(target_os = "linux")]

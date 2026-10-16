@@ -662,15 +662,7 @@ impl AuthenticatedNativeWorldClaim {
             .map_err(|_| ServiceBirthError::policy("Main descriptor owner is uncertain"))?
             .as_mut()
             .ok_or_else(|| ServiceBirthError::policy("Main descriptor owner is absent"))?
-            .close_pool_windows(peak)?;
-        held.root
-            .owner
-            .host_descriptors
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("Main descriptor owner is uncertain"))?
-            .as_mut()
-            .ok_or_else(|| ServiceBirthError::policy("Main descriptor owner is absent"))?
-            .close_pool_tables(tables)?;
+            .close_pool_assignment(peak, tables)?;
         ledger.commit_world_return(index, self.epoch, used);
         drop(ledger);
         drop(self.held.take());
@@ -768,11 +760,31 @@ fn structure_bytes(capacity: usize) -> Result<u64, ServiceBirthError> {
 }
 
 impl AuthenticatedNativeWorldControlLease {
+    /// Authenticates the same open containing-body lease and never-born World.
+    ///
+    /// This observation releases nothing. The actual owner must still be
+    /// destroyed before closing this lease and returning its World assignment.
+    ///
+    /// # Errors
+    /// Refuses closed, foreign, stale, attempted or uncertain custody.
+    pub fn verify_unborn_world(
+        &self,
+        loan: &AuthenticatedNativeWorldCleanupLoan,
+    ) -> Result<(), ServiceBirthError> {
+        if self.closed || self.epoch != loan.epoch || !Arc::ptr_eq(&self.held, &loan.held) {
+            return Err(ServiceBirthError::policy(
+                "unborn World body lease is foreign or closed",
+            ));
+        }
+        loan.verify_never_born()
+    }
+
     /// Records destruction of the real containing owner before assignment return.
     ///
-    /// This is consumed only by the prepaid cleanup cell after it destroyed
-    /// its actual Launcher/Lifecycle/SourceWorld outside the queue lock. It
-    /// returns no native role, operation, descriptor or Source permission.
+    /// The prepaid cleanup cell destroys its actual containing owner outside
+    /// the queue lock. A canonically proven never-born constructor instead
+    /// consumes its same pending body before this call. Neither path returns
+    /// native role, operation, descriptor or Source permission.
     ///
     /// # Errors
     /// Refuses stale or uncertain custody; the same holder remains retryable.

@@ -367,6 +367,37 @@ impl LinuxQemuAttemptHostFactory {
             .transpose()
     }
 
+    /// Checks the selected open body lease against this factory's no-birth journal.
+    ///
+    /// # Errors
+    /// Preserves foreign, attempted or uncertain custody without releasing it.
+    pub fn verify_unborn_native_world(
+        &self,
+        loan: &AuthenticatedNativeWorldCleanupLoan,
+        controls: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), QemuVmRealizationError> {
+        controls
+            .verify_unborn_world(loan)
+            .map_err(|source| original_roster::original_error(source.into()))?;
+        let pool = self
+            .normal_pool
+            .as_ref()
+            .ok_or_else(|| missing_authority("retain unborn native World"))?;
+        let index = pool
+            .worlds
+            .iter()
+            .position(|world| {
+                world
+                    .as_ref()
+                    .is_some_and(|world| world.matches_cleanup_loan(loan))
+            })
+            .ok_or_else(|| missing_authority("match unborn native World"))?;
+        if pool.nodes.iter().flatten().any(|node| node.world == index) {
+            return Err(missing_authority("unborn World has a canonical node owner"));
+        }
+        Ok(())
+    }
+
     /// Returns only an exact World whose member constructors were never entered.
     ///
     /// The caller first destroys its actual pending body and closes its moved

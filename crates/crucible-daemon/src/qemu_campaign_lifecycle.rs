@@ -88,9 +88,104 @@ enum NativeWorldBeginFailure {
     Native(#[from] QemuVmRealizationError),
 }
 
+/// Keeps actual first causes after the same Source has physically returned.
+///
+/// These values are moved from the original empty publication shell and its
+/// completed receipt. History is a report, not retained cleanup or permission
+/// to create another lifecycle.
+#[derive(Debug)]
+pub struct SourceCleanupHistory {
+    first: Option<SourceInstallationFirst>,
+    cleanup: Option<SourceCleanupCause>,
+    cleanup_post: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+}
+
+/// Retains the concrete cleanup refusal without replacing the constructor cause.
+#[derive(Debug)]
+pub(crate) enum SourceCleanupCause {
+    Scheduler(SchedulerError),
+    Native(QemuVmRealizationError),
+    Body(crucible_linux_resource::host_services::process_birth::ServiceBirthError),
+}
+
+impl SourceCleanupCause {
+    pub(crate) fn as_error(&self) -> &(dyn std::error::Error + 'static) {
+        match self {
+            Self::Scheduler(first) => first,
+            Self::Native(first) => first,
+            Self::Body(first) => first,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SourceInstallationFirst {
+    Api(LifecycleApiError),
+    Native(QemuVmRealizationError),
+    Storage(SourceGenerationStorageRefusal),
+    Post(SourcePostInstallationRefusal),
+}
+
+impl SourceCleanupHistory {
+    /// Borrows the actual cleanup error independently of the constructor error.
+    ///
+    /// The primary error source remains the original constructor refusal when
+    /// present. This accessor also exposes a later physical cleanup refusal.
+    pub fn cleanup_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cleanup.as_ref().map(SourceCleanupCause::as_error)
+    }
+
+    /// Borrows the independent post-check of the same retained World Cleanup.
+    pub fn cleanup_post_error(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostSupervisionError> {
+        self.cleanup_post.as_ref()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_none() && self.cleanup.is_none() && self.cleanup_post.is_none()
+    }
+
+    pub(crate) fn from_native(first: QemuVmRealizationError) -> Self {
+        Self {
+            first: Some(SourceInstallationFirst::Native(first)),
+            cleanup: None,
+            cleanup_post: None,
+        }
+    }
+}
+
+impl std::fmt::Display for SourceCleanupHistory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Source physically returned; first: {:?}; cleanup: {:?}; cleanup post: {:?}",
+            self.first, self.cleanup, self.cleanup_post
+        )
+    }
+}
+
+impl std::error::Error for SourceCleanupHistory {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.first {
+            Some(SourceInstallationFirst::Api(first)) => Some(first),
+            Some(SourceInstallationFirst::Native(first)) => Some(first),
+            Some(SourceInstallationFirst::Storage(first)) => Some(first),
+            Some(SourceInstallationFirst::Post(first)) => Some(first),
+            None => self.cleanup_error().or_else(|| {
+                self.cleanup_post_error()
+                    .map(|first| first as &dyn std::error::Error)
+            }),
+        }
+    }
+}
+
 /// Failure to bind an admitted attempt to a fresh production VM lifecycle.
 #[derive(Debug, Error)]
 pub enum QemuAttemptProductionVmLifecycleError {
+    /// Actual Source return completed, with its original typed historical causes.
+    #[error(transparent)]
+    SourceCleanupHistory(#[from] SourceCleanupHistory),
     /// The actual Source factory retains installation custody for later cleanup.
     #[error("Source installation remains retained: {diagnostic}")]
     SourceInstallRetained {
@@ -178,7 +273,7 @@ pub(crate) struct QemuAttemptProductionVmLifecycleFactory<R: QemuAttemptResource
     terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     continuations: Vec<OwnedQemuAttemptContinuation>,
     authenticated_network_selections: Vec<SelectionDecision>,
-    retained_install: Option<source_construction::RetainedSourceInstall<R::Guard>>,
+    retained_install: Option<source_construction::RetainedSourceInstall<R>>,
     lifecycle_outstanding: bool,
     // Retained model copies close before their original metadata credits.
     _decode_custody: Option<crucible::owned_decode::DecodeCustody>,

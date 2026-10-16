@@ -62,6 +62,7 @@ pub(crate) fn production_lifecycle_failure_class(
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)
         | QemuAttemptProductionVmLifecycleError::Lifecycle(_)
         | QemuAttemptProductionVmLifecycleError::SourceInstallRetained { .. }
+        | QemuAttemptProductionVmLifecycleError::SourceCleanupHistory(_)
         | QemuAttemptProductionVmLifecycleError::SourceGenerationStorage(_)
         | QemuAttemptProductionVmLifecycleError::CheckpointRestore(_) => {
             SchedulerOperationalFailureClass::Terminal

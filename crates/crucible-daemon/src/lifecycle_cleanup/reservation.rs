@@ -28,14 +28,6 @@ impl LifecycleCleanupHandle {
         self.reserve_with(controls, |cell, controls| cell.controls = Some(controls))
     }
 
-    /// Occupies a cell after its actual logical role and before physical effects.
-    pub(crate) fn reserve(
-        &self,
-    ) -> Result<Box<dyn ProductionVmCleanupReservation>, LifecycleApiError> {
-        self.reserve_with((), |_, ()| {})
-            .map_err(|((), error)| error)
-    }
-
     fn reserve_with<T>(
         &self,
         input: T,

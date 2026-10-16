@@ -232,3 +232,79 @@ fn permanent_worker_controls_compete_with_every_world_without_a_second_bank() {
     assert!(ledger.reserve_worker_controls(1).is_err());
     assert_eq!(ledger.used, used);
 }
+
+fn selected_ledger() -> (PoolLedger, u64) {
+    use crate::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let original = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
+    let mut ledger = PoolLedger::new(ceiling(), 2, 8, 3).unwrap();
+    let (epoch, _, _) = ledger
+        .assign(
+            NativeWorldIdentity {
+                owner: [1; 32],
+                selection: [2; 32],
+            },
+            &requests(),
+            16,
+            &original,
+        )
+        .unwrap();
+    (ledger, epoch)
+}
+
+#[test]
+fn never_born_return_keeps_body_debt_until_explicit_owner_destruction() {
+    let (mut ledger, epoch) = selected_ledger();
+    let charged = ledger.used;
+    ledger.take_consumer(epoch).unwrap();
+
+    ledger.verify_never_born(epoch).unwrap();
+    assert!(ledger.prepare_world_return(epoch).is_err());
+    assert_eq!(ledger.used, charged);
+    assert!(ledger.verify_never_born(epoch + 1).is_err());
+
+    ledger.close_consumer(epoch).unwrap();
+    let (index, remaining, windows, tables) = ledger.prepare_world_return(epoch).unwrap();
+    assert_eq!(windows, 26);
+    assert_eq!(tables, 20);
+    assert_eq!(remaining.metadata_bytes, 8);
+    assert_eq!(remaining.resident_peak_bytes, 8);
+    assert_eq!(remaining.file_descriptors, 3);
+    assert_eq!(ledger.used, charged);
+
+    ledger.commit_world_return(index, epoch, remaining);
+    assert_eq!(ledger.used, remaining);
+    assert!(ledger.prepare_world_return(epoch).is_err());
+    assert!(ledger.verify_never_born(epoch).is_err());
+}
+
+#[test]
+fn actual_node_entry_cannot_become_never_born_after_physical_return() {
+    let (mut ledger, epoch) = selected_ledger();
+    let window = crate::host_services::HostServiceAllocator::new(1, 26, 1)
+        .unwrap()
+        .reserve_resources(0, 26, 0)
+        .unwrap();
+    ledger.bind_window(epoch, window).unwrap();
+    ledger.verify_never_born(epoch).unwrap();
+
+    let (index, assignment) = ledger.take_node(epoch, requests()[0].node).unwrap();
+    assert!(ledger.verify_never_born(epoch).is_err());
+    let charged = ledger.used;
+    assert!(
+        ledger
+            .prepare_node_return(epoch, assignment + 1, index)
+            .is_err()
+    );
+    assert_eq!(ledger.used, charged);
+    let prepared = ledger
+        .prepare_node_return(epoch, assignment, index)
+        .unwrap();
+    assert_eq!(ledger.used, charged);
+    ledger.commit_node_return(prepared);
+    assert!(ledger.verify_never_born(epoch).is_err());
+    assert_eq!(ledger.unissued_node_count(epoch).unwrap(), 1);
+}

@@ -615,6 +615,21 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
         None
     }
 
+    /// Authenticates the same unreturned body and canonical no-birth journal.
+    ///
+    /// # Errors
+    /// Refuses foreign, attempted or uncertain Worlds without consuming custody.
+    fn verify_unborn_native_world(
+        &self,
+        _loan: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+        _controls: &crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "verify exact unborn World construction",
+            message: String::from("factory has no exact pending World owner"),
+        })
+    }
+
     /// Returns only a canonically proven never-born World after body destruction.
     ///
     /// # Errors
@@ -683,17 +698,6 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
                 selected_checkpoint,
             ),
         )
-    }
-
-    /// Occupies existing Main cleanup storage before any lifecycle effect.
-    ///
-    /// # Errors
-    /// Refuses missing, busy or stale actual production cleanup custody.
-    fn reserve_lifecycle_cleanup(
-        &self,
-    ) -> Result<Option<Box<dyn crucible_api::ProductionVmCleanupReservation>>, QemuVmRealizationError>
-    {
-        Ok(None)
     }
 
     /// Consumes one source permit through the same actual host factory.
