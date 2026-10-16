@@ -12,6 +12,8 @@ use std::os::unix::fs::MetadataExt;
 use super::index_io::{Bytes, Operation};
 use super::placement_index::{FreshRoot, IndexSnapshot, Reader as IndexReader};
 
+#[cfg(test)]
+pub(crate) mod cost;
 mod manifest;
 
 pub(in crate::content_store::packed) use manifest::Manifest;
@@ -92,6 +94,8 @@ impl Reader<'_> {
         id: ContentId,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<BlobHandle, StoreError> {
+        #[cfg(test)]
+        cost::lookup();
         checked_reader::check(original, boundary)?;
         let mut operation = Operation {
             original: Some(original),
@@ -121,6 +125,8 @@ impl Reader<'_> {
             .as_ref()
             .is_none_or(|pack| pack.manifest.id != entry.pack)
         {
+            #[cfg(test)]
+            cost::switch_pack();
             // Retire the prior pin before opening its replacement: the view
             // keeps at most two locks, one arena and one pack descriptor.
             self.last_pack = None;

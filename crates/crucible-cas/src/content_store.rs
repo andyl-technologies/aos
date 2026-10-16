@@ -45,6 +45,10 @@ mod namespace;
 mod packed;
 pub(crate) use packed::canonical_session::Session as PackedCanonicalSession;
 pub(crate) use packed::read_view::View as PackedReadView;
+#[cfg(test)]
+pub(crate) use packed::read_view::cost::{
+    reset as reset_packed_read_costs, snapshot as packed_read_costs,
+};
 mod physical_quota;
 mod prepaid_source;
 mod profile;
