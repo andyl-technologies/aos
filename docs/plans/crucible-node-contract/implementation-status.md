@@ -597,10 +597,15 @@ in 4.05 seconds.
 
 Both unchanged SDK constructor controls still fail with `ResourceLimit` during
 original startup finalization, before their constructor assertions. The 768 MiB
-policy remains unchanged. The earlier diagnostic operands above describe the
-previous source; current-source operands are under investigation. Neither these
-component controls nor smaller accounting formulas establish constructor fit,
-native restoration, device parity or runtime performance improvement.
+policy remains unchanged. A fresh independently audited temporary diagnostic
+identifies the same initial third-member addition: 720,282,094 plus 188,954,635
+requested bytes exceeds 805,306,368 by 103,930,361, without integer overflow.
+The failing subtotal is 101,418,674 bytes (96.7 MiB) smaller than the earlier
+probe, but later finalization and publication additions remain unreached.
+The original diagnostic still fails; both child waits release cleanly. These
+are requested-storage accounting values, not measured RAM. Neither the
+component controls nor this reduction establishes constructor fit, native
+restoration, device parity or runtime performance improvement.
 
 ## Known gaps and exit criteria
 
