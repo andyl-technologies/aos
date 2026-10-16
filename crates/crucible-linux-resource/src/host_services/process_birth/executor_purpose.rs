@@ -120,7 +120,7 @@ impl AuthenticatedProcessResources {
             .map_err(ServiceBirthError::from)?;
         let original = Arc::new(
             supervisor
-                .begin_work(HostOperationClass::Preparation, 0)
+                .begin(HostOperationClass::Preparation)
                 .map_err(ServiceBirthError::from)?,
         );
         let purpose = Arc::new(AuthenticatedNativeSlotPurpose {
@@ -408,7 +408,7 @@ impl AuthenticatedNativeSubdivision {
         self.check()?;
         self.owner
             .supervisor
-            .begin_work(HostOperationClass::Preparation, 0)
+            .begin(HostOperationClass::Preparation)
             .map_err(ServiceBirthError::from)
     }
 }

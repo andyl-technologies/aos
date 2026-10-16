@@ -25,28 +25,19 @@ impl QemuNode {
             OperationPollBudget::BorrowedPair(actor, family) => self
                 .host_io_runtime
                 .publish_current_execution_fingerprint_under_originals(actor, family),
+            #[cfg(any(test, feature = "test-support"))]
             OperationPollBudget::Fixture(_) => {
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    let remaining = deadline
-                        .remaining("publish fresh fault fingerprint")
-                        .map_err(fingerprint_runtime_error)?
-                        .ok_or_else(|| {
-                            fingerprint_runtime_error(QemuAsyncDriverRuntimeError::new(
-                                "publish fresh fault fingerprint",
-                                "fixture operation has expired",
-                            ))
-                        })?;
-                    self.host_io_runtime
-                        .publish_fresh_execution_fingerprint_for_test(remaining)
-                }
-                #[cfg(not(any(test, feature = "test-support")))]
-                {
-                    Err(QemuAsyncDriverRuntimeError::new(
-                        "publish fresh fault fingerprint",
-                        "fresh fault capture requires original supervision",
-                    ))
-                }
+                let remaining = deadline
+                    .remaining("publish fresh fault fingerprint")
+                    .map_err(fingerprint_runtime_error)?
+                    .ok_or_else(|| {
+                        fingerprint_runtime_error(QemuAsyncDriverRuntimeError::new(
+                            "publish fresh fault fingerprint",
+                            "fixture operation has expired",
+                        ))
+                    })?;
+                self.host_io_runtime
+                    .publish_fresh_execution_fingerprint_for_test(remaining)
             }
         };
         result.map_err(fingerprint_runtime_error)

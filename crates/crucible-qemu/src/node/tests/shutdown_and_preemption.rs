@@ -267,6 +267,11 @@ fn assert_native_capture_failure_reaps(
     options: ScriptedNodeOptions,
     expected_failure: &str,
 ) -> Result<(), Box<dyn Error>> {
+    #[cfg(target_os = "linux")]
+    let options = ScriptedNodeOptions {
+        checkpoint: Some(checkpoint_ownership::Ownership::new(options.fail_qmp_stop)?),
+        ..options
+    };
     let log = shared_log();
     let mut node =
         scripted_node_with_options(Arc::clone(&log), options, [QemuAsyncWaitOutcome::Completed])?;

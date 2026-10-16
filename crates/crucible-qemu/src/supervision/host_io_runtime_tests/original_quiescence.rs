@@ -3,12 +3,39 @@
 #![cfg(test)]
 
 use super::*;
+use crucible_linux_resource::host_services::HostServiceAllocator;
 use crucible_linux_resource::host_supervision::{
-    HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    HostOperationBudgets, HostOperationClass, HostOperationGuard, HostOperationSupervisor,
 };
 use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
+
+// This account pays only the host guard's cancellation subscriber. It cannot
+// issue a native Source, standing action owner or checkpoint capture authority.
+fn quiescence_original() -> Result<
+    (
+        HostOperationSupervisor,
+        Arc<HostOperationGuard>,
+        HostServiceAllocator,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let owner = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = Arc::new(owner.begin(HostOperationClass::Quiescence)?);
+    let subscriber_bytes = HostOperationGuard::original_quiescence_cancellation_bytes();
+    let account = HostServiceAllocator::new(1, 1, subscriber_bytes)?;
+    let credit = account.reserve_resources(0, 1, subscriber_bytes)?;
+    let event = rustix::event::eventfd(
+        0,
+        rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
+    )?;
+    original.retain_original_quiescence_cancellation(event, credit)?;
+    Ok((owner, original, account))
+}
 
 #[test]
 fn cancelled_original_refuses_pause_before_header_or_doorbell()
@@ -23,11 +50,7 @@ fn cancelled_original_refuses_pause_before_header_or_doorbell()
     let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
     let mut runtime =
         QemuLiveHostIoRuntime::from_shmem_fd(shmem.as_fd(), wake.as_fd(), layout.region_size, 0)?;
-    let owner = HostOperationSupervisor::new(
-        HostOperationBudgets::default(),
-        Some(Duration::from_secs(2)),
-    )?;
-    let original = owner.begin(HostOperationClass::Preparation)?;
+    let (owner, original, _account) = quiescence_original()?;
     let before = plugin.node_slot(0)?.snapshot();
     owner.cancel()?;
     let expected = original.wait_slice().expect_err("original is cancelled");
@@ -54,10 +77,7 @@ fn original_idle_handoff_publishes_pause_before_fresh_capture()
     let layout = allocation.layout();
     let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;
-    let (mut notifications, wake) = UnixStream::pair()?;
-    // This authored host-fixture bound only contains a broken publication
-    // handshake; it neither replaces nor renews the original operation.
-    notifications.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let (_notifications, wake) = UnixStream::pair()?;
     let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
     plugin
         .node_slot(0)?
@@ -72,11 +92,7 @@ fn original_idle_handoff_publishes_pause_before_fresh_capture()
     plugin.fingerprint_sample(0)?.publish(&stale)?;
     let mut runtime =
         QemuLiveHostIoRuntime::from_shmem_fd(shmem.as_fd(), wake.as_fd(), layout.region_size, 0)?;
-    let owner = HostOperationSupervisor::new(
-        HostOperationBudgets::default(),
-        Some(Duration::from_secs(2)),
-    )?;
-    let original = Arc::new(owner.begin(HostOperationClass::Preparation)?);
+    let (_owner, original, _account) = quiescence_original()?;
     // The scope joins the actual fixture worker even when an observation or
     // assertion fails; the same original deadline bounds its cleanup wait.
     std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
@@ -91,10 +107,13 @@ fn original_idle_handoff_publishes_pause_before_fresh_capture()
                 )
             })
         });
-        let mut notification = [0; 8];
         while !plugin.header().pause_requested()
             || plugin.node_slot(0)?.snapshot().max_advance_icount != 73
         {
+            if host.is_finished() {
+                host.join().map_err(|_| "pause host panicked")??;
+                return Err("pause host returned before publishing pause".into());
+            }
             original.wait_slice()?;
             std::thread::yield_now();
         }
@@ -109,15 +128,19 @@ fn original_idle_handoff_publishes_pause_before_fresh_capture()
         plugin
             .node_slot(0)?
             .publish_pause_quiesced(73, 73 / crucible_shmem::TICKS_PER_INSTRUCTION)?;
-        notifications.read_exact(&mut notification)?;
-        // The completed pause wakes the main loop, then the fresh capture publishes
-        // its own token. Observe that token before acknowledging it.
+        // Observe the actual capture publication under the same original. An
+        // early worker refusal must remain its cause, not a later read timeout.
         while plugin
             .fingerprint_sample(0)?
             .pending_capture_request_v1()
             .is_none()
         {
-            notifications.read_exact(&mut notification)?;
+            if host.is_finished() {
+                host.join().map_err(|_| "pause host panicked")??;
+                return Err("pause host returned before publishing capture".into());
+            }
+            original.wait_slice()?;
+            std::thread::yield_now();
         }
         let request = plugin
             .fingerprint_sample(0)?
@@ -128,6 +151,10 @@ fn original_idle_handoff_publishes_pause_before_fresh_capture()
         while plugin.node_slot(0)?.control_boundary_capture_request() != Some(request)
             || !plugin.node_slot(0)?.control_boundary_is_requested()
         {
+            if host.is_finished() {
+                host.join().map_err(|_| "pause host panicked")??;
+                return Err("pause host returned before publishing the capture token".into());
+            }
             original.wait_slice()?;
             std::thread::yield_now();
         }

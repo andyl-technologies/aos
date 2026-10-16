@@ -22,11 +22,40 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         deadline: &OperationPollBudget<'_>,
         timeout: Duration,
-        fingerprint_request: u32,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let fingerprint_acknowledgement = fingerprint_request.wrapping_add(1);
+        let operation = "publish current execution fingerprint";
         check_paired_capture(deadline)?;
+        let observed = self
+            .region
+            .as_ref()
+            .ok_or_else(region_missing)?
+            .fingerprint_sample(self.vm_slot)
+            .map_err(map_slot_error)?
+            .capture_request_generation();
+        if observed & 1 == 1 {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                operation,
+                crucible_shmem::FingerprintSampleError::CaptureAlreadyPending { request: observed }
+                    .to_string(),
+            ));
+        }
+
+        let fingerprint_request = observed.wrapping_add(1);
         let loan = self.lend_control_action(deadline, Some(fingerprint_request))?;
+        deadline.remaining(operation)?.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(operation, "capture operation has expired")
+        })?;
+        // Admission owns the proposed successor before it becomes visible.
+        // The exact compare-and-exchange also rejects a completed intervening
+        // capture rather than publishing an unowned replacement generation.
+        self.region
+            .as_ref()
+            .ok_or_else(region_missing)?
+            .fingerprint_sample(self.vm_slot)
+            .map_err(map_slot_error)?
+            .request_fresh_capture_from_v1(observed)
+            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
+        let fingerprint_acknowledgement = fingerprint_request.wrapping_add(1);
         let request = self.signal_fingerprint_capture(deadline, fingerprint_request)?;
         super::action::validate_control_action_request(request, loan)?;
         let mut last_observed = None;
@@ -124,8 +153,7 @@ impl QemuLiveHostIoRuntime {
     }
 }
 
-// Ordinary capture keeps its existing admission/coalescing behavior. A paired
-// capture carries both subscriptions through every separate service/wake cut.
+// Paired capture carries both subscriptions through every separate service/wake cut.
 fn check_paired_capture(
     _deadline: &OperationPollBudget<'_>,
 ) -> Result<(), QemuAsyncDriverRuntimeError> {

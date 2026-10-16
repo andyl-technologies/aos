@@ -3,6 +3,58 @@
 use super::*;
 
 impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
+    #[cfg(target_os = "linux")]
+    fn bind_checkpoint_original(
+        &mut self,
+        original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.checkpoint
+            .as_ref()
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "bind checkpoint original",
+                    "missing scripted original transport",
+                )
+            })?
+            .bind(original)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn begin_checkpoint_receiving(
+        &mut self,
+        receipt: crate::ram_control::CheckpointArmReceipt,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.checkpoint
+            .as_ref()
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "begin checkpoint receiving",
+                    "missing scripted original transport",
+                )
+            })?
+            .begin(receipt)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resume_after_checkpoint_under_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        let owner = self.checkpoint.clone().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "original reset resume",
+                "missing scripted original transport",
+            )
+        })?;
+        owner.check(original).map_err(|error| {
+            QemuNodeChannelError::new("original reset resume", error.to_string())
+        })?;
+        self.resume_after_checkpoint()?;
+        owner
+            .check(original)
+            .map_err(|error| QemuNodeChannelError::new("original reset resume", error.to_string()))
+    }
+
     fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
         Ok(false)
     }
@@ -55,6 +107,10 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 
     fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::QmpStop);
+        #[cfg(target_os = "linux")]
+        if let Some(owner) = &self.checkpoint {
+            return owner.stop();
+        }
         if self.fail_stop {
             return Err(QemuNodeChannelError::new(
                 "stop_for_checkpoint",
@@ -66,6 +122,10 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::QmpContinue);
+        #[cfg(target_os = "linux")]
+        if let Some(owner) = &self.checkpoint {
+            return owner.resume();
+        }
         Ok(())
     }
 

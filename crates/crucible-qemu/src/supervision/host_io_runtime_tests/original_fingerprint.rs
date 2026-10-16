@@ -109,6 +109,62 @@ fn old_pending_capture_refuses_fresh_original_request_before_any_wake()
     Ok(())
 }
 
+#[test]
+fn absent_source_refuses_before_capture_generation_or_control_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    for borrowed in [false, true] {
+        let allocation =
+            crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
+        let layout = allocation.layout();
+        let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
+        shmem.write_all(&allocation.setup_region_bytes()?)?;
+        let (mut notifications, wake) = UnixStream::pair()?;
+        notifications.set_nonblocking(true)?;
+        let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+        let supervisor = HostOperationSupervisor::new(
+            HostOperationBudgets::default(),
+            Some(Duration::from_secs(2)),
+        )?;
+        let original = supervisor.begin(HostOperationClass::Preparation)?;
+        let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd(
+            shmem.as_fd(),
+            wake.as_fd(),
+            layout.region_size,
+            0,
+        )?
+        .with_host_operation_supervisor(supervisor);
+        let before = plugin.node_slot(0)?.snapshot();
+
+        let error = if borrowed {
+            runtime.publish_current_execution_fingerprint_under_original(&original)
+        } else {
+            runtime.publish_current_execution_fingerprint(Duration::from_secs(1))
+        }
+        .expect_err("capture needs its actual standing Source owner");
+
+        assert!(
+            error.to_string().contains("standing Source owner"),
+            "{error}"
+        );
+        assert_eq!(
+            plugin.fingerprint_sample(0)?.capture_request_generation(),
+            0
+        );
+        let after = plugin.node_slot(0)?.snapshot();
+        assert_eq!(after.control_boundary_ack, before.control_boundary_ack);
+        assert_eq!(
+            after.control_boundary_capture_request,
+            before.control_boundary_capture_request
+        );
+        assert_eq!(
+            notifications.read(&mut [0_u8; 8]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(original.status()?.completed_work_units, 0);
+    }
+    Ok(())
+}
+
 // The account below funds only actual guard subscriptions in these mapped host
 // fixtures. It is not an actor/family issuer or a native park entitlement.
 #[cfg(feature = "private-measurement-domain")]

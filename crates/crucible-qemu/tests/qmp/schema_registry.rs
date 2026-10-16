@@ -276,6 +276,8 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
     // These additions have no independent schema-version field. QAPI owns
     // their shape, and the pinned patched-QEMU release is their version.
     let qapi_only = [
+        "crucible-checkpoint-begin",
+        "crucible-checkpoint-end",
         "crucible-complete-terminal-lifecycle",
         "query-crucible-selectable-reply-boundary",
         "crucible-complete-selectable-reply",

@@ -5,7 +5,17 @@ use super::*;
 #[test]
 fn exact_checkpoint_pause_orders_quiesce_stop_and_release() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
-    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    #[cfg(target_os = "linux")]
+    let ownership = checkpoint_ownership::Ownership::new(false)?;
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            #[cfg(target_os = "linux")]
+            checkpoint: Some(ownership.clone()),
+            ..ScriptedNodeOptions::default()
+        },
+        std::iter::empty(),
+    )?;
     node.synchronize_observed_time()?;
     log.lock().unwrap().clear();
 
@@ -22,15 +32,21 @@ fn exact_checkpoint_pause_orders_quiesce_stop_and_release() -> Result<(), Box<dy
         ]
     );
     node.shutdown_child()?;
+    #[cfg(target_os = "linux")]
+    assert_eq!(ownership.counts(), (1, 1));
     Ok(())
 }
 
 #[test]
 fn exact_checkpoint_pause_aborts_plugin_pause_when_qmp_stop_fails() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
+    #[cfg(target_os = "linux")]
+    let ownership = checkpoint_ownership::Ownership::new(true)?;
     let mut node = scripted_node_with_options(
         Arc::clone(&log),
         ScriptedNodeOptions {
+            #[cfg(target_os = "linux")]
+            checkpoint: Some(ownership.clone()),
             fail_qmp_stop: true,
             ..ScriptedNodeOptions::default()
         },
@@ -54,6 +70,8 @@ fn exact_checkpoint_pause_aborts_plugin_pause_when_qmp_stop_fails() -> Result<()
         ]
     );
     node.shutdown_child()?;
+    #[cfg(target_os = "linux")]
+    assert_eq!(ownership.counts(), (1, 1));
     Ok(())
 }
 
@@ -98,10 +116,21 @@ fn restored_replacement_requires_explicit_release_after_install() -> Result<(), 
     nodes.shutdown()?;
     Ok(())
 }
+
 #[test]
 fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
-    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    #[cfg(target_os = "linux")]
+    let ownership = checkpoint_ownership::Ownership::new(false)?;
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            #[cfg(target_os = "linux")]
+            checkpoint: Some(ownership.clone()),
+            ..ScriptedNodeOptions::default()
+        },
+        std::iter::empty(),
+    )?;
     let mut checkpoint = checkpoint("terminal-exact");
     checkpoint.virtual_time = node.synchronize_observed_time()?;
     let node_identity = node_id("vm-a");
@@ -128,6 +157,8 @@ fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), 
             ChannelCall::QmpExactSave(snapshot.checkpoint().id),
         ]
     );
+    #[cfg(target_os = "linux")]
+    assert_eq!(ownership.counts(), (1, 1));
     Ok(())
 }
 

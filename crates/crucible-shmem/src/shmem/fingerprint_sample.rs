@@ -281,13 +281,38 @@ impl FingerprintSampleSlot {
     /// generation, or [`FingerprintSampleError::CaptureRequestChanged`] when a
     /// concurrent publication wins. Refusal does not change the slot.
     pub fn request_fresh_capture_v1(&self) -> Result<u32, FingerprintSampleError> {
-        let observed = self.capture_request.load(Ordering::Acquire);
-        if observed & 1 == 1 {
-            return Err(FingerprintSampleError::CaptureAlreadyPending { request: observed });
+        self.request_fresh_capture_from_v1(self.capture_request.load(Ordering::Acquire))
+    }
+
+    /// Claims a capture from an unchanged acknowledged generation.
+    ///
+    /// Callers may read [`Self::capture_request_generation`], admit the operation
+    /// that will own its successor, then publish that exact successor here. A
+    /// competing capture, even one already acknowledged, cannot be adopted.
+    /// The supplied generation is an observation, not operation authority.
+    ///
+    /// # Errors
+    /// Returns [`FingerprintSampleError::CaptureAlreadyPending`] when the
+    /// supplied generation is odd, or [`FingerprintSampleError::CaptureRequestChanged`]
+    /// when the slot no longer contains the supplied even generation. Refusal
+    /// leaves the slot unchanged.
+    pub fn request_fresh_capture_from_v1(
+        &self,
+        acknowledged_generation: u32,
+    ) -> Result<u32, FingerprintSampleError> {
+        if acknowledged_generation & 1 == 1 {
+            return Err(FingerprintSampleError::CaptureAlreadyPending {
+                request: acknowledged_generation,
+            });
         }
-        let request = observed.wrapping_add(1);
+        let request = acknowledged_generation.wrapping_add(1);
         self.capture_request
-            .compare_exchange(observed, request, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                acknowledged_generation,
+                request,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .map(|_| request)
             .map_err(|observed| FingerprintSampleError::CaptureRequestChanged { observed })
     }
@@ -508,6 +533,42 @@ mod tests {
         assert_eq!(slot.capture_request_generation(), old);
         assert!(slot.acknowledge_capture_v1(old));
         assert_eq!(slot.request_fresh_capture_v1(), Ok(old.wrapping_add(2)));
+    }
+
+    #[test]
+    fn admitted_capture_cannot_adopt_an_intervening_completed_generation() {
+        let slot = FingerprintSampleSlot::new();
+        let admitted = slot.capture_request_generation();
+
+        let competing = slot.request_fresh_capture_v1().unwrap();
+        assert!(slot.acknowledge_capture_v1(competing));
+        let completed = slot.capture_request_generation();
+
+        assert_eq!(
+            slot.request_fresh_capture_from_v1(admitted),
+            Err(FingerprintSampleError::CaptureRequestChanged {
+                observed: completed,
+            })
+        );
+        assert_eq!(slot.capture_request_generation(), completed);
+        assert!(slot.pending_capture_request_v1().is_none());
+    }
+
+    #[test]
+    fn admitted_capture_publishes_the_exact_successor_and_refuses_reuse() {
+        let slot = FingerprintSampleSlot::new();
+        let admitted = slot.capture_request_generation();
+
+        assert_eq!(slot.request_fresh_capture_from_v1(admitted), Ok(1));
+        assert_eq!(
+            slot.request_fresh_capture_from_v1(admitted),
+            Err(FingerprintSampleError::CaptureRequestChanged { observed: 1 })
+        );
+        assert_eq!(
+            slot.request_fresh_capture_from_v1(1),
+            Err(FingerprintSampleError::CaptureAlreadyPending { request: 1 })
+        );
+        assert_eq!(slot.capture_request_generation(), 1);
     }
 
     #[test]
