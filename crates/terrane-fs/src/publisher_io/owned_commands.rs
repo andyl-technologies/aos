@@ -129,7 +129,7 @@ pub enum NativeOperation {
         /// The requested registered body key.
         key: NativeBodyKey,
         /// Required only for sealed-body independent adoption.
-        claim: Option<Arc<PublicationClaim>>,
+        claim: Option<PublicationClaim>,
     },
     /// Retains pending namespace custody without content or serving authority.
     InspectPending {
@@ -240,7 +240,7 @@ enum Location {
 
 struct RetainedBody {
     key: NativeBodyKey,
-    claim: Option<PublicationClaim>,
+    claim: Option<Arc<PublicationClaim>>,
     token: [u8; 32],
     file: File,
     location: Location,
