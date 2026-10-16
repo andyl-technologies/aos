@@ -153,7 +153,8 @@ impl StateInventory {
     /// Matches an existing record to actual verified inline or manifest content.
     ///
     /// # Errors
-    /// Rejects changed custody, invalid content, malformed state or seal conflict.
+    /// Rejects changed sources/custody, invalid content, malformed state, seal
+    /// conflict and exhausted retained-metadata budgets.
     pub(super) async fn reconcile(
         &mut self,
         inventory: &NativeInventory,
@@ -293,5 +294,107 @@ impl StateInventory {
             Self::recheck_body(inventory, body)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use terrane_core::chunking::ChunkProfile;
+    use terrane_core::manifest::{ChunkRef, Manifest};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn retained_manifest_budget_includes_canonical_and_decoded_payloads() {
+        let profile = ChunkProfile::new(16, 32, 64, 48, 2, [0; 32]).unwrap();
+        let plaintext: Vec<u8> = (0..70).collect();
+        let manifest = Manifest {
+            size: plaintext.len() as u64,
+            chunks: [&plaintext[..40], &plaintext[40..]]
+                .into_iter()
+                .map(|bytes| ChunkRef {
+                    digest: TERRANE_V1
+                        .calculate(IdentityKind::Chunk, bytes)
+                        .unwrap()
+                        .terrane_v1_digest()
+                        .unwrap(),
+                    length: bytes.len() as u64,
+                })
+                .collect(),
+            media_type: Some("application/octet-stream".into()),
+            hashes: BTreeMap::from([(
+                "blake3".into(),
+                blake3::hash(&plaintext).as_bytes().to_vec(),
+            )]),
+        };
+        let canonical = manifest.encode(&profile).unwrap();
+        let identity = manifest.identity(&profile).unwrap();
+        let claim = PublicationClaim::new(
+            "public".into(),
+            PublicationRecipe::Manifest {
+                object: Descriptor::from_identity(&TERRANE_V1, &identity, &canonical).unwrap(),
+                canonical_manifest: canonical,
+            },
+            &profile,
+        )
+        .unwrap();
+
+        let charge = retain_source_budget(0, &claim).unwrap();
+        let canonical_bytes = claim.canonical_manifest().unwrap().len();
+        assert!(charge > canonical_bytes);
+        let limit = HostReadLimits::default().max_allocation_bytes;
+        assert_eq!(retain_source_budget(limit - charge, &claim).unwrap(), limit);
+        // A record-only budget would fit, but retaining the real reconstruction
+        // claim must refuse before it becomes part of the inventory snapshot.
+        assert!(retain_source_budget(limit - canonical_bytes, &claim).is_err());
+        assert!(retain_source_budget(limit - charge + 1, &claim).is_err());
+        assert!(add_retained(usize::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn retained_snapshot_rejects_mode_links_and_canonical_inode_replacement() {
+        let root = std::env::temp_dir().join(format!(
+            "terrane-inventory-binding-snapshot-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("body");
+        std::fs::write(&path, b"retained body").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let retained = File::open(&path).unwrap();
+        let expected = retained.metadata().unwrap();
+
+        assert!(same_inode_snapshot(
+            &expected,
+            &retained.metadata().unwrap()
+        ));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!same_inode_snapshot(
+            &expected,
+            &retained.metadata().unwrap()
+        ));
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let before_link = retained.metadata().unwrap();
+        std::fs::hard_link(&path, root.join("alias")).unwrap();
+        assert!(!same_inode_snapshot(
+            &before_link,
+            &retained.metadata().unwrap()
+        ));
+
+        std::fs::rename(&path, root.join("old-body")).unwrap();
+        std::fs::write(&path, b"retained body").unwrap();
+        assert!(!same_inode_snapshot(
+            &retained.metadata().unwrap(),
+            &std::fs::metadata(path).unwrap()
+        ));
+
+        drop(retained);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
