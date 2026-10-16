@@ -2321,7 +2321,9 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   and exposes the parent step as the next page. CLI `campaign rankings` follows
   at most 64 such pages under a 128 MiB aggregate response-byte budget and
   applies the same deterministic comparator across all candidates, stopping at
-  a policy/engine/artifact/view boundary. Exact branch-point and source filters
+  a policy/engine/artifact/view boundary. Reaching the byte budget stops the
+  chain with that step as `next_step` instead of failing the query, and
+  `--top` keeps only a bounded best-first selection in memory. Exact branch-point and source filters
   run after proof validation, and an at-most-65,536 top-result cap runs after
   global best-first ordering; the versioned machine report retains the filter
   basis and pre-truncation match count. `--policy-groups` now continues across

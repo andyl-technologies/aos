@@ -892,12 +892,17 @@ retained request, and recomputes every PUCT score from its by-value policy and
 owner-built guidance. Each response carries one bounded step/request page and
 returns the step's optional parent; the CLI follows at most 64 pages, charges at
 most 128 MiB of aggregate canonical response bytes, and applies the packaged
-planner's score/edge/position order across all returned candidates. Traversal
+planner's score/edge/position order across all returned candidates. A page
+that would exceed the byte budget ends the chain like the page bound: the
+report stops before that page and names its step as `next_step` (the first
+page is always admitted so that continuation makes progress). Traversal
 stops before a parent whose policy, engine, policy artifact, or planning view
 differs, because scores from another interpretation basis are not comparable.
 Exact branch-point and branch-request filters run only after proof and retained-
 request validation. An optional top-result cap is in `1..=65_536` and truncates
-only after global best-first ordering; the version-2 CLI report retains the
+only after global best-first ordering; the client selects those results with a
+bounded best-first fold that holds at most the cap per comparable basis and
+equals a stable sort followed by truncation; the version-2 CLI report retains the
 exact filter basis and pre-truncation matching count. With `--policy-groups`,
 the client does not stop at the first incompatible parent. It authenticates
 pages up to the same 64-page and 128-MiB limits, partitions them into

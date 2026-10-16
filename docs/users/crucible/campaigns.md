@@ -1075,7 +1075,8 @@ crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
 Each page authenticates one step under the snapshot's coordination root and
 recomputes scores from its complete retained request. The report is globally
 best-first across the returned pages. If `next_step` is present, repeat from
-that step to continue beyond the selected page bound. The command stops at a
+that step to continue beyond the selected page bound or the 128 MiB
+aggregate response budget. The command stops at a
 different policy, engine, policy artifact, or planning view instead of merging
 incomparable score bases. `--branch-point` and `--source` accept exact canonical
 IDs and filter only after response authentication; `--top` truncates only after
