@@ -318,7 +318,8 @@ fn canonical_session_reopens_replaced_pack_before_reusing_manifest() {
         .backend
         .packs
         .join(std::str::from_utf8(&name).unwrap());
-    drop((reader, view));
+    drop(reader);
+    drop(view);
     let previous = path.with_extension("previous-test-pack");
     std::fs::rename(&path, &previous).unwrap();
     std::fs::write(&path, []).unwrap();
