@@ -8,6 +8,7 @@
 mod config;
 mod index_io;
 mod preparation;
+mod recovery_namespace;
 mod retention;
 
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
