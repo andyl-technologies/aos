@@ -3,7 +3,165 @@
 use super::super::wire::Operation;
 use super::*;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use terrane_core::identity::TERRANE_V1;
+
+struct SocketModeFixture {
+    path: std::path::PathBuf,
+    parent: OwnedFd,
+    node: OwnedFd,
+    _socket: OwnedFd,
+}
+
+impl SocketModeFixture {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "publisher-local-mode-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o2700)).unwrap();
+        let parent = rustix::fs::open(
+            &directory,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        let path = directory.join("publisher.sock");
+        let socket = new_socket().unwrap();
+        net::bind(&socket, &net::SocketAddrUnix::new(&path).unwrap()).unwrap();
+        // Fixture setup uses its private pathname; the production operation
+        // below must change the retained inode without a pathname chmod.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let node = rustix::fs::openat(
+            &parent,
+            "publisher.sock",
+            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        Self {
+            path,
+            parent,
+            node,
+            _socket: socket,
+        }
+    }
+}
+
+impl Drop for SocketModeFixture {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(self.path.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group() {
+    let fixture = SocketModeFixture::new();
+    let before = rustix::fs::fstat(&fixture.node).unwrap();
+    assert_eq!(before.st_mode & 0o7777, 0o600);
+
+    set_bound_socket_mode(
+        &fixture.parent,
+        OsStr::new("publisher.sock"),
+        &fixture.node,
+        rustix::process::geteuid().as_raw(),
+    )
+    .unwrap();
+
+    let retained = rustix::fs::fstat(&fixture.node).unwrap();
+    let named =
+        rustix::fs::statat(&fixture.parent, "publisher.sock", AtFlags::SYMLINK_NOFOLLOW).unwrap();
+    for actual in [retained, named] {
+        assert_eq!(
+            (actual.st_dev, actual.st_ino),
+            (before.st_dev, before.st_ino)
+        );
+        assert_eq!(
+            (actual.st_uid, actual.st_gid),
+            (before.st_uid, before.st_gid)
+        );
+        assert_eq!(actual.st_mode & 0o7777, 0o660);
+        assert_eq!(
+            rustix::fs::FileType::from_raw_mode(actual.st_mode),
+            rustix::fs::FileType::Socket
+        );
+    }
+}
+
+#[test]
+fn replaced_socket_name_is_rejected_without_changing_either_inode() {
+    let fixture = SocketModeFixture::new();
+    let retained_before = rustix::fs::fstat(&fixture.node).unwrap();
+    std::fs::rename(&fixture.path, fixture.path.with_file_name("original.sock")).unwrap();
+    File::create(&fixture.path).unwrap();
+    std::fs::set_permissions(&fixture.path, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+    assert!(
+        set_bound_socket_mode(
+            &fixture.parent,
+            OsStr::new("publisher.sock"),
+            &fixture.node,
+            rustix::process::geteuid().as_raw(),
+        )
+        .is_err()
+    );
+
+    let retained = rustix::fs::fstat(&fixture.node).unwrap();
+    assert_eq!(
+        (retained.st_dev, retained.st_ino),
+        (retained_before.st_dev, retained_before.st_ino)
+    );
+    assert_eq!(retained.st_mode & 0o7777, 0o600);
+    assert_eq!(
+        std::fs::metadata(&fixture.path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o400
+    );
+}
+
+#[test]
+fn socket_chmod_rejects_wrong_type_and_owner_before_mutation() {
+    let fixture = SocketModeFixture::new();
+    let regular = fixture.path.with_file_name("regular");
+    File::create(&regular).unwrap();
+    std::fs::set_permissions(&regular, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let regular_node = rustix::fs::openat(
+        &fixture.parent,
+        "regular",
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .unwrap();
+    let uid = rustix::process::geteuid().as_raw();
+
+    assert!(
+        set_bound_socket_mode(&fixture.parent, OsStr::new("regular"), &regular_node, uid).is_err()
+    );
+    assert!(
+        set_bound_socket_mode(
+            &fixture.parent,
+            OsStr::new("publisher.sock"),
+            &fixture.node,
+            uid.wrapping_add(1),
+        )
+        .is_err()
+    );
+
+    assert_eq!(
+        rustix::fs::fstat(&regular_node).unwrap().st_mode & 0o7777,
+        0o400
+    );
+    assert_eq!(
+        rustix::fs::fstat(&fixture.node).unwrap().st_mode & 0o7777,
+        0o600
+    );
+}
 
 fn policy() -> ValidationPolicy<'static> {
     ValidationPolicy {

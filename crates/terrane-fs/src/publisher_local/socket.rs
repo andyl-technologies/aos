@@ -5,6 +5,7 @@
 
 use std::{
     collections::BTreeMap,
+    ffi::OsStr,
     fs::File,
     io::{self, IoSlice},
     mem::{self, MaybeUninit},
@@ -101,7 +102,9 @@ impl Listener {
     /// # Errors
     ///
     /// Rejects role collisions, the wrong process identity, unsafe ancestors,
-    /// invalid socket paths and kernel bind/listen failures.
+    /// invalid socket paths and kernel bind/listen failures. Retained-inode
+    /// permission changes require kernel fchmodat2 support and the audited
+    /// x86/x86_64 syscall binding; other architectures return Unsupported.
     pub fn bind(path: &Path, identities: RoleIdentities) -> Result<Self, Error> {
         let directories = retain_listener_parent(path, identities)?;
         let descriptor = new_socket()?;
@@ -114,27 +117,7 @@ impl Listener {
             OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )?;
-        let before = rustix::fs::fstat(&socket_node)?;
-        if before.st_uid != identities.publish_uid
-            || rustix::fs::FileType::from_raw_mode(before.st_mode) != rustix::fs::FileType::Socket
-        {
-            return Err(Error::Invalid("bound socket custody"));
-        }
-        // Setgid parent custody selects the configured peer group. Changing
-        // this retained inode preserves restrictive umask for private files.
-        rustix::fs::chmodat(
-            &socket_node,
-            "",
-            Mode::from_bits_truncate(0o660),
-            AtFlags::EMPTY_PATH,
-        )?;
-        let named = rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
-        if named.st_dev != before.st_dev
-            || named.st_ino != before.st_ino
-            || named.st_mode & 0o777 != 0o660
-        {
-            return Err(Error::Invalid("bound socket replaced"));
-        }
+        set_bound_socket_mode(parent, name, &socket_node, identities.publish_uid)?;
         net::listen(&descriptor, 32)?;
         Ok(Self {
             descriptor,
@@ -159,6 +142,96 @@ impl Listener {
             active: Mutex::new(BTreeMap::new()),
         })
     }
+}
+
+/// Changes only the retained bound inode, then verifies its configured name.
+fn set_bound_socket_mode(
+    parent: &OwnedFd,
+    name: &OsStr,
+    node: &OwnedFd,
+    publisher_uid: u32,
+) -> Result<(), Error> {
+    let parent_stat = rustix::fs::fstat(parent)?;
+    // Linux inherits the parent's group under setgid; otherwise bind uses the
+    // process group. Do not silently accept a substituted socket's group.
+    let expected_gid = if parent_stat.st_mode & 0o2000 != 0 {
+        parent_stat.st_gid
+    } else {
+        rustix::process::getegid().as_raw()
+    };
+    let before = rustix::fs::fstat(node)?;
+    if rustix::fs::FileType::from_raw_mode(before.st_mode) != rustix::fs::FileType::Socket
+        || before.st_uid != publisher_uid
+        || before.st_gid != expected_gid
+        || before.st_nlink != 1
+    {
+        return Err(Error::Invalid("bound socket custody"));
+    }
+    let named_before = rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
+    check_bound_socket(&before, &named_before, publisher_uid, expected_gid, false)?;
+
+    // Pinned rustix's linux_raw chmodat rejects EMPTY_PATH before entering the
+    // kernel. fchmodat2 supports it for this O_PATH socket inode; pathname chmod
+    // would reintroduce a replacement race. Keep private-file umask unchanged.
+    chmod_retained_socket(node.as_fd())?;
+
+    let retained = rustix::fs::fstat(node)?;
+    let named = rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
+    check_bound_socket(&before, &retained, publisher_uid, expected_gid, true)?;
+    check_bound_socket(&before, &named, publisher_uid, expected_gid, true)?;
+    Ok(())
+}
+
+fn check_bound_socket(
+    original: &rustix::fs::Stat,
+    actual: &rustix::fs::Stat,
+    publisher_uid: u32,
+    expected_gid: u32,
+    require_mode: bool,
+) -> Result<(), Error> {
+    if actual.st_dev != original.st_dev
+        || actual.st_ino != original.st_ino
+        || actual.st_uid != publisher_uid
+        || actual.st_gid != expected_gid
+        || rustix::fs::FileType::from_raw_mode(actual.st_mode) != rustix::fs::FileType::Socket
+        || actual.st_nlink != 1
+        || require_mode && actual.st_mode & 0o7777 != 0o660
+    {
+        return Err(Error::Invalid("bound socket replaced or custody changed"));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn chmod_retained_socket(node: BorrowedFd<'_>) -> io::Result<()> {
+    // SAFETY: SYS_fchmodat2 fixes the native Linux ABI. The borrowed descriptor
+    // remains live and refers to the checked original socket inode. c"" is a
+    // static NUL-terminated empty pathname, AT_EMPTY_PATH selects that inode,
+    // and mode_t(0660) contains only fixed permission bits. No memory is written.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_fchmodat2,
+            node.as_raw_fd(),
+            c"".as_ptr(),
+            0o660 as libc::mode_t,
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn chmod_retained_socket(_node: BorrowedFd<'_>) -> io::Result<()> {
+    // Pinned libc does not expose SYS_fchmodat2 uniformly across Linux targets.
+    // Only x86/x86_64 are audited here. Preserve compilation elsewhere without
+    // guessing a native ABI or using a pathname fallback.
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "retained socket chmod requires an audited fchmodat2 syscall binding",
+    ))
 }
 
 impl Connection {
