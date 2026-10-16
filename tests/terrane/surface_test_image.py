@@ -1,4 +1,4 @@
-"""Installs four source-bound surface test binaries without qualifying tests.
+"""Installs source-bound surface test binaries without qualifying tests.
 
 The shared native image helper owns genuine Cargo launch discovery and reachable
 ELF runtime retention. Each consuming gate checks this image and runs its own
@@ -15,7 +15,8 @@ import sys
 import tomllib
 
 
-TARGETS = ["local_sdk", "surface_contract", "surface_runtime", "surface_lifecycle_contract"]
+TARGETS = ["local_sdk", "surface_contract", "surface_runtime", "surface_lifecycle_contract",
+           "configured_local_repository"]
 FEATURES = ["send", "std", "surface-sdk", "tokio"]
 CARGO_FLAGS = [
     "--frozen", "--offline", "-p", "terrane", "--no-default-features",
@@ -39,7 +40,7 @@ def native_helper(path):
 
 
 def selected_artifacts(workspace, target_dir, temporary):
-    """Binds exactly four Cargo artifacts to actual package, source and profile."""
+    """Binds the exact Cargo artifacts to actual package, source and profile."""
     records = [json.loads(line) for line in
                (temporary / "surface-build.jsonl").read_text().splitlines()]
     packages = json.loads((temporary / "surface-packages.json").read_text())["packages"]

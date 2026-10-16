@@ -19,6 +19,7 @@ use crate::role::{Role, RoleError};
 pub mod exposure;
 pub mod expression;
 pub mod host;
+pub mod local_repository;
 pub mod token;
 
 /// Holds parsed foundation configuration without backend credentials or I/O.
@@ -28,6 +29,7 @@ pub struct Config {
     exposures: Vec<exposure::ConfiguredExposure>,
     locality: host::Locality,
     host_tier: Option<host::HostTier>,
+    local_repository: Option<local_repository::TrustedLocalRepository>,
     tokens: token::Tokens,
     store: expression::StoreExpression,
 }
@@ -51,12 +53,16 @@ impl Config {
             host.validate()?;
         }
         raw.tokens.validate()?;
+        if let Some(local) = &raw.local_repository {
+            local.validate()?;
+        }
 
         Ok(Self {
             role: raw.role,
             exposures,
             locality: raw.locality,
             host_tier: raw.host_tier,
+            local_repository: raw.local_repository,
             tokens: raw.tokens,
             store,
         })
@@ -104,6 +110,11 @@ impl Config {
         self.host_tier.as_ref()
     }
 
+    /// Returns explicit trust inputs for strict local reopening, when configured.
+    pub fn local_repository(&self) -> Option<&local_repository::TrustedLocalRepository> {
+        self.local_repository.as_ref()
+    }
+
     /// Returns configured credential locators without reading their secrets.
     pub fn tokens(&self) -> &token::Tokens {
         &self.tokens
@@ -125,6 +136,7 @@ struct RawConfig {
     #[serde(default)]
     locality: host::Locality,
     host_tier: Option<host::HostTier>,
+    local_repository: Option<local_repository::TrustedLocalRepository>,
     #[serde(default)]
     tokens: token::Tokens,
 }

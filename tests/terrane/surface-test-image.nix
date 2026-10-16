@@ -6,6 +6,7 @@ sourceGate "surface-test-image" ''
   cargo test --frozen --offline -p terrane --no-default-features \
     --features tokio,surface-sdk --test local_sdk --test surface_contract \
     --test surface_runtime --test surface_lifecycle_contract \
+    --test configured_local_repository \
     --no-run --message-format=json > "$TMPDIR/surface-build.jsonl"
   cargo metadata --frozen --offline --no-deps --format-version=1 \
     > "$TMPDIR/surface-packages.json"
