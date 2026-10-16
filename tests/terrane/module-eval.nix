@@ -146,6 +146,16 @@
   ];
   extraAssertions = [
     {
+      name = "publisher-socket-parent-custody";
+      pass =
+        lib.hasInfix "d /run/terrane-publish 2750 terrane-publish terrane-content" enabled.environment.etc."tmpfiles.d/terrane.conf".text
+        && (service "publish").Group == "terrane-publish"
+        && (service "publish").UMask == "0077"
+        && builtins.elem "/run/terrane-publish" (service "publish").ReadWritePaths
+        && builtins.all (role: !(builtins.elem "/run/terrane-publish" (service role).ReadWritePaths)) ["serve" "realize" "gc"];
+    }
+
+    {
       name = "content-and-pin-state-groups-separated";
       pass =
         enabled.aos.users.groups.terrane-content.gid
@@ -158,7 +168,7 @@
     }
     {
       name = "publisher-exact-retirement-write-paths";
-      pass = (service "publish").ReadWritePaths == map (path: "/var/lib/terrane/${path}") ["sealed" "staging" "pending-delete" "state/publication" "chunks" "objects" "quarantine"];
+      pass = (service "publish").ReadWritePaths == ["/run/terrane-publish"] ++ map (path: "/var/lib/terrane/${path}") ["sealed" "staging" "pending-delete" "state/publication" "chunks" "objects" "quarantine"];
     }
     {
       name = "body-and-pin-state-directory-groups";

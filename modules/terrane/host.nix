@@ -74,7 +74,7 @@
   uniqueRoots = builtins.all (a: builtins.all (b: a == b || !overlaps a b) roots) roots && builtins.length (lib.unique roots) == builtins.length roots;
   writable = role:
     if role == "publish"
-    then builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
+    then ["/run/terrane-publish"] ++ builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
     else if role == "serve" || role == "gc"
     then builtins.concatMap (root: ["${root}/state/cache" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
     else [];
@@ -237,18 +237,20 @@ in {
     # The root stays root-owned: cache identities cannot rename publisher roots.
     # Publisher-private directories are intentionally not readable by path by
     # other roles; verified read-only descriptors cross the process boundary.
-    environment.etc."tmpfiles.d/terrane.conf".text = lib.concatMapStrings (root:
-      ''
-        d ${root} 0755 root root - -
-        d ${root}/state 0755 root root - -
-        d ${root}/state/cache 2770 terrane terrane-cache - -
-        d ${root}/state/publication 0700 terrane-publish terrane-publish - -
-        d ${root}/sealed 0700 terrane-publish terrane-publish - -
-        d ${root}/staging 0700 terrane-publish terrane-publish - -
-        d ${root}/pending-delete 0700 terrane-publish terrane-publish - -
-      ''
-      + lib.concatMapStrings (name: "d ${root}/${name} 2770 terrane terrane-content - -\n") ["chunks" "objects" "quarantine"])
-    roots;
+    environment.etc."tmpfiles.d/terrane.conf".text =
+      "d /run/terrane-publish 2750 terrane-publish terrane-content - -\n"
+      + lib.concatMapStrings (root:
+        ''
+          d ${root} 0755 root root - -
+          d ${root}/state 0755 root root - -
+          d ${root}/state/cache 2770 terrane terrane-cache - -
+          d ${root}/state/publication 0700 terrane-publish terrane-publish - -
+          d ${root}/sealed 0700 terrane-publish terrane-publish - -
+          d ${root}/staging 0700 terrane-publish terrane-publish - -
+          d ${root}/pending-delete 0700 terrane-publish terrane-publish - -
+        ''
+        + lib.concatMapStrings (name: "d ${root}/${name} 2770 terrane terrane-content - -\n") ["chunks" "objects" "quarantine"])
+      roots;
     systemd.slices.aos-control = {description = "AOS control services";};
     systemd.slices.aos-view-services = {description = "AOS filesystem view services outside consumer freezer domains";};
     systemd.services = builtins.listToAttrs (map (role: {
