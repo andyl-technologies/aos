@@ -235,6 +235,41 @@ fn missing_foreign_and_changed_queue_observations_leave_actor_state_unchanged() 
 }
 
 #[test]
+fn staged_import_matches_the_transactional_import_and_its_retained_ledger() {
+    let (mut transactional, queue, pipeline) = fixture();
+    let mut staged = transactional.clone();
+
+    // The first observation creates the retained delivery. The repeat moves
+    // that ledger into the replacement queue instead of copying it.
+    for _ in 0..2 {
+        let inventory = observation(&transactional, &queue, &pipeline);
+        ok(transactional.import_initial_io_inventory(inventory.clone()));
+        ok(staged.import_initial_io_inventory_into_staged(inventory));
+
+        assert_eq!(staged.imported_io, transactional.imported_io);
+        assert_eq!(staged.pending_events, transactional.pending_events);
+        assert_eq!(
+            ok(ok(staged.checkpoint()).canonical_bytes()),
+            ok(ok(transactional.checkpoint()).canonical_bytes())
+        );
+    }
+
+    // Both forms refuse a mutated delivery; only the transactional form
+    // promises an unchanged scheduler, so staged callers discard their copy.
+    let before = ok(ok(transactional.checkpoint()).canonical_bytes());
+    let mut mutated = observation(&transactional, &queue, &pipeline);
+    mutated.queues[0].completions[0].payload.push(1);
+    assert!(
+        staged
+            .clone()
+            .import_initial_io_inventory_into_staged(mutated.clone())
+            .is_err()
+    );
+    assert!(transactional.import_initial_io_inventory(mutated).is_err());
+    assert_eq!(ok(ok(transactional.checkpoint()).canonical_bytes()), before);
+}
+
+#[test]
 fn actual_queue_removal_without_acknowledged_publication_is_refused() {
     let (mut scheduler, mut queue, pipeline) = fixture();
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));

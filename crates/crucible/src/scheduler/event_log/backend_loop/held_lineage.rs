@@ -82,6 +82,26 @@ impl RetainedRunContext {
     }
 }
 
+/// The scheduler fields a canonical commit compares across publication.
+///
+/// Held RUN settlement and commit capture this projection before they mutate
+/// the staged scheduler, instead of cloning the whole scheduler. Its size
+/// depends on the topology and node count, never on the run's retained
+/// histories, imported deliveries, or event log.
+pub(super) struct HeldCommitBefore {
+    context: RetainedRunContext,
+    counters: Vec<NodeCounter>,
+}
+
+impl HeldCommitBefore {
+    pub(super) fn capture(scheduler: &SingleScheduler) -> Self {
+        Self {
+            context: RetainedRunContext::capture(scheduler),
+            counters: scheduler.nodes.iter().map(|node| node.counter).collect(),
+        }
+    }
+}
+
 fn checkpoint_interval(node_count: usize) -> Result<u64, SchedulerError> {
     let live_inventory_bound = node_count
         .checked_mul(3)
@@ -152,22 +172,42 @@ impl HeldRunLineage {
         after: &SingleScheduler,
         affected_node: &NodeId,
     ) -> Result<(), SchedulerError> {
+        self.extend_commit_from(HeldCommitBefore::capture(before), after, affected_node)
+    }
+
+    /// Extends the lineage from a projection captured before the commit.
+    ///
+    /// This is [`Self::extend_commit`] for callers that mutate their only
+    /// staged scheduler and therefore capture the before-state as a
+    /// [`HeldCommitBefore`] instead of a whole scheduler clone.
+    pub(super) fn extend_commit_from(
+        &mut self,
+        before: HeldCommitBefore,
+        after: &SingleScheduler,
+        affected_node: &NodeId,
+    ) -> Result<(), SchedulerError> {
         self.ensure_extension_room()?;
-        if !self.current_context().matches(before)
+        let HeldCommitBefore {
+            context: before,
+            counters: before_counters,
+        } = before;
+        if *self.current_context() != before
             || before.configuration.def != after.configuration.def
             || before.effective_topology != after.effective_topology
             || before.topology_epoch != after.topology_epoch
-            || after.event_log.offset().events < before.event_log.offset().events
-            || after.event_log.offset().bytes < before.event_log.offset().bytes
+            || after.event_log.offset().events < before.event_log_offset.events
+            || after.event_log.offset().bytes < before.event_log_offset.bytes
             || before.nodes.len() != after.nodes.len()
+            || before_counters.len() != after.nodes.len()
             || before
                 .nodes
                 .iter()
+                .zip(&before_counters)
                 .zip(&after.nodes)
-                .any(|(before, after)| {
-                    before.id != after.id
-                        || before.time_mapping != after.time_mapping
-                        || (before.id.node != *affected_node && before.counter != after.counter)
+                .any(|(((id, time_mapping), counter), after)| {
+                    *id != after.id
+                        || *time_mapping != after.time_mapping
+                        || (id.node != *affected_node && *counter != after.counter)
                 })
             || before
                 .preemption_requests
@@ -187,7 +227,7 @@ impl HeldRunLineage {
             .ok_or_else(|| rejected("canonical extension generation exhausted"))?;
         self.tip = Some(Arc::new(CanonicalExtension {
             previous: self.tip.clone(),
-            before: Arc::new(RetainedRunContext::capture(before)),
+            before: Arc::new(before),
             after: Arc::new(RetainedRunContext::capture(after)),
             affected_node: affected_node.clone(),
             generation,
@@ -816,6 +856,87 @@ mod tests {
                     .extend_commit(&scheduler, &next, &affected)
                     .is_err()
             );
+        }
+    }
+
+    /// The extension predicate as written over two whole schedulers, before
+    /// commits captured a [`HeldCommitBefore`] projection instead.
+    fn original_extension_admitted(
+        lineage: &HeldRunLineage,
+        before: &SingleScheduler,
+        after: &SingleScheduler,
+        affected_node: &NodeId,
+    ) -> bool {
+        lineage.context_is_current(before)
+            && before.configuration.def == after.configuration.def
+            && before.effective_topology == after.effective_topology
+            && before.topology_epoch == after.topology_epoch
+            && after.event_log.offset().events >= before.event_log.offset().events
+            && after.event_log.offset().bytes >= before.event_log.offset().bytes
+            && before.nodes.len() == after.nodes.len()
+            && before
+                .nodes
+                .iter()
+                .zip(&after.nodes)
+                .all(|(before, after)| {
+                    before.id == after.id
+                        && before.time_mapping == after.time_mapping
+                        && (before.id.node == *affected_node || before.counter == after.counter)
+                })
+            && before
+                .preemption_requests
+                .iter()
+                .filter(|command| command.node != *affected_node)
+                .eq(after
+                    .preemption_requests
+                    .iter()
+                    .filter(|command| command.node != *affected_node))
+    }
+
+    #[test]
+    fn captured_projection_admits_exactly_what_whole_scheduler_clones_admitted() {
+        let (scheduler, _, lineage, _, _) = prepared_peer_commit();
+        let affected = scheduler.nodes[1].id.node.clone();
+        let mut affected_counter = scheduler.clone();
+        affected_counter.nodes[1].counter.ticks += 1;
+
+        // Mutate either side of the commit, plus the one counter change an
+        // affected-node publication may make.
+        let mut cases = Vec::new();
+        for change in 0..19 {
+            let mut changed = scheduler.clone();
+            mutate_context(&mut changed, change);
+            cases.push((
+                changed.clone(),
+                scheduler.clone(),
+                format!("before {change}"),
+            ));
+            cases.push((scheduler.clone(), changed, format!("after {change}")));
+        }
+        cases.push((
+            scheduler.clone(),
+            affected_counter,
+            String::from("affected"),
+        ));
+
+        for (before, after, case) in cases {
+            let expected = original_extension_admitted(&lineage, &before, &after, &affected);
+            let mut projected = lineage.clone();
+            let admitted = projected
+                .extend_commit_from(HeldCommitBefore::capture(&before), &after, &affected)
+                .is_ok();
+            assert_eq!(admitted, expected, "{case}");
+            if !admitted {
+                continue;
+            }
+
+            let tip = projected
+                .tip
+                .as_ref()
+                .unwrap_or_else(|| panic!("admitted extension must retain its tip"));
+            assert_eq!(*tip.before, RetainedRunContext::capture(&before), "{case}");
+            assert_eq!(*tip.after, RetainedRunContext::capture(&after), "{case}");
+            assert!(projected.context_is_current(&after), "{case}");
         }
     }
 

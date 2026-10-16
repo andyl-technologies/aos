@@ -3,6 +3,7 @@
 use super::cap_boundary::resolve_cap_boundary;
 use super::dispatch_boundary::resolve_dispatch_boundary;
 use super::held_boundary::{HeldBoundaryRun, backend_run, hold_run_result};
+use super::held_lineage::HeldCommitBefore;
 use super::held_stop::{CommittedHostStop, HeldHostStopKind};
 use super::host_run_validation::validate_held_network_lookahead;
 pub(super) use super::host_run_validation::validate_host_run_outcome;
@@ -599,7 +600,9 @@ where
                         ),
                     }));
                 }
-                let before_settlement = staged_scheduler.clone();
+                // Settlement mutates the only staged scheduler. The lineage
+                // compares just this projection of its prior state.
+                let before_settlement = HeldCommitBefore::capture(&staged_scheduler);
                 let result = match held_boundary.boundary {
                     super::held_boundary::HeldRunBoundary::Input(boundary) => {
                         resolve_input_boundary(
@@ -657,7 +660,7 @@ where
                     }
                 }
                 lineage
-                    .extend_commit(&before_settlement, &staged_scheduler, &next_node)
+                    .extend_commit_from(before_settlement, &staged_scheduler, &next_node)
                     .map_err(|error| self.poison_continuation(error))?;
                 held_boundary.run.canonical_lineage = Some(lineage.clone());
                 for held in held_runs.values_mut() {
@@ -715,9 +718,11 @@ where
                 .iter()
                 .map(|event| event.key.clone())
                 .collect();
-            let before_commit = staged_scheduler.clone();
+            // The commit mutates the only staged scheduler. The lineage
+            // compares just this projection of its prior state.
+            let before_commit = HeldCommitBefore::capture(&staged_scheduler);
             let retain_extension =
-                !boundary_runs.is_empty() || lineage.context_is_current(&before_commit);
+                !boundary_runs.is_empty() || lineage.context_is_current(&staged_scheduler);
             if retain_extension {
                 lineage
                     .ensure_extension_room()
@@ -767,7 +772,7 @@ where
                 Ok(outcome) => {
                     if retain_extension {
                         lineage
-                            .extend_commit(&before_commit, &staged_scheduler, &node)
+                            .extend_commit_from(before_commit, &staged_scheduler, &node)
                             .map_err(|error| self.poison_continuation(error))?;
                     }
                     for held in held_runs.values_mut() {

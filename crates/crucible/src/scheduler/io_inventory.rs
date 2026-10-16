@@ -56,16 +56,40 @@ where
 }
 
 impl SingleScheduler {
+    /// Imports one node's physical inventory as a single actor transaction.
+    ///
+    /// Tests use this form to observe that a refusal leaves the scheduler
+    /// unchanged. Production callers already own a staged copy and import
+    /// into it directly.
+    #[cfg(test)]
     pub(super) fn import_initial_io_inventory(
+        &mut self,
+        inventory: BackendIoInventory,
+    ) -> Result<(), SchedulerError> {
+        // Validation and canonical sequence allocation are one actor transaction.
+        // A refused later queue must not leave the earlier queue's event behind.
+        let mut staged = self.clone();
+        staged.import_initial_io_inventory_into_staged(inventory)?;
+        *self = staged;
+        Ok(())
+    }
+
+    /// Imports one node's physical inventory into a staged scheduler copy.
+    ///
+    /// A refusal can leave this scheduler partially updated, so callers must
+    /// own a staged copy that they discard on error. Validation and canonical
+    /// sequence allocation then remain one actor transaction, and a caller
+    /// importing every node stages that copy once instead of once per node.
+    pub(super) fn import_initial_io_inventory_into_staged(
         &mut self,
         inventory: BackendIoInventory,
     ) -> Result<(), SchedulerError> {
         let node = self.vm_node_index(&inventory.node)?;
         let observed = self.nodes[node].counter;
-        self.import_io_inventory(inventory, observed)
+        self.import_io_inventory_into_staged(inventory, observed)
     }
 
-    fn import_io_inventory(
+    fn import_io_inventory_into_staged(
         &mut self,
         inventory: BackendIoInventory,
         expected: NodeCounter,
@@ -132,13 +156,14 @@ impl SingleScheduler {
             ));
         }
 
-        // Validation and canonical sequence allocation are one actor transaction.
-        // A refused later queue must not leave the earlier queue's event behind.
-        let mut staged = self.clone();
-        let previous = staged.imported_io.remove(&inventory.node);
+        // Validation is complete. Canonical sequence allocation below mutates
+        // this staged copy directly; the caller discards it on refusal, so a
+        // refused later queue never leaves an earlier queue's event behind.
+        let world = world.id();
+        let previous = self.imported_io.remove(&inventory.node);
         if previous
             .as_ref()
-            .is_some_and(|previous| previous.world != world.id())
+            .is_some_and(|previous| previous.world != world)
         {
             return Err(inventory_error(
                 "physical inventory replaced its immutable World",
@@ -146,22 +171,20 @@ impl SingleScheduler {
         }
         let mut queues = previous.map_or_else(BTreeMap::new, |previous| previous.queues);
         for queue in inventory.queues {
-            staged.import_io_queue(&inventory.node, &mut queues, queue)?;
+            self.import_io_queue(&inventory.node, &mut queues, queue)?;
         }
-        staged.imported_io.insert(
+        self.imported_io.insert(
             inventory.node.clone(),
             ImportedIoNode {
-                world: world.id(),
+                world,
                 observed: inventory.observed,
                 generation: inventory.generation,
                 native_caps: inventory.native_caps,
                 queues,
             },
         );
-        staged
-            .pending_events
+        self.pending_events
             .sort_by(|left, right| left.key.cmp(&right.key));
-        *self = staged;
         Ok(())
     }
 
@@ -191,8 +214,10 @@ impl SingleScheduler {
                 })
             })
             .collect::<Result<Vec<_>, SchedulerError>>()?;
-        let previous = queues.get(&queue.device);
-        if let Some(previous) = previous {
+        // The queue map belongs to the staged copy, so the retained delivery
+        // ledger moves into the replacement queue instead of being copied.
+        let previous = queues.remove(&queue.device);
+        if let Some(previous) = &previous {
             if queue.revision < previous.revision
                 || queue.source_node != previous.source_node
                 || queue.pipeline_revision < previous.pipeline_revision
@@ -223,7 +248,7 @@ impl SingleScheduler {
                 }
             }
         }
-        let mut deliveries = previous.map_or_else(BTreeMap::new, |queue| queue.deliveries.clone());
+        let mut deliveries = previous.map_or_else(BTreeMap::new, |queue| queue.deliveries);
         for completion in &completions {
             let at = completion.delivery_tick;
             if let Some(retained) = deliveries.get(&completion.source_delivery) {
