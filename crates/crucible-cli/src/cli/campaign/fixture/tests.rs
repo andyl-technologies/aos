@@ -317,6 +317,140 @@ fn worked_network_measurements_declare_every_envoy_semantic_marker() {
     );
 }
 
+/// Guest scripts that emit the Envoy fixture's structured assertions.
+const ENVOY_GUEST_SCRIPTS: [(&str, &str); 2] = [
+    (
+        "init.sh",
+        include_str!("../../../../../../tests/crucible/fixtures/envoy-network/init.sh"),
+    ),
+    (
+        "traffic.py",
+        include_str!("../../../../../../tests/crucible/fixtures/envoy-network/traffic.py"),
+    ),
+];
+
+/// Splits shell or Python source into bare words and quoted-string contents.
+///
+/// Comments and punctuation are dropped, so `guest("sometimes", "id", "m")`
+/// and `crucible-guest sometimes id 'm'` both yield `guest`/`crucible-guest`
+/// followed by the kind, id, and message tokens.
+fn script_tokens(source: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut characters = source.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '#' => {
+                for skipped in characters.by_ref() {
+                    if skipped == '\n' {
+                        break;
+                    }
+                }
+            }
+            '\'' | '"' => {
+                let mut token = String::new();
+                while let Some(inner) = characters.next() {
+                    match inner {
+                        '\\' if character == '"' => token.extend(characters.next()),
+                        inner if inner == character => break,
+                        inner => token.push(inner),
+                    }
+                }
+                tokens.push(token);
+            }
+            character if character.is_alphanumeric() || "-_.".contains(character) => {
+                let mut token = String::from(character);
+                while let Some(&next) = characters.peek() {
+                    if !(next.is_alphanumeric() || "-_.".contains(next)) {
+                        break;
+                    }
+                    token.push(next);
+                    characters.next();
+                }
+                tokens.push(token);
+            }
+            _ => {}
+        }
+    }
+    tokens
+}
+
+/// Returns `(kind, id, message)` for every structured guest assertion a script emits.
+fn guest_assertion_emissions(source: &str) -> Vec<(String, String, String)> {
+    let tokens = script_tokens(source);
+    tokens
+        .windows(4)
+        .filter(|window| matches!(window[0].as_str(), "crucible-guest" | "guest"))
+        .filter(|window| {
+            matches!(
+                window[1].as_str(),
+                "always" | "sometimes" | "reachable" | "unreachable"
+            )
+        })
+        .map(|window| (window[1].clone(), window[2].clone(), window[3].clone()))
+        .collect()
+}
+
+fn guest_assertion_kind(assertion: &AssertionDef) -> Option<&'static str> {
+    match &assertion.property {
+        crucible_core::Property::Always {
+            predicate: Predicate::GuestMarker { .. },
+        } => Some("always"),
+        crucible_core::Property::Sometimes {
+            predicate: Predicate::GuestMarker { .. },
+        } => Some("sometimes"),
+        crucible_core::Property::Reachable {
+            predicate: Predicate::GuestMarker { .. },
+            expectation: crucible_core::ReachabilityExpectation::Reachable { .. },
+        } => Some("reachable"),
+        crucible_core::Property::Reachable {
+            predicate: Predicate::GuestMarker { .. },
+            expectation: crucible_core::ReachabilityExpectation::Unreachable,
+        } => Some("unreachable"),
+        _ => None,
+    }
+}
+
+/// The host judges a guest marker whose message differs from its declaration
+/// as a violation, so a drifted `sometimes` message turns every successful
+/// run into a finding.
+#[test]
+fn envoy_guest_assertion_emissions_match_their_scenario_declarations() {
+    let world = worked_network_world(None).expect("worked-network world");
+    let properties = worked_network_properties(&world).expect("worked-network properties");
+    let declared = properties
+        .assertions()
+        .iter()
+        .filter_map(|assertion| {
+            guest_assertion_kind(assertion)
+                .map(|kind| (assertion.id.name.clone(), (kind, assertion.message.clone())))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut emitted = BTreeSet::new();
+    for (script, source) in ENVOY_GUEST_SCRIPTS {
+        for (kind, id, message) in guest_assertion_emissions(source) {
+            let Some((declared_kind, declared_message)) = declared.get(&id) else {
+                panic!("{script} emits undeclared guest assertion {id}");
+            };
+            assert_eq!(
+                kind, *declared_kind,
+                "{script} emits {id} with the wrong kind"
+            );
+            assert_eq!(
+                message, *declared_message,
+                "{script} emits {id} with a message that differs from its declaration"
+            );
+            emitted.insert(id);
+        }
+    }
+
+    assert_eq!(
+        emitted,
+        declared.keys().cloned().collect::<BTreeSet<_>>(),
+        "every declared guest assertion has an emitter"
+    );
+}
+
 #[test]
 fn generated_network_fault_group_discovers_both_phases_and_projects_typed_paths() {
     let temporary = tempfile::tempdir().expect("fixture temporary directory");

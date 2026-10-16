@@ -272,7 +272,7 @@ run_router() {
     emit_phase_marker fault.followup.ready
     wait "$envoy_pid" || :
     crucible-guest unreachable control-plane-crash-or-deadlock \
-      'An Envoy router exited during the campaign'
+      'control-plane processes must not crash or deadlock'
     return
   fi
 
@@ -293,10 +293,10 @@ run_router() {
   emit_phase_marker fault.followup.ready
   choose_recovery followup/one 2 followup
   crucible-guest sometimes selection-acknowledged-once \
-    'Both guest response envelopes were acknowledged' 1
+    'every delivered selection is acknowledged exactly once' 1
   wait "$envoy_pid" || :
   crucible-guest unreachable control-plane-crash-or-deadlock \
-    'Envoy router A exited during the campaign'
+    'control-plane processes must not crash or deadlock'
 }
 
 run_east() {

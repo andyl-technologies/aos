@@ -134,14 +134,14 @@ def run_west():
                     guest(
                         "unreachable",
                         "forbidden-destination-delivery",
-                        "Router A answered without delivering to traffic-east",
+                        "traffic must not reach a forbidden destination",
                     )
                     continue
                 if body.count(":") != 4 or "," in body:
                     guest(
                         "unreachable",
                         "persistent-forwarding-loop",
-                        "A routed request repeated a proxy hop",
+                        "no persistent forwarding loop may be observed",
                     )
                     continue
                 if body not in (
@@ -151,7 +151,7 @@ def run_west():
                     guest(
                         "unreachable",
                         "forbidden-destination-delivery",
-                        "A response lacked the required endpoint and route identity",
+                        "traffic must not reach a forbidden destination",
                     )
                     continue
                 if measurement_started and body == f"east:{number}:1::1" and failover_sequence is None:
@@ -187,7 +187,7 @@ def run_west():
                 guest("event", "recovery.outcome", f"kind={outcome}")
                 guest(
                     "sometimes", "bounded-recovery-outcome",
-                    "The response converged or declared bounded failure", "1",
+                    "the product converges or declares a bounded terminal failure", "1",
                 )
                 guest("semantic-marker", "recovery.measured", "instance-1")
                 if failover_sequence is not None:
