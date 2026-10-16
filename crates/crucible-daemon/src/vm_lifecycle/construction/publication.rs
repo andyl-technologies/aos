@@ -234,3 +234,6 @@ mod published_error_tests {
         assert!(retained.additional.is_some());
     }
 }
+
+#[cfg(test)]
+mod refused_publication_tests;

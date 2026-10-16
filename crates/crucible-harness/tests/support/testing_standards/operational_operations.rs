@@ -14,6 +14,8 @@ use super::{
 mod cache;
 #[path = "operational_operations/cleanup_delegation.rs"]
 mod cleanup_delegation;
+#[path = "operational_operations/refused_publication.rs"]
+mod refused_publication;
 #[path = "operational_operations/worker_custody.rs"]
 mod worker_custody;
 
@@ -644,6 +646,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .iter()
         .chain(cache::CONTRACTS)
         .chain(cleanup_delegation::CONTRACTS)
+        .chain(refused_publication::CONTRACTS)
         .chain(worker_custody::CONTRACTS)
 }
 
@@ -862,6 +865,10 @@ fn continuation_waits_require_original_posts_and_physical_custody()
                 .replace("(&error)", "(&other_error)")
                 .replace("retry_unsettled()", "retry_unsettled(altered)")
                 .replace("retry_pending()", "retry_pending(altered)")
+                .replace(
+                    "retry_reserved_publication()",
+                    "retry_reserved_publication(altered)",
+                )
                 .replace("(slot)", "(other_slot)")
                 .replace("(provider)", "(other_provider)")
                 .replace("(&mut self)", "(&mut other)");
