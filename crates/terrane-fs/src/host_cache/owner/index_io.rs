@@ -227,7 +227,7 @@ fn write_inner(
 ///
 /// # Errors
 /// Refuses missing, nonregular, inaccessible or changing ordinary inodes.
-pub(super) fn open_regular_at(parent: &File, name: &str) -> io::Result<File> {
+pub(in crate::host_cache) fn open_regular_at(parent: &File, name: &str) -> io::Result<File> {
     let observation = File::from(openat(
         parent,
         name,

@@ -17,6 +17,8 @@ mod recovery_state_parent;
 mod resume_error;
 mod retention;
 
+pub(super) use index_io::open_regular_at;
+
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
 pub use recovery::CompletedRecovery;
