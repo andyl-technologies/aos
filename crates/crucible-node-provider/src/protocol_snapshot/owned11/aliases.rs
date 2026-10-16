@@ -211,9 +211,13 @@ impl HistoricalAliasViews<'_, '_> {
     /// Requires complete consumption before any reconstructed graph is accepted.
     ///
     /// # Errors
-    /// Refuses unvisited or trailing shared rows.
+    /// Refuses unvisited, trailing or unfinished shared rows, including a group
+    /// whose observed view failed validation after consuming its roster row.
     pub fn finish(mut self) -> Result<(), ProviderError> {
-        if self.remaining != 0 || self.fields.next()?.is_some() {
+        if self.remaining != 0
+            || self.fields.next()?.is_some()
+            || self.summaries.iter().any(|summary| summary.in_progress)
+        {
             return Err(invalid());
         }
         Ok(())
@@ -314,6 +318,31 @@ mod tests {
                 .observe(MetadataSharedKind::ContentBytes, 24, b"empty", b"cap20")
                 .is_err()
         );
+        assert_eq!(views.remaining, 0);
+        assert!(views.summaries[0].in_progress);
+        assert!(views.finish().is_err());
+
+        let mut views = plan.views().unwrap();
+        views
+            .observe(MetadataSharedKind::ContentBytes, 24, b"empty", b"cap19")
+            .unwrap();
+        assert_eq!(views.remaining, 1);
+        assert!(views.finish().is_err());
+    }
+
+    #[test]
+    fn unfinished_group_cannot_complete_after_consuming_its_only_row() {
+        let mut scratch = [HistoricalAliasSummary::default(); 1];
+        let mut plan = ValidatedHistoricalAliases::validate(
+            br#"[["codec",0]]"#,
+            &mut scratch,
+            1,
+        )
+        .unwrap();
+        let mut views = plan.views().unwrap();
+        assert_eq!(views.begin(MetadataSharedKind::Codec).unwrap(), 0);
+        assert_eq!(views.remaining, 0);
+        assert!(views.summaries[0].in_progress);
         assert!(views.finish().is_err());
     }
 }
