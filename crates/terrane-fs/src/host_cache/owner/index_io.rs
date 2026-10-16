@@ -73,7 +73,7 @@ fn write_inner(
     source: &DerivedIndexRepair,
     pending: &mut PendingIndexWrite,
 ) -> io::Result<IndexWriteCompletion> {
-    source.check_current()?;
+    source.check_pack_current()?;
     if source.detached_index_status() != DetachedIndexStatus::Missing {
         return Err(invalid(
             "native create-no-replace repair requires a missing index",
@@ -131,7 +131,7 @@ fn write_inner(
     }
     check_canonical_mode(readonly)?;
     verify_bytes(readonly, source.index_bytes())?;
-    source.check_current()?;
+    source.check_pack_current()?;
     let name = format!("{}.idx", source.pack_id());
     let index = match renameat_with(
         parent,
@@ -187,7 +187,7 @@ fn write_inner(
     packs.sync_all()?;
     File::from(openat(objects, ".", flags, Mode::empty())?).sync_all()?;
     File::from(openat(&source.layout().root, ".", flags, Mode::empty())?).sync_all()?;
-    source.check_current()?;
+    source.check_pack_current()?;
     let index = pending
         .readonly
         .as_ref()
