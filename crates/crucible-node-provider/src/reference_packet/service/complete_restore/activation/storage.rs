@@ -57,52 +57,82 @@ impl OriginalInstalledRestorationActivationConstructionData {
     /// Refuses a different actual controller identity, phase axis, evidence
     /// term, complete requested sum or counter layout. No sum-only alias passes.
     pub fn authenticate_same_construction_data(&self, other: &Self) -> Result<(), ProviderError> {
-        if self != other { return Err(invalid()); }
+        if self != other {
+            return Err(invalid());
+        }
         Ok(())
     }
 
-    pub(crate) fn authenticate_controller_data(&self, controller: *const ()) -> Result<(), ProviderError> {
+    pub(crate) fn authenticate_controller_data(
+        &self,
+        controller: *const (),
+    ) -> Result<(), ProviderError> {
         if self.controller.is_null() || self.controller != controller || self.requested == 0 {
             return Err(invalid());
         }
         Ok(())
     }
     /// Returns the independently admitted native allocation for one upload ordinal.
-    pub fn upload_native_allocation_data(&self, role: super::upload::PacketRestorationActivationUploadRole) -> PacketRestorationActivationAllocationRow {
+    pub fn upload_native_allocation_data(
+        &self,
+        role: super::upload::PacketRestorationActivationUploadRole,
+    ) -> PacketRestorationActivationAllocationRow {
         self.uploads[role.ordinal_data()].native
     }
 
     /// Returns this ordinal's unchanged negotiated and prequoted chunk width.
-    pub fn upload_chunk_bytes_data(&self, role: super::upload::PacketRestorationActivationUploadRole) -> usize {
+    pub fn upload_chunk_bytes_data(
+        &self,
+        role: super::upload::PacketRestorationActivationUploadRole,
+    ) -> usize {
         self.uploads[role.ordinal_data()].chunk
     }
 
     /// Returns this ordinal's genuine selected frame ceiling.
-    pub fn upload_maximum_frame_bytes_data(&self, role: super::upload::PacketRestorationActivationUploadRole) -> usize {
+    pub fn upload_maximum_frame_bytes_data(
+        &self,
+        role: super::upload::PacketRestorationActivationUploadRole,
+    ) -> usize {
         self.uploads[role.ordinal_data()].frame
     }
 
     /// Returns the complete future content upper lent by its real defining producer.
-    pub fn upload_maximum_content_bytes_data(&self, role: super::upload::PacketRestorationActivationUploadRole) -> usize {
+    pub fn upload_maximum_content_bytes_data(
+        &self,
+        role: super::upload::PacketRestorationActivationUploadRole,
+    ) -> usize {
         self.uploads[role.ordinal_data()].maximum_bytes
     }
 
     /// Returns additional independently retained SDK upload histories/content.
-    pub fn upload_host_retained_requested_bytes_data(&self, role: super::upload::PacketRestorationActivationUploadRole) -> usize {
+    pub fn upload_host_retained_requested_bytes_data(
+        &self,
+        role: super::upload::PacketRestorationActivationUploadRole,
+    ) -> usize {
         self.uploads[role.ordinal_data()].retained
     }
 
     /// Returns additional independent SDK upload construction and receive work.
-    pub fn upload_host_maximum_simultaneous_transient_bytes_data(&self, role: super::upload::PacketRestorationActivationUploadRole) -> usize {
+    pub fn upload_host_maximum_simultaneous_transient_bytes_data(
+        &self,
+        role: super::upload::PacketRestorationActivationUploadRole,
+    ) -> usize {
         self.uploads[role.ordinal_data()].transient
     }
 
     /// Returns actual upload counter and conversion fixed views.
-    pub fn upload_counter_scratch_bytes_data(&self, role: super::upload::PacketRestorationActivationUploadRole) -> usize {
+    pub fn upload_counter_scratch_bytes_data(
+        &self,
+        role: super::upload::PacketRestorationActivationUploadRole,
+    ) -> usize {
         self.uploads[role.ordinal_data()].scratch
     }
 
-    pub(crate) fn preflight_upload_data(&self, controller: &crate::client::CnpController, role: super::upload::PacketRestorationActivationUploadRole) -> Result<(), ProviderError> {
+    pub(crate) fn preflight_upload_data(
+        &self,
+        controller: &crate::client::CnpController,
+        role: super::upload::PacketRestorationActivationUploadRole,
+    ) -> Result<(), ProviderError> {
         let rows = &self.uploads[role.ordinal_data()..];
         let mut requests = 0usize;
         let mut journal = 0usize;
@@ -151,17 +181,26 @@ impl OriginalInstalledRestorationActivationConstructionData {
     ///
     /// This is independent of every SDK owner. Source must add this term to its
     /// own retained row rather than borrow the controller's retained allowance.
-    pub fn source_evidence_retained_requested_bytes_data(&self, phase: PacketRestorationActivationPhase) -> usize {
+    pub fn source_evidence_retained_requested_bytes_data(
+        &self,
+        phase: PacketRestorationActivationPhase,
+    ) -> usize {
         self.phases[index(phase)].source_evidence_retained
     }
 
     /// Returns independent Source parsing, full-hash and revalidation workspace.
-    pub fn source_evidence_maximum_simultaneous_transient_bytes_data(&self, phase: PacketRestorationActivationPhase) -> usize {
+    pub fn source_evidence_maximum_simultaneous_transient_bytes_data(
+        &self,
+        phase: PacketRestorationActivationPhase,
+    ) -> usize {
         self.phases[index(phase)].source_evidence_transient
     }
 
     /// Returns Source evidence decoder and raw-owning-walk fixed views.
-    pub fn source_evidence_counter_scratch_bytes_data(&self, phase: PacketRestorationActivationPhase) -> usize {
+    pub fn source_evidence_counter_scratch_bytes_data(
+        &self,
+        phase: PacketRestorationActivationPhase,
+    ) -> usize {
         self.phases[index(phase)].source_evidence_scratch
     }
 

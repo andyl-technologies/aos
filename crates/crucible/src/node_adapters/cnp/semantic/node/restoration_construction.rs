@@ -72,14 +72,24 @@ impl CnpSemanticNode {
         if let Some(signing) = &inputs.signing {
             let (custody, source_activation) = {
                 let construction = signing.cold.original_signing_construction_inputs_data(
-                    signing.inputs, inputs.plan, &data,
-                    native.controller.as_ref().ok_or(RuntimeError::OwnerUnavailable)?, query,
-                    data.maximum_mapping_bytes, signing.maximum_record_bytes,
+                    signing.inputs,
+                    inputs.plan,
+                    &data,
+                    native
+                        .controller
+                        .as_ref()
+                        .ok_or(RuntimeError::OwnerUnavailable)?,
+                    query,
+                    data.maximum_mapping_bytes,
+                    signing.maximum_record_bytes,
                     signing.observed_other_retained_bytes,
                 )?;
                 let custody = self.original_installed_restoration_custody_construction_data(
                     signing.inputs.archive.original_runtime_record_data()?,
-                    signing.inputs.activation, &construction, signing.coordinator, inputs.maximum_requested_bytes,
+                    signing.inputs.activation,
+                    &construction,
+                    signing.coordinator,
+                    inputs.maximum_requested_bytes,
                 )?;
                 let activation_inputs = crate::node_admission::OriginalInstalledRestorationActivationSigningConstructionInputs {
                     transfer: &construction,
@@ -88,9 +98,12 @@ impl CnpSemanticNode {
                     signer: data.signer.as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
                     coordinator: signing.coordinator,
                 };
-                let source_activation = inputs.source.original_restoration_activation_source_construction_data(
-                    &activation_inputs, inputs.maximum_requested_bytes,
-                )?;
+                let source_activation = inputs
+                    .source
+                    .original_restoration_activation_source_construction_data(
+                        &activation_inputs,
+                        inputs.maximum_requested_bytes,
+                    )?;
                 (custody, source_activation)
             };
             data.installed_custody = Some(custody);

@@ -729,7 +729,11 @@ impl PacketControl {
         selected_observe: Option<&mut OriginalObserveAllocationPreparation<'_>>,
     ) -> Result<&PacketControlReply, ProviderError> {
         self.dispatch_prepared_with_restoration_activation(
-            request, preparation, canonical_ack_admit, selected_observe, None,
+            request,
+            preparation,
+            canonical_ack_admit,
+            selected_observe,
+            None,
         )
     }
 
@@ -741,7 +745,9 @@ impl PacketControl {
             &super::service::ack_emitter::OriginalCanonicalAckControlAdmit<'_>,
         >,
         selected_observe: Option<&mut OriginalObserveAllocationPreparation<'_>>,
-        restoration_activation: Option<&super::service::ack_emitter::OriginalRestorationActivationPermit>,
+        restoration_activation: Option<
+            &super::service::ack_emitter::OriginalRestorationActivationPermit,
+        >,
     ) -> Result<&PacketControlReply, ProviderError> {
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
@@ -765,14 +771,22 @@ impl PacketControl {
             ));
         }
         if let Some(permit) = restoration_activation {
-            permit.authenticate_control_request(request, &self.selection,
-                self.complete_restored_hold.as_ref().ok_or(ProviderError::Correlation(
-                    "restoration activation physical owner absent",
-                ))?)?;
-        } else if self.complete_restored_hold.is_some() && self.restoration_activation_required
+            permit.authenticate_control_request(
+                request,
+                &self.selection,
+                self.complete_restored_hold
+                    .as_ref()
+                    .ok_or(ProviderError::Correlation(
+                        "restoration activation physical owner absent",
+                    ))?,
+            )?;
+        } else if self.complete_restored_hold.is_some()
+            && self.restoration_activation_required
             && matches!(request.method, Method::Activate | Method::WorldActivate)
         {
-            return Err(ProviderError::Correlation("restoration activation private permit absent"));
+            return Err(ProviderError::Correlation(
+                "restoration activation private permit absent",
+            ));
         }
         encode(request)?;
         request.validate()?;
@@ -833,7 +847,8 @@ impl PacketControl {
             || request.capture_owner_id.0.is_some()
             || (!request.extensions.is_empty()
                 && !(self.program.is_connected() && request.method == Method::Input)
-                && !authenticated_admit && restoration_activation.is_none())
+                && !authenticated_admit
+                && restoration_activation.is_none())
         {
             return Err(ProviderError::Correlation("packet original native route"));
         }
@@ -871,7 +886,13 @@ impl PacketControl {
                 &mut produced_receipt,
             )
         });
-        let result = self.execute(request, decoded, preparation, stopped_observe, restoration_activation);
+        let result = self.execute(
+            request,
+            decoded,
+            preparation,
+            stopped_observe,
+            restoration_activation,
+        );
         match result {
             Ok(mut reply) => {
                 if let Some(selected) = selected_observe {
@@ -995,7 +1016,9 @@ impl PacketControl {
             &NativeStoppedObserveRecordStorageData<'_>,
             &mut Option<ProducedOriginalObserveReceipt>,
         )>,
-        restoration_activation: Option<&super::service::ack_emitter::OriginalRestorationActivationPermit>,
+        restoration_activation: Option<
+            &super::service::ack_emitter::OriginalRestorationActivationPermit,
+        >,
     ) -> Result<PacketControlReply, ProviderError> {
         if request.body.get("extensions").is_some_and(|extensions| {
             extensions
@@ -1117,7 +1140,9 @@ impl PacketControl {
         request: &Envelope,
         activate: WorldActivateRequest,
         preparation: &mut ReplyPreparation<'_>,
-        restoration_activation: Option<&super::service::ack_emitter::OriginalRestorationActivationPermit>,
+        restoration_activation: Option<
+            &super::service::ack_emitter::OriginalRestorationActivationPermit,
+        >,
     ) -> Result<PacketControlReply, ProviderError> {
         let (staged, ready) = self
             .staged
@@ -1163,17 +1188,28 @@ impl PacketControl {
             ));
         }
         if let Some(permit) = restoration_activation {
-            permit.authenticate_control_request(request, &self.selection,
-                self.complete_restored_hold.as_ref().ok_or(ProviderError::Correlation(
-                    "restoration activation physical owner absent",
-                ))?)?;
+            permit.authenticate_control_request(
+                request,
+                &self.selection,
+                self.complete_restored_hold
+                    .as_ref()
+                    .ok_or(ProviderError::Correlation(
+                        "restoration activation physical owner absent",
+                    ))?,
+            )?;
             let artifact = permit.artifact_data()?;
             let coordinator = permit.coordinator_data()?;
             let raw = self.content.get(&manifest.coordinator_state_ref).ok_or(
                 ProviderError::Correlation("restoration coordinator bytes absent"),
             )?;
             authenticate_original_restoration_coordinator_data(
-                &coordinator, raw, &artifact.request.scope, &self.selection, staged, ready, &manifest,
+                &coordinator,
+                raw,
+                &artifact.request.scope,
+                &self.selection,
+                staged,
+                ready,
+                &manifest,
             )?;
         } else {
             if let Some(installed) = &self.common_coordinator {

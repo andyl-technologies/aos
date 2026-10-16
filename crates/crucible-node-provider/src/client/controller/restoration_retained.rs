@@ -32,7 +32,8 @@ struct Fields<'a> {
     admit: &'a Option<assigned_admit::AssignedOriginalCanonicalAckAdmit>,
     prepare: &'a Option<assigned_restore::AssignedOriginalCompleteRestore>,
     commit: &'a Option<assigned_restore::AssignedOriginalCompleteRestore>,
-    activation: &'a [Option<installed_activation::AssignedOriginalInstalledRestorationActivation>; 2],
+    activation:
+        &'a [Option<installed_activation::AssignedOriginalInstalledRestorationActivation>; 2],
     uploads: &'a [Option<installed_activation::AssignedUpload>; 2],
 }
 

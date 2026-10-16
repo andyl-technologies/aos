@@ -104,8 +104,7 @@ pub use correspondence::authenticate_restoration_activation_held_correspondence_
 pub use prospective::original_installed_restoration_activation_construction_counter_scratch_data;
 pub(crate) use prospective::original_native_restoration_activation_required_storage_data;
 pub use retained::{
-    restoration_activation_retained_counter_scratch_data,
-    RetainedRestorationActivationData,
+    RetainedRestorationActivationData, restoration_activation_retained_counter_scratch_data,
     restoration_activation_retained_native_evidence_counter_scratch_data,
     restoration_activation_retained_native_evidence_data,
 };

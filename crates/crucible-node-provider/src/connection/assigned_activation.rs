@@ -1,9 +1,9 @@
 //! Reserves and publishes only a selected, once-assigned activation original.
 
 use super::*;
-use serde_json::Value;
 use crate::reference_packet::service::complete_restore::activation::*;
 use crate::transport::original_frames::FrameDirection;
+use serde_json::Value;
 
 impl<S: ProviderStream> Connection<S> {
     pub(crate) fn reserve_original_assigned_installed_restoration_activation(

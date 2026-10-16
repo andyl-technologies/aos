@@ -7,7 +7,9 @@
 use super::*;
 
 impl PacketCompleteSemanticSource {
-    pub(in super::super) fn authenticate_transfer_selection_data(&self) -> Result<(), RuntimeError> {
+    pub(in super::super) fn authenticate_transfer_selection_data(
+        &self,
+    ) -> Result<(), RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
 
         if self.complete_restore_selection.flatten()

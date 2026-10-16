@@ -95,14 +95,13 @@ pub(crate) use admission_projection::validate_proof_value;
 pub(in crate::reference_packet::service) mod native_boot;
 pub(crate) use native_boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;
 pub(crate) use native_boot::{
-    OriginalRestorationActivationPermit,
-    NativeRestorationUploadAttempt, OriginalRestorationUploadPermit,
-    OriginalRestorationActivationRequirement,
-    original_native_restoration_upload_attempt_backing_data,
-    original_native_restoration_upload_counter_scratch_data,
+    NativeRestorationUploadAttempt, OriginalRestorationActivationPermit,
+    OriginalRestorationActivationRequirement, OriginalRestorationUploadPermit,
     original_native_restoration_activation_attempt_backing_data,
     original_native_restoration_activation_counter_scratch_data,
     original_native_restoration_activation_ingress_row_data,
+    original_native_restoration_upload_attempt_backing_data,
+    original_native_restoration_upload_counter_scratch_data,
 };
 pub use native_boot::{
     PacketNativeRestoreCommitConstructionData, PacketNativeRestoreCommitConstructionInputs,

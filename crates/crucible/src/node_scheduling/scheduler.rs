@@ -1199,8 +1199,8 @@ mod tests;
 #[path = "snapshot_impl.rs"]
 mod snapshot_impl;
 
-pub use snapshot_impl::PreparedSchedulingRestore;
 pub(crate) use snapshot_impl::OriginalSchedulingRestorationPublicationProjection;
+pub use snapshot_impl::PreparedSchedulingRestore;
 pub use snapshot_impl::validate_saved_source;
 
 #[cfg(test)]

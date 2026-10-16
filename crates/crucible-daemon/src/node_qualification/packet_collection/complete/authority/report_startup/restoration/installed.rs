@@ -21,10 +21,13 @@ impl PacketCompleteReportStartupHolder {
     /// changed four-owner histories, unavailable durable publication or failed
     /// native/source/currentness/resource checks. Started effects are not retried.
     pub fn execute_original_complete_restoration(
-        original: &Rc<RefCell<Self>>, activation: &crucible::node_contract::ActivationRecord,
-        prepare_ids: &mut Option<[Id; 3]>, commit_ids: &mut Option<[Id; 3]>,
+        original: &Rc<RefCell<Self>>,
+        activation: &crucible::node_contract::ActivationRecord,
+        prepare_ids: &mut Option<[Id; 3]>,
+        commit_ids: &mut Option<[Id; 3]>,
         publisher: &mut Option<crate::node_observed_executor::StoredWorldActivationPublisher>,
-        blobs: Arc<DirectoryBlobBackend>, refs: Arc<DirectoryRefBackend>,
+        blobs: Arc<DirectoryBlobBackend>,
+        refs: Arc<DirectoryRefBackend>,
     ) -> Result<(), RuntimeError> {
         {
             let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
@@ -36,9 +39,12 @@ impl PacketCompleteReportStartupHolder {
                 return Err(RuntimeError::ForeignAuthority);
             };
             let maximum = held.restoration_policy_data()?.maximum_requested_bytes;
-            let owner = capsule.try_borrow_mut().map_err(|_| RuntimeError::OwnerBusy)?
+            let owner = capsule
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?
                 .retain_original_directory_publication_into(publisher, blobs, refs, maximum)?;
-            held.restoration_publication.set(owner)
+            held.restoration_publication
+                .set(owner)
                 .map_err(|_| RuntimeError::DuplicateOperation)?;
         }
         Self::execute_original_restoration_transfer(original, activation, prepare_ids, commit_ids)?;
@@ -47,27 +53,48 @@ impl PacketCompleteReportStartupHolder {
             let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose else {
                 return Err(RuntimeError::ForeignAuthority);
             };
-            (Rc::clone(held.restoration_window.get().ok_or(RuntimeError::OwnerUnavailable)?),
-                Rc::clone(&held.plan), Rc::clone(capsule))
+            (
+                Rc::clone(
+                    held.restoration_window
+                        .get()
+                        .ok_or(RuntimeError::OwnerUnavailable)?,
+                ),
+                Rc::clone(&held.plan),
+                Rc::clone(capsule),
+            )
         };
-        capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?
+        capsule
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
             .construct_original_complete_scope(&window, &plan, activation)?;
         Self::recheck_original_restoration_transaction_data(original, activation)?;
-        let context = capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?
+        let context = capsule
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
             .prepare_original_complete_context(&window, &plan)?;
-        capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?
+        capsule
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
             .prepare_original_complete_scheduler(&window, &plan, &context)?;
         Self::recheck_original_restoration_transaction_data(original, activation)?;
-        capsule.try_borrow_mut().map_err(|_| RuntimeError::OwnerBusy)?
+        capsule
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?
             .arm_original_complete_restoration(&window, &plan, &context)?;
         Self::recheck_original_restoration_transaction_data(original, activation)?;
-        capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?
+        capsule
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
             .retain_original_complete_coordinator(&window, &plan, &context)?;
         Self::recheck_original_restoration_transaction_data(original, activation)?;
-        capsule.try_borrow_mut().map_err(|_| RuntimeError::OwnerBusy)?
+        capsule
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?
             .publish_original_complete_restoration(&window, &plan, &context)?;
         Self::recheck_original_restoration_transaction_data(original, activation)?;
-        capsule.try_borrow_mut().map_err(|_| RuntimeError::OwnerBusy)?
+        capsule
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?
             .install_original_complete_restoration(&window, &plan, &context)?;
         Self::recheck_original_restoration_transaction_data(original, activation).map(|_| ())
     }

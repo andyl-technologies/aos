@@ -38,16 +38,29 @@ impl NodeRuntime {
 
 impl OriginalRestorationRuntimeMemberIdentity {
     pub(crate) fn authenticate_world_activation_data(
-        &self, world: &crate::node_contract::WorldActivation,
+        &self,
+        world: &crate::node_contract::WorldActivation,
         expected: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
-        if world.record() != expected { return Err(RuntimeError::ForeignAuthority); }
-        let authority = self.runtime.authority.upgrade().ok_or(RuntimeError::ForeignAuthority)?;
-        if !std::rc::Rc::ptr_eq(&authority, &world.authority) { return Err(RuntimeError::ForeignAuthority); }
+        if world.record() != expected {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let authority = self
+            .runtime
+            .authority
+            .upgrade()
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if !std::rc::Rc::ptr_eq(&authority, &world.authority) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
         self.authenticate_current(&expected.world_binding_hash)
     }
 
-    pub(crate) fn authenticate_runtime_data(&self, runtime: &NodeRuntime, world: &HashRef) -> Result<(), RuntimeError> {
+    pub(crate) fn authenticate_runtime_data(
+        &self,
+        runtime: &NodeRuntime,
+        world: &HashRef,
+    ) -> Result<(), RuntimeError> {
         self.runtime.authenticate(runtime)?;
         self.authenticate_current(world)
     }

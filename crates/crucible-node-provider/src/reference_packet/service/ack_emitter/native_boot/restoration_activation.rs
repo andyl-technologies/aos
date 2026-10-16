@@ -776,14 +776,18 @@ pub(crate) fn original_native_restoration_activation_ingress_row_data(
     ProviderError,
 > {
     use crate::retained_metadata::serialization_storage::{
-        original_serialization_tree_node_requested_bytes_data, original_json_value_storage_extent_data,
+        original_json_value_storage_extent_data,
+        original_serialization_tree_node_requested_bytes_data,
     };
     let frame = original_json_value_storage_extent_data(maximum_frame)?;
     let artifact =
         original_json_value_storage_extent_data(MAXIMUM_RESTORATION_ACTIVATION_ARTIFACT_BYTES)?;
     let logical_roots = frame
         .maximum_value_nodes
-        .checked_mul(original_serialization_tree_node_requested_bytes_data::<String, serde_json::Value>()?)
+        .checked_mul(original_serialization_tree_node_requested_bytes_data::<
+            String,
+            serde_json::Value,
+        >()?)
         .ok_or_else(refused)?;
     let once = frame
         .value_dom_requested_bytes

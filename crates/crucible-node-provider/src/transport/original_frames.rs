@@ -836,7 +836,6 @@ mod allocation_literal_tests {
     }
 }
 
-
 // Defining views used by immutable complete-history and indexed-frame checks.
 pub(crate) fn original_history_guard_counter_scratch_data() -> usize {
     std::mem::size_of::<std::slice::Iter<'static, Slot>>()

@@ -24,9 +24,17 @@ impl ConformanceRuntime {
         if self.activation.is_some() {
             return Err(RuntimeError::ForeignAuthority);
         }
-        let data = self.runtime.original_runtime_restoration_installation_construction_data(
-            &self.graph.graph, record, scheduling, target, content, coordinator, maximum,
-        )?;
+        let data = self
+            .runtime
+            .original_runtime_restoration_installation_construction_data(
+                &self.graph.graph,
+                record,
+                scheduling,
+                target,
+                content,
+                coordinator,
+                maximum,
+            )?;
         self.authenticate_complete_original_restoration_origin()?;
         Ok(data)
     }
@@ -41,12 +49,18 @@ impl ConformanceRuntime {
         coordinator: &crate::node_admission::OriginalRestorationCoordinatorConstructionData,
     ) -> Result<(), RuntimeError> {
         self.authenticate_complete_original_restoration_origin()?;
-        data.authenticate_inputs_data(&self.runtime, record, scheduling, target, content, coordinator)
+        data.authenticate_inputs_data(
+            &self.runtime,
+            record,
+            scheduling,
+            target,
+            content,
+            coordinator,
+        )
     }
 
     pub(crate) fn original_runtime_restoration_installation_counter_scratch_data()
-        -> Result<usize, RuntimeError>
-    {
+    -> Result<usize, RuntimeError> {
         NodeRuntime::original_runtime_restoration_installation_counter_scratch_data()
     }
 }

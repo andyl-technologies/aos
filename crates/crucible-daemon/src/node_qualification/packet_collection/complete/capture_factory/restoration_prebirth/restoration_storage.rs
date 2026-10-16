@@ -20,15 +20,24 @@ impl PacketCompleteRestorationPrebirth {
         activation: &ActivationRecord,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        self.retained_restoration_holder_storage_for_scope_data(original, archive, runtime, plan, activation, maximum, None)
+        self.retained_restoration_holder_storage_for_scope_data(
+            original, archive, runtime, plan, activation, maximum, None,
+        )
     }
 
     pub(in crate::node_qualification::packet_collection::complete) fn retained_restoration_holder_storage_for_scope_data(
-        &self, original: &Rc<RefCell<Self>>, archive: &crucible::node_state::CompleteOriginalRestorationSource,
-        runtime: &ConformanceRuntime, plan: &InstalledConformancePlan, activation: &ActivationRecord,
-        maximum: usize, scope: Option<&crucible::node_admission::OriginalRestorationConstructionScope<'_>>,
+        &self,
+        original: &Rc<RefCell<Self>>,
+        archive: &crucible::node_state::CompleteOriginalRestorationSource,
+        runtime: &ConformanceRuntime,
+        plan: &InstalledConformancePlan,
+        activation: &ActivationRecord,
+        maximum: usize,
+        scope: Option<&crucible::node_admission::OriginalRestorationConstructionScope<'_>>,
     ) -> Result<usize, RuntimeError> {
-        self.authenticate_restoration_storage_scope_data(archive, runtime, plan, activation, scope)?;
+        self.authenticate_restoration_storage_scope_data(
+            archive, runtime, plan, activation, scope,
+        )?;
         let Self {
             factory,
             code_graph,
@@ -59,7 +68,8 @@ impl PacketCompleteRestorationPrebirth {
         }
         let mut counter = super::super::super::retained::Counter::new(maximum);
         if let Some(publication) = publication {
-            counter.add(publication.retained_storage_data(counter.remaining())?)
+            counter
+                .add(publication.retained_storage_data(counter.remaining())?)
                 .map_err(storage_error)?;
         }
         counter.rc(original).map_err(storage_error)?;
@@ -109,7 +119,9 @@ impl PacketCompleteRestorationPrebirth {
             .add(fresh.original_unobserved_restoration_storage_data(counter.remaining())?)
             .map_err(storage_error)?;
         source.authenticate_same_original_source_data(archive)?;
-        self.authenticate_restoration_storage_scope_data(archive, runtime, plan, activation, scope)?;
+        self.authenticate_restoration_storage_scope_data(
+            archive, runtime, plan, activation, scope,
+        )?;
         Ok(counter.bytes())
     }
 
@@ -160,15 +172,22 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         activation: &ActivationRecord,
     ) -> Result<usize, RuntimeError> {
-        self.retained_restoration_holder_descriptor_for_scope_data(archive, runtime, plan, activation, None)
+        self.retained_restoration_holder_descriptor_for_scope_data(
+            archive, runtime, plan, activation, None,
+        )
     }
 
     pub(in crate::node_qualification::packet_collection::complete) fn retained_restoration_holder_descriptor_for_scope_data(
-        &self, archive: &crucible::node_state::CompleteOriginalRestorationSource,
-        runtime: &ConformanceRuntime, plan: &InstalledConformancePlan, activation: &ActivationRecord,
+        &self,
+        archive: &crucible::node_state::CompleteOriginalRestorationSource,
+        runtime: &ConformanceRuntime,
+        plan: &InstalledConformancePlan,
+        activation: &ActivationRecord,
         scope: Option<&crucible::node_admission::OriginalRestorationConstructionScope<'_>>,
     ) -> Result<usize, RuntimeError> {
-        self.authenticate_restoration_storage_scope_data(archive, runtime, plan, activation, scope)?;
+        self.authenticate_restoration_storage_scope_data(
+            archive, runtime, plan, activation, scope,
+        )?;
         let Self {
             factory,
             code_graph: _,
@@ -210,7 +229,9 @@ impl PacketCompleteRestorationPrebirth {
             publication.authenticate_retained_directory_views_data()?;
         }
         let descriptors = code.checked_add(fresh).ok_or(RuntimeError::ResourceLimit)?;
-        self.authenticate_restoration_storage_scope_data(archive, runtime, plan, activation, scope)?;
+        self.authenticate_restoration_storage_scope_data(
+            archive, runtime, plan, activation, scope,
+        )?;
         Ok(descriptors)
     }
 
@@ -234,22 +255,39 @@ fn storage_error(_: QualificationError) -> RuntimeError {
 
 impl PacketCompleteRestorationPrebirth {
     pub(in crate::node_qualification::packet_collection::complete) fn authenticate_restoration_storage_scope_data(
-        &self, archive: &crucible::node_state::CompleteOriginalRestorationSource,
-        runtime: &ConformanceRuntime, plan: &InstalledConformancePlan, activation: &ActivationRecord,
+        &self,
+        archive: &crucible::node_state::CompleteOriginalRestorationSource,
+        runtime: &ConformanceRuntime,
+        plan: &InstalledConformancePlan,
+        activation: &ActivationRecord,
         scope: Option<&crucible::node_admission::OriginalRestorationConstructionScope<'_>>,
     ) -> Result<(), RuntimeError> {
         if let Some(scope) = scope
-            && scope.phase() == crucible::node_admission::OriginalRestorationConstructionPhase::Installed {
-            if self.process != std::process::id() || self.thread != std::thread::current().id()
-                || !self.binding_attempted || !self.runtime_attempted || self.failed_runtime.is_some()
-                || !self.runtime.as_ref().is_some_and(|actual| std::ptr::eq(actual, runtime))
+            && scope.phase()
+                == crucible::node_admission::OriginalRestorationConstructionPhase::Installed
+        {
+            if self.process != std::process::id()
+                || self.thread != std::thread::current().id()
+                || !self.binding_attempted
+                || !self.runtime_attempted
+                || self.failed_runtime.is_some()
+                || !self
+                    .runtime
+                    .as_ref()
+                    .is_some_and(|actual| std::ptr::eq(actual, runtime))
                 || !std::ptr::eq(scope.inputs().archive, archive)
                 || !std::ptr::eq(scope.inputs().activation, activation)
-                || !scope.plan().is_original_plan_data(plan) {
+                || !scope.plan().is_original_plan_data(plan)
+            {
                 return Err(RuntimeError::ForeignAuthority);
             }
-            self.source.authenticate_same_original_source_data(archive)?;
-            self.factory.inner.authority.capture_graph_policy().authenticate_retained_origin_data()
+            self.source
+                .authenticate_same_original_source_data(archive)?;
+            self.factory
+                .inner
+                .authority
+                .capture_graph_policy()
+                .authenticate_retained_origin_data()
                 .map_err(|_| RuntimeError::ForeignAuthority)?;
             return scope.authenticate_original_runtime_data();
         }

@@ -18,12 +18,16 @@ pub(super) fn authenticate_world_command(
     maximum_manifest: usize,
 ) -> Result<(), RuntimeError> {
     match (command, inputs.world, inputs.phase) {
-        (PacketRestorationActivationCommand::Arm(_), None,
-            OriginalInstalledRestorationActivationPhase::Arm) => Ok(()),
-        (PacketRestorationActivationCommand::WorldActivate(body), Some(world),
-            OriginalInstalledRestorationActivationPhase::WorldActivate) => {
-            authenticate_world_manifest(source, controller, body, world, maximum_manifest)
-        }
+        (
+            PacketRestorationActivationCommand::Arm(_),
+            None,
+            OriginalInstalledRestorationActivationPhase::Arm,
+        ) => Ok(()),
+        (
+            PacketRestorationActivationCommand::WorldActivate(body),
+            Some(world),
+            OriginalInstalledRestorationActivationPhase::WorldActivate,
+        ) => authenticate_world_manifest(source, controller, body, world, maximum_manifest),
         _ => Err(RuntimeError::ForeignAuthority),
     }
 }
@@ -35,11 +39,16 @@ pub(super) fn authenticate_world_manifest(
     world: &WorldActivation,
     maximum_manifest: usize,
 ) -> Result<(), RuntimeError> {
-    let publication = world.prepared_publication_data()
+    let publication = world
+        .prepared_publication_data()
         .ok_or(RuntimeError::UnsupportedFacet)?;
     publication.validate_coordinator()?;
-    let owners = world.prepared_owners().ok_or(RuntimeError::UnsupportedFacet)?;
-    let coordinator = world.coordinator_snapshot().ok_or(RuntimeError::UnsupportedFacet)?;
+    let owners = world
+        .prepared_owners()
+        .ok_or(RuntimeError::UnsupportedFacet)?;
+    let coordinator = world
+        .coordinator_snapshot()
+        .ok_or(RuntimeError::UnsupportedFacet)?;
     if publication.nodes() != world.node_preparations()
         || publication.prepared_owners() != owners
         || publication.coordinator_snapshot() != coordinator
@@ -48,12 +57,15 @@ pub(super) fn authenticate_world_manifest(
     {
         return Err(RuntimeError::ForeignAuthority);
     }
-    let original = controller.content(&body.activation_manifest)
+    let original = controller
+        .content(&body.activation_manifest)
         .map_err(|_| RuntimeError::InvalidReceipt)?;
     if original.len() > maximum_manifest {
         return Err(RuntimeError::ResourceLimit);
     }
-    body.activation_manifest.verify(original).map_err(|_| RuntimeError::InvalidReceipt)?;
+    body.activation_manifest
+        .verify(original)
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
     let value = canonical::parse_json(original, maximum_manifest)
         .map_err(|_| RuntimeError::InvalidReceipt)?;
     let encoded = canonical::canonical_json(&value).map_err(|_| RuntimeError::InvalidReceipt)?;
@@ -61,8 +73,8 @@ pub(super) fn authenticate_world_manifest(
         return Err(RuntimeError::InvalidReceipt);
     }
     drop(encoded);
-    let manifest: ActivationManifest = serde_json::from_value(value)
-        .map_err(|_| RuntimeError::InvalidReceipt)?;
+    let manifest: ActivationManifest =
+        serde_json::from_value(value).map_err(|_| RuntimeError::InvalidReceipt)?;
     let installation = source.installation();
     if manifest.schema_version != 1
         || manifest.transaction_id != installation.transaction
@@ -76,9 +88,13 @@ pub(super) fn authenticate_world_manifest(
     {
         return Err(RuntimeError::ForeignAuthority);
     }
-    let bytes = controller.content(&manifest.coordinator_state_ref)
+    let bytes = controller
+        .content(&manifest.coordinator_state_ref)
         .map_err(|_| RuntimeError::InvalidReceipt)?;
-    manifest.coordinator_state_ref.verify(bytes).map_err(|_| RuntimeError::InvalidReceipt)?;
+    manifest
+        .coordinator_state_ref
+        .verify(bytes)
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
     if bytes != coordinator.bytes.as_slice() {
         return Err(RuntimeError::ForeignAuthority);
     }

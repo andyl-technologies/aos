@@ -56,7 +56,8 @@ impl PacketCompleteRestorationPrebirth {
             .source();
         let mut counter = super::super::super::retained::Counter::new(maximum);
         if let Some(publication) = &self.publication {
-            counter.add(publication.retained_storage_data(counter.remaining())?)
+            counter
+                .add(publication.retained_storage_data(counter.remaining())?)
                 .map_err(|_| RuntimeError::ResourceLimit)?;
         }
         counter

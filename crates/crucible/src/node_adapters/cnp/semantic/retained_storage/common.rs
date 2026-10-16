@@ -86,7 +86,11 @@ pub(in crate::node_adapters::cnp::semantic) fn runtime(
         quarantined: _,
     } = value;
     if let Some(selected) = installed_restoration {
-        counter.add(selected.retained_requested_storage_data(counter.ceiling()).map_err(unknown)?)?;
+        counter.add(
+            selected
+                .retained_requested_storage_data(counter.ceiling())
+                .map_err(unknown)?,
+        )?;
     }
     optional_plain!(counter, capture_activation_storage_data, arm_attempt);
     optional_plain!(counter, capture_ready_storage_data, ready);

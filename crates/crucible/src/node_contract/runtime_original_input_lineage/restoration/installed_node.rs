@@ -364,7 +364,6 @@ impl OriginalInstalledRestorationNodeAssociation {
     }
 }
 
-
 impl OriginalInstalledRestorationNodeAssociation {
     /// Checks that an installation uses this association's exact issued context.
     ///
@@ -381,7 +380,10 @@ impl OriginalInstalledRestorationNodeAssociation {
         context: &OriginalLineageRestoration<'_>,
     ) -> Result<(), RuntimeError> {
         self.origin()?;
-        let window = self.window.upgrade().ok_or(RuntimeError::OwnerUnavailable)?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
             return Err(RuntimeError::ForeignAuthority);
         }

@@ -585,7 +585,9 @@ impl CompleteOriginalSource {
 }
 
 impl CompleteOriginalRestorationSource {
-    pub(crate) fn original_host_record_data(&self) -> Result<&HostSchedulingContinuationRecord, RuntimeError> {
+    pub(crate) fn original_host_record_data(
+        &self,
+    ) -> Result<&HostSchedulingContinuationRecord, RuntimeError> {
         self.inner.authenticate_birth()?;
         Ok(&self.inner.host)
     }

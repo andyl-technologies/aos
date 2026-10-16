@@ -11,9 +11,9 @@ pub use upload::{
 };
 
 use super::*;
-use crucible_node_contract::HashRef;
 use crate::operational_time::OperationalDeadline;
 use crate::reference_packet::service::complete_restore::activation::*;
+use crucible_node_contract::HashRef;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum ActivationState {

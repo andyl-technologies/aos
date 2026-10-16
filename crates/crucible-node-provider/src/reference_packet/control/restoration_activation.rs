@@ -17,21 +17,33 @@ impl PacketControl {
         permit: &OriginalRestorationActivationPermit,
         prepare: &mut dyn FnMut(&PacketControlReply) -> Result<(), ProviderError>,
     ) -> Result<&PacketControlReply, ProviderError> {
-        if self.capture_creator != std::process::id() || !self.immediate
-            || request.request_id.0.as_ref().is_none_or(|id| self.originals.contains_key(id))
+        if self.capture_creator != std::process::id()
+            || !self.immediate
+            || request
+                .request_id
+                .0
+                .as_ref()
+                .is_none_or(|id| self.originals.contains_key(id))
             || !matches!(request.method, Method::Activate | Method::WorldActivate)
         {
             return Err(refused());
         }
         permit.authenticate_control_request(
-            request, &self.selection, self.complete_restored_hold.as_ref().ok_or_else(refused)?,
+            request,
+            &self.selection,
+            self.complete_restored_hold.as_ref().ok_or_else(refused)?,
         )?;
         // begin_dispatch is spent by the endpoint before borrowing its retained
         // original. The same immutable loan is used throughout this dispatch.
         self.dispatch_prepared_with_restoration_activation(
             request,
-            &mut ReplyPreparation { callback: Some(prepare), attempted: false },
-            None, None, Some(permit),
+            &mut ReplyPreparation {
+                callback: Some(prepare),
+                attempted: false,
+            },
+            None,
+            None,
+            Some(permit),
         )
     }
 
@@ -41,25 +53,40 @@ impl PacketControl {
         phase: PacketRestorationActivationPhase,
         retained_manifest: &mut Option<ActivationManifest>,
     ) -> Result<Option<&'a [u8]>, ProviderError> {
-        if self.capture_creator != std::process::id() || self.fenced || !self.immediate
-            || self.complete_restored_hold.is_none() || retained_manifest.is_some()
+        if self.capture_creator != std::process::id()
+            || self.fenced
+            || !self.immediate
+            || self.complete_restored_hold.is_none()
+            || retained_manifest.is_some()
         {
             return Err(refused());
         }
         if phase == PacketRestorationActivationPhase::Arm {
-            if original.method != Method::Activate { return Err(refused()); }
+            if original.method != Method::Activate {
+                return Err(refused());
+            }
             return Ok(None);
         }
-        if original.method != Method::WorldActivate { return Err(refused()); }
-        let reference = ContentRef::deserialize(original.body.get("activation_manifest")
-            .ok_or_else(refused)?).map_err(ContractError::from)?;
+        if original.method != Method::WorldActivate {
+            return Err(refused());
+        }
+        let reference = ContentRef::deserialize(
+            original
+                .body
+                .get("activation_manifest")
+                .ok_or_else(refused)?,
+        )
+        .map_err(ContractError::from)?;
         let bytes = self.content.get(&reference).ok_or_else(refused)?;
         // This bounded manifest ingress was admitted before Child, independently
         // of the artifact's untrusted phase row and the larger coordinator DOM.
         let manifest = canonical::decode(bytes, FRAME)?;
         *retained_manifest = Some(manifest);
         let manifest = retained_manifest.as_ref().ok_or_else(refused)?;
-        let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or_else(refused)?;
+        let coordinator = self
+            .content
+            .get(&manifest.coordinator_state_ref)
+            .ok_or_else(refused)?;
         Ok(Some(coordinator))
     }
 }
@@ -73,10 +100,17 @@ impl PacketControl {
         &self,
         expected: &std::rc::Rc<PacketCompleteRestorePhysicalHold>,
     ) -> Result<(), ProviderError> {
-        if self.capture_creator != std::process::id() || self.fenced || !self.immediate
-            || self.complete_restored_hold.as_ref().is_none_or(|actual| !std::rc::Rc::ptr_eq(actual, expected))
+        if self.capture_creator != std::process::id()
+            || self.fenced
+            || !self.immediate
+            || self
+                .complete_restored_hold
+                .as_ref()
+                .is_none_or(|actual| !std::rc::Rc::ptr_eq(actual, expected))
             || !self.original_physical_gate_held()?
-        { return Err(refused()); }
+        {
+            return Err(refused());
+        }
         Ok(())
     }
 }
@@ -106,10 +140,15 @@ impl PacketControl {
         content: ContentRef,
         bytes: &[u8],
     ) -> Result<(), ProviderError> {
-        if self.capture_creator != std::process::id() || self.fenced || !self.immediate
-            || !self.restoration_activation_required || self.complete_restored_hold.is_none()
+        if self.capture_creator != std::process::id()
+            || self.fenced
+            || !self.immediate
+            || !self.restoration_activation_required
+            || self.complete_restored_hold.is_none()
             || self.content.contains_key(&content)
-        { return Err(refused()); }
+        {
+            return Err(refused());
+        }
         self.install_content(content, bytes)
     }
 }

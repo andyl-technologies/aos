@@ -16,9 +16,15 @@ pub(super) fn observe(
         window.final_construction
     } else {
         super::scope_storage::OriginalRestorationFinalConstructionData::quote(
-            scope.inputs.archive, scope.inputs.activation, policy.maximum_requested_bytes)?
+            scope.inputs.archive,
+            scope.inputs.activation,
+            policy.maximum_requested_bytes,
+        )?
     };
-    requested = checked_sum(&[requested, final_construction.requested_bytes_data()?], policy.maximum_requested_bytes)?;
+    requested = checked_sum(
+        &[requested, final_construction.requested_bytes_data()?],
+        policy.maximum_requested_bytes,
+    )?;
     match scope.phase {
         OriginalRestorationConstructionPhase::ColdOwners => {
             for ticket in scope.inputs.tickets {
@@ -33,12 +39,29 @@ pub(super) fn observe(
                 )?;
             }
         }
-        OriginalRestorationConstructionPhase::Transaction | OriginalRestorationConstructionPhase::Installed => {
+        OriginalRestorationConstructionPhase::Transaction
+        | OriginalRestorationConstructionPhase::Installed => {
             let window = scope.window.ok_or(RuntimeError::OwnerUnavailable)?;
-            let coordinator = window.coordinator_construction.get().ok_or(RuntimeError::OwnerUnavailable)?;
-            requested = checked_sum(&[requested, coordinator.requested_bytes_data()?], policy.maximum_requested_bytes)?;
-            let common = window.common_construction.get().ok_or(RuntimeError::OwnerUnavailable)?;
-            requested = checked_sum(&[requested, common.requested_bytes_data(), common.counter_scratch_bytes_data()], policy.maximum_requested_bytes)?;
+            let coordinator = window
+                .coordinator_construction
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            requested = checked_sum(
+                &[requested, coordinator.requested_bytes_data()?],
+                policy.maximum_requested_bytes,
+            )?;
+            let common = window
+                .common_construction
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            requested = checked_sum(
+                &[
+                    requested,
+                    common.requested_bytes_data(),
+                    common.counter_scratch_bytes_data(),
+                ],
+                policy.maximum_requested_bytes,
+            )?;
             let rows = window
                 .node_rows
                 .get()
@@ -57,8 +80,14 @@ pub(super) fn observe(
                     policy.maximum_requested_bytes,
                 )?;
                 let signer = row.signer.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
-                let custody = row.installed_custody.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
-                let activation = row.source_activation.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+                let custody = row
+                    .installed_custody
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?;
+                let activation = row
+                    .source_activation
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?;
                 requested = checked_sum(
                     &[
                         requested,
@@ -98,20 +127,46 @@ pub(super) fn observed_current(
     let maximum = policy.maximum_requested_bytes;
     let installed = scope.phase == OriginalRestorationConstructionPhase::Installed;
     let runtime_bytes = if installed {
-        scope.inputs.runtime.original_installed_restoration_retained_storage_precredit_data(
-            scope.window.ok_or(RuntimeError::OwnerUnavailable)?, scope.inputs.archive,
-            scope.plan, scope.inputs.activation, maximum)?
+        scope
+            .inputs
+            .runtime
+            .original_installed_restoration_retained_storage_precredit_data(
+                scope.window.ok_or(RuntimeError::OwnerUnavailable)?,
+                scope.inputs.archive,
+                scope.plan,
+                scope.inputs.activation,
+                maximum,
+            )?
     } else {
-        scope.inputs.runtime.original_restoration_retained_storage_precredit_data(
-            scope.inputs.archive, scope.plan, scope.inputs.activation, maximum)?
+        scope
+            .inputs
+            .runtime
+            .original_restoration_retained_storage_precredit_data(
+                scope.inputs.archive,
+                scope.plan,
+                scope.inputs.activation,
+                maximum,
+            )?
     };
     let runtime_descriptors = if installed {
-        scope.inputs.runtime.original_installed_restoration_descriptor_views_precredit_data(
-            scope.window.ok_or(RuntimeError::OwnerUnavailable)?, scope.inputs.archive,
-            scope.plan, scope.inputs.activation)?
+        scope
+            .inputs
+            .runtime
+            .original_installed_restoration_descriptor_views_precredit_data(
+                scope.window.ok_or(RuntimeError::OwnerUnavailable)?,
+                scope.inputs.archive,
+                scope.plan,
+                scope.inputs.activation,
+            )?
     } else {
-        scope.inputs.runtime.original_restoration_descriptor_views_precredit_data(
-            scope.inputs.archive, scope.plan, scope.inputs.activation)?
+        scope
+            .inputs
+            .runtime
+            .original_restoration_descriptor_views_precredit_data(
+                scope.inputs.archive,
+                scope.plan,
+                scope.inputs.activation,
+            )?
     };
     let mut requested = checked_sum(
         &[
@@ -217,7 +272,10 @@ pub(super) fn observed_current(
         if let Some(cold) = window.cold.get() {
             requested = checked_sum(&[requested, cold.retained_storage_data(maximum)?], maximum)?;
         }
-        let scope_owner = window.scope_partial.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        let scope_owner = window
+            .scope_partial
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
         if let Some(owner) = scope_owner.as_ref() {
             requested = checked_sum(&[requested, owner.retained_storage_data(maximum)?], maximum)?;
         }
@@ -225,13 +283,28 @@ pub(super) fn observed_current(
             requested = checked_sum(&[requested, owner.retained_storage_data(maximum)?], maximum)?;
         }
         drop(scope_owner);
-        let paused = window.paused_scheduler.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        let paused = window
+            .paused_scheduler
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
         if let Some(scheduler) = paused.as_ref() {
-            requested = checked_sum(&[requested, scheduler.original_retained_requested_storage_precredit_data(maximum)?], maximum)?;
+            requested = checked_sum(
+                &[
+                    requested,
+                    scheduler.original_retained_requested_storage_precredit_data(maximum)?,
+                ],
+                maximum,
+            )?;
         }
         drop(paused);
-        let coordinator = window.coordinator_owner.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
-        requested = checked_sum(&[requested, coordinator.retained_storage_data(maximum)?], maximum)?;
+        let coordinator = window
+            .coordinator_owner
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        requested = checked_sum(
+            &[requested, coordinator.retained_storage_data(maximum)?],
+            maximum,
+        )?;
         drop(coordinator);
         if let Some(activation) = window.activation_world.get() {
             let facts = activation.retained_requested_storage_data(maximum)?;

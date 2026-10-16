@@ -49,7 +49,8 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
 {
     restore: Option<complete_restore::OriginalCompleteRestoreAttempt>,
     restore_transfer_banks: Option<restore_transfer_banks::OriginalRestoreTransferBanks>,
-    restoration_activation: Option<restoration_activation::OriginalSourceRestorationActivationAttempt>,
+    restoration_activation:
+        Option<restoration_activation::OriginalSourceRestorationActivationAttempt>,
     emitter: Option<OriginalCanonicalBlobAckEmitter>,
     restore_input_emitter: Option<OriginalCanonicalRestoreInputEmitter>,
     native: Option<CnpSemanticSourceRead>,
@@ -140,9 +141,12 @@ impl OriginalAckPeerAssociation {
             .restore_transfer_banks
             .as_ref()
             .map_or(Ok(0), |banks| banks.allocated_bytes_with_error::<E>())?;
-        let activation = self.restoration_activation.as_ref().map_or(
-            Ok(0), |attempt| attempt.allocated_bank_bytes_with_error::<E>(),
-        )?;
+        let activation = self
+            .restoration_activation
+            .as_ref()
+            .map_or(Ok(0), |attempt| {
+                attempt.allocated_bank_bytes_with_error::<E>()
+            })?;
         existing
             .checked_add(activation)
             .and_then(|bytes| bytes.checked_add(restore))
@@ -1242,7 +1246,6 @@ pub(crate) use restoration_transfer::{
     OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
     SourceVerifiedPhase as OriginalSourceRestoreVerifiedPhaseKind,
 };
-
 
 pub use restoration_activation::{
     OriginalSourceRestorationActivationConstructionData,

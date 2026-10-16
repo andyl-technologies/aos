@@ -9,9 +9,8 @@ impl ClientSession {
         maximum: usize,
         result: &mut Option<usize>,
     ) -> Result<(), ProviderError> {
-        self.connection.reserve_original_assigned_installed_restoration_activation(
-            original, maximum, result,
-        )
+        self.connection
+            .reserve_original_assigned_installed_restoration_activation(original, maximum, result)
     }
 
     pub(in crate::client) fn publish_original_installed_restoration_activation(
@@ -23,7 +22,8 @@ impl ClientSession {
         cut: crate::operational_time::OperationalDeadline,
     ) -> Result<Envelope, ProviderError> {
         self.authenticate_original_ack_admit_cut(original.sequence, cut)?;
-        self.connection.publish_original_assigned_installed_restoration_activation(original, bytes, slot)?;
+        self.connection
+            .publish_original_assigned_installed_restoration_activation(original, bytes, slot)?;
         self.sequence = self.sequence.checked_add(U64::new(1))?;
         loop {
             let frame = self.connection.receive()?.ok_or_else(refused)?;

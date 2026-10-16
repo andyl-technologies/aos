@@ -173,7 +173,9 @@ impl Serialize for CustodyView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let state = self.0;
         if state.installed_restoration.is_some() {
-            return Err(serde::ser::Error::custom("selected installed custody requires its continuation format"));
+            return Err(serde::ser::Error::custom(
+                "selected installed custody requires its continuation format",
+            ));
         }
         let observation = state
             .observation

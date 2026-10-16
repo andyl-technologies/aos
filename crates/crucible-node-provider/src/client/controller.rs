@@ -32,8 +32,10 @@ mod assigned_admit;
 mod assigned_restore;
 mod installed_activation;
 pub use installed_activation::{
-    CompletedOriginalInstalledRestorationUpload, PreparedOriginalInstalledRestorationUpload,OriginalRestorationActivationTargetBindingData,
-    PreparedOriginalInstalledRestorationActivation, CompletedOriginalInstalledRestorationActivation};
+    CompletedOriginalInstalledRestorationActivation, CompletedOriginalInstalledRestorationUpload,
+    OriginalRestorationActivationTargetBindingData, PreparedOriginalInstalledRestorationActivation,
+    PreparedOriginalInstalledRestorationUpload,
+};
 mod assigned_transfer;
 mod fresh_restore_query;
 #[path = "controller/input_emitter.rs"]
@@ -87,7 +89,8 @@ pub struct CnpController {
     original_complete_restore_prepare: Option<assigned_restore::AssignedOriginalCompleteRestore>,
     original_complete_restore_commit: Option<assigned_restore::AssignedOriginalCompleteRestore>,
     installed_complete_restore: Option<complete_installation::InstalledArchivedProtocolState>,
-    original_installed_restoration_activation: [Option<installed_activation::AssignedOriginalInstalledRestorationActivation>; 2],
+    original_installed_restoration_activation:
+        [Option<installed_activation::AssignedOriginalInstalledRestorationActivation>; 2],
     original_installed_restoration_upload: [Option<installed_activation::AssignedUpload>; 2],
 }
 
@@ -135,8 +138,12 @@ impl CnpController {
             original_installed_restoration_activation,
             original_installed_restoration_upload,
         } = self;
-        if original_installed_restoration_upload.iter().any(Option::is_some)
-            || original_installed_restoration_activation.iter().any(Option::is_some)
+        if original_installed_restoration_upload
+            .iter()
+            .any(Option::is_some)
+            || original_installed_restoration_activation
+                .iter()
+                .any(Option::is_some)
             || installed_complete_restore.is_some()
             || original_complete_restore_prepare.is_some()
             || original_complete_restore_commit.is_some()
@@ -487,8 +494,14 @@ impl CnpController {
             &crate::connection::OriginalSupervisorProtocolView<'_>,
         )>,
     ) -> Result<(), ProviderError> {
-        if self.original_installed_restoration_upload.iter().any(Option::is_some)
-            || self.original_installed_restoration_activation.iter().any(Option::is_some)
+        if self
+            .original_installed_restoration_upload
+            .iter()
+            .any(Option::is_some)
+            || self
+                .original_installed_restoration_activation
+                .iter()
+                .any(Option::is_some)
             || self.original_complete_restore_prepare.is_some()
             || self.original_complete_restore_commit.is_some()
         {
@@ -1200,8 +1213,8 @@ impl CnpController {
                 original_complete_restore_prepare: None,
                 original_complete_restore_commit: None,
                 installed_complete_restore: None,
-            original_installed_restoration_activation: [None, None],
-            original_installed_restoration_upload: [None, None],
+                original_installed_restoration_activation: [None, None],
+                original_installed_restoration_upload: [None, None],
                 protocol_owner: std::rc::Rc::new(
                     crate::protocol_snapshot::ProtocolCaptureOwner::new(),
                 ),
@@ -1836,8 +1849,12 @@ impl CnpController {
             || original_complete_restore_prepare.is_some()
             || original_complete_restore_commit.is_some()
             || installed_complete_restore.is_some()
-            || original_installed_restoration_upload.iter().any(Option::is_some)
-            || original_installed_restoration_activation.iter().any(Option::is_some)
+            || original_installed_restoration_upload
+                .iter()
+                .any(Option::is_some)
+            || original_installed_restoration_activation
+                .iter()
+                .any(Option::is_some)
             || custody.originals().next().is_some()
         {
             return Err(ProviderError::Correlation(

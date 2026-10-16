@@ -16,20 +16,22 @@ use super::*;
 use crate::envelope::{Envelope, MessageKind};
 use crucible_node_contract::{ContractError, SchemaRef, canonical};
 
-mod crypto;
 mod contract;
+mod crypto;
 mod projection;
 pub(super) mod storage;
-pub(crate) use storage::original_native_restoration_activation_upload_required_storage_data;
+pub use contract::{
+    authenticate_restoration_activation_upload_schema_data,
+    restoration_activation_upload_contract_data, restoration_activation_upload_schema,
+    restoration_activation_upload_schema_counter_scratch_data,
+};
 pub use crypto::{
     maximum_restoration_activation_upload_proof_encoded_bytes_data,
     restoration_activation_upload_assigned_request_digest,
-    restoration_activation_upload_context_digest_data,
-    restoration_activation_upload_proof_data,
+    restoration_activation_upload_context_digest_data, restoration_activation_upload_proof_data,
     verify_restoration_activation_upload_proof_data,
 };
-pub use contract::{restoration_activation_upload_schema_counter_scratch_data, restoration_activation_upload_contract_data,
-    restoration_activation_upload_schema, authenticate_restoration_activation_upload_schema_data};
+pub(crate) use storage::original_native_restoration_activation_upload_required_storage_data;
 
 /// Names the explicitly negotiated upload-begin schema and envelope extension.
 pub const PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE: &str =
@@ -48,7 +50,10 @@ pub enum PacketRestorationActivationUploadRole {
 impl PacketRestorationActivationUploadRole {
     /// Returns this closed upload's retained ordinal.
     pub const fn ordinal_data(self) -> usize {
-        match self { Self::Coordinator => 0, Self::Manifest => 1 }
+        match self {
+            Self::Coordinator => 0,
+            Self::Manifest => 1,
+        }
     }
 }
 
@@ -92,16 +97,29 @@ impl PacketRestorationActivationUploadRequest {
     /// scope/row, zero or oversized chunk, nonexact loop count or artifact cap.
     pub fn validate_data(&self) -> Result<(), ProviderError> {
         if self.schema != PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE
-            || self.maximum_frame_bytes.get() == 0 || self.maximum_frame_bytes.get() > 65_536
-            || self.chunk_bytes.get() == 0 || self.chunk_bytes.get() > 4096
-            || self.coordinator.media_type != "application/json" || self.manifest.media_type != "application/json"
-            || self.coordinator == self.manifest || self.coordinator.length.get() == 0
-            || self.coordinator.length.get() > 131_072 || self.manifest.length.get() > 16_384
+            || self.maximum_frame_bytes.get() == 0
+            || self.maximum_frame_bytes.get() > 65_536
+            || self.chunk_bytes.get() == 0
+            || self.chunk_bytes.get() > 4096
+            || self.coordinator.media_type != "application/json"
+            || self.manifest.media_type != "application/json"
+            || self.coordinator == self.manifest
+            || self.coordinator.length.get() == 0
+            || self.coordinator.length.get() > 131_072
+            || self.manifest.length.get() > 16_384
             || self.manifest.length.get() == 0
             || self.maximum_requests.get() > 4096
-            || self.maximum_requests.get() != self.content_ref_data().length.get()
-                .div_ceil(self.chunk_bytes.get()).checked_add(2).ok_or_else(invalid)?
-        { return Err(invalid()); }
+            || self.maximum_requests.get()
+                != self
+                    .content_ref_data()
+                    .length
+                    .get()
+                    .div_ceil(self.chunk_bytes.get())
+                    .checked_add(2)
+                    .ok_or_else(invalid)?
+        {
+            return Err(invalid());
+        }
         self.coordinator.validate()?;
         self.manifest.validate()?;
         // The borrowed common grammar constructs no synthetic phase owner.
@@ -129,7 +147,9 @@ impl PacketRestorationActivationUploadContext {
     /// Refuses invalid request data, a non-32-byte digest or context extent.
     pub fn validate_data(&self) -> Result<(), ProviderError> {
         self.request.validate_data()?;
-        if self.assigned_request.as_slice().len() != 32 { return Err(invalid()); }
+        if self.assigned_request.as_slice().len() != 32 {
+            return Err(invalid());
+        }
         crate::connection::serialized_credit(self, MAXIMUM_RESTORATION_ACTIVATION_ARTIFACT_BYTES)?;
         Ok(())
     }
@@ -156,7 +176,9 @@ impl PacketRestorationActivationUploadArtifact {
             || self.proof.algorithm != "blake3-256-mac"
             || self.proof.context_digest.as_slice().len() != 32
             || self.proof.mac.as_slice().len() != 32
-        { return Err(invalid()); }
+        {
+            return Err(invalid());
+        }
         crate::connection::serialized_credit(self, MAXIMUM_RESTORATION_ACTIVATION_ARTIFACT_BYTES)?;
         Ok(())
     }

@@ -6,8 +6,8 @@
 //! whole-preparation context, readiness or restoration installation permission.
 
 mod precredit;
-mod restoration_storage;
 pub(in crate::node_qualification::packet_collection::complete) mod publication;
+mod restoration_storage;
 
 use super::*;
 use crucible::node_admission::{CompleteArchiveCodeGraph, ConformanceGraph};

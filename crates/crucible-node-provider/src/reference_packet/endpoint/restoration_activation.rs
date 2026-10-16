@@ -22,9 +22,8 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
             return Err(refused());
         };
-        let permit = NativeAckBoot::retain_restoration_activation(
-            boot, connection, request, &self.native,
-        )?;
+        let permit =
+            NativeAckBoot::retain_restoration_activation(boot, connection, request, &self.native)?;
         // Mark the one dispatch before borrowing its retained original. No
         // subsequent refusal can return this slot to an unattempted state.
         permit.begin_dispatch_data()?;
@@ -37,9 +36,12 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             let mut prepare = |reply: &super::super::control::PacketControlReply| {
                 prefix::prepare(transport, sequence, credit, authority, &original, reply)
             };
-            self.native.dispatch_original_restoration_activation_with_preflight(
-                &original, &permit, &mut prepare,
-            )?;
+            self.native
+                .dispatch_original_restoration_activation_with_preflight(
+                    &original,
+                    &permit,
+                    &mut prepare,
+                )?;
         }
         let Some(Transport::Prepared(exchange, acknowledgements)) = self.transport.as_mut() else {
             return Err(refused());
@@ -76,12 +78,15 @@ impl<S: ProviderStream> PacketEndpoint<S> {
     ) -> Result<(), ProviderError> {
         self.ensure_complete_origin()?;
         deadline.remaining()?;
-        if !self.held || self.records.len() >= EXCHANGES { return Err(refused()); }
+        if !self.held || self.records.len() >= EXCHANGES {
+            return Err(refused());
+        }
         let boot = self.canonical_ack_boot.as_ref().ok_or_else(refused)?;
         let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
             return Err(refused());
         };
-        let permit = NativeAckBoot::retain_restoration_upload(boot, connection, request, &self.native)?;
+        let permit =
+            NativeAckBoot::retain_restoration_upload(boot, connection, request, &self.native)?;
         // A dedicated exact raw bank is admitted by the signed ordinal. The
         // generic receiver's 64 KiB content limit remains unchanged.
         let reply = permit.prepare_content_reply_data(&mut self.native)?;
@@ -92,12 +97,16 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         };
         exchange.publish(&mut |sent, received| acknowledgements.validate(sent, received))?;
         drop(original);
-        let Some(Transport::Prepared(exchange, _)) = self.transport.take() else { return Err(refused()); };
+        let Some(Transport::Prepared(exchange, _)) = self.transport.take() else {
+            return Err(refused());
+        };
         let (connection, record) = exchange.into_parts();
         self.records.push(record);
         self.transport = Some(Transport::Connected(connection));
         deadline.remaining()?;
-        let Some(Transport::Connected(connection)) = self.transport.as_ref() else { return Err(refused()); };
+        let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
+            return Err(refused());
+        };
         permit.complete_publication(connection, self.records.last().ok_or_else(refused)?)?;
         self.held = false;
         Ok(())

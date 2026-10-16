@@ -339,14 +339,20 @@ mod tests {
 
 pub(super) fn counter_scratch_data() -> usize {
     size_of::<UploadOrder>()
-        + size_of::<(&serde_json::Map<String, serde_json::Value>,
+        + size_of::<(
+            &serde_json::Map<String, serde_json::Value>,
             &crucible_node_contract::Extensions,
-            &crucible_node_provider::bodies::BlobFinishResult)>()
+            &crucible_node_provider::bodies::BlobFinishResult,
+        )>()
         + size_of::<Option<&MethodResult>>()
         + size_of::<Option<&serde_json::Map<String, serde_json::Value>>>()
         + size_of::<serde_json::map::Keys<'static>>()
-        + size_of::<(&crucible_node_provider::envelope::Envelope,
-            &ResponseBody, &ContentRef, &str)>()
+        + size_of::<(
+            &crucible_node_provider::envelope::Envelope,
+            &ResponseBody,
+            &ContentRef,
+            &str,
+        )>()
         + size_of::<serde_json::Value>()
         + size_of::<[PacketRestorationActivationUploadRole; 2]>()
         + size_of::<std::array::IntoIter<PacketRestorationActivationUploadRole, 2>>()

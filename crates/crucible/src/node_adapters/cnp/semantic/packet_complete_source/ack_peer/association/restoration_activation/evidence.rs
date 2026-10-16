@@ -125,9 +125,7 @@ impl PacketCompleteSemanticSource {
         final_currency: impl FnOnce() -> Result<(), RuntimeError>,
     ) -> Result<(), RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
-        if expected != inputs.phase
-            || !std::ptr::eq(inputs.transfer.source.as_ref(), self)
-        {
+        if expected != inputs.phase || !std::ptr::eq(inputs.transfer.source.as_ref(), self) {
             return Err(RuntimeError::ForeignAuthority);
         }
         admitted.authenticate_same_construction_data(inputs.source_construction)?;

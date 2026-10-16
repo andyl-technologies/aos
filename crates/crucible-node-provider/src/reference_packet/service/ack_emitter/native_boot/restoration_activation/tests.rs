@@ -18,7 +18,10 @@ fn signed_phase_rows_refuse_axis_substitution_and_invalid_totals() {
     // Equal whole totals cannot exchange persistent, transient or scratch
     // credit. This calls the same gate used before native model/DOM work.
     for available in [row(16, 24, 31), row(18, 22, 31), row(18, 23, 30)] {
-        assert_eq!(available.requested_bytes_data().unwrap(), required.requested_bytes_data().unwrap());
+        assert_eq!(
+            available.requested_bytes_data().unwrap(),
+            required.requested_bytes_data().unwrap()
+        );
         assert!(authenticate_row(&available, &required).is_err());
     }
     assert!(authenticate_row(&row(u64::MAX, 1, 1), &required).is_err());
@@ -29,7 +32,10 @@ fn signed_phase_rows_refuse_axis_substitution_and_invalid_totals() {
 fn selected_upload_raw_bank_refuses_wrong_offset_and_growth_before_mutation() {
     let mut bank = Vec::with_capacity(8);
     let capacity = bank.capacity();
-    assert_eq!(upload::append_upload_chunk_data(&mut bank, U64::new(0), &[1, 2, 3]).unwrap(), 3);
+    assert_eq!(
+        upload::append_upload_chunk_data(&mut bank, U64::new(0), &[1, 2, 3]).unwrap(),
+        3
+    );
 
     assert!(upload::append_upload_chunk_data(&mut bank, U64::new(2), &[4]).is_err());
     assert_eq!(bank, [1, 2, 3]);
@@ -39,7 +45,10 @@ fn selected_upload_raw_bank_refuses_wrong_offset_and_growth_before_mutation() {
     assert_eq!(bank.capacity(), capacity);
 
     let remainder = vec![4; capacity - 3];
-    assert_eq!(upload::append_upload_chunk_data(&mut bank, U64::new(3), &remainder).unwrap(), capacity);
+    assert_eq!(
+        upload::append_upload_chunk_data(&mut bank, U64::new(3), &remainder).unwrap(),
+        capacity
+    );
     assert_eq!(bank.capacity(), capacity);
     assert!(upload::append_upload_chunk_data(&mut bank, U64::new(capacity as u64), &[5]).is_err());
     assert_eq!(bank.len(), capacity);

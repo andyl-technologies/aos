@@ -36,11 +36,14 @@ impl OriginalAckPeerAssociation {
             )?;
         }
         if let Some(activation) = &self.restoration_activation {
-            bytes = sum_with_error::<E, _>([
-                bytes,
-                activation.normalized_value_bytes_with_error::<E>(maximum)?,
-                activation.native_evidence_backing_bytes_with_error::<E>(maximum)?,
-            ], maximum)?;
+            bytes = sum_with_error::<E, _>(
+                [
+                    bytes,
+                    activation.normalized_value_bytes_with_error::<E>(maximum)?,
+                    activation.native_evidence_backing_bytes_with_error::<E>(maximum)?,
+                ],
+                maximum,
+            )?;
         }
         for value in self
             .normalized

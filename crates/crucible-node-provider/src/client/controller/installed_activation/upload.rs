@@ -6,10 +6,10 @@
 //! retry, sequence rewrite or shortened progress loop is available here.
 
 use super::*;
-use std::rc::Rc;
 use crate::connection::{ReceivedBody, ReceivedFrame};
 use crate::reference_packet::service::complete_restore::activation::upload::*;
 use crate::retained_metadata::MetadataObserver;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {

@@ -133,7 +133,11 @@ impl PacketCompleteReportStartupHolder {
         };
         let capsule = capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         capsule.authenticate_restoration_storage_scope_data(
-            inputs.archive, inputs.runtime, scope.plan(), inputs.activation, Some(scope),
+            inputs.archive,
+            inputs.runtime,
+            scope.plan(),
+            inputs.activation,
+            Some(scope),
         )?;
         let requests = self
             .restoration_requests
@@ -250,17 +254,22 @@ impl InstalledPacketCompleteCollectionAuthority {
         let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose else {
             return Err(RuntimeError::ForeignAuthority);
         };
-        let (publication_requested, publication_descriptors) = capsule.try_borrow()
-            .map_err(|_| RuntimeError::OwnerBusy)?.original_publication_future_data(scope, maximum)?;
+        let (publication_requested, publication_descriptors) = capsule
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
+            .original_publication_future_data(scope, maximum)?;
         held.authenticate_restoration_scope_data(self, scope)?;
         Ok(OriginalRestorationConstructionStorage {
             retained_holder_bytes,
             retained_descriptors,
-            maximum_simultaneous_transient_bytes: self.original_initial_callback_transient_data()?
-                .checked_add(publication_requested).ok_or(RuntimeError::ResourceLimit)?,
+            maximum_simultaneous_transient_bytes: self
+                .original_initial_callback_transient_data()?
+                .checked_add(publication_requested)
+                .ok_or(RuntimeError::ResourceLimit)?,
             // The real concrete qualification callback opens one kernel File;
             // Core separately counts the actual Source's three nested opens.
-            maximum_simultaneous_transient_descriptors: 1usize.checked_add(publication_descriptors)
+            maximum_simultaneous_transient_descriptors: 1usize
+                .checked_add(publication_descriptors)
                 .ok_or(RuntimeError::ResourceLimit)?,
         })
     }
@@ -285,7 +294,10 @@ impl InstalledPacketCompleteCollectionAuthority {
             return Err(RuntimeError::ForeignAuthority);
         }
         if scope.is_original_publication_member_data() {
-            let publisher = *held.restoration_publication.get().ok_or(RuntimeError::OwnerUnavailable)?;
+            let publisher = *held
+                .restoration_publication
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
             if !scope.is_original_publisher_data(publisher) {
                 return Err(RuntimeError::ForeignAuthority);
             }

@@ -428,7 +428,6 @@ fn terminal(
     )
 }
 
-
 // Actual SDK upload IDs are a fixed prefix, 64 hexadecimal bytes and an index
 // below4096.128 bytes is the existing validated Id maximum, not a minted Id.
 const UPLOAD_ID: &str = "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
@@ -500,30 +499,62 @@ fn measure_upload(
 ) -> Result<UploadShapes, RuntimeError> {
     let request = UploadRequest {
         schema: PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,
-        scope, role: "coordinator",
-        coordinator: Reference::future(), manifest: Reference::future(),
-        chunk_bytes: NUMBER, maximum_frame_bytes: NUMBER, maximum_requests: NUMBER,
+        scope,
+        role: "coordinator",
+        coordinator: Reference::future(),
+        manifest: Reference::future(),
+        chunk_bytes: NUMBER,
+        maximum_frame_bytes: NUMBER,
+        maximum_requests: NUMBER,
         native_allocation: Allocation {
             retained_requested_bytes: NUMBER,
             maximum_simultaneous_transient_bytes: NUMBER,
             declared_counter_scratch_bytes: NUMBER,
         },
     };
-    let context = UploadContext { request: &request, assigned_request: DIGEST };
-    let artifact = UploadArtifact { request: &request, proof: Proof {
-        schema: "source-owned.packet-restoration-activation-upload-proof/1",
-        algorithm: "blake3-256-mac", context_digest: DIGEST, mac: DIGEST,
-    }};
-    let mut assigned = envelope(inputs, 1, "request", UploadBegin {
-        transfer_id: UPLOAD_ID, content: Reference::future(), extensions: Empty {},
-    }, UploadExtensions { artifact: &artifact });
+    let context = UploadContext {
+        request: &request,
+        assigned_request: DIGEST,
+    };
+    let artifact = UploadArtifact {
+        request: &request,
+        proof: Proof {
+            schema: "source-owned.packet-restoration-activation-upload-proof/1",
+            algorithm: "blake3-256-mac",
+            context_digest: DIGEST,
+            mac: DIGEST,
+        },
+    };
+    let mut assigned = envelope(
+        inputs,
+        1,
+        "request",
+        UploadBegin {
+            transfer_id: UPLOAD_ID,
+            content: Reference::future(),
+            extensions: Empty {},
+        },
+        UploadExtensions {
+            artifact: &artifact,
+        },
+    );
     assigned.method = "blob_begin";
     assigned.request_id = Some(UPLOAD_ID);
-    let mut terminal = envelope(inputs, 1, "response", UploadTerminal {
-        status: "completed", operation_state: "completed", result: UploadFinish {
-            transfer_id: UPLOAD_ID, content: Reference::future(),
-        }, extensions: Empty {},
-    }, Empty {});
+    let mut terminal = envelope(
+        inputs,
+        1,
+        "response",
+        UploadTerminal {
+            status: "completed",
+            operation_state: "completed",
+            result: UploadFinish {
+                transfer_id: UPLOAD_ID,
+                content: Reference::future(),
+            },
+            extensions: Empty {},
+        },
+        Empty {},
+    );
     terminal.method = "blob_finish";
     terminal.request_id = Some(UPLOAD_ID);
     Ok(UploadShapes {
@@ -534,7 +565,6 @@ fn measure_upload(
         terminal: Shape::measure(&terminal, maximum)?,
     })
 }
-
 
 pub(super) fn future_reference_backing_data(maximum: usize) -> Result<usize, RuntimeError> {
     typed_backing::measure(&Reference::future(), maximum)

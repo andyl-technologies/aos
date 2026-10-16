@@ -92,8 +92,8 @@ pub(super) fn install(
     // The manifest validator has authenticated exact full outer14 DATA on both
     // immutable rosters and content before any Source bank or namespace effect.
     let restoration_activation = selected.schema == "crucible.complete-scene.installation/4";
-    let invocation_snapshot = restoration_activation
-        || selected.schema == "crucible.complete-scene.installation/3";
+    let invocation_snapshot =
+        restoration_activation || selected.schema == "crucible.complete-scene.installation/3";
     let (sources, declarations) = prepare_sources(
         selected.participants,
         &selected.coordinator,
@@ -310,10 +310,12 @@ fn prepare_sources(
             // ordinary operator-install phase, like the tuple binders above.
             // Later runtime/native grants do not authorize this earlier work.
             if restoration_activation {
-                source.bind_original_restoration_activation_declaration()
+                source
+                    .bind_original_restoration_activation_declaration()
                     .map_err(|_| refused())?;
             } else {
-                source.bind_original_invocation_snapshot_declaration()
+                source
+                    .bind_original_invocation_snapshot_declaration()
                     .map_err(|_| refused())?;
             }
             super::super::records::validate_original_native_definition_data(
@@ -452,7 +454,10 @@ fn ready_sources(
                 PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING.into(),
             ]);
         }
-        if source.is_original_restoration_activation_declaration_data().map_err(|_| refused())? {
+        if source
+            .is_original_restoration_activation_declaration_data()
+            .map_err(|_| refused())?
+        {
             use crucible_node_provider::reference_packet::service::complete_restore::activation::{
                 PACKET_RESTORATION_ACTIVATION_FEATURE,
                 upload::PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,

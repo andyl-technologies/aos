@@ -493,20 +493,34 @@ mod normalization;
 
 impl CompleteOriginalRestorationTransactionTarget {
     pub(super) fn authenticate_original_installed_member_data(
-        &self, window_runtime: &crate::node_contract::OriginalRestorationRuntimeMemberIdentity,
-        plan: &InstalledConformancePlan, source: &Rc<PacketCompleteSemanticSource>,
-        original_activation: *const ActivationRecord, world: &crucible_node_contract::HashRef,
+        &self,
+        window_runtime: &crate::node_contract::OriginalRestorationRuntimeMemberIdentity,
+        plan: &InstalledConformancePlan,
+        source: &Rc<PacketCompleteSemanticSource>,
+        original_activation: *const ActivationRecord,
+        world: &crucible_node_contract::HashRef,
     ) -> Result<(), RuntimeError> {
         self.origin()?;
         self.authenticate_original_completed_data()?;
         if self.activation != original_activation
-            || !self.plan.upgrade().map_err(|_| RuntimeError::ForeignAuthority)?
+            || !self
+                .plan
+                .upgrade()
+                .map_err(|_| RuntimeError::ForeignAuthority)?
                 .is_same_original_plan_data(plan)
-            || !self.source.upgrade().is_some_and(|original| Rc::ptr_eq(&original, source))
+            || !self
+                .source
+                .upgrade()
+                .is_some_and(|original| Rc::ptr_eq(&original, source))
         {
             return Err(RuntimeError::ForeignAuthority);
         }
-        window_runtime.authenticate_original_transaction_member_data(self.ticket_data()?,
-            self.runtime.as_ref().ok_or(RuntimeError::OwnerUnavailable)?, world)
+        window_runtime.authenticate_original_transaction_member_data(
+            self.ticket_data()?,
+            self.runtime
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+            world,
+        )
     }
 }

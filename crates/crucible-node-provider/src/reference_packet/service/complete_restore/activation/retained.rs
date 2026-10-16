@@ -67,8 +67,13 @@ impl RetainedRestorationActivationData<'_> {
                 observer.vector::<crucible_node_contract::PreparedOwner>(owners.capacity())?;
                 for owner in owners {
                     let crucible_node_contract::PreparedOwner {
-                        owner_id, incarnation_id, owner_generation, prepared_token,
-                        binding_hashes, ready_receipt, extensions,
+                        owner_id,
+                        incarnation_id,
+                        owner_generation,
+                        prepared_token,
+                        binding_hashes,
+                        ready_receipt,
+                        extensions,
                     } = owner;
                     observer.observe(owner_id)?;
                     observer.observe(incarnation_id)?;
@@ -430,27 +435,43 @@ mod manifest_owner_tests {
         let reference = canonical::content_ref(b"{}", "application/json").unwrap();
         let hash = canonical::json_hash("cnp.binding.v1", &"actual-binding-data").unwrap();
         let mut manifest = ActivationManifest {
-            schema_version: 1, transaction_id: Id::new("transaction").unwrap(),
-            activation_id: Id::new("activation").unwrap(), world_generation: U64::new(2),
-            gate_id: Id::new("gate").unwrap(), world_binding_hash: hash.clone(),
-            owners: vec![PreparedOwner { owner_id: Id::new("owner").unwrap(),
-                incarnation_id: Id::new("incarnation").unwrap(), owner_generation: U64::new(2),
-                prepared_token: Id::new("prepared").unwrap(), binding_hashes: vec![hash],
-                ready_receipt: reference.clone(), extensions: Extensions::new() }],
-            coordinator_state_ref: reference, extensions: Extensions::new(),
+            schema_version: 1,
+            transaction_id: Id::new("transaction").unwrap(),
+            activation_id: Id::new("activation").unwrap(),
+            world_generation: U64::new(2),
+            gate_id: Id::new("gate").unwrap(),
+            world_binding_hash: hash.clone(),
+            owners: vec![PreparedOwner {
+                owner_id: Id::new("owner").unwrap(),
+                incarnation_id: Id::new("incarnation").unwrap(),
+                owner_generation: U64::new(2),
+                prepared_token: Id::new("prepared").unwrap(),
+                binding_hashes: vec![hash],
+                ready_receipt: reference.clone(),
+                extensions: Extensions::new(),
+            }],
+            coordinator_state_ref: reference,
+            extensions: Extensions::new(),
         };
         // Portable manifest data grants no world, Source or native permission.
         // Reserve moves existing owners without cloning their string backing.
-        let before = RetainedRestorationActivationData::Manifest(&manifest).original_retained_metadata_facts().unwrap();
+        let before = RetainedRestorationActivationData::Manifest(&manifest)
+            .original_retained_metadata_facts()
+            .unwrap();
         let owners_before = manifest.owners.capacity();
         let hashes_before = manifest.owners[0].binding_hashes.capacity();
         manifest.owners.reserve_exact(5);
         manifest.owners[0].binding_hashes.reserve_exact(7);
         let expected = (manifest.owners.capacity() - owners_before) * size_of::<PreparedOwner>()
             + (manifest.owners[0].binding_hashes.capacity() - hashes_before) * size_of::<HashRef>();
-        let after = RetainedRestorationActivationData::Manifest(&manifest).original_retained_metadata_facts().unwrap();
+        let after = RetainedRestorationActivationData::Manifest(&manifest)
+            .original_retained_metadata_facts()
+            .unwrap();
         assert!(expected > 0);
-        assert_eq!(after.vector_capacity_bytes - before.vector_capacity_bytes, expected);
+        assert_eq!(
+            after.vector_capacity_bytes - before.vector_capacity_bytes,
+            expected
+        );
         assert_eq!(after.string_capacity_bytes, before.string_capacity_bytes);
         assert_eq!(after.tree_entries, before.tree_entries);
     }

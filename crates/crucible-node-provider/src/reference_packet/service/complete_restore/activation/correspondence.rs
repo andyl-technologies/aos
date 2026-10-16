@@ -31,23 +31,38 @@ pub fn authenticate_restoration_activation_held_correspondence_data(
         || current.mapping != held.mapping
         || current.restore_commit != held.restore_commit
         || current.context_digest != held.context_digest
-    { return Err(invalid()); }
+    {
+        return Err(invalid());
+    }
     let (cursor, inventory_hash) = match underlying {
         PacketNative5UnderlyingRecord::Producer(record) => {
-            if record.native_pid != held.native_pid || record.grant.is_some()
+            if record.native_pid != held.native_pid
+                || record.grant.is_some()
                 || record.original != current.native_receipt.original
-            { return Err(invalid()); }
+            {
+                return Err(invalid());
+            }
             crate::connection::serialized_credit(&record.inventory, 65_536)?;
-            (record.inventory.reached,
-                canonical::json_hash("source-owned.packet-inventory.v1", &record.inventory)?)
+            (
+                record.inventory.reached,
+                canonical::json_hash("source-owned.packet-inventory.v1", &record.inventory)?,
+            )
         }
         PacketNative5UnderlyingRecord::Reactive(record) => {
-            if record.native_pid != held.native_pid || record.grant.is_some()
+            if record.native_pid != held.native_pid
+                || record.grant.is_some()
                 || record.original != current.native_receipt.original
-            { return Err(invalid()); }
+            {
+                return Err(invalid());
+            }
             crate::connection::serialized_credit(&record.inventory, 65_536)?;
-            (record.inventory.reached,
-                canonical::json_hash("source-owned.packet-connected-inventory/4", &record.inventory)?)
+            (
+                record.inventory.reached,
+                canonical::json_hash(
+                    "source-owned.packet-connected-inventory/4",
+                    &record.inventory,
+                )?,
+            )
         }
     };
     if cursor != held.local_cursor || inventory_hash != held.inventory_hash {

@@ -16,12 +16,20 @@ pub fn authenticate_restoration_activation_selection_data(
     authority: &ConnectionAuthority,
 ) -> Result<(), ProviderError> {
     for (feature, authenticate) in SCHEMAS {
-        authenticate_formats(&selection.provider.implementation.formats, feature, authenticate)?;
+        authenticate_formats(
+            &selection.provider.implementation.formats,
+            feature,
+            authenticate,
+        )?;
         if selection.realization.bindings.is_empty() {
             return Err(invalid());
         }
         for binding in &selection.realization.bindings {
-            authenticate_formats(&binding.compatibility.implementation.formats, feature, authenticate)?;
+            authenticate_formats(
+                &binding.compatibility.implementation.formats,
+                feature,
+                authenticate,
+            )?;
         }
         if !selection
             .provider
@@ -43,17 +51,27 @@ pub fn authenticate_restoration_activation_selection_data(
 type SchemaAuthenticator = fn(&crucible_node_contract::SchemaRef) -> Result<(), ProviderError>;
 type FeatureAuthenticator = (&'static str, SchemaAuthenticator);
 const SCHEMAS: [FeatureAuthenticator; 2] = [
-    (PACKET_RESTORATION_ACTIVATION_FEATURE, authenticate_restoration_activation_schema_data),
-    (upload::PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE, upload::authenticate_restoration_activation_upload_schema_data),
+    (
+        PACKET_RESTORATION_ACTIVATION_FEATURE,
+        authenticate_restoration_activation_schema_data,
+    ),
+    (
+        upload::PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,
+        upload::authenticate_restoration_activation_upload_schema_data,
+    ),
 ];
 
 fn authenticate_formats(
-    formats: &[crucible_node_contract::SchemaRef], feature: &str, authenticate: SchemaAuthenticator,
+    formats: &[crucible_node_contract::SchemaRef],
+    feature: &str,
+    authenticate: SchemaAuthenticator,
 ) -> Result<(), ProviderError> {
     let mut matched = None;
     for schema in formats {
         if schema.id.as_str() == feature {
-            if matched.replace(schema).is_some() { return Err(invalid()); }
+            if matched.replace(schema).is_some() {
+                return Err(invalid());
+            }
         }
     }
     let schema = matched.ok_or_else(invalid)?;
@@ -71,6 +89,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<&crucible_node_contract::SchemaRef, ProviderError>>()
         + size_of::<std::slice::Iter<'static, crucible_node_contract::NodeBinding>>()
         + size_of::<std::slice::Iter<'static, Id>>()
-        + size_of::<&str>() + size_of::<SchemaAuthenticator>()
+        + size_of::<&str>()
+        + size_of::<SchemaAuthenticator>()
         + size_of::<Result<(), ProviderError>>()
 }

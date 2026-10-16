@@ -49,7 +49,10 @@ pub use admin::{
     RefStoreAdmin,
 };
 pub use compressed_directory::CompressedDirectoryBlobBackend;
-pub use directory::{DirectoryBlobBackend, DirectoryRefBackend, DirectoryPublicationConstructionStorageData, DirectoryRefNameConstructionData};
+pub use directory::{
+    DirectoryBlobBackend, DirectoryPublicationConstructionStorageData, DirectoryRefBackend,
+    DirectoryRefNameConstructionData,
+};
 pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
 };

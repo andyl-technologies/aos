@@ -65,7 +65,9 @@ impl OriginalRestorationNodeContinuationInspection<'_> {
 
     fn authenticate_current(&self) -> Result<(), RuntimeError> {
         if let Some(scope) = self.installed_scope {
-            return self.window.authenticate_original_complete_identity_data(self.plan, scope);
+            return self
+                .window
+                .authenticate_original_complete_identity_data(self.plan, scope);
         }
         self.window.authenticate_original_completed_member_data(
             self.target()?,
@@ -86,14 +88,23 @@ impl OriginalRestorationNodeContinuationInspection<'_> {
         let target = self.target()?;
         let source = self.source_data()?;
         if let Some(scope) = self.installed_scope {
-            if let Some(phase) = self.window.activation_phases[self.selected].verified_phase_data()? {
+            if let Some(phase) =
+                self.window.activation_phases[self.selected].verified_phase_data()?
+            {
                 return self.window.with_original_activated_node_custody_data(
-                    self.selected, source.as_ref(), controller, read_owner, phase,
+                    self.selected,
+                    source.as_ref(),
+                    controller,
+                    read_owner,
+                    phase,
                     |_, _, _| match self.continuation {
                         Some(next) => next.inspect_next(),
                         None => Err(RuntimeError::OwnerUnavailable),
                     },
-                    || self.window.authenticate_original_complete_identity_data(self.plan, scope),
+                    || {
+                        self.window
+                            .authenticate_original_complete_identity_data(self.plan, scope)
+                    },
                 );
             }
         }
@@ -215,7 +226,9 @@ impl CompleteOriginalRestorationWindow {
     }
 
     pub(super) fn inspect_original_native_group_data(
-        &self, plan: &InstalledConformancePlan, runtime: &ConformanceRuntime,
+        &self,
+        plan: &InstalledConformancePlan,
+        runtime: &ConformanceRuntime,
         activation: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
         for selected in 0..3 {
@@ -333,11 +346,19 @@ mod tests {
 
 impl<'a> OriginalRestorationNodeContinuationInspection<'a> {
     pub(super) fn for_original_installed_window(
-        window: &'a CompleteOriginalRestorationWindow, plan: &'a InstalledConformancePlan,
-        scope: &'a crate::node_contract::OriginalLineageNativeScope, selected: usize,
+        window: &'a CompleteOriginalRestorationWindow,
+        plan: &'a InstalledConformancePlan,
+        scope: &'a crate::node_contract::OriginalLineageNativeScope,
+        selected: usize,
         continuation: super::installed_context::OriginalCompleteNativeFenceStep<'a>,
     ) -> Self {
-        Self { window, plan, activation: &scope.target, selected,
-            installed_scope: Some(scope), continuation: Some(continuation) }
+        Self {
+            window,
+            plan,
+            activation: &scope.target,
+            selected,
+            installed_scope: Some(scope),
+            continuation: Some(continuation),
+        }
     }
 }

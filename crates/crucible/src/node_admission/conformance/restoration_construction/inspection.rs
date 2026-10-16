@@ -19,7 +19,9 @@ impl OriginalRestorationTransactionInspection<'_> {
     /// Rechecks the real retained member and terminal live runtime identity.
     pub(crate) fn authenticate_current(&self) -> Result<(), RuntimeError> {
         if let Some(scope) = self.installed_scope {
-            return self.window.authenticate_original_complete_identity_data(self.plan, scope);
+            return self
+                .window
+                .authenticate_original_complete_identity_data(self.plan, scope);
         }
         self.window.authenticate_original_completed_member_data(
             self.target,

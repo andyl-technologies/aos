@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::node_adapters::cnp::{
-    OriginalSourceRestoreSignerConstructionData,
     OriginalSourceRestorationActivationConstructionData,
+    OriginalSourceRestoreSignerConstructionData,
 };
 use crate::node_contract::OriginalLineageNativeScope;
 use crucible_node_provider::{
@@ -95,24 +95,33 @@ impl OriginalInstalledRestorationActivationSigningInputs<'_> {
         reference: &ContentRef,
     ) -> Result<(), RuntimeError> {
         self.window.authenticate_original_activation_hold_data(
-            self.selected, self.scope, held, reference,
+            self.selected,
+            self.scope,
+            held,
+            reference,
         )
     }
 }
 
 impl OriginalInstalledRestorationActivationClaim {
     pub(super) fn from_original_window(
-        window: &Rc<CompleteOriginalRestorationWindow>, selected: usize,
-        phase: OriginalInstalledRestorationActivationPhase, proof_identity: [u8; 32],
+        window: &Rc<CompleteOriginalRestorationWindow>,
+        selected: usize,
+        phase: OriginalInstalledRestorationActivationPhase,
+        proof_identity: [u8; 32],
     ) -> Self {
-        Self { process: std::process::id(), thread: std::thread::current().id(),
-            window: Rc::downgrade(window), selected, phase, proof_identity }
+        Self {
+            process: std::process::id(),
+            thread: std::thread::current().id(),
+            window: Rc::downgrade(window),
+            selected,
+            phase,
+            proof_identity,
+        }
     }
 
     fn origin(&self) -> Result<(), RuntimeError> {
-        if self.process != std::process::id()
-            || self.thread != std::thread::current().id()
-        {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
             return Err(RuntimeError::ForeignAuthority);
         }
         Ok(())
@@ -129,12 +138,19 @@ impl OriginalInstalledRestorationActivationClaim {
     /// native kernel/registrar fence afterward. It authenticates the actual
     /// Controller/Commit itself; this method never accepts copied evidence.
     pub(crate) fn authenticate_current(
-        &self, source: &PacketCompleteSemanticSource,
+        &self,
+        source: &PacketCompleteSemanticSource,
     ) -> Result<(), RuntimeError> {
         self.origin()?;
-        let window = self.window.upgrade().ok_or(RuntimeError::OwnerUnavailable)?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         window.authenticate_original_activation_member_data(
-            self.selected, source, self.phase, self.proof_identity,
+            self.selected,
+            source,
+            self.phase,
+            self.proof_identity,
         )
     }
 
@@ -142,13 +158,21 @@ impl OriginalInstalledRestorationActivationClaim {
     pub(crate) fn with_original_activation_signing_inputs_data(
         &self,
         source: &PacketCompleteSemanticSource,
-        inspect: impl FnOnce(&OriginalInstalledRestorationActivationSigningInputs<'_>)
-            -> Result<(), RuntimeError>,
+        inspect: impl FnOnce(
+            &OriginalInstalledRestorationActivationSigningInputs<'_>,
+        ) -> Result<(), RuntimeError>,
     ) -> Result<(), RuntimeError> {
         self.authenticate_current(source)?;
-        let window = self.window.upgrade().ok_or(RuntimeError::OwnerUnavailable)?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         window.with_original_activation_signing_inputs_data(
-            self.selected, source, self.phase, self.proof_identity, inspect,
+            self.selected,
+            source,
+            self.phase,
+            self.proof_identity,
+            inspect,
         )?;
         self.authenticate_current(source)
     }
@@ -164,7 +188,8 @@ impl OriginalInstalledRestorationActivationClaim {
             + size_of::<Result<OriginalInstalledRestorationActivationPhase, RuntimeError>>()
             + size_of::<OriginalSourceRestorationActivationConstructionData>()
             + size_of::<Result<OriginalSourceRestorationActivationConstructionData, RuntimeError>>()
-            + size_of::<Result<&OriginalSourceRestorationActivationConstructionData, RuntimeError>>()
+            + size_of::<Result<&OriginalSourceRestorationActivationConstructionData, RuntimeError>>(
+            )
             + size_of::<Result<OriginalInstalledRestorationActivationClaim, RuntimeError>>()
             + size_of::<Option<&crate::node_contract::WorldActivation>>()
             + size_of::<Result<&crate::node_contract::WorldActivation, RuntimeError>>()
@@ -184,12 +209,21 @@ enum ActivationStage {
 pub(super) struct OriginalInstalledRestorationActivationLedger(std::cell::Cell<ActivationStage>);
 
 impl OriginalInstalledRestorationActivationLedger {
-    pub(super) fn new() -> Self { Self(std::cell::Cell::new(ActivationStage::Unissued)) }
+    pub(super) fn new() -> Self {
+        Self(std::cell::Cell::new(ActivationStage::Unissued))
+    }
 
-    pub(super) fn begin(&self, phase: OriginalInstalledRestorationActivationPhase) -> Result<(), RuntimeError> {
+    pub(super) fn begin(
+        &self,
+        phase: OriginalInstalledRestorationActivationPhase,
+    ) -> Result<(), RuntimeError> {
         let (expected, started) = match phase {
-            OriginalInstalledRestorationActivationPhase::Arm => (ActivationStage::Unissued, ActivationStage::ArmStarted),
-            OriginalInstalledRestorationActivationPhase::WorldActivate => (ActivationStage::ArmVerified, ActivationStage::WorldStarted),
+            OriginalInstalledRestorationActivationPhase::Arm => {
+                (ActivationStage::Unissued, ActivationStage::ArmStarted)
+            }
+            OriginalInstalledRestorationActivationPhase::WorldActivate => {
+                (ActivationStage::ArmVerified, ActivationStage::WorldStarted)
+            }
         };
         if self.0.replace(ActivationStage::Failed) != expected {
             return Err(RuntimeError::OutstandingObligations);
@@ -198,46 +232,84 @@ impl OriginalInstalledRestorationActivationLedger {
         Ok(())
     }
 
-    pub(super) fn verified_phase_data(&self) -> Result<Option<OriginalInstalledRestorationActivationPhase>, RuntimeError> {
+    pub(super) fn verified_phase_data(
+        &self,
+    ) -> Result<Option<OriginalInstalledRestorationActivationPhase>, RuntimeError> {
         match self.0.get() {
             ActivationStage::Unissued => Ok(None),
-            ActivationStage::ArmVerified => Ok(Some(OriginalInstalledRestorationActivationPhase::Arm)),
-            ActivationStage::WorldVerified => Ok(Some(OriginalInstalledRestorationActivationPhase::WorldActivate)),
-            ActivationStage::ArmStarted | ActivationStage::WorldStarted | ActivationStage::Failed => Err(RuntimeError::OutstandingObligations),
+            ActivationStage::ArmVerified => {
+                Ok(Some(OriginalInstalledRestorationActivationPhase::Arm))
+            }
+            ActivationStage::WorldVerified => Ok(Some(
+                OriginalInstalledRestorationActivationPhase::WorldActivate,
+            )),
+            ActivationStage::ArmStarted
+            | ActivationStage::WorldStarted
+            | ActivationStage::Failed => Err(RuntimeError::OutstandingObligations),
         }
     }
 
-    pub(super) fn authenticate_retained_phase_data(&self, phase: OriginalInstalledRestorationActivationPhase) -> Result<(), RuntimeError> {
+    pub(super) fn authenticate_retained_phase_data(
+        &self,
+        phase: OriginalInstalledRestorationActivationPhase,
+    ) -> Result<(), RuntimeError> {
         let matches = match phase {
-            OriginalInstalledRestorationActivationPhase::Arm => matches!(self.0.get(), ActivationStage::ArmStarted | ActivationStage::ArmVerified),
-            OriginalInstalledRestorationActivationPhase::WorldActivate => matches!(self.0.get(), ActivationStage::WorldStarted | ActivationStage::WorldVerified),
+            OriginalInstalledRestorationActivationPhase::Arm => matches!(
+                self.0.get(),
+                ActivationStage::ArmStarted | ActivationStage::ArmVerified
+            ),
+            OriginalInstalledRestorationActivationPhase::WorldActivate => matches!(
+                self.0.get(),
+                ActivationStage::WorldStarted | ActivationStage::WorldVerified
+            ),
         };
-        if !matches { return Err(RuntimeError::OutstandingObligations); }
+        if !matches {
+            return Err(RuntimeError::OutstandingObligations);
+        }
         Ok(())
     }
 
     pub(super) fn is_verified(&self, phase: OriginalInstalledRestorationActivationPhase) -> bool {
-        matches!((self.0.get(), phase),
-            (ActivationStage::ArmVerified, OriginalInstalledRestorationActivationPhase::Arm)
-            | (ActivationStage::WorldVerified, OriginalInstalledRestorationActivationPhase::WorldActivate))
+        matches!(
+            (self.0.get(), phase),
+            (
+                ActivationStage::ArmVerified,
+                OriginalInstalledRestorationActivationPhase::Arm
+            ) | (
+                ActivationStage::WorldVerified,
+                OriginalInstalledRestorationActivationPhase::WorldActivate
+            )
+        )
     }
 
-    pub(super) fn authenticate_started(&self, phase: OriginalInstalledRestorationActivationPhase) -> Result<(), RuntimeError> {
+    pub(super) fn authenticate_started(
+        &self,
+        phase: OriginalInstalledRestorationActivationPhase,
+    ) -> Result<(), RuntimeError> {
         let expected = match phase {
             OriginalInstalledRestorationActivationPhase::Arm => ActivationStage::ArmStarted,
-            OriginalInstalledRestorationActivationPhase::WorldActivate => ActivationStage::WorldStarted,
+            OriginalInstalledRestorationActivationPhase::WorldActivate => {
+                ActivationStage::WorldStarted
+            }
         };
-        if self.0.get() != expected { return Err(RuntimeError::OutstandingObligations); }
+        if self.0.get() != expected {
+            return Err(RuntimeError::OutstandingObligations);
+        }
         Ok(())
     }
 
     // Only the Window's opaque Source-evidence consumer calls this transition.
     // No erased callback or allocation follows the terminal SourceRead fence.
-    pub(super) fn complete_verified(&self, phase: OriginalInstalledRestorationActivationPhase) -> Result<(), RuntimeError> {
+    pub(super) fn complete_verified(
+        &self,
+        phase: OriginalInstalledRestorationActivationPhase,
+    ) -> Result<(), RuntimeError> {
         self.authenticate_started(phase)?;
         self.0.set(match phase {
             OriginalInstalledRestorationActivationPhase::Arm => ActivationStage::ArmVerified,
-            OriginalInstalledRestorationActivationPhase::WorldActivate => ActivationStage::WorldVerified,
+            OriginalInstalledRestorationActivationPhase::WorldActivate => {
+                ActivationStage::WorldVerified
+            }
         });
         Ok(())
     }
@@ -250,24 +322,62 @@ mod tests {
     #[test]
     fn a_missing_arm_or_swallowed_duplicate_cannot_issue_world_activation() {
         let missing = OriginalInstalledRestorationActivationLedger::new();
-        assert!(missing.begin(OriginalInstalledRestorationActivationPhase::WorldActivate).is_err());
-        assert!(missing.begin(OriginalInstalledRestorationActivationPhase::Arm).is_err());
+        assert!(
+            missing
+                .begin(OriginalInstalledRestorationActivationPhase::WorldActivate)
+                .is_err()
+        );
+        assert!(
+            missing
+                .begin(OriginalInstalledRestorationActivationPhase::Arm)
+                .is_err()
+        );
 
         let interrupted = OriginalInstalledRestorationActivationLedger::new();
-        interrupted.begin(OriginalInstalledRestorationActivationPhase::Arm).unwrap();
-        assert!(interrupted.begin(OriginalInstalledRestorationActivationPhase::Arm).is_err());
-        assert!(interrupted.complete_verified(OriginalInstalledRestorationActivationPhase::Arm).is_err());
-        assert!(interrupted.begin(OriginalInstalledRestorationActivationPhase::WorldActivate).is_err());
+        interrupted
+            .begin(OriginalInstalledRestorationActivationPhase::Arm)
+            .unwrap();
+        assert!(
+            interrupted
+                .begin(OriginalInstalledRestorationActivationPhase::Arm)
+                .is_err()
+        );
+        assert!(
+            interrupted
+                .complete_verified(OriginalInstalledRestorationActivationPhase::Arm)
+                .is_err()
+        );
+        assert!(
+            interrupted
+                .begin(OriginalInstalledRestorationActivationPhase::WorldActivate)
+                .is_err()
+        );
     }
 
     #[test]
     fn exact_verified_phase_completion_does_not_renew_a_spent_claim() {
         let phase = OriginalInstalledRestorationActivationLedger::new();
-        phase.begin(OriginalInstalledRestorationActivationPhase::Arm).unwrap();
-        assert!(phase.complete_verified(OriginalInstalledRestorationActivationPhase::WorldActivate).is_err());
-        phase.complete_verified(OriginalInstalledRestorationActivationPhase::Arm).unwrap();
-        phase.begin(OriginalInstalledRestorationActivationPhase::WorldActivate).unwrap();
-        phase.complete_verified(OriginalInstalledRestorationActivationPhase::WorldActivate).unwrap();
-        assert!(phase.begin(OriginalInstalledRestorationActivationPhase::WorldActivate).is_err());
+        phase
+            .begin(OriginalInstalledRestorationActivationPhase::Arm)
+            .unwrap();
+        assert!(
+            phase
+                .complete_verified(OriginalInstalledRestorationActivationPhase::WorldActivate)
+                .is_err()
+        );
+        phase
+            .complete_verified(OriginalInstalledRestorationActivationPhase::Arm)
+            .unwrap();
+        phase
+            .begin(OriginalInstalledRestorationActivationPhase::WorldActivate)
+            .unwrap();
+        phase
+            .complete_verified(OriginalInstalledRestorationActivationPhase::WorldActivate)
+            .unwrap();
+        assert!(
+            phase
+                .begin(OriginalInstalledRestorationActivationPhase::WorldActivate)
+                .is_err()
+        );
     }
 }

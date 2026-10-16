@@ -43,15 +43,32 @@ impl PacketCompleteSemanticSource {
                 .authenticate_request_data(&request)
                 .map_err(|_| RuntimeError::ForeignAuthority)?;
             let world_bodies = match (&command, inputs.world, inputs.phase) {
-                (PacketRestorationActivationCommand::Arm(_), None, OriginalInstalledRestorationActivationPhase::Arm) => None,
-                (PacketRestorationActivationCommand::WorldActivate(body), Some(world), OriginalInstalledRestorationActivationPhase::WorldActivate) => {
-                    Some(world_content::WorldUploadBodies::from_original_world(self, world, body,
-                        inputs.activation_data.upload_maximum_content_bytes_data(PacketRestorationActivationUploadRole::Coordinator),
-                        admitted.maximum_activation_manifest_encoded_bytes_data())?)
-                }
+                (
+                    PacketRestorationActivationCommand::Arm(_),
+                    None,
+                    OriginalInstalledRestorationActivationPhase::Arm,
+                ) => None,
+                (
+                    PacketRestorationActivationCommand::WorldActivate(body),
+                    Some(world),
+                    OriginalInstalledRestorationActivationPhase::WorldActivate,
+                ) => Some(world_content::WorldUploadBodies::from_original_world(
+                    self,
+                    world,
+                    body,
+                    inputs.activation_data.upload_maximum_content_bytes_data(
+                        PacketRestorationActivationUploadRole::Coordinator,
+                    ),
+                    admitted.maximum_activation_manifest_encoded_bytes_data(),
+                )?),
                 _ => return Err(RuntimeError::ForeignAuthority),
             };
-            prepared_inputs = Some((request, inputs.request_id.clone(), *inputs.activation_data, world_bodies));
+            prepared_inputs = Some((
+                request,
+                inputs.request_id.clone(),
+                *inputs.activation_data,
+                world_bodies,
+            ));
             Ok(())
         })?;
         let (request, request_id, provider_data, world_bodies) =
@@ -106,14 +123,27 @@ impl PacketCompleteSemanticSource {
         attempt.begin(phase)?;
         if let Some(bodies) = world_bodies {
             attempt.retain_world_bodies(bodies)?;
-            upload::publish_world_uploads(controller, emitter, key, attempt, &request.scope,
-                admitted, &provider_data, || {
+            upload::publish_world_uploads(
+                controller,
+                emitter,
+                key,
+                attempt,
+                &request.scope,
+                admitted,
+                &provider_data,
+                || {
                     call.ensure_original_fresh_current_before_effect_data(&mut scratch)?;
                     claim.authenticate_current(self)
-                })?;
+                },
+            )?;
             claim.with_original_activation_signing_inputs_data(self, |inputs| {
-                authenticate_world_command(self, controller, &command, inputs,
-                    admitted.maximum_activation_manifest_encoded_bytes_data())
+                authenticate_world_command(
+                    self,
+                    controller,
+                    &command,
+                    inputs,
+                    admitted.maximum_activation_manifest_encoded_bytes_data(),
+                )
             })?;
         }
         attempt.retain_value(

@@ -99,9 +99,11 @@ impl PacketCompleteSemanticSource {
                     .map_err(|_| RuntimeError::InvalidReceipt)?;
                 // Hash the unique canonical incoming original under its actual
                 // immutable bank loan. No response DOM or byte copy is made.
-                let history = controller.original_native5_frame_history()
+                let history = controller
+                    .original_native5_frame_history()
                     .map_err(|_| RuntimeError::InvalidReceipt)?;
-                let response = history.original_canonical_reference_data(pair.response())
+                let response = history
+                    .original_canonical_reference_data(pair.response())
                     .map_err(|_| RuntimeError::InvalidReceipt)?;
                 let scope = PacketRestorationActivationScope {
                     source_birth: canonical::content_ref(&original.banks[0], "application/json")

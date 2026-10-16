@@ -114,7 +114,8 @@ impl CnpSemanticProcessCustody {
         if let Some(runtime) = runtime {
             runtime.installed_storage_origin_precredit_data()?;
             if runtime.installed_restoration.is_some() {
-                counter.add(runtime.installed_retained_storage_precredit_data(counter.remaining())?)?;
+                counter
+                    .add(runtime.installed_retained_storage_precredit_data(counter.remaining())?)?;
             }
         }
         counter.path(directory)?;

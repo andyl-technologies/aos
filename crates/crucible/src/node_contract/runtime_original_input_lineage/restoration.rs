@@ -152,7 +152,9 @@ impl OriginalLineageRestoration<'_> {
     /// Borrows authenticated original bytes only by their complete typed reference.
     pub fn original_body(&self, reference: &ContentRef) -> Option<&[u8]> {
         self.content.get(reference).or_else(|| match self.ancestry {
-            RestorationAncestry::Installed { window, plan: _ } => window.original_complete_scope_body_data(reference),
+            RestorationAncestry::Installed { window, plan: _ } => {
+                window.original_complete_scope_body_data(reference)
+            }
             RestorationAncestry::Legacy | RestorationAncestry::Exact => None,
         })
     }
@@ -172,10 +174,15 @@ impl OriginalLineageRestoration<'_> {
             return Err(RuntimeError::ForeignAuthority);
         }
         match self.ancestry {
-            RestorationAncestry::Installed { window, plan } => {
-                window.validate_original_installed_context_current_data(plan, runtime,
-                    &self.source, &self.record, &self.scope, self.content)
-            },
+            RestorationAncestry::Installed { window, plan } => window
+                .validate_original_installed_context_current_data(
+                    plan,
+                    runtime,
+                    &self.source,
+                    &self.record,
+                    &self.scope,
+                    self.content,
+                ),
             RestorationAncestry::Legacy => validate_nodes(
                 runtime,
                 &self.source,

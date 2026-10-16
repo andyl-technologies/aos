@@ -739,7 +739,9 @@ impl BodySchemaVerifier for Native5Policy {
             ));
         }
         if super::complete_restore::activation::verify_selected_wire_header_data(
-            &self.selection, authority, envelope,
+            &self.selection,
+            authority,
+            envelope,
         )? {
             return authority.ensure_live();
         }

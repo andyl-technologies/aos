@@ -19,7 +19,8 @@ use crucible_node_provider::{
     reference_packet::{
         control::PacketNative5UnderlyingRecord,
         service::complete_restore::{
-            PacketNativeRestoredCommitHold, PacketNativeRestoredRecord, activation::{*, upload::*},
+            PacketNativeRestoredCommitHold, PacketNativeRestoredRecord,
+            activation::{upload::*, *},
         },
     },
 };
@@ -44,14 +45,14 @@ mod typed_backing;
 #[path = "restoration_activation/world.rs"]
 mod world;
 use world::{authenticate_world_command, authenticate_world_manifest};
-#[path = "restoration_activation/world_content.rs"]
-mod world_content;
-#[path = "restoration_activation/upload.rs"]
-mod upload;
 #[path = "restoration_activation/effect.rs"]
 mod effect;
 #[path = "restoration_activation/evidence.rs"]
 mod evidence;
+#[path = "restoration_activation/upload.rs"]
+mod upload;
+#[path = "restoration_activation/world_content.rs"]
+mod world_content;
 pub use evidence::OriginalSourceRestorationActivationVerifiedPhase;
 use evidence::authenticate_saved_pair;
 

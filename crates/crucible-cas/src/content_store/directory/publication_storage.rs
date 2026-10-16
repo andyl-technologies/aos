@@ -52,11 +52,12 @@ impl<'a> DirectoryRefNameConstructionData<'a> {
         let prefix = replacement_prefix
             .strip_suffix('/')
             .ok_or(StoreError::InvalidId)?;
-        if prefix.split('/').any(invalid_namespace_component) || replacement_prefix
-            .len()
-            .checked_add(suffix.len())
-            .filter(|n| *n <= 1024)
-            .is_none()
+        if prefix.split('/').any(invalid_namespace_component)
+            || replacement_prefix
+                .len()
+                .checked_add(suffix.len())
+                .filter(|n| *n <= 1024)
+                .is_none()
         {
             return Err(StoreError::InvalidComposition {
                 reason: "publication replacement namespace is invalid",
@@ -518,10 +519,12 @@ impl DirectoryBlobBackend {
             size_of::<std::str::Bytes<'_>>(),
             size_of::<std::str::Bytes<'_>>(),
             size_of::<std::iter::Chain<std::str::Bytes<'_>, std::str::Bytes<'_>>>(),
-            size_of::<std::iter::Filter<
-                std::iter::Chain<std::str::Bytes<'_>, std::str::Bytes<'_>>,
-                fn(&u8) -> bool,
-            >>(),
+            size_of::<
+                std::iter::Filter<
+                    std::iter::Chain<std::str::Bytes<'_>, std::str::Bytes<'_>>,
+                    fn(&u8) -> bool,
+                >,
+            >(),
             size_of::<std::str::Split<'_, char>>(),
             size_of::<std::str::Bytes<'_>>(),
             size_of::<fn(&str) -> bool>(),

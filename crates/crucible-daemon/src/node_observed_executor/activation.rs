@@ -12,8 +12,8 @@ use crucible_cas::content_store::{
 use crucible_node_contract::canonical;
 
 mod complete;
-mod requested_storage;
 mod publication_storage;
+mod requested_storage;
 
 pub(crate) use publication_storage::OriginalDirectoryPublicationConstructionData;
 

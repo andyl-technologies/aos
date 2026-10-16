@@ -167,11 +167,14 @@ pub(crate) fn verify_selected_wire_header_data(
         ]
     };
     if request.len() != expected.len()
-        || request.get("schema").and_then(serde_json::Value::as_str) != Some(feature) {
+        || request.get("schema").and_then(serde_json::Value::as_str) != Some(feature)
+    {
         return Err(invalid());
     }
     for key in expected {
-        if !request.contains_key(*key) { return Err(invalid()); }
+        if !request.contains_key(*key) {
+            return Err(invalid());
+        }
     }
     authority.ensure_live()?;
     Ok(true)
@@ -184,9 +187,11 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<&serde_json::Map<String, serde_json::Value>, ProviderError>>() * 2
         + size_of::<Option<&serde_json::Value>>() * 2
         + size_of::<Result<&serde_json::Value, ProviderError>>()
-        + size_of::<&[&str]>() + size_of::<[&str; 9]>()
+        + size_of::<&[&str]>()
+        + size_of::<[&str; 9]>()
         + size_of::<std::slice::Iter<'static, &'static str>>()
-        + size_of::<Option<&str>>() + size_of::<&str>()
+        + size_of::<Option<&str>>()
+        + size_of::<&str>()
         + size_of::<Result<bool, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()
 }

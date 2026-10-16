@@ -604,7 +604,11 @@ impl PacketCompleteReportStartupHolder {
         let capsule = capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         let inputs = scope.inputs();
         let nested = capsule.retained_restoration_holder_descriptor_for_scope_data(
-            inputs.archive, inputs.runtime, scope.plan(), inputs.activation, Some(scope),
+            inputs.archive,
+            inputs.runtime,
+            scope.plan(),
+            inputs.activation,
+            Some(scope),
         )?;
         self.original_host_descriptor_views_data()?
             .checked_add(nested)
@@ -624,8 +628,11 @@ impl PacketCompleteReportStartupHolder {
             .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?
             .authenticate_restoration_storage_scope_data(
-                scope.inputs().archive, scope.inputs().runtime, scope.plan(),
-                scope.inputs().activation, Some(scope),
+                scope.inputs().archive,
+                scope.inputs().runtime,
+                scope.plan(),
+                scope.inputs().activation,
+                Some(scope),
             )?;
         Self::holder_storage_data(
             original,
@@ -680,8 +687,13 @@ impl PacketCompleteReportStartupHolder {
                 HolderStoragePhase::Restoration(scope) => {
                     let inputs = scope.inputs();
                     capsule_data.retained_restoration_holder_storage_for_scope_data(
-                        capsule, inputs.archive, inputs.runtime, scope.plan(),
-                        inputs.activation, counter.remaining(), Some(scope),
+                        capsule,
+                        inputs.archive,
+                        inputs.runtime,
+                        scope.plan(),
+                        inputs.activation,
+                        counter.remaining(),
+                        Some(scope),
                     )?
                 }
                 _ => capsule_data

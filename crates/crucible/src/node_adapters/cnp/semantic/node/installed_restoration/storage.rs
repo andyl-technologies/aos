@@ -171,13 +171,16 @@ pub(super) fn node_activation_copies(
 }
 
 pub(super) fn counts(
-    record: &OriginalLineageRuntimeRecord, route: &NodeRoute,
+    record: &OriginalLineageRuntimeRecord,
+    route: &NodeRoute,
 ) -> Result<(usize, usize), RuntimeError> {
     let mut operations = 0usize;
     let mut inputs = 0usize;
     for saved in &record.operations {
         if saved.route.node == route.node {
-            operations = operations.checked_add(1).ok_or(RuntimeError::ResourceLimit)?;
+            operations = operations
+                .checked_add(1)
+                .ok_or(RuntimeError::ResourceLimit)?;
         }
     }
     for saved in &record.inputs {

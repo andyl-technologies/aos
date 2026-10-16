@@ -6,11 +6,11 @@ use crucible_node_contract::{ContractError, canonical};
 
 #[derive(Serialize)]
 pub(super) struct ProofView<'a> {
-        schema: &'a str,
-        algorithm: &'a str,
-        context_digest: &'a str,
-        mac: &'a str,
-    }
+    schema: &'a str,
+    algorithm: &'a str,
+    context_digest: &'a str,
+    mac: &'a str,
+}
 
 const ALGORITHM: &str = "blake3-256-mac";
 const PROOF_SCHEMA: &str = "source-owned.packet-restoration-activation-upload-proof/1";
@@ -35,11 +35,18 @@ pub fn restoration_activation_upload_context_digest_data(
 ///
 /// # Errors
 /// Refuses a checked serializer-counter overflow or the selected artifact cap.
-pub fn maximum_restoration_activation_upload_proof_encoded_bytes_data() -> Result<usize, ProviderError> {
+pub fn maximum_restoration_activation_upload_proof_encoded_bytes_data()
+-> Result<usize, ProviderError> {
     let digest = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    crate::connection::serialized_credit(&ProofView {
-        schema: PROOF_SCHEMA, algorithm: ALGORITHM, context_digest: digest, mac: digest,
-    }, MAXIMUM_RESTORATION_ACTIVATION_ARTIFACT_BYTES)
+    crate::connection::serialized_credit(
+        &ProofView {
+            schema: PROOF_SCHEMA,
+            algorithm: ALGORITHM,
+            context_digest: digest,
+            mac: digest,
+        },
+        MAXIMUM_RESTORATION_ACTIVATION_ARTIFACT_BYTES,
+    )
 }
 
 /// Computes proof data over the whole actual independently derived phase context.
@@ -120,35 +127,47 @@ pub fn restoration_activation_upload_assigned_request_digest(
         || original.execution_owner_id.0.is_none()
         || original.operation_id.0.is_some()
         || original.capture_owner_id.0.is_some()
-        || original.extensions.keys().any(|key| key != PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE)
+        || original
+            .extensions
+            .keys()
+            .any(|key| key != PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE)
         || original.body.get("extensions").is_none_or(|value| {
-            value.as_object().is_none_or(|extensions| !extensions.is_empty())
+            value
+                .as_object()
+                .is_none_or(|extensions| !extensions.is_empty())
         })
     {
         return Err(invalid());
     }
-    let extension = original.extensions.get(PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE)
+    let extension = original
+        .extensions
+        .get(PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE)
         .and_then(serde_json::Value::as_object)
         .ok_or_else(invalid)?;
     if !extension.contains_key("request")
-        || extension.keys().any(|key| key != "request" && key != "proof")
+        || extension
+            .keys()
+            .any(|key| key != "request" && key != "proof")
     {
         return Err(invalid());
     }
     let request = PacketRestorationActivationUploadRequest::deserialize(
         extension.get("request").ok_or_else(invalid)?,
-    ).map_err(ContractError::from)?;
+    )
+    .map_err(ContractError::from)?;
     request.validate_data()?;
     if request.role != role {
         return Err(invalid());
     }
-    if original.body.get("content") != Some(&serde_json::to_value(request.content_ref_data())
-        .map_err(ContractError::from)?) {
+    if original.body.get("content")
+        != Some(&serde_json::to_value(request.content_ref_data()).map_err(ContractError::from)?)
+    {
         return Err(invalid());
     }
     crate::connection::serialized_credit(original, maximum_frame_bytes)?;
     let mut value = serde_json::to_value(original).map_err(ContractError::from)?;
-    value.get_mut("extensions")
+    value
+        .get_mut("extensions")
         .and_then(serde_json::Value::as_object_mut)
         .and_then(|extensions| extensions.get_mut(PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE))
         .and_then(serde_json::Value::as_object_mut)
@@ -156,7 +175,9 @@ pub fn restoration_activation_upload_assigned_request_digest(
         .remove("proof");
     let encoded = canonical::canonical_json(&value)?;
     if encoded.len() > maximum_frame_bytes {
-        return Err(ProviderError::ResourceExhausted("activation assigned frame extent"));
+        return Err(ProviderError::ResourceExhausted(
+            "activation assigned frame extent",
+        ));
     }
     Ok(*blake3::hash(&encoded).as_bytes())
 }
@@ -166,7 +187,9 @@ pub(super) fn bounded(value: &impl Serialize) -> Result<Vec<u8>, ProviderError> 
     let value = serde_json::to_value(value).map_err(ContractError::from)?;
     let bytes = canonical::canonical_json(&value)?;
     if bytes.len() > MAXIMUM_RESTORATION_ACTIVATION_ARTIFACT_BYTES {
-        return Err(ProviderError::ResourceExhausted("activation artifact extent"));
+        return Err(ProviderError::ResourceExhausted(
+            "activation artifact extent",
+        ));
     }
     Ok(bytes)
 }

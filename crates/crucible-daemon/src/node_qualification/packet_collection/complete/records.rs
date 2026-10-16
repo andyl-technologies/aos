@@ -929,14 +929,25 @@ fn selected_native_definition_bodies(
             native_owned14_snapshot_contract().map_err(|_| refused())?,
         ));
     }
-    if source.is_original_restoration_activation_declaration_data().map_err(|_| refused())? {
+    if source
+        .is_original_restoration_activation_declaration_data()
+        .map_err(|_| refused())?
+    {
         use crucible_node_provider::reference_packet::service::complete_restore::activation::{
-            restoration_activation_schema, restoration_activation_contract_data,
-            upload::{restoration_activation_upload_schema, restoration_activation_upload_contract_data},
+            restoration_activation_contract_data, restoration_activation_schema,
+            upload::{
+                restoration_activation_upload_contract_data, restoration_activation_upload_schema,
+            },
         };
         definitions.extend([
-            (restoration_activation_schema().map_err(|_| refused())?, restoration_activation_contract_data().to_vec()),
-            (restoration_activation_upload_schema().map_err(|_| refused())?, restoration_activation_upload_contract_data().to_vec()),
+            (
+                restoration_activation_schema().map_err(|_| refused())?,
+                restoration_activation_contract_data().to_vec(),
+            ),
+            (
+                restoration_activation_upload_schema().map_err(|_| refused())?,
+                restoration_activation_upload_contract_data().to_vec(),
+            ),
         ]);
     }
     Ok(definitions)

@@ -90,15 +90,14 @@ use held::prepare_gate_evidence;
 #[path = "restoration_activation.rs"]
 mod restoration_activation;
 pub(crate) use restoration_activation::{
-    NativeRestorationActivationAttempt, OriginalRestorationActivationPermit,
-    NativeRestorationUploadAttempt, OriginalRestorationUploadPermit,
-    OriginalRestorationActivationRequirement,
+    NativeRestorationActivationAttempt, NativeRestorationUploadAttempt,
+    OriginalRestorationActivationPermit, OriginalRestorationActivationRequirement,
+    OriginalRestorationUploadPermit, original_native_restoration_activation_attempt_backing_data,
+    original_native_restoration_activation_counter_scratch_data,
+    original_native_restoration_activation_ingress_row_data,
+    original_native_restoration_activation_ingress_storage_data,
     original_native_restoration_upload_attempt_backing_data,
     original_native_restoration_upload_counter_scratch_data,
-    original_native_restoration_activation_attempt_backing_data,
-    original_native_restoration_activation_counter_scratch_data,
-    original_native_restoration_activation_ingress_storage_data,
-    original_native_restoration_activation_ingress_row_data,
 };
 
 impl NativeAckBoot {
@@ -454,10 +453,13 @@ impl NativeAckBoot {
         }
         let requirement = {
             let owner = boot.try_borrow().map_err(|_| borrowed())?;
-            restoration_activation::original_restoration_activation_model_requirement_data(&owner, &flight)?
+            restoration_activation::original_restoration_activation_model_requirement_data(
+                &owner, &flight,
+            )?
         };
         let physical_hold = control.install_original_complete_model_with_activation_requirement(
-            flight.prepared_model.as_mut().ok_or_else(refused)?, requirement,
+            flight.prepared_model.as_mut().ok_or_else(refused)?,
+            requirement,
         )?;
         flight.physical_hold = Some(Rc::clone(&physical_hold));
         drop(flight);

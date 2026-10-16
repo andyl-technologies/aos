@@ -54,7 +54,8 @@ pub use world_provider::{
 };
 
 pub use node::{
-    OriginalInstalledRestorationCustodyConstructionData, CnpConformanceNodeConstructionStorageData, CnpSemanticAdmissionFailure, CnpSemanticNode,
+    CnpConformanceNodeConstructionStorageData, CnpSemanticAdmissionFailure, CnpSemanticNode,
+    OriginalInstalledRestorationCustodyConstructionData,
 };
 pub use packet_complete_source::{
     OriginalCaptureAllocationData, PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA,

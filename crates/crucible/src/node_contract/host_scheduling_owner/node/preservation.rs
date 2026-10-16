@@ -27,8 +27,15 @@ impl PreparedHostSchedulingNode {
         content: &crate::node_state::VerifiedStateContent,
     ) -> Result<(), OperationFailure> {
         self.validate_original_host_restoration_fields(
-            source_record, record, &scope.source_record, &scope.source_capture, &scope.target,
-            scope.coordinator_schema, &scope.owners, &scope.journals, content,
+            source_record,
+            record,
+            &scope.source_record,
+            &scope.source_capture,
+            &scope.target,
+            scope.coordinator_schema,
+            &scope.owners,
+            &scope.journals,
+            content,
         )
     }
 
@@ -134,7 +141,9 @@ impl PreparedHostSchedulingNode {
         let original = self.source.original_restoration_record()?;
         if let Some(ticket) = &self.source.archive_ticket {
             if context.is_original_installed_restoration_data() {
-                context.authenticate_original_installed_host_ticket_data(ticket).map_err(failure)?;
+                context
+                    .authenticate_original_installed_host_ticket_data(ticket)
+                    .map_err(failure)?;
             } else {
                 ticket.authenticate_context(context).map_err(failure)?;
             }

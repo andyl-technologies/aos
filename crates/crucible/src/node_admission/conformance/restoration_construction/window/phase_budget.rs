@@ -11,11 +11,15 @@ use super::*;
 pub(super) fn observed_transaction_peak_data(
     installed: OriginalRestorationConstructionPolicy,
     current: OriginalRestorationConstructionPolicy,
-    previous: Option<usize>, requested: usize,
+    previous: Option<usize>,
+    requested: usize,
 ) -> Result<usize, RuntimeError> {
-    if installed != current { return Err(RuntimeError::ForeignAuthority); }
+    if installed != current {
+        return Err(RuntimeError::ForeignAuthority);
+    }
     let previous = previous.ok_or(RuntimeError::OwnerUnavailable)?;
-    if previous > installed.maximum_requested_bytes || requested > installed.maximum_requested_bytes {
+    if previous > installed.maximum_requested_bytes || requested > installed.maximum_requested_bytes
+    {
         return Err(RuntimeError::ResourceLimit);
     }
     Ok(previous.max(requested))
@@ -26,8 +30,11 @@ mod tests {
     use super::*;
 
     fn policy() -> OriginalRestorationConstructionPolicy {
-        OriginalRestorationConstructionPolicy { maximum_requested_bytes: 1024,
-            maximum_owned_descriptors: 7, declared_observer_scratch_bytes: 96 }
+        OriginalRestorationConstructionPolicy {
+            maximum_requested_bytes: 1024,
+            maximum_owned_descriptors: 7,
+            declared_observer_scratch_bytes: 96,
+        }
     }
 
     #[test]
@@ -39,21 +46,48 @@ mod tests {
         let all_future = 512usize;
         let initial = initial_current + all_future;
         let grown = initial_current + 64 + all_future;
-        let high_water = observed_transaction_peak_data(policy, policy, Some(initial), grown).unwrap();
+        let high_water =
+            observed_transaction_peak_data(policy, policy, Some(initial), grown).unwrap();
         assert_eq!(high_water, grown);
-        assert_eq!(observed_transaction_peak_data(policy, policy, Some(high_water), initial).unwrap(), high_water);
-        assert_eq!(observed_transaction_peak_data(policy, policy, Some(high_water), 1024).unwrap(), 1024);
-        assert!(matches!(observed_transaction_peak_data(policy, policy, Some(high_water), 1025), Err(RuntimeError::ResourceLimit)));
+        assert_eq!(
+            observed_transaction_peak_data(policy, policy, Some(high_water), initial).unwrap(),
+            high_water
+        );
+        assert_eq!(
+            observed_transaction_peak_data(policy, policy, Some(high_water), 1024).unwrap(),
+            1024
+        );
+        assert!(matches!(
+            observed_transaction_peak_data(policy, policy, Some(high_water), 1025),
+            Err(RuntimeError::ResourceLimit)
+        ));
     }
 
     #[test]
     fn another_policy_or_missing_original_admission_cannot_reuse_the_observation() {
         let original = policy();
-        for changed in [OriginalRestorationConstructionPolicy { maximum_requested_bytes: 1025, ..original },
-            OriginalRestorationConstructionPolicy { maximum_owned_descriptors: 8, ..original },
-            OriginalRestorationConstructionPolicy { declared_observer_scratch_bytes: 97, ..original }] {
-            assert!(matches!(observed_transaction_peak_data(original, changed, Some(640), 704), Err(RuntimeError::ForeignAuthority)));
+        for changed in [
+            OriginalRestorationConstructionPolicy {
+                maximum_requested_bytes: 1025,
+                ..original
+            },
+            OriginalRestorationConstructionPolicy {
+                maximum_owned_descriptors: 8,
+                ..original
+            },
+            OriginalRestorationConstructionPolicy {
+                declared_observer_scratch_bytes: 97,
+                ..original
+            },
+        ] {
+            assert!(matches!(
+                observed_transaction_peak_data(original, changed, Some(640), 704),
+                Err(RuntimeError::ForeignAuthority)
+            ));
         }
-        assert!(matches!(observed_transaction_peak_data(original, original, None, 704), Err(RuntimeError::OwnerUnavailable)));
+        assert!(matches!(
+            observed_transaction_peak_data(original, original, None, 704),
+            Err(RuntimeError::OwnerUnavailable)
+        ));
     }
 }

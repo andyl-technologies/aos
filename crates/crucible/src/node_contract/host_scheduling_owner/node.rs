@@ -143,7 +143,11 @@ impl SimulationNode for PreparedHostSchedulingNode {
         inspection: &crate::node_admission::OriginalRestorationHostContinuationInspection<'_>,
     ) -> Result<(), RuntimeError> {
         inspection.authenticate_current()?;
-        let ticket = self.source.archive_ticket.as_ref().ok_or(RuntimeError::UnsupportedFacet)?;
+        let ticket = self
+            .source
+            .archive_ticket
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
         if self.source.original_ticket.is_some()
             || !Rc::ptr_eq(&ticket.source, &inspection.archive_data().inner)
             || &self.route.node != inspection.node_data()?
@@ -153,11 +157,17 @@ impl SimulationNode for PreparedHostSchedulingNode {
         }
         let record = inspection.record_data()?;
         self.validate_original_host_restoration_fields(
-            inspection.source_record_data(), record, inspection.source_record_data(),
-            &record.source_activation, inspection.target_data(), 7,
-            inspection.owner_mappings_data(), inspection.journals_data(),
+            inspection.source_record_data(),
+            record,
+            inspection.source_record_data(),
+            &record.source_activation,
+            inspection.target_data(),
+            7,
+            inspection.owner_mappings_data(),
+            inspection.journals_data(),
             inspection.archive_data().content(),
-        ).map_err(|_| RuntimeError::InvalidReceipt)?;
+        )
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
         inspection.authenticate_current()
     }
 

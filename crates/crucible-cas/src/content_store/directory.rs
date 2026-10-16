@@ -43,10 +43,12 @@ use super::admin::{
 };
 use super::*;
 
-mod ref_admin;
 mod publication_storage;
+mod ref_admin;
 
-pub use publication_storage::{DirectoryPublicationConstructionStorageData, DirectoryRefNameConstructionData};
+pub use publication_storage::{
+    DirectoryPublicationConstructionStorageData, DirectoryRefNameConstructionData,
+};
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);

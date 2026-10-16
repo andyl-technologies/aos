@@ -235,11 +235,10 @@ pub(super) fn semantic_external_content_dependencies(
         credit: _,
         quarantined: _,
     } = runtime;
-    installed_restoration.iter()
+    installed_restoration
+        .iter()
         .flat_map(|selected| selected.input_content_dependencies())
-        .chain(inputs
-        .values()
-        .flat_map(|input| {
+        .chain(inputs.values().flat_map(|input| {
             input
                 .original
                 .payloads()
@@ -248,8 +247,8 @@ pub(super) fn semantic_external_content_dependencies(
                 .chain(input.commitment.iter().flat_map(|commitment| {
                     commitment.context.iter().map(|payload| &payload.reference)
                 }))
-        })
-        ).chain(operations.values().filter_map(|operation| {
+        }))
+        .chain(operations.values().filter_map(|operation| {
             operation
                 .retirement
                 .as_ref()

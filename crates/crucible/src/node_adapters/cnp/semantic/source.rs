@@ -201,7 +201,10 @@ pub trait CnpSemanticSource {
         _command: crucible_node_provider::reference_packet::service::complete_restore::activation::PacketRestorationActivationCommand,
         _admitted: &super::OriginalSourceRestorationActivationConstructionData,
         _completed: &mut Option<crucible_node_provider::bodies::ResponseBody>,
-    ) -> Result<super::OriginalSourceRestorationActivationVerifiedPhase<'a>, crate::node_contract::RuntimeError> {
+    ) -> Result<
+        super::OriginalSourceRestorationActivationVerifiedPhase<'a>,
+        crate::node_contract::RuntimeError,
+    > {
         Err(crate::node_contract::RuntimeError::UnsupportedFacet)
     }
 

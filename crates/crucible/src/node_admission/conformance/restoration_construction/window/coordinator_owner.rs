@@ -38,7 +38,9 @@ impl OriginalRestorationCoordinatorOwner {
         &self,
         world: &crate::node_contract::WorldActivation,
     ) -> Result<(), RuntimeError> {
-        let actual = world.coordinator_snapshot().ok_or(RuntimeError::InvalidReceipt)?;
+        let actual = world
+            .coordinator_snapshot()
+            .ok_or(RuntimeError::InvalidReceipt)?;
         if actual.bytes != self.bytes
             || Some(&actual.reference) != self.reference.as_ref()
             || world.node_preparations() != self.nodes

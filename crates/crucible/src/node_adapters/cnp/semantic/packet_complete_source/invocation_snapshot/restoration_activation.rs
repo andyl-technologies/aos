@@ -8,9 +8,11 @@ use super::*;
 use crucible_node_provider::reference_packet::service::complete_restore::activation::{
     PACKET_RESTORATION_ACTIVATION_FEATURE, authenticate_restoration_activation_schema_data,
     restoration_activation_schema_counter_scratch_data,
-    upload::{PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,
+    upload::{
+        PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,
         authenticate_restoration_activation_upload_schema_data,
-        restoration_activation_upload_schema_counter_scratch_data},
+        restoration_activation_upload_schema_counter_scratch_data,
+    },
 };
 
 impl PacketCompleteSemanticSource {
@@ -40,9 +42,14 @@ impl PacketCompleteSemanticSource {
     ///
     /// # Errors
     /// Refuses foreign origin, a failed declaration or changed immutable data.
-    pub fn is_original_restoration_activation_declaration_data(&self) -> Result<bool, RuntimeError> {
+    pub fn is_original_restoration_activation_declaration_data(
+        &self,
+    ) -> Result<bool, RuntimeError> {
         self.is_original_invocation_snapshot_declaration_data()?;
-        Ok(matches!(self.invocation_snapshot_declaration, Some(Declaration::RestorationActivation14)))
+        Ok(matches!(
+            self.invocation_snapshot_declaration,
+            Some(Declaration::RestorationActivation14)
+        ))
     }
 
     /// Names the full borrowed classifier's fixed views before later queries.
@@ -53,26 +60,39 @@ impl PacketCompleteSemanticSource {
         Self::original_invocation_snapshot_declaration_counter_scratch_data()
     }
 
-    pub(super) fn authenticate_restoration_activation_declaration_tuple_data(&self) -> Result<(), RuntimeError> {
+    pub(super) fn authenticate_restoration_activation_declaration_tuple_data(
+        &self,
+    ) -> Result<(), RuntimeError> {
         authenticate_rosters(self.installation())
     }
 }
 
 fn authenticate_rosters(installation: &CnpSemanticInstallation) -> Result<(), RuntimeError> {
-    for formats in [installation.provider.implementation.formats.as_slice(),
-        installation.binding.compatibility.implementation.formats.as_slice()] {
+    for formats in [
+        installation.provider.implementation.formats.as_slice(),
+        installation
+            .binding
+            .compatibility
+            .implementation
+            .formats
+            .as_slice(),
+    ] {
         let mut activation = false;
         let mut upload = false;
         for schema in formats {
             match schema.id.as_str() {
                 PACKET_RESTORATION_ACTIVATION_FEATURE => {
-                    if activation { return Err(RuntimeError::ForeignAuthority); }
+                    if activation {
+                        return Err(RuntimeError::ForeignAuthority);
+                    }
                     authenticate_restoration_activation_schema_data(schema)
                         .map_err(|_| RuntimeError::ForeignAuthority)?;
                     activation = true;
                 }
                 PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE => {
-                    if upload { return Err(RuntimeError::ForeignAuthority); }
+                    if upload {
+                        return Err(RuntimeError::ForeignAuthority);
+                    }
                     authenticate_restoration_activation_upload_schema_data(schema)
                         .map_err(|_| RuntimeError::ForeignAuthority)?;
                     upload = true;
@@ -80,17 +100,26 @@ fn authenticate_rosters(installation: &CnpSemanticInstallation) -> Result<(), Ru
                 _ => {}
             }
         }
-        if !activation || !upload { return Err(RuntimeError::ForeignAuthority); }
+        if !activation || !upload {
+            return Err(RuntimeError::ForeignAuthority);
+        }
     }
-    for expected in [PACKET_RESTORATION_ACTIVATION_FEATURE, PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE] {
+    for expected in [
+        PACKET_RESTORATION_ACTIVATION_FEATURE,
+        PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,
+    ] {
         let mut found = false;
         for feature in &installation.provider.extensions_supported {
             if feature.as_str() == expected {
-                if found { return Err(RuntimeError::ForeignAuthority); }
+                if found {
+                    return Err(RuntimeError::ForeignAuthority);
+                }
                 found = true;
             }
         }
-        if !found { return Err(RuntimeError::ForeignAuthority); }
+        if !found {
+            return Err(RuntimeError::ForeignAuthority);
+        }
     }
     Ok(())
 }
@@ -103,7 +132,9 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<[&str; 2]>()
         + size_of::<std::array::IntoIter<&str, 2>>()
         + size_of::<std::slice::Iter<'_, Id>>()
-        + size_of::<&SchemaRef>() + size_of::<&Id>() + size_of::<&str>()
+        + size_of::<&SchemaRef>()
+        + size_of::<&Id>()
+        + size_of::<&str>()
         + 3 * size_of::<bool>()
         + size_of::<Option<Declaration>>()
         + size_of::<Result<bool, RuntimeError>>()
@@ -122,9 +153,14 @@ mod tests {
     fn installation() -> CnpSemanticInstallation {
         let coordinator = super::super::super::tests::coordinator();
         let mut installation = super::super::super::tests::installation(&coordinator, 0);
-        let formats = [restoration_activation_schema().unwrap(), restoration_activation_upload_schema().unwrap()];
-        for roster in [&mut installation.provider.implementation.formats,
-            &mut installation.binding.compatibility.implementation.formats] {
+        let formats = [
+            restoration_activation_schema().unwrap(),
+            restoration_activation_upload_schema().unwrap(),
+        ];
+        for roster in [
+            &mut installation.provider.implementation.formats,
+            &mut installation.binding.compatibility.implementation.formats,
+        ] {
             roster.extend(formats.iter().cloned());
             roster.sort_by(|left, right| left.id.cmp(&right.id));
         }
@@ -141,26 +177,51 @@ mod tests {
         let original = installation();
         authenticate_rosters(&original).unwrap();
         for binding in [false, true] {
-            for feature in [PACKET_RESTORATION_ACTIVATION_FEATURE, PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE] {
+            for feature in [
+                PACKET_RESTORATION_ACTIVATION_FEATURE,
+                PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,
+            ] {
                 for change in 0..4 {
                     let mut changed = installation();
-                    let roster = if binding { &mut changed.binding.compatibility.implementation.formats }
-                        else { &mut changed.provider.implementation.formats };
-                    let position = roster.iter().position(|schema| schema.id.as_str() == feature).unwrap();
+                    let roster = if binding {
+                        &mut changed.binding.compatibility.implementation.formats
+                    } else {
+                        &mut changed.provider.implementation.formats
+                    };
+                    let position = roster
+                        .iter()
+                        .position(|schema| schema.id.as_str() == feature)
+                        .unwrap();
                     match change {
-                        0 => { roster.remove(position); }
-                        1 => { roster.push(roster[position].clone()); }
-                        2 => { roster[position].definition.hash.digest = "0".repeat(64); }
-                        3 => { roster[position].extensions.insert("foreign".into(), serde_json::Value::Null); }
+                        0 => {
+                            roster.remove(position);
+                        }
+                        1 => {
+                            roster.push(roster[position].clone());
+                        }
+                        2 => {
+                            roster[position].definition.hash.digest = "0".repeat(64);
+                        }
+                        3 => {
+                            roster[position]
+                                .extensions
+                                .insert("foreign".into(), serde_json::Value::Null);
+                        }
                         _ => unreachable!(),
                     }
                     assert!(authenticate_rosters(&changed).is_err());
                 }
             }
         }
-        for feature in [PACKET_RESTORATION_ACTIVATION_FEATURE, PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE] {
+        for feature in [
+            PACKET_RESTORATION_ACTIVATION_FEATURE,
+            PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,
+        ] {
             let mut changed = installation();
-            changed.provider.extensions_supported.retain(|one| one.as_str() != feature);
+            changed
+                .provider
+                .extensions_supported
+                .retain(|one| one.as_str() != feature);
             assert!(authenticate_rosters(&changed).is_err());
         }
     }
@@ -170,12 +231,31 @@ mod tests {
         let coordinator = super::super::super::tests::coordinator();
         let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
             super::super::super::tests::installation(&coordinator, 0),
-            super::super::super::tests::producer(), coordinator,
-            super::super::super::tests::storage_selection()).unwrap();
-        assert!(!source.is_original_restoration_activation_declaration_data().unwrap());
-        assert!(source.bind_original_restoration_activation_declaration().is_err());
-        assert!(source.is_original_restoration_activation_declaration_data().is_err());
-        assert!(source.bind_original_restoration_activation_declaration().is_err());
+            super::super::super::tests::producer(),
+            coordinator,
+            super::super::super::tests::storage_selection(),
+        )
+        .unwrap();
+        assert!(
+            !source
+                .is_original_restoration_activation_declaration_data()
+                .unwrap()
+        );
+        assert!(
+            source
+                .bind_original_restoration_activation_declaration()
+                .is_err()
+        );
+        assert!(
+            source
+                .is_original_restoration_activation_declaration_data()
+                .is_err()
+        );
+        assert!(
+            source
+                .bind_original_restoration_activation_declaration()
+                .is_err()
+        );
         assert!(source.capture_banks.get_mut().is_none());
         assert!(source.ack_peer_birth.get_mut().is_none());
     }

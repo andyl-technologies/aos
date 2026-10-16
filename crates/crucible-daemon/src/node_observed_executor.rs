@@ -13,8 +13,8 @@ mod factory;
 mod service;
 mod terminal_publication;
 
-pub use activation::StoredWorldActivationPublisher;
 pub(crate) use activation::OriginalDirectoryPublicationConstructionData;
+pub use activation::StoredWorldActivationPublisher;
 pub use backend::{NodeObservedAdmission, NodeObservedBackend, NodeObservedError};
 pub use cache_reuse::{NodeCacheReuseReceipt, NodeCacheReuseRequest, node_cache_key};
 pub use condition_execution::ConditionExecution;

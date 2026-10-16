@@ -77,7 +77,11 @@ pub use host_startup::{
 };
 
 /// Names actual assigned activation originals without issuing phase claims.
-pub use controller::{OriginalRestorationActivationTargetBindingData,
-    PreparedOriginalInstalledRestorationActivation, CompletedOriginalInstalledRestorationActivation};
+pub use controller::{
+    CompletedOriginalInstalledRestorationActivation,
+    OriginalRestorationActivationTargetBindingData, PreparedOriginalInstalledRestorationActivation,
+};
 
-pub use controller::{CompletedOriginalInstalledRestorationUpload, PreparedOriginalInstalledRestorationUpload};
+pub use controller::{
+    CompletedOriginalInstalledRestorationUpload, PreparedOriginalInstalledRestorationUpload,
+};

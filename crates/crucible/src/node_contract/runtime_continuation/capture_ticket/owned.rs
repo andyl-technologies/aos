@@ -686,8 +686,14 @@ impl NodeRuntime {
 
 impl NodeRuntime {
     pub(crate) fn original_restoration_coordinator_serialization_geometry_data(
-        value: &impl serde::Serialize, maximum_decode_slot: usize, maximum: usize,
+        value: &impl serde::Serialize,
+        maximum_decode_slot: usize,
+        maximum: usize,
     ) -> Result<(usize, usize), RuntimeError> {
-        super::serialization::original_constructor_and_decode_geometry(value, maximum_decode_slot, maximum)
+        super::serialization::original_constructor_and_decode_geometry(
+            value,
+            maximum_decode_slot,
+            maximum,
+        )
     }
 }

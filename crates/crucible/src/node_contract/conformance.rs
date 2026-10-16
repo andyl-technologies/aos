@@ -842,28 +842,41 @@ impl ConformanceRuntime {
         inspection: crate::node_admission::OriginalRestorationHostContinuationInspection<'_>,
     ) -> Result<(), RuntimeError> {
         inspection.authenticate_runtime_data(self)?;
-        self.runtime.inspect_original_host_restoration_continuation(inspection)
+        self.runtime
+            .inspect_original_host_restoration_continuation(inspection)
     }
 }
 
 impl ConformanceRuntime {
     pub(crate) fn prepare_original_installed_restoration_context_data<'a>(
-        &self, window: &'a Rc<crate::node_admission::CompleteOriginalRestorationWindow>,
+        &self,
+        window: &'a Rc<crate::node_admission::CompleteOriginalRestorationWindow>,
         plan: &'a crate::node_admission::InstalledConformancePlan,
     ) -> Result<OriginalLineageRestoration<'a>, RuntimeError> {
-        self.runtime.prepare_original_installed_restoration_context_data(window, plan)
+        self.runtime
+            .prepare_original_installed_restoration_context_data(window, plan)
     }
 }
 
 impl ConformanceRuntime {
     pub(crate) fn original_restoration_coordinator_sources_data(
-        &self, plan: &crate::node_admission::InstalledConformancePlan,
-    ) -> Result<(&crucible_node_contract::WorldBinding, &super::HostSchedulingSource), RuntimeError> {
+        &self,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<
+        (
+            &crucible_node_contract::WorldBinding,
+            &super::HostSchedulingSource,
+        ),
+        RuntimeError,
+    > {
         self.authenticate_complete_original_restoration_origin()?;
         if !self.graph.plan().is_same_original_plan_data(plan) {
             return Err(RuntimeError::ForeignAuthority);
         }
-        let host = self.exact_inputs.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        let host = self
+            .exact_inputs
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         Ok((self.graph.world(), host.as_ref()))
     }
 }

@@ -15,6 +15,16 @@ mod owned11;
 #[path = "restore.rs"]
 mod restore;
 pub(crate) use restore::{
+    NativeRestorationActivationAttempt, NativeRestorationUploadAttempt,
+    OriginalRestorationActivationPermit, OriginalRestorationActivationRequirement,
+    OriginalRestorationUploadPermit, original_native_restoration_activation_attempt_backing_data,
+    original_native_restoration_activation_counter_scratch_data,
+    original_native_restoration_activation_ingress_row_data,
+    original_native_restoration_activation_ingress_storage_data,
+    original_native_restoration_upload_attempt_backing_data,
+    original_native_restoration_upload_counter_scratch_data,
+};
+pub(crate) use restore::{
     NativeRestoredControlEvidence, OriginalCompleteRestoreCommit, VerifiedCompleteRestoration,
     VerifiedCompleteRestorationHeld,
 };
@@ -22,17 +32,6 @@ pub use restore::{
     PacketNativeRestoreCommitConstructionData, PacketNativeRestoreCommitConstructionInputs,
     original_native_restore_commit_construction_counter_scratch_data,
     original_native_restore_commit_construction_storage_data,
-};
-pub(crate) use restore::{
-    NativeRestorationActivationAttempt, OriginalRestorationActivationPermit,
-    NativeRestorationUploadAttempt, OriginalRestorationUploadPermit,
-    OriginalRestorationActivationRequirement,
-    original_native_restoration_upload_attempt_backing_data,
-    original_native_restoration_upload_counter_scratch_data,
-    original_native_restoration_activation_attempt_backing_data,
-    original_native_restoration_activation_counter_scratch_data,
-    original_native_restoration_activation_ingress_storage_data,
-    original_native_restoration_activation_ingress_row_data,
 };
 #[path = "restore_prepare.rs"]
 mod restore_prepare;

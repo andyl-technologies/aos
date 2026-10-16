@@ -26,13 +26,25 @@ pub(in super::super) struct UploadStorage {
     pub(in super::super) native: PacketRestorationActivationAllocationRow,
 }
 
-pub(in super::super) fn quote(maximum_bytes: usize, chunk: usize, frame: usize) -> Result<UploadStorage, ProviderError> {
-    if maximum_bytes == 0 || maximum_bytes > 131_072 || chunk == 0 || chunk > 4096 || frame == 0 || frame > 65_536 {
+pub(in super::super) fn quote(
+    maximum_bytes: usize,
+    chunk: usize,
+    frame: usize,
+) -> Result<UploadStorage, ProviderError> {
+    if maximum_bytes == 0
+        || maximum_bytes > 131_072
+        || chunk == 0
+        || chunk > 4096
+        || frame == 0
+        || frame > 65_536
+    {
         return Err(invalid());
     }
     let chunks = maximum_bytes.div_ceil(chunk);
     let requests = add(chunks, 2)?;
-    if requests > 4096 { return Err(invalid()); }
+    if requests > 4096 {
+        return Err(invalid());
+    }
     let raw = original_json_value_storage_extent_data(frame)?;
     let scratch = add(counter_scratch_data(),
         crate::reference_packet::service::ack_emitter::native_boot::original_native_restoration_upload_counter_scratch_data())?;
@@ -60,25 +72,48 @@ pub(in super::super) fn quote(maximum_bytes: usize, chunk: usize, frame: usize) 
     let mut transient = sum(&[raw.canonical_pass_requested_bytes()?, scratch])?;
     let mut journal = 0;
     for method in [Method::BlobBegin, Method::BlobChunk, Method::BlobFinish] {
-        let count = if method == Method::BlobChunk { chunks } else { 1 };
+        let count = if method == Method::BlobChunk {
+            chunks
+        } else {
+            1
+        };
         let request = projection::frame(method, false, chunk, usize::MAX)?;
         let response = projection::frame(method, true, chunk, usize::MAX)?;
         if request.maximum_encoded_bytes > frame || response.maximum_encoded_bytes > frame {
-            return Err(ProviderError::ResourceExhausted("selected activation upload frame"));
+            return Err(ProviderError::ResourceExhausted(
+                "selected activation upload frame",
+            ));
         }
-        retained = add(retained, mul(count, sum(&[
-            mul(request.dom_and_canonical_scratch_bytes, 3)?,
-            mul(response.dom_and_canonical_scratch_bytes, 4)?,
-            size_of::<crate::connection::ReceivedFrame>(),
-            size_of::<crate::bodies::ResponseBody>(),
-            // Original key, actual plan/request IDs and transfer ID strings.
-            4 * (2 * 128 + 4),
-        ])?)?)?;
-        transient = add(transient, mul(count, sum(&[
-            mul(request.requested_total()?, 3)?, mul(response.requested_total()?, 3)?,
-            mul(chunk, 2)?, chunk.div_ceil(3).checked_mul(4).ok_or_else(invalid)?,
-        ])?)?)?;
-        journal = add(journal, mul(count, add(request.maximum_encoded_bytes, frame)?)?)?;
+        retained = add(
+            retained,
+            mul(
+                count,
+                sum(&[
+                    mul(request.dom_and_canonical_scratch_bytes, 3)?,
+                    mul(response.dom_and_canonical_scratch_bytes, 4)?,
+                    size_of::<crate::connection::ReceivedFrame>(),
+                    size_of::<crate::bodies::ResponseBody>(),
+                    // Original key, actual plan/request IDs and transfer ID strings.
+                    4 * (2 * 128 + 4),
+                ])?,
+            )?,
+        )?;
+        transient = add(
+            transient,
+            mul(
+                count,
+                sum(&[
+                    mul(request.requested_total()?, 3)?,
+                    mul(response.requested_total()?, 3)?,
+                    mul(chunk, 2)?,
+                    chunk.div_ceil(3).checked_mul(4).ok_or_else(invalid)?,
+                ])?,
+            )?,
+        )?;
+        journal = add(
+            journal,
+            mul(count, add(request.maximum_encoded_bytes, frame)?)?,
+        )?;
     }
     // Native keeps its own real request history, immutable transfer buffers and
     // decoded response/ACK/index views. These full independent bounds are added
@@ -97,7 +132,17 @@ pub(in super::super) fn quote(maximum_bytes: usize, chunk: usize, frame: usize) 
         declared_counter_scratch_bytes: u64_data(scratch)?,
     };
     native.requested_bytes_data()?;
-    Ok(UploadStorage { maximum_bytes, chunk, frame, requests, journal, retained, transient, scratch, native })
+    Ok(UploadStorage {
+        maximum_bytes,
+        chunk,
+        frame,
+        requests,
+        journal,
+        retained,
+        transient,
+        scratch,
+        native,
+    })
 }
 
 /// Recounts this real upload's exact full reference and finite loop before reserve.
@@ -105,9 +150,11 @@ pub(crate) fn original_native_restoration_activation_upload_required_storage_dat
     request: &PacketRestorationActivationUploadRequest,
 ) -> Result<PacketRestorationActivationAllocationRow, ProviderError> {
     request.validate_data()?;
-    let data = quote(usize::try_from(request.content_ref_data().length.get()).map_err(|_| invalid())?,
+    let data = quote(
+        usize::try_from(request.content_ref_data().length.get()).map_err(|_| invalid())?,
         usize::try_from(request.chunk_bytes.get()).map_err(|_| invalid())?,
-        usize::try_from(request.maximum_frame_bytes.get()).map_err(|_| invalid())?)?;
+        usize::try_from(request.maximum_frame_bytes.get()).map_err(|_| invalid())?,
+    )?;
     Ok(data.native)
 }
 
@@ -133,7 +180,15 @@ pub(super) fn counter_scratch_data() -> usize {
         + crate::retained_metadata::serialization_storage::original_serialization_counter_scratch_data()
 }
 
-fn add(a: usize, b: usize) -> Result<usize, ProviderError> { a.checked_add(b).ok_or_else(invalid) }
-fn mul(a: usize, b: usize) -> Result<usize, ProviderError> { a.checked_mul(b).ok_or_else(invalid) }
-fn sum(terms: &[usize]) -> Result<usize, ProviderError> { terms.iter().try_fold(0, |total, term| add(total, *term)) }
-fn u64_data(value: usize) -> Result<U64, ProviderError> { u64::try_from(value).map(U64::new).map_err(|_| invalid()) }
+fn add(a: usize, b: usize) -> Result<usize, ProviderError> {
+    a.checked_add(b).ok_or_else(invalid)
+}
+fn mul(a: usize, b: usize) -> Result<usize, ProviderError> {
+    a.checked_mul(b).ok_or_else(invalid)
+}
+fn sum(terms: &[usize]) -> Result<usize, ProviderError> {
+    terms.iter().try_fold(0, |total, term| add(total, *term))
+}
+fn u64_data(value: usize) -> Result<U64, ProviderError> {
+    u64::try_from(value).map(U64::new).map_err(|_| invalid())
+}

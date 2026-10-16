@@ -898,7 +898,6 @@ mod selected_decode_geometry_tests {
     }
 }
 
-
 #[cfg(test)]
 mod selected_map_root_controls {
     use super::*;
@@ -912,19 +911,33 @@ mod selected_map_root_controls {
         for value in [empty, nested] {
             let actual = value.owned_storage().unwrap();
             let (requested, encoded) = original_constructor_and_decode_geometry(
-                &value, std::mem::size_of::<serde_json::Value>(), usize::MAX,
-            ).unwrap();
+                &value,
+                std::mem::size_of::<serde_json::Value>(),
+                usize::MAX,
+            )
+            .unwrap();
             let bytes = crucible_node_contract::canonical::canonical_json(&value).unwrap();
 
             assert!(actual >= value_layout::map_node_bytes());
             assert!(requested >= actual + value_layout::value_slot_bytes());
             assert!(encoded >= bytes.len());
-            assert_eq!(original_constructor_and_decode_geometry(
-                &value, std::mem::size_of::<serde_json::Value>(), requested,
-            ).unwrap(), (requested, encoded));
-            assert!(original_constructor_and_decode_geometry(
-                &value, std::mem::size_of::<serde_json::Value>(), requested - 1,
-            ).is_err());
+            assert_eq!(
+                original_constructor_and_decode_geometry(
+                    &value,
+                    std::mem::size_of::<serde_json::Value>(),
+                    requested,
+                )
+                .unwrap(),
+                (requested, encoded)
+            );
+            assert!(
+                original_constructor_and_decode_geometry(
+                    &value,
+                    std::mem::size_of::<serde_json::Value>(),
+                    requested - 1,
+                )
+                .is_err()
+            );
         }
     }
 }
