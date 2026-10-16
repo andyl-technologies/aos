@@ -126,6 +126,27 @@ the source copies and registered outputs. Loader geometry and console controls
 pass. These results qualify the selected Linux/PID1 workload; common-node
 readiness, capture, restoration and complete device parity remain outstanding.
 
+The current x86 Linux-root capture witness follows bounded progress grants until
+its first UART publication. Commit `663c572a9b` permits at most ten million search
+events across 39 grants, each limited to 262,144 events, while retaining the
+100-millisecond simulated horizon and existing native wall limit. The earlier
+single-grant failure remains preserved: it exhausted its event budget before any
+UART output.
+
+The installed profile check passes with the first UART byte (`[`) at
+44,103,690,000 ps and event ordinal 4,410,378. Its source-bound assertions capture
+the pending receipt, remove the original resources, restore into two distinct
+fresh process groups, recapture both branches and compare eight future
+publications. Independent review verifies the installed summary, both process
+anchors, source and 27 artifact bindings. The installed summary does not retain
+the raw images, individual grants or complete suffix arrays for a separate
+post-build comparison.
+
+This qualifies the selected opaque capture mechanism. Execution admission,
+common-node readiness, complete Linux preservation, device parity and CPU timing
+remain unqualified. The 139.34-second package check is validation time, not a
+boot performance measurement.
+
 ### Original-owner preparation and Clock continuation
 
 Commit `a836c25274` observes retained host and provider storage before
