@@ -10,7 +10,7 @@
 
 use super::{NativeCachePreparation, NativeHostLayout};
 use crate::{publisher_local::client::Client, quota_confinement::Installed};
-use std::{io, sync::Arc};
+use std::{fs::File, io, sync::Arc};
 use terrane::host::cache::{HostDomainLocation, HostReadLimits};
 
 mod collection;
@@ -42,6 +42,15 @@ pub struct NativeRecoveryInspector {
     max_candidates: usize,
     charge_owner: String,
     project_id: u32,
+    custody: ContentCustody,
+}
+
+/// Keeps configured custody separate from mutable observed inode metadata.
+#[derive(Clone, Copy)]
+struct ContentCustody {
+    uid: u32,
+    gid: u32,
+    directory_mode: u32,
 }
 
 impl NativeRecoveryInspector {
@@ -57,6 +66,12 @@ impl NativeRecoveryInspector {
             max_candidates: config.inventory_entries,
             charge_owner: observation.owner_id.clone(),
             project_id: observation.project_id,
+            custody: ContentCustody {
+                uid: config.content_uid,
+                gid: config.content_gid,
+                // Preparation independently requires this exact shared class.
+                directory_mode: 0o2770,
+            },
         }
     }
 
@@ -65,7 +80,7 @@ impl NativeRecoveryInspector {
         &self.layout
     }
 
-    /// Returns the configured per-allocation encoded read budget.
+    /// Returns the configured per-allocation encoded read and plaintext decode budget.
     pub fn read_limits(&self) -> HostReadLimits {
         self.reads
     }
@@ -85,13 +100,23 @@ impl NativeRecoveryInspector {
         self.project_id
     }
 
-    /// Rechecks process confinement and retained domain-root incarnations.
+    /// Rechecks process confinement, domain-root incarnations and configured custody.
     ///
     /// # Errors
-    /// Refuses another process, failed current confinement or changed roots.
+    /// Refuses another process, failed confinement or changed roots or content custody.
     pub fn check_current(&self) -> io::Result<()> {
         self.confinement.check_current()?;
-        self.layout.recheck()
+        self.layout.recheck()?;
+        for label in ["chunks", "objects", "quarantine"] {
+            let root = self
+                .layout
+                .directories
+                .get(label)
+                .ok_or_else(|| files::invalid("missing retained shared-content root"))?;
+            let metadata = File::from(root.try_clone()?).metadata()?;
+            self.custody.check(&metadata, true)?;
+        }
+        Ok(())
     }
 
     /// Borrows the real prepared session for registered readonly recovery commands.

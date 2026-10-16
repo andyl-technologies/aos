@@ -1,6 +1,6 @@
 //! Retains readonly canonical shared-content inodes and rechecks their custody.
 
-use super::NativeRecoveryInspector;
+use super::{ContentCustody, NativeRecoveryInspector};
 use crate::host_quota::NativeProject;
 use rustix::fs::{Mode, OFlags, open, openat};
 use std::{
@@ -56,8 +56,7 @@ impl RetainedFile {
             .get(label)
             .ok_or_else(|| invalid("missing retained shared-content directory"))?;
         let mut parent = File::from(openat(root, ".", directory_flags(), Mode::empty())?);
-        let class = parent.metadata()?;
-        check_custody(context, &parent, &class, true)?;
+        check_custody(context, &parent, true)?;
         let mut parents = vec![parent.try_clone()?];
         for component in components {
             parent = File::from(openat(
@@ -66,7 +65,7 @@ impl RetainedFile {
                 directory_flags(),
                 Mode::empty(),
             )?);
-            check_custody(context, &parent, &class, true)?;
+            check_custody(context, &parent, true)?;
             parents.push(parent.try_clone()?);
         }
         // NONBLOCK prevents a replaced FIFO from waiting for a writer. Devices
@@ -90,7 +89,7 @@ impl RetainedFile {
         if !same_file(&expected, &metadata) {
             return Err(invalid("shared-content candidate changed during open"));
         }
-        check_custody(context, &file, &class, false)?;
+        check_custody(context, &file, false)?;
         let source = Self {
             context: context.clone(),
             name,
@@ -157,10 +156,9 @@ impl RetainedFile {
             .get(label)
             .ok_or_else(|| invalid("missing retained shared-content directory"))?;
         let mut current = File::from(openat(root, ".", directory_flags(), Mode::empty())?);
-        let class = current.metadata()?;
         let mut parents = self.parents.iter();
         check_parent(parents.next(), &current)?;
-        check_custody(&self.context, &current, &class, true)?;
+        check_custody(&self.context, &current, true)?;
         for component in components {
             current = File::from(openat(
                 &current,
@@ -169,7 +167,7 @@ impl RetainedFile {
                 Mode::empty(),
             )?);
             check_parent(parents.next(), &current)?;
-            check_custody(&self.context, &current, &class, true)?;
+            check_custody(&self.context, &current, true)?;
         }
         let path = File::from(openat(
             &current,
@@ -180,7 +178,7 @@ impl RetainedFile {
         if !same_file(&self.metadata, &path.metadata()?) {
             return Err(invalid("canonical shared-content pathname changed"));
         }
-        check_custody(&self.context, &self.file, &class, false)
+        check_custody(&self.context, &self.file, false)
     }
 }
 
@@ -202,17 +200,12 @@ fn check_parent(expected: Option<&File>, actual: &File) -> io::Result<()> {
 fn check_custody(
     context: &NativeRecoveryInspector,
     file: &File,
-    class: &Metadata,
     directory: bool,
 ) -> io::Result<()> {
     let metadata = file.metadata()?;
+    context.custody.check(&metadata, directory)?;
     let project = NativeProject::inspect(file)?;
-    if metadata.dev() != class.dev()
-        || metadata.uid() != class.uid()
-        || metadata.gid() != class.gid()
-        || metadata.mode() & 0o002 != 0
-        || metadata.is_dir() != directory
-        || (!directory && !metadata.is_file())
+    if metadata.dev() != context.layout.directory_binding("layout-root")?.0
         || project.project_id != context.project_id
         || (directory && !project.inherit)
     {
@@ -221,6 +214,23 @@ fn check_custody(
         ));
     }
     Ok(())
+}
+
+impl ContentCustody {
+    pub(super) fn check(&self, metadata: &Metadata, directory: bool) -> io::Result<()> {
+        if metadata.uid() != self.uid
+            || metadata.gid() != self.gid
+            || metadata.is_dir() != directory
+            || (!directory && !metadata.is_file())
+            || (directory && metadata.mode() & 0o7777 != self.directory_mode)
+            || (!directory && metadata.mode() & 0o002 != 0)
+        {
+            return Err(invalid(
+                "shared-content inode differs from configured custody",
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn read_bounded(file: &File, bound: usize) -> io::Result<Vec<u8>> {

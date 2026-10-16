@@ -5,20 +5,21 @@
 //! composed real owner, registered publisher and quota helper in its VM fixture.
 
 use super::{
+    ContentCustody,
     files::{invalid, read_bounded, same_file, verify_read_hash},
-    verification::bounded_pack,
+    verification::{bounded_pack, bounded_standalone_length, dictionary_from_pack},
 };
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom, Write},
-    os::unix::fs::FileExt,
+    os::unix::fs::{FileExt, MetadataExt, PermissionsExt},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
 use terrane::{
     host::cache::{HostReadLimits, reconstruct_pack_index},
-    pack::{EntryKind, PackClass, PackId, PackWriter},
+    pack::{EntryKind, NativeBodyDecoder, PackClass, PackId, PackWriter},
     repository::MetadataValidator,
 };
 use terrane_core::{
@@ -27,6 +28,126 @@ use terrane_core::{
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+#[test]
+fn compressed_standalone_plaintext_is_bounded_before_decode() -> TestResult {
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let plaintext = vec![b'x'; 65536];
+    let budget = 1024;
+    let identity = TERRANE_V1.calculate(IdentityKind::Chunk, &plaintext)?;
+    for dictionary in [None, Some(b"independent recovery dictionary".as_slice())] {
+        let encoded = terrane::codec::encode_chunk(&plaintext, profile.maximum(), 3, dictionary)?;
+        assert_eq!(encoded[0], if dictionary.is_some() { 2 } else { 1 });
+        assert!(encoded.len() < budget);
+
+        let error = bounded_standalone_length(&encoded, &profile, budget)
+            .err()
+            .ok_or("oversized compressed plaintext was accepted")?;
+
+        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+        assert_eq!(
+            bounded_standalone_length(&encoded, &profile, plaintext.len())?,
+            plaintext.len()
+        );
+        assert_eq!(
+            terrane::codec::decode_verified(
+                &encoded,
+                plaintext.len(),
+                &profile,
+                true,
+                &identity,
+                dictionary
+            )?
+            .plaintext(),
+            plaintext
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn compressed_pack_dictionary_respects_remaining_plaintext_budget() -> TestResult {
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let plaintext = vec![b'd'; 65536];
+    let identity = TERRANE_V1.calculate(IdentityKind::Chunk, &plaintext)?;
+    let digest = identity.terrane_v1_digest()?;
+    let encoded = terrane::codec::encode_chunk(&plaintext, profile.maximum(), 3, None)?;
+    let mut writer = PackWriter::new(PackId::from_random_bytes([45; 16]), PackClass::Data, true);
+    writer.append_chunk(
+        digest,
+        &encoded,
+        plaintext.len() as u32,
+        0,
+        &NativeBodyDecoder::without_dictionaries(&profile),
+    )?;
+    let pack = writer.seal()?;
+    let budget = 1024;
+    assert!(pack.bytes().len() < budget);
+    let reader = bounded_pack(
+        pack.bytes(),
+        HostReadLimits {
+            max_allocation_bytes: budget,
+        },
+    )?;
+
+    let error = dictionary_from_pack(&profile, &reader, &digest, budget)
+        .err()
+        .ok_or("oversized packed dictionary was decoded")?;
+
+    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+    assert_eq!(
+        dictionary_from_pack(&profile, &reader, &digest, plaintext.len())?,
+        Some(plaintext)
+    );
+    Ok(())
+}
+
+#[test]
+fn configured_custody_rejects_rebased_owner_and_group() -> TestResult {
+    let scratch = Scratch::new()?;
+    let metadata = scratch.file.metadata()?;
+    let custody = ContentCustody {
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        directory_mode: 0o2770,
+    };
+    custody.check(&metadata, false)?;
+
+    let changed_owner = ContentCustody {
+        uid: custody.uid.wrapping_add(1),
+        ..custody
+    };
+    let changed_group = ContentCustody {
+        gid: custody.gid.wrapping_add(1),
+        ..custody
+    };
+
+    assert!(changed_owner.check(&metadata, false).is_err());
+    assert!(changed_group.check(&metadata, false).is_err());
+    Ok(())
+}
+
+#[test]
+fn configured_directory_mode_is_not_rebased_to_current_metadata() -> TestResult {
+    let directory = Directory::new()?;
+    fs::set_permissions(&directory.path, fs::Permissions::from_mode(0o2770))?;
+    let metadata = fs::metadata(&directory.path)?;
+    let custody = ContentCustody {
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        directory_mode: 0o2770,
+    };
+    custody.check(&metadata, true)?;
+
+    fs::set_permissions(&directory.path, fs::Permissions::from_mode(0o2750))?;
+
+    assert!(
+        custody
+            .check(&fs::metadata(&directory.path)?, true)
+            .is_err()
+    );
+    Ok(())
+}
 
 #[test]
 fn unresolved_verification_failure_preserves_its_typed_source() -> TestResult {
@@ -214,5 +335,28 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+struct Directory {
+    path: PathBuf,
+    _marker: Scratch,
+}
+
+impl Directory {
+    fn new() -> io::Result<Self> {
+        let marker = Scratch::new()?;
+        let path = marker.path.with_extension("directory");
+        fs::create_dir(&path)?;
+        Ok(Self {
+            path,
+            _marker: marker,
+        })
+    }
+}
+
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.path);
     }
 }

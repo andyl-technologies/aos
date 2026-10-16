@@ -17,6 +17,7 @@ use terrane::{
     repository::MetadataValidator,
 };
 use terrane_core::{
+    chunking::ChunkProfile,
     codec::Codec,
     identity::{Descriptor, Digest, Identity, IdentityKind, TERRANE_V1},
     pack_format::{RECORD_SIZE, Record, index_count},
@@ -207,6 +208,8 @@ pub(super) fn chunk(
     {
         return Err(invalid("standalone recovery key has another kind or codec"));
     }
+    let length = usize::try_from(descriptor.size()).map_err(invalid)?;
+    check_plaintext_budget(length, context.reads.max_allocation_bytes)?;
     let identity = TERRANE_V1
         .from_digest(IdentityKind::Chunk, descriptor.digest())
         .map_err(invalid)?;
@@ -227,10 +230,11 @@ pub(super) fn chunk(
             "actual standalone codec differs from inventory key",
         ));
     }
-    let length = usize::try_from(descriptor.size()).map_err(invalid)?;
-    if inspect_standalone_length(&encoded, context.layout.layout().chunk_profile())
-        .map_err(invalid)?
-        != length
+    if bounded_standalone_length(
+        &encoded,
+        context.layout.layout().chunk_profile(),
+        context.reads.max_allocation_bytes,
+    )? != length
     {
         return Err(invalid(
             "actual standalone length differs from inventory descriptor",
@@ -247,6 +251,7 @@ pub(super) fn chunk(
             None,
             packs,
             &mut dependencies,
+            context.reads.max_allocation_bytes,
         )?),
         _ => None,
     };
@@ -305,8 +310,19 @@ pub(super) fn pack(
             .codec
         {
             if let std::collections::btree_map::Entry::Vacant(slot) = dictionaries.entry(digest) {
-                let plaintext =
-                    dictionary(context, &digest, Some(&reader), packs, &mut dependencies)?;
+                let remaining = context
+                    .reads
+                    .max_allocation_bytes
+                    .checked_sub(dictionary_bytes)
+                    .ok_or_else(|| invalid("dictionary budget overflow"))?;
+                let plaintext = dictionary(
+                    context,
+                    &digest,
+                    Some(&reader),
+                    packs,
+                    &mut dependencies,
+                    remaining,
+                )?;
                 dictionary_bytes = dictionary_bytes
                     .checked_add(plaintext.len())
                     .ok_or_else(|| invalid("dictionary budget overflow"))?;
@@ -368,6 +384,7 @@ fn dictionary(
     current_pack: Option<&PackReader<'_>>,
     packs: &[PackId],
     dependencies: &mut Vec<VerifiedDependency>,
+    plaintext_budget: usize,
 ) -> io::Result<Vec<u8>> {
     if dependencies.len() >= context.max_candidates {
         return Err(io::Error::new(
@@ -375,15 +392,16 @@ fn dictionary(
             "dictionary descriptor budget exceeded",
         ));
     }
+    let plaintext_budget = plaintext_budget.min(context.reads.max_allocation_bytes);
+    let profile = context.layout.layout().chunk_profile();
     if let Some(pack) = current_pack
-        && let Some(bytes) = dictionary_from_pack(context, pack, digest)?
+        && let Some(bytes) = dictionary_from_pack(profile, pack, digest, plaintext_budget)?
     {
         return Ok(bytes);
     }
     let identity = TERRANE_V1
         .from_digest(IdentityKind::Chunk, digest)
         .map_err(invalid)?;
-    let profile = context.layout.layout().chunk_profile();
     for codec in 0..=2 {
         let source = match RetainedFile::open(
             context,
@@ -406,7 +424,7 @@ fn dictionary(
                 "dictionary source codec differs from canonical key",
             ));
         }
-        let length = inspect_standalone_length(&encoded, profile).map_err(invalid)?;
+        let length = bounded_standalone_length(&encoded, profile, plaintext_budget)?;
         let plaintext =
             terrane::codec::decode_verified(&encoded, length, profile, true, &identity, None)
                 .map_err(invalid)?
@@ -436,7 +454,7 @@ fn dictionary(
         if pack.header().id() != *id {
             return Err(invalid("dictionary pack header differs from canonical key"));
         }
-        if let Some(bytes) = dictionary_from_pack(context, &pack, digest)? {
+        if let Some(bytes) = dictionary_from_pack(profile, &pack, digest, plaintext_budget)? {
             source.recheck()?;
             dependencies.push(VerifiedDependency {
                 source,
@@ -451,10 +469,11 @@ fn dictionary(
     ))
 }
 
-fn dictionary_from_pack(
-    context: &NativeRecoveryInspector,
+pub(super) fn dictionary_from_pack(
+    profile: &ChunkProfile,
     pack: &PackReader<'_>,
     digest: &Digest,
+    plaintext_budget: usize,
 ) -> io::Result<Option<Vec<u8>>> {
     let Some(entry) = pack
         .entries()
@@ -463,16 +482,32 @@ fn dictionary_from_pack(
     else {
         return Ok(None);
     };
-    if entry.plaintext_len() as usize > context.reads.max_allocation_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::OutOfMemory,
-            "dictionary exceeds read budget",
-        ));
-    }
-    let decoder = NativeBodyDecoder::without_dictionaries(context.layout.layout().chunk_profile());
+    check_plaintext_budget(entry.plaintext_len() as usize, plaintext_budget)?;
+    let decoder = NativeBodyDecoder::without_dictionaries(profile);
     pack.read(EntryKind::Chunk, digest, &decoder)
         .map(Some)
         .map_err(invalid)
+}
+
+/// Checks frame-declared plaintext against policy before any decode allocation.
+pub(super) fn bounded_standalone_length(
+    encoded: &[u8],
+    profile: &ChunkProfile,
+    plaintext_budget: usize,
+) -> io::Result<usize> {
+    let length = inspect_standalone_length(encoded, profile).map_err(invalid)?;
+    check_plaintext_budget(length, plaintext_budget)?;
+    Ok(length)
+}
+
+fn check_plaintext_budget(length: usize, plaintext_budget: usize) -> io::Result<()> {
+    if length > plaintext_budget {
+        return Err(io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "decoded plaintext exceeds recovery allocation budget",
+        ));
+    }
+    Ok(())
 }
 
 /// PackReader allocates decoded records. Bound those before parsing untrusted counts.
