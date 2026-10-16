@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 
 sys.path.insert(0, sys.argv[1])
 from native_sdk_test_image import allowed_directory, require, runtime_closure, source_hashes
@@ -26,6 +27,9 @@ package = [item for item in packages
            if pathlib.Path(item["manifest_path"]) == workspace / "terrane-fs/Cargo.toml"]
 require(len(package) == 1 and package[0]["name"] == "terrane-fs",
         "ambiguous publication source package")
+manifest = tomllib.loads((workspace / "Cargo.toml").read_text())
+require(manifest.get("profile", {}).get("dev", {}) == {},
+        "publication workspace dev profile overrides the expected Cargo defaults")
 records = [json.loads(line) for line in
            (temporary / "publication-build.jsonl").read_text().splitlines()]
 selected = [item for item in records if item.get("reason") == "compiler-artifact"
@@ -46,6 +50,7 @@ require(artifact["package_id"] == package[0]["id"]
         and executable.is_file() and os.access(executable, os.X_OK)
         and executable.resolve().is_relative_to(target.resolve()),
         "publication artifact source/profile mismatch")
+bound_executable_sha256 = hashlib.sha256(executable.read_bytes()).hexdigest()
 hashes = source_hashes(workspace, source)
 target_libraries = pathlib.Path((temporary / "publication-rust-libdir").read_text().strip())
 require(target_libraries.is_dir() and target_libraries.resolve().is_relative_to("/nix/store"),
@@ -69,6 +74,8 @@ with (temporary / "publication-cargo-discovery.log").open("w") as log:
                     "--features", "native-test-fixtures", "--example", "publication_fixture",
                     "--", "--discover"], env=environment,
                    stdout=log, stderr=subprocess.STDOUT, check=True)
+require(hashlib.sha256(executable.read_bytes()).hexdigest() == bound_executable_sha256,
+        "Cargo discovery changed the selected publication executable")
 captured = capture.read_text()
 require(captured.endswith("\n") and captured.count("\n") == 1 and captured.strip(),
         "missing Cargo runtime environment")
@@ -80,7 +87,12 @@ require(hashes == source_hashes(workspace, source), "source changed during disco
 for directory in ["bin", "libexec", "lib", "share"]:
     (output / directory).mkdir()
 installed = output / "libexec/terrane-publication-fixture"
+require(hashlib.sha256(executable.read_bytes()).hexdigest() == bound_executable_sha256,
+        "publication executable changed before installation")
 shutil.copy2(executable, installed)
+require(hashlib.sha256(installed.read_bytes()).hexdigest() == bound_executable_sha256
+        and hashlib.sha256(executable.read_bytes()).hexdigest() == bound_executable_sha256,
+        "publication executable changed while copying the bound artifact")
 for name, library in libraries.items():
     shutil.copy2(library, output / "lib" / name)
 library_path = ":".join(map(str, [output / "lib", *store_directories]))
@@ -91,10 +103,11 @@ wrapper.write_text("\n".join([
     "exec " + shlex.quote(str(installed)) + ' "$@"', "",
 ]))
 wrapper.chmod(0o755)
-identity = {"source": str(source), "package_id": artifact["package_id"],
+identity = {"schema_version": 1, "cargo_profile": "dev", "default_features": True,
+            "requested_features": ["native-test-fixtures"], "source": str(source), "package_id": artifact["package_id"],
             "target": artifact["target"], "profile": artifact["profile"],
             "features": artifact["features"], "input_sha256": hashes,
-            "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+            "executable_sha256": bound_executable_sha256,
             "copied_runtime_libraries": sorted(libraries),
             "copied_runtime_sha256": {name: hashlib.sha256((output / "lib" / name).read_bytes()).hexdigest()
                                       for name in sorted(libraries)},
