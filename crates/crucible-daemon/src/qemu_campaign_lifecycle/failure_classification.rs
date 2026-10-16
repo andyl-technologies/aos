@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_single_begin_reports_keep_existing_retry_and_cancel_classes() {
+    fn single_begin_reports_preserve_unavailability_and_cancellation() {
         let unavailable = QemuVmRealizationError::ExecutorUnavailable {
             operation: "component admission",
             message: String::from("temporarily unavailable"),

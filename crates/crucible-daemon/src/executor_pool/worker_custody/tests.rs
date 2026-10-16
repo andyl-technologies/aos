@@ -45,7 +45,7 @@ impl Drop for Worker {
 }
 
 #[test]
-fn thread_borrow_exit_does_not_destroy_worker_and_retry_preserves_typed_history()
+fn thread_exit_keeps_worker_until_explicit_retirement_and_preserves_typed_history()
 -> Result<(), Box<dyn std::error::Error>> {
     let dropped = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
