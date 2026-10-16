@@ -21,6 +21,7 @@ use crate::ProviderError;
 /// Retains the source-owned x86 root model and its measured capture machinery.
 #[derive(Clone, Debug)]
 pub struct X86RootLaunch {
+    pub(crate) command_budget: Option<super::NativeCommandConstructionBudget>,
     pub(crate) owner: Id,
     pub(crate) incarnation: Id,
     pub(crate) generation: U64,
@@ -49,6 +50,18 @@ impl X86RootLaunch {
         image_root: PathBuf,
         temporary_root: PathBuf,
         timeout: Duration,
+    ) -> Result<Self, ProviderError> {
+        Self::installed_with_command_budget(owner, incarnation, generation, resource_root, image_root, temporary_root, timeout, super::NativeCommandConstructionPolicy::default().reserve()?)
+    }
+
+    /// Measures the installed model under a separately retained construction budget.
+    ///
+    /// # Errors
+    /// Refuses every invalid installed launch condition described by `installed`.
+    pub fn installed_with_command_budget(
+        owner: Id, incarnation: Id, generation: U64, resource_root: PathBuf,
+        image_root: PathBuf, temporary_root: PathBuf, timeout: Duration,
+        command_budget: super::NativeCommandConstructionBudget,
     ) -> Result<Self, ProviderError> {
         if generation.get() == 0 || timeout.is_zero() || timeout > Duration::from_secs(600) {
             return Err(ProviderError::Frame("x86 root launch fencing or deadline"));
@@ -106,6 +119,7 @@ impl X86RootLaunch {
             temporary_root,
         };
         Ok(Self {
+            command_budget: Some(command_budget),
             owner,
             incarnation,
             generation,
@@ -210,5 +224,15 @@ impl Gem5ImageSource for X86RootLaunch {
 
     fn managed_root(&self) -> &Path {
         &self.resource_root
+    }
+}
+
+impl X86RootLaunch {
+    /// Borrows the caller-owned construction reservation, never restored from an archive.
+    ///
+    /// # Errors
+    /// Refuses inert imported source records without a fresh operational budget.
+    pub fn command_construction_budget(&self) -> Result<&super::NativeCommandConstructionBudget, ProviderError> {
+        self.command_budget.as_ref().ok_or(ProviderError::Correlation("Root archive has no operational command reservation"))
     }
 }

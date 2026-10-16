@@ -26,6 +26,7 @@ fn fixture() -> (RootCustodyQueue, ActivationRecord) {
     };
     let entry = Entry {
         scope: RootScope {
+        command_budget: crucible_node_provider::gem5::NativeCommandConstructionPolicy::default().reserve().unwrap(),
             activation: target.clone(),
             owner,
             publication: PublicationKnowledge::NotAttempted,

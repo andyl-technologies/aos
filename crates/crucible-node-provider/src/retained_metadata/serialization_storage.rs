@@ -347,6 +347,12 @@ fn map_node_bytes() -> Result<usize, Excess> {
     map_node_bytes_for::<String, serde_json::Value>()
 }
 
+/// Names the defining checked node-layout arithmetic's complete return views.
+pub(crate) fn original_serialization_tree_node_counter_scratch_data() -> usize {
+    size_of::<Result<usize, Excess>>() + size_of::<Result<usize, ProviderError>>()
+        + size_of::<Option<usize>>()
+}
+
 /// Reports the same compiled requested node bound used by this serializer.
 ///
 /// Closed native field counters supply their actual K/V types and separately

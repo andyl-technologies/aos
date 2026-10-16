@@ -10,6 +10,7 @@
 }: let
   assets = gem5-x86-linux-model-assets;
   helperSources = {
+    "native-controller-temporary-root-check.py" = ./_gem5/native-controller-temporary-root-check.py;
     "native-controller-x86-root.py" = ./_gem5/native-controller-x86-root.py;
     "native-controller-x86-root-model.py" = ./_gem5/native-controller-x86-root-model.py;
     "native-controller-x86-root-model-check.py" = ./_gem5/native-controller-x86-root-model-check.py;
@@ -56,6 +57,7 @@ in
         name = "check";
         script = ''
           export PYTHONDONTWRITEBYTECODE=1
+          ${python3}/bin/python3 -I -B helper-source/native-controller-temporary-root-check.py
           ${python3}/bin/python3 -B helper-source/native-controller-x86-root-model-check.py
           export LD_LIBRARY_PATH="${abseil-cpp}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           ${python3}/bin/python3 -I -B - <<'PY'

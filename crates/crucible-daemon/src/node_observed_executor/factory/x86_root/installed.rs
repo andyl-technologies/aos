@@ -41,6 +41,7 @@ pub(super) struct X86RootInstalledEngine {
     pub(super) runtime: RuntimeCustodyQueue,
     root: PathBuf,
     host: PathBuf,
+    command_policy: crucible_node_provider::gem5::NativeCommandConstructionPolicy,
 }
 
 pub(super) struct X86RootLiveWorld {
@@ -72,10 +73,18 @@ impl X86RootInstalledEngine {
         root: PathBuf,
         runtime: RuntimeCustodyQueue,
     ) -> Result<Self, NodeObservedError> {
+        Self::with_runtime_and_command_policy(root, runtime, Default::default())
+    }
+
+    pub(super) fn with_runtime_and_command_policy(
+        root: PathBuf, runtime: RuntimeCustodyQueue,
+        command_policy: crucible_node_provider::gem5::NativeCommandConstructionPolicy,
+    ) -> Result<Self, NodeObservedError> {
         validate_private_root(&root)?;
         Ok(Self {
             native: X86RootCustodyQueue::installed()?,
             runtime,
+            command_policy,
             root,
             host: PathBuf::from("/proc/self/exe"),
         })
@@ -113,7 +122,7 @@ impl X86RootInstalledEngine {
             incarnation: Id::new(format!("clock/{}", fresh_nonce()?))?,
             generation: 1.into(),
         };
-        let launch = X86RootLaunch::installed(
+        let launch = X86RootLaunch::installed_with_command_budget(
             root_owner.owner.clone(),
             root_owner.incarnation.clone(),
             root_owner.generation,
@@ -121,6 +130,7 @@ impl X86RootInstalledEngine {
             namespace.join("images"),
             namespace.join("temporary"),
             Duration::from_secs(120),
+            self.command_policy.reserve().map_err(error)?,
         )
         .map_err(error)?;
         let profile = Rc::new(X86RootWorldProfile::build(
@@ -154,6 +164,7 @@ impl X86RootInstalledEngine {
             activation: target.clone(),
             owner: root_owner,
             publication: PublicationKnowledge::NotAttempted,
+            command_budget: launch.command_construction_budget().map_err(error)?.clone(),
             backing: X86RootBacking::Fresh(files),
         })?;
 
@@ -289,7 +300,7 @@ impl X86RootInstalledEngine {
             private_directory(&namespace.join(child))?;
         }
         let root = &owners[1];
-        let launch = X86RootLaunch::installed(
+        let launch = X86RootLaunch::installed_with_command_budget(
             root.owner.clone(),
             root.incarnation.clone(),
             root.generation,
@@ -297,6 +308,7 @@ impl X86RootInstalledEngine {
             namespace.join("images"),
             namespace.join("temporary"),
             Duration::from_secs(120),
+            self.command_policy.reserve().map_err(error)?,
         )
         .map_err(error)?;
         let profile = Rc::new(X86RootWorldProfile::build(
@@ -328,6 +340,7 @@ impl X86RootInstalledEngine {
             activation: target.clone(),
             owner: target.owners[1].clone(),
             publication: PublicationKnowledge::NotAttempted,
+            command_budget: launch.command_construction_budget().map_err(error)?.clone(),
             backing: X86RootBacking::Archived {
                 source: Box::new(archive.clone()),
                 artifacts,

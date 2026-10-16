@@ -151,6 +151,7 @@ impl X86RootHistoricalSource {
                 .ok_or(ProviderError::Frame("x86 installed image tool omitted"))
         };
         Ok(X86RootLaunch {
+            command_budget: None,
             owner: self.owner.clone(),
             incarnation: self.incarnation.clone(),
             generation: self.generation,

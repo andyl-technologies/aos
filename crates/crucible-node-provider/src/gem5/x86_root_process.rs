@@ -316,36 +316,26 @@ impl X86RootNativeProcess {
             .create_new(true)
             .mode(0o600)
             .open(output)?;
-        let mut command = Command::new(&launch.tools.launcher.path);
+        use super::native_command::{Atom, CommandSpec};
+        let args = [
+            Atom::text("--new-coordinator"), Atom::text("--coord-port"), Atom::text("0"),
+            Atom::text("--no-gzip"), Atom::text("--interval"), Atom::text("0"),
+            Atom::text("--ckpt-signal"), Atom::text("40"), Atom::text("--with-plugin"),
+            Atom::path(&launch.tools.resource_helper.path), Atom::text("--ckptdir"),
+            Atom::path(&launch.tools.image_root), Atom::text("--tmpdir"),
+            Atom::path(&launch.tools.temporary_root), Atom::path(&launch.artifact("native_executable")?.path),
+            Atom::text("--listener-mode=off"), Atom::PrefixedJoin("--outdir=", &launch.resource_root, "output"),
+            Atom::Joined(&launch.resource_root, "native-controller-x86-root.py"),
+        ];
+        let environment = [
+            ("PYTHONNOUSERSITE", Atom::text("1")),
+            ("PYTHONDONTWRITEBYTECODE", Atom::text("1")),
+            ("CRUCIBLE_CAPTURE_RESOURCE_ROOT", Atom::path(&launch.resource_root)),
+        ];
+        let mut command = CommandSpec { executable: &launch.tools.launcher.path,
+            temporary_root: &launch.tools.temporary_root, args: &args, environment: &environment,
+        }.construct(launch.command_construction_budget()?)?;
         command
-            .env_clear()
-            .env("LC_ALL", "C")
-            .env("PYTHONHASHSEED", "0")
-            .env("PYTHONNOUSERSITE", "1")
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .env("CRUCIBLE_CAPTURE_RESOURCE_ROOT", &launch.resource_root)
-            .args([
-                "--new-coordinator",
-                "--coord-port",
-                "0",
-                "--no-gzip",
-                "--interval",
-                "0",
-                "--ckpt-signal",
-                "40",
-                "--with-plugin",
-            ])
-            .arg(&launch.tools.resource_helper.path)
-            .arg("--ckptdir")
-            .arg(&launch.tools.image_root)
-            .arg(launch.artifact("native_executable")?.path.clone())
-            .arg("--listener-mode=off")
-            .arg(format!(
-                "--outdir={}",
-                launch.resource_root.join("output").display()
-            ))
-            .arg(launch.resource_root.join("native-controller-x86-root.py"))
-            .current_dir(&launch.tools.temporary_root)
             .process_group(0)
             .stdin(Stdio::from(OwnedFd::from(child_bootstrap)))
             .stdout(Stdio::null())
@@ -927,6 +917,7 @@ mod construction_tests {
             content: canonical::content_ref(b"test", "application/octet-stream").unwrap(),
         };
         let launch = X86RootLaunch {
+            command_budget: None,
             owner: Id::new("original").unwrap(),
             incarnation: Id::new("incarnation").unwrap(),
             generation: 1.into(),

@@ -14,6 +14,7 @@
   # Repository sources remain model-specific; installed companion filenames
   # are fixed by the source-owned controller and auditor import contract.
   helperSources = {
+    "native-controller-temporary-root-check.py" = ./_gem5/native-controller-temporary-root-check.py;
     "native-controller.py" = ./_gem5/native-controller.py;
     "native-controller-models.py" = ./_gem5/native-controller-models.py;
     "native-controller-arm-root.py" = ./_gem5/native-controller-arm-root.py;
@@ -88,6 +89,7 @@ in
         name = "check";
         script = ''
           export PYTHONDONTWRITEBYTECODE=1
+          ${python3}/bin/python3 -I -B ${helperSource}/native-controller-temporary-root-check.py
           ${python3}/bin/python3 -B ${helperSource}/native-model-assets-check.py \
             ${helperSource}/native-model-assets.py
           ${python3}/bin/python3 -B ${helperSource}/full-system-process-image-audit-check.py

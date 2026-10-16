@@ -151,6 +151,7 @@ impl ArmRootHistoricalSource {
                 .ok_or(ProviderError::Frame("ARM installed image tool omitted"))
         };
         Ok(ArmRootLaunch {
+            command_budget: None,
             owner: self.owner.clone(),
             incarnation: self.incarnation.clone(),
             generation: self.generation,

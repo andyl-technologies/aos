@@ -14,7 +14,7 @@ use std::{
         unix::{net::UnixStream, process::CommandExt},
     },
     path::Path,
-    process::{Command, Stdio},
+    process::Stdio,
     time::Duration,
 };
 
@@ -288,15 +288,11 @@ impl X86RootNativeProcess {
             ProviderError::ResourceExhausted("x86 reserved unenrolled-helper storage")
         })?;
         let original_deadline = super::arm_root_io::deadline(launch.timeout)?;
-        let child = Command::new(&launch.artifact("python")?.path)
-            .env_clear()
-            .env("LC_ALL", "C")
-            .env("PYTHONHASHSEED", "0")
-            .env("PYTHONNOUSERSITE", "1")
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .arg("-B")
-            .arg(launch.resource_root.join("x86-root-process-image-audit.py"))
-            .current_dir(&launch.tools.temporary_root)
+        use super::native_command::{Atom, CommandSpec};
+        let args = [Atom::text("-B"), Atom::Joined(&launch.resource_root, "x86-root-process-image-audit.py")];
+        let child = CommandSpec { executable: &launch.artifact("python")?.path,
+            temporary_root: &launch.tools.temporary_root, args: &args, environment: &[("PYTHONNOUSERSITE", Atom::text("1")), ("PYTHONDONTWRITEBYTECODE", Atom::text("1"))],
+        }.construct(launch.command_construction_budget()?)?
             .process_group(0)
             .stdin(Stdio::from(input))
             .stdout(Stdio::from(output))

@@ -300,6 +300,7 @@ fn actual_root_archive_import_preserves_raw_history_after_entire_source_is_gone(
             let restored = ArmRootNativeProcess::restore(
                 &saved,
                 ArmRootRestoreTarget {
+                command_budget: crucible_node_provider::gem5::NativeCommandConstructionPolicy::default().reserve().unwrap(),
                     incarnation: Id::new(name)?,
                     generation: 2.into(),
                     resource_root: resources,

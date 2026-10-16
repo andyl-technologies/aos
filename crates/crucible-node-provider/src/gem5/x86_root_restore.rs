@@ -11,7 +11,7 @@ use std::{
         process::CommandExt,
     },
     path::PathBuf,
-    process::{Command, Stdio},
+    process::Stdio,
     time::Duration,
 };
 
@@ -46,6 +46,8 @@ pub struct X86RootRestoreTarget {
     pub temporary_root: PathBuf,
     /// Bounds operational transport and helper deadlines without guest time.
     pub timeout: Duration,
+    /// Supplies the fresh target caller's independent construction reservation.
+    pub command_budget: super::NativeCommandConstructionBudget,
 }
 
 impl X86RootNativeProcess {
@@ -106,6 +108,7 @@ impl X86RootNativeProcess {
         launch.tools.image_root = target.image_root;
         launch.tools.temporary_root = target.temporary_root;
         launch.timeout = target.timeout;
+        launch.command_budget = Some(target.command_budget);
         let endpoint = launch.tools.temporary_root.join("control.sock");
         let listener = UnixListener::bind(&endpoint)?;
         fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600))?;
@@ -125,37 +128,23 @@ impl X86RootNativeProcess {
         let mut history = image.control_history().clone();
         history.reserve(3)?;
         history.reserve_session()?;
-        let child = Command::new(&launch.tools.restarter.path)
-            .env_clear()
-            .env("LC_ALL", "C")
-            .env("PYTHONHASHSEED", "0")
-            .args(["--new-coordinator", "--coord-port", "0", "--interval", "0"])
-            .arg("--ckptdir")
-            .arg(&launch.tools.image_root)
-            .arg("--tmpdir")
-            .arg(&launch.tools.temporary_root)
-            .arg(image.process_image()?)
-            .env("CRUCIBLE_RESTORE_RESOURCE_ROOT", &launch.resource_root)
-            .env(
-                "CRUCIBLE_RESTORE_SAVED_FILES_SOURCE_ROOT",
-                image.source_supplementary_files_root(),
-            )
-            .env("CRUCIBLE_RESTORE_SAVED_FILES_TARGET_ROOT", &supplementary)
-            .env("CRUCIBLE_RESTORE_SAVED_FILES_MANIFEST", &manifest)
-            .env(
-                "CRUCIBLE_GEM5_OPERATIONAL_ROOT",
-                &launch.tools.temporary_root,
-            )
-            .env("CRUCIBLE_GEM5_CONTROL_SOCKET", &endpoint)
-            .env(
-                "DMTCP_PATH_MAPPING",
-                format!(
-                    "{}:{}",
-                    image.source().resource_root.display(),
-                    launch.resource_root.display()
-                ),
-            )
-            .current_dir(&launch.tools.temporary_root)
+        use super::native_command::{Atom, CommandSpec};
+        let args = [Atom::text("--new-coordinator"), Atom::text("--coord-port"), Atom::text("0"),
+            Atom::text("--interval"), Atom::text("0"), Atom::text("--ckptdir"),
+            Atom::path(&launch.tools.image_root), Atom::text("--tmpdir"),
+            Atom::path(&launch.tools.temporary_root), Atom::path(image.process_image()?)];
+        let environment = [
+            ("CRUCIBLE_RESTORE_RESOURCE_ROOT", Atom::path(&launch.resource_root)),
+            ("CRUCIBLE_RESTORE_SAVED_FILES_SOURCE_ROOT", Atom::path(image.source_supplementary_files_root())),
+            ("CRUCIBLE_RESTORE_SAVED_FILES_TARGET_ROOT", Atom::path(&supplementary)),
+            ("CRUCIBLE_RESTORE_SAVED_FILES_MANIFEST", Atom::path(&manifest)),
+            ("CRUCIBLE_GEM5_OPERATIONAL_ROOT", Atom::path(&launch.tools.temporary_root)),
+            ("CRUCIBLE_GEM5_CONTROL_SOCKET", Atom::path(&endpoint)),
+            ("DMTCP_PATH_MAPPING", Atom::Mapping(&image.source().resource_root, &launch.resource_root)),
+        ];
+        let child = CommandSpec { executable: &launch.tools.restarter.path,
+            temporary_root: &launch.tools.temporary_root, args: &args, environment: &environment,
+        }.construct(launch.command_construction_budget()?)?
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))

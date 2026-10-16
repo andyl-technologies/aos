@@ -313,6 +313,31 @@ def hello(stream, continuation):
     send(stream, ready)
 
 
+def rebind_operational_temporary_root(raw_root, native_setenv, native_getenv):
+    """Rebinds restored libc, Python and tempfile views before any callback."""
+    root = Path(os.fsdecode(raw_root))
+    if (
+        not root.is_absolute() or root.resolve(strict=True) != root
+        or not root.is_dir() or root.stat().st_uid != os.getuid()
+        or root.stat().st_mode & 0o077
+    ):
+        raise ValueError("restored operational temporary root is not canonically private")
+
+    for key in ("TMPDIR", "DMTCP_TMPDIR"):
+        if native_setenv(key.encode("ascii"), raw_root, 1) != 0:
+            raise ValueError("cannot rebind native operational temporary custody")
+        if native_getenv(key.encode("ascii")) != raw_root:
+            raise ValueError("native operational temporary custody did not rebind")
+        os.environ[key] = os.fsdecode(raw_root)
+
+    # DMTCP restores Python module globals as well as libc. A previously cached
+    # tempfile route must not survive a genuine target's operational rebinding.
+    module = sys.modules.get("tempfile")
+    if module is not None:
+        module.tempdir = None
+    os.chdir(root)
+
+
 def serve(selected_adapter):
     """Runs one source-owned model with the shared exact boundary/custody loop.
 
@@ -716,7 +741,9 @@ def serve(selected_adapter):
                     raise ValueError("fresh reconstruction has no private operational root")
                 # Operational checkpoint scripts must never return to a source
                 # host directory. The closed guest profile cannot observe host cwd.
-                os.chdir(operational_root.value.decode("utf-8"))
+                rebind_operational_temporary_root(
+                    operational_root.value, native_setenv, native_getenv,
+                )
                 continuation = "restored"
             model.rebind_resource_root(resource_root)
             # Rebind operational diagnostic paths before inspecting the native cut;

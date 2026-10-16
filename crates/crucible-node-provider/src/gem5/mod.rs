@@ -100,3 +100,6 @@ pub use x86_root_process::{
 };
 pub use x86_root_restore::X86RootRestoreTarget;
 pub use x86_root_source::X86RootHistoricalSource;
+
+mod native_command;
+pub use native_command::{NativeCommandConstructionBudget, NativeCommandConstructionPolicy};
