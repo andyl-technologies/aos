@@ -116,6 +116,8 @@ impl Manifest {
             return Err(StoreError::Corrupt { id });
         }
         checked_reader::check(original, boundary)?;
+        #[cfg(test)]
+        super::cost::authenticated(count, length);
         Ok(Self {
             entries,
             id: entry.pack,

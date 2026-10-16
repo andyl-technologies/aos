@@ -260,6 +260,36 @@ fn packed_incompressible_512_mib_capture_archive_restore_and_repack() {
     exercise_volume(VOLUME_BYTES);
 }
 
+#[test]
+fn packed_repack_depth_first_read_costs() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path());
+    let pages = (32 << 20) / 4096;
+    let root = capture_pages(&fixture, pages);
+    assert_restored(&fixture, &root, pages, "cost_before_repack");
+    let before = crate::content_store::packed_read_costs();
+
+    let repack = fixture.admin.packed_repack();
+    let plan = repack[0]
+        .plan_repack_with_boundary(&fixture.original, &mut || Ok(()))
+        .unwrap();
+    let report = repack[0]
+        .apply_repack_with_boundary(&fixture.original, &plan, &mut || Ok(()))
+        .unwrap();
+    assert_eq!(report.before().logical_objects(), 3 * pages);
+    assert_eq!(report.after().logical_objects(), 3 * pages);
+    assert_restored(&fixture, &root, pages, "cost_after_repack");
+    let after = crate::content_store::packed_read_costs();
+
+    assert_eq!(before.lookups, 3 * pages - 1);
+    assert_eq!(after.lookups, before.lookups);
+    assert!(before.authenticated_manifests > 0);
+    assert!(after.authenticated_manifests > 0);
+    assert!(after.authenticated_manifests <= after.pack_switches);
+    // crucible-lint: allow direct-diagnostic -- counts real same-root reads, not permissions or performance parity.
+    eprintln!("packed_repack_dfs_costs pages={pages} before={before:?} after={after:?}");
+}
+
 fn exercise_volume(bytes: u64) {
     let complete = VolumeStage::start(bytes, "exercise");
     let setup = VolumeStage::start(bytes, "setup");
@@ -516,6 +546,7 @@ struct VolumeStage {
 )]
 impl VolumeStage {
     fn start(bytes: u64, name: &'static str) -> Self {
+        crate::content_store::reset_packed_read_costs();
         let started = if bytes == VOLUME_BYTES {
             // crucible-lint: allow direct-diagnostic -- fixed workload progress only.
             eprintln!("packed_volume_stage_begin={name}");
@@ -530,9 +561,10 @@ impl VolumeStage {
         if let Some(started) = self.started {
             // crucible-lint: allow direct-diagnostic -- completed fixed workload stage only.
             eprintln!(
-                "packed_volume_stage_end={} elapsed_ns={} {counts}",
+                "packed_volume_stage_end={} elapsed_ns={} {counts} packed_read_costs={:?}",
                 self.name,
                 started.elapsed().as_nanos(),
+                crate::content_store::packed_read_costs(),
             );
         }
     }
