@@ -233,15 +233,39 @@ fn host_global_provision_kill_restart_and_broker_vm() {
     require_bounded_vm();
     let mount =
         PathBuf::from(std::env::var_os("TERRANE_HOST_QUOTA_ADMIN_ROOT").expect("guest mount"));
-    for (index, stage) in ["claim-durable", "ledger-durable", "custody-taken"]
-        .into_iter()
-        .enumerate()
+    for (index, stage) in [
+        "claim-durable",
+        "ledger-durable",
+        "custody-taken",
+        "project-mutated",
+    ]
+    .into_iter()
+    .enumerate()
     {
         let project = 49101 + index as u32;
         let a = Fixture::create(&mount, &format!("crash-A-{index}"), &[project]);
         let b = Fixture::create(&mount, &format!("crash-B-{index}"), &[project]);
         a.kill_provision_at(stage);
         assert_eq!(a.ledger.exists(), stage != "claim-durable");
+        let interrupted_root = File::open(&a.layouts[0]).expect("interrupted actual root");
+        assert_eq!(
+            NativeProject::inspect(&interrupted_root)
+                .expect("actual interrupted project")
+                .project_id,
+            if stage == "project-mutated" {
+                project
+            } else {
+                0
+            }
+        );
+        if stage == "project-mutated" {
+            assert_eq!(
+                NativeQuota::query(&interrupted_root, project)
+                    .expect("actual interrupted quota limit")
+                    .hard_limit_bytes,
+                2097152
+            );
+        }
         assert!(serve(&a.config, &a.ledger).is_err());
         assert!(provision(&b.config, &b.ledger).is_err());
         assert!(!b.ledger.exists());
@@ -295,6 +319,46 @@ fn host_global_provision_kill_restart_and_broker_vm() {
     let broker = multi.broker();
     multi.query(0).expect("first owner actual quota");
     multi.query(1).expect("second owner actual quota");
+
+    let anchor_bytes = fs::read(ANCHOR_PATH).expect("actual anchor bytes");
+    let absent_anchor =
+        Path::new(ANCHOR_PATH).with_file_name("project-claims.identity.live-vm-missing");
+    fs::rename(ANCHOR_PATH, &absent_anchor).expect("live broker anchor loss");
+    assert!(multi.query(0).is_err());
+    fs::rename(absent_anchor, ANCHOR_PATH).expect("restore original anchor");
+    multi
+        .query(0)
+        .expect("actual quota after anchor restoration");
+    fs::write(ANCHOR_PATH, b"malformed live anchor").expect("VM anchor corruption");
+    assert!(multi.query(1).is_err());
+    assert!(provision(&multi.config, &multi.ledger).is_err());
+    fs::write(ANCHOR_PATH, anchor_bytes).expect("VM administrator anchor restoration");
+    multi.query(1).expect("actual quota after anchor repair");
+
+    let root = File::open(&multi.layouts[0]).expect("actual owner root");
+    let uuid = terrane_fs::host_quota::filesystem_uuid(&root).expect("actual owner UUID");
+    let claim_name = terrane_fs::host_quota::project_claim_name(&uuid, multi.projects[0])
+        .expect("exact native claim key");
+    let claim = Path::new(REGISTRY_PATH).join(claim_name);
+    let claim_bytes = fs::read(&claim).expect("actual protected claim bytes");
+    let absent_claim = claim.with_extension("live-vm-missing");
+    fs::rename(&claim, &absent_claim).expect("live broker owner claim loss");
+    assert!(multi.query(0).is_err());
+    // Every observation checks the entire native partition, including owners
+    // other than the requested one. Missing A also makes B unavailable.
+    assert!(multi.query(1).is_err());
+    fs::rename(absent_claim, &claim).expect("restore actual owner claim");
+    multi
+        .query(1)
+        .expect("actual partition after claim restoration");
+    fs::write(&claim, b"foreign project claim bytes").expect("VM individual claim corruption");
+    assert!(multi.query(0).is_err());
+    assert!(multi.query(1).is_err());
+    assert!(provision(&multi.config, &multi.ledger).is_err());
+    fs::write(&claim, claim_bytes).expect("VM administrator claim restoration");
+    multi
+        .query(0)
+        .expect("actual quota after individual claim repair");
 
     let displaced = Path::new(REGISTRY_PATH).with_file_name("project-claims.full-vm-displaced");
     fs::rename(REGISTRY_PATH, &displaced).expect("registry loss");

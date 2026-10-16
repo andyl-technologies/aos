@@ -728,6 +728,8 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     }
     for (binding, directory) in ledger.bindings.iter().zip(&directories) {
         provision_project(directory, binding.project_id, binding.hard_limit_bytes)?;
+        #[cfg(test)]
+        provisioning_test_checkpoint("project-mutated")?;
     }
     for (binding, directory) in ledger.bindings.iter().zip(&directories) {
         terrane_fs::host_quota::set_directory_custody(
