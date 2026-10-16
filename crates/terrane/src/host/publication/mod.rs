@@ -8,7 +8,7 @@ mod claim;
 mod leases;
 mod sequence;
 mod state;
-pub use leases::{RetirementInode, RetirementLease};
+pub use leases::{RetirementInode, RetirementLease, RetirementLeaseRequest};
 
 pub use claim::{PublicationClaim, PublicationRecipe};
 pub use sequence::{

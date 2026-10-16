@@ -5,13 +5,13 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 
 use terrane::host::publication::{PublicationClaim, VerityBinding};
-use terrane::store::{LocalFs, TokioLocalFs};
+use terrane::store::{LocalFs, TokioClock, TokioLocalFs};
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
 use super::{NativePublishedObject, NativePublisher, NativeRetirementPolicy, WorkerState};
 use std::path::PathBuf;
 use terrane::host::publication::Publisher;
-use terrane::host::publication::{FsPublicationState, RetirementInode};
+use terrane::host::publication::{FsPublicationState, RetirementInode, RetirementLeaseRequest};
 
 /// Selects a configured domain and one cache owner's current incarnation.
 #[derive(Clone, Debug)]
@@ -431,10 +431,13 @@ impl CommandOwner {
         let metadata = file.metadata()?;
         self.leases
             .retirement_lease(
-                &self.domain,
-                &descriptor.encode(),
-                retirement_inode(&metadata),
-                self.retirement.interval(),
+                &TokioClock,
+                RetirementLeaseRequest {
+                    domain: &self.domain,
+                    key: &descriptor.encode(),
+                    incarnation: retirement_inode(&metadata),
+                    interval: self.retirement.interval(),
+                },
             )
             .await?;
         for retained in &self.bodies {
@@ -522,13 +525,16 @@ impl CommandOwner {
             let lease = self
                 .leases
                 .retirement_lease(
-                    &self.domain,
-                    &lease_key,
-                    retirement_inode(&metadata),
-                    self.retirement.interval(),
+                    &TokioClock,
+                    RetirementLeaseRequest {
+                        domain: &self.domain,
+                        key: &lease_key,
+                        incarnation: retirement_inode(&metadata),
+                        interval: self.retirement.interval(),
+                    },
                 )
                 .await?;
-            if !lease.expired()? {
+            if !lease.expired(&TokioClock)? {
                 return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "pending retirement lease has not expired",
@@ -548,10 +554,13 @@ impl CommandOwner {
             let metadata = expected.metadata()?;
             self.leases
                 .begin_retirement_lease(
-                    &self.domain,
-                    &lease_key,
-                    retirement_inode(&metadata),
-                    self.retirement.interval(),
+                    &TokioClock,
+                    RetirementLeaseRequest {
+                        domain: &self.domain,
+                        key: &lease_key,
+                        incarnation: retirement_inode(&metadata),
+                        interval: self.retirement.interval(),
+                    },
                 )
                 .await?;
         }

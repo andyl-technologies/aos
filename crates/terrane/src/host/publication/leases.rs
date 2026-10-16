@@ -15,12 +15,12 @@
 //! deadlines receive a fresh conservative interval rather than immediate expiry.
 
 use std::io;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use super::state::FsPublicationState;
-use crate::store::LocalFs;
+use crate::store::{Clock, LocalFs};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,16 +61,30 @@ impl RetirementLease {
     ///
     /// # Errors
     /// Returns an error for an unavailable or unrepresentable Unix clock.
-    pub fn expired(&self) -> io::Result<bool> {
-        Ok(now_ms()? >= self.deadline_unix_ms)
+    pub fn expired(&self, clock: &impl Clock) -> io::Result<bool> {
+        Ok(now_ms(clock)? >= self.deadline_unix_ms)
     }
 }
 
-fn now_ms() -> io::Result<u64> {
-    let elapsed = SystemTime::now()
+fn now_ms(clock: &impl Clock) -> io::Result<u64> {
+    let elapsed = clock
+        .now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?;
     elapsed.as_millis().try_into().map_err(io::Error::other)
+}
+
+/// Binds lease persistence to one configured domain and actual pending inode.
+#[derive(Clone, Copy)]
+pub struct RetirementLeaseRequest<'a> {
+    /// The configured disclosure domain.
+    pub domain: &'a str,
+    /// The bounded internal encoding of the registered body key.
+    pub key: &'a [u8],
+    /// The actual retained inode and post-rename timestamp.
+    pub incarnation: RetirementInode,
+    /// The explicit conservative pending interval, nonzero and at most 300 seconds.
+    pub interval: Duration,
 }
 
 enum LeaseMode {
@@ -89,12 +103,10 @@ impl<F: LocalFs + Sync> FsPublicationState<F> {
     /// Returns invalid context, malformed state, clock, write or durability errors.
     pub async fn retirement_lease(
         &self,
-        domain: &str,
-        key: &[u8],
-        incarnation: RetirementInode,
-        interval: Duration,
+        clock: &impl Clock,
+        request: RetirementLeaseRequest<'_>,
     ) -> io::Result<RetirementLease> {
-        self.persist_retirement_lease(domain, key, incarnation, interval, LeaseMode::Recover)
+        self.persist_retirement_lease(clock, request, LeaseMode::Recover)
             .await
     }
 
@@ -107,23 +119,25 @@ impl<F: LocalFs + Sync> FsPublicationState<F> {
     /// Returns invalid context, clock, serialization, write or durability errors.
     pub async fn begin_retirement_lease(
         &self,
-        domain: &str,
-        key: &[u8],
-        incarnation: RetirementInode,
-        interval: Duration,
+        clock: &impl Clock,
+        request: RetirementLeaseRequest<'_>,
     ) -> io::Result<RetirementLease> {
-        self.persist_retirement_lease(domain, key, incarnation, interval, LeaseMode::Begin)
+        self.persist_retirement_lease(clock, request, LeaseMode::Begin)
             .await
     }
 
     async fn persist_retirement_lease(
         &self,
-        domain: &str,
-        key: &[u8],
-        incarnation: RetirementInode,
-        interval: Duration,
+        clock: &impl Clock,
+        request: RetirementLeaseRequest<'_>,
         mode: LeaseMode,
     ) -> io::Result<RetirementLease> {
+        let RetirementLeaseRequest {
+            domain,
+            key,
+            incarnation,
+            interval,
+        } = request;
         terrane_core::properties::Domain::parse(domain)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         if key.is_empty()
@@ -196,7 +210,7 @@ impl<F: LocalFs + Sync> FsPublicationState<F> {
             .max(1)
             .try_into()
             .map_err(io::Error::other)?;
-        let deadline_unix_ms = now_ms()?
+        let deadline_unix_ms = now_ms(clock)?
             .checked_add(interval_ms)
             .ok_or_else(|| io::Error::other("retirement deadline overflow"))?;
         let record = Record {
