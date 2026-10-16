@@ -2,7 +2,7 @@
 
 use std::env;
 use std::error::Error;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -12,11 +12,6 @@ use std::time::{Duration, Instant};
 
 use crucible::ContentHash;
 use sha2::Digest as _;
-
-use crate::launch::{
-    MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES, MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
-    MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES, MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
-};
 
 use super::*;
 
@@ -176,33 +171,43 @@ fn console_sentinel_refuses_extra_bytes_links_and_permissions() -> Result<(), Bo
     Ok(())
 }
 
-fn write_sparse_trace(path: &std::path::Path, bytes: u64) -> Result<(), Box<dyn Error>> {
-    let mut trace = std::fs::OpenOptions::new().write(true).open(path)?;
-    trace.set_len(bytes)?;
-    trace.seek(SeekFrom::Start(bytes - 1))?;
-    trace.write_all(b"\n")?;
-    Ok(())
+const RR_TRACE_ROW: &str =
+    "crucible_sim_rr_control_boundary phase=request request=1 ack=0 complete=0 token=0x0 state=2\n";
+
+/// Reads a whole authenticated trace inside an inspection callback.
+fn read_inspected_trace(reader: &mut dyn io::BufRead) -> Result<String, QemuSpawnError> {
+    let mut trace = String::new();
+    reader
+        .read_to_string(&mut trace)
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "read inspected test trace",
+            source,
+        })?;
+    Ok(trace)
 }
 
 #[test]
-fn retained_control_boundary_trace_accepts_only_the_prepared_inode() -> Result<(), Box<dyn Error>> {
+fn inspected_control_boundary_trace_accepts_only_the_prepared_inode() -> Result<(), Box<dyn Error>>
+{
     let fixture = TraceRetentionFixture::new()?;
     fixture.prepared.prepare_rr_control_boundary_trace()?;
-    std::fs::write(fixture.trace_path(), b"phase=request request=1\n")?;
+    std::fs::write(fixture.trace_path(), RR_TRACE_ROW)?;
+    let inspected = fixture
+        .prepared
+        .inspect_rr_control_boundary_trace_after_reap(1024, read_inspected_trace)?;
+    assert_eq!(inspected, RR_TRACE_ROW);
     assert_eq!(
-        fixture
-            .prepared
-            .retain_rr_control_boundary_trace_after_reap()?,
-        "phase=request request=1\n"
+        crate::parse_qemu_rr_control_boundary_trace(&inspected)?.len(),
+        1
     );
 
     std::fs::remove_file(fixture.trace_path())?;
-    std::fs::write(fixture.trace_path(), b"phase=request request=2\n")?;
+    std::fs::write(fixture.trace_path(), RR_TRACE_ROW)?;
     std::fs::set_permissions(fixture.trace_path(), std::fs::Permissions::from_mode(0o600))?;
     assert!(matches!(
         fixture
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .inspect_rr_control_boundary_trace_after_reap(1024, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceChanged { .. })
     ));
     Ok(())
@@ -216,14 +221,7 @@ fn streamed_control_boundary_trace_hashes_all_rows_and_retains_only_the_tail()
     let row = "crucible_sim_rr_control_boundary phase=request request=1 ack=0 complete=0 token=0x0 state=2\n";
     let trace = row.repeat(50_000);
     std::fs::write(fixture.trace_path(), &trace)?;
-    assert!(u64::try_from(trace.len())? > MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES);
 
-    assert!(matches!(
-        fixture
-            .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLength { .. })
-    ));
     let summary = fixture
         .prepared
         .summarize_rr_control_boundary_trace_after_reap()?;
@@ -242,7 +240,46 @@ fn streamed_control_boundary_trace_hashes_all_rows_and_retains_only_the_tail()
 }
 
 #[test]
-fn streamed_control_boundary_trace_rejects_replacement_malformed_and_oversize()
+fn streamed_control_boundary_trace_is_limited_only_by_aggregate_admission()
+-> Result<(), Box<dyn Error>> {
+    // The streamed reader once refused traces above 32 MiB or 500,000 rows even
+    // though it keeps only a fixed tail. Exceed both former limits.
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_rr_control_boundary_trace()?;
+    let rows = 500_001_usize;
+    let mut writer = io::BufWriter::new(std::fs::File::create(fixture.trace_path())?);
+    for _ in 0..rows {
+        writer.write_all(RR_TRACE_ROW.as_bytes())?;
+    }
+    writer.into_inner()?.sync_all()?;
+    let trace_bytes = rows * RR_TRACE_ROW.len();
+    assert!(trace_bytes > 32 * 1024 * 1024);
+
+    let summary = fixture
+        .prepared
+        .summarize_rr_control_boundary_trace_after_reap()?;
+    let header = summary.lines().next().ok_or("missing RR summary header")?;
+    assert!(header.starts_with(&format!("bytes={trace_bytes} sha256=")));
+    assert!(header.ends_with(&format!(
+        "rows={rows} tail_rows=32 omitted_rows={}",
+        rows - 32
+    )));
+
+    let mut inadmissible = TraceRetentionFixture::new()?;
+    inadmissible.prepared.prepare_rr_control_boundary_trace()?;
+    std::fs::write(inadmissible.trace_path(), RR_TRACE_ROW)?;
+    inadmissible.prepared.admitted_ceiling.2 = 1;
+    assert!(matches!(
+        inadmissible
+            .prepared
+            .summarize_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceExceedsAdmission { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn streamed_control_boundary_trace_rejects_replacement_and_malformed_rows()
 -> Result<(), Box<dyn Error>> {
     let fixture = TraceRetentionFixture::new()?;
     fixture.prepared.prepare_rr_control_boundary_trace()?;
@@ -280,16 +317,6 @@ fn streamed_control_boundary_trace_rejects_replacement_malformed_and_oversize()
             .prepared
             .summarize_rr_control_boundary_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceChanged { .. })
-    ));
-
-    let oversized = TraceRetentionFixture::new()?;
-    oversized.prepared.prepare_rr_control_boundary_trace()?;
-    write_sparse_trace(&oversized.trace_path(), 32 * 1024 * 1024 + 1)?;
-    assert!(matches!(
-        oversized
-            .prepared
-            .summarize_rr_control_boundary_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLength { .. })
     ));
     Ok(())
 }
@@ -333,17 +360,17 @@ fn streamed_control_trace_retains_delivery_only_and_mixed_late_rows() -> Result<
 }
 
 #[test]
-fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dyn Error>> {
+fn inspected_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dyn Error>> {
     let trace = "crucible_sim_determinism_timer seq=1 timer=3 list=1 scope=global owner=rr expire_ps=10 current_ps=10 raw=80\n";
     let fixture = TraceRetentionFixture::new()?;
     fixture.prepared.prepare_runtime_determinism_trace()?;
     std::fs::write(fixture.runtime_trace_path(), trace)?;
-    let retained = fixture
+    let inspected = fixture
         .prepared
-        .retain_runtime_determinism_trace_after_reap()?;
-    assert_eq!(retained, trace);
+        .inspect_runtime_determinism_trace_after_reap(1024, read_inspected_trace)?;
+    assert_eq!(inspected, trace);
     assert_eq!(
-        crate::parse_qemu_runtime_determinism_trace(&retained)?.len(),
+        crate::parse_qemu_runtime_determinism_trace(&inspected)?.len(),
         1
     );
 
@@ -357,7 +384,7 @@ fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dy
     assert!(matches!(
         fixture
             .prepared
-            .retain_runtime_determinism_trace_after_reap(),
+            .inspect_runtime_determinism_trace_after_reap(1024, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceChanged { .. })
     ));
     Ok(())
@@ -485,26 +512,28 @@ fn retained_runtime_liveness_tail_bounds_an_oversized_authenticated_trace()
 }
 
 #[test]
-fn retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_state()
+fn streamed_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_state()
 -> Result<(), Box<dyn Error>> {
     let unprepared = TraceRetentionFixture::new()?;
     assert!(
         unprepared
             .prepared
-            .retain_rr_control_boundary_trace_after_reap()
+            .summarize_rr_control_boundary_trace_after_reap()
             .is_err()
     );
 
     let empty = TraceRetentionFixture::new()?;
     empty.prepared.prepare_rr_control_boundary_trace()?;
     assert!(matches!(
-        empty.prepared.retain_rr_control_boundary_trace_after_reap(),
+        empty
+            .prepared
+            .summarize_rr_control_boundary_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceLength { actual: 0, .. })
     ));
 
     let linked = TraceRetentionFixture::new()?;
     linked.prepared.prepare_rr_control_boundary_trace()?;
-    std::fs::write(linked.trace_path(), b"line\n")?;
+    std::fs::write(linked.trace_path(), RR_TRACE_ROW)?;
     std::fs::hard_link(
         linked.trace_path(),
         linked.directory.path().join("second-link"),
@@ -512,13 +541,13 @@ fn retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_sta
     assert!(matches!(
         linked
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .summarize_rr_control_boundary_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceMetadata { links: 2, .. })
     ));
 
     let wrong_mode = TraceRetentionFixture::new()?;
     wrong_mode.prepared.prepare_rr_control_boundary_trace()?;
-    std::fs::write(wrong_mode.trace_path(), b"line\n")?;
+    std::fs::write(wrong_mode.trace_path(), RR_TRACE_ROW)?;
     std::fs::set_permissions(
         wrong_mode.trace_path(),
         std::fs::Permissions::from_mode(0o644),
@@ -526,7 +555,7 @@ fn retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_sta
     assert!(matches!(
         wrong_mode
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .summarize_rr_control_boundary_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceMetadata { mode: 0o644, .. })
     ));
 
@@ -534,130 +563,40 @@ fn retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_sta
     symlinked.prepared.prepare_rr_control_boundary_trace()?;
     std::fs::remove_file(symlinked.trace_path())?;
     let target = symlinked.directory.path().join("trace-target");
-    std::fs::write(&target, b"line\n")?;
+    std::fs::write(&target, RR_TRACE_ROW)?;
     symlink(&target, symlinked.trace_path())?;
     assert!(
         symlinked
             .prepared
-            .retain_rr_control_boundary_trace_after_reap()
+            .summarize_rr_control_boundary_trace_after_reap()
             .is_err()
     );
     Ok(())
 }
 
 #[test]
-fn retained_control_boundary_trace_enforces_content_and_aggregate_bounds()
--> Result<(), Box<dyn Error>> {
+fn inspected_traces_enforce_caller_and_aggregate_bounds() -> Result<(), Box<dyn Error>> {
     let oversized = TraceRetentionFixture::new()?;
     oversized.prepared.prepare_rr_control_boundary_trace()?;
-    std::fs::write(
-        oversized.trace_path(),
-        vec![b'x'; usize::try_from(MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES)? + 1],
-    )?;
+    std::fs::write(oversized.trace_path(), RR_TRACE_ROW)?;
+    let below_trace = u64::try_from(RR_TRACE_ROW.len())? - 1;
     assert!(matches!(
         oversized
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .inspect_rr_control_boundary_trace_after_reap(below_trace, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceLength { .. })
-    ));
-
-    let runtime_above_prior_limit = TraceRetentionFixture::new()?;
-    runtime_above_prior_limit
-        .prepared
-        .prepare_runtime_determinism_trace()?;
-    let runtime_bytes = MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES / 2 + 1;
-    write_sparse_trace(
-        &runtime_above_prior_limit.runtime_trace_path(),
-        runtime_bytes,
-    )?;
-    assert_eq!(
-        runtime_above_prior_limit
-            .prepared
-            .retain_runtime_determinism_trace_after_reap()?
-            .len(),
-        usize::try_from(runtime_bytes)?
-    );
-
-    let runtime_oversized = TraceRetentionFixture::new()?;
-    runtime_oversized
-        .prepared
-        .prepare_runtime_determinism_trace()?;
-    write_sparse_trace(
-        &runtime_oversized.runtime_trace_path(),
-        MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES + 1,
-    )?;
-    assert!(matches!(
-        runtime_oversized
-            .prepared
-            .retain_runtime_determinism_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLength { .. })
-    ));
-
-    let too_many_lines = TraceRetentionFixture::new()?;
-    too_many_lines
-        .prepared
-        .prepare_rr_control_boundary_trace()?;
-    std::fs::write(
-        too_many_lines.trace_path(),
-        vec![b'\n'; MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES + 1],
-    )?;
-    assert!(matches!(
-        too_many_lines
-            .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLines {
-            actual,
-            maximum: MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
-            ..
-        }) if actual == MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES + 1
-    ));
-
-    let runtime_above_rr_line_limit = TraceRetentionFixture::new()?;
-    runtime_above_rr_line_limit
-        .prepared
-        .prepare_runtime_determinism_trace()?;
-    let runtime_lines = vec![b'\n'; MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES + 1];
-    std::fs::write(
-        runtime_above_rr_line_limit.runtime_trace_path(),
-        &runtime_lines,
-    )?;
-    assert_eq!(
-        runtime_above_rr_line_limit
-            .prepared
-            .retain_runtime_determinism_trace_after_reap()?
-            .len(),
-        runtime_lines.len()
-    );
-
-    let runtime_too_many_lines = TraceRetentionFixture::new()?;
-    runtime_too_many_lines
-        .prepared
-        .prepare_runtime_determinism_trace()?;
-    std::fs::write(
-        runtime_too_many_lines.runtime_trace_path(),
-        vec![b'\n'; MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES + 1],
-    )?;
-    assert!(matches!(
-        runtime_too_many_lines
-            .prepared
-            .retain_runtime_determinism_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLines {
-            actual,
-            maximum: MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
-            ..
-        }) if actual == MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES + 1
     ));
 
     let mut outside_admission = TraceRetentionFixture::new()?;
     outside_admission
         .prepared
         .prepare_rr_control_boundary_trace()?;
-    std::fs::write(outside_admission.trace_path(), b"line\n")?;
+    std::fs::write(outside_admission.trace_path(), RR_TRACE_ROW)?;
     outside_admission.prepared.admitted_ceiling.2 = 1;
     assert!(matches!(
         outside_admission
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .inspect_rr_control_boundary_trace_after_reap(1024, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceExceedsAdmission { .. })
     ));
 
@@ -673,7 +612,7 @@ fn retained_control_boundary_trace_enforces_content_and_aggregate_bounds()
     assert!(matches!(
         runtime_outside_admission
             .prepared
-            .retain_runtime_determinism_trace_after_reap(),
+            .inspect_runtime_determinism_trace_after_reap(1024, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceExceedsAdmission { .. })
     ));
     Ok(())

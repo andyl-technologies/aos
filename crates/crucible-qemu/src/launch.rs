@@ -86,8 +86,10 @@ pub(crate) const QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION: &str =
     "enable=crucible_sim_rr_control_delivery";
 const CONTROL_CALLBACK_WITNESS_ENV: &str = "CRUCIBLE_CONTROL_CALLBACK_WITNESS";
 pub(crate) const QEMU_IDLE_PREFIX_TRACE_SELECTION: &str = "enable=crucible_sim_idle_*";
+// Writable-file reservation added to pre-spawn admission for an enabled RR
+// trace. Readers stream the trace, so it is not a retention limit; the
+// attempt's aggregate writable ceiling bounds the file itself.
 pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES: u64 = 4 * 1024 * 1024;
-pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
 /// Fixed child-relative file used by the runtime-determinism diagnostic trace.
 pub const QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME: &str = "crucible-runtime-determinism.trace";
 pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
@@ -95,8 +97,9 @@ pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
 // Keep the diagnostic trace sparse enough that the bounded retained tail
 // includes the QMP exchange after a 60-second command timeout.
 pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=*qmp*";
+// Default writable-file reservation for an enabled runtime or QMP liveness
+// trace; callers that stream larger traces raise the budget explicitly.
 pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 32 * 1024 * 1024;
-pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES: usize = 131_072;
 pub(crate) const MAXIMUM_STREAMED_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 /// Stable QEMU chardev identifier for fork-time debug guest activation.
 pub const QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID: &str = "crucible-debug-activation";
