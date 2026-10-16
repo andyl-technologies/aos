@@ -14,6 +14,8 @@
     cargo test --frozen --offline -p terrane-fs --lib \
       --test host_quota_protocol --test host_quota_native \
       --no-run --message-format=json > "$TMPDIR/host-quota-build.jsonl"
+    cargo test --frozen --offline -p aos-terrane --test host_quota_config \
+      --no-run --message-format=json >> "$TMPDIR/host-quota-build.jsonl"
     rustc --print target-libdir > "$TMPDIR/host-quota-rust-libdir"
     python3 - "$TMPDIR/host-quota-build.jsonl" "$out" "$TMPDIR/host-quota-rust-libdir" <<'PY'
     import json
@@ -37,6 +39,10 @@
             "error_response_cannot_smuggle_quota_evidence",
             "nonroot_helper_identity_cannot_mint_native_evidence",
             "provisioning_guard_excludes_factories_until_exclusive_custody_ends",
+        },
+        "host_quota_config": {
+            "configuration_rejects_mutation_command_fields",
+            "host_quota_admin_ledger_preserves_domain_and_project_vm",
         },
         "host_quota_native": {
             "host_quota_native_privilege_and_helper_vm",
@@ -73,6 +79,8 @@
         evidence[name] = {"inventory": sorted(actual), "executed": []}
         if name != "host_quota_native":
             for case in sorted(actual):
+                if case == "host_quota_admin_ledger_preserves_domain_and_project_vm":
+                    continue
                 result = subprocess.run([str(installed), "--exact", prefix + case, "--nocapture"], check=True, text=True, capture_output=True, env=environment)
                 if "test result: ok. 1 passed; 0 failed; 0 ignored;" not in result.stdout:
                     raise SystemExit(f"host-quota case did not execute exactly once: {case}")
@@ -96,7 +104,15 @@
       export TERRANE_HOST_QUOTA_ROOT=/mnt/terrane-host-quota/owner
       export LD_LIBRARY_PATH="${image}/lib"
       ${image}/bin/host_quota_native --exact host_quota_native_privilege_and_helper_vm --ignored --nocapture
+      # An unsupported unprivileged user namespace fails this proof; it is
+      # never reported as an executed negative witness.
+      export TERRANE_HOST_QUOTA_ROLE=userns
+      setpriv --reuid 840 --regid 840 --clear-groups \
+        unshare --user --map-root-user \
+        ${image}/bin/host_quota_native --exact host_quota_vm_role --ignored --nocapture
       rmdir /mnt/terrane-host-quota/owner
+      export TERRANE_HOST_QUOTA_ADMIN_ROOT=/mnt/terrane-host-quota
+      ${image}/bin/host_quota_config --exact host_quota_admin_ledger_preserves_domain_and_project_vm --ignored --nocapture
     '';
   };
 in {

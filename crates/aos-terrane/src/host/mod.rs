@@ -362,6 +362,11 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
                 bindings,
             })
             .map_err(parse_error)?;
+            if serialized.len() > 1024 * 1024 {
+                return Err(io::Error::other(
+                    "provisioning ledger exceeds protected read bound",
+                ));
+            }
             let mut output = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -412,7 +417,7 @@ pub fn serve(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     let mut workers = Vec::new();
     for _ in 0..16 {
         let broker = std::sync::Arc::clone(&broker);
-        workers.push(std::thread::spawn(move || {
+        workers.push(std::thread::spawn(move || -> () {
             loop {
                 // A malformed or disconnected client loses only its own connection.
                 let _ = broker.serve_connection();
