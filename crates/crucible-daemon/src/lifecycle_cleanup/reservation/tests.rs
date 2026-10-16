@@ -449,3 +449,228 @@ fn actual_closed_worker_and_file_stay_closed_after_same_original_expires()
     assert_eq!(selected.attempts.load(Ordering::Acquire), 2);
     Ok(())
 }
+
+// Dispatcher controls use only the same local Original and real file/cell
+// primitives. No Main or native dispatcher admission is constructed.
+fn expire_component_cleanup(
+    supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+) {
+    use crucible_linux_resource::host_supervision::{HostOperationBudget, HostOperationClass};
+    let (revision, mut budgets) = supervisor.budgets().unwrap();
+    budgets.classes[HostOperationClass::Cleanup as usize] =
+        HostOperationBudget::finite(std::time::Duration::from_nanos(1));
+    supervisor.update_budgets(revision, budgets).unwrap();
+    assert!(original.wait_slice().is_err());
+}
+
+fn loop_failure_message(error: &LifecycleApiError) -> &str {
+    match error {
+        LifecycleApiError::LoopFactory { message } => message,
+        other => panic!("unexpected component cleanup report: {other:?}"),
+    }
+}
+
+#[test]
+fn actual_cell_failure_survives_same_original_refusal_before_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::packaged_qemu_executor::retirement::{
+        AttachedRetirementReport, PackagedQemuExecutorRetirementError, retire_dispatcher,
+    };
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(std::time::Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    let selected = fixture(91, true)?;
+    let first = retry_slot(&selected.slot, Some(91)).unwrap_err();
+    let first_message = loop_failure_message(&first).as_ptr();
+    let mut dispatcher_file = Some(tempfile::tempfile()?);
+    let descriptor = dispatcher_file.as_ref().unwrap().as_raw_fd();
+    let identity = dispatcher_file.as_ref().unwrap().metadata()?;
+    let mut physically_closed = false;
+    let mut attempts = 0;
+    expire_component_cleanup(&supervisor, &original);
+
+    let dispatch = retire_dispatcher(&original, true, &mut physically_closed, || {
+        attempts += 1;
+        drop(dispatcher_file.take());
+        Ok(())
+    });
+    let report = PackagedQemuExecutorRetirementError::new();
+    report.retain(AttachedRetirementReport::new(
+        None,
+        None,
+        None,
+        Some(first),
+        dispatch,
+    ));
+
+    assert_eq!(attempts, 0);
+    assert!(!physically_closed);
+    assert_eq!(
+        loop_failure_message(report.lifecycle().unwrap()).as_ptr(),
+        first_message
+    );
+    assert!(report.before_dispatch().is_some());
+    assert!(report.original_post().is_some());
+    assert!(report.dispatcher().is_none());
+    assert!(!selected.dropped.load(Ordering::Acquire));
+    assert_eq!(selected.attempts.load(Ordering::Acquire), 1);
+    let retained = fs::metadata(format!("/proc/self/fd/{descriptor}"))?;
+    assert_eq!(
+        (retained.dev(), retained.ino()),
+        (identity.dev(), identity.ino())
+    );
+    Ok(())
+}
+
+#[test]
+fn dispatcher_refusal_and_independent_post_preserve_actual_cell_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::packaged_qemu_executor::retirement::{
+        AttachedRetirementReport, PackagedQemuExecutorRetirementError, retire_dispatcher,
+    };
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(std::time::Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    let selected = fixture(92, true)?;
+    let first = retry_slot(&selected.slot, Some(92)).unwrap_err();
+    let first_message = loop_failure_message(&first).as_ptr();
+    retry_slot(&selected.slot, Some(92))?;
+    let mut handoff = receipt(92);
+    assert_eq!(
+        handoff.observe_slot(&selected.slot)?,
+        ProductionVmCleanupStage::Complete
+    );
+    assert!(handoff.first_failure().is_some());
+    let mut dispatcher_file = Some(tempfile::tempfile()?);
+    let mut physically_closed = false;
+    let mut attempts = 0;
+
+    let report = PackagedQemuExecutorRetirementError::new();
+    report.retain(AttachedRetirementReport::new(
+        None,
+        None,
+        None,
+        Some(first),
+        Default::default(),
+    ));
+    let dispatch = retire_dispatcher(&original, true, &mut physically_closed, || {
+        attempts += 1;
+        drop(dispatcher_file.take());
+        expire_component_cleanup(&supervisor, &original);
+        // The real local effect ran, but this injected component refusal does
+        // not certify completion of a native dispatcher or any other resource.
+        Err(crucible_qemu::QemuVmRealizationError::Canceled {
+            operation: "component dispatcher refusal",
+        })
+    });
+    // A later phase augments the same inline history, rather than replacing
+    // the earlier real cleanup cause with a whole-attempt snapshot.
+    report.retain(AttachedRetirementReport::new(
+        None, None, None, None, dispatch,
+    ));
+
+    assert_eq!(attempts, 1);
+    assert!(!physically_closed);
+    assert_eq!(
+        loop_failure_message(report.lifecycle().unwrap()).as_ptr(),
+        first_message
+    );
+    assert!(report.before_dispatch().is_none());
+    assert!(matches!(
+        report.dispatcher(),
+        Some(crucible_qemu::QemuVmRealizationError::Canceled {
+            operation: "component dispatcher refusal"
+        })
+    ));
+    assert!(report.original_post().is_some());
+    assert!(std::ptr::eq(
+        std::error::Error::source(&report)
+            .unwrap()
+            .downcast_ref::<LifecycleApiError>()
+            .unwrap(),
+        report.lifecycle().unwrap(),
+    ));
+    assert!(selected.dropped.load(Ordering::Acquire));
+    assert!(selected.slot.is(CleanupPhase::Free));
+    Ok(())
+}
+
+#[test]
+fn successful_file_retirement_latches_before_post_without_erasing_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::packaged_qemu_executor::retirement::{
+        AttachedRetirementReport, PackagedQemuExecutorRetirementError, retire_dispatcher,
+    };
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(std::time::Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    let selected = fixture(93, true)?;
+    let first = retry_slot(&selected.slot, Some(93)).unwrap_err();
+    let first_message = loop_failure_message(&first).as_ptr();
+    retry_slot(&selected.slot, Some(93))?;
+    let mut handoff = receipt(93);
+    assert_eq!(
+        handoff.observe_slot(&selected.slot)?,
+        ProductionVmCleanupStage::Complete
+    );
+    let mut dispatcher_file = Some(tempfile::tempfile()?);
+    let descriptor = dispatcher_file.as_ref().unwrap().as_raw_fd();
+    let identity = dispatcher_file.as_ref().unwrap().metadata()?;
+    let mut physically_closed = false;
+
+    let dispatch = retire_dispatcher(&original, true, &mut physically_closed, || {
+        drop(dispatcher_file.take());
+        expire_component_cleanup(&supervisor, &original);
+        Ok(())
+    });
+    let report = PackagedQemuExecutorRetirementError::new();
+    report.retain(AttachedRetirementReport::new(
+        None,
+        None,
+        None,
+        Some(first),
+        dispatch,
+    ));
+
+    assert!(physically_closed);
+    assert_eq!(
+        loop_failure_message(report.lifecycle().unwrap()).as_ptr(),
+        first_message
+    );
+    assert!(report.before_dispatch().is_none());
+    assert!(report.dispatcher().is_none());
+    assert!(report.original_post().is_some());
+    assert!(
+        fs::metadata(format!("/proc/self/fd/{descriptor}")).map_or(true, |current| (
+            current.dev(),
+            current.ino()
+        ) != (
+            identity.dev(),
+            identity.ino()
+        ))
+    );
+    assert!(selected.slot.is(CleanupPhase::Free));
+    // A later observation cannot replay a completed effect, even after expiry.
+    let repeated = retire_dispatcher(&original, true, &mut physically_closed, || {
+        panic!("closed physical effect must not replay")
+    });
+    assert!(repeated.post.is_some());
+    assert!(physically_closed);
+    Ok(())
+}

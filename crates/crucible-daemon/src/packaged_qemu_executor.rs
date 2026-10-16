@@ -117,6 +117,8 @@ pub use guarded::{
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) mod original_campaign;
 pub(crate) mod original_retirement;
+pub(crate) mod retirement;
+pub use retirement::PackagedQemuExecutorRetirementError;
 mod preparation;
 pub use preparation::PreparationExpiredCause;
 mod status;
@@ -1335,28 +1337,33 @@ pub enum PackagedQemuExecutorStartError {
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuExecutorJoinError {
     /// The same Main retains the exact first cause separately from live custody.
-    #[error("attached executor first failure: {first}; independent post: {post:?}")]
+    #[error(
+        "attached executor first failure: {first:?}; cleanup: {cleanup:?}; independent post: {post:?}"
+    )]
     RetainedAttached {
         /// Actual permanent first-error storage; no cloned report or owner.
         #[source]
         first: &'static PackagedQemuExecutorJoinError,
+        /// Independent finite cleanup history retained in the same Main.
+        cleanup: Option<&'static PackagedQemuExecutorRetirementError>,
         /// Independent actual same-Original postcut retained in Main.
+        post: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    },
+    /// Cleanup failed independently of a successful service return.
+    #[error("attached executor cleanup: {cleanup}; independent post: {post:?}")]
+    RetainedAttachedCleanup {
+        /// Actual finite report in permanent Main storage; no cloned owner.
+        #[source]
+        cleanup: &'static PackagedQemuExecutorRetirementError,
+        /// Independent same-Original postcut retained alongside cleanup history.
         post: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
     },
     /// The active or busy attached body remains in its existing Main cell.
     #[error("attached retirement remains active or borrowed")]
     AttachedPending,
-    /// The same Original refused an actual retirement boundary.
-    #[error("attached Main Original refused: {0}")]
-    MainOriginal(#[source] crucible_linux_resource::host_supervision::HostSupervisionError),
     /// Current process admission refuses a new service thread after custody is saved.
     #[error("attached Main admission refused: {0}")]
     MainStartAdmission(#[source] crucible_cas::content_store::StoreError),
-    /// Same saved Main Cleanup could not be entered.
-    #[error("attached Main cleanup admission refused: {0}")]
-    MainCleanupAdmission(
-        #[source] crucible_linux_resource::host_services::process_birth::ServiceBirthError,
-    ),
     /// Actual failed service-owner spawn; its retirement body stays in Main.
     #[error("attached executor thread creation failed: {0}")]
     OwnerSpawn(#[source] std::io::Error),
@@ -1372,11 +1379,6 @@ pub enum PackagedQemuExecutorJoinError {
     /// Exact-pin materialization failed and stopped the executor.
     #[error(transparent)]
     ExactPinMaterializer(Box<PackagedExactPinMaterializerError>),
-    /// Exact-pin retirement refused under the same original operation.
-    #[error(transparent)]
-    ExactPinMaterializerRetirement(
-        exact_pin_materializer::original_retirement::OriginalMaterializerRetirementError,
-    ),
     /// Retained source-world shutdown failed after workers stopped.
     #[error(transparent)]
     HotForkSources(Box<PackagedQemuHotForkSourceShutdownError>),

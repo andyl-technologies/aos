@@ -74,8 +74,7 @@ struct ProcessActor {
     // The failed constructor or its active Attached successor uses one cell;
     // all fields, including first reports, enter the actual structural query.
     construction: std::sync::Mutex<Option<RetainedExecutorConstruction>>,
-    attached_first: OnceLock<crate::packaged_qemu_executor::PackagedQemuExecutorJoinError>,
-    attached_post: OnceLock<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    attached_history: attached_retirement::AttachedRetirementHistory,
     attached_started: std::sync::atomic::AtomicBool,
     construction_first:
         OnceLock<crucible_linux_resource::host_services::process_birth::ServiceBirthError>,
@@ -371,8 +370,7 @@ impl CampaignProcessOwner {
             executor_workers: OnceLock::new(),
             construction: std::sync::Mutex::new(None),
             construction_first: OnceLock::new(),
-            attached_first: OnceLock::new(),
-            attached_post: OnceLock::new(),
+            attached_history: attached_retirement::AttachedRetirementHistory::new(),
             attached_started: std::sync::atomic::AtomicBool::new(false),
         });
         SqliteProcessHeap::prepare_bootstrap(&actor)

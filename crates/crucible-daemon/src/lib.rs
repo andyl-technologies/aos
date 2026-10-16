@@ -532,10 +532,10 @@ pub use packaged_qemu_executor::{
     PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
     PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
     PackagedQemuExecutorJoinError, PackagedQemuExecutorJoinFailures,
-    PackagedQemuExecutorStartError, PackagedQemuHotForkConfig, PackagedQemuHotForkConfigError,
-    PackagedQemuHotForkSourceShutdownError, PackagedRamCatalogConfig,
-    PackagedRamCatalogConfigError, PreparationExpiredCause, ReceivingExecutionPreparation,
-    ReceivingExecutionPreparationError,
+    PackagedQemuExecutorRetirementError, PackagedQemuExecutorStartError, PackagedQemuHotForkConfig,
+    PackagedQemuHotForkConfigError, PackagedQemuHotForkSourceShutdownError,
+    PackagedRamCatalogConfig, PackagedRamCatalogConfigError, PreparationExpiredCause,
+    ReceivingExecutionPreparation, ReceivingExecutionPreparationError,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use paused_checkpoint_promotion::{
