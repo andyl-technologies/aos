@@ -24,6 +24,7 @@ pub(super) struct NativeOwnerExecutor {
     running: Option<Arc<PublisherRunningContext>>,
     failed_resume: Option<(ResumeFailureStage, CompletedRecovery)>,
     adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
+    manifest_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
 }
 
 impl NativeOwnerExecutor {
@@ -35,12 +36,42 @@ impl NativeOwnerExecutor {
             running: None,
             failed_resume: None,
             adopted_inline: Vec::new(),
+            manifest_sources: Vec::new(),
         }
     }
 
     /// Borrows actual custody for one serialized physical command.
     pub(super) fn custody(&self) -> &Arc<Mutex<Custody>> {
         &self.custody
+    }
+
+    /// Checks the actual physical worker before a fixed native command.
+    ///
+    /// # Errors
+    /// Refuses a caller on any thread other than this retained executor.
+    pub(super) fn check_physical_worker(&self) -> io::Result<()> {
+        if self.worker != thread::current().id() {
+            return Err(io::Error::other(
+                "native command belongs to another physical worker",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Retains actual source handles outside embedded state before write effects.
+    ///
+    /// # Errors
+    /// Refuses another worker or unavailable finite registry allocation.
+    pub(super) fn retain_manifest_source(
+        &mut self,
+        source: Arc<crate::host_cache::NativeManifestSource>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        self.manifest_sources
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        self.manifest_sources.push(source);
+        Ok(())
     }
 
     /// Runs supported recovery while retaining adopted backing beyond any reply.

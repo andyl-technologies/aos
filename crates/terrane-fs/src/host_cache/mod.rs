@@ -29,7 +29,10 @@ pub use owner::{
     NativeIndexRepairReport, NativeMetadataOwner, NativeResumeError, RetainedManifest,
 };
 #[cfg(feature = "tokio")]
-pub(crate) use owner::{PublisherResumeTurn, PublisherRunningTurn};
+pub(crate) use owner::{
+    LiveManifestRecoveryContext, PublisherResumeTurn, PublisherRunningTurn,
+    RecoveryRetainedManifest,
+};
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
 #[cfg(feature = "tokio")]

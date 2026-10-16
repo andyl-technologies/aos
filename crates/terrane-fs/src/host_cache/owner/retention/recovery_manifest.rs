@@ -1,0 +1,263 @@
+//! Retains manifest reconstruction metadata inside one exclusive recovery turn.
+//!
+//! The live context borrows the genuine physical executor for its entire life.
+//! It owns the original opaque Drain context, never a replacement epoch. Its
+//! distinct receipt cannot satisfy ordinary retention/currentness or authorize
+//! Resume. No existing recovery dispatch enters this incomplete manifest phase.
+
+use super::{executor::NativeOwnerExecutor, *};
+use crate::publisher_local::client::PublisherRecoveryContext;
+use std::cell::Cell;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RecoveryPhase {
+    Active,
+    Faulted,
+}
+
+/// Retains the original publisher barrier and exclusive physical recovery turn.
+///
+/// Construction is restricted to the actual native executor. Holding it keeps
+/// every other physical command excluded, including across a downstream RPC.
+pub(crate) struct LiveManifestRecoveryContext<'executor> {
+    executor: &'executor mut NativeOwnerExecutor,
+    session: Arc<Client<HostDomainLocation>>,
+    original: PublisherRecoveryContext<HostDomainLocation>,
+    bootstrap_id: [u8; 16],
+    generation: Cell<u64>,
+    phase: Cell<RecoveryPhase>,
+}
+
+impl NativeOwnerExecutor {
+    /// Borrows this executor for the original active, durably reserved phase.
+    ///
+    /// This is not wired into dispatch: shared metadata and downstream manifest
+    /// adoption still require their genuine reconciliation implementations.
+    ///
+    /// # Errors
+    /// Refuses another worker, a handoff, stale original barrier, absent exact
+    /// bootstrap reservation, cold records or missing synchronized state.
+    pub(super) fn live_manifest_recovery(
+        &mut self,
+        original: PublisherRecoveryContext<HostDomainLocation>,
+        bootstrap_id: [u8; 16],
+    ) -> io::Result<LiveManifestRecoveryContext<'_>> {
+        self.check_physical_worker()?;
+        self.check_recovery_phase()?;
+        let (session, generation) = {
+            let owner = self
+                .custody()
+                .lock()
+                .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+            owner.check_current()?;
+            if !owner.recovery_required || !owner.faulted || owner.snapshot.is_none() {
+                return Err(invalid(
+                    "manifest recovery lacks an active durable bootstrap",
+                ));
+            }
+            super::super::recovery_state::check_bootstrap(
+                &owner.preparation.config,
+                &owner.state,
+                &bootstrap_id,
+            )?;
+            (owner.preparation.publisher_session(), owner.generation)
+        };
+        session
+            .check_recovery_context(&original)
+            .map_err(io::Error::other)?;
+        Ok(LiveManifestRecoveryContext {
+            executor: self,
+            session,
+            original,
+            bootstrap_id,
+            generation: Cell::new(generation),
+            phase: Cell::new(RecoveryPhase::Active),
+        })
+    }
+}
+
+impl<'executor> LiveManifestRecoveryContext<'executor> {
+    /// Borrows the original actual publisher session without a new connection.
+    pub(crate) fn publisher_session(&self) -> &Arc<Client<HostDomainLocation>> {
+        &self.session
+    }
+
+    /// Borrows the original acknowledged Drain context, never a fresh snapshot.
+    pub(crate) fn publisher_context(&self) -> &PublisherRecoveryContext<HostDomainLocation> {
+        &self.original
+    }
+
+    /// Rechecks actual owner phase before a downstream publisher mutex is held.
+    ///
+    /// The exclusive executor borrow remains alive after this check. Consumers
+    /// must also check this exact original context under their actual RPC lock.
+    ///
+    /// # Errors
+    /// Refuses changed process/root/owner/generation, absent durable hold or a
+    /// changed original publisher session/barrier. It retains no state lock.
+    pub(crate) fn check_current(&self) -> io::Result<()> {
+        self.executor.check_physical_worker()?;
+        {
+            let owner = self
+                .executor
+                .custody()
+                .lock()
+                .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+            self.check_owner(&owner)?;
+        }
+        self.session
+            .check_recovery_context(&self.original)
+            .map_err(io::Error::other)
+    }
+
+    /// Checks genuine active phase and its durable bootstrap custody.
+    ///
+    /// # Errors
+    /// Refuses failed operations or changed owner, reservation and generation.
+    pub(super) fn check_owner(&self, owner: &Custody) -> io::Result<()> {
+        owner.check_current()?;
+        if self.phase.get() != RecoveryPhase::Active
+            || !owner.faulted
+            || !owner.recovery_required
+            || owner.snapshot.is_none()
+            || owner.generation != self.generation.get()
+            || !Arc::ptr_eq(&self.session, &owner.preparation.publisher_session())
+            || !owner.state.reservations.iter().any(|hold| {
+                hold.id == hex(&self.bootstrap_id)
+                    && hold.owner == owner.preparation.config.quota_owner
+                    && hold.bytes == owner.preparation.config.metadata_sync_hold_bytes
+            })
+        {
+            return Err(invalid(
+                "live manifest recovery no longer owns its durable phase",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Advances only after the physical producer invalidates the old generation.
+    pub(super) fn advance_generation(&self, owner: &Custody) {
+        self.generation.set(owner.generation);
+    }
+
+    /// Retains real source descriptors outside state before durability effects.
+    ///
+    /// # Errors
+    /// Refuses another worker or unavailable registry capacity.
+    pub(super) fn retain_source(&mut self, source: Arc<NativeManifestSource>) -> io::Result<()> {
+        self.executor.retain_manifest_source(source)
+    }
+
+    /// Produces a distinct recovery-only receipt after actual durable retention.
+    ///
+    /// Ordinary retention stays unavailable while this recovery phase is live.
+    /// Source/hold registry ownership remains physical even if this future or a
+    /// later consumer is abandoned. No public Retain request is self-enqueued.
+    ///
+    /// # Errors
+    /// Refuses stale phase, missing/corrupt metadata, resource limits, failed
+    /// durability or unreconciled source/project/kernel charge observations.
+    pub(crate) async fn retain_manifest(
+        &mut self,
+        identity: Identity,
+    ) -> io::Result<RecoveryRetainedManifest<'_, 'executor>> {
+        self.check_current()?;
+        let custody = Arc::clone(self.executor.custody());
+        let result = super::manifest::retain_recovery(&custody, identity, self).await;
+        let retained = match result {
+            Ok(retained) => retained,
+            Err(error) => {
+                self.phase.set(RecoveryPhase::Faulted);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .check_current()
+            .and_then(|()| retained.source.recheck())
+        {
+            self.phase.set(RecoveryPhase::Faulted);
+            return Err(error);
+        }
+        Ok(RecoveryRetainedManifest {
+            retained,
+            live: self,
+        })
+    }
+}
+
+/// Retains actual synced metadata pins within the original exclusive recovery turn.
+///
+/// This is deliberately distinct from ordinary `RetainedManifest`; its live
+/// borrow excludes another owner command through the complete downstream RPC.
+/// It grants no completed recovery, serving, publication or Resume authority.
+pub(crate) struct RecoveryRetainedManifest<'phase, 'executor> {
+    retained: RetainedManifest,
+    live: &'phase LiveManifestRecoveryContext<'executor>,
+}
+
+impl RecoveryRetainedManifest<'_, '_> {
+    /// Borrows the exact original live recovery turn for an atomic RPC check.
+    pub(crate) fn live_context(&self) -> &LiveManifestRecoveryContext<'_> {
+        self.live
+    }
+
+    /// Borrows independently verified canonical manifest claim bytes.
+    pub(crate) fn claim(&self) -> &PublicationClaim {
+        self.retained.claim()
+    }
+
+    /// Borrows the retained ordinary metadata pack descriptor, never a caller FD.
+    pub(crate) fn metadata_file(&self) -> &File {
+        self.retained.metadata_file()
+    }
+
+    /// Returns the exact verified canonical manifest range in that pack.
+    pub(crate) fn manifest_range(&self) -> ByteRange {
+        self.retained.manifest_range()
+    }
+
+    /// Borrows the actual stable cache incarnation without caller injection.
+    pub(crate) fn cache_incarnation(&self) -> &[u8; 16] {
+        self.retained.cache_incarnation()
+    }
+
+    /// Borrows the actual persisted retention registration identifier.
+    pub(crate) fn retention_id(&self) -> &[u8; 16] {
+        self.retained.retention_id()
+    }
+
+    /// Borrows the retained original root, domain and chunk profile authority.
+    pub(crate) fn layout(&self) -> &Arc<NativeHostLayout<HostDomainLocation>> {
+        self.retained.layout()
+    }
+
+    /// Returns the exact verified metadata-pack identifier under existing keys.
+    pub(crate) fn pack_id(&self) -> terrane::pack::PackId {
+        self.retained.pack_id()
+    }
+
+    /// Borrows the independently verified full metadata-pack identity.
+    pub(crate) fn pack_identity(&self) -> &Identity {
+        self.retained.pack_identity()
+    }
+
+    /// Rechecks real durable pins/source and the original active recovery phase.
+    ///
+    /// # Errors
+    /// Refuses stale owner/session/root/generation, changed source or absent pins.
+    /// The consumer must perform this before acquiring its publisher RPC mutex.
+    pub(crate) fn check_current(&self) -> io::Result<()> {
+        self.live.check_current()?;
+        let owner = self
+            .live
+            .executor
+            .custody()
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+        if !Arc::ptr_eq(&self.retained.custody, self.live.executor.custody()) {
+            return Err(invalid("recovery metadata belongs to another owner"));
+        }
+        self.live.check_owner(&owner)?;
+        self.retained.check_registration(&owner)
+    }
+}
