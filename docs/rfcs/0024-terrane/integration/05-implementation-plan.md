@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; ten of twenty-two T1 tasks are complete.
+**Status:** In progress; eleven of twenty-two T1 tasks are complete.
 
 The qualified source checkpoint `1d7451dd75` has independently reviewed passing
 outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
@@ -6520,7 +6520,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   confirms unchanged leaf, ancestor and descriptor checks and refusal order.
   Regression coverage, compilation and timed workload qualification remain
   pending for both native changes. No deadline or output layout changes.
-- [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
+- [x] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
   carriers and structural property placement. Preserve generic retained recipe
