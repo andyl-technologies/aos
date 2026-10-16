@@ -8,9 +8,13 @@
 mod config;
 mod index_io;
 mod preparation;
+mod recovery;
+mod recovery_accounting;
 mod recovery_namespace;
+mod recovery_state;
 mod retention;
 
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
+pub use recovery::CompletedRecovery;
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};

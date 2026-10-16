@@ -224,7 +224,10 @@ fn write_inner(
 }
 
 /// Classifies without opening a FIFO/device, then reads only that retained inode.
-fn open_regular_at(parent: &File, name: &str) -> io::Result<File> {
+///
+/// # Errors
+/// Refuses missing, nonregular, inaccessible or changing ordinary inodes.
+pub(super) fn open_regular_at(parent: &File, name: &str) -> io::Result<File> {
     let observation = File::from(openat(
         parent,
         name,

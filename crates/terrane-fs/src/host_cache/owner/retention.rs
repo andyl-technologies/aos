@@ -7,7 +7,7 @@
 
 use super::{
     NativeCachePreparation,
-    index_io::{IndexWriteCompletion, PendingIndexWrite, write_missing_index},
+    index_io::{IndexWriteCompletion, PendingIndexWrite, open_regular_at, write_missing_index},
 };
 use crate::{
     host_cache::{
@@ -38,14 +38,17 @@ use tokio::sync::oneshot;
 /// Retains a native queue for durable metadata pins and missing-index repair.
 ///
 /// This recovery-only owner enables no publication, eviction, admission or
-/// Resume. Cold state containing records is refused until full native recovery
-/// exists. Dropping an awaiting request does not cancel physical execution.
+/// Resume. Cold records remain untrusted candidates until recovery reconciles
+/// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
-    commands: Option<mpsc::SyncSender<Command>>,
+    pub(super) commands: Option<mpsc::SyncSender<Command>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
-enum Command {
+pub(super) enum Command {
+    Recover {
+        response: oneshot::Sender<io::Result<super::CompletedRecovery>>,
+    },
     Retain {
         identity: Identity,
         response: oneshot::Sender<io::Result<RetainedManifest>>,
@@ -62,16 +65,19 @@ struct IndexRepairCustody {
     completed: Option<IndexWriteCompletion>,
 }
 
-struct Custody {
-    preparation: NativeCachePreparation,
-    directory: File,
-    state: CacheState,
-    snapshot: Option<(File, Metadata)>,
+pub(super) struct Custody {
+    pub(super) preparation: NativeCachePreparation,
+    pub(super) directory: File,
+    pub(super) state: CacheState,
+    pub(super) snapshot: Option<(File, Metadata)>,
     sources: BTreeMap<[u8; 16], Arc<NativeManifestSource>>,
     index_repairs: BTreeMap<[u8; 16], IndexRepairCustody>,
-    faulted: bool,
-    snapshot_allocated_bytes: u64,
-    directory_allocated_bytes: u64,
+    pub(super) faulted: bool,
+    pub(super) recovery_required: bool,
+    pub(super) generation: u64,
+    pub(super) recovery_id: Option<[u8; 16]>,
+    pub(super) snapshot_allocated_bytes: u64,
+    pub(super) directory_allocated_bytes: u64,
 }
 
 /// Reports an actual index repair without granting serving or recovery authority.
@@ -122,11 +128,12 @@ impl NativeMetadataOwner {
     /// The dedicated thread retains all commands through actual completion. It
     /// takes exclusive custody of the configured existing `state/cache` inode;
     /// it never creates that operator-provisioned directory. Existing durable
-    /// records cause conservative startup refusal pending actual recovery.
+    /// records load as candidates. Mutations require actual recovery first;
+    /// unhandled records are never cleared merely to make startup succeed.
     ///
     /// # Errors
     /// Refuses unavailable thread/runtime resources, stale native preparation,
-    /// unsafe state custody, another state writer and unreconciled cold records.
+    /// unsafe/malformed state custody, another state writer and cold scratch.
     pub fn start(preparation: NativeCachePreparation) -> io::Result<Self> {
         let (commands, receive) = mpsc::sync_channel(preparation.config.queued_commands);
         let (ready, startup) = mpsc::sync_channel(1);
@@ -155,6 +162,10 @@ impl NativeMetadataOwner {
                 }
                 while let Ok(command) = receive.recv() {
                     match command {
+                        Command::Recover { response } => {
+                            let result = runtime.block_on(super::recovery::run(&custody));
+                            let _ = response.send(result);
+                        }
                         Command::Retain { identity, response } => {
                             let result = runtime.block_on(retain(&custody, identity));
                             // An abandoned reply never releases the registry's source,
@@ -356,6 +367,7 @@ impl RetainedManifest {
         custody.check_current()?;
         if !Arc::ptr_eq(&self.session, &custody.preparation.publisher_session())
             || custody.faulted
+            || custody.recovery_required
             || custody.snapshot.is_none()
             || !custody
                 .sources
@@ -441,6 +453,9 @@ impl Custody {
             sources: BTreeMap::new(),
             index_repairs: BTreeMap::new(),
             faulted: false,
+            recovery_required: true,
+            generation: 0,
+            recovery_id: None,
             snapshot_allocated_bytes: 0,
             directory_allocated_bytes: 0,
         };
@@ -455,22 +470,12 @@ impl Custody {
             .await
             .map_err(io::Error::other)?
             .unwrap_or_default();
-        if !state.pins.is_empty()
-            || !state.leases.is_empty()
-            || !state.reservations.is_empty()
-            || !state.residences.is_empty()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "cold cache policy records require native recovery before metadata mutation",
-            ));
-        }
         custody.state = state;
         custody.check_current()?;
         Ok(custody)
     }
 
-    fn check_current(&self) -> io::Result<()> {
+    pub(super) fn check_current(&self) -> io::Result<()> {
         self.preparation.confinement.check_current()?;
         self.preparation.layout().recheck()?;
         let root = self
@@ -518,14 +523,8 @@ impl Custody {
     }
 
     fn capture_snapshot(&mut self) -> io::Result<()> {
-        match openat(
-            &self.directory,
-            "records.toml",
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) {
+        match open_regular_at(&self.directory, "records.toml") {
             Ok(file) => {
-                let file = File::from(file);
                 let metadata = file.metadata()?;
                 if !metadata.is_file()
                     || metadata.uid() != self.preparation.config.content_uid
@@ -538,13 +537,13 @@ impl Custody {
                 }
                 self.snapshot = Some((file, metadata));
             }
-            Err(rustix::io::Errno::NOENT) if self.snapshot.is_none() => {}
-            Err(error) => return Err(error.into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && self.snapshot.is_none() => {}
+            Err(error) => return Err(error),
         }
         Ok(())
     }
 
-    async fn persist(&mut self) -> io::Result<()> {
+    pub(super) async fn persist(&mut self) -> io::Result<()> {
         let path = self.preparation.config.location.root().join("state/cache");
         self.state
             .persist(&TokioLocalFs, &path, self.preparation.config.state)
@@ -573,13 +572,23 @@ impl Custody {
         }
         self.check_current()
     }
+
+    /// Invalidates an older completion before any new durable command effects.
+    pub(super) fn begin_mutation(&mut self) -> io::Result<()> {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| invalid("native owner command generation overflow"))?;
+        self.recovery_id = None;
+        Ok(())
+    }
 }
 
 async fn retain(custody: &Arc<Mutex<Custody>>, identity: Identity) -> io::Result<RetainedManifest> {
     let mut owner = custody
         .lock()
         .map_err(|_| io::Error::other("metadata custody poisoned"))?;
-    if owner.faulted {
+    if owner.faulted || owner.recovery_required {
         return Err(io::Error::other(
             "metadata owner requires failed-operation recovery",
         ));
@@ -657,6 +666,7 @@ async fn retain(custody: &Arc<Mutex<Custody>>, identity: Identity) -> io::Result
     pinned
         .encoded_len(owner.preparation.config.state)
         .map_err(io::Error::other)?;
+    owner.begin_mutation()?;
     owner.sources.insert(retention_id, Arc::clone(&source));
     owner.state = next;
     // From the first attempted snapshot onward, all failure paths keep this
@@ -724,7 +734,7 @@ async fn repair_index(
     let mut owner = custody
         .lock()
         .map_err(|_| io::Error::other("metadata custody poisoned"))?;
-    if owner.faulted {
+    if owner.faulted || owner.recovery_required {
         return Err(io::Error::other(
             "index repair requires failed-operation recovery",
         ));
@@ -797,6 +807,7 @@ async fn repair_index(
         .map_err(io::Error::other)?;
 
     let source = Arc::new(source);
+    owner.begin_mutation()?;
     owner.index_repairs.insert(
         id,
         IndexRepairCustody {

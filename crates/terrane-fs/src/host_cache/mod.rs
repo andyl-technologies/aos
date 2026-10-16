@@ -25,8 +25,8 @@ pub use manifest_source::NativeManifestSource;
 pub use metadata::NativeHostMetadataReader;
 #[cfg(feature = "tokio")]
 pub use owner::{
-    IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation, NativeIndexRepairReport,
-    NativeMetadataOwner, RetainedManifest,
+    CompletedRecovery, IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation,
+    NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;

@@ -54,6 +54,14 @@ pub(super) struct SharedNamespaceObservation {
 }
 
 impl SharedNamespaceObservation {
+    /// Borrows actual retained descriptors for post-barrier allocation observation.
+    pub(super) fn retained_inodes(&self) -> impl Iterator<Item = &File> {
+        self.directories
+            .iter()
+            .map(|directory| directory.file.as_ref())
+            .chain(self.entries.iter().map(|entry| &entry.inode))
+    }
+
     /// Enumerates actual names with one finite budget across all shared roots.
     ///
     /// No entry is filtered by spelling or inode type. Iterative traversal avoids
