@@ -43,6 +43,7 @@
           },
           "aos_terrane": {
               "host::claims::tests::permanent_publication_survives_restart_and_refuses_collision",
+              "host::claims::tests::stale_temporary_name_is_preserved_and_skipped",
               "host::claims::tests::concurrent_claims_publish_one_complete_record",
               "host::claims::tests::host_global_claims_preserve_crash_custody_vm",
           },

@@ -341,17 +341,9 @@ fn validate_anchor(identity: &RegistryIdentity, initial_enrollment: bool) -> io:
 
 fn publish_no_replace(parent: &Path, directory: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temporary = parent.join(format!(".claim-{}-{sequence}", std::process::id()));
+    let (temporary, mut output) = claim_temporary(parent, &SEQUENCE)?;
     let target = parent.join(name);
-    let mut created = false;
     let result = (|| {
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        created = true;
         output.write_all(bytes)?;
         output.sync_all()?;
         match fs::hard_link(&temporary, &target) {
@@ -361,15 +353,64 @@ fn publish_no_replace(parent: &Path, directory: &File, name: &str, bytes: &[u8])
         }
         Ok(())
     })();
-    if created {
-        let _ = fs::remove_file(&temporary);
-    }
+    let _ = fs::remove_file(&temporary);
     result
+}
+
+fn claim_temporary(
+    parent: &Path,
+    sequence: &std::sync::atomic::AtomicU64,
+) -> io::Result<(PathBuf, File)> {
+    // Interrupted attempts own their temporary names permanently until an
+    // administrator recovers them. Never remove a stale name to make progress.
+    for _ in 0..1024 {
+        let number = sequence
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |value| value.checked_add(1),
+            )
+            .map_err(|_| io::Error::other("claim temporary sequence exhausted"))?;
+        let path = parent.join(format!(".claim-{}-{number}", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other("too many stale claim temporary names"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_temporary_name_is_preserved_and_skipped() {
+        let parent =
+            std::env::temp_dir().join(format!("terrane-stale-claim-{}", std::process::id()));
+        fs::create_dir(&parent).expect("exclusive test directory");
+        let stale = parent.join(format!(".claim-{}-0", std::process::id()));
+        fs::write(&stale, b"interrupted attempt").expect("stale attempt");
+        let sequence = std::sync::atomic::AtomicU64::new(0);
+
+        let (fresh, file) = claim_temporary(&parent, &sequence).expect("skip stale name");
+
+        assert_ne!(fresh, stale);
+        assert_eq!(
+            fs::read(&stale).expect("preserved stale attempt"),
+            b"interrupted attempt"
+        );
+        drop(file);
+        fs::remove_file(fresh).expect("fresh test cleanup");
+        fs::remove_file(stale).expect("stale test cleanup");
+        fs::remove_dir(parent).expect("directory cleanup");
+    }
 
     #[test]
     fn permanent_publication_survives_restart_and_refuses_collision() {
