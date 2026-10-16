@@ -10,12 +10,14 @@ use crate::{
     host_cache::recovery_inspection::{DerivedIndexRepair, DetachedIndexStatus},
     host_quota::{NativeProject, synchronized_allocated_bytes},
 };
-use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags, fchmod, openat, renameat_with, unlinkat};
+use rustix::fs::{
+    AtFlags, Mode, OFlags, RenameFlags, fchmod, open, openat, renameat_with, unlinkat,
+};
 use std::{
     fs::{File, Metadata},
     io::{self, Read, Write},
     os::{
-        fd::IntoRawFd,
+        fd::{AsRawFd, IntoRawFd},
         unix::fs::{FileExt, MetadataExt},
     },
 };
@@ -114,12 +116,7 @@ fn write_inner(
         .ok_or_else(|| invalid("index writer disappeared"))?;
     close_checked(writer)?;
 
-    pending.readonly = Some(File::from(openat(
-        parent,
-        &pending.temporary,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?));
+    pending.readonly = Some(open_regular_at(parent, &pending.temporary)?);
     let readonly = pending
         .readonly
         .as_ref()
@@ -148,12 +145,7 @@ fn write_inner(
                 .ok_or_else(|| invalid("published index descriptor missing"))?
         }
         Err(rustix::io::Errno::EXIST) => {
-            let existing = File::from(openat(
-                parent,
-                &name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )?);
+            let existing = open_regular_at(parent, &name)?;
             check_custody(&existing, &directory, project.project_id)?;
             check_canonical_mode(&existing)?;
             verify_bytes(&existing, source.index_bytes())?;
@@ -193,12 +185,7 @@ fn write_inner(
         .as_ref()
         .ok_or_else(|| invalid("canonical index custody lost"))?;
     verify_bytes(index, source.index_bytes())?;
-    let current = File::from(openat(
-        parent,
-        &name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?);
+    let current = open_regular_at(parent, &name)?;
     if !same_file(&index.metadata()?, &current.metadata()?) {
         return Err(invalid("canonical index pathname changed"));
     }
@@ -211,6 +198,35 @@ fn write_inner(
         index,
         allocated_bytes,
     })
+}
+
+/// Classifies without opening a FIFO/device, then reads only that retained inode.
+fn open_regular_at(parent: &File, name: &str) -> io::Result<File> {
+    let observation = File::from(openat(
+        parent,
+        name,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    let before = observation.metadata()?;
+    if !before.is_file() {
+        return Err(invalid("index candidate is not an ordinary regular inode"));
+    }
+
+    // The proc descriptor path follows the retained O_PATH inode, not a second
+    // lookup of the mutable canonical name. NONBLOCK remains defense in depth;
+    // a missing procfs path is an error, never a pathname-open fallback.
+    let file = File::from(open(
+        format!("/proc/self/fd/{}", observation.as_raw_fd()),
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    if !same_file(&before, &file.metadata()?) || !same_file(&before, &observation.metadata()?) {
+        return Err(invalid(
+            "classified index inode changed during read-only reopen",
+        ));
+    }
+    Ok(file)
 }
 
 fn check_custody(file: &File, parent: &Metadata, project_id: u32) -> io::Result<()> {
@@ -284,6 +300,76 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn invalid(error: impl std::fmt::Display) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+fn invalid(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture(std::path::PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            let mut random = [0; 16];
+            File::open("/dev/urandom")
+                .unwrap()
+                .read_exact(&mut random)
+                .unwrap();
+            let path = std::env::temp_dir().join(format!("terrane-index-open-{}", hex(&random)));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn classified_index_open_reads_regular_inode_and_refuses_fifo_and_symlink() {
+        let fixture = Fixture::new();
+        std::fs::write(fixture.0.join("index"), b"exact index").unwrap();
+        let parent = File::open(&fixture.0).unwrap();
+        rustix::fs::mkfifoat(&parent, "fifo", Mode::from_raw_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink("index", fixture.0.join("symlink")).unwrap();
+
+        let mut file = open_regular_at(&parent, "index").unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"exact index");
+        for name in ["fifo", "symlink"] {
+            assert_eq!(
+                open_regular_at(&parent, name).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
+    fn classified_index_open_refuses_character_device_before_read_open() {
+        let parent = File::open("/dev").unwrap();
+        assert_eq!(
+            open_regular_at(&parent, "null").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn invalid_index_error_preserves_typed_source() {
+        let source = io::Error::new(io::ErrorKind::PermissionDenied, "original failure");
+        let error = invalid(source);
+        assert_eq!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
 }
