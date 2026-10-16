@@ -610,10 +610,15 @@ enum SelectedConnectedCoordinator {
 
 impl SelectedConnectedCoordinator {
     fn precharge(&self) -> Result<(), OperationFailure> {
-        let maximum=crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES;
+        use crucible_node_provider::reference_packet::coordinator::{
+            PACKET_CONNECTED_COORDINATOR_BYTES, PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES,
+        };
+
         match self {
-            Self::Four(value) => budget::serialized_size(value, maximum),
-            Self::Complete(value) => budget::serialized_size(value, maximum),
+            Self::Four(value) => budget::serialized_size(value, PACKET_CONNECTED_COORDINATOR_BYTES),
+            Self::Complete(value) => {
+                budget::serialized_size(value, PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES)
+            }
         }
         .map(|_| ())
     }

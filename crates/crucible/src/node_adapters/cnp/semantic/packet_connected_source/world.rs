@@ -41,7 +41,10 @@ impl PacketConnectedWorldScope {
         installation: &CnpSemanticInstallation,
         coordinator: PacketNative5CoordinatorInstallation,
     ) -> Result<Self, OperationFailure> {
-        budget::serialized_size(&coordinator, crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES)?;
+        budget::serialized_size(
+            &coordinator,
+            crucible_node_provider::reference_packet::coordinator::PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES,
+        )?;
         Self::new_selected(
             installation,
             InstalledConnectedCoordinator::Five(Box::new(coordinator)),

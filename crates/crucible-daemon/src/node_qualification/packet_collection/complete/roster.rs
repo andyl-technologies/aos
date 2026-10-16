@@ -12,7 +12,7 @@ use crucible::node_adapters::cnp::{
 };
 use crucible::node_contract::OperationFailure;
 use crucible_node_provider::reference_packet::coordinator::{
-    PACKET_CONNECTED_COORDINATOR_BYTES, PacketNative5CoordinatorInstallation,
+    PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES, PacketNative5CoordinatorInstallation,
 };
 
 use super::{QualificationError, refused};
@@ -34,7 +34,10 @@ impl PacketCompleteRoster {
         sources: [Rc<PacketCompleteSemanticSource>; 3],
         coordinator: &PacketNative5CoordinatorInstallation,
     ) -> Result<Self, QualificationError> {
-        super::super::scope::encoded_size(coordinator, PACKET_CONNECTED_COORDINATOR_BYTES)?;
+        super::super::scope::encoded_size(
+            coordinator,
+            PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES,
+        )?;
         for (member, source) in sources.iter().enumerate() {
             source.authenticate_registration().map_err(external)?;
             source
