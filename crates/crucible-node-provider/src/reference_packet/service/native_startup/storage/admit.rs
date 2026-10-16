@@ -274,10 +274,21 @@ pub(super) fn project(
     // expected_body and all five normalizations; it is not the service's moved
     // launch already counted by the parent permanent row. The decode returns
     // before normalization, but its resulting backing stays live throughout.
-    let launch_local = decoded::quote(input.encoded_launch,
-        size_of::<PacketNative5SourceLaunch>(), native_element_slot(), maximum)?;
-    let launch_work = decode(input.encoded_launch, size_of::<PacketNative5SourceLaunch>(), maximum)?;
-    transient = sum(&[launch_local.typed_backing, transient.max(launch_work)], maximum)?;
+    let launch_local = decoded::quote(
+        input.encoded_launch,
+        size_of::<PacketNative5SourceLaunch>(),
+        native_element_slot(),
+        maximum,
+    )?;
+    let launch_work = decode(
+        input.encoded_launch,
+        size_of::<PacketNative5SourceLaunch>(),
+        maximum,
+    )?;
+    transient = sum(
+        &[launch_local.typed_backing, transient.max(launch_work)],
+        maximum,
+    )?;
     let scratch = sum(
         &[
             size_of::<AdmitStorage>(),

@@ -54,9 +54,7 @@ pub(super) fn quote(
     // heap coexist. A second pinned node dominates four input slots and one
     // sort slot per entry; fixed4096-byte sort workspace stays separate below.
     let sort_slot = size_of::<(Vec<u16>, (&str, &Value))>();
-    if size_of::<usize>() != 8
-        || sort_slot.checked_mul(5).ok_or_else(refused)? > sort_node
-    {
+    if size_of::<usize>() != 8 || sort_slot.checked_mul(5).ok_or_else(refused)? > sort_node {
         return Err(refused());
     }
     let mut canonical = bytes.len().checked_mul(8).ok_or_else(refused)?;
@@ -113,10 +111,15 @@ pub(super) fn quote(
                 }
                 if bytes.get(next) == Some(&b':') {
                     maps = maps.checked_add(1).ok_or_else(refused)?;
-                    canonical = sum(&[canonical,
-                        encoded.checked_mul(8).ok_or_else(refused)?,
-                        sort_node.checked_mul(2).ok_or_else(refused)?,
-                        16], maximum)?;
+                    canonical = sum(
+                        &[
+                            canonical,
+                            encoded.checked_mul(8).ok_or_else(refused)?,
+                            sort_node.checked_mul(2).ok_or_else(refused)?,
+                            16,
+                        ],
+                        maximum,
+                    )?;
                 }
                 canonical = sum(
                     &[canonical, encoded.checked_mul(24).ok_or_else(refused)?, 264],
@@ -166,11 +169,19 @@ pub(super) fn quote(
     //66 desired-depth bytes, insertion temporary/CopyOnDrop and heap header.
     let sort_alignment = align_of::<(Vec<u16>, (&str, &Value))>();
     let sort_workspace = ((4096 + sort_alignment - 1) & !(sort_alignment - 1))
-        + size_of::<[usize; 66]>() + size_of::<[u8; 66]>()
-        + sort_slot + 3 * size_of::<usize>()
+        + size_of::<[usize; 66]>()
+        + size_of::<[u8; 66]>()
+        + sort_slot
+        + 3 * size_of::<usize>()
         + size_of::<Vec<(Vec<u16>, (&str, &Value))>>();
     let work = sum(
-        &[value_backing, value_backing, typed_backing, canonical, sort_workspace],
+        &[
+            value_backing,
+            value_backing,
+            typed_backing,
+            canonical,
+            sort_workspace,
+        ],
         maximum,
     )?;
     let result = DecodedStorage {
