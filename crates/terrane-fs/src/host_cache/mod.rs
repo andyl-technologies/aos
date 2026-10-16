@@ -10,6 +10,7 @@ mod metadata;
 mod quota;
 mod reassembly;
 mod residency;
+mod seal;
 mod source;
 
 #[cfg(feature = "tokio")]
@@ -17,6 +18,7 @@ pub use metadata::NativeHostMetadataReader;
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
 pub use residency::{NativeChunkSpan, NativeResidencePlan};
+pub use seal::NativeSealCapability;
 pub use source::NativeChunkSource;
 
 use std::{
