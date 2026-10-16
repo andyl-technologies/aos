@@ -64,7 +64,7 @@ fn name(claim: &PublicationClaim) -> String {
     name
 }
 
-/// Retains a fresh private inode after every writer has been closed.
+/// Retains a private reader and unexported writer through verification.
 pub struct StagedFile {
     reader: File,
     writer: Option<File>,

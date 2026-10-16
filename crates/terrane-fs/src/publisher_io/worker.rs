@@ -33,11 +33,11 @@ enum Command {
     Adopt { claim: PublicationClaim, response: Response },
 }
 
-/// Submits fixed publication commands to an independently owned native task.
+/// Submits fixed publication commands to an independently owned native worker.
 ///
 /// Cancellation drops only the response waiter. Once accepted, a command owns
 /// its source, directory exclusions and actual state future through completion.
-/// The task serializes mutations and never receives paths or arbitrary callbacks.
+/// The worker serializes mutations and never receives paths or arbitrary callbacks.
 #[derive(Clone)]
 pub struct NativePublicationWorker {
     sender: mpsc::Sender<Command>,

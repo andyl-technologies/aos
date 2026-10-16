@@ -46,7 +46,7 @@ pub trait PublicationKernel {
     /// Copies descriptor content into a fresh publisher-private inode.
     ///
     /// # Errors
-    /// Returns invalid source, copy, close or private inode creation failures.
+    /// Returns invalid source, copy or private inode creation failures.
     fn stage(&mut self, claim: &PublicationClaim, source: Self::Source) -> io::Result<Self::Staged>;
 
     /// Closes every private-inode writer, reporting deferred close errors.
