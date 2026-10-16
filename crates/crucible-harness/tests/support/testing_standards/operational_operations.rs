@@ -12,6 +12,8 @@ use super::{
 
 #[path = "operational_operations/cache.rs"]
 mod cache;
+#[path = "operational_operations/cleanup_delegation.rs"]
+mod cleanup_delegation;
 
 struct Companion {
     path: &'static str,
@@ -636,7 +638,10 @@ const CONTRACTS: &[Contract] = &[
 ];
 
 fn contracts() -> impl Iterator<Item = &'static Contract> {
-    CONTRACTS.iter().chain(cache::CONTRACTS)
+    CONTRACTS
+        .iter()
+        .chain(cache::CONTRACTS)
+        .chain(cleanup_delegation::CONTRACTS)
 }
 
 pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
@@ -839,8 +844,9 @@ fn continuation_waits_require_original_posts_and_physical_custody()
             }
         }
         for (expression, count) in contract.expressions {
-            let expression = source_pattern(expression);
-            assert_eq!(expression_offsets(&code, &expression).len(), *count);
+            let expression = *expression;
+            let expression_pattern = source_pattern(expression);
+            assert_eq!(expression_offsets(&code, &expression_pattern).len(), *count);
             let additional = format!("{code}\n{expression}");
             assert!(
                 rejects(&additional, &companions),
@@ -853,9 +859,10 @@ fn continuation_waits_require_original_posts_and_physical_custody()
                 .replace("(&error)", "(&other_error)")
                 .replace("retry_unsettled()", "retry_unsettled(altered)")
                 .replace("(slot)", "(other_slot)")
-                .replace("(provider)", "(other_provider)");
+                .replace("(provider)", "(other_provider)")
+                .replace("(&mut self)", "(&mut other)");
             assert_ne!(changed_expression, expression);
-            let changed = replace_one_obligation(&code, &expression, &changed_expression);
+            let changed = replace_one_obligation(&code, &expression_pattern, &changed_expression);
             assert!(
                 rejects(&changed, &companions),
                 "changed continuation was masked: {} {expression}",
@@ -875,6 +882,7 @@ fn continuation_waits_require_original_posts_and_physical_custody()
             "fn conceal_failure() { thread::sleep(unbounded); }",
             "fn conceal_failure() { retry(); }",
             "fn conceal_failure() { retry!(); }",
+            "fn retry() {}",
             "fn conceal_failure() { retry_failed_test(); }",
             "fn conceal_failure() { loop { retry_failed_test(); } }",
         ] {
