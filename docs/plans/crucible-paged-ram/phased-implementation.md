@@ -90,6 +90,16 @@ uses shared metadata. The storage cost controls cover tiny, mixed and dense pack
 and 32/512 MiB RAM traversals. Their integrity/resource results do not establish
 VM performance parity or authorize new resource ceilings.
 
+The complete volume fixture deliberately uses a quota guard without manifest
+retention. Digest-ordered repack loses depth-first traversal locality, so that
+fixture authenticates a manifest on almost every subsequent pack switch. The
+separate cost control and production quota guard use the service-owned cache;
+the measured switch count is the same, while authenticated manifests fall from
+391,776 to 628 in the 512-MiB post-repack traversal. This identifies two guard
+policies, not a demonstrated shared-cache eviction defect. The cache-disabled
+integrity coverage remains required. Complete capture/archive/reopen/GC overlap
+with one retained cache owner still needs its own lifecycle control.
+
 Execution runners now expose retirement through an existing supervised
 operation. Routers visit both contained runners even when neither became the
 active semantic route; one refusal does not suppress cleanup of its peer.
@@ -365,8 +375,10 @@ and the real outer-fence measurement, so selecting no test cannot pass. The fres
 control, default/private workspace checks and hygiene pass; confirmation in the
 complete parallel storage suite remains pending. In that fresh four-thread run,
 the fixed control passes and the 512-MiB workload is in progress. Packaged target
-compilation also continues. These results do not qualify native integration,
-physical resource floors or VM performance.
+compilation passes for the immutable member-state/promotion cohort, before the
+subsequent test-only controls and World-loan return API. Packaged qualification
+of the latest joined source remains due. These results do not qualify native
+integration, physical resource floors or VM performance.
 
 A new negative publication regression calls the actual constructor-failure
 adapter twice with its canonical reservation whose queue is unavailable. It
