@@ -46,6 +46,7 @@ pub(super) fn complete_effect(
         .live
         .check_owner_phase(&owner, RecoveryPhase::EffectInFlight)?;
     receipt.retained.check_registration(&owner)?;
+    let body_project = check_body_project(body.handle(), &owner)?;
     let layout = owner.preparation.layout();
     let readable = File::from(openat(
         &layout.root,
@@ -113,6 +114,11 @@ pub(super) fn complete_effect(
         .live
         .check_owner_phase(&owner, RecoveryPhase::EffectInFlight)?;
     receipt.retained.check_registration(&owner)?;
+    if check_body_project(body.handle(), &owner)? != body_project {
+        return Err(invalid(
+            "adopted manifest project or inode changed during reconciliation",
+        ));
+    }
     let charged_reserved_bytes = owner
         .preparation
         .quota()
@@ -125,4 +131,25 @@ pub(super) fn complete_effect(
         retained_source_and_body_bytes,
         charged_reserved_bytes,
     })
+}
+
+/// Checks the actual body inode against retained native charge-owner authority.
+fn check_body_project(file: &File, owner: &Custody) -> io::Result<NativeProject> {
+    let project = NativeProject::inspect(file)?;
+    let metadata = file.metadata()?;
+    let expected_device = owner
+        .preparation
+        .layout()
+        .directory_binding("layout-root")?
+        .0;
+    if project.project_id != owner.preparation.config.project_id
+        || project.device != expected_device
+        || (project.device, project.inode) != (metadata.dev(), metadata.ino())
+        || !metadata.is_file()
+    {
+        return Err(invalid(
+            "adopted manifest body has another native charge owner or device",
+        ));
+    }
+    Ok(project)
 }
