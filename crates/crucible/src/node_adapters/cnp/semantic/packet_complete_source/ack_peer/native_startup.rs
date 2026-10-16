@@ -32,6 +32,9 @@ use crucible_node_provider::{
 use serde::{Serialize, ser::SerializeMap};
 use std::{mem::size_of, rc::Rc};
 
+#[path = "native_startup/capture_construction.rs"]
+mod capture_construction;
+
 pub(super) struct OriginalNativeStartupFinalization {
     pub(super) member: OriginalNativeStartupMember,
     replacement: Vec<u8>,
@@ -107,6 +110,10 @@ impl PacketCompleteSemanticSource {
             16 * 1024,
             size_of::<blake3::Hasher>(),
             size_of::<[u8; 336]>(),
+            Self::original_complete_capture_execution_counter_scratch_data(),
+            // Quote and pre-reservation recheck each return this fixed view.
+            // Their bank storage is independently included in finalization.
+            2 * size_of::<(usize, usize, usize)>(),
         ]
         .into_iter()
         .try_fold(0usize, |sum, n| {
@@ -269,8 +276,14 @@ impl PacketCompleteSemanticSource {
             crucible_node_provider::reference_packet::service::native_startup::original_native_private_boot_fields_storage_data(&input,maximum)
                 .map_err(|_|RuntimeError::ResourceLimit)?,
         ],maximum)?;
+        let (source_capture_backend_bytes, source_capture_execution_bytes,
+            source_capture_execution_scratch) = self.original_native_source_capture_construction_data(
+                launch, maximum,
+            )?;
         let finalization_bytes=retained_values::sum_with_error::<RuntimeError,_>([
             wire_bytes,
+            source_capture_execution_bytes,
+            source_capture_execution_scratch,
 
             birth.source_birth.capacity(),decoded,additions,
             size_of::<OriginalNativeStartupFinalization>(),
@@ -295,6 +308,9 @@ impl PacketCompleteSemanticSource {
         Ok(OriginalNativeStartupQuote {
             rows,
             finalization_bytes,
+            source_capture_backend_bytes,
+            source_capture_execution_bytes,
+            source_capture_execution_scratch,
             wire_requested_bytes: wire_bytes,
             publication_bytes,
             launch_digest: *blake3::hash(encoded_launch).as_bytes(),
@@ -332,7 +348,16 @@ impl PacketCompleteSemanticSource {
             additions: None,
             complete: false,
         });
-        let result = finalize_bank(birth, launch, rows, capacity, maximum);
+        let result = (|| {
+            // The exact original member is already spent and Source-retained.
+            // Its whole-action quote admitted these separate host allocations
+            // before any reserve call; no row14/report scalar authorizes them.
+            self.reserve_original_native_source_capture_construction_data(
+                &birth.native_startup.as_ref().ok_or(RuntimeError::OwnerUnavailable)?.member,
+                launch,
+            )?;
+            finalize_bank(birth, launch, rows, capacity, maximum)
+        })();
         if result.is_err() {
             birth.failed = true;
         }

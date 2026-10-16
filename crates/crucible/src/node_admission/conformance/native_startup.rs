@@ -156,6 +156,11 @@ impl NativeStartupRows {
 pub(crate) struct OriginalNativeStartupQuote {
     pub(crate) rows: NativeStartupRows,
     pub(crate) finalization_bytes: usize,
+    // Source-owned pre-Child output-bank construction is a distinct host term.
+    // It is never serialized into the native private/bootstrap/Prepare rows.
+    pub(crate) source_capture_backend_bytes: usize,
+    pub(crate) source_capture_execution_bytes: usize,
+    pub(crate) source_capture_execution_scratch: usize,
     pub(crate) wire_requested_bytes: usize,
     pub(crate) publication_bytes: usize,
     pub(crate) launch_digest: [u8; 32],
@@ -358,6 +363,9 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
             || actual.finalization_bytes > quote.finalization_bytes
             || actual.wire_requested_bytes > quote.wire_requested_bytes
             || actual.publication_bytes > quote.publication_bytes
+            || actual.source_capture_backend_bytes != quote.source_capture_backend_bytes
+            || actual.source_capture_execution_bytes > quote.source_capture_execution_bytes
+            || actual.source_capture_execution_scratch > quote.source_capture_execution_scratch
         {
             return Err(RuntimeError::ResourceLimit);
         }
@@ -369,6 +377,9 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
             plan: self.scope.plan.downgrade(),
             rows: quote.rows,
             finalization_bytes: quote.finalization_bytes,
+            source_capture_backend_bytes: quote.source_capture_backend_bytes,
+            source_capture_execution_bytes: quote.source_capture_execution_bytes,
+            source_capture_execution_scratch: quote.source_capture_execution_scratch,
             wire_requested_bytes: quote.wire_requested_bytes,
             host_launch_requested_bytes: self.storage.prospective_host_launch_requested_bytes
                 [index],
@@ -441,6 +452,11 @@ pub(crate) struct OriginalNativeStartupMember {
     plan: WeakInstalledConformancePlan,
     pub(crate) rows: NativeStartupRows,
     pub(crate) finalization_bytes: usize,
+    // Source-owned pre-Child output-bank construction is a distinct host term.
+    // It is never serialized into the native private/bootstrap/Prepare rows.
+    pub(crate) source_capture_backend_bytes: usize,
+    pub(crate) source_capture_execution_bytes: usize,
+    pub(crate) source_capture_execution_scratch: usize,
     pub(crate) wire_requested_bytes: usize,
     pub(crate) host_launch_requested_bytes: usize,
     pub(crate) launch_digest: [u8; 32],
