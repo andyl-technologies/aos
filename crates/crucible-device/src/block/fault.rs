@@ -903,6 +903,12 @@ pub struct BlockFaultState {
     observation_changed: bool,
     config: BlockDurabilityConfig,
     transport_epoch: Option<u64>,
+    // One policy per `NewEpochFromZero` reset, never pruned. The highest epoch
+    // the frontend has sent is not a sound floor: a reset that answers a
+    // request with `RetryPreserveId` grants no authorization, so the frontend
+    // resubmits the pre-reset identity after recovery, possibly behind
+    // newer-epoch requests, and its disposal still reads this policy. A bound
+    // needs the frontend to acknowledge its oldest live epoch on the wire.
     retired_transport_epochs: BTreeMap<u64, BlockRetiredTransportEpoch>,
     retry_preserve_authorizations: BTreeSet<BlockRequestIdentity>,
     recovery_until_ticks: Option<u64>,
