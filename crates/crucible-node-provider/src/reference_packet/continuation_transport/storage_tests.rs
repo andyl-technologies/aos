@@ -6,12 +6,10 @@
 // crucible-lint: allow panic-shortcut -- Assertion panics are the data-control verdict.
 
 use super::*;
+use crate::handshake::{ConnectionAuthority, Handshake};
 use crate::retained_metadata::{
     MetadataObserver,
     serialization_storage::{OriginalSerializationStorageData, actual_serialization_storage_data},
-};
-use crate::{
-    handshake::{ConnectionAuthority, Handshake},
 };
 use crucible_node_contract::{Extensions, Phase, Position, Tick, U64, canonical};
 use serde_json::{Map, Value};
