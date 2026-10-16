@@ -127,6 +127,13 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         // Canonical private bank growth: checked full/spare scalar views.
         + size_of::<[usize; 3]>()
         + size_of::<Result<usize, ProviderError>>()
+        // Selected phase cap and occurrence-based partial native DTO view.
+        + 2 * size_of::<bool>()
+        + size_of::<[usize; 6]>()
+        + size_of::<[usize; 2]>()
+        + size_of::<[usize; 4]>()
+        + size_of::<[usize; 4]>()
+        + size_of::<Result<usize, ProviderError>>()
         + size_of::<Result<Option<bool>, ProviderError>>()
         + size_of::<Result<hello::HelloStorage, ProviderError>>()
         + size_of::<Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError>>()
@@ -172,7 +179,24 @@ pub fn original_native_birth_startup_storage_data(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum_requested_bytes: usize,
 ) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
-    birth_storage_with_source(input, maximum_requested_bytes, private_bootstrap::project)
+    birth_storage_with_source(input, maximum_requested_bytes, private_bootstrap::project, false)
+}
+
+/// Quotes original14 construction under the actual pre-DOM frame gates.
+///
+/// This separate DATA producer is selected by the authenticated host action and
+/// the current original14 native claim. It bounds accepted input layout before
+/// Value allocation; it does not promise every frame at the byte cap will fit.
+/// The broad public producer and Invocation15 keep their original raw floors.
+///
+/// # Errors
+/// Refuses unsupported inputs, overflow or any complete component above the
+/// supplied ceiling. No returned component authorizes allocation or parsing.
+pub fn original_native_preflight_birth_startup_storage_data(
+    input: &PacketNativeBirthStartupInputs<'_>,
+    maximum_requested_bytes: usize,
+) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
+    birth_storage_with_source(input, maximum_requested_bytes, private_bootstrap::project_preflight, true)
 }
 
 // Only the new actual inherited-channel claim uses this source-edition census.
@@ -186,6 +210,7 @@ pub(crate) fn original_native_invocation_baseline_storage_data(
         input,
         maximum_requested_bytes,
         private_bootstrap::project_invocation,
+        false,
     )
 }
 
@@ -196,6 +221,7 @@ fn birth_storage_with_source(
         &PacketNativeBirthStartupInputs<'_>,
         usize,
     ) -> Result<private_bootstrap::PrivateBootstrapStorage, ProviderError>,
+    preflight: bool,
 ) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
     if input.encoded_launch.is_empty()
         || input.encoded_launch.len() > PRIVATE_LAUNCH_BYTES
@@ -346,7 +372,11 @@ fn birth_storage_with_source(
         maximum,
     )?;
     let admit = admit::project(input, &private, maximum)?;
-    let hello = hello::project(input, maximum)?;
+    // Selected Hello work is checked against the SAME native row before any
+    // request Value. Compute its unchanged retained/scratch projection without
+    // making the broad arbitrary-byte transient a hidden selected requirement.
+    // This arithmetic ceiling grants no allocation; final rows still use maximum.
+    let hello = hello::project(input, if preflight { usize::MAX } else { maximum })?;
     let retained = sum(
         &[
             retained,
@@ -369,7 +399,7 @@ fn birth_storage_with_source(
         .max(coordinator_decode)
         .max(source_decode)
         .max(registration_decode)
-        .max(hello.transient);
+        .max(if preflight { NATIVE_HELLO_BYTES } else { hello.transient });
     let lifecycle_work = sum(
         &[
             lifecycle.transient,
@@ -592,4 +622,28 @@ pub(in crate::reference_packet::service) fn original_private_launch_backing_data
         ],
         usize::MAX,
     )
+}
+
+// Both private frames are admitted against actual raw occurrences. The first
+// may construct a partial native launch; the second BootData owns Value trees.
+// Keep the compiled native Vec roster for both, including malformed partials.
+pub(super) fn private_frame_work_data(
+    raw: crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData,
+    carry: usize,
+) -> Result<usize, ProviderError> {
+    let slots = raw.maximum_value_nodes.checked_mul(4).ok_or_else(refused)?;
+    let typed = sum(&[
+        raw.value_dom_requested_bytes,
+        slots.checked_mul(native_element_slot()).ok_or_else(refused)?,
+        raw.maximum_decoded_string_bytes.checked_mul(8).ok_or_else(refused)?,
+        size_of::<PacketNative5SourceLaunch>().max(
+            super::super::ack_emitter::original_native_ack_boot_layout(),
+        ),
+    ], usize::MAX)?;
+    sum(&[
+        raw.canonical_pass_requested_bytes()?,
+        raw.canonical_pass_requested_bytes()?,
+        typed,
+        carry,
+    ], usize::MAX)
 }

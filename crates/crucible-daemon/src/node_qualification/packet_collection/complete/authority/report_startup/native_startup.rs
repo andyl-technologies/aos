@@ -62,7 +62,7 @@ impl PacketCompleteReportStartupHolder {
             }
             requested_peak
         } else {
-            let mut admission = held.plan.reserve_original_native_startup(
+            let mut admission = held.plan.reserve_original_native_preflight_startup(
                 &held.authority.roster.sources,
                 &held.authority.original_launches,
                 &held.authority.private_launches,

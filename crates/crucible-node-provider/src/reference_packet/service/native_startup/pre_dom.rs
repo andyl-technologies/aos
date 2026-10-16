@@ -62,7 +62,12 @@ impl<'a> OriginalNativeFramePreflight<'a> {
     /// Refuses incomplete rows or a body/scratch window above that same row.
     pub(crate) fn admit_raw_bank(&self, length: usize) -> Result<(), ProviderError> {
         self.row.requested_peak_data()?;
-        if length as u64 > self.row.maximum_simultaneous_transient_bytes.get()
+        let carry = match self.kind {
+            FrameKind::Private { typed_launch_backing } => typed_launch_backing,
+            FrameKind::Hello { .. } => 0,
+        };
+        let body_and_carry = length.checked_add(carry).ok_or_else(exhausted)?;
+        if body_and_carry as u64 > self.row.maximum_simultaneous_transient_bytes.get()
             || counter_scratch_data() as u64 > self.row.declared_counter_scratch_bytes.get()
         {
             return Err(exhausted());
@@ -86,10 +91,7 @@ impl<'a> OriginalNativeFramePreflight<'a> {
         let requested = match self.kind {
             FrameKind::Private {
                 typed_launch_backing,
-            } => extent
-                .canonical_pass_requested_bytes()?
-                .checked_add(typed_launch_backing)
-                .ok_or_else(exhausted)?,
+            } => super::storage::private_frame_work_data(extent, typed_launch_backing)?,
             FrameKind::Hello {
                 launch,
                 registration,
@@ -106,12 +108,18 @@ impl<'a> OriginalNativeFramePreflight<'a> {
     }
 }
 
+pub(super) fn raw_extent_data(raw: &[u8]) -> Result<crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData, ProviderError> {
+    raw_shape::extent(raw)
+}
+
 pub(super) fn counter_scratch_data() -> usize {
     raw_shape::counter_scratch_data()
         + std::mem::size_of::<OriginalNativeFramePreflight<'static>>()
         + std::mem::size_of::<FrameKind<'static>>()
         + std::mem::size_of::<Result<(), ProviderError>>()
         + std::mem::size_of::<[usize; 4]>()
+        + std::mem::size_of::<[usize; 2]>()
+        + std::mem::size_of::<Result<usize, ProviderError>>()
         + std::mem::size_of::<Option<OriginalNativeFramePreflight<'static>>>()
         + std::mem::size_of::<Result<Option<OriginalNativeFramePreflight<'static>>, ProviderError>>(
         )

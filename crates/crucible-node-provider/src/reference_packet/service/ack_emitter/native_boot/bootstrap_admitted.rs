@@ -98,10 +98,11 @@ impl OriginalNativeStartupBootstrap {
                 "native startup private bank floor",
             ));
         }
-        let incoming = crate::retained_metadata::serialization_storage::original_json_value_storage_extent_data(
-            (data.launch_bytes as usize).max(data.maximum_boot_bytes as usize),
-        )?;
-        if incoming.canonical_pass_requested_bytes()? as u64
+        // Current original14 always uses the selected occurrence gate before
+        // either Value. This first check pays the independent raw body bank;
+        // the complete two-pass/typed/carry sum follows the actual raw read.
+        // Old binaries retain their broad parser floor and refuse lower rows.
+        if (data.launch_bytes as usize).max(data.maximum_boot_bytes as usize) as u64
             > data.private_bootstrap.maximum_simultaneous_transient_bytes.get()
             || crate::reference_packet::service::native_startup::original_native_birth_startup_counter_scratch_data() as u64
                 > data.private_bootstrap.declared_counter_scratch_bytes.get()
@@ -168,7 +169,7 @@ impl OriginalNativeStartupBootstrap {
             PACKET_NATIVE_STARTUP_ALLOCATION_SCHEMA, PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA,
             PacketNativeBirthStartupInputs, PacketNativeStartupAllocation,
             PacketNativeStartupAllocationRow, original_native_birth_startup_counter_scratch_data,
-            original_native_birth_startup_storage_data,
+            original_native_preflight_birth_startup_storage_data,
         };
         use crucible_node_contract::U64;
 
@@ -217,7 +218,7 @@ impl OriginalNativeStartupBootstrap {
         // parser extent. Each returned row still authenticates every component
         // against its ORIGINAL grant below; this ceiling grants no allocation.
         let maximum = original_requote_maximum(&self.native_birth, &self.private_bootstrap)?;
-        let actual = original_native_birth_startup_storage_data(
+        let actual = original_native_preflight_birth_startup_storage_data(
             &PacketNativeBirthStartupInputs {
                 launch,
                 private_launch,

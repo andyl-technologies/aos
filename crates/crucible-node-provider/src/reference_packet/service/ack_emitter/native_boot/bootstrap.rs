@@ -282,7 +282,11 @@ impl<S: AsFd> Bootstrap<S> {
         self.boot_value = Some(
             if let Some(startup) = self.startup.as_ref().filter(|_| pre_dom_selected) {
                 startup.ensure_original()?;
-                let carry = crate::reference_packet::service::native_startup::original_private_launch_backing_data(launch)?;
+                // The clone passed into NativeAckBoot is independent from the
+                // original growable canonical bank already funded in privateR.
+                let carry = crate::reference_packet::service::native_startup::original_private_launch_backing_data(launch)?
+                    .checked_add(self.launch_bytes.len())
+                    .ok_or(ProviderError::ResourceExhausted("native private carried launch"))?;
                 let budget = crate::reference_packet::service::native_startup::OriginalNativeFramePreflight::private(
                     &startup.private_bootstrap,
                     carry,

@@ -25,6 +25,7 @@ use crucible_node_provider::{
             PacketNativeBirthStartupInputs, PacketNativeStartupAllocationRow,
             original_native_birth_startup_counter_scratch_data,
             original_native_birth_startup_storage_data,
+            original_native_preflight_birth_startup_storage_data,
         },
         original_native_prepare_startup_counter_scratch_data,
         original_native_prepare_startup_storage_data,
@@ -207,6 +208,7 @@ impl PacketCompleteSemanticSource {
             original_native_prepare_startup_counter_scratch_data(),
             Self::original_report_startup_observer_scratch_data(),
             size_of::<NativeAdditions<'_>>(),
+            size_of::<bool>(),
             size_of::<OriginalNativeStartupFinalization>(),
             size_of::<PacketNativeBirthStartupInputs<'_>>(),
             16 * 1024,
@@ -309,6 +311,25 @@ impl PacketCompleteSemanticSource {
         encoded_launch: &[u8],
         maximum: usize,
     ) -> Result<OriginalNativeStartupQuote, RuntimeError> {
+        self.original_native_startup_quote_with_producer_data(launch, encoded_launch, maximum, false)
+    }
+
+    pub(crate) fn original_native_preflight_startup_quote_data(
+        self: &Rc<Self>,
+        launch: &PacketNative5SourceLaunch,
+        encoded_launch: &[u8],
+        maximum: usize,
+    ) -> Result<OriginalNativeStartupQuote, RuntimeError> {
+        self.original_native_startup_quote_with_producer_data(launch, encoded_launch, maximum, true)
+    }
+
+    fn original_native_startup_quote_with_producer_data(
+        self: &Rc<Self>,
+        launch: &PacketNative5SourceLaunch,
+        encoded_launch: &[u8],
+        maximum: usize,
+        preflight: bool,
+    ) -> Result<OriginalNativeStartupQuote, RuntimeError> {
         self.authenticate_native_launch_data(launch)?;
         self.original_complete_report_startup_retained_storage_precredit_data(maximum)?;
         let slot = self
@@ -335,8 +356,11 @@ impl PacketCompleteSemanticSource {
             source_birth: &birth.source_birth,
             host_registration: &birth.expected_host_registration,
         };
-        let native = original_native_birth_startup_storage_data(&input, maximum)
-            .map_err(|_| RuntimeError::ResourceLimit)?;
+        let native = if preflight {
+            original_native_preflight_birth_startup_storage_data(&input, maximum)
+        } else {
+            original_native_birth_startup_storage_data(&input, maximum)
+        }.map_err(|_| RuntimeError::ResourceLimit)?;
         let private_bootstrap = row(
             native.private_bootstrap_retained_requested_bytes(),
             native.private_bootstrap_maximum_simultaneous_transient_bytes(),

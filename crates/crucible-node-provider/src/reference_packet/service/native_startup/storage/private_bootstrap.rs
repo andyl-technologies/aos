@@ -157,20 +157,28 @@ pub(super) fn project(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum: usize,
 ) -> Result<PrivateBootstrapStorage, ProviderError> {
-    project_with_source(input, maximum, source_binding::project)
+    project_with_source(input, maximum, source_binding::project, false)
 }
 
 pub(super) fn project_invocation(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum: usize,
 ) -> Result<PrivateBootstrapStorage, ProviderError> {
-    project_with_source(input, maximum, source_binding::project_invocation)
+    project_with_source(input, maximum, source_binding::project_invocation, false)
+}
+
+pub(super) fn project_preflight(
+    input: &PacketNativeBirthStartupInputs<'_>,
+    maximum: usize,
+) -> Result<PrivateBootstrapStorage, ProviderError> {
+    project_with_source(input, maximum, source_binding::project, true)
 }
 
 fn project_with_source(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum: usize,
     source_project: fn(&[u8], usize) -> Result<source_binding::SourceBindingStorage, ProviderError>,
+    preflight: bool,
 ) -> Result<PrivateBootstrapStorage, ProviderError> {
     let additions = source_additions(input, maximum)?;
     let fields = boot_fields(input, maximum)?;
@@ -229,21 +237,6 @@ fn project_with_source(
     // FrameReader's generic raw+Value pass is restricted to the authenticated
     // preamble's actual launch length/closed boot extent BEFORE allocating. The
     // original literal reservation remains independent and is counted whole.
-    let incoming = original_json_value_storage_extent_data(
-        input.encoded_launch.len().max(maximum_boot_bytes),
-    )?;
-    // The FIRST raw launch frame precedes its typed owner. The SECOND raw
-    // boot frame is parsed while self.launch retains that independent typed
-    // launch. Its actual maximum_boot_bytes is enforced before reading. Keep
-    // the original max(launch,boot) raw extent term unchanged as well.
-    let second_raw = original_json_value_storage_extent_data(maximum_boot_bytes)?;
-    let second_raw_phase = sum(
-        &[
-            second_raw.canonical_pass_requested_bytes()?,
-            launch_data.typed_backing,
-        ],
-        maximum,
-    )?;
     // After the quote/boot preparation, Bootstrap::prepare still invokes the
     // complete launch validator before moving launch into service. Retained
     // private Value banks persist; its temporary policy/coordinator/model work
@@ -260,10 +253,46 @@ fn project_with_source(
         ],
         maximum,
     )?;
-    let transient = incoming
-        .canonical_pass_requested_bytes()?
-        .max(second_raw_phase)
-        .max(decode_phase);
+    let transient = if preflight {
+        // First-frame Value/canonical banks remain in retained. The second
+        // borrowed BootData and its independent canonical child banks are
+        // charged alongside the full validator and carried typed launch/body.
+        // Actual raw input must independently fit the two-pass gate BEFORE
+        // either Value exists, including malformed partial DTO ownership.
+        let carry = sum(&[launch_data.typed_backing, input.encoded_launch.len()], maximum)?;
+        let construction = sum(&[
+            decode_phase,
+            source,
+            registration,
+            additions.requested_total()?,
+            fields.requested_total()?,
+            carry,
+        ], maximum)?;
+        let first = sum(&[
+            input.encoded_launch.len(),
+            super::private_frame_work_data(
+                super::super::pre_dom::raw_extent_data(input.encoded_launch)?, 0,
+            )?,
+        ], maximum)?;
+        construction.max(first).max(sum(&[maximum_boot_bytes, carry], maximum)?)
+    } else {
+    let incoming = original_json_value_storage_extent_data(
+        input.encoded_launch.len().max(maximum_boot_bytes),
+    )?;
+    // The FIRST raw launch frame precedes its typed owner. The SECOND raw
+    // boot frame is parsed while self.launch retains that independent typed
+    // launch. Its actual maximum_boot_bytes is enforced before reading. Keep
+    // the original max(launch,boot) raw extent term unchanged as well.
+    let second_raw = original_json_value_storage_extent_data(maximum_boot_bytes)?;
+    let second_raw_phase = sum(
+        &[
+            second_raw.canonical_pass_requested_bytes()?,
+            launch_data.typed_backing,
+        ],
+        maximum,
+    )?;
+        incoming.canonical_pass_requested_bytes()?.max(second_raw_phase).max(decode_phase)
+    };
     // Original launch/source/registration/boot DOM children survive successful
     // service birth in the original private bootstrap holder. These independent
     // owners are not released merely because policy retains equivalent values.

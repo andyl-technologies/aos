@@ -172,6 +172,25 @@ pub(crate) struct OriginalNativeStartupQuote {
     pub(crate) maximum_boot_bytes: usize,
 }
 
+// This is host-only actual-call provenance, never serialized or inferred from
+// row magnitudes. Each quote/finalization uses the same admitted producer.
+#[derive(Clone, Copy)]
+enum NativeStartupQuoteKind {
+    Broad,
+    Preflight,
+}
+
+impl NativeStartupQuoteKind {
+    fn quote(self, source: &Rc<PacketCompleteSemanticSource>, launch: &PacketNative5SourceLaunch, encoded: &[u8], maximum: usize)
+        -> Result<OriginalNativeStartupQuote, RuntimeError>
+    {
+        match self {
+            Self::Broad => source.original_native_startup_quote_data(launch, encoded, maximum),
+            Self::Preflight => source.original_native_preflight_startup_quote_data(launch, encoded, maximum),
+        }
+    }
+}
+
 /// Retains Core's original once-consumed baseline allocation admission.
 ///
 /// No constructor, Clone or serialization exists. It authorizes only the
@@ -179,6 +198,7 @@ pub(crate) struct OriginalNativeStartupQuote {
 /// Capture and whole restoration rights remain independent.
 pub struct CompleteOriginalNativeStartupAdmission<'a> {
     scope: OriginalNativeStartupScope<'a>,
+    quote_kind: NativeStartupQuoteKind,
     process: u32,
     thread: ThreadId,
     policy: OriginalNativeStartupPolicy,
@@ -199,6 +219,7 @@ impl InstalledConformancePlan {
         sum(
             &[
                 size_of::<CompleteOriginalNativeStartupAdmission<'_>>(),
+                size_of::<NativeStartupQuoteKind>(),
                 size_of::<OriginalNativeStartupScope<'_>>(),
                 size_of::<OriginalNativeStartupMemberScope<'_>>(),
                 size_of::<[OriginalNativeStartupQuote; 3]>(),
@@ -226,6 +247,33 @@ impl InstalledConformancePlan {
         sources: &'a [Rc<PacketCompleteSemanticSource>; 3],
         launches: &'a [PacketNative5SourceLaunch; 3],
         encoded_launches: &'a [Vec<u8>; 3],
+    ) -> Result<CompleteOriginalNativeStartupAdmission<'a>, RuntimeError> {
+        self.reserve_original_native_startup_with_quote(sources, launches, encoded_launches, NativeStartupQuoteKind::Broad)
+    }
+
+    /// Admits original14 startup with the current native's restrictive raw gates.
+    ///
+    /// The original authority still authenticates every holder/Source and sums
+    /// all three independent rows. No serialized row chooses this producer.
+    ///
+    /// # Errors
+    /// Refuses the same foreign, incomplete, changed or over-budget original
+    /// owners as the broad admission; this grants no syntax or native rights.
+    pub fn reserve_original_native_preflight_startup<'a>(
+        &'a self,
+        sources: &'a [Rc<PacketCompleteSemanticSource>; 3],
+        launches: &'a [PacketNative5SourceLaunch; 3],
+        encoded_launches: &'a [Vec<u8>; 3],
+    ) -> Result<CompleteOriginalNativeStartupAdmission<'a>, RuntimeError> {
+        self.reserve_original_native_startup_with_quote(sources, launches, encoded_launches, NativeStartupQuoteKind::Preflight)
+    }
+
+    fn reserve_original_native_startup_with_quote<'a>(
+        &'a self,
+        sources: &'a [Rc<PacketCompleteSemanticSource>; 3],
+        launches: &'a [PacketNative5SourceLaunch; 3],
+        encoded_launches: &'a [Vec<u8>; 3],
+        quote_kind: NativeStartupQuoteKind,
     ) -> Result<CompleteOriginalNativeStartupAdmission<'a>, RuntimeError> {
         let scope = OriginalNativeStartupScope {
             plan: self,
@@ -283,8 +331,8 @@ impl InstalledConformancePlan {
                 source_bytes[index],
                 policy.maximum_requested_bytes,
             )?;
-            let quote = sources[index].original_native_startup_quote_data(
-                &launches[index],
+            let quote = quote_kind.quote(
+                &sources[index], &launches[index],
                 &encoded_launches[index],
                 policy.maximum_requested_bytes,
             )?;
@@ -317,6 +365,7 @@ impl InstalledConformancePlan {
         let [a, b, c] = pending;
         let mut admission = CompleteOriginalNativeStartupAdmission {
             scope,
+            quote_kind,
             process: std::process::id(),
             thread: std::thread::current().id(),
             policy,
@@ -363,8 +412,8 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
         self.recheck()?;
         let source = &self.scope.sources[index];
         let quote = &self.quotes[index];
-        let actual = source.original_native_startup_quote_data(
-            &self.scope.launches[index],
+        let actual = self.quote_kind.quote(
+            source, &self.scope.launches[index],
             &self.scope.encoded_launches[index],
             self.policy.maximum_requested_bytes,
         )?;
