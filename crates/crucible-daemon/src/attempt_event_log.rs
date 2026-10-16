@@ -28,16 +28,17 @@
 //! authenticating segments `1..i` authenticates the dense prefix they cover
 //! without decoding any later segment (RFC-0020 section 15.2).
 
-use std::collections::BTreeMap;
-use std::fs;
 use std::io::{self, Write};
 use std::ops::Range;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 use crucible::{ContentHash, SchedulerEventLogEntry};
 use crucible_cas::content_store::{ContentId, ObjectKind};
 use serde::{Deserialize, Serialize};
+
+mod store;
+
+pub(crate) use store::AttemptLogSegmentStore;
+pub use store::{AttemptLogSegmentSource, MemorySegmentStore};
 
 /// Trace payload schema of an encoded attempt-log segment.
 pub const ATTEMPT_LOG_SEGMENT_SCHEMA: u32 = 1;
@@ -101,6 +102,15 @@ pub enum AttemptEventLogError {
         /// Validation failure.
         reason: String,
     },
+    /// Sealing another segment would exceed what one manifest may reference.
+    ///
+    /// Checked at every seal, so a long attempt fails when it reaches the
+    /// bound rather than at its stop.
+    #[error("attempt event log already holds {limit} sealed segments")]
+    SegmentLimit {
+        /// [`MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS`].
+        limit: usize,
+    },
     /// The segment store could not write or read a segment.
     #[error("attempt event log segment store failed: {source}")]
     Store {
@@ -121,219 +131,6 @@ pub struct AttemptLogSegmentRef {
     pub entry_count: u64,
     /// Encoded segment size.
     pub encoded_bytes: u64,
-}
-
-/// Read access to sealed segments, addressed by content identity.
-///
-/// Readers authenticate every segment they receive against its reference, so
-/// a source only needs to return the bytes it holds under an identity.
-pub trait AttemptLogSegmentSource {
-    /// Reads one encoded segment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the segment is absent, unreadable, or larger
-    /// than [`MAX_ATTEMPT_LOG_SEGMENT_BYTES`].
-    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>>;
-}
-
-/// Writable storage for the segments an attempt seals.
-pub(crate) trait AttemptLogSegmentStore: AttemptLogSegmentSource {
-    /// Stores one encoded segment under its identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the segment cannot be durably written.
-    fn put(&mut self, id: ContentId, bytes: &[u8]) -> io::Result<()>;
-}
-
-/// Segment store backed by one attempt-owned directory.
-///
-/// Each segment is written to a temporary name, synchronized, and renamed to
-/// its identity, so a partially written segment is never visible.
-#[derive(Debug)]
-pub(crate) struct DirectorySegmentStore {
-    directory: PathBuf,
-}
-
-impl DirectorySegmentStore {
-    /// Uses `directory`, which the attempt owns and removes with its storage.
-    pub(crate) fn new(directory: impl Into<PathBuf>) -> Self {
-        Self {
-            directory: directory.into(),
-        }
-    }
-
-    fn path(&self, id: ContentId) -> PathBuf {
-        let name = id
-            .digest()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        self.directory.join(format!("{name}.segment"))
-    }
-}
-
-impl AttemptLogSegmentStore for DirectorySegmentStore {
-    fn put(&mut self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
-        let path = self.path(id);
-        let staging = path.with_extension("segment.partial");
-        let mut file = fs::File::create(&staging)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&staging, &path)
-    }
-}
-
-impl AttemptLogSegmentSource for DirectorySegmentStore {
-    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
-        let path = self.path(id);
-        let length = fs::metadata(&path)?.len();
-        if length > MAX_ATTEMPT_LOG_SEGMENT_BYTES as u64 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "attempt log segment exceeds its format bound",
-            ));
-        }
-        fs::read(path)
-    }
-}
-
-/// In-memory segment store for bounded in-process callers and tests.
-///
-/// Segments are keyed by the identity their bytes derive, so a store never
-/// holds bytes under a foreign identity. Sealed bytes are immutable and
-/// shared, so cloning a store copies only its index.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MemorySegmentStore {
-    segments: BTreeMap<ContentId, Arc<[u8]>>,
-}
-
-impl MemorySegmentStore {
-    /// Stores encoded segment bytes under the identity they derive.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AttemptEventLogError::InvalidSegment`] when the bytes exceed
-    /// [`MAX_ATTEMPT_LOG_SEGMENT_BYTES`].
-    pub fn insert(&mut self, bytes: Vec<u8>) -> Result<ContentId, AttemptEventLogError> {
-        let id = ContentId::for_bytes(ObjectKind::Trace, ATTEMPT_LOG_SEGMENT_SCHEMA, &bytes);
-        if bytes.len() > MAX_ATTEMPT_LOG_SEGMENT_BYTES {
-            return Err(AttemptEventLogError::InvalidSegment {
-                segment: id,
-                reason: format!("unexpected length {}", bytes.len()),
-            });
-        }
-        self.segments.insert(id, Arc::from(bytes));
-        Ok(id)
-    }
-
-    /// Copies one referenced segment from `source` into this store.
-    ///
-    /// The segment is authenticated against its reference before it is kept.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AttemptEventLogError`] when the segment is absent from
-    /// `source` or fails authentication.
-    pub fn copy_from(
-        &mut self,
-        source: &dyn AttemptLogSegmentSource,
-        segment: &AttemptLogSegmentRef,
-    ) -> Result<(), AttemptEventLogError> {
-        if self.segments.contains_key(&segment.id) {
-            return Ok(());
-        }
-        let bytes = source
-            .segment(segment.id)
-            .map_err(|source| AttemptEventLogError::Store { source })?;
-        decode_segment(segment, &bytes)?;
-        self.segments.insert(segment.id, Arc::from(bytes));
-        Ok(())
-    }
-
-    /// Moves every segment of `other` into this store.
-    pub fn extend(&mut self, other: Self) {
-        self.segments.extend(other.segments);
-    }
-
-    /// Keeps only the segments whose identities `keep` accepts.
-    pub fn retain(&mut self, mut keep: impl FnMut(ContentId) -> bool) {
-        self.segments.retain(|id, _| keep(*id));
-    }
-
-    /// Returns whether a segment with `id` is stored.
-    #[must_use]
-    pub fn contains(&self, id: ContentId) -> bool {
-        self.segments.contains_key(&id)
-    }
-
-    /// Returns the stored identities in ascending order.
-    pub fn ids(&self) -> impl Iterator<Item = ContentId> + '_ {
-        self.segments.keys().copied()
-    }
-
-    /// Returns the stored segments in identity order.
-    pub fn iter(&self) -> impl Iterator<Item = (ContentId, &[u8])> {
-        self.segments.iter().map(|(id, bytes)| (*id, &**bytes))
-    }
-
-    /// Returns the number of stored segments.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.segments.len()
-    }
-
-    /// Returns whether no segment is stored.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.segments.is_empty()
-    }
-
-    /// Returns the total encoded bytes of every stored segment.
-    #[must_use]
-    pub fn total_bytes(&self) -> u64 {
-        self.segments
-            .values()
-            .map(|bytes| bytes.len() as u64)
-            .fold(0, u64::saturating_add)
-    }
-
-    /// Encodes `entries` as one sealed log and returns its manifest.
-    ///
-    /// The log is sealed at the ordinary target size, so the manifest matches
-    /// what an executor retaining the same entries would publish.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AttemptEventLogError`] when the entries are not dense from
-    /// sequence zero or cannot be encoded.
-    pub fn sealed_log(
-        &mut self,
-        entries: impl IntoIterator<Item = SchedulerEventLogEntry>,
-    ) -> Result<AttemptLogManifest, AttemptEventLogError> {
-        let mut log = AttemptEventLog::new(std::mem::take(self), u64::MAX, 0);
-        let manifest = log.append(entries).and_then(|()| log.seal_manifest());
-        // Segments sealed before a failure stay stored; they are unreferenced.
-        *self = log.store;
-        manifest
-    }
-}
-
-impl AttemptLogSegmentStore for MemorySegmentStore {
-    fn put(&mut self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
-        self.segments.insert(id, Arc::from(bytes));
-        Ok(())
-    }
-}
-
-impl AttemptLogSegmentSource for MemorySegmentStore {
-    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
-        self.segments
-            .get(&id)
-            .map(|bytes| bytes.to_vec())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "attempt log segment absent"))
-    }
 }
 
 /// An attempt log retained as sealed segments plus an open tail.
@@ -468,13 +265,19 @@ impl<S: AttemptLogSegmentStore> AttemptEventLog<S> {
     ///
     /// # Errors
     ///
-    /// Returns [`AttemptEventLogError`] when the segment cannot be encoded,
-    /// exceeds [`MAX_ATTEMPT_LOG_SEGMENT_BYTES`], or cannot be stored. The
-    /// tail is retained on error.
+    /// Returns [`AttemptEventLogError`] when the log already holds
+    /// [`MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS`] segments, or the segment cannot be
+    /// encoded, exceeds [`MAX_ATTEMPT_LOG_SEGMENT_BYTES`], or cannot be stored.
+    /// The tail is retained on error.
     pub(crate) fn seal(&mut self) -> Result<(), AttemptEventLogError> {
         let Some(first) = self.tail.first() else {
             return Ok(());
         };
+        if self.sealed.len() >= MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS {
+            return Err(AttemptEventLogError::SegmentLimit {
+                limit: MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS,
+            });
+        }
         let first_sequence = first.sequence();
         let bytes = encode_segment(first_sequence, &self.tail)?;
         let id = ContentId::for_bytes(ObjectKind::Trace, ATTEMPT_LOG_SEGMENT_SCHEMA, &bytes);

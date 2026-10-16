@@ -1,12 +1,15 @@
 //! Tests sealing, chaining, and authenticated read-back of attempt logs.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::sync::Arc;
 
 use crucible::{
     EventAttributeValue, EventLevel, EventLogTime, EventPayload, EventSource,
     SchedulerEventLogClass, VirtualTime,
 };
 
+use super::store::{AttemptLogDirectory, DirectorySegmentStore};
 use super::*;
 
 /// Builds one observational entry carrying `text_bytes` of payload text.
@@ -136,16 +139,19 @@ fn decoding_rejects_segments_that_do_not_match_their_reference() {
     assert!(decode_segment(&shifted, &bytes).is_err());
 }
 
+/// Creates a fresh segment directory inside a temporary parent.
+fn segment_directory() -> (tempfile::TempDir, Arc<AttemptLogDirectory>) {
+    let parent = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary parent: {error}"));
+    let directory = AttemptLogDirectory::create(parent.path().join("event-log"))
+        .unwrap_or_else(|error| panic!("segment directory: {error}"));
+    (parent, directory)
+}
+
 #[test]
 fn directory_store_round_trips_sealed_segments() {
-    let directory = std::env::temp_dir().join(format!(
-        "crucible-attempt-log-segments-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&directory);
-    fs::create_dir(&directory).unwrap_or_else(|error| panic!("segment directory: {error}"));
+    let (_parent, directory) = segment_directory();
     let appended = entries(4, 64);
-    let mut log = AttemptEventLog::new(DirectorySegmentStore::new(&directory), u64::MAX, 0);
+    let mut log = AttemptEventLog::new(DirectorySegmentStore::new(directory), u64::MAX, 0);
 
     log.append(appended.clone())
         .unwrap_or_else(|error| panic!("append: {error}"));
@@ -156,7 +162,127 @@ fn directory_store_round_trips_sealed_segments() {
         Ok::<(), ()>(())
     });
 
-    let _ = fs::remove_dir_all(&directory);
     assert!(read_back.is_ok());
     assert_eq!(visited, appended);
+}
+
+#[test]
+fn memory_and_directory_stores_yield_equal_refs_and_chain() {
+    let (_parent, directory) = segment_directory();
+    let appended = entries(20, 1024 * 1024);
+    let mut memory = AttemptEventLog::new(MemorySegmentStore::default(), u64::MAX, 0);
+    let mut on_disk = AttemptEventLog::new(DirectorySegmentStore::new(directory), u64::MAX, 0);
+
+    memory
+        .append(appended.clone())
+        .unwrap_or_else(|error| panic!("memory append: {error}"));
+    on_disk
+        .append(appended)
+        .unwrap_or_else(|error| panic!("directory append: {error}"));
+    let memory_manifest = memory
+        .seal_manifest()
+        .unwrap_or_else(|error| panic!("memory manifest: {error}"));
+    let on_disk_manifest = on_disk
+        .seal_manifest()
+        .unwrap_or_else(|error| panic!("directory manifest: {error}"));
+
+    assert!(memory_manifest.segments().len() >= 2);
+    assert_eq!(memory_manifest, on_disk_manifest);
+}
+
+#[test]
+fn directory_removed_when_last_clone_drops() {
+    let (_parent, directory) = segment_directory();
+    let path = directory.path().to_path_buf();
+    let mut log = AttemptEventLog::new(DirectorySegmentStore::new(directory), u64::MAX, 0);
+    log.append(entries(3, 64))
+        .unwrap_or_else(|error| panic!("append: {error}"));
+    log.seal().unwrap_or_else(|error| panic!("seal: {error}"));
+    let snapshot = log.clone();
+
+    drop(log);
+    let kept_by_snapshot = path.is_dir();
+    drop(snapshot);
+
+    assert!(kept_by_snapshot);
+    assert!(!path.exists());
+}
+
+#[test]
+fn directory_store_concurrent_identical_puts_never_expose_partial_bytes() {
+    let (_parent, directory) = segment_directory();
+    let bytes = vec![0x5a_u8; 4 * 1024 * 1024];
+    let id = ContentId::for_bytes(ObjectKind::Trace, ATTEMPT_LOG_SEGMENT_SCHEMA, &bytes);
+    let store = DirectorySegmentStore::new(directory);
+
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            let mut writer = store.clone();
+            let bytes = &bytes;
+            scope.spawn(move || {
+                for _ in 0..8 {
+                    writer
+                        .put(id, bytes)
+                        .unwrap_or_else(|error| panic!("concurrent put: {error}"));
+                }
+            });
+        }
+        let reader = store.clone();
+        let bytes = &bytes;
+        scope.spawn(move || {
+            for _ in 0..64 {
+                match reader.segment(id) {
+                    Ok(read) => assert!(read == *bytes, "a reader saw partial segment bytes"),
+                    Err(error) => assert_eq!(error.kind(), io::ErrorKind::NotFound),
+                }
+            }
+        });
+    });
+
+    let names = fs::read_dir(store.directory().path())
+        .unwrap_or_else(|error| panic!("list segment directory: {error}"))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| panic!("directory entry: {error}"))
+                .file_name()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names.len(),
+        1,
+        "only the complete segment remains: {names:?}"
+    );
+    assert_eq!(
+        store
+            .segment(id)
+            .unwrap_or_else(|error| panic!("stored segment: {error}")),
+        bytes
+    );
+}
+
+#[test]
+fn seal_refuses_segment_beyond_manifest_ceiling() {
+    let mut log = AttemptEventLog::new(MemorySegmentStore::default(), u64::MAX, 0);
+    for sequence in 0..MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS as u64 {
+        log.append([entry(sequence, 1)])
+            .unwrap_or_else(|error| panic!("append {sequence}: {error}"));
+        log.seal()
+            .unwrap_or_else(|error| panic!("seal {sequence}: {error}"));
+    }
+
+    log.append([entry(MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS as u64, 1)])
+        .unwrap_or_else(|error| panic!("tail append: {error}"));
+    let refused = log.seal();
+
+    assert!(matches!(
+        refused,
+        Err(AttemptEventLogError::SegmentLimit {
+            limit: MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS
+        })
+    ));
+    assert_eq!(
+        log.sealed_segments().len(),
+        MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS
+    );
+    assert_eq!(log.tail().len(), 1);
 }
