@@ -6,6 +6,7 @@
 }: let
   testImage = import ../surface-test-image.nix {
     sourceGate = sourceGateWithInputs {
+      preserveArtifactBytes = true;
       runtimeDeps = [pkgs.rust pkgs.rust.dev pkgs.diffutils] ++ (pkgs.rust.runtimeDeps or []);
       nukeRefsKeep = [pkgs.terrane.src];
       extraBuildDeps = [pkgs.binutils];
