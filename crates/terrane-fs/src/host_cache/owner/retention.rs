@@ -420,6 +420,23 @@ impl Custody {
             .persist(&TokioLocalFs, &path, self.preparation.config.state)
             .await
             .map_err(io::Error::other)?;
+        // The snapshot helper synchronizes state/cache itself. Retain and sync
+        // its fixed layout ancestors too before treating the pin as durable.
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let state_root = self
+            .preparation
+            .layout()
+            .directories
+            .get("state")
+            .ok_or_else(|| invalid("retained state root is absent"))?;
+        File::from(openat(state_root, ".", flags, Mode::empty())?).sync_all()?;
+        File::from(openat(
+            &self.preparation.layout().root,
+            ".",
+            flags,
+            Mode::empty(),
+        )?)
+        .sync_all()?;
         self.capture_snapshot()?;
         self.check_current()
     }
