@@ -255,6 +255,17 @@ the earlier immutable World-return/replay snapshot, with remote builders disable
 It predates the subsequent guard, associated-failure, policy and generation edits;
 it does not qualify their packaged integration or any VM execution.
 
+Hot-fork Target, primary-launcher and auxiliary guards now distinguish a local
+successful return from retained quarantine. Terminal observations refuse before
+borrowing the shared registry and cannot fabricate a released-node entry, a
+finished-launcher journal or an inactive auxiliary lease. Successful local
+receipts remain idempotent after an independent aggregate quarantine; they do
+not attest aggregate closure. Unreaped-child transfer keeps the same child and
+wait authority in the same backing guard and preserves the first shared cause.
+The new static retained-cleanup observation stays terminal through existing
+realization and promotion classifiers. Aggregate readiness, cleanup and physical
+release ordering are unchanged.
+
 The Guarded cause and complete returned report measure 616 and 832 bytes;
 retained-constructor cleanup and retirement reports measure 1,032 and 1,200 bytes.
 These are returned diagnostics, not newly stored actor fields. Main remains 5,024
@@ -315,14 +326,38 @@ fallback still allocates and leaks its containing owner on uncertain cleanup;
 preserving diagnostics alone cannot repair that custody path. Promotion can carry distinct realization,
 closure and restore causes plus multiple cleanup phases. Its follow-up needs a
 finite nonrecursive history representation and an actual containing-body size
-query for the promotion body; the ordinary worker-cell query alone does not
-fund a separate promotion body. Its current builder constructs the promotion
-vector before the once-only worker debit. An unbuilt plan must join actual
-promotion/path/catalog geometry into that same existing debit before allocation.
-A shared immutable basis map can eliminate remaining per-factory deep clones;
-the initial Main-funded constructor and runtime decode-funded constructors need
-explicit existing payers. Capture size alone does not cover the standard
-library's private thread-control allocations. Resource ceilings remain unchanged.
+query for the promotion body; the ordinary semantic-worker cell query alone does
+not fund a separate promotion body. Promotion construction now uses an unbuilt
+plan. Its checked visible worker/vector/capture/path and shared-catalog geometry
+joins the same once-only Main worker debit, and only then can the builder create
+the map, exact-capacity vector and owned paths. Initial Source construction and
+all promotion workers share that same immutable basis map. Clones retain the
+original payment without copying the map; the last wrapper destroys both map
+entries and the Arc allocation before returning payment. The B-tree query reuses
+the existing audited node calculation. Finite input and duplicate-basis checks
+bound construction to the admitted geometry.
+
+The initial Main-funded map retains the actual purpose returned by that debit.
+Runtime constructors require the existing decode account, and the component
+composition explicitly charges its existing checkpoint metadata account. Missing
+runtime authority refuses rather than manufacturing an unscoped account. Existing
+captured checkpoint bodies remain existing inputs; their earlier allocations are
+not newly attested by the producer query. Supplied thread payloads and names are
+measured, but the standard library's private thread controls and whole-stack
+capacity still need separate qualification. Resource ceilings remain unchanged.
+Both default and private-feature workspace/all-target checks pass for this joined
+source. Thirty-three focused daemon controls pass, including all new member
+state, retained-child, shared-map, refusal-before-build and single-admission
+controls. The new B-tree geometry/accounting control also passes. The fresh API
+library and API ABI suite have 120 and six passes. Source hygiene has five passes;
+the standards suite retains its one unresolved broad classifier gate.
+
+Full affected-library and packaged-target qualification is in progress. The full
+storage run records a checked-fence allocation-observer test failure; an isolated
+diagnostic invocation passes, which does not clear the original failure. Its
+parallel interaction remains under investigation. The 512-MiB archive/repack
+cases are still running. These partial results do not qualify the complete
+library run, native integration, physical resource floors or VM performance.
 
 Prepared Service retention also needs an actual owning continuation before the
 World claim: assignment/window changes can precede the before-effects callback.

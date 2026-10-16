@@ -180,9 +180,17 @@ where
         .expect("load durable paused recovery")
         .expect("raw pause requires promotion");
     let mut work = CheckpointPromotionRestartWork::Paused(recovery);
+    let catalog_original = crucible::owned_decode::DecodeBudget::for_store(
+        prepared
+            .checkpoints
+            .metadata_resource_authority()
+            .expect("retained checkpoint metadata authority"),
+    )
+    .expect("original checkpoint metadata account");
     let mut replay = ProductionBakedGenesisReplayCatalogFactory::new(
         [baked.clone()],
         ComposedQemuAttemptResourceGuardFactory::new(host),
+        &catalog_original,
     )
     .expect("real native baked replay catalog")
     .with_savepoint_replay_config(config.lifecycle.clone())

@@ -593,6 +593,22 @@ pub fn charge_btree_entry<K, V>() -> Result<(), DecodeAdmissionError> {
 }
 
 impl DecodeBudget {
+    /// Measures the existing audited B-tree node bound without admitting storage.
+    ///
+    /// The result includes cumulative node creation and split overlap. It grants
+    /// no allocation credit; the containing owner must admit it before insertion.
+    ///
+    /// # Errors
+    /// Refuses multiplication or pinned-toolchain node-layout overflow.
+    pub fn btree_control_bytes<K, V>(count: usize) -> Result<u64, DecodeAdmissionError> {
+        if count == 0 {
+            return Ok(0);
+        }
+        btree_entry_bytes::<K, V>()?
+            .checked_mul(u64::try_from(count).map_err(DecodeAdmissionError::new)?)
+            .ok_or_else(|| refusal("decoded B-tree size overflow"))
+    }
+
     /// Admits the audited B-tree node bound under this original account.
     ///
     /// # Errors
@@ -612,13 +628,7 @@ impl DecodeBudget {
         let result = if count == 0 {
             self.check()
         } else {
-            btree_entry_bytes::<K, V>()
-                .and_then(|bytes| {
-                    bytes
-                        .checked_mul(count as u64)
-                        .ok_or_else(|| refusal("decoded B-tree size overflow"))
-                })
-                .and_then(|bytes| self.charge_bytes(bytes))
+            Self::btree_control_bytes::<K, V>(count).and_then(|bytes| self.charge_bytes(bytes))
         };
         if let Err(error) = &result {
             self.record_failure(error.clone());

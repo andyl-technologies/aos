@@ -36,6 +36,10 @@ use super::{
     retain_forever, supervisor_error_is_retryable,
 };
 
+mod startup;
+pub(crate) use startup::promotion_control_bytes;
+pub(super) use startup::{PromotionThreadCapture, promotion_thread_name};
+
 /// Maximum fixed promotion threads accepted by one local executor pool.
 pub const MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS: usize = 256;
 

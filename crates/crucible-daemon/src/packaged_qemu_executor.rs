@@ -120,7 +120,9 @@ pub(crate) mod original_retirement;
 pub(crate) mod retirement;
 pub use retirement::PackagedQemuExecutorRetirementError;
 mod preparation;
+mod promotion_plan;
 pub use preparation::PreparationExpiredCause;
+use promotion_plan::{PromotionControlPayer, UnbuiltPromotions};
 mod status;
 #[cfg(test)]
 mod tests;
@@ -1986,7 +1988,8 @@ where
         },
         config,
         host,
-        Vec::<DisabledPackagedCheckpointPromotionWorker>::new(),
+        0,
+        Vec::<DisabledPackagedCheckpointPromotionWorker>::new,
     )
 }
 
@@ -2008,12 +2011,13 @@ impl LocalCheckpointPromotionWorker for DisabledPackagedCheckpointPromotionWorke
 }
 
 #[cfg(test)]
-fn compose_packaged_qemu_executor_with_checkpoint_promotions<H, P>(
+fn compose_packaged_qemu_executor_with_checkpoint_promotions<H, P, B>(
     storage: PackagedQemuExecutorStorage,
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     host: H,
-    promotion_workers: Vec<P>,
+    promotion_count: usize,
+    build_promotions: B,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
     H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
@@ -2021,6 +2025,7 @@ where
     crate::ComposedQemuAttemptResourceGuard<H::Owner>:
         QemuAttemptProcessResourceGuard + Send + 'static,
     P: LocalCheckpointPromotionWorker + Send + 'static,
+    B: FnOnce() -> Vec<P>,
 {
     let shared = SharedQemuAttemptHostResourceFactory::new(host);
     compose_packaged_qemu_executor_with_promotion_builder(
@@ -2029,7 +2034,16 @@ where
         config,
         shared,
         None,
-        move |_store, _checkpoints, _shared, _run_state_root, _worker_count| promotion_workers,
+        UnbuiltPromotions::new(
+            promotion_count,
+            0,
+            move |_store: &CampaignExecutorStore,
+                  _checkpoints: &Arc<ExactCheckpointStore>,
+                  _shared: &SharedQemuAttemptHostResourceFactory<H>,
+                  _root: &Path,
+                  _count: usize,
+                  _payer: PromotionControlPayer<'_>| { Ok((build_promotions(), ())) },
+        ),
     )
 }
 
@@ -2040,7 +2054,7 @@ fn compose_packaged_qemu_executor_with_promotion_builder<H, P, B>(
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
     preparation: Option<preparation::PackagedPreparation>,
-    build_promotions: B,
+    build_promotions: UnbuiltPromotions<P, (), B>,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
     H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
@@ -2054,7 +2068,8 @@ where
         &SharedQemuAttemptHostResourceFactory<H>,
         &Path,
         usize,
-    ) -> Vec<P>,
+        PromotionControlPayer<'_>,
+    ) -> Result<(Vec<P>, ()), PackagedQemuExecutorError>,
 {
     // Mock host factories exercise actor composition without asserting that a
     // temporary directory carries an operator-installed project quota.
@@ -2076,7 +2091,8 @@ where
         shared,
         Some(preparation),
         build_promotions,
-        |_store,
+        |(),
+         _store,
          checkpoints,
          finding_exact_retention,
          shared,
@@ -2119,13 +2135,13 @@ where
     )
 }
 
-fn compose_packaged_qemu_executor_with_builders<H, P, B, I, R>(
+fn compose_packaged_qemu_executor_with_builders<H, P, B, I, R, T>(
     storage: PackagedQemuExecutorStorage,
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
     preparation: Option<preparation::PackagedPreparation>,
-    build_promotions: B,
+    build_promotions: UnbuiltPromotions<P, T, B>,
     build_initial_runners: I,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
@@ -2140,8 +2156,10 @@ where
         &SharedQemuAttemptHostResourceFactory<H>,
         &Path,
         usize,
-    ) -> Vec<P>,
+        PromotionControlPayer<'_>,
+    ) -> Result<(Vec<P>, T), PackagedQemuExecutorError>,
     I: FnOnce(
+        T,
         &CampaignExecutorStore,
         &Arc<ExactCheckpointStore>,
         &Arc<dyn crate::automatic_finding_runner::FindingExactRetentionSource>,
@@ -2191,30 +2209,41 @@ where
         .lifecycle
         .run_state_root()
         .join("campaign-finding-replays");
-    let promotion_state_root = config
-        .lifecycle
-        .run_state_root()
-        .join("campaign-checkpoint-promotions");
-    let promotion_workers = build_promotions(
-        &store,
-        &checkpoints,
-        &shared,
-        &promotion_state_root,
-        config.worker_count,
-    );
-    // Generic W is inferred from push below. Its exact Main body is admitted
-    // before runner/model construction, with no separate shape projection.
-    let mut workers = crate::executor_pool::PreparedExecutorWorkers::prepare(
-        config.worker_count,
-        promotion_workers.len(),
-        config.normal_executor.as_ref(),
-        |bytes| shared.reserve_main_worker_controls(bytes),
-    )?;
+    // No promotion map, worker vector or owned worker path exists before
+    // the same once-only Main worker assignment accepts the complete query.
+    let producer_bytes = build_promotions.control_bytes(config.lifecycle.run_state_root())?;
+    let (mut workers, build_promotions) =
+        build_promotions.admit(config.lifecycle.run_state_root(), |bytes, count| {
+            Ok(crate::executor_pool::PreparedExecutorWorkers::prepare(
+                config.worker_count,
+                count,
+                if config.normal_executor.is_some() {
+                    bytes
+                } else {
+                    0
+                },
+                config.normal_executor.as_ref(),
+                |total| shared.reserve_main_worker_controls(total),
+            )?)
+        })?;
+    let payer = match workers.controls() {
+        Some(purpose) => PromotionControlPayer::Main(purpose),
+        None => {
+            // Explicit original store metadata pays component/private-original
+            // construction; absence of Main never becomes an unscoped grant.
+            lifecycle_metadata.charge_bytes(producer_bytes)?;
+            PromotionControlPayer::Decode(&lifecycle_metadata)
+        }
+    };
+    let promotion_state_root = promotion_plan::worker_root(config.lifecycle.run_state_root())?;
+    let (promotion_workers, promotion_output) =
+        build_promotions.build(&store, &checkpoints, &shared, &promotion_state_root, payer)?;
     let lifecycles = PackagedWorldLifecycleTracker::new();
     let finding_replay_brokers = (0..config.worker_count)
         .map(|_| QemuHotForkWorldAuxiliaryResourceBroker::new())
         .collect::<Vec<_>>();
     let initial_runner_build = build_initial_runners(
+        promotion_output,
         &store,
         &checkpoints,
         &finding_exact_retention,

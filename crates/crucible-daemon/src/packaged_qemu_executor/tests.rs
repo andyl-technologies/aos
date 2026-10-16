@@ -408,9 +408,18 @@ fn packaged_startup_completes_pending_observation_and_finding_handoff() {
         config.clone(),
         SharedQemuAttemptHostResourceFactory::new(UnusedHostFactory),
         Some(preparation),
-        |_store, _checkpoints, _shared, _root, _workers| {
-            Vec::<DisabledPackagedCheckpointPromotionWorker>::new()
-        },
+        UnbuiltPromotions::new(
+            0,
+            0,
+            |_store: &CampaignExecutorStore,
+             _checkpoints: &Arc<ExactCheckpointStore>,
+             _shared: &SharedQemuAttemptHostResourceFactory<UnusedHostFactory>,
+             _root: &Path,
+             _workers: usize,
+             _payer: PromotionControlPayer<'_>| {
+                Ok((Vec::<DisabledPackagedCheckpointPromotionWorker>::new(), ()))
+            },
+        ),
     )
     .expect("packaged startup reconciles pending finding");
     let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
@@ -472,7 +481,8 @@ fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
         },
         config,
         UnusedHostFactory,
-        vec![UnusedPromotionWorker, UnusedPromotionWorker],
+        2,
+        || vec![UnusedPromotionWorker, UnusedPromotionWorker],
     )
     .expect("compose promotion-enabled packaged executor");
     let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
@@ -1975,4 +1985,86 @@ fn fixture_ram_catalog_config(directory: &tempfile::TempDir) -> crate::PackagedR
         8 * 1024 * 1024,
     )
     .expect("explicit component catalog service and independent physical quota")
+}
+
+#[test]
+fn promotion_plan_pays_once_before_building_its_owned_worker_paths() {
+    let directory = tempfile::tempdir().expect("component directory");
+    let config = config(&directory, 2);
+    let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let basis = PackagedCampaignBasis {
+        profile: profile(),
+        scenarios: BTreeSet::from([scenario_artifact()]),
+        sources: BTreeMap::new(),
+    };
+    let backend = Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
+        "promotion-plan-component",
+        directory.path().join("checkpoints"),
+    ));
+    let preparation =
+        super::preparation::prepare_component_runtime(&repository, backend, &basis, &config)
+            .expect("actual component actor and checkpoint metadata");
+    let original = crucible::owned_decode::DecodeBudget::for_store(
+        preparation
+            .checkpoints
+            .metadata_resource_authority()
+            .expect("actual metadata authority"),
+    )
+    .expect("component original account");
+    let admitted = std::cell::Cell::new(false);
+    let built = std::cell::Cell::new(0usize);
+    let plan = UnbuiltPromotions::<PathBuf, (), _>::new(
+        2,
+        0,
+        |_store: &CampaignExecutorStore,
+         _checkpoints: &Arc<ExactCheckpointStore>,
+         _shared: &SharedQemuAttemptHostResourceFactory<UnusedHostFactory>,
+         root: &Path,
+         count: usize,
+         _payer: PromotionControlPayer<'_>| {
+            assert!(admitted.get(), "builder ran before actual original debit");
+            built.set(built.get() + 1);
+            let mut paths = Vec::with_capacity(count);
+            for slot in 0..count {
+                paths.push(promotion_plan::worker_path(root, slot)?);
+            }
+            Ok((paths, ()))
+        },
+    );
+    let bytes = plan
+        .control_bytes(config.lifecycle.run_state_root())
+        .expect("pure query");
+    let calls = std::cell::Cell::new(0usize);
+    let (_, plan) = plan
+        .admit(config.lifecycle.run_state_root(), |requested, count| {
+            assert_eq!(requested, bytes);
+            assert_eq!(count, 2);
+            original.charge_bytes(requested)?;
+            admitted.set(true);
+            calls.set(calls.get() + 1);
+            Ok(())
+        })
+        .expect("actual component metadata admission");
+    assert_eq!(built.get(), 0);
+    let root = promotion_plan::worker_root(config.lifecycle.run_state_root()).expect("paid root");
+    let shared = SharedQemuAttemptHostResourceFactory::new(UnusedHostFactory);
+    let (paths, ()) = plan
+        .build(
+            &store,
+            &preparation.checkpoints,
+            &shared,
+            &root,
+            PromotionControlPayer::Decode(&original),
+        )
+        .expect("deferred component construction");
+    assert_eq!(calls.get(), 1);
+    assert_eq!(built.get(), 1);
+    assert_eq!(paths.len(), 2);
+    assert_eq!(paths.capacity(), 2);
+    assert_eq!(paths[0], root.join("worker-000"));
+    assert_eq!(paths[1], root.join("worker-001"));
+    drop(paths);
+    drop(root);
+    drop(original);
 }

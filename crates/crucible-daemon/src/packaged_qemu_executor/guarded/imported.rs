@@ -67,9 +67,12 @@ impl GuardedCampaignOwner {
             .map_err(|error| ImportedProductionReplayError::Admission(Box::new(error.into())))?;
         drop(genesis);
 
+        let catalog_original = crucible::owned_decode::current_budget()
+            .ok_or(ImportedProductionReplayError::Unavailable)?;
         ProductionBakedGenesisReplayCatalogFactory::new(
             [baked],
             ComposedQemuAttemptResourceGuardFactory::new(self.inner.host.clone()),
+            &catalog_original,
         )
         .map_err(ImportedProductionReplayError::Catalog)?
         .with_savepoint_replay_config(self.inner.config.lifecycle.clone())

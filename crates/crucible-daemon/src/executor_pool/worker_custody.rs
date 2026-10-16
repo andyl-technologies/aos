@@ -283,6 +283,7 @@ where
     pub(crate) fn prepare(
         count: usize,
         promotion_count: usize,
+        producer_bytes: u64,
         main: Option<&Arc<AuthenticatedNativeSlotPurpose>>,
         reserve: impl FnOnce(
             u64,
@@ -292,6 +293,7 @@ where
         >,
     ) -> Result<Self, LocalExecutorPoolConfigError> {
         let bytes = Self::control_bytes(count, promotion_count)
+            .and_then(|bytes| bytes.checked_add(producer_bytes))
             .ok_or(LocalExecutorPoolConfigError::WorkerControlGeometry)?;
         let controls =
             reserve(bytes).map_err(LocalExecutorPoolConfigError::WorkerControlAdmission)?;
@@ -321,6 +323,11 @@ where
             capacity: count,
             handed_off: false,
         })
+    }
+
+    /// Borrows the actual returned payer without another reservation or grant.
+    pub(crate) fn controls(&self) -> Option<&AuthenticatedNativePoolPurpose> {
+        self.custody._controls.as_ref()
     }
 
     /// Moves a newly constructed worker into its already paid Main cell.

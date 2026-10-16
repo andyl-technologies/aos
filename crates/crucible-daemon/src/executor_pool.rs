@@ -68,8 +68,10 @@ use checkpoint::{observe_promoted_checkpoint, reconcile_checkpoint_result};
 pub use completion::LocalExecutorPoolCompletion;
 use completion::{PoolCompletionState, WorkerCompletion};
 mod promotion;
-use promotion::{DisabledCheckpointPromotionWorker, PromotionQueue, promotion_worker_loop};
-pub(crate) use promotion::{LocalCheckpointPromotionWorker, ProductionCheckpointPromotionWorker};
+use promotion::{DisabledCheckpointPromotionWorker, PromotionQueue};
+pub(crate) use promotion::{
+    LocalCheckpointPromotionWorker, ProductionCheckpointPromotionWorker, promotion_control_bytes,
+};
 pub use promotion::{MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE, MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS};
 
 /// Maximum execution threads accepted by one local executor pool.
@@ -617,13 +619,14 @@ where
             worker_custody.retain_thread(join);
         }
         for (slot, worker) in promotion_workers.into_iter().enumerate() {
-            let worker_shared = Arc::clone(&shared);
+            let capture = promotion::PromotionThreadCapture {
+                shared: Arc::clone(&shared),
+                worker,
+            };
             let join = match thread::Builder::new()
-                .name(format!("crucible-checkpoint-promotion-{slot}"))
-                .spawn(move || {
-                    let _completion = WorkerCompletion::new(&worker_shared.completion);
-                    promotion_worker_loop(worker_shared, worker);
-                }) {
+                .name(promotion::promotion_thread_name(slot))
+                .spawn(move || capture.run())
+            {
                 Ok(join) => join,
                 Err(source) => {
                     shared.request_shutdown();
