@@ -16,12 +16,14 @@ use terrane::host::cache::{HostDomainLocation, HostReadLimits};
 mod collection;
 mod files;
 mod inspection;
+mod manifest;
 mod verification;
 
 #[cfg(test)]
 mod tests;
 
 pub use inspection::{NativeRecoveryCandidate, NativeRecoveryInspection, RecoveryIssue};
+pub(in crate::host_cache) use manifest::{ManifestInspectionFailure, VerifiedRecoveryManifest};
 pub use verification::{
     DerivedIndexRepair, DetachedIndexStatus, VerifiedEncodedBody, VerifiedStandaloneChunk,
 };

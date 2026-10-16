@@ -7,27 +7,307 @@
 use super::{
     ContentCustody,
     files::{invalid, read_bounded, same_file, verify_read_hash},
+    manifest::{
+        check_key, manifest_from_pack, manifest_residences, verify_file_plaintext, verify_plaintext,
+    },
     verification::{bounded_pack, bounded_standalone_length, dictionary_from_pack},
 };
+use crate::publisher_local::wire::{BodyKey, BodyKind};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, Seek, SeekFrom, Write},
+    io::{self, Cursor, Read, Seek, SeekFrom, Write},
     os::unix::fs::{FileExt, MetadataExt, PermissionsExt},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
 use terrane::{
-    host::cache::{HostReadLimits, reconstruct_pack_index},
+    host::{
+        cache::{HostReadLimits, reconstruct_pack_index},
+        publication::{PublicationClaim, PublicationRecipe},
+    },
     pack::{EntryKind, NativeBodyDecoder, PackClass, PackId, PackWriter},
     repository::MetadataValidator,
+    store::ByteRange,
 };
 use terrane_core::{
     chunking::ChunkProfile,
-    identity::{IdentityKind, TERRANE_V1},
+    identity::{Descriptor, IdentityKind, TERRANE_V1},
+    manifest::{ChunkRef, Manifest},
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+#[test]
+fn retained_manifest_inspection_requires_the_complete_manifest_key() -> TestResult {
+    let (_, _, claim) = manifest_claim()?;
+    let key = BodyKey {
+        kind: BodyKind::Sealed as i32,
+        descriptor: claim.descriptor().encode(),
+        ..Default::default()
+    };
+    check_key(&key, &claim)?;
+    for changed in [
+        BodyKey {
+            codec: 1,
+            ..key.clone()
+        },
+        BodyKey {
+            pack_id: vec![0; 16],
+            ..key.clone()
+        },
+        BodyKey {
+            kind: BodyKind::Pack as i32,
+            ..key.clone()
+        },
+        BodyKey {
+            descriptor: Vec::new(),
+            ..key.clone()
+        },
+    ] {
+        assert!(check_key(&changed, &claim).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn actual_metadata_pack_requires_the_exact_original_manifest_record_range() -> TestResult {
+    let (profile, _, claim) = manifest_claim()?;
+    let canonical = claim
+        .canonical_manifest()
+        .ok_or("missing canonical fixture")?;
+    let id = PackId::from_random_bytes([63; 16]);
+    let mut writer = PackWriter::new(id, PackClass::Meta, false);
+    writer.append_raw(EntryKind::Manifest, canonical)?;
+    let pack = writer.seal()?;
+    let limits = HostReadLimits {
+        max_allocation_bytes: 4096,
+    };
+    let reader = bounded_pack(pack.bytes(), limits)?;
+    let record = &reader.entries()[0];
+    let range = ByteRange {
+        start: record.offset(),
+        length: u64::from(record.body_len()),
+    };
+
+    let verified = manifest_from_pack(pack.bytes(), &claim, range, &profile, limits)?;
+
+    assert_eq!(verified.descriptor(), claim.descriptor());
+    assert_eq!(verified.canonical_manifest(), Some(canonical));
+    assert!(
+        manifest_from_pack(
+            pack.bytes(),
+            &claim,
+            ByteRange {
+                start: range.start + 1,
+                ..range
+            },
+            &profile,
+            limits
+        )
+        .is_err()
+    );
+    assert!(
+        manifest_from_pack(
+            pack.bytes(),
+            &claim,
+            ByteRange {
+                length: range.length - 1,
+                ..range
+            },
+            &profile,
+            limits
+        )
+        .is_err()
+    );
+    assert!(
+        manifest_from_pack(
+            pack.bytes(),
+            &claim,
+            range,
+            &profile,
+            HostReadLimits {
+                max_allocation_bytes: pack.bytes().len() - 1
+            }
+        )
+        .is_err()
+    );
+
+    let mut changed = pack.bytes().to_vec();
+    changed[usize::try_from(range.start)?] ^= 1;
+    assert!(manifest_from_pack(&changed, &claim, range, &profile, limits).is_err());
+    Ok(())
+}
+
+#[test]
+fn retained_manifest_plaintext_limit_is_checked_before_any_body_read() -> TestResult {
+    struct NoRead;
+
+    impl Read for NoRead {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            panic!("oversized manifest chunk reached plaintext IO")
+        }
+    }
+
+    let (_, _, claim) = manifest_claim()?;
+    assert!(
+        claim
+            .canonical_manifest()
+            .ok_or("missing canonical fixture")?
+            .len()
+            < 1024
+    );
+
+    let error = verify_plaintext(&claim, &mut NoRead, 1024)
+        .err()
+        .ok_or("oversized plaintext accepted")?;
+
+    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+    Ok(())
+}
+
+#[test]
+fn retained_manifest_verifies_full_plaintext_and_preserves_its_metadata_identity() -> TestResult {
+    let (profile, plaintext, claim) = manifest_claim()?;
+    verify_plaintext(&claim, &mut Cursor::new(&plaintext), plaintext.len())?;
+    assert_ne!(
+        claim.descriptor().digest(),
+        TERRANE_V1
+            .calculate(IdentityKind::Chunk, &plaintext)?
+            .digest()
+    );
+
+    let mut changed = plaintext.clone();
+    changed[0] ^= 1;
+    assert!(verify_plaintext(&claim, &mut Cursor::new(&changed), changed.len()).is_err());
+    let mut reordered = plaintext.clone();
+    reordered.rotate_left(profile.minimum());
+    assert!(verify_plaintext(&claim, &mut Cursor::new(&reordered), reordered.len()).is_err());
+    let mut trailing = plaintext.clone();
+    trailing.push(0);
+    assert!(verify_plaintext(&claim, &mut Cursor::new(&trailing), trailing.len()).is_err());
+    assert!(
+        verify_plaintext(
+            &claim,
+            &mut Cursor::new(&plaintext[..plaintext.len() - 1]),
+            plaintext.len()
+        )
+        .is_err()
+    );
+
+    let mut wrong_hash = Manifest::decode(
+        claim
+            .canonical_manifest()
+            .ok_or("missing canonical fixture")?,
+        &profile,
+    )?;
+    wrong_hash.hashes.insert("blake3".into(), vec![0; 32]);
+    let canonical = wrong_hash.encode(&profile)?;
+    let identity = TERRANE_V1.calculate(IdentityKind::Manifest, &canonical)?;
+    let object = Descriptor::from_identity(&TERRANE_V1, &identity, &canonical)?;
+    let wrong_hash = PublicationClaim::new(
+        "public".into(),
+        PublicationRecipe::Manifest {
+            object,
+            canonical_manifest: canonical,
+        },
+        &profile,
+    )?;
+    assert!(verify_plaintext(&wrong_hash, &mut Cursor::new(&plaintext), plaintext.len()).is_err());
+    Ok(())
+}
+
+#[test]
+fn retained_manifest_plaintext_uses_positioned_reads_without_changing_shared_cursor() -> TestResult
+{
+    let (_, plaintext, claim) = manifest_claim()?;
+    let scratch = Scratch::new()?;
+    let mut writer = &scratch.file;
+    writer.write_all(&plaintext)?;
+    writer.seek(SeekFrom::Start(17))?;
+
+    verify_file_plaintext(&claim, &scratch.file, plaintext.len())?;
+
+    assert_eq!(writer.stream_position()?, 17);
+    Ok(())
+}
+
+#[test]
+fn retained_manifest_residences_preserve_order_offsets_and_manifest_identity() -> TestResult {
+    let (profile, plaintext, claim) = manifest_claim()?;
+    let records = manifest_residences(&claim, 4096)?;
+
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        (records[0].offset, records[0].length),
+        (0, profile.minimum() as u64)
+    );
+    assert_eq!(
+        (records[1].offset, records[1].length),
+        (profile.minimum() as u64, 37)
+    );
+    assert_eq!(records[0].object, records[1].object);
+    let object: String = claim
+        .descriptor()
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(records[0].object, object);
+    assert_ne!(records[0].chunk, records[1].chunk);
+    assert_eq!(
+        records[1].offset + records[1].length,
+        plaintext.len() as u64
+    );
+    assert_eq!(
+        manifest_residences(&claim, 1)
+            .err()
+            .ok_or("over-budget residences accepted")?
+            .kind(),
+        io::ErrorKind::OutOfMemory
+    );
+    Ok(())
+}
+
+/// Uses real canonical bytes to test pure verification, never native custody.
+fn manifest_claim() -> Result<(ChunkProfile, Vec<u8>, PublicationClaim), Box<dyn std::error::Error>>
+{
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let mut plaintext = vec![73; profile.minimum() + 37];
+    plaintext[profile.minimum()..].fill(81);
+    let chunks = plaintext
+        .chunks(profile.minimum())
+        .map(|bytes| {
+            Ok::<_, Box<dyn std::error::Error>>(ChunkRef {
+                digest: TERRANE_V1
+                    .calculate(IdentityKind::Chunk, bytes)?
+                    .terrane_v1_digest()?,
+                length: bytes.len() as u64,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let manifest = Manifest {
+        size: plaintext.len() as u64,
+        chunks,
+        hashes: BTreeMap::from([(
+            "blake3".into(),
+            blake3::hash(&plaintext).as_bytes().to_vec(),
+        )]),
+        media_type: None,
+    };
+    let canonical = manifest.encode(&profile)?;
+    let identity = TERRANE_V1.calculate(IdentityKind::Manifest, &canonical)?;
+    let object = Descriptor::from_identity(&TERRANE_V1, &identity, &canonical)?;
+    let claim = PublicationClaim::new(
+        "public".into(),
+        PublicationRecipe::Manifest {
+            object,
+            canonical_manifest: canonical,
+        },
+        &profile,
+    )?;
+    Ok((profile, plaintext, claim))
+}
 
 #[test]
 fn compressed_standalone_plaintext_is_bounded_before_decode() -> TestResult {
