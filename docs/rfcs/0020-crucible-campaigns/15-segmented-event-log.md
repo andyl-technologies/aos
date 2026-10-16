@@ -291,13 +291,22 @@ segments.
 Several per-quantum consumers formerly rescanned the retained log: replay
 target matching, network-fault discovery, guest-marker assertion observation,
 and console matching. With a bounded log those rescans become the dominant
-cost.
+cost. The same growth appears outside the log wherever per-quantum work reads
+run history: rehashing a configuration's whole schedule for its identity,
+decoding every recorded selection for a stop check, deep-copying scheduler
+state whose ledgers grow with the run, and re-validating every emitted fault
+event.
 
-- **[CPERF-10]** Per-quantum host work for event-log consumers MUST be
-  proportional to the entries appended in that quantum. Resident executor
+- **[CPERF-10]** All per-quantum host work MUST be proportional to the work
+  appended in that quantum. This covers event-log consumers, scheduler
+  staging and rollback copies, schedule and configuration identity, stop
+  checks, imported I/O inventory, and fault accounting. State that grows with
+  the run MAY be read per quantum only through structural sharing, a sealed
+  or memoized form, or an index maintained on append. Resident executor
   memory and per-quantum host time MUST NOT grow with elapsed virtual time.
-  The performance gate runs a long-horizon attempt and fails when either trend
-  exceeds its noise allowance.
+  The performance gate runs a long-horizon attempt that includes a long phase
+  after a deep selected branch point, and fails when either trend exceeds its
+  noise allowance.
 
 ## 15.10 Compatibility
 

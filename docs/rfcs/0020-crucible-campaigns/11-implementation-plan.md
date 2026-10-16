@@ -1691,9 +1691,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   materialization, and the campaign trace protocol to segment-by-segment
   readers.
 - [ ] **T-CAM-4.13** Make replay-target matching, network-fault discovery,
-  guest-marker observation, and console matching proportional to each
-  quantum's appended entries, and prove flat memory and per-quantum time over a
-  long-horizon attempt.
+  guest-marker observation, console matching, scheduler staging, schedule
+  identity, stop checks, imported I/O inventory, and fault accounting
+  proportional to each quantum's appended work, and prove flat memory and
+  per-quantum time over a long-horizon attempt with a deep selected branch.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,
