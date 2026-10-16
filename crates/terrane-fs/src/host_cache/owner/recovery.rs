@@ -31,7 +31,8 @@ use tokio::sync::oneshot;
 /// Only the physical owner constructs this after exhaustive actual observations
 /// and durable reconciliation. It cannot be constructed from a boolean, caller
 /// epoch or file. It does not prove BKT-15 bucket validity, grant service handles,
-/// resume exposures or authorize native admission. No Resume consumer is enabled.
+/// resume exposures or authorize native admission. The physical owner may consume
+/// it through its serialized publisher Resume handoff; that grants no Store readiness.
 pub struct CompletedRecovery {
     custody: Arc<Mutex<Custody>>,
     session: Arc<Client<HostDomainLocation>>,

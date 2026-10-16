@@ -4,6 +4,9 @@
 //! before starting the selector's fixed test identity with empty capabilities.
 //! Publication uses UID 841/GID 845; transport uses its separate 6100x identities.
 //! These fixtures do not establish deployment-role or quota-admission conformance.
+//! Standalone actor/kernel selectors exercise inline claims. Manifest publication
+//! additionally requires the real cache-owned durable metadata-pin composition;
+//! a standalone received witness is not a substitute for that missing proof.
 //! This executable
 //! installs the actual confinement policy before creating runtimes, threads or
 //! mutable publisher handles. A selector is never a content-validity receipt.
@@ -12,6 +15,9 @@ use std::{io, process::ExitCode, sync::Arc};
 
 #[path = "../tests/host_publish_kernel.rs"]
 mod kernel_fixture;
+
+#[path = "publication_fixture/provision.rs"]
+mod provision;
 
 const SELECTORS: &[&str] = &[
     "disk_ext4_seal_noreplace_recovery_and_domain_isolation",
@@ -82,6 +88,9 @@ fn run() -> io::Result<()> {
             "expected exactly one fixture selector or --list",
         ));
     };
+    if selector == "--provision-projects" || selector == "--verify-projects" {
+        return provision::run(selector == "--verify-projects");
+    }
     if selector == "--fixture-inputs" {
         return fixture_inputs();
     }

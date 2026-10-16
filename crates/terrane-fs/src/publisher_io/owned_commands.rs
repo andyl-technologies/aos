@@ -448,7 +448,12 @@ impl CommandOwner {
                 self.transition(key, incarnation, Transition::FinishNone)
                     .await
             }
-            NativeOperation::Inventory { cursor } => self.inventory.page(cursor).await,
+            NativeOperation::Inventory { cursor } if self.recovery => {
+                self.inventory.page(cursor).await
+            }
+            NativeOperation::Inventory { .. } => {
+                Err(invalid("inventory requires drained recovery custody"))
+            }
         }
     }
 

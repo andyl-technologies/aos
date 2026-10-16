@@ -106,10 +106,14 @@
       # The loop image lives on the guest's persistent root disk, never /tmp.
       truncate -s 96M /var/lib/terrane-publication/verity.img
       # The production Merkle block is 4096 bytes and must fit one fs block.
-      mkfs.ext4 -F -b 4096 -O verity /var/lib/terrane-publication/verity.img
+      mkfs.ext4 -F -b 4096 -O project,quota,verity -E quotatype=prjquota /var/lib/terrane-publication/verity.img
       trap 'umount /mnt/terrane-publication || true; rm -f /var/lib/terrane-publication/verity.img' EXIT
       umask 077
-      mount -t ext4 -o loop /var/lib/terrane-publication/verity.img /mnt/terrane-publication
+      mount -t ext4 -o loop,prjquota /var/lib/terrane-publication/verity.img /mnt/terrane-publication
+      # Actual projects are bound durably by the external root supervisor
+      # while every fixed root is empty, before confined roles can allocate.
+      TERRANE_PUBLISH_VM=1 TERRANE_PUBLISH_VM_ROOT=/mnt/terrane-publication \
+        ${image}/bin/terrane-publication-fixture --provision-projects
       # All ownership and encoded fixture inputs are installed by the external
       # supervisor before the fresh publisher process drops credentials/caps.
       chown 841:845 /mnt/terrane-publication
@@ -143,6 +147,8 @@
       done
       ln /mnt/terrane-publication/worker-pack-partial-unlink/objects/pack/42/42424242424242424242424242424242.idx \
         /mnt/terrane-publication/worker-pack-partial-unlink/index-survivor
+      TERRANE_PUBLISH_VM=1 TERRANE_PUBLISH_VM_ROOT=/mnt/terrane-publication \
+        ${image}/bin/terrane-publication-fixture --verify-projects
       # Each selector is a separate exec before Installed exists. The example
       # then installs the real fixed filter before creating its first runtime.
       while IFS= read -r selector; do

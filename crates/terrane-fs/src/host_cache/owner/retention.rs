@@ -37,12 +37,12 @@ use tokio::sync::oneshot;
 
 mod executor;
 use executor::NativeOwnerExecutor;
-pub(crate) use executor::PublisherResumeTurn;
+pub(crate) use executor::{PublisherResumeTurn, PublisherRunningTurn};
 
 /// Retains a native queue for durable metadata pins and missing-index repair.
 ///
-/// This recovery-only owner enables no publication, eviction, admission or
-/// Resume. Cold records remain untrusted candidates until recovery reconciles
+/// This owner enables no publication, eviction or native admission.
+/// Cold records remain untrusted candidates until recovery reconciles
 /// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
     /// Bounded admission to physical work retained independently of reply waiters.
@@ -52,6 +52,11 @@ pub struct NativeMetadataOwner {
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    /// Transfers genuine completion through the sole physical Resume turn.
+    Resume {
+        completed: super::CompletedRecovery,
+        response: oneshot::Sender<io::Result<()>>,
+    },
     /// Runs actual recovery without enabling Resume or service readiness.
     Recover {
         response: oneshot::Sender<io::Result<super::CompletedRecovery>>,
@@ -167,24 +172,38 @@ impl NativeMetadataOwner {
                         return;
                     }
                 };
-                let executor = NativeOwnerExecutor::new(custody);
+                let mut executor = NativeOwnerExecutor::new(custody);
                 if ready.send(Ok(())).is_err() {
                     return;
                 }
                 while let Ok(command) = receive.recv() {
                     match command {
+                        Command::Resume {
+                            completed,
+                            response,
+                        } => {
+                            let result = executor.resume(completed);
+                            // The executor retains the physical outcome before reply.
+                            let _ = response.send(result);
+                        }
                         Command::Recover { response } => {
-                            let result = runtime.block_on(super::recovery::run(executor.custody()));
+                            let result = executor.check_recovery_phase().and_then(|()| {
+                                runtime.block_on(super::recovery::run(executor.custody()))
+                            });
                             let _ = response.send(result);
                         }
                         Command::Retain { identity, response } => {
-                            let result = runtime.block_on(retain(executor.custody(), identity));
+                            let result = executor.check_recovery_phase().and_then(|()| {
+                                runtime.block_on(retain(executor.custody(), identity))
+                            });
                             // An abandoned reply never releases the registry's source,
                             // durable pins, future hold or exclusive state custody.
                             let _ = response.send(result);
                         }
                         Command::RepairIndex { source, response } => {
-                            let result = runtime.block_on(repair_index(executor.custody(), source));
+                            let result = executor.check_recovery_phase().and_then(|()| {
+                                runtime.block_on(repair_index(executor.custody(), source))
+                            });
                             // Actual source/temporary custody and durable holds
                             // belong to the worker, never to this reply waiter.
                             let _ = response.send(result);
@@ -205,6 +224,55 @@ impl NativeMetadataOwner {
             commands: Some(commands),
             worker: Some(worker),
         })
+    }
+
+    /// Resumes the actual publisher through this owner's serialized physical queue.
+    ///
+    /// The consumed completion and acknowledged context remain with the worker
+    /// even if this waiter disappears. Success grants no Store readiness or
+    /// native admission; running mutations require a separate concrete turn.
+    ///
+    /// # Errors
+    /// Refuses a full or stopped queue, foreign or stale completion, repeated
+    /// handoff, or failed/uncertain transport. Failures retain recovery custody.
+    pub async fn resume_recovered(
+        &self,
+        completed: super::CompletedRecovery,
+    ) -> Result<(), super::NativeResumeError> {
+        use super::NativeResumeError;
+        let Some(commands) = self.commands.as_ref() else {
+            return Err(NativeResumeError::Unsubmitted {
+                error: io::Error::other("metadata owner stopped"),
+                completed,
+            });
+        };
+        let (response, receive) = oneshot::channel();
+        if let Err(error) = commands.try_send(Command::Resume {
+            completed,
+            response,
+        }) {
+            let (kind, command) = match error {
+                mpsc::TrySendError::Full(command) => (io::ErrorKind::WouldBlock, command),
+                mpsc::TrySendError::Disconnected(command) => (io::ErrorKind::BrokenPipe, command),
+            };
+            let Command::Resume { completed, .. } = command else {
+                return Err(NativeResumeError::Accepted(io::Error::other(
+                    "unexpected owner command",
+                )));
+            };
+            return Err(NativeResumeError::Unsubmitted {
+                error: io::Error::new(kind, "Resume was not submitted to the owner"),
+                completed,
+            });
+        }
+        receive
+            .await
+            .map_err(|_| {
+                NativeResumeError::Accepted(io::Error::other(
+                    "metadata owner terminated before Resume completion",
+                ))
+            })?
+            .map_err(NativeResumeError::Accepted)
     }
 
     /// Retains verified reconstruction metadata before any dependent publication.

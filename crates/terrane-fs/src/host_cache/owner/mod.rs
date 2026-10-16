@@ -13,10 +13,12 @@ mod recovery_accounting;
 mod recovery_namespace;
 mod recovery_state;
 mod recovery_state_parent;
+mod resume_error;
 mod retention;
 
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
 pub use recovery::CompletedRecovery;
-pub(crate) use retention::PublisherResumeTurn;
+pub use resume_error::NativeResumeError;
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};
+pub(crate) use retention::{PublisherResumeTurn, PublisherRunningTurn};
