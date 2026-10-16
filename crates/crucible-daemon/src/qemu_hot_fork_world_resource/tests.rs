@@ -247,14 +247,18 @@ fn bound_auxiliary_resources(
 fn begin_auxiliary_resources(
     factory: &mut TestAuxiliaryResourceFactory,
     owner: &QemuHotForkWorldResourceOwner<FakeGuard>,
-) -> Result<TestAuxiliaryResourceGuard, QemuVmRealizationError> {
+) -> Result<
+    TestAuxiliaryResourceGuard,
+    crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
+> {
     factory
         .begin(owner.resources, owner.cancellation.clone(), None)
         .map_err(|failure| failure.into_parts().0)
 }
 
 #[test]
-fn aggregate_release_waits_for_every_exact_node_target() -> Result<(), QemuVmRealizationError> {
+fn aggregate_release_waits_for_every_exact_node_target()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -278,7 +282,7 @@ fn aggregate_release_waits_for_every_exact_node_target() -> Result<(), QemuVmRea
 
 #[test]
 fn release_readiness_keeps_exact_target_and_launcher_progress_retryable()
--> Result<(), QemuVmRealizationError> {
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -328,7 +332,8 @@ fn release_readiness_keeps_exact_target_and_launcher_progress_retryable()
 }
 
 #[test]
-fn release_readiness_waits_for_the_actual_auxiliary_owner() -> Result<(), QemuVmRealizationError> {
+fn release_readiness_waits_for_the_actual_auxiliary_owner()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -359,7 +364,7 @@ fn release_readiness_waits_for_the_actual_auxiliary_owner() -> Result<(), QemuVm
 
 #[test]
 fn release_readiness_refuses_contention_and_the_existing_terminal_failure()
--> Result<(), QemuVmRealizationError> {
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -392,7 +397,8 @@ fn release_readiness_refuses_contention_and_the_existing_terminal_failure()
 }
 
 #[test]
-fn release_readiness_refuses_an_actually_poisoned_registry() -> Result<(), QemuVmRealizationError> {
+fn release_readiness_refuses_an_actually_poisoned_registry()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let owner = QemuHotForkWorldResourceOwner::new(
@@ -414,7 +420,8 @@ fn release_readiness_refuses_an_actually_poisoned_registry() -> Result<(), QemuV
 }
 
 #[test]
-fn unfinished_or_duplicate_node_fails_closed() -> Result<(), QemuVmRealizationError> {
+fn unfinished_or_duplicate_node_fails_closed()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -432,7 +439,8 @@ fn unfinished_or_duplicate_node_fails_closed() -> Result<(), QemuVmRealizationEr
 }
 
 #[test]
-fn explicit_no_child_rollback_reopens_the_exact_slot() -> Result<(), QemuVmRealizationError> {
+fn explicit_no_child_rollback_reopens_the_exact_slot()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -452,8 +460,8 @@ fn explicit_no_child_rollback_reopens_the_exact_slot() -> Result<(), QemuVmReali
 }
 
 #[test]
-fn partial_world_rejection_rolls_back_only_the_unforked_node() -> Result<(), QemuVmRealizationError>
-{
+fn partial_world_rejection_rolls_back_only_the_unforked_node()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -476,8 +484,8 @@ fn partial_world_rejection_rolls_back_only_the_unforked_node() -> Result<(), Qem
 }
 
 #[test]
-fn partial_world_ambiguous_failure_quarantines_the_aggregate() -> Result<(), QemuVmRealizationError>
-{
+fn partial_world_ambiguous_failure_quarantines_the_aggregate()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -496,7 +504,8 @@ fn partial_world_ambiguous_failure_quarantines_the_aggregate() -> Result<(), Qem
 }
 
 #[test]
-fn auxiliary_lifecycle_requires_complete_primary_cleanup() -> Result<(), QemuVmRealizationError> {
+fn auxiliary_lifecycle_requires_complete_primary_cleanup()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -522,8 +531,8 @@ fn auxiliary_lifecycle_requires_complete_primary_cleanup() -> Result<(), QemuVmR
 }
 
 #[test]
-fn auxiliary_lifecycle_is_a_single_reusable_sequential_lease() -> Result<(), QemuVmRealizationError>
-{
+fn auxiliary_lifecycle_is_a_single_reusable_sequential_lease()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -549,7 +558,7 @@ fn auxiliary_lifecycle_is_a_single_reusable_sequential_lease() -> Result<(), Qem
 
 #[test]
 fn auxiliary_lifecycle_shares_one_capacity_quantum_and_cancellation()
--> Result<(), QemuVmRealizationError> {
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -587,7 +596,7 @@ fn auxiliary_lifecycle_shares_one_capacity_quantum_and_cancellation()
 
 #[test]
 fn bound_replay_factory_reuses_one_capacity_with_fresh_private_directories()
--> Result<(), QemuVmRealizationError> {
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let active = Arc::new(AtomicUsize::new(0));
     let begins = Arc::new(AtomicUsize::new(0));
     let finishes = Arc::new(AtomicUsize::new(0));
@@ -672,7 +681,7 @@ fn bound_replay_factory_reuses_one_capacity_with_fresh_private_directories()
 
 #[test]
 fn auxiliary_cleanup_failure_quarantines_and_poisons_the_aggregate()
--> Result<(), QemuVmRealizationError> {
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -693,7 +702,8 @@ fn auxiliary_cleanup_failure_quarantines_and_poisons_the_aggregate()
 }
 
 #[test]
-fn aggregate_finish_refuses_an_active_auxiliary_lifecycle() -> Result<(), QemuVmRealizationError> {
+fn aggregate_finish_refuses_an_active_auxiliary_lifecycle()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let mut owner = QemuHotForkWorldResourceOwner::new(
@@ -783,8 +793,8 @@ fn unpublished_target_ram_registration(
 }
 
 #[test]
-fn target_ram_binding_refusal_keeps_registration_unpublished() -> Result<(), QemuVmRealizationError>
-{
+fn target_ram_binding_refusal_keeps_registration_unpublished()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     use crucible_linux_resource::host_supervision::{
         HostOperationBudgets, HostOperationSupervisor,
     };
@@ -828,8 +838,8 @@ fn target_ram_binding_refusal_keeps_registration_unpublished() -> Result<(), Qem
 }
 
 #[test]
-fn stale_target_ram_generation_refuses_before_target_binding() -> Result<(), QemuVmRealizationError>
-{
+fn stale_target_ram_generation_refuses_before_target_binding()
+-> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
     use crucible_linux_resource::host_supervision::{
         HostOperationBudgets, HostOperationSupervisor,
     };

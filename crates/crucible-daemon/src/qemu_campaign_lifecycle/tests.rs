@@ -559,9 +559,9 @@ impl QemuAttemptProductionVmLifecycleFactory<FakeResourceFactory> {
                 if let Some(selected) = selected {
                     context.restore_selected_checkpoint(selected);
                 }
-                return Err(QemuAttemptProductionVmLifecycleError::ResourceInstallation(
-                    error,
-                ));
+                return Err(
+                    QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(error),
+                );
             }
         };
         if guard.resource_limits() != context.resources()

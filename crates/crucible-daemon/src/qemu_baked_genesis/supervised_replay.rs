@@ -256,19 +256,22 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
         cancellation: &ExecutionCancellation,
         resources: AttemptResourceLimits,
         mut selected: Option<SelectedExactCheckpointRoot>,
-    ) -> Result<crate::packaged_qemu_executor::RetainedTemplateService, ReplayBeginFailure> {
+    ) -> Result<
+        crate::packaged_qemu_executor::RetainedTemplateService,
+        (QemuVmRealizationError, Option<SelectedExactCheckpointRoot>),
+    > {
         let Some(basis) = self
             .replay_basis
             .as_ref()
             .filter(|basis| basis.resources() == resources)
         else {
-            return Err(ReplayBeginFailure::before_checkpoint_claim(
+            return Err((
                 replay_contract("replay has no authenticated accepted execution basis"),
                 selected,
             ));
         };
         let Some(services) = self.replay_services.as_ref() else {
-            return Err(ReplayBeginFailure::before_checkpoint_claim(
+            return Err((
                 replay_contract("replay has no independently admitted Service allocator"),
                 selected,
             ));
@@ -276,12 +279,7 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
         let checkpoint = selected.as_ref().map(|_| basis.checkpoint());
         services
             .start_for_replay_basis(basis, checkpoint, cancellation.clone(), &mut selected)
-            .map_err(|source| {
-                ReplayBeginFailure::before_checkpoint_claim(
-                    replay_contract(source.to_string()),
-                    selected,
-                )
-            })
+            .map_err(|source| (replay_contract(source.to_string()), selected))
     }
 }
 
@@ -296,7 +294,13 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
         R: QemuAttemptResourceGuardFactory,
         R::Guard: QemuAttemptProcessResourceGuard,
     {
-        let service = self.replay_service(cancellation, resources, Some(selected))?;
+        // Service setup has one leaf and unchanged claim disposition. Only
+        // native begin below can add an independent host rollback report.
+        let service = self
+            .replay_service(cancellation, resources, Some(selected))
+            .map_err(|(error, selected)| {
+                ReplayBeginFailure::before_checkpoint_claim(error, selected)
+            })?;
         let setup = (|| {
             let basis = self
                 .replay_basis
@@ -393,7 +397,7 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
                     // ownership, so an empty node ledger cannot discharge it.
                     service.retain_after_unknown_cleanup();
                 }
-                return Err(ReplayBeginFailure::before_checkpoint_claim(error, selected));
+                return Err(ReplayBeginFailure::from_report(error, selected));
             }
         };
         let bind = (|| {

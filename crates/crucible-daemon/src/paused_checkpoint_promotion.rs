@@ -341,6 +341,9 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
     /// Fat/thin realization, comparison, or mandatory cleanup failed.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
+    /// Resource begin retained its original refusal and any rollback history.
+    #[error(transparent)]
+    ResourceBegin(#[from] crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport),
     /// Canonical event evidence could not be authenticated under its original metadata authority.
     #[error("checkpoint event identity failed: {0}")]
     EventIdentity(#[source] crucible::EngineError),
@@ -839,7 +842,7 @@ where
             Err(failure) => {
                 let (error, selected_checkpoint) = failure.into_parts();
                 *target.selected_checkpoint = selected_checkpoint;
-                return Err(PausedCheckpointPromotionPreparationError::Realization(
+                return Err(PausedCheckpointPromotionPreparationError::ResourceBegin(
                     error,
                 ));
             }

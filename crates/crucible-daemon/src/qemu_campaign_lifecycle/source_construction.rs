@@ -18,7 +18,17 @@ pub(super) use retained::RetainedSourceInstall;
 pub struct SourceGenerationStorageRefusal {
     #[source]
     source: LifecycleApiError,
-    boundary: QemuVmRealizationError,
+    boundary: crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
+}
+
+impl SourceGenerationStorageRefusal {
+    /// Borrows the native boundary's original refusal and rollback history.
+    #[must_use]
+    pub fn native_boundary(
+        &self,
+    ) -> &crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport {
+        &self.boundary
+    }
 }
 
 /// Preserves the exact entered post-installation operation that refused.
@@ -149,7 +159,7 @@ where
                         }
                         Err(owner) => {
                             return Err(self.park_install_from_checked_vacancy(
-                                RetainedSourceInstall::Begin {
+                                RetainedSourceInstall::ResourceBegin {
                                     owner,
                                     handoff: None,
                                 },
@@ -158,9 +168,7 @@ where
                     },
                     None => boundary,
                 };
-                Err(QemuAttemptProductionVmLifecycleError::ResourceInstallation(
-                    first,
-                ))
+                Err(QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(first))
             }
             Ok((guard, expected)) => {
                 let Some(owner) = pending else {

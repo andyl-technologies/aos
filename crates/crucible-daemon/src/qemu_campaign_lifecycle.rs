@@ -89,7 +89,7 @@ enum NativeWorldBeginFailure {
     #[error("configure native World: {0}")]
     Configuration(#[from] QemuAttemptProductionVmLifecycleError),
     #[error("begin native World: {0}")]
-    Native(#[from] QemuVmRealizationError),
+    Native(#[from] crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport),
 }
 
 /// Keeps actual first causes after the same Source has physically returned.
@@ -125,6 +125,7 @@ impl SourceCleanupCause {
 #[derive(Debug)]
 enum SourceInstallationFirst {
     Api(LifecycleApiError),
+    ResourceBegin(crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport),
     Native(QemuVmRealizationError),
     Storage(SourceGenerationStorageRefusal),
     Post(SourcePostInstallationRefusal),
@@ -137,6 +138,19 @@ impl SourceCleanupHistory {
     /// present. This accessor also exposes a later physical cleanup refusal.
     pub fn cleanup_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.cleanup.as_ref().map(SourceCleanupCause::as_error)
+    }
+
+    /// Borrows the original resource-begin report, including rollback history.
+    ///
+    /// Later Source cleanup remains independently available through
+    /// [`Self::cleanup_error`]; it does not replace the begin rollback cause.
+    pub fn resource_begin_error(
+        &self,
+    ) -> Option<&crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
+        match &self.first {
+            Some(SourceInstallationFirst::ResourceBegin(first)) => Some(first),
+            _ => None,
+        }
     }
 
     /// Borrows the independent post-check of the same retained World Cleanup.
@@ -173,6 +187,7 @@ impl std::error::Error for SourceCleanupHistory {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.first {
             Some(SourceInstallationFirst::Api(first)) => Some(first),
+            Some(SourceInstallationFirst::ResourceBegin(first)) => Some(first),
             Some(SourceInstallationFirst::Native(first)) => Some(first),
             Some(SourceInstallationFirst::Storage(first)) => Some(first),
             Some(SourceInstallationFirst::Post(first)) => Some(first),
@@ -225,6 +240,11 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// Installing the attempt resource guard failed.
     #[error("install production VM attempt resources: {0}")]
     ResourceInstallation(#[source] QemuVmRealizationError),
+    /// Resource begin retained its first refusal and independent rollback cause.
+    #[error("install production VM attempt resources: {0}")]
+    ResourceBeginInstallation(
+        #[source] crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
+    ),
     /// Generation metadata refused before native effects, with boundary status.
     #[error(transparent)]
     SourceGenerationStorage(#[from] SourceGenerationStorageRefusal),
