@@ -41,9 +41,10 @@ pub enum DetachedIndexStatus {
 pub struct DerivedIndexRepair {
     pack: RetainedFile,
     index: Option<RetainedFile>,
-    dependencies: Vec<RetainedFile>,
+    dependencies: Vec<VerifiedDependency>,
     derived: ReconstructedPackIndex,
     status: DetachedIndexStatus,
+    index_hash: Option<blake3::Hash>,
 }
 
 impl DerivedIndexRepair {
@@ -97,7 +98,7 @@ impl DerivedIndexRepair {
     /// Refuses stale confinement, roots, sources, project assignments or pack bytes.
     pub fn check_pack_current(&self) -> io::Result<()> {
         for source in &self.dependencies {
-            source.recheck()?;
+            source.check_current()?;
         }
         let bytes = self
             .pack
@@ -116,6 +117,9 @@ impl DerivedIndexRepair {
         self.check_pack_current()?;
         if let Some(index) = &self.index {
             index.recheck()?;
+            if let Some(expected) = self.index_hash {
+                index.check_hash(expected)?;
+            }
         }
         Ok(())
     }
@@ -143,9 +147,10 @@ pub enum VerifiedEncodedBody {
 /// an object's final/nonfinal position. No object reconstruction is authorized.
 pub struct VerifiedStandaloneChunk {
     source: RetainedFile,
-    dependencies: Vec<RetainedFile>,
+    dependencies: Vec<VerifiedDependency>,
     identity: Identity,
     length: usize,
+    encoded_hash: blake3::Hash,
 }
 
 impl VerifiedStandaloneChunk {
@@ -164,16 +169,28 @@ impl VerifiedStandaloneChunk {
         self.source.file()
     }
 
-    /// Rechecks actual canonical source and dictionary incarnations.
+    /// Rechecks actual canonical source bytes and dictionary incarnations.
     ///
     /// # Errors
     /// Refuses changed roots, process confinement, project assignment or source inodes.
     pub fn check_current(&self) -> io::Result<()> {
-        self.source.recheck()?;
+        self.source.check_hash(self.encoded_hash)?;
         for dependency in &self.dependencies {
-            dependency.recheck()?;
+            dependency.check_current()?;
         }
         Ok(())
+    }
+}
+
+/// Retains the exact verified dependency bytes, without relying on timestamp resolution.
+struct VerifiedDependency {
+    source: RetainedFile,
+    encoded_hash: blake3::Hash,
+}
+
+impl VerifiedDependency {
+    fn check_current(&self) -> io::Result<()> {
+        self.source.check_hash(self.encoded_hash)
     }
 }
 
@@ -242,15 +259,15 @@ pub(super) fn chunk(
         dictionary.as_deref(),
     )
     .map_err(invalid)?;
-    source.recheck()?;
-    Ok(VerifiedEncodedBody::Chunk(Box::new(
-        VerifiedStandaloneChunk {
-            source,
-            dependencies,
-            identity,
-            length,
-        },
-    )))
+    let chunk = VerifiedStandaloneChunk {
+        source,
+        dependencies,
+        identity,
+        length,
+        encoded_hash: blake3::hash(&encoded),
+    };
+    chunk.check_current()?;
+    Ok(VerifiedEncodedBody::Chunk(Box::new(chunk)))
 }
 
 pub(super) fn pack(
@@ -318,15 +335,20 @@ pub(super) fn pack(
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
     };
-    let status = match &index {
-        None => DetachedIndexStatus::Missing,
-        Some(index)
-            if index.file().metadata()?.len() == derived.bytes().len() as u64
-                && index.read(context.reads.max_allocation_bytes)? == derived.bytes() =>
-        {
-            DetachedIndexStatus::Matches
+    let (status, index_hash) = match &index {
+        None => (DetachedIndexStatus::Missing, None),
+        Some(index) if index.file().metadata()?.len() != derived.bytes().len() as u64 => {
+            (DetachedIndexStatus::Mismatch, None)
         }
-        Some(_) => DetachedIndexStatus::Mismatch,
+        Some(index) => {
+            let bytes = index.read(context.reads.max_allocation_bytes)?;
+            let status = if bytes == derived.bytes() {
+                DetachedIndexStatus::Matches
+            } else {
+                DetachedIndexStatus::Mismatch
+            };
+            (status, Some(blake3::hash(&bytes)))
+        }
     };
     let plan = DerivedIndexRepair {
         pack: source,
@@ -334,6 +356,7 @@ pub(super) fn pack(
         dependencies,
         derived,
         status,
+        index_hash,
     };
     plan.check_current()?;
     Ok(VerifiedEncodedBody::Pack(Box::new(plan)))
@@ -344,7 +367,7 @@ fn dictionary(
     digest: &Digest,
     current_pack: Option<&PackReader<'_>>,
     packs: &[PackId],
-    dependencies: &mut Vec<RetainedFile>,
+    dependencies: &mut Vec<VerifiedDependency>,
 ) -> io::Result<Vec<u8>> {
     if dependencies.len() >= context.max_candidates {
         return Err(io::Error::new(
@@ -390,7 +413,10 @@ fn dictionary(
                 .plaintext()
                 .to_vec();
         source.recheck()?;
-        dependencies.push(source);
+        dependencies.push(VerifiedDependency {
+            source,
+            encoded_hash: blake3::hash(&encoded),
+        });
         return Ok(plaintext);
     }
     for id in packs {
@@ -405,14 +431,17 @@ fn dictionary(
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
         };
-        let bytes = source.read(context.reads.max_allocation_bytes)?;
-        let pack = bounded_pack(&bytes, context.reads)?;
+        let encoded = source.read(context.reads.max_allocation_bytes)?;
+        let pack = bounded_pack(&encoded, context.reads)?;
         if pack.header().id() != *id {
             return Err(invalid("dictionary pack header differs from canonical key"));
         }
         if let Some(bytes) = dictionary_from_pack(context, &pack, digest)? {
             source.recheck()?;
-            dependencies.push(source);
+            dependencies.push(VerifiedDependency {
+                source,
+                encoded_hash: blake3::hash(&encoded),
+            });
             return Ok(bytes);
         }
     }

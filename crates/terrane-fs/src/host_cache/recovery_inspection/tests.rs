@@ -5,13 +5,14 @@
 //! composed real owner, registered publisher and quota helper in its VM fixture.
 
 use super::{
-    files::{read_bounded, same_file},
+    files::{read_bounded, same_file, verify_read_hash},
     verification::bounded_pack,
 };
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom, Write},
+    os::unix::fs::FileExt,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -67,6 +68,29 @@ fn equal_sized_path_replacement_does_not_match_retained_inode() -> TestResult {
 
     assert!(!same_file(&retained, &fs::metadata(&scratch.path)?));
     assert_eq!(read_bounded(&scratch.file, 128)?, b"same length");
+    Ok(())
+}
+
+#[test]
+fn equal_sized_in_place_change_fails_actual_encoded_hash_recheck() -> TestResult {
+    let scratch = Scratch::new()?;
+    let original = b"verified encoded bytes";
+    let replacement = b"modified encoded bytes";
+    let mut writer = &scratch.file;
+    writer.write_all(original)?;
+    let expected = blake3::hash(original);
+    verify_read_hash(&scratch.file, 128, expected)?;
+
+    scratch.file.write_all_at(replacement, 0)?;
+
+    assert_eq!(scratch.file.metadata()?.len(), original.len() as u64);
+    assert_eq!(
+        verify_read_hash(&scratch.file, 128, expected)
+            .err()
+            .ok_or("modified source revalidated")?
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
     Ok(())
 }
 

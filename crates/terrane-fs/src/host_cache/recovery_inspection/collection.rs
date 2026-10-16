@@ -58,6 +58,15 @@ impl Candidates {
         }
     }
 
+    fn publisher_key(&mut self, key: BodyKey) -> io::Result<()> {
+        // Charge occurrences before deduplication. Repeated pages can never
+        // evade the bound by repeating one registered key.
+        self.charge()?;
+        self.publisher_entries += 1;
+        self.insert(key);
+        Ok(())
+    }
+
     pub(super) fn publisher(&mut self, context: &NativeRecoveryInspector) -> io::Result<()> {
         let mut cursor = None;
         loop {
@@ -78,11 +87,7 @@ impl Candidates {
                 ));
             }
             for key in page.keys {
-                // Charge occurrences before deduplication. Repeated pages can
-                // never evade the bound by repeating one registered key.
-                self.charge()?;
-                self.publisher_entries += 1;
-                self.insert(key);
+                self.publisher_key(key)?;
             }
             cursor = page.next_cursor;
             if cursor.is_none() {
@@ -184,13 +189,13 @@ mod tests {
             ..Default::default()
         };
         for _ in 0..2 {
-            candidates.charge().unwrap();
-            candidates.insert(key.clone());
+            candidates.publisher_key(key.clone()).unwrap();
         }
         assert_eq!(candidates.keys().count(), 1);
         assert_eq!(candidates.duplicates, 1);
+        assert_eq!(candidates.publisher_entries, 2);
         assert_eq!(
-            candidates.charge().unwrap_err().kind(),
+            candidates.publisher_key(key).unwrap_err().kind(),
             io::ErrorKind::OutOfMemory
         );
     }

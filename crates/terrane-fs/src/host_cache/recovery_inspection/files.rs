@@ -134,6 +134,16 @@ impl RetainedFile {
         Ok(bytes)
     }
 
+    pub(super) fn check_hash(&self, expected: blake3::Hash) -> io::Result<()> {
+        self.recheck()?;
+        verify_read_hash(
+            &self.file,
+            self.context.reads.max_allocation_bytes,
+            expected,
+        )?;
+        self.recheck()
+    }
+
     pub(super) fn recheck(&self) -> io::Result<()> {
         self.context.check_current()?;
         if !same_file(&self.metadata, &self.file.metadata()?) {
@@ -237,6 +247,18 @@ pub(super) fn read_bounded(file: &File, bound: usize) -> io::Result<Vec<u8>> {
         return Err(invalid("candidate changed during positioned read"));
     }
     Ok(bytes)
+}
+
+pub(super) fn verify_read_hash(
+    file: &File,
+    bound: usize,
+    expected: blake3::Hash,
+) -> io::Result<()> {
+    let encoded = read_bounded(file, bound)?;
+    if blake3::hash(&encoded) != expected {
+        return Err(invalid("verified encoded source bytes changed"));
+    }
+    Ok(())
 }
 
 pub(super) fn same_file(left: &Metadata, right: &Metadata) -> bool {
