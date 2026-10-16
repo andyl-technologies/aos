@@ -338,10 +338,14 @@ impl CnpController {
         proof_original: &Envelope,
         record: &crate::reference_packet::service::complete_restore::PacketNativeRestoredRecord,
         underlying: &[u8],
-    ) -> Result<crate::reference_packet::control::PacketNative5UnderlyingRecord, ProviderError> {
+    ) -> Result<crate::reference_packet::control::PacketNative5UnderlyingRecord, ProviderError>
+    {
         self.authenticate_original_installed_restored_suffix_data(emitter)?;
         self.original_completed_installed_restoration_observation(emitter)?;
-        let actual = original.request_id.0.as_ref()
+        let actual = original
+            .request_id
+            .0
+            .as_ref()
             .and_then(|id| self.original(id))
             .ok_or_else(refused)?;
         if &actual.request != original || actual.response.as_ref() != Some(terminal) {
@@ -353,8 +357,12 @@ impl CnpController {
         if self.original(proof_id).map(|pair| &pair.request) != Some(proof_original) {
             return Err(refused());
         }
-        let scope = &self.original_installed_restoration_observation
-            .as_ref().ok_or_else(refused)?.request.scope;
+        let scope = &self
+            .original_installed_restoration_observation
+            .as_ref()
+            .ok_or_else(refused)?
+            .request
+            .scope;
         record.validate_data()?;
         if record.captured_owner_state != scope.restoration.captured_owner_state
             || record.captured_journal != scope.restoration.captured_journal
@@ -363,11 +371,15 @@ impl CnpController {
             || record.restore_response != scope.restoration.commit_response
             || record.context_digest != scope.restoration.context_digest
             || record.physical_gate_held
-            || scope.target.native_pid.get() != u64::from(self.peer_pid()) {
+            || scope.target.native_pid.get() != u64::from(self.peer_pid())
+        {
             return Err(refused());
         }
         record.native_receipt.verify_original_record_data(
-            self.session.fresh_restore_query_selection()?, self.peer_pid(), proof_original, underlying,
+            self.session.fresh_restore_query_selection()?,
+            self.peer_pid(),
+            proof_original,
+            underlying,
         )
     }
 

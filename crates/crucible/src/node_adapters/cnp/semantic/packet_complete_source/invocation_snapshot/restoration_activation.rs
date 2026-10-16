@@ -48,7 +48,11 @@ impl PacketCompleteSemanticSource {
         self.is_original_invocation_snapshot_declaration_data()?;
         Ok(matches!(
             self.invocation_snapshot_declaration,
-            Some(Declaration::RestorationActivation14 | Declaration::RestorationObservation14 | Declaration::RestorationSuffix14)
+            Some(
+                Declaration::RestorationActivation14
+                    | Declaration::RestorationObservation14
+                    | Declaration::RestorationSuffix14
+            )
         ))
     }
 

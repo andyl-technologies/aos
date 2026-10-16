@@ -10,11 +10,11 @@
 //! The full launch digest binds the new wrapper and complete selected schemas.
 //! Decoding and MAC comparison are DATA checks, not inherited-channel authority.
 
-use super::*;
 use super::super::invocation_preamble::{
     PacketNativeInvocationPreambleData, decode_original_native_invocation_preamble_data,
     encode_original_native_invocation_preamble_data,
 };
+use super::*;
 
 /// Names the complete fixed suffix-startup prefix extent.
 pub const ORIGINAL_NATIVE_RESTORED_SUFFIX_PREAMBLE_BYTES: usize = 392;
@@ -46,7 +46,13 @@ pub fn encode_original_native_suffix_preamble_data(
     let mut bytes = [0; ORIGINAL_NATIVE_RESTORED_SUFFIX_PREAMBLE_BYTES];
     bytes[..272].copy_from_slice(&original[..272]);
     bytes[..8].copy_from_slice(MAGIC);
-    bytes[272..280].copy_from_slice(&data.suffix_reservation.maximum_originals.get().to_be_bytes());
+    bytes[272..280].copy_from_slice(
+        &data
+            .suffix_reservation
+            .maximum_originals
+            .get()
+            .to_be_bytes(),
+    );
     write_row(&mut bytes[280..304], data.suffix_reservation.ingress);
     write_row(&mut bytes[304..328], data.suffix_reservation.actions);
     bytes[KEY].copy_from_slice(key);
@@ -79,7 +85,10 @@ pub fn decode_original_native_suffix_preamble_data(
         actions: read_row(&bytes[304..328])?,
     };
     suffix_reservation.requested_bytes_data()?;
-    Ok(PacketNativeSuffixPreambleData { invocation, suffix_reservation })
+    Ok(PacketNativeSuffixPreambleData {
+        invocation,
+        suffix_reservation,
+    })
 }
 
 /// Authenticates every fixed field under the separate suffix-startup MAC.
@@ -92,9 +101,7 @@ pub fn authenticate_original_native_suffix_preamble_data(
 ) -> Result<(), ProviderError> {
     let key: &[u8; 32] = expected_key.try_into().map_err(|_| invalid())?;
     let _ = decode_original_native_suffix_preamble_data(bytes)?;
-    if !equal(&bytes[KEY], key)
-        || !equal(&bytes[MAC], signature(&bytes[..360], key).as_bytes())
-    {
+    if !equal(&bytes[KEY], key) || !equal(&bytes[MAC], signature(&bytes[..360], key).as_bytes()) {
         return Err(invalid());
     }
     Ok(())
@@ -128,5 +135,9 @@ fn signature(bytes: &[u8], key: &[u8; 32]) -> blake3::Hash {
 
 fn equal(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len()
-        && left.iter().zip(right).fold(0, |difference, (left, right)| difference | (left ^ right)) == 0
+        && left
+            .iter()
+            .zip(right)
+            .fold(0, |difference, (left, right)| difference | (left ^ right))
+            == 0
 }

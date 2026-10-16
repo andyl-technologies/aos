@@ -232,7 +232,7 @@ impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthorit
     ) -> Result<[
         crucible_node_provider::reference_packet::service::native_startup::PacketNativeRestoredSuffixStartupStorageData;
         3
-    ], crucible::node_contract::RuntimeError> {
+    ], crucible::node_contract::RuntimeError>{
         self.original_restored_suffix_startup_data(scope)
     }
 

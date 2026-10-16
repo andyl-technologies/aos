@@ -7,9 +7,9 @@
 //! The existing Source15 binding, purpose/1 and nested launch5 remain unchanged.
 //! Their successful decoding does not select this edition or install a budget.
 
-use super::*;
-use super::super::invocation::PacketNativeInvocationPurposeData;
 use super::super::super::PacketNative5SourceLaunch;
+use super::super::invocation::PacketNativeInvocationPurposeData;
+use super::*;
 use serde::{Serializer, ser::SerializeStruct};
 use serde_json::Value;
 
@@ -47,11 +47,16 @@ impl PacketNative7RestoredSuffixLaunch {
         }
         let purpose =
             PacketNativeInvocationPurposeData::from_original_value_data(&fields["invocation"])?;
-        let suffix = PacketRestoredSuffixReservationData::deserialize(&fields["suffix_reservation"])
-            .map_err(crucible_node_contract::ContractError::from)?;
+        let suffix =
+            PacketRestoredSuffixReservationData::deserialize(&fields["suffix_reservation"])
+                .map_err(crucible_node_contract::ContractError::from)?;
         let launch = PacketNative5SourceLaunch::deserialize(&fields["launch"])
             .map_err(crucible_node_contract::ContractError::from)?;
-        *output = Some(Self { purpose, launch, suffix });
+        *output = Some(Self {
+            purpose,
+            launch,
+            suffix,
+        });
 
         let retained = output.as_ref().ok_or_else(invalid)?;
         retained.suffix.requested_bytes_data()?;

@@ -26,8 +26,8 @@ pub(super) use association::OriginalAckPeerAssociation;
 pub use association::PacketCompleteRestorePreparation;
 pub(super) use birth::OriginalAckPeerBirth;
 pub use birth::{
-    PacketCompleteAckPeerBootMaterial, PacketCompleteNativeStartupWire, PacketCompleteNativeRestoredSuffixStartupWire,
-    PacketCompleteOriginalHostSdk,
+    PacketCompleteAckPeerBootMaterial, PacketCompleteNativeRestoredSuffixStartupWire,
+    PacketCompleteNativeStartupWire, PacketCompleteOriginalHostSdk,
 };
 pub use frame::PacketCompleteAckPeerBootFrame;
 

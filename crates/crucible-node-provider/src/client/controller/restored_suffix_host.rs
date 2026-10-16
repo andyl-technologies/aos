@@ -365,37 +365,60 @@ impl OriginalRestoredSuffixHostAttempt {
 
     /// Names the fixed assignment, retained owner and actual Session return views.
     pub fn counter_scratch_data() -> usize {
-        size_of::<Self>() + size_of::<Option<Self>>()
-            + size_of::<&Self>() + size_of::<&mut Self>()
-            + size_of::<Option<&mut Self>>() + size_of::<Result<&mut Self,ProviderError>>()
+        size_of::<Self>()
+            + size_of::<Option<Self>>()
+            + size_of::<&Self>()
+            + size_of::<&mut Self>()
+            + size_of::<Option<&mut Self>>()
+            + size_of::<Result<&mut Self, ProviderError>>()
+
             + size_of::<OriginalRestoredSuffixBody<'static>>()
             + size_of::<PreparedOriginalRestoredSuffixHostAttempt<'static>>()
-            + size_of::<Result<PreparedOriginalRestoredSuffixHostAttempt<'static>,ProviderError>>()
-            + size_of::<(&Envelope,&Envelope,&ResponseBody)>()
-            + size_of::<Result<(&Envelope,&Envelope,&ResponseBody),ProviderError>>()
-            + size_of::<Option<&Envelope>>() + size_of::<Result<&Envelope,ProviderError>>()
-            + size_of::<Option<&ResponseBody>>() + size_of::<Result<&ResponseBody,ProviderError>>()
-            + size_of::<Result<RequestBody,ProviderError>>()
-            + size_of::<Result<Method,ProviderError>>()
-            + size_of::<Result<(),ProviderError>>()
+            + size_of::<Result<PreparedOriginalRestoredSuffixHostAttempt<'static>, ProviderError>>()
+            + size_of::<(&Envelope, &Envelope, &ResponseBody)>()
+            + size_of::<Result<(&Envelope, &Envelope, &ResponseBody), ProviderError>>()
+            + size_of::<Option<&Envelope>>()
+            + size_of::<Result<&Envelope, ProviderError>>()
+            + size_of::<Option<&ResponseBody>>()
+            + size_of::<Result<&ResponseBody, ProviderError>>()
+            + size_of::<Result<RequestBody, ProviderError>>()
+            + size_of::<Result<Method, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+
             + size_of::<serde_json::map::Values<'static>>()
-            + size_of::<(&Id, &Option<Id>, &Method, &*const CnpController, &u32,
-                &std::thread::ThreadId, &Option<OperationalDeadline>, &Option<U64>,
-                &Option<Envelope>, &Option<Envelope>, &Option<Box<ResponseBody>>,
-                &Vec<ContentRef>, &Stage)>()
+            + size_of::<(
+                &Id,
+                &Option<Id>,
+                &Method,
+                &*const CnpController,
+                &u32,
+                &std::thread::ThreadId,
+                &Option<OperationalDeadline>,
+                &Option<U64>,
+                &Option<Envelope>,
+                &Option<Envelope>,
+                &Option<Box<ResponseBody>>,
+                &Vec<ContentRef>,
+                &Stage
+            )>()
             + size_of::<Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError>>()
+
             + crate::retained_metadata::restored_suffix::counter_scratch_data()
             + ClientSession::original_restored_suffix_counter_scratch_data()
             + CnpController::original_installed_restoration_observation_counter_scratch_data()
             + crate::reference_packet::service::native_startup::original_native_suffix_counter_scratch_data()
             + crate::connection::original_serialized_credit_counter_scratch_data()
+
             + size_of::<BorrowedEnvelope<'static, OriginalRestoredSuffixBody<'static>>>()
             + size_of::<crate::retained_metadata::MetadataObserver<'static>>()
             + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
-            + size_of::<Envelope>() + size_of::<RequestBody>() + size_of::<ResponseBody>()
+            + size_of::<Envelope>()
+            + size_of::<RequestBody>()
+            + size_of::<ResponseBody>()
             + size_of::<Result<Value, serde_json::Error>>()
             + size_of::<Result<Value, crucible_node_contract::ContractError>>()
-            + size_of::<Value>() + size_of::<serde_json::Map<String, Value>>()
+            + size_of::<Value>()
+            + size_of::<serde_json::Map<String, Value>>()
             + size_of::<Option<Box<ResponseBody>>>()
             + size_of::<Result<(), crucible_node_contract::ContractError>>()
             + size_of::<Result<(), std::num::TryFromIntError>>()
@@ -403,13 +426,19 @@ impl OriginalRestoredSuffixHostAttempt {
             + size_of::<Result<usize, ProviderError>>()
             + size_of::<Result<U64, ProviderError>>()
             + size_of::<Option<U64>>()
+
             + size_of::<&OriginalCanonicalBlobAckEmitter>()
-            + size_of::<&CnpController>() + size_of::<&mut CnpController>()
-            + size_of::<&Extensions>() + size_of::<Extensions>()
+            + size_of::<&CnpController>()
+            + size_of::<&mut CnpController>()
+            + size_of::<&Extensions>()
+            + size_of::<Extensions>()
             + size_of::<Option<&ClientOriginal>>()
             + size_of::<Result<&ClientOriginal, ProviderError>>()
             + size_of::<(&Envelope, &Envelope)>()
-            + size_of::<(&crate::reference_packet::control::PacketControlSelection, &crate::handshake::ConnectionAuthority)>()
+            + size_of::<(
+                &crate::reference_packet::control::PacketControlSelection,
+                &crate::handshake::ConnectionAuthority
+            )>()
     }
 }
 

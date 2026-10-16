@@ -44,7 +44,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(flag) if flag == "--original-canonical-ack-boot" => Some(PrivateBootstrap::Canonical),
         Some(flag) if flag == "--original-native-startup14" => Some(PrivateBootstrap::Startup14),
         Some(flag) if flag == "--original-native-startup15" => Some(PrivateBootstrap::Invocation15),
-        Some(flag) if flag == "--original-native-startup16" => Some(PrivateBootstrap::RestoredSuffix16),
+        Some(flag) if flag == "--original-native-startup16" => {
+            Some(PrivateBootstrap::RestoredSuffix16)
+        }
         Some(_) => return Err("unexpected private packet argument".into()),
     };
     if arguments.next().is_some() {

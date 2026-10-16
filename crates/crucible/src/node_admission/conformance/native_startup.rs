@@ -735,8 +735,10 @@ fn sum(values: &[usize], maximum: usize) -> Result<usize, RuntimeError> {
 }
 
 mod invocation;
-pub use invocation::{CompleteOriginalNativeInvocationAdmission, CompleteOriginalRestoredSuffixStartupAdmission};
 pub(crate) use invocation::OriginalRestoredSuffixStartupMember;
+pub use invocation::{
+    CompleteOriginalNativeInvocationAdmission, CompleteOriginalRestoredSuffixStartupAdmission,
+};
 
 #[cfg(test)]
 mod retained_overlap_tests {

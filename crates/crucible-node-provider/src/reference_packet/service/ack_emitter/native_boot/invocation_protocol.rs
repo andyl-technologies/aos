@@ -181,7 +181,9 @@ struct InvocationOwnerView<'a>(&'a super::super::native_startup::OriginalNativeS
 impl Serialize for InvocationOwnerView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if self.0.restored_suffix.is_some() {
-            return Err(serde::ser::Error::custom("suffix ledger requires paired continuation codec"));
+            return Err(serde::ser::Error::custom(
+                "suffix ledger requires paired continuation codec",
+            ));
         }
         let super::super::native_startup::OriginalNativeStartupBoot {
             restored_suffix: _,

@@ -7,8 +7,8 @@
 use super::*;
 use crucible::node_adapters::cnp::{
     CnpSemanticLaunchGuard, CnpSemanticLaunchReservation, CnpSemanticProcessSlot,
-    PacketCompleteAckPeerBootMaterial, PacketCompleteNativeStartupWire,
-    PacketCompleteNativeRestoredSuffixStartupWire,
+    PacketCompleteAckPeerBootMaterial, PacketCompleteNativeRestoredSuffixStartupWire,
+    PacketCompleteNativeStartupWire,
 };
 use crucible_node_contract::ContentRef;
 use std::{
@@ -535,9 +535,7 @@ impl PacketCompleteReportStartupHolder {
                 (Some(wire), None) if !restored_suffix => {
                     wire.write_original(material, &mut writer)
                 }
-                (None, Some(wire)) if restored_suffix => {
-                    wire.write_original(material, &mut writer)
-                }
+                (None, Some(wire)) if restored_suffix => wire.write_original(material, &mut writer),
                 _ => return Err(RuntimeError::ForeignAuthority),
             }
             .map_err(|_| RuntimeError::OwnerUnavailable)?;

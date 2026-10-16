@@ -82,8 +82,15 @@ impl PacketCompleteNativeStartupWire {
         self.origin()
             .map_err(|_| refused("native startup wire foreign origin"))?;
         material.authenticate_original()?;
-        if material.original.native_startup.as_ref().is_some_and(|state| state.member.suffix.is_some()) {
-            return Err(refused("restored suffix requires its distinct original writer"));
+        if material
+            .original
+            .native_startup
+            .as_ref()
+            .is_some_and(|state| state.member.suffix.is_some())
+        {
+            return Err(refused(
+                "restored suffix requires its distinct original writer",
+            ));
         }
         if !self.prepared || material.birth_id()? != &self.birth_id {
             return Err(refused("native startup wire original association differs"));
@@ -172,7 +179,9 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
             return Err(refused("invocation15 requires its original wire entry"));
         }
         if finalized.member.suffix.is_some() {
-            return Err(refused("restored suffix requires its distinct original wire entry"));
+            return Err(refused(
+                "restored suffix requires its distinct original wire entry",
+            ));
         }
         if !finalized.complete
             || blake3::hash(encoded_launch).as_bytes() != &finalized.member.launch_digest

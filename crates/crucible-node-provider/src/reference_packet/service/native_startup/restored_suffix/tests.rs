@@ -1,12 +1,12 @@
 //! Exercises only closed DATA, fixed codecs and non-authoritative ledgers.
 
-use super::*;
 use super::super::{
     PacketNativeInvocationPreambleData, PacketNativeInvocationPurposeData,
     authenticate_original_native_invocation_preamble_data,
     decode_original_native_invocation_preamble_data,
     encode_original_native_invocation_preamble_data,
 };
+use super::*;
 use crucible_node_contract::canonical;
 use serde_json::json;
 use std::io::Write;
@@ -125,20 +125,32 @@ fn the_streamed_wrapper_matches_canonical_full_fields_and_the_exact_same_raw_chi
     let child = json!({"schema_version":5,"escaped":"quote\" and slash\\"});
     let child_bytes = canonical::canonical_json(&child).unwrap();
     let mut actual = Vec::new();
-    write_original_native_suffix_launch_data(&purpose, &child_bytes, &reservation, &mut actual).unwrap();
+    write_original_native_suffix_launch_data(&purpose, &child_bytes, &reservation, &mut actual)
+        .unwrap();
     let expected = canonical::canonical_json(&json!({
         "schema_version":7, "invocation":purpose, "launch":child,
         "suffix_reservation":reservation
-    })).unwrap();
+    }))
+    .unwrap();
     assert_eq!(actual, expected);
-    assert!(actual.windows(child_bytes.len()).any(|bytes| bytes == child_bytes));
-    let identity = original_native_suffix_launch_identity_data(&purpose, &child_bytes, &reservation).unwrap();
+    assert!(
+        actual
+            .windows(child_bytes.len())
+            .any(|bytes| bytes == child_bytes)
+    );
+    let identity =
+        original_native_suffix_launch_identity_data(&purpose, &child_bytes, &reservation).unwrap();
     assert_eq!(identity.encoded_bytes, actual.len());
     assert_eq!(identity.raw_digest, *blake3::hash(&actual).as_bytes());
 
     let mut changed = reservation;
     changed.actions.retained_requested_bytes = U64::new(41);
-    assert_ne!(original_native_suffix_launch_identity_data(&purpose, &child_bytes, &changed).unwrap().raw_digest, identity.raw_digest);
+    assert_ne!(
+        original_native_suffix_launch_identity_data(&purpose, &child_bytes, &changed)
+            .unwrap()
+            .raw_digest,
+        identity.raw_digest
+    );
 }
 
 struct RefusingWriter {
@@ -148,7 +160,9 @@ struct RefusingWriter {
 
 impl Write for RefusingWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let count = bytes.len().min(self.maximum.saturating_sub(self.bytes.len()));
+        let count = bytes
+            .len()
+            .min(self.maximum.saturating_sub(self.bytes.len()));
         if count == 0 {
             return Err(std::io::Error::from(std::io::ErrorKind::WriteZero));
         }
@@ -168,8 +182,14 @@ fn a_short_actual_writer_keeps_the_exact_canonical_partial_in_its_original_bank(
     let child = b"{\"schema_version\":5}";
     let mut complete = Vec::new();
     write_original_native_suffix_launch_data(&purpose, child, &reservation, &mut complete).unwrap();
-    let mut short = RefusingWriter { bytes: Vec::new(), maximum: complete.len() - 1 };
-    assert!(write_original_native_suffix_launch_data(&purpose, child, &reservation, &mut short).is_err());
+    let mut short = RefusingWriter {
+        bytes: Vec::new(),
+        maximum: complete.len() - 1,
+    };
+    assert!(
+        write_original_native_suffix_launch_data(&purpose, child, &reservation, &mut short)
+            .is_err()
+    );
     assert_eq!(short.bytes, complete[..complete.len() - 1]);
 }
 
@@ -187,7 +207,11 @@ fn the_full_suffix_definition_comparison_refuses_each_changed_reference_field() 
             4 => changed.definition.hash.digest = "0".repeat(64),
             5 => changed.definition.length = U64::new(changed.definition.length.get() + 1),
             6 => changed.definition.media_type = "text/plain".into(),
-            _ => { changed.extensions.insert("unknown".into(), serde_json::Value::Null); }
+            _ => {
+                changed
+                    .extensions
+                    .insert("unknown".into(), serde_json::Value::Null);
+            }
         }
         assert!(authenticate_restoration_suffix_schema_data(&changed).is_err());
     }
@@ -199,9 +223,9 @@ fn carrier_quote_keeps_reservation_credit_separate_and_refuses_one_short() {
     // This is an inert canonical writer child, not an admitted launch fixture.
     let child = b"{\"schema_version\":5}";
     let admitted = reservation();
-    let full = original_native_suffix_construction_storage_data(
-        &purpose, child, &admitted, usize::MAX,
-    ).unwrap();
+    let full =
+        original_native_suffix_construction_storage_data(&purpose, child, &admitted, usize::MAX)
+            .unwrap();
     let maximum = [
         full.native_retained_requested_bytes(),
         full.native_transient_requested_bytes(),
@@ -209,15 +233,19 @@ fn carrier_quote_keeps_reservation_credit_separate_and_refuses_one_short() {
         full.private_transient_requested_bytes(),
         full.source_finalization_requested_bytes(),
         full.wire_growth_requested_bytes(),
-    ].into_iter().max().unwrap();
+    ]
+    .into_iter()
+    .max()
+    .unwrap();
 
-    let exact = original_native_suffix_construction_storage_data(
-        &purpose, child, &admitted, maximum,
-    ).unwrap();
+    let exact =
+        original_native_suffix_construction_storage_data(&purpose, child, &admitted, maximum)
+            .unwrap();
     assert_eq!(exact.launch_identity_data(), full.launch_identity_data());
-    assert!(original_native_suffix_construction_storage_data(
-        &purpose, child, &admitted, maximum - 1,
-    ).is_err());
+    assert!(
+        original_native_suffix_construction_storage_data(&purpose, child, &admitted, maximum - 1,)
+            .is_err()
+    );
     assert!(full.native_retained_requested_bytes() > 0);
     assert!(full.private_retained_requested_bytes() > 0);
     assert!(full.source_finalization_requested_bytes() > 0);

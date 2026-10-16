@@ -24,8 +24,15 @@ pub fn authenticate_restoration_suffix_selection_data(
     for binding in &selection.realization.bindings {
         formats(&binding.compatibility.implementation.formats)?;
     }
-    if !selection.provider.extensions_supported.iter().any(|feature| feature.as_str() == PACKET_RESTORATION_SUFFIX_FEATURE)
-        || !authority.selected_features().iter().any(|feature| feature.as_str() == PACKET_RESTORATION_SUFFIX_FEATURE)
+    if !selection
+        .provider
+        .extensions_supported
+        .iter()
+        .any(|feature| feature.as_str() == PACKET_RESTORATION_SUFFIX_FEATURE)
+        || !authority
+            .selected_features()
+            .iter()
+            .any(|feature| feature.as_str() == PACKET_RESTORATION_SUFFIX_FEATURE)
     {
         return Err(invalid());
     }

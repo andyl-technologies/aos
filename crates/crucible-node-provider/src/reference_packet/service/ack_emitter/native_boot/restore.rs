@@ -370,29 +370,29 @@ impl NativeAckBoot {
                 anchor_bytes: inputs.original_input(2)?,
             };
             if Self::original_restored_suffix_owner_present_data(boot)? {
-            let launch = flight.launch.as_ref().ok_or_else(refused)?;
-            let suffix_inputs = PacketCompleteRestoreSelectedOwnerInputs {
-                owner_state: input.owner_state_bytes,
-                journal: input.journal_bytes,
-                control: input.control_bytes,
-                anchor: input.anchor_bytes,
-                maximum_input_bytes: usize::try_from(
-                    request.prepare.allocation.maximum_input_bytes.get(),
-                )
-                .map_err(|_| refused())?,
-                maximum_before_bytes: usize::try_from(
-                    launch
-                        .capture_profile
-                        .native_before_bytes(&launch.storage)
-                        .get(),
-                )
-                .map_err(|_| refused())?,
-                maximum_requested_bytes: usize::try_from(
-                    request.prepare.allocation.maximum_model_bytes.get(),
-                )
-                .map_err(|_| refused())?,
-            };
-            Self::seal_original_restored_suffix_model_data(boot, launch, &suffix_inputs)?;
+                let launch = flight.launch.as_ref().ok_or_else(refused)?;
+                let suffix_inputs = PacketCompleteRestoreSelectedOwnerInputs {
+                    owner_state: input.owner_state_bytes,
+                    journal: input.journal_bytes,
+                    control: input.control_bytes,
+                    anchor: input.anchor_bytes,
+                    maximum_input_bytes: usize::try_from(
+                        request.prepare.allocation.maximum_input_bytes.get(),
+                    )
+                    .map_err(|_| refused())?,
+                    maximum_before_bytes: usize::try_from(
+                        launch
+                            .capture_profile
+                            .native_before_bytes(&launch.storage)
+                            .get(),
+                    )
+                    .map_err(|_| refused())?,
+                    maximum_requested_bytes: usize::try_from(
+                        request.prepare.allocation.maximum_model_bytes.get(),
+                    )
+                    .map_err(|_| refused())?,
+                };
+                Self::seal_original_restored_suffix_model_data(boot, launch, &suffix_inputs)?;
             }
             let selected = connection.original_complete_restore_selected_native_class_data()?;
             let owner_requested = match selected {

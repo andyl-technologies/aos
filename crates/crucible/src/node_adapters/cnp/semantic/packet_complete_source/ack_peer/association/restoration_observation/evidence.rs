@@ -156,8 +156,14 @@ impl<'a> OriginalSourceRestorationObservationVerifiedPhase<'a> {
             admitted,
             |held, reference| inputs.authenticate_original_observation_hold_data(held, reference),
             |scheduling| {
-                let original = self.association.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
-                let attempt = original.restoration_observation.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+                let original = self
+                    .association
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?;
+                let attempt = original
+                    .restoration_observation
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?;
                 inspect(attempt.record()?, attempt.underlying()?, scheduling)
             },
             final_currency,

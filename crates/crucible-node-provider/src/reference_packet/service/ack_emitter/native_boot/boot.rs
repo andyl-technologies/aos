@@ -15,12 +15,12 @@ mod owned11;
 #[path = "restore.rs"]
 mod restore;
 pub(crate) use restore::{
-    OriginalRestoredSuffixPostObservation, original_restored_suffix_post_observation_counter_scratch_data,
     NativeRestorationActivationAttempt, NativeRestorationObservationAttempt,
     NativeRestorationUploadAttempt, OriginalRestorationActivationPermit,
     OriginalRestorationActivationRequirement, OriginalRestorationObservationPermit,
     OriginalRestorationObservationRead, OriginalRestorationReleaseState,
     OriginalRestorationReleased, OriginalRestorationUploadPermit,
+    OriginalRestoredSuffixPostObservation,
     original_native_restoration_activation_attempt_backing_data,
     original_native_restoration_activation_counter_scratch_data,
     original_native_restoration_activation_ingress_row_data,
@@ -30,6 +30,7 @@ pub(crate) use restore::{
     original_native_restoration_observation_ingress_row_data,
     original_native_restoration_upload_attempt_backing_data,
     original_native_restoration_upload_counter_scratch_data,
+    original_restored_suffix_post_observation_counter_scratch_data,
 };
 pub(crate) use restore::{
     NativeRestoredControlEvidence, OriginalCompleteRestoreCommit, VerifiedCompleteRestoration,
@@ -671,6 +672,6 @@ pub use restore_prepare::{
 #[path = "restored_suffix.rs"]
 pub(super) mod restored_suffix;
 pub(crate) use restored_suffix::{
-    original_restored_suffix_native_header_data,
     original_restored_suffix_native_counter_scratch_data,
+    original_restored_suffix_native_header_data,
 };

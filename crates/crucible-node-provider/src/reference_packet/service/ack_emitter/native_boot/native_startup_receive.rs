@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::reference_packet::{
-    control::{PacketControl, PacketControlSelection}, service::native_startup::data_equality,
+    control::{PacketControl, PacketControlSelection},
+    service::native_startup::data_equality,
 };
 use crate::{
     connection::{Connection, ProviderStream},

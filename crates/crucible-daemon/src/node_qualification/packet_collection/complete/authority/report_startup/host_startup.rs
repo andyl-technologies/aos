@@ -656,19 +656,32 @@ mod constructor_controls {
         let (_scene, original) = fixture();
         let held = original.borrow();
         for (member, source) in held.authority.roster.sources.iter().enumerate() {
-            let (broad, selected, wire) = source.original_initial_report_refinement_audit_data(source)
-                .unwrap().unwrap();
+            let (broad, selected, wire) = source
+                .original_initial_report_refinement_audit_data(source)
+                .unwrap()
+                .unwrap();
             broad.authenticate_actual_data(&selected).unwrap();
             assert_eq!(wire, selected);
             assert!(selected.retained_growth_bytes <= broad.retained_growth_bytes);
-            assert!(selected.maximum_simultaneous_transient_bytes <= broad.maximum_simultaneous_transient_bytes);
-            assert!(source.original_report_startup_audit_data().unwrap().complete);
+            assert!(
+                selected.maximum_simultaneous_transient_bytes
+                    <= broad.maximum_simultaneous_transient_bytes
+            );
+            assert!(
+                source
+                    .original_report_startup_audit_data()
+                    .unwrap()
+                    .complete
+            );
             let other = &held.authority.roster.sources[(member + 1) % 3];
-            assert!(source.original_initial_report_refinement_audit_data(other).is_err());
+            assert!(
+                source
+                    .original_initial_report_refinement_audit_data(other)
+                    .is_err()
+            );
         }
         assert!(!held.host_sdk_attempted.get());
         assert!(!held.host_sdk_completed.get());
         assert!(held.authority.roster.current_native().is_err());
     }
-
 }

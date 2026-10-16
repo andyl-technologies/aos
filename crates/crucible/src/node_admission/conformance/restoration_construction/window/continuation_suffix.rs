@@ -44,6 +44,7 @@ impl OriginalRestoredSuffixConstructionData {
         {
             return Err(RuntimeError::ForeignAuthority);
         }
+
         Ok(())
     }
 
@@ -70,7 +71,12 @@ impl OriginalRestoredSuffixConstructionData {
             + size_of::<&observation::OriginalRestorationWholeObservation>()
             + size_of::<SuffixLedger>()
             + size_of::<[SuffixLedger; 3]>()
-            + size_of::<std::slice::Iter<'static, super::super::observation::OriginalInstalledRestorationObservationLedger,>,>()
+            + size_of::<
+                std::slice::Iter<
+                    'static,
+                    super::super::observation::OriginalInstalledRestorationObservationLedger,
+                >,
+            >()
             + size_of::<&CompleteOriginalRestorationWindow>()
             + size_of::<&PacketCompleteSemanticSource>()
             + size_of::<&dyn CnpSemanticSource>()
@@ -94,8 +100,15 @@ impl OriginalRestoredSuffixConstructionData {
             + size_of::<Option<&WorldActivation>>()
             + size_of::<Option<&super::scope_owner::OriginalRestorationScopeOwner>>()
             + size_of::<Result<&super::scope_owner::OriginalRestorationScopeOwner, RuntimeError>>()
-            + size_of::<&super::super::observation::OriginalInstalledRestorationObservationSigningInputs<'static,>,>()
-            + size_of::<(&OriginalRestoredSuffixSeedClaim<'static>, &OriginalRestoredSuffixConstructionData,)>()
+            + size_of::<
+                &super::super::observation::OriginalInstalledRestorationObservationSigningInputs<
+                    'static,
+                >,
+            >()
+            + size_of::<(
+                &OriginalRestoredSuffixSeedClaim<'static>,
+                &OriginalRestoredSuffixConstructionData,
+            )>()
             + size_of::<Result<(), RuntimeError>>()
     }
 }
@@ -142,6 +155,7 @@ impl SuffixLedger {
         if self.0.get() != expected {
             return Err(RuntimeError::OutstandingObligations);
         }
+
         Ok(())
     }
 }
@@ -152,7 +166,9 @@ fn begin_suffix_attempt_data(
     in_flight: &Cell<bool>,
     whole: &observation::OriginalRestorationWholeObservation,
 ) -> Result<(), RuntimeError> {
-    let selected = ledgers.get(selected).ok_or(RuntimeError::ForeignAuthority)?;
+    let selected = ledgers
+        .get(selected)
+        .ok_or(RuntimeError::ForeignAuthority)?;
     if in_flight.get() {
         // A swallowed reentrant error must not let the original callback tail
         // complete. Revoke the actual outstanding seed, including another peer.
@@ -223,8 +239,12 @@ impl OriginalRestoredSuffixSeedClaim<'_> {
         if self.window.suffix_in_flight.get() != (self.expected == SeedStage::Started) {
             return Err(RuntimeError::OutstandingObligations);
         }
-        self.window.node_rows.get().and_then(|rows| rows.get(self.selected))
-            .and_then(|row| row.restored_suffix.as_ref()).ok_or(RuntimeError::OwnerUnavailable)?
+        self.window
+            .node_rows
+            .get()
+            .and_then(|rows| rows.get(self.selected))
+            .and_then(|row| row.restored_suffix.as_ref())
+            .ok_or(RuntimeError::OwnerUnavailable)?
             .authenticate_original_data(source, controller)?;
         self.window.suffix_seeds[self.selected].authenticate(self.expected)
     }
@@ -240,11 +260,21 @@ impl OriginalRestoredSuffixSeedClaim<'_> {
     /// Refuses changed original identity, unavailable plan or member revocation.
     pub(crate) fn authenticate_terminal_member_data(&self) -> Result<(), RuntimeError> {
         self.authenticate_current_data(self.source, self.controller)?;
-        let plan = self.window.plan.upgrade().map_err(|_| RuntimeError::ForeignAuthority)?;
-        let scope = self.window.complete_scope.get().ok_or(RuntimeError::OwnerUnavailable)?.scope_data()?;
+        let plan = self
+            .window
+            .plan
+            .upgrade()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        let scope = self
+            .window
+            .complete_scope
+            .get()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .scope_data()?;
         // This concrete member callback runs inside SourceRead. The bank-free
         // identity path above never invokes an erased authority callback.
-        self.window.authenticate_original_complete_member_data(&plan, scope)?;
+        self.window
+            .authenticate_original_complete_member_data(&plan, scope)?;
         self.authenticate_current_data(self.source, self.controller)
     }
 }
@@ -259,13 +289,24 @@ impl CompleteOriginalRestorationWindow {
         proof: [u8; 32],
     ) -> Result<(), RuntimeError> {
         self.authenticate_original_retained_observation_identity_data(selected, source, proof)?;
-        if !self.observation_phases.iter().all(|phase| phase.is_verified())
-            || !self.activation_world.get().is_some_and(|actual| actual.same_authority(world))
+        if !self
+            .observation_phases
+            .iter()
+            .all(|phase| phase.is_verified())
+            || !self
+                .activation_world
+                .get()
+                .is_some_and(|actual| actual.same_authority(world))
         {
             return Err(RuntimeError::OutstandingObligations);
         }
-        let original = self.sources.get(selected).ok_or(RuntimeError::ForeignAuthority)?;
-        self.node_rows.get().and_then(|rows| rows.get(selected))
+        let original = self
+            .sources
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        self.node_rows
+            .get()
+            .and_then(|rows| rows.get(selected))
             .ok_or(RuntimeError::OwnerUnavailable)?
             .authenticate_original_owner_data(original, read_owner)
     }
@@ -286,22 +327,54 @@ impl CompleteOriginalRestorationWindow {
         if self.original_installed_source_index_data(source)? != selected {
             return Err(RuntimeError::ForeignAuthority);
         }
-        let source = self.sources.get(selected).ok_or(RuntimeError::ForeignAuthority)?.as_ref();
+        let source = self
+            .sources
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .as_ref();
         let proof = self.original_complete_scope_proof_identity_data()?;
         self.authenticate_suffix_identity_data(selected, source, read_owner, world, proof)?;
-        let row = self.node_rows.get().and_then(|rows| rows.get(selected))
-            .and_then(|row| row.restored_suffix.as_ref()).ok_or(RuntimeError::OwnerUnavailable)?;
+        let row = self
+            .node_rows
+            .get()
+            .and_then(|rows| rows.get(selected))
+            .and_then(|row| row.restored_suffix.as_ref())
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         row.authenticate_original_data(source, controller)?;
         self.whole_observation.authenticate_dispatch_data()?;
-        let ledger = self.suffix_seeds.get(selected).ok_or(RuntimeError::ForeignAuthority)?;
-        begin_suffix_attempt_data(selected, &self.suffix_seeds, &self.suffix_in_flight, &self.whole_observation,)?;
-        let _attempt = SuffixAttemptGuard { ledger, whole: &self.whole_observation, in_flight: &self.suffix_in_flight ,};
-        let claim = OriginalRestoredSuffixSeedClaim { window: self, selected, source, controller, read_owner, world, proof, expected: SeedStage::Started ,};
+        let ledger = self
+            .suffix_seeds
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        begin_suffix_attempt_data(
+            selected,
+            &self.suffix_seeds,
+            &self.suffix_in_flight,
+            &self.whole_observation,
+        )?;
+
+        let _attempt = SuffixAttemptGuard {
+            ledger,
+            whole: &self.whole_observation,
+            in_flight: &self.suffix_in_flight,
+        };
+        let claim = OriginalRestoredSuffixSeedClaim {
+            window: self,
+            selected,
+            source,
+            controller,
+            read_owner,
+            world,
+            proof,
+            expected: SeedStage::Started,
+        };
+
         self.with_original_observation_signing_inputs_data(selected, source, proof, |inputs| {
             source.seed_original_restored_suffix_data(controller, inputs, row, &claim)
         })?;
         claim.authenticate_current_data(source, controller)?;
         ledger.0.set(SeedStage::Verified);
+
         Ok(())
     }
 
@@ -322,15 +395,33 @@ impl CompleteOriginalRestorationWindow {
         if self.original_installed_source_index_data(source)? != selected {
             return Err(RuntimeError::ForeignAuthority);
         }
-        let source = self.sources.get(selected).ok_or(RuntimeError::ForeignAuthority)?.as_ref();
+        let source = self
+            .sources
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .as_ref();
         let proof = self.original_complete_scope_proof_identity_data()?;
         self.authenticate_suffix_identity_data(selected, source, read_owner, world, proof)?;
         self.suffix_seeds[selected].authenticate(SeedStage::Verified)?;
         self.whole_observation.authenticate_dispatch_data()?;
-        let claim = OriginalRestoredSuffixSeedClaim { window: self, selected, source, controller, read_owner, world, proof, expected: SeedStage::Verified ,};
+        let claim = OriginalRestoredSuffixSeedClaim {
+            window: self,
+            selected,
+            source,
+            controller,
+            read_owner,
+            world,
+            proof,
+            expected: SeedStage::Verified,
+        };
+
         self.with_original_observation_signing_inputs_data(selected, source, proof, |inputs| {
-            let row = self.node_rows.get().and_then(|rows| rows.get(selected))
-                .and_then(|row| row.restored_suffix.as_ref()).ok_or(RuntimeError::OwnerUnavailable)?;
+            let row = self
+                .node_rows
+                .get()
+                .and_then(|rows| rows.get(selected))
+                .and_then(|row| row.restored_suffix.as_ref())
+                .ok_or(RuntimeError::OwnerUnavailable)?;
             source.with_original_restored_suffix_seed_data(controller, inputs, row, &claim, inspect)
         })
     }
@@ -365,12 +456,17 @@ mod tests {
         whole.complete_observation();
         ledger.begin().expect("first attempt");
         {
-            let _attempt = SuffixAttemptGuard { ledger: &ledger, whole: &whole, in_flight: &in_flight ,};
+            let _attempt = SuffixAttemptGuard {
+                ledger: &ledger,
+                whole: &whole,
+                in_flight: &in_flight,
+            };
         }
 
         assert!(!in_flight.get());
         assert!(ledger.authenticate(SeedStage::Failed).is_ok());
         assert!(whole.authenticate_dispatch_data().is_err());
+
         assert!(ledger.begin().is_err());
     }
 }

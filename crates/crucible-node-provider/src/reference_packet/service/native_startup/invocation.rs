@@ -677,8 +677,7 @@ mod tests {
 mod wire;
 pub use wire::{
     PacketNativeInvocationLaunchIdentityData, original_native_invocation_launch_identity_data,
-    write_original_native_invocation_launch_data,
-    write_original_native_invocation_purpose_data,
+    write_original_native_invocation_launch_data, write_original_native_invocation_purpose_data,
 };
 
 #[path = "invocation/storage.rs"]

@@ -687,27 +687,50 @@ fn actual_birth_phase_selection_survives_realize_and_admit_for_all_three_models(
     for member in 0..3 {
         let mut control = if member == 0 {
             PacketControl::new_complete_producer(
-                coordinator.participants[member].clone(), producer(), coordinator.clone(),
-            ).unwrap()
+                coordinator.participants[member].clone(),
+                producer(),
+                coordinator.clone(),
+            )
+            .unwrap()
         } else {
             PacketControl::new_complete_reactive(
-                coordinator.participants[member].clone(), reactive(&coordinator, member),
+                coordinator.participants[member].clone(),
+                reactive(&coordinator, member),
                 coordinator.clone(),
-            ).unwrap()
+            )
+            .unwrap()
         };
         bind_storage(&mut control);
         assert!(std::ptr::eq(
-            control.original_native_birth_selection_data(0, false).unwrap(),
+            control
+                .original_native_birth_selection_data(0, false)
+                .unwrap(),
             &control.selection,
         ));
-        assert!(control.original_native_birth_selection_data(2, false).is_err());
+        assert!(
+            control
+                .original_native_birth_selection_data(2, false)
+                .is_err()
+        );
 
         let mut discover = request(&control);
         discover.request_id = Nullable(Some(id("actual-birth-discover")));
         control.dispatch(&discover).unwrap();
-        assert!(control.original_native_birth_selection_data(0, true).is_ok());
-        assert!(control.original_native_birth_selection_data(1, false).is_ok());
-        assert!(control.original_native_birth_selection_data(1, true).is_err());
+        assert!(
+            control
+                .original_native_birth_selection_data(0, true)
+                .is_ok()
+        );
+        assert!(
+            control
+                .original_native_birth_selection_data(1, false)
+                .is_ok()
+        );
+        assert!(
+            control
+                .original_native_birth_selection_data(1, true)
+                .is_err()
+        );
 
         let mut realize = discover.clone();
         realize.method = Method::Realize;
@@ -715,14 +738,29 @@ fn actual_birth_phase_selection_survives_realize_and_admit_for_all_three_models(
         realize.sequence = U64::new(4);
         realize.body = object(&control.selection.realize).unwrap();
         let reply = control.dispatch(&realize).unwrap();
-        assert_eq!(reply.body.get("status").and_then(Value::as_str), Some("completed"));
+        assert_eq!(
+            reply.body.get("status").and_then(Value::as_str),
+            Some("completed")
+        );
         assert!(control.realized);
         // The constructor predicate remains strict. Reusing it here caused
         // the actual Realize publication to fail before the next Admit read.
         assert!(control.endpoint_scope().is_err());
-        assert!(control.original_native_birth_selection_data(1, true).is_ok());
-        assert!(control.original_native_birth_selection_data(2, false).is_ok());
-        assert!(control.original_native_birth_selection_data(1, false).is_err());
+        assert!(
+            control
+                .original_native_birth_selection_data(1, true)
+                .is_ok()
+        );
+        assert!(
+            control
+                .original_native_birth_selection_data(2, false)
+                .is_ok()
+        );
+        assert!(
+            control
+                .original_native_birth_selection_data(1, false)
+                .is_err()
+        );
 
         let mut admit = realize.clone();
         admit.method = Method::Admit;
@@ -733,17 +771,37 @@ fn actual_birth_phase_selection_survives_realize_and_admit_for_all_three_models(
             world_binding_hash: control.selection.world.clone(),
             admission_receipt: control.selection.admission_receipt.clone(),
             extensions: Extensions::new(),
-        }).unwrap();
+        })
+        .unwrap();
         let reply = control.dispatch(&admit).unwrap();
-        assert_eq!(reply.body.get("status").and_then(Value::as_str), Some("completed"));
+        assert_eq!(
+            reply.body.get("status").and_then(Value::as_str),
+            Some("completed")
+        );
         assert!(control.admitted);
-        assert!(control.original_native_birth_selection_data(2, true).is_ok());
-        assert!(control.original_native_birth_selection_data(2, false).is_err());
-        assert!(control.original_native_birth_selection_data(3, true).is_err());
+        assert!(
+            control
+                .original_native_birth_selection_data(2, true)
+                .is_ok()
+        );
+        assert!(
+            control
+                .original_native_birth_selection_data(2, false)
+                .is_err()
+        );
+        assert!(
+            control
+                .original_native_birth_selection_data(3, true)
+                .is_err()
+        );
         assert_eq!(control.originals.len(), 3);
 
         control.program.open_gate().unwrap();
-        assert!(control.original_native_birth_selection_data(2, true).is_err());
+        assert!(
+            control
+                .original_native_birth_selection_data(2, true)
+                .is_err()
+        );
     }
 }
 
@@ -751,8 +809,11 @@ fn actual_birth_phase_selection_survives_realize_and_admit_for_all_three_models(
 fn failed_actual_realize_preparation_keeps_partial_control_and_refuses_birth_scope() {
     let coordinator = fixture::five();
     let mut control = PacketControl::new_complete_producer(
-        coordinator.participants[0].clone(), producer(), coordinator,
-    ).unwrap();
+        coordinator.participants[0].clone(),
+        producer(),
+        coordinator,
+    )
+    .unwrap();
     bind_storage(&mut control);
     let mut realize = request(&control);
     realize.method = Method::Realize;
@@ -760,11 +821,21 @@ fn failed_actual_realize_preparation_keeps_partial_control_and_refuses_birth_sco
     realize.body = object(&control.selection.realize).unwrap();
 
     let result = control.dispatch_with_preflight(&realize, &mut |_| {
-        Err(ProviderError::ResourceExhausted("actual birth prefix refusal"))
+        Err(ProviderError::ResourceExhausted(
+            "actual birth prefix refusal",
+        ))
     });
     assert!(result.is_err());
     assert!(control.realized);
     assert!(control.fenced);
-    assert!(control.originals.contains_key(realize.request_id.0.as_ref().unwrap()));
-    assert!(control.original_native_birth_selection_data(1, true).is_err());
+    assert!(
+        control
+            .originals
+            .contains_key(realize.request_id.0.as_ref().unwrap())
+    );
+    assert!(
+        control
+            .original_native_birth_selection_data(1, true)
+            .is_err()
+    );
 }

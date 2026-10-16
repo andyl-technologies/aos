@@ -118,7 +118,10 @@ impl PacketCompleteSemanticSource {
                 ) {
                     self.authenticate_restoration_observation_declaration_tuple_data()?;
                 }
-                if matches!(self.invocation_snapshot_declaration, Some(Declaration::RestorationSuffix14)) {
+                if matches!(
+                    self.invocation_snapshot_declaration,
+                    Some(Declaration::RestorationSuffix14)
+                ) {
                     self.authenticate_restored_suffix_declaration_tuple_data()?;
                 }
                 Ok(true)

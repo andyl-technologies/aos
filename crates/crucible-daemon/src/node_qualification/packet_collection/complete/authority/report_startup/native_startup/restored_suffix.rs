@@ -12,8 +12,11 @@ impl PacketCompleteReportStartupHolder {
     pub(super) fn restored_suffix_startup_selected_data(&self) -> Result<bool, RuntimeError> {
         self.authenticate_native_origin_data()?;
         let fixed = Self::restored_suffix_selection_counter_scratch_data();
-        let maximum = usize::try_from(self.resources.memory_bytes.get()).map_err(|_| RuntimeError::ResourceLimit)?;
-        if fixed > maximum { return Err(RuntimeError::ResourceLimit); }
+        let maximum = usize::try_from(self.resources.memory_bytes.get())
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        if fixed > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
         let mut selected = 0usize;
         for source in &self.authority.roster.sources {
             if source.is_original_restored_suffix_declaration_data()? {
@@ -46,8 +49,15 @@ impl PacketCompleteReportStartupHolder {
             + size_of::<Result<std::cell::Ref<'static, Self>, std::cell::BorrowError>>()
             + size_of::<Result<std::cell::Ref<'static, Self>, RuntimeError>>()
             + size_of::<std::cell::Ref<'static, PacketCompleteRestorationPrebirth>>()
-            + size_of::<Result<std::cell::Ref<'static, PacketCompleteRestorationPrebirth>, std::cell::BorrowError>>()
-            + size_of::<Result<std::cell::Ref<'static, PacketCompleteRestorationPrebirth>, RuntimeError>>()
+            + size_of::<
+                Result<
+                    std::cell::Ref<'static, PacketCompleteRestorationPrebirth>,
+                    std::cell::BorrowError,
+                >,
+            >()
+            + size_of::<
+                Result<std::cell::Ref<'static, PacketCompleteRestorationPrebirth>, RuntimeError>,
+            >()
             + size_of::<[PacketNativeRestoredSuffixStartupStorageData; 3]>()
             + size_of::<Result<[PacketNativeRestoredSuffixStartupStorageData; 3], RuntimeError>>()
             + size_of::<OriginalNativeStartupPolicy>()
@@ -63,14 +73,22 @@ impl InstalledPacketCompleteCollectionAuthority {
         let original = self.original_native_holder_data()?;
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         held.authenticate_native_scope_data(self, scope)?;
-        if !held.restored_suffix_startup_selected_data()? { return Err(RuntimeError::ForeignAuthority); }
-        let count = usize::try_from(held.resources.maximum_operations.get()).map_err(|_| RuntimeError::ResourceLimit)?;
+        if !held.restored_suffix_startup_selected_data()? {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let count = usize::try_from(held.resources.maximum_operations.get())
+            .map_err(|_| RuntimeError::ResourceLimit)?;
         let maximum = held.native_policy_data()?.maximum_requested_bytes;
         let result = match &held.purpose {
             StartupHolderPurpose::FreshRestoration(capsule) => {
                 let capsule = capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
                 capsule.original_restored_suffix_startup_data(
-                    self, &held.plan, scope.launches(), scope.encoded_launches(), count, maximum,
+                    self,
+                    &held.plan,
+                    scope.launches(),
+                    scope.encoded_launches(),
+                    count,
+                    maximum,
                 )?
             }
             StartupHolderPurpose::OriginalScene => return Err(RuntimeError::ForeignAuthority),

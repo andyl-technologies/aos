@@ -237,7 +237,6 @@ mod tests {
     }
 }
 
-
 /// Projects only the actual untouched Source14 model checked before live quote.
 ///
 /// The original constructor owns all initial event payloads. No callback/input
@@ -248,7 +247,10 @@ pub(super) fn project_initial(
     maximum: usize,
 ) -> Result<OriginalSerializationStorageData, ProviderError> {
     let mut projection = Projection::new(maximum)?;
-    object(&mut projection, &["schema", "native_pid", "original", "inventory", "grant"])?;
+    object(
+        &mut projection,
+        &["schema", "native_pid", "original", "inventory", "grant"],
+    )?;
     projection.add_string(match &launch.program {
         PacketConnectedSourceProgram::Producer { .. } => "source-owned.packet-native/2",
         PacketConnectedSourceProgram::Reactive { .. } => "source-owned.packet-native/4",
@@ -260,34 +262,69 @@ pub(super) fn project_initial(
     projection.finish(maximum)
 }
 
-
 fn initial_inventory(
     projection: &mut Projection,
     program: &PacketConnectedSourceProgram,
 ) -> Result<(), ProviderError> {
     match program {
         PacketConnectedSourceProgram::Producer { program } => {
-            object(projection, &["reached", "gate_closed", "pending", "retained_outputs", "private_mutations", "packet_effects"])?;
+            object(
+                projection,
+                &[
+                    "reached",
+                    "gate_closed",
+                    "pending",
+                    "retained_outputs",
+                    "private_mutations",
+                    "packet_effects",
+                ],
+            )?;
             projection.add_value(&crucible_node_contract::Position::new(
-                crucible_node_contract::U64::new(0), crucible_node_contract::U64::new(0),
-                crucible_node_contract::Phase::BoundaryControl))?;
+                crucible_node_contract::U64::new(0),
+                crucible_node_contract::U64::new(0),
+                crucible_node_contract::Phase::BoundaryControl,
+            ))?;
             projection.add_value(&false)?;
             projection.add_array_extent(program.events.len())?;
             for event in &program.events {
                 projection.add_value(event)?;
             }
             projection.add_array_extent(0)?;
-            for _ in 0..2 { projection.add_value(&crucible_node_contract::U64::new(0))?; }
+            for _ in 0..2 {
+                projection.add_value(&crucible_node_contract::U64::new(0))?;
+            }
         }
         PacketConnectedSourceProgram::Reactive { .. } => {
-            object(projection, &["reached", "gate_closed", "reactions", "delivered_inputs", "publications", "retained_outputs", "reactions_completed", "packet_effects", "stages", "commits"])?;
+            object(
+                projection,
+                &[
+                    "reached",
+                    "gate_closed",
+                    "reactions",
+                    "delivered_inputs",
+                    "publications",
+                    "retained_outputs",
+                    "reactions_completed",
+                    "packet_effects",
+                    "stages",
+                    "commits",
+                ],
+            )?;
             projection.add_value(&crucible_node_contract::Position::new(
-                crucible_node_contract::U64::new(0), crucible_node_contract::U64::new(0),
-                crucible_node_contract::Phase::BoundaryControl))?;
+                crucible_node_contract::U64::new(0),
+                crucible_node_contract::U64::new(0),
+                crucible_node_contract::Phase::BoundaryControl,
+            ))?;
             projection.add_value(&false)?;
-            for _ in 0..4 { projection.add_array_extent(0)?; }
-            for _ in 0..2 { projection.add_value(&crucible_node_contract::U64::new(0))?; }
-            for _ in 0..2 { projection.add_array_extent(0)?; }
+            for _ in 0..4 {
+                projection.add_array_extent(0)?;
+            }
+            for _ in 0..2 {
+                projection.add_value(&crucible_node_contract::U64::new(0))?;
+            }
+            for _ in 0..2 {
+                projection.add_array_extent(0)?;
+            }
         }
     }
     Ok(())
@@ -296,14 +333,17 @@ fn initial_inventory(
 #[cfg(test)]
 mod initial_geometry_tests {
     use super::*;
-    use crate::reference_packet::{PacketEvent, PacketProgram, PacketProgramDefinition};
     use crate::reference_packet::connected::{PacketConnectedDefinition, PacketInputConnection};
+    use crate::reference_packet::{PacketEvent, PacketProgram, PacketProgramDefinition};
     use crucible_node_contract::{Bytes, Endpoint, Id, Phase, Position, U64, canonical};
     use std::os::unix::net::UnixDatagram;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn check(program: &PacketConnectedSourceProgram, inventory: impl serde::Serialize) -> TestResult {
+    fn check(
+        program: &PacketConnectedSourceProgram,
+        inventory: impl serde::Serialize,
+    ) -> TestResult {
         let maximum = 512 * 1024 * 1024;
         let mut counter = Projection::new(maximum)?;
         initial_inventory(&mut counter, program)?;
@@ -312,7 +352,8 @@ mod initial_geometry_tests {
         let encoded = canonical::canonical_json(&value)?;
         let mut observer = MetadataObserver::new();
         observer.observe(&value)?;
-        let actual_backing = crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())?;
+        let actual_backing =
+            crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())?;
 
         assert!(encoded.len() <= projected.maximum_encoded_bytes);
         assert!(actual_backing <= projected.retained_value_backing_bytes);
@@ -330,7 +371,8 @@ mod initial_geometry_tests {
     }
 
     #[test]
-    fn actual_initial_producer_and_reactive_inventory_dom_and_encoding_fit_exact_projection() -> TestResult {
+    fn actual_initial_producer_and_reactive_inventory_dom_and_encoding_fit_exact_projection()
+    -> TestResult {
         let definition = PacketProgramDefinition {
             schema: "source-owned.packet-program.v1".into(),
             events: vec![PacketEvent {
@@ -343,23 +385,40 @@ mod initial_geometry_tests {
         let (socket, _peer) = UnixDatagram::pair()?;
         let mut producer = PacketProgram::new(definition.events.clone(), socket)?;
         producer.open_gate()?;
-        check(&PacketConnectedSourceProgram::Producer { program: definition }, producer.inventory())?;
+        check(
+            &PacketConnectedSourceProgram::Producer {
+                program: definition,
+            },
+            producer.inventory(),
+        )?;
 
         let endpoint = |node| -> Result<Endpoint, ProviderError> {
-            Ok(Endpoint { node_id: Id::new(node)?, port_id: Id::new("port")?, lane_id: Id::new("lane")? })
+            Ok(Endpoint {
+                node_id: Id::new(node)?,
+                port_id: Id::new("port")?,
+                lane_id: Id::new("lane")?,
+            })
         };
         let definition = PacketConnectedDefinition {
             schema: "source-owned.packet-connected-program/4".into(),
             connections: vec![PacketInputConnection {
                 id: Id::new("actual-initial-route")?,
                 policy: canonical::content_ref(b"policy", "application/octet-stream")?,
-                producer: endpoint("producer")?, consumer: endpoint("consumer")?, delay_ps: U64::new(1),
-            }], output: None,
+                producer: endpoint("producer")?,
+                consumer: endpoint("consumer")?,
+                delay_ps: U64::new(1),
+            }],
+            output: None,
         };
         let (socket, _peer) = UnixDatagram::pair()?;
         let mut reactive = PacketConnectedProgram::new(definition.clone(), socket)?;
         reactive.open_gate()?;
-        check(&PacketConnectedSourceProgram::Reactive { program: definition }, reactive.inventory()?)?;
+        check(
+            &PacketConnectedSourceProgram::Reactive {
+                program: definition,
+            },
+            reactive.inventory()?,
+        )?;
         Ok(())
     }
 }

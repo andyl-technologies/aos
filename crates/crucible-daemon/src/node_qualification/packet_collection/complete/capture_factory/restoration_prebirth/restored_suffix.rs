@@ -24,7 +24,10 @@ struct OriginalSuffixTicketQuoteInputs<'a> {
 }
 
 impl OriginalSuffixTicketQuoteInputs<'_> {
-    fn member(&self, index: usize) -> Result<PacketNativeRestoredSuffixStartupStorageData, RuntimeError> {
+    fn member(
+        &self,
+        index: usize,
+    ) -> Result<PacketNativeRestoredSuffixStartupStorageData, RuntimeError> {
         let ticket = self.capsule.native[index]
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;

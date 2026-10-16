@@ -39,7 +39,10 @@ impl PacketCompleteSemanticSource {
     /// Refuses foreign origin, a poisoned attempt or changed immutable rosters.
     pub fn is_original_restored_suffix_declaration_data(&self) -> Result<bool, RuntimeError> {
         self.is_original_invocation_snapshot_declaration_data()?;
-        Ok(matches!(self.invocation_snapshot_declaration, Some(Declaration::RestorationSuffix14)))
+        Ok(matches!(
+            self.invocation_snapshot_declaration,
+            Some(Declaration::RestorationSuffix14)
+        ))
     }
 
     /// Names complete inherited declaration scratch before later live queries.
@@ -47,7 +50,9 @@ impl PacketCompleteSemanticSource {
         Self::original_invocation_snapshot_declaration_counter_scratch_data()
     }
 
-    pub(super) fn authenticate_restored_suffix_declaration_tuple_data(&self,) -> Result<(), RuntimeError> {
+    pub(super) fn authenticate_restored_suffix_declaration_tuple_data(
+        &self,
+    ) -> Result<(), RuntimeError> {
         authenticate_rosters(self.installation())
     }
 }
@@ -55,27 +60,40 @@ impl PacketCompleteSemanticSource {
 fn authenticate_rosters(installation: &CnpSemanticInstallation) -> Result<(), RuntimeError> {
     for formats in [
         installation.provider.implementation.formats.as_slice(),
-        installation.binding.compatibility.implementation.formats.as_slice(),
+        installation
+            .binding
+            .compatibility
+            .implementation
+            .formats
+            .as_slice(),
     ] {
         let mut found = false;
         for schema in formats {
             if schema.id.as_str() == PACKET_RESTORATION_SUFFIX_FEATURE {
-                if found { return Err(RuntimeError::ForeignAuthority); }
+                if found {
+                    return Err(RuntimeError::ForeignAuthority);
+                }
                 authenticate_restoration_suffix_schema_data(schema)
                     .map_err(|_| RuntimeError::ForeignAuthority)?;
                 found = true;
             }
         }
-        if !found { return Err(RuntimeError::ForeignAuthority); }
+        if !found {
+            return Err(RuntimeError::ForeignAuthority);
+        }
     }
     let mut found = false;
     for feature in &installation.provider.extensions_supported {
         if feature.as_str() == PACKET_RESTORATION_SUFFIX_FEATURE {
-            if found { return Err(RuntimeError::ForeignAuthority); }
+            if found {
+                return Err(RuntimeError::ForeignAuthority);
+            }
             found = true;
         }
     }
-    if !found { return Err(RuntimeError::ForeignAuthority); }
+    if !found {
+        return Err(RuntimeError::ForeignAuthority);
+    }
     Ok(())
 }
 
@@ -89,9 +107,13 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<std::array::IntoIter<&[SchemaRef], 2>>()
         + size_of::<std::slice::Iter<'_, SchemaRef>>()
         + size_of::<std::slice::Iter<'_, Id>>()
-        + size_of::<&SchemaRef>() + size_of::<&Id>() + size_of::<&str>()
-        + 2 * size_of::<bool>() + size_of::<Option<Declaration>>()
-        + size_of::<Result<bool, RuntimeError>>() + size_of::<Result<(), RuntimeError>>()
+        + size_of::<&SchemaRef>()
+        + size_of::<&Id>()
+        + size_of::<&str>()
+        + 2 * size_of::<bool>()
+        + size_of::<Option<Declaration>>()
+        + size_of::<Result<bool, RuntimeError>>()
+        + size_of::<Result<(), RuntimeError>>()
         + size_of::<Result<(), crucible_node_provider::ProviderError>>()
         + restoration_suffix_schema_counter_scratch_data()
 }
@@ -102,15 +124,23 @@ mod tests {
     use super::*;
     use crucible_node_provider::reference_packet::service::native_startup::restoration_suffix_schema;
 
-    fn installation(coordinator: &PacketNative5CoordinatorInstallation, index: usize,) -> CnpSemanticInstallation {
+    fn installation(
+        coordinator: &PacketNative5CoordinatorInstallation,
+        index: usize,
+    ) -> CnpSemanticInstallation {
         let mut installed = fixture::installation(coordinator, index);
         let suffix = restoration_suffix_schema().expect("compiled full suffix schema");
-        for roster in [&mut installed.provider.implementation.formats,
-            &mut installed.binding.compatibility.implementation.formats,] {
+        for roster in [
+            &mut installed.provider.implementation.formats,
+            &mut installed.binding.compatibility.implementation.formats,
+        ] {
             roster.push(suffix.clone());
             roster.sort_by(|left, right| left.id.cmp(&right.id));
         }
-        installed.provider.extensions_supported.push(Id::new(PACKET_RESTORATION_SUFFIX_FEATURE).unwrap());
+        installed
+            .provider
+            .extensions_supported
+            .push(Id::new(PACKET_RESTORATION_SUFFIX_FEATURE).unwrap());
         installed.provider.extensions_supported.sort();
         installed
     }
@@ -123,30 +153,62 @@ mod tests {
         for binding in [false, true] {
             for axis in 0..9 {
                 let mut installed = installation(&coordinator, 0);
-                let roster = if binding { &mut installed.binding.compatibility.implementation.formats }
-                    else { &mut installed.provider.implementation.formats };
-                let index = roster.iter().position(|schema| schema.id.as_str() == PACKET_RESTORATION_SUFFIX_FEATURE).unwrap();
+                let roster = if binding {
+                    &mut installed.binding.compatibility.implementation.formats
+                } else {
+                    &mut installed.provider.implementation.formats
+                };
+                let index = roster
+                    .iter()
+                    .position(|schema| schema.id.as_str() == PACKET_RESTORATION_SUFFIX_FEATURE)
+                    .unwrap();
                 match axis {
-                    0 => { roster.remove(index); }
-                    1 => { roster.push(roster[index].clone()); }
-                    2 => { roster[index].version += 1; }
-                    3 => { roster[index].definition.hash.digest = "0".repeat(64); }
-                    4 => { roster[index].definition.length = U64::new(1); }
-                    5 => { roster[index].definition.media_type = "application/octet-stream".into(); }
-                    6 => { roster[index].definition.hash.domain = "cnp.changed.v1".into(); }
-                    7 => { roster[index].definition.hash.algorithm = "changed-256".into(); }
-                    _ => { roster[index].extensions.insert("unknown".into(), serde_json::Value::Null); }
+                    0 => {
+                        roster.remove(index);
+                    }
+                    1 => {
+                        roster.push(roster[index].clone());
+                    }
+                    2 => {
+                        roster[index].version += 1;
+                    }
+                    3 => {
+                        roster[index].definition.hash.digest = "0".repeat(64);
+                    }
+                    4 => {
+                        roster[index].definition.length = U64::new(1);
+                    }
+                    5 => {
+                        roster[index].definition.media_type = "application/octet-stream".into();
+                    }
+                    6 => {
+                        roster[index].definition.hash.domain = "cnp.changed.v1".into();
+                    }
+                    7 => {
+                        roster[index].definition.hash.algorithm = "changed-256".into();
+                    }
+                    _ => {
+                        roster[index]
+                            .extensions
+                            .insert("unknown".into(), serde_json::Value::Null);
+                    }
                 }
                 assert!(authenticate_rosters(&installed).is_err());
             }
         }
 
         let mut missing = installation(&coordinator, 0);
-        missing.provider.extensions_supported.retain(|feature| feature.as_str() != PACKET_RESTORATION_SUFFIX_FEATURE);
+        missing
+            .provider
+            .extensions_supported
+            .retain(|feature| feature.as_str() != PACKET_RESTORATION_SUFFIX_FEATURE);
         assert!(authenticate_rosters(&missing).is_err());
 
         let mut duplicate = installation(&coordinator, 0);
-        duplicate.provider.extensions_supported.push(Id::new(PACKET_RESTORATION_SUFFIX_FEATURE).unwrap());
+        duplicate
+            .provider
+            .extensions_supported
+            .push(Id::new(PACKET_RESTORATION_SUFFIX_FEATURE).unwrap());
         assert!(authenticate_rosters(&duplicate).is_err());
     }
 
@@ -156,22 +218,39 @@ mod tests {
             let coordinator = fixture::coordinator();
             let mut source = if reactive {
                 PacketCompleteSemanticSource::new_reactive_for_collecting_world(
-                    fixture::installation(&coordinator, 1), fixture::reactive(&coordinator, 1),
-                    coordinator, fixture::storage_selection(),
-                ).expect("actual reactive Source")
+                    fixture::installation(&coordinator, 1),
+                    fixture::reactive(&coordinator, 1),
+                    coordinator,
+                    fixture::storage_selection(),
+                )
+                .expect("actual reactive Source")
             } else {
                 PacketCompleteSemanticSource::new_producer_for_collecting_world(
-                    fixture::installation(&coordinator, 0), fixture::producer(),
-                    coordinator, fixture::storage_selection(),
-                ).expect("actual producer Source")
+                    fixture::installation(&coordinator, 0),
+                    fixture::producer(),
+                    coordinator,
+                    fixture::storage_selection(),
+                )
+                .expect("actual producer Source")
             };
 
             // An actual legacy constructor does not manufacture the inherited
             // selected tuple, private member, SourceRead or native authority.
-            assert!(!source.is_original_restored_suffix_declaration_data().unwrap());
+            assert!(
+                !source
+                    .is_original_restored_suffix_declaration_data()
+                    .unwrap()
+            );
             assert!(source.bind_original_restored_suffix_declaration().is_err());
-            assert!(matches!(source.invocation_snapshot_declaration, Some(Declaration::Attempted)));
-            assert!(source.is_original_restored_suffix_declaration_data().is_err());
+            assert!(matches!(
+                source.invocation_snapshot_declaration,
+                Some(Declaration::Attempted)
+            ));
+            assert!(
+                source
+                    .is_original_restored_suffix_declaration_data()
+                    .is_err()
+            );
             assert!(source.bind_original_restored_suffix_declaration().is_err());
 
             assert!(source.capture_banks.get_mut().is_none());
@@ -185,19 +264,32 @@ mod tests {
     fn foreign_source_origin_precedes_suffix_selection_and_attempt_state() {
         let coordinator = fixture::coordinator();
         let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
-            fixture::installation(&coordinator, 0), fixture::producer(), coordinator,
+            fixture::installation(&coordinator, 0),
+            fixture::producer(),
+            coordinator,
             fixture::storage_selection(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let process = source.process;
         source.process = process.wrapping_add(1);
 
-        assert!(matches!(source.bind_original_restored_suffix_declaration(), Err(RuntimeError::ForeignAuthority)));
+        assert!(matches!(
+            source.bind_original_restored_suffix_declaration(),
+            Err(RuntimeError::ForeignAuthority)
+        ));
         assert!(source.invocation_snapshot_declaration.is_none());
-        assert!(matches!(source.is_original_restored_suffix_declaration_data(), Err(RuntimeError::ForeignAuthority)));
+        assert!(matches!(
+            source.is_original_restored_suffix_declaration_data(),
+            Err(RuntimeError::ForeignAuthority)
+        ));
 
         source.process = process;
-        assert!(!source.is_original_restored_suffix_declaration_data().unwrap());
+        assert!(
+            !source
+                .is_original_restored_suffix_declaration_data()
+                .unwrap()
+        );
         assert!(source.ack_peer_birth.get_mut().is_none());
     }
 }

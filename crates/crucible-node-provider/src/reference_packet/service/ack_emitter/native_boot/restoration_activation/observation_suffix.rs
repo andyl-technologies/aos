@@ -40,11 +40,7 @@ pub(super) fn retain_published_suffix_observation_data<S: ProviderStream>(
         };
         let flight = permit.read.attempt.try_borrow().map_err(|_| borrowed())?;
         state.authenticate_witness_storage_data(
-            &flight
-                .artifact
-                .as_ref()
-                .ok_or_else(refused)?
-                .request,
+            &flight.artifact.as_ref().ok_or_else(refused)?.request,
         )?;
     }
     {
@@ -120,11 +116,7 @@ impl NativeAckBoot {
                 .try_borrow()
                 .map_err(|_| borrowed())?;
             state.authenticate_witness_storage_data(
-                &flight
-                    .artifact
-                    .as_ref()
-                    .ok_or_else(refused)?
-                    .request,
+                &flight.artifact.as_ref().ok_or_else(refused)?.request,
             )?;
         }
         authenticate_suffix_selection_data(connection)?;
@@ -188,11 +180,7 @@ impl OriginalRestoredSuffixPostObservation {
                 .ok_or_else(refused)?;
             let flight = self.attempt.try_borrow().map_err(|_| borrowed())?;
             state.authenticate_witness_storage_data(
-                &flight
-                    .artifact
-                    .as_ref()
-                    .ok_or_else(refused)?
-                    .request,
+                &flight.artifact.as_ref().ok_or_else(refused)?.request,
             )?;
         }
         authenticate_suffix_selection_data(connection)?;

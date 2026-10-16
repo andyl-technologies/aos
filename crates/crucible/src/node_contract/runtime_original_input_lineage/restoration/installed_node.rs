@@ -520,11 +520,20 @@ impl OriginalInstalledRestorationNodeAssociation {
         world: &WorldActivation,
     ) -> Result<(), RuntimeError> {
         self.origin()?;
-        let window = self.window.upgrade().ok_or(RuntimeError::OwnerUnavailable)?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
             return Err(RuntimeError::ForeignAuthority);
         }
-        window.seed_original_restored_suffix_data(self.selected, source, controller, read_owner, world,)
+        window.seed_original_restored_suffix_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            world,
+        )
     }
 
     /// Borrows the separate initial checkpoint inside the same complete fence.
@@ -538,13 +547,25 @@ impl OriginalInstalledRestorationNodeAssociation {
         controller: &CnpController,
         read_owner: *const (),
         world: &WorldActivation,
-        inspect: impl FnOnce(&crate::node_admission::OriginalRestoredSuffixCheckpointData,) -> Result<(), RuntimeError>,
+        inspect: impl FnOnce(
+            &crate::node_admission::OriginalRestoredSuffixCheckpointData,
+        ) -> Result<(), RuntimeError>,
     ) -> Result<(), RuntimeError> {
         self.origin()?;
-        let window = self.window.upgrade().ok_or(RuntimeError::OwnerUnavailable)?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
             return Err(RuntimeError::ForeignAuthority);
         }
-        window.with_original_restored_suffix_seed_data(self.selected, source, controller, read_owner, world, inspect,)
+        window.with_original_restored_suffix_seed_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            world,
+            inspect,
+        )
     }
 }

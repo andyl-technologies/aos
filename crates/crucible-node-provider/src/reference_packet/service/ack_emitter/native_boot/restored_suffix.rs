@@ -694,7 +694,12 @@ mod witness_projection_tests {
             declared_counter_scratch_bytes: actual.declared_counter_scratch_bytes,
         };
         let check = |admitted: &PacketNativeStartupAllocationRow, schema, count| {
-            authenticate_initial_observation_projection_data(admitted, schema, U64::new(count), &actual)
+            authenticate_initial_observation_projection_data(
+                admitted,
+                schema,
+                U64::new(count),
+                &actual,
+            )
         };
 
         // Only inert demand correspondence passes here; no native owner,
@@ -718,11 +723,14 @@ mod witness_projection_tests {
             retained_requested_bytes: U64::new(0),
             ..actual
         };
-        assert!(authenticate_initial_observation_projection_data(
-            &admitted,
-            PACKET_RESTORATION_OBSERVE_FEATURE,
-            U64::new(1),
-            &empty,
-        ).is_err());
+        assert!(
+            authenticate_initial_observation_projection_data(
+                &admitted,
+                PACKET_RESTORATION_OBSERVE_FEATURE,
+                U64::new(1),
+                &empty,
+            )
+            .is_err()
+        );
     }
 }

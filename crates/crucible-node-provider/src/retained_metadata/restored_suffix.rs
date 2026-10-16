@@ -72,7 +72,11 @@ pub(crate) fn response(
 // The kind and position are inline. The optional full ContentRef retains its
 // actual String capacities even in malformed or failed response partials.
 fn observe_bound(bound: &Bound, observer: &mut MetadataObserver<'_>) -> Result<(), ProviderError> {
-    let Bound { kind, position, evidence } = bound;
+    let Bound {
+        kind,
+        position,
+        evidence,
+    } = bound;
     match kind {
         BoundKind::At | BoundKind::After | BoundKind::NoneUntilActivation | BoundKind::Unknown => {}
     }
@@ -129,13 +133,24 @@ mod tests {
             + evidence.hash.digest.capacity()
             + evidence.media_type.capacity();
 
-        for kind in [BoundKind::At, BoundKind::After, BoundKind::NoneUntilActivation, BoundKind::Unknown] {
+        for kind in [
+            BoundKind::At,
+            BoundKind::After,
+            BoundKind::NoneUntilActivation,
+            BoundKind::Unknown,
+        ] {
             let bound = Bound {
                 kind,
                 position: if matches!(kind, BoundKind::At | BoundKind::After) {
                     Some(Position::new(Tick::new(3), U64::new(2), Phase::Reaction))
-                } else { None },
-                evidence: if kind == BoundKind::Unknown { None } else { Some(evidence.clone()) },
+                } else {
+                    None
+                },
+                evidence: if kind == BoundKind::Unknown {
+                    None
+                } else {
+                    Some(evidence.clone())
+                },
             };
             // Re-reserve the actual child after Clone, which may discard spare.
             let mut bound = bound;
@@ -146,19 +161,30 @@ mod tests {
                 reference.media_type.reserve(43);
             }
             let actual = bound.evidence.as_ref().map_or(0, |reference| {
-                reference.hash.algorithm.capacity() + reference.hash.domain.capacity()
-                    + reference.hash.digest.capacity() + reference.media_type.capacity()
+                reference.hash.algorithm.capacity()
+                    + reference.hash.domain.capacity()
+                    + reference.hash.digest.capacity()
+                    + reference.media_type.capacity()
             });
             let mut observer = MetadataObserver::new();
             observe_bound(&bound, &mut observer).unwrap();
             assert_eq!(observer.facts.string_capacity_bytes, actual);
-            assert_eq!(observer.facts.string_banks, if kind == BoundKind::Unknown { 0 } else { 4 });
-            if kind != BoundKind::Unknown { assert!(actual >= expected); }
+            assert_eq!(
+                observer.facts.string_banks,
+                if kind == BoundKind::Unknown { 0 } else { 4 }
+            );
+            if kind != BoundKind::Unknown {
+                assert!(actual >= expected);
+            }
         }
 
         // Raw partial custody counts evidence even when semantic validation
         // would reject this kind/field combination. It does not bless the bound.
-        let partial = Bound { kind: BoundKind::Unknown, position: None, evidence: Some(evidence) };
+        let partial = Bound {
+            kind: BoundKind::Unknown,
+            position: None,
+            evidence: Some(evidence),
+        };
         let mut observer = MetadataObserver::new();
         observe_bound(&partial, &mut observer).unwrap();
         assert_eq!(observer.facts.string_capacity_bytes, expected);

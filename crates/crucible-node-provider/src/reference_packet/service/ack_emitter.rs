@@ -95,11 +95,11 @@ pub(crate) use admission_projection::validate_proof_value;
 pub(in crate::reference_packet::service) mod native_boot;
 pub(crate) use native_boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;
 pub(crate) use native_boot::{
-    OriginalRestoredSuffixPostObservation, original_restored_suffix_post_observation_counter_scratch_data,
     NativeRestorationObservationAttempt, NativeRestorationUploadAttempt,
     OriginalRestorationActivationPermit, OriginalRestorationActivationRequirement,
     OriginalRestorationObservationPermit, OriginalRestorationObservationRead,
     OriginalRestorationReleaseState, OriginalRestorationReleased, OriginalRestorationUploadPermit,
+    OriginalRestoredSuffixPostObservation,
     original_native_restoration_activation_attempt_backing_data,
     original_native_restoration_activation_counter_scratch_data,
     original_native_restoration_activation_ingress_row_data,
@@ -108,6 +108,7 @@ pub(crate) use native_boot::{
     original_native_restoration_observation_ingress_row_data,
     original_native_restoration_upload_attempt_backing_data,
     original_native_restoration_upload_counter_scratch_data,
+    original_restored_suffix_post_observation_counter_scratch_data,
 };
 pub use native_boot::{
     PacketNativeRestoreCommitConstructionData, PacketNativeRestoreCommitConstructionInputs,
@@ -204,10 +205,9 @@ pub use native_boot::{
     original_native_prepare_startup_storage_data,
 };
 
-
 pub(crate) use native_boot::{
-    original_restored_suffix_bootstrap_header_data,
     original_restored_suffix_bootstrap_counter_scratch_data,
-    original_restored_suffix_native_header_data,
+    original_restored_suffix_bootstrap_header_data,
     original_restored_suffix_native_counter_scratch_data,
+    original_restored_suffix_native_header_data,
 };

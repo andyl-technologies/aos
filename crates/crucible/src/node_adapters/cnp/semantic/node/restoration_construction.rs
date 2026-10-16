@@ -137,13 +137,19 @@ impl CnpSemanticNode {
             };
             data.installed_custody = Some(custody);
             data.source_activation = Some(source_activation);
-            data.restored_suffix = source_observation.as_ref().map(|observation| {
-                inputs.source.original_restored_suffix_construction_data(
-                    native.controller.as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
-                    observation,
-                    inputs.maximum_requested_bytes,
-                )
-            }).transpose()?;
+            data.restored_suffix = source_observation
+                .as_ref()
+                .map(|observation| {
+                    inputs.source.original_restored_suffix_construction_data(
+                        native
+                            .controller
+                            .as_ref()
+                            .ok_or(RuntimeError::OwnerUnavailable)?,
+                        observation,
+                        inputs.maximum_requested_bytes,
+                    )
+                })
+                .transpose()?;
             data.source_observation = source_observation;
         }
         data.authenticate_original_owner_data(

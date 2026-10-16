@@ -670,7 +670,9 @@ impl OriginalRestorationObservationPermit {
         self.read
             .released
             .authenticate_current_data(connection, control, records)?;
-        restored_suffix::retain_published_suffix_observation_data(self, connection, control, records)
+        restored_suffix::retain_published_suffix_observation_data(
+            self, connection, control, records,
+        )
     }
 }
 

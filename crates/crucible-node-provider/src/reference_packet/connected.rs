@@ -460,7 +460,6 @@ impl PacketConnectedProgram {
     }
 }
 
-
 impl PacketConnectedProgram {
     /// Checks the unchanged original model before the first selected report.
     ///
@@ -469,25 +468,48 @@ impl PacketConnectedProgram {
     ///
     /// # Errors
     /// Refuses a foreign, failed, closed, advanced, staged or otherwise used model.
-    pub(crate) fn authenticate_original_initial_observation_data(&self) -> Result<(), ProviderError> {
+    pub(crate) fn authenticate_original_initial_observation_data(
+        &self,
+    ) -> Result<(), ProviderError> {
         let Self {
-            definition: _, native_pid, effect_socket: _, reached, gate_closed,
-            reactions, delivered_inputs, publications, outputs, stages, grants,
-            retired, reactions_completed, packet_effects, failed,
+            definition: _,
+            native_pid,
+            effect_socket: _,
+            reached,
+            gate_closed,
+            reactions,
+            delivered_inputs,
+            publications,
+            outputs,
+            stages,
+            grants,
+            retired,
+            reactions_completed,
+            packet_effects,
+            failed,
         } = self;
         let zero = Position::new(U64::new(0), U64::new(0), Phase::BoundaryControl);
-        if *native_pid != std::process::id() || *failed || *gate_closed || *reached != zero
-            || !reactions.is_empty() || !delivered_inputs.is_empty()
-            || !publications.is_empty() || !outputs.is_empty() || !stages.is_empty()
-            || !grants.is_empty() || !retired.is_empty()
-            || *reactions_completed != 0 || *packet_effects != 0
+        if *native_pid != std::process::id()
+            || *failed
+            || *gate_closed
+            || *reached != zero
+            || !reactions.is_empty()
+            || !delivered_inputs.is_empty()
+            || !publications.is_empty()
+            || !outputs.is_empty()
+            || !stages.is_empty()
+            || !grants.is_empty()
+            || !retired.is_empty()
+            || *reactions_completed != 0
+            || *packet_effects != 0
         {
-            return Err(ProviderError::Correlation("original initial reactive observation state"));
+            return Err(ProviderError::Correlation(
+                "original initial reactive observation state",
+            ));
         }
         Ok(())
     }
 }
-
 
 impl PacketConnectedProgram {
     /// Names the exact borrowed field views of the initial-state census.
@@ -520,30 +542,58 @@ mod initial_observation_tests {
 
     fn model() -> Result<PacketConnectedProgram, ProviderError> {
         let endpoint = |node| -> Result<Endpoint, ProviderError> {
-            Ok(Endpoint { node_id: Id::new(node)?, port_id: Id::new("port")?, lane_id: Id::new("lane")? })
+            Ok(Endpoint {
+                node_id: Id::new(node)?,
+                port_id: Id::new("port")?,
+                lane_id: Id::new("lane")?,
+            })
         };
         let (socket, _peer) = UnixDatagram::pair()?;
-        PacketConnectedProgram::new(PacketConnectedDefinition {
-            schema: "source-owned.packet-connected-program/4".into(),
-            connections: vec![PacketInputConnection {
-                id: Id::new("actual-route")?,
-                policy: canonical::content_ref(b"original-policy", "application/octet-stream")?,
-                producer: endpoint("producer")?, consumer: endpoint("consumer")?, delay_ps: U64::new(1),
-            }], output: None,
-        }, socket)
+        PacketConnectedProgram::new(
+            PacketConnectedDefinition {
+                schema: "source-owned.packet-connected-program/4".into(),
+                connections: vec![PacketInputConnection {
+                    id: Id::new("actual-route")?,
+                    policy: canonical::content_ref(b"original-policy", "application/octet-stream")?,
+                    producer: endpoint("producer")?,
+                    consumer: endpoint("consumer")?,
+                    delay_ps: U64::new(1),
+                }],
+                output: None,
+            },
+            socket,
+        )
     }
 
     #[test]
-    fn actual_reactive_initial_owner_keeps_all_reserved_banks_and_rejects_used_state() -> TestResult {
+    fn actual_reactive_initial_owner_keeps_all_reserved_banks_and_rejects_used_state() -> TestResult
+    {
         let mut value = model()?;
-        assert!(value.authenticate_original_initial_observation_data().is_err());
+        assert!(
+            value
+                .authenticate_original_initial_observation_data()
+                .is_err()
+        );
         value.open_gate()?;
-        let capacities = (value.reactions.capacity(), value.delivered_inputs.capacity(),
-            value.publications.capacity(), value.outputs.capacity(), value.stages.capacity());
+        let capacities = (
+            value.reactions.capacity(),
+            value.delivered_inputs.capacity(),
+            value.publications.capacity(),
+            value.outputs.capacity(),
+            value.stages.capacity(),
+        );
         value.authenticate_original_initial_observation_data()?;
 
-        assert_eq!(capacities, (value.reactions.capacity(), value.delivered_inputs.capacity(),
-            value.publications.capacity(), value.outputs.capacity(), value.stages.capacity()));
+        assert_eq!(
+            capacities,
+            (
+                value.reactions.capacity(),
+                value.delivered_inputs.capacity(),
+                value.publications.capacity(),
+                value.outputs.capacity(),
+                value.stages.capacity()
+            )
+        );
         for changed in 0..5 {
             let mut used = model()?;
             used.open_gate()?;
@@ -554,7 +604,10 @@ mod initial_observation_tests {
                 3 => used.failed = true,
                 _ => used.native_pid = 0,
             }
-            assert!(used.authenticate_original_initial_observation_data().is_err());
+            assert!(
+                used.authenticate_original_initial_observation_data()
+                    .is_err()
+            );
         }
         Ok(())
     }
@@ -565,16 +618,23 @@ mod initial_observation_tests {
         value.open_gate()?;
         value.authenticate_original_initial_observation_data()?;
         value.reactions.push(PacketReaction {
-            input_event: Id::new("actual-input")?, input_producer: Id::new("producer")?,
-            input_sequence: U64::new(0), stage_operation: Id::new("stage")?,
-            commit_request: Id::new("commit")?, payload: Bytes::new(b"retained-input".to_vec()),
+            input_event: Id::new("actual-input")?,
+            input_producer: Id::new("producer")?,
+            input_sequence: U64::new(0),
+            stage_operation: Id::new("stage")?,
+            commit_request: Id::new("commit")?,
+            payload: Bytes::new(b"retained-input".to_vec()),
             parent: Position::new(U64::new(0), U64::new(0), Phase::Delivery),
             evaluation: Position::new(U64::new(0), U64::new(0), Phase::Reaction),
         });
         let pointer = value.reactions.as_ptr();
         let capacity = value.reactions.capacity();
 
-        assert!(value.authenticate_original_initial_observation_data().is_err());
+        assert!(
+            value
+                .authenticate_original_initial_observation_data()
+                .is_err()
+        );
         assert_eq!(value.reactions.as_ptr(), pointer);
         assert_eq!(value.reactions.capacity(), capacity);
         assert_eq!(value.reactions[0].payload.as_slice(), b"retained-input");

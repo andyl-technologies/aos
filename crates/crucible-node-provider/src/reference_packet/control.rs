@@ -66,8 +66,8 @@ pub use continuation::{
     PacketOriginalCaptureTransitionData, PacketOriginalControlSnapshot,
     decode_packet_control_snapshot, packet_control_snapshot_validation_layouts,
 };
-mod program;
 mod initial_observe;
+mod program;
 
 use program::NativeProgram;
 
