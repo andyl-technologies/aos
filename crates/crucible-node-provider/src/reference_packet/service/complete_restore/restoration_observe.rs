@@ -20,13 +20,13 @@ use crate::ProviderError;
 
 mod contract;
 mod crypto;
+mod projection;
+mod prospective;
 mod retained;
 mod selection;
 mod storage;
-mod projection;
-mod prospective;
 mod wire;
-pub(crate) use wire::{verify_selected_wire_data,verify_selected_wire_header_data};
+pub(crate) use wire::{verify_selected_wire_data, verify_selected_wire_header_data};
 
 #[cfg(test)]
 mod tests;
@@ -40,11 +40,11 @@ pub use crypto::{
     restoration_observe_assigned_request_digest, restoration_observe_context_digest_data,
     restoration_observe_proof_data, verify_restoration_observe_proof_data,
 };
-pub use retained::RetainedRestorationObservationData;
-pub use storage::OriginalInstalledRestorationObservationConstructionData;
 pub use prospective::original_installed_restoration_observation_construction_counter_scratch_data;
 pub(crate) use prospective::original_native_restoration_observation_required_storage_data;
+pub use retained::RetainedRestorationObservationData;
 pub use selection::authenticate_restoration_observe_selection_data;
+pub use storage::OriginalInstalledRestorationObservationConstructionData;
 
 /// Names the separately installed schema, feature and request extension.
 pub const PACKET_RESTORATION_OBSERVE_FEATURE: &str = "source-owned.packet-restoration-observe/1";
@@ -197,12 +197,16 @@ pub fn restoration_observe_protocol_counter_scratch_data() -> usize {
         + size_of::<Result<PacketRestorationObservationProof, ProviderError>>()
         + size_of::<Result<[u8; 32], ProviderError>>()
         + size_of::<Result<(), ProviderError>>()
-        + size_of::<Result<(),crucible_node_contract::ContractError>>()
-        + size_of::<Result<u64,ProviderError>>()
-        + size_of::<Result<PacketRestorationObservationRequest,crucible_node_contract::ContractError>>()
-        + size_of::<Result<PacketRestorationObservationArtifact,crucible_node_contract::ContractError>>()
-        + size_of::<Result<crate::bodies::ObserveRequest,crucible_node_contract::ContractError>>()
-        + size_of::<Result<serde_json::Value,crucible_node_contract::ContractError>>()
+        + size_of::<Result<(), crucible_node_contract::ContractError>>()
+        + size_of::<Result<u64, ProviderError>>()
+        + size_of::<
+            Result<PacketRestorationObservationRequest, crucible_node_contract::ContractError>,
+        >()
+        + size_of::<
+            Result<PacketRestorationObservationArtifact, crucible_node_contract::ContractError>,
+        >()
+        + size_of::<Result<crate::bodies::ObserveRequest, crucible_node_contract::ContractError>>()
+        + size_of::<Result<serde_json::Value, crucible_node_contract::ContractError>>()
         + size_of::<Result<serde_json::Value, serde_json::Error>>()
         + size_of::<Result<Vec<u8>, crucible_node_contract::ContractError>>()
         + size_of::<crate::bodies::ObserveRequest>()
@@ -229,4 +233,6 @@ fn invalid() -> ProviderError {
     ProviderError::Correlation("installed restoration observation data")
 }
 
-fn credit()->ProviderError {ProviderError::ResourceExhausted("installed restoration observation requested storage")}
+fn credit() -> ProviderError {
+    ProviderError::ResourceExhausted("installed restoration observation requested storage")
+}

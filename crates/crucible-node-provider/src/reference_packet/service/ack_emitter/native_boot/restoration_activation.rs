@@ -10,20 +10,20 @@ use crate::reference_packet::service::complete_restore::activation::*;
 use crate::retained_metadata::MetadataObserver;
 use std::mem::size_of;
 
-#[path = "restoration_activation/upload.rs"]
-mod upload;
-#[path = "restoration_activation/released.rs"]
-mod released;
 #[path = "restoration_activation/observation.rs"]
 mod observation;
+#[path = "restoration_activation/released.rs"]
+mod released;
+#[path = "restoration_activation/upload.rs"]
+mod upload;
 pub(crate) use observation::{
-    NativeRestorationObservationAttempt, OriginalRestorationObservationRead,
-    OriginalRestorationObservationPermit,
+    NativeRestorationObservationAttempt, OriginalRestorationObservationPermit,
+    OriginalRestorationObservationRead,
     original_native_restoration_observation_attempt_backing_data,
     original_native_restoration_observation_counter_scratch_data,
     original_native_restoration_observation_ingress_row_data,
 };
-pub(crate) use released::{OriginalRestorationReleased, OriginalRestorationReleaseState};
+pub(crate) use released::{OriginalRestorationReleaseState, OriginalRestorationReleased};
 pub(crate) use upload::{
     NativeRestorationUploadAttempt, OriginalRestorationUploadPermit,
     original_native_restoration_upload_attempt_backing_data,

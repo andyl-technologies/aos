@@ -197,7 +197,11 @@ fn actual_observation_terminal_binds_the_complete_verified_inventory_hash() {
     result.inventory_hash =
         canonical::hash("cnp.packet-inventory.v5", b"different complete inventory").unwrap();
 
-    let replacement = serde_json::to_value(&*result).unwrap().as_object().unwrap().clone();
+    let replacement = serde_json::to_value(&*result)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
     let ResponseShape::Completed { result, .. } = &mut changed.shape else {
         panic!("fixture completed shape absent");
     };

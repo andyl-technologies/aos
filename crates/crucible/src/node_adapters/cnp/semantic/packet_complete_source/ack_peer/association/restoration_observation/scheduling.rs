@@ -7,15 +7,14 @@
 
 use super::*;
 use crate::node_adapters::cnp::semantic::initial_lifecycle_diagnostics::OriginalInitialLifecycleDiagnostics;
-use crucible_node_provider::reference_packet::{
-    connected::PacketConnectedDefinition,
-    coordinator::PacketNative5CoordinatorInstallation,
-};
 use crate::node_scheduling::{NativeProducerBound, NativePublication};
 use crucible_node_provider::reference_packet::service::complete_restore::transfer::{
-    PacketCompleteRestoreSelectedOwnerInputs, PacketCompleteRestoreModelOutputPopulationData,
+    PacketCompleteRestoreModelOutputPopulationData, PacketCompleteRestoreSelectedOwnerInputs,
     complete_restore_selected_model_output_population_counter_scratch_data,
     complete_restore_selected_model_output_population_data,
+};
+use crucible_node_provider::reference_packet::{
+    connected::PacketConnectedDefinition, coordinator::PacketNative5CoordinatorInstallation,
 };
 
 pub(super) fn quote(
@@ -140,7 +139,7 @@ pub(super) fn construct(
     // The existing original helpers retain their normal checks. This new
     // caller discards their diagnostic into RuntimeError, so use the existing
     // finite diagnostic owner instead of invoking an arbitrary Display.
-    let _diagnostics=OriginalInitialLifecycleDiagnostics::begin();
+    let _diagnostics = OriginalInitialLifecycleDiagnostics::begin();
     match (&source.original, underlying) {
         (
             CompletePacketOriginal::Producer(original),
@@ -182,31 +181,41 @@ pub(super) fn counter_scratch_data() -> usize {
         &'static crate::node_contract::SavedRuntimeActivation,
     );
     complete_restore_selected_model_output_population_counter_scratch_data()
-        +OriginalInitialLifecycleDiagnostics::counter_scratch_bytes()
-        +size_of::<DeclarationParts>()+size_of::<Result<DeclarationParts,RuntimeError>>()
-        +size_of::<PacketCompleteRestoreModelOutputPopulationData>()
-        +size_of::<Result<PacketCompleteRestoreModelOutputPopulationData,crucible_node_provider::ProviderError>>()
-        +size_of::<&crate::node_adapters::cnp::semantic::CnpSemanticInstallation>()
-        +size_of::<&crucible_node_contract::PortDescriptor>()
-        +size_of::<&crucible_node_contract::LaneDescriptor>()
-        +size_of::<&crucible_node_contract::Endpoint>()
-        +size_of::<Option<&crucible_node_contract::PortDescriptor>>()
-        +size_of::<Option<&crucible_node_contract::LaneDescriptor>>()
-        +size_of::<Option<&crucible_node_contract::Endpoint>>()
-        +size_of::<(&CompletePacketOriginal,&PacketNative5UnderlyingRecord)>()
-        +crate::node_contract::opaque_owner_counter_scratch_data()
-        +size_of::<PacketCompleteRestoreSelectedOwnerInputs<'static>>()
-        +size_of::<Result<usize,std::num::TryFromIntError>>()
-        +size_of::<NativeSchedulingObservation>()
-        +size_of::<Result<NativeSchedulingObservation,RuntimeError>>()
-        +size_of::<Result<NativeSchedulingObservation,crate::node_contract::OperationFailure>>()
-        +size_of::<Result<usize,RuntimeError>>()
-        +size_of::<[usize;11]>()+size_of::<std::array::IntoIter<usize,11>>()
-        +size_of::<[usize;4]>()+size_of::<std::array::IntoIter<usize,4>>()
-        +size_of::<[usize;3]>()+size_of::<std::array::IntoIter<usize,3>>()
-        +size_of::<[usize;2]>()+size_of::<std::array::IntoIter<usize,2>>()
-        +size_of::<&PacketNative5UnderlyingRecord>()
-        +size_of::<&crate::node_contract::WorldActivation>()
-        +size_of::<&ContentRef>()
-        +size_of::<Result<(),RuntimeError>>()
+        + OriginalInitialLifecycleDiagnostics::counter_scratch_bytes()
+        + size_of::<DeclarationParts>()
+        + size_of::<Result<DeclarationParts, RuntimeError>>()
+        + size_of::<PacketCompleteRestoreModelOutputPopulationData>()
+        + size_of::<
+            Result<
+                PacketCompleteRestoreModelOutputPopulationData,
+                crucible_node_provider::ProviderError,
+            >,
+        >()
+        + size_of::<&crate::node_adapters::cnp::semantic::CnpSemanticInstallation>()
+        + size_of::<&crucible_node_contract::PortDescriptor>()
+        + size_of::<&crucible_node_contract::LaneDescriptor>()
+        + size_of::<&crucible_node_contract::Endpoint>()
+        + size_of::<Option<&crucible_node_contract::PortDescriptor>>()
+        + size_of::<Option<&crucible_node_contract::LaneDescriptor>>()
+        + size_of::<Option<&crucible_node_contract::Endpoint>>()
+        + size_of::<(&CompletePacketOriginal, &PacketNative5UnderlyingRecord)>()
+        + crate::node_contract::opaque_owner_counter_scratch_data()
+        + size_of::<PacketCompleteRestoreSelectedOwnerInputs<'static>>()
+        + size_of::<Result<usize, std::num::TryFromIntError>>()
+        + size_of::<NativeSchedulingObservation>()
+        + size_of::<Result<NativeSchedulingObservation, RuntimeError>>()
+        + size_of::<Result<NativeSchedulingObservation, crate::node_contract::OperationFailure>>()
+        + size_of::<Result<usize, RuntimeError>>()
+        + size_of::<[usize; 11]>()
+        + size_of::<std::array::IntoIter<usize, 11>>()
+        + size_of::<[usize; 4]>()
+        + size_of::<std::array::IntoIter<usize, 4>>()
+        + size_of::<[usize; 3]>()
+        + size_of::<std::array::IntoIter<usize, 3>>()
+        + size_of::<[usize; 2]>()
+        + size_of::<std::array::IntoIter<usize, 2>>()
+        + size_of::<&PacketNative5UnderlyingRecord>()
+        + size_of::<&crate::node_contract::WorldActivation>()
+        + size_of::<&ContentRef>()
+        + size_of::<Result<(), RuntimeError>>()
 }

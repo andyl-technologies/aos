@@ -50,7 +50,12 @@ pub(super) fn authenticate_edition_data(
             Ok(())
         }
         Some("crucible.complete-scene.installation/5")
-            if object.get("mechanism").is_some_and(serde_json::Value::is_object) => Ok(()),
+            if object
+                .get("mechanism")
+                .is_some_and(serde_json::Value::is_object) =>
+        {
+            Ok(())
+        }
         Some("crucible.complete-scene.installation/4")
             if object
                 .get("mechanism")

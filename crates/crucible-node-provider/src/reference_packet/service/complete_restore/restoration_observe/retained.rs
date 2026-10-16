@@ -37,7 +37,10 @@ impl RetainedRestorationObservationData<'_> {
     ///
     /// # Errors
     /// Refuses metadata overflow/limits or an unsupported typed response variant.
-    pub(crate) fn observe_owned_metadata_data(&self, observer:&mut MetadataObserver<'_>)->Result<(),ProviderError> {
+    pub(crate) fn observe_owned_metadata_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
         match self {
             Self::Body(value) => {
                 let crate::bodies::ObserveRequest {

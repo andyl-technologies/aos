@@ -161,7 +161,9 @@ pub(crate) use initial_lifecycle_diagnostics::{
     OriginalInitialLifecycleDiagnostics, unknown_reason as original_construction_failure_reason,
 };
 
-pub(crate) use packet_complete_source::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
+pub(crate) use packet_complete_source::{
+    OriginalRestorationColdGroup, OriginalRestorationColdOwnerView,
+};
 
 pub(crate) use packet_complete_source::{
     OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,

@@ -421,10 +421,15 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         }
         if let Some(read) = self.prepare_original_restoration_observation_receive()? {
             if selected_restore.is_none() || service_context.is_none() {
-                return Err(ProviderError::Correlation("restored Observe concrete service absent"));
+                return Err(ProviderError::Correlation(
+                    "restored Observe concrete service absent",
+                ));
             }
             return self.receive_and_dispatch_original_restoration_observation(
-                read, selected_deadline.ok_or(ProviderError::Correlation("restored Observe deadline absent"))?,
+                read,
+                selected_deadline.ok_or(ProviderError::Correlation(
+                    "restored Observe deadline absent",
+                ))?,
             );
         }
         let fresh_query = self.prepare_original_fresh_query_receive()?;

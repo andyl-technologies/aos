@@ -159,7 +159,8 @@ pub fn restoration_observe_assigned_request_digest(
         return Err(invalid());
     }
     let body_value = serde_json::Value::Object(original.body.clone());
-    let body = crate::bodies::ObserveRequest::deserialize(&body_value).map_err(ContractError::from)?;
+    let body =
+        crate::bodies::ObserveRequest::deserialize(&body_value).map_err(ContractError::from)?;
     request.authenticate_body_data(&body)?;
     let mut value = serde_json::to_value(original).map_err(ContractError::from)?;
     value

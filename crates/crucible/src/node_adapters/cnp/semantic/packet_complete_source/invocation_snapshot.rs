@@ -94,15 +94,25 @@ impl PacketCompleteSemanticSource {
         match self.invocation_snapshot_declaration {
             None => Ok(false),
             Some(Declaration::Attempted) => Err(RuntimeError::UnsupportedFacet),
-            Some(Declaration::Invocation14 | Declaration::RestorationActivation14 | Declaration::RestorationObservation14) => {
+            Some(
+                Declaration::Invocation14
+                | Declaration::RestorationActivation14
+                | Declaration::RestorationObservation14,
+            ) => {
                 self.authenticate_invocation_snapshot_declaration_tuple_data()?;
                 if matches!(
                     self.invocation_snapshot_declaration,
-                    Some(Declaration::RestorationActivation14 | Declaration::RestorationObservation14)
+                    Some(
+                        Declaration::RestorationActivation14
+                            | Declaration::RestorationObservation14
+                    )
                 ) {
                     self.authenticate_restoration_activation_declaration_tuple_data()?;
                 }
-                if matches!(self.invocation_snapshot_declaration, Some(Declaration::RestorationObservation14)) {
+                if matches!(
+                    self.invocation_snapshot_declaration,
+                    Some(Declaration::RestorationObservation14)
+                ) {
                     self.authenticate_restoration_observation_declaration_tuple_data()?;
                 }
                 Ok(true)

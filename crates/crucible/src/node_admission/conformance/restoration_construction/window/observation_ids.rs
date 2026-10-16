@@ -24,40 +24,60 @@ impl CompleteOriginalRestorationWindow {
         if selected != Some(true) {
             return Ok(());
         }
-        if self.observation_request_ids.iter().any(|slot| slot.get().is_some()) {
+        if self
+            .observation_request_ids
+            .iter()
+            .any(|slot| slot.get().is_some())
+        {
             return Err(RuntimeError::DuplicateOperation);
         }
 
         let prefix = "cnp-restoration-observe-";
-        let capacity = prefix.len().checked_add(activation.activation_id.as_str().len())
+        let capacity = prefix
+            .len()
+            .checked_add(activation.activation_id.as_str().len())
             .ok_or(RuntimeError::ResourceLimit)?;
         // Id::new remains the defining validator. This precheck avoids any
         // constructor bank for a combined identifier it necessarily rejects.
         if capacity > 128 {
             return Err(RuntimeError::InvalidReceipt);
         }
-        let future = capacity.checked_mul(self.observation_request_ids.len())
+        let future = capacity
+            .checked_mul(self.observation_request_ids.len())
             .ok_or(RuntimeError::ResourceLimit)?;
         let mut previous = observed_current_bytes;
-        for id in self.activation_request_ids.get().ok_or(RuntimeError::OwnerUnavailable)? {
-            previous = checked_sum(&[previous, id.allocated_capacity()], self.policy.maximum_requested_bytes)?;
+        for id in self
+            .activation_request_ids
+            .get()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+        {
+            previous = checked_sum(
+                &[previous, id.allocated_capacity()],
+                self.policy.maximum_requested_bytes,
+            )?;
         }
         checked_sum(&[previous, future], self.policy.maximum_requested_bytes)?;
 
         let mut actual = previous;
         for slot in &self.observation_request_ids {
             let mut body = String::new();
-            body.try_reserve_exact(capacity).map_err(|_| RuntimeError::ResourceLimit)?;
+            body.try_reserve_exact(capacity)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
             body.push_str(prefix);
             body.push_str(activation.activation_id.as_str());
             let id = Id::new(body).map_err(|_| RuntimeError::InvalidReceipt)?;
             slot.set(id).map_err(|_| RuntimeError::DuplicateOperation)?;
             // The actual owner is installed before checking observed capacity.
             // Failure preserves this ID together with all earlier slot owners.
-            actual = checked_sum(&[
-                actual,
-                slot.get().ok_or(RuntimeError::OwnerUnavailable)?.allocated_capacity(),
-            ], self.policy.maximum_requested_bytes)?;
+            actual = checked_sum(
+                &[
+                    actual,
+                    slot.get()
+                        .ok_or(RuntimeError::OwnerUnavailable)?
+                        .allocated_capacity(),
+                ],
+                self.policy.maximum_requested_bytes,
+            )?;
         }
         Ok(())
     }

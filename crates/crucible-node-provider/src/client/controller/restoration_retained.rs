@@ -102,7 +102,9 @@ impl<'a> Fields<'a> {
         for original in self.activation.iter().flatten() {
             original.observe_owned_metadata(observer)?;
         }
-        if let Some(original)=self.observation {original.observe_owned_metadata(observer)?;}
+        if let Some(original) = self.observation {
+            original.observe_owned_metadata(observer)?;
+        }
         Ok(())
     }
 }

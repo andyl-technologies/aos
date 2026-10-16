@@ -57,11 +57,17 @@ impl NativeAckBoot {
         crate::reference_packet::service::complete_restore::restoration_observe::authenticate_restoration_observe_selection_data(
             admission.policy.original_restoration_activation_selection_data(), &admission.authority,
         )?;
-        if !Rc::ptr_eq(boot, &admission.boot) { return Err(refused()); }
+        if !Rc::ptr_eq(boot, &admission.boot) {
+            return Err(refused());
+        }
         let owner = boot.try_borrow().map_err(|_| borrowed())?;
         owner.authenticate_original_invocation_prepare_target_data()?;
-        if !owner.requires_restoration_activation_data()? { return Err(refused()); }
-        let world = owner.restoration_activation[1].as_ref().ok_or_else(refused)?;
+        if !owner.requires_restoration_activation_data()? {
+            return Err(refused());
+        }
+        let world = owner.restoration_activation[1]
+            .as_ref()
+            .ok_or_else(refused)?;
         let flight = world.try_borrow().map_err(|_| borrowed())?;
         flight.ensure_origin()?;
         if !flight.verified || !flight.dispatched || !flight.published {
@@ -71,16 +77,28 @@ impl NativeAckBoot {
         let mut matched = None;
         for (index, record) in records.iter().enumerate() {
             if record.originals().last() == Some(terminal) {
-                if matched.replace(index).is_some() { return Err(refused()); }
+                if matched.replace(index).is_some() {
+                    return Err(refused());
+                }
             }
         }
         let record = matched.ok_or_else(refused)?;
         let commit = Rc::clone(owner.restoration.as_ref().ok_or_else(refused)?);
-        let hold = Rc::clone(commit.try_borrow().map_err(|_| borrowed())?
-            .physical_hold.as_ref().ok_or_else(refused)?);
+        let hold = Rc::clone(
+            commit
+                .try_borrow()
+                .map_err(|_| borrowed())?
+                .physical_hold
+                .as_ref()
+                .ok_or_else(refused)?,
+        );
         let witness = OriginalRestorationReleased {
-            boot: Rc::clone(boot), world: Rc::clone(world), commit, hold,
-            policy: Rc::clone(&admission.policy), record,
+            boot: Rc::clone(boot),
+            world: Rc::clone(world),
+            commit,
+            hold,
+            policy: Rc::clone(&admission.policy),
+            record,
         };
         drop(flight);
         drop(owner);
@@ -103,56 +121,94 @@ impl OriginalRestorationReleased {
     ) -> Result<(), ProviderError> {
         let admission = connection.original_native_owned11_admission()?;
         admission.authenticate_current(connection)?;
-        if !Rc::ptr_eq(&admission.boot, &self.boot)
-            || !Rc::ptr_eq(&admission.policy, &self.policy)
-        { return Err(refused()); }
+        if !Rc::ptr_eq(&admission.boot, &self.boot) || !Rc::ptr_eq(&admission.policy, &self.policy)
+        {
+            return Err(refused());
+        }
         let owner = self.boot.try_borrow().map_err(|_| borrowed())?;
         owner.authenticate_original_invocation_prepare_target_data()?;
         let flight = self.world.try_borrow().map_err(|_| borrowed())?;
         let commit = self.commit.try_borrow().map_err(|_| borrowed())?;
         flight.ensure_origin()?;
         commit.ensure_origin()?;
-        if owner.restoration_activation[1].as_ref().is_none_or(|slot| !Rc::ptr_eq(slot, &self.world))
-            || owner.restoration.as_ref().is_none_or(|slot| !Rc::ptr_eq(slot, &self.commit))
-            || commit.physical_hold.as_ref().is_none_or(|hold| !Rc::ptr_eq(hold, &self.hold))
-            || !commit.verified || !commit.installation_started || !commit.receipt_started
-            || !flight.verified || !flight.dispatched || !flight.published
+        if owner.restoration_activation[1]
+            .as_ref()
+            .is_none_or(|slot| !Rc::ptr_eq(slot, &self.world))
+            || owner
+                .restoration
+                .as_ref()
+                .is_none_or(|slot| !Rc::ptr_eq(slot, &self.commit))
+            || commit
+                .physical_hold
+                .as_ref()
+                .is_none_or(|hold| !Rc::ptr_eq(hold, &self.hold))
+            || !commit.verified
+            || !commit.installation_started
+            || !commit.receipt_started
+            || !flight.verified
+            || !flight.dispatched
+            || !flight.published
             || flight.phase != PacketRestorationActivationPhase::WorldActivate
             || self.hold.physical_gate_data()?
-        { return Err(refused()); }
+        {
+            return Err(refused());
+        }
         connection.authenticate_installed_complete_restoration(&commit.mapping)?;
         let original = flight.original.as_ref().ok_or_else(refused)?;
         let terminal = flight.terminal.as_ref().ok_or_else(refused)?;
         let incoming = connection.original_restoration_incoming_literal_data(
-            original, flight.incoming_slot.ok_or_else(refused)?,
+            original,
+            flight.incoming_slot.ok_or_else(refused)?,
         )?;
         drop(incoming);
         let artifact = flight.artifact.as_ref().ok_or_else(refused)?;
         let context = flight.context.as_ref().ok_or_else(refused)?;
-        if context.request != artifact.request { return Err(refused()); }
+        if context.request != artifact.request {
+            return Err(refused());
+        }
         authenticate_completed_commit(&owner, &commit, &artifact.request.scope)?;
         let purpose = owner.authenticate_original_invocation_birth_data()?;
-        purpose.authenticate_restoration_source_data(&artifact.request.scope.source_runtime,
-            &artifact.request.scope.restoration.captured_owner_state, &artifact.request.scope.target.owner)?;
-        owner.authenticate_restoration_activation_uploads_data(&artifact.request.scope, original)?;
-        let arm = owner.restoration_activation[0].as_ref().ok_or_else(refused)?
-            .try_borrow().map_err(|_| borrowed())?;
+        purpose.authenticate_restoration_source_data(
+            &artifact.request.scope.source_runtime,
+            &artifact.request.scope.restoration.captured_owner_state,
+            &artifact.request.scope.target.owner,
+        )?;
+        owner
+            .authenticate_restoration_activation_uploads_data(&artifact.request.scope, original)?;
+        let arm = owner.restoration_activation[0]
+            .as_ref()
+            .ok_or_else(refused)?
+            .try_borrow()
+            .map_err(|_| borrowed())?;
         arm.ensure_origin()?;
-        if !arm.verified || !arm.dispatched || !arm.published
+        if !arm.verified
+            || !arm.dispatched
+            || !arm.published
             || arm.artifact.as_ref().ok_or_else(refused)?.request.scope != artifact.request.scope
-        { return Err(refused()); }
+        {
+            return Err(refused());
+        }
         control.authenticate_original_restoration_released_control_data(
-            original, terminal, &artifact.request.scope, &self.boot, &commit.mapping, &self.hold, &self.policy,
+            original,
+            terminal,
+            &artifact.request.scope,
+            &self.boot,
+            &commit.mapping,
+            &self.hold,
+            &self.policy,
         )?;
         let record = records.get(self.record).ok_or_else(refused)?;
-        if record.sent() != record.originals().len() || record.originals().last() != Some(terminal) {
+        if record.sent() != record.originals().len() || record.originals().last() != Some(terminal)
+        {
             return Err(refused());
         }
         // Physical original headers/bodies, actor and same frame bank are
         // checked independently of the terminal label or stored published bit.
         for index in 0..record.originals().len() {
             let sent = record.original_sent_frame(connection, index)?;
-            if sent.original() != &record.originals()[index] { return Err(refused()); }
+            if sent.original() != &record.originals()[index] {
+                return Err(refused());
+            }
         }
         Ok(())
     }
@@ -194,20 +250,34 @@ impl OriginalRestorationReleased {
     pub(super) fn authenticate_observation_request_data<S: ProviderStream>(
         &self,
         request: &crate::reference_packet::service::complete_restore::restoration_observe::PacketRestorationObservationRequest,
-        connection: &Connection<S>, records: &[ExchangeRecord],
+        connection: &Connection<S>,
+        records: &[ExchangeRecord],
     ) -> Result<(), ProviderError> {
         let flight = self.world.try_borrow().map_err(|_| borrowed())?;
         flight.ensure_origin()?;
-        if !flight.verified || !flight.dispatched || !flight.published
+        if !flight.verified
+            || !flight.dispatched
+            || !flight.published
             || flight.artifact.as_ref().ok_or_else(refused)?.request.scope != request.scope
-        { return Err(refused()); }
+        {
+            return Err(refused());
+        }
         let original = flight.original.as_ref().ok_or_else(refused)?;
-        let incoming = connection.original_restoration_incoming_literal_data(original, flight.incoming_slot.ok_or_else(refused)?)?;
+        let incoming = connection.original_restoration_incoming_literal_data(
+            original,
+            flight.incoming_slot.ok_or_else(refused)?,
+        )?;
         request.world_original.verify(&incoming)?;
         let record = records.get(self.record).ok_or_else(refused)?;
-        let index = record.originals().len().checked_sub(1).ok_or_else(refused)?;
+        let index = record
+            .originals()
+            .len()
+            .checked_sub(1)
+            .ok_or_else(refused)?;
         let sent = record.original_sent_frame(connection, index)?;
-        if Some(sent.original()) != flight.terminal.as_ref() { return Err(refused()); }
+        if Some(sent.original()) != flight.terminal.as_ref() {
+            return Err(refused());
+        }
         request.world_terminal.verify(sent.canonical_body())?;
         Ok(())
     }

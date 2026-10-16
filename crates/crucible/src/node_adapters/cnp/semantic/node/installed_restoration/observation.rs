@@ -18,50 +18,86 @@ impl super::super::super::CnpSemanticNode {
         world: &WorldActivation,
     ) -> Result<NativeSchedulingObservation, OperationFailure> {
         self.current()?;
-        let native = self.preparation.guard.custody.as_mut()
+        let native = self
+            .preparation
+            .guard
+            .custody
+            .as_mut()
             .ok_or_else(|| super::super::super::refused("selected native capsule absent"))?;
-        let source = native.source.as_ref()
+        let source = native
+            .source
+            .as_ref()
             .ok_or_else(|| super::super::super::refused("selected Source absent"))?;
-        let controller = native.controller.as_mut()
+        let controller = native
+            .controller
+            .as_mut()
             .ok_or_else(|| super::super::super::refused("selected Controller absent"))?;
-        let runtime = native.runtime.as_mut()
+        let runtime = native
+            .runtime
+            .as_mut()
             .ok_or_else(|| super::super::super::refused("selected runtime absent"))?;
-        if !runtime.active.as_ref().is_some_and(|active| active.same_authority(world)) {
-            return Err(super::super::super::refused("selected observation changed actual World"));
+        if !runtime
+            .active
+            .as_ref()
+            .is_some_and(|active| active.same_authority(world))
+        {
+            return Err(super::super::super::refused(
+                "selected observation changed actual World",
+            ));
         }
-        let selected = runtime.installed_restoration.as_mut()
+        let selected = runtime
+            .installed_restoration
+            .as_mut()
             .ok_or_else(|| super::super::super::refused("selected association absent"))?;
         if !selected.installed || selected.observation_attempted {
-            return Err(super::super::super::refused("selected first observation is spent or uninstalled"));
+            return Err(super::super::super::refused(
+                "selected first observation is spent or uninstalled",
+            ));
         }
-        let admitted = selected.association.admitted_source_observation_data()
+        let admitted = selected
+            .association
+            .admitted_source_observation_data()
             .map_err(super::super::super::refused_display)?;
         selected.observation_attempted = true;
-        let claim = selected.association.begin_original_observation_claim_data(
-            source.as_ref(), controller, Rc::as_ptr(&native.read_owner).cast(), world,
-        ).map_err(super::super::super::refused_display)?;
-        let evidence = source.call_original_installed_restoration_observation_into(
-            controller, claim, &admitted, &mut selected.observation_completed,
-        ).map_err(super::super::super::unknown)?;
+        let claim = selected
+            .association
+            .begin_original_observation_claim_data(
+                source.as_ref(),
+                controller,
+                Rc::as_ptr(&native.read_owner).cast(),
+                world,
+            )
+            .map_err(super::super::super::refused_display)?;
+        let evidence = source
+            .call_original_installed_restoration_observation_into(
+                controller,
+                claim,
+                &admitted,
+                &mut selected.observation_completed,
+            )
+            .map_err(super::super::super::unknown)?;
 
         let InstalledRestorationCustody {
-            association, observation, observation_return, ..
+            association,
+            observation,
+            observation_return,
+            ..
         } = selected;
-        association.with_original_observation_scheduling_data(
-            source.as_ref(), &evidence, |actual| {
+        association
+            .with_original_observation_scheduling_data(source.as_ref(), &evidence, |actual| {
                 retain_scheduling_copies(
                     actual,
                     observation,
                     observation_return,
                     admitted.node_scheduling_copy_requested_bytes_data(),
                 )
-            },
-        ).map_err(super::super::super::unknown)?;
+            })
+            .map_err(super::super::super::unknown)?;
         // The association gate completed the genuine once ledger only after
         // both copies and final Source currency. No callback/allocation follows.
-        observation_return.take().ok_or_else(|| {
-            super::super::super::unknown("selected observation return owner absent")
-        })
+        observation_return
+            .take()
+            .ok_or_else(|| super::super::super::unknown("selected observation return owner absent"))
     }
 
     pub(in crate::node_adapters::cnp::semantic) fn validate_installed_restoration_observation(
@@ -70,30 +106,56 @@ impl super::super::super::CnpSemanticNode {
         observation: &NativeSchedulingObservation,
     ) -> Result<(), OperationFailure> {
         self.current()?;
-        let native = self.preparation.guard.custody.as_ref()
+        let native = self
+            .preparation
+            .guard
+            .custody
+            .as_ref()
             .ok_or_else(|| super::super::super::refused("selected native capsule absent"))?;
-        let source = native.source.as_ref()
+        let source = native
+            .source
+            .as_ref()
             .ok_or_else(|| super::super::super::refused("selected Source absent"))?;
-        let controller = native.controller.as_ref()
+        let controller = native
+            .controller
+            .as_ref()
             .ok_or_else(|| super::super::super::refused("selected Controller absent"))?;
-        let runtime = native.runtime.as_ref()
+        let runtime = native
+            .runtime
+            .as_ref()
             .ok_or_else(|| super::super::super::refused("selected runtime absent"))?;
-        if !runtime.active.as_ref().is_some_and(|active| active.same_authority(world)) {
-            return Err(super::super::super::refused("selected observation changed actual World"));
+        if !runtime
+            .active
+            .as_ref()
+            .is_some_and(|active| active.same_authority(world))
+        {
+            return Err(super::super::super::refused(
+                "selected observation changed actual World",
+            ));
         }
-        let selected = runtime.installed_restoration.as_ref()
+        let selected = runtime
+            .installed_restoration
+            .as_ref()
             .ok_or_else(|| super::super::super::refused("selected association absent"))?;
-        let saved = selected.observation.as_ref()
+        let saved = selected
+            .observation
+            .as_ref()
             .ok_or_else(|| super::super::super::refused("selected observation owner absent"))?;
-        selected.association.with_original_current_observation_scheduling_data(
-            source.as_ref(), controller, Rc::as_ptr(&native.read_owner).cast(), world,
-            |actual| {
-                if actual != saved || actual != observation {
-                    return Err(RuntimeError::InvalidReceipt);
-                }
-                Ok(())
-            },
-        ).map_err(super::super::super::unknown)
+        selected
+            .association
+            .with_original_current_observation_scheduling_data(
+                source.as_ref(),
+                controller,
+                Rc::as_ptr(&native.read_owner).cast(),
+                world,
+                |actual| {
+                    if actual != saved || actual != observation {
+                        return Err(RuntimeError::InvalidReceipt);
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(super::super::super::unknown)
     }
 }
 
@@ -137,7 +199,8 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<OriginalInstalledRestorationObservationClaim>()
         + size_of::<Result<OriginalInstalledRestorationObservationClaim, RuntimeError>>()
         + size_of::<OriginalSourceRestorationObservationVerifiedPhase<'static>>()
-        + size_of::<Result<OriginalSourceRestorationObservationVerifiedPhase<'static>, RuntimeError>>()
+        + size_of::<Result<OriginalSourceRestorationObservationVerifiedPhase<'static>, RuntimeError>>(
+        )
         + size_of::<&OriginalSourceRestorationObservationVerifiedPhase<'static>>()
         + size_of::<NativeSchedulingObservation>()
         + size_of::<Option<NativeSchedulingObservation>>()
@@ -150,7 +213,8 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<OriginalInstalledRestorationObservationConstructionData>()
         + size_of::<Option<OriginalInstalledRestorationObservationConstructionData>>()
         + size_of::<Option<&OriginalInstalledRestorationObservationConstructionData>>()
-        + size_of::<Result<OriginalInstalledRestorationObservationConstructionData, ProviderError>>()
+        + size_of::<Result<OriginalInstalledRestorationObservationConstructionData, ProviderError>>(
+        )
         + size_of::<Result<bool, RuntimeError>>()
         + size_of::<Option<crucible_node_provider::bodies::ResponseBody>>()
         + size_of::<Option<&crucible_node_provider::bodies::ResponseBody>>()
@@ -197,7 +261,6 @@ pub(super) fn counter_scratch_data() -> usize {
         super::super::super::PacketCompleteSemanticSource::original_restoration_observation_source_construction_counter_scratch_data(),
     ].into_iter().try_fold(0usize, usize::checked_add).unwrap_or(usize::MAX)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -249,12 +312,15 @@ mod tests {
     #[test]
     fn actual_two_scheduling_copies_fit_exact_census_and_one_short_retains_no_copy() {
         let actual = observation();
-        let one = NodeRuntime::capture_scheduling_observation_storage_data(&actual, usize::MAX).unwrap();
+        let one =
+            NodeRuntime::capture_scheduling_observation_storage_data(&actual, usize::MAX).unwrap();
         let exact = one.checked_mul(2).unwrap();
         let mut retained = None;
         let mut returned = None;
 
-        assert!(retain_scheduling_copies(&actual, &mut retained, &mut returned, exact - 1).is_err());
+        assert!(
+            retain_scheduling_copies(&actual, &mut retained, &mut returned, exact - 1).is_err()
+        );
         assert!(retained.is_none() && returned.is_none());
         retain_scheduling_copies(&actual, &mut retained, &mut returned, exact).unwrap();
 
@@ -262,8 +328,12 @@ mod tests {
         let output = returned.as_ref().unwrap();
         assert_eq!(saved, &actual);
         assert_eq!(output, &actual);
-        assert_ne!(saved.publications[0].payload_bytes.as_ptr(), output.publications[0].payload_bytes.as_ptr());
-        let copied = NodeRuntime::capture_scheduling_observation_storage_data(saved, exact).unwrap()
+        assert_ne!(
+            saved.publications[0].payload_bytes.as_ptr(),
+            output.publications[0].payload_bytes.as_ptr()
+        );
+        let copied = NodeRuntime::capture_scheduling_observation_storage_data(saved, exact)
+            .unwrap()
             + NodeRuntime::capture_scheduling_observation_storage_data(output, exact).unwrap();
         assert!(copied <= exact);
     }
@@ -277,7 +347,9 @@ mod tests {
         let mut changed = actual.clone();
         changed.node = Id::new("foreign-node").unwrap();
 
-        assert!(retain_scheduling_copies(&changed, &mut retained, &mut returned, usize::MAX).is_err());
+        assert!(
+            retain_scheduling_copies(&changed, &mut retained, &mut returned, usize::MAX).is_err()
+        );
         assert_eq!(retained.as_ref(), Some(&actual));
         assert_eq!(returned.as_ref(), Some(&actual));
     }

@@ -50,11 +50,11 @@ mod fresh_report;
 mod input;
 mod native5;
 mod restoration_activation;
-pub(crate) use restoration_activation::original_restoration_released_counter_scratch_data;
 pub(crate) use native5::{
     authenticate_original_restoration_coordinator_data,
     original_restoration_coordinator_counter_scratch_data,
 };
+pub(crate) use restoration_activation::original_restoration_released_counter_scratch_data;
 
 pub use native5::{
     PacketCompleteControlBirthFailure, PacketNative5Record, PacketNative5StorageSelection,
@@ -751,8 +751,12 @@ impl PacketControl {
         >,
     ) -> Result<&PacketControlReply, ProviderError> {
         self.dispatch_prepared_with_restoration_permissions(
-            request, preparation, canonical_ack_admit, selected_observe,
-            restoration_activation, None,
+            request,
+            preparation,
+            canonical_ack_admit,
+            selected_observe,
+            restoration_activation,
+            None,
         )
     }
 
@@ -796,7 +800,9 @@ impl PacketControl {
         if let Some(permit) = restoration_observation {
             permit.authenticate_control_request_data(request, &self.selection, self)?;
         } else if self.restoration_activation_required && request.method == Method::Observe {
-            return Err(ProviderError::Correlation("restored Observe private permit absent"));
+            return Err(ProviderError::Correlation(
+                "restored Observe private permit absent",
+            ));
         }
         if let Some(permit) = restoration_activation {
             permit.authenticate_control_request(

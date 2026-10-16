@@ -1183,8 +1183,8 @@ pub use archive_journal::{
 
 #[path = "packet_complete_source/archive_owner.rs"]
 mod archive_owner;
-pub(crate) use archive_owner::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
 pub use archive_owner::PacketCompleteArchivedOwnerData;
+pub(crate) use archive_owner::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
 
 impl PacketCompleteSemanticSource {
     /// Borrows the original typed reactive model used by this complete source.

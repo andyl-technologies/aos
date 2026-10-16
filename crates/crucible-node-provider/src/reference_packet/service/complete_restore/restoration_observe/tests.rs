@@ -166,25 +166,44 @@ fn observe_raw_proof_walk_counts_actual_spare_digest_backing() -> TestResult {
     Ok(())
 }
 
-
 #[test]
 fn observe_assigned_digest_refuses_each_changed_baseline_before_signing() -> TestResult {
-    let request=request()?;
-    let saved=original(&request)?;
-    restoration_observe_assigned_request_digest(&saved,65_536)?;
+    let request = request()?;
+    let saved = original(&request)?;
+    restoration_observe_assigned_request_digest(&saved, 65_536)?;
     for field in 0..5 {
-        let mut changed=saved.clone();
+        let mut changed = saved.clone();
         match field {
-            0=>{changed.body.insert("after_observation_sequence".into(),Value::String("1".into()));}
-            1=>{changed.body.insert("maximum_items".into(),Value::String("2".into()));}
-            2=>{changed.body.insert("owner_generation".into(),Value::String("2".into()));}
-            3=>{changed.body.insert("binding_hash".into(),serde_json::to_value(canonical::hash("cnp.owner-binding.v1",b"foreign")?)?);}
-            _=>{changed.body.insert("unknown".into(),Value::Null);}
+            0 => {
+                changed.body.insert(
+                    "after_observation_sequence".into(),
+                    Value::String("1".into()),
+                );
+            }
+            1 => {
+                changed
+                    .body
+                    .insert("maximum_items".into(), Value::String("2".into()));
+            }
+            2 => {
+                changed
+                    .body
+                    .insert("owner_generation".into(), Value::String("2".into()));
+            }
+            3 => {
+                changed.body.insert(
+                    "binding_hash".into(),
+                    serde_json::to_value(canonical::hash("cnp.owner-binding.v1", b"foreign")?)?,
+                );
+            }
+            _ => {
+                changed.body.insert("unknown".into(), Value::Null);
+            }
         }
-        assert!(restoration_observe_assigned_request_digest(&changed,65_536).is_err());
+        assert!(restoration_observe_assigned_request_digest(&changed, 65_536).is_err());
     }
-    let maximum=crate::connection::serialized_credit(&saved,65_536)?;
-    restoration_observe_assigned_request_digest(&saved,maximum)?;
-    assert!(restoration_observe_assigned_request_digest(&saved,maximum-1).is_err());
+    let maximum = crate::connection::serialized_credit(&saved, 65_536)?;
+    restoration_observe_assigned_request_digest(&saved, maximum)?;
+    assert!(restoration_observe_assigned_request_digest(&saved, maximum - 1).is_err());
     Ok(())
 }

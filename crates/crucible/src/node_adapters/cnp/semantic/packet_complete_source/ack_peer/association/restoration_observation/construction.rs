@@ -98,15 +98,25 @@ impl PacketCompleteSemanticSource {
         // Each old World inspection is a NEW independent validation extent.
         // Its earlier admitted credit remains spent on the earlier graph; it
         // cannot pay for this observation or these additional returned owners.
-        let transient=sum([
-            shapes.phase_work(maximum)?,
-            inputs.observation_data.source_evidence_maximum_simultaneous_transient_bytes_data(),
-            inputs.activation_source.requested_peak_bytes_data(),
-            inputs.activation_source.requested_peak_bytes_data(),
-            scheduling,
-            crate::node_adapters::cnp::semantic::initial_lifecycle_diagnostics::OriginalInitialLifecycleDiagnostics::requested_bytes(),
-            original.native.as_ref().ok_or(RuntimeError::OwnerUnavailable)?.original_fresh_current_storage_data()?,
-        ],maximum)?;
+        let transient = sum(
+            [
+                shapes.phase_work(maximum)?,
+                inputs
+                    .observation_data
+                    .source_evidence_maximum_simultaneous_transient_bytes_data(),
+                inputs.activation_source.requested_peak_bytes_data(),
+                inputs.activation_source.requested_peak_bytes_data(),
+                scheduling,
+                crate::node_adapters::cnp::semantic::initial_lifecycle_diagnostics::
+                    OriginalInitialLifecycleDiagnostics::requested_bytes(),
+                original
+                    .native
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .original_fresh_current_storage_data()?,
+            ],
+            maximum
+        )?;
         let scratch = sum(
             [
                 fixed,
@@ -168,7 +178,11 @@ impl PacketCompleteSemanticSource {
                 + size_of::<PacketRestorationObservationContext>(),
             size_of::<PacketRestorationObservationArtifact>()
                 + size_of::<PacketRestorationObservationProof>(),
-            size_of::<(PacketRestorationObservationRequest,Id,OriginalInstalledRestorationObservationConstructionData)>(),
+            size_of::<(
+                PacketRestorationObservationRequest,
+                Id,
+                OriginalInstalledRestorationObservationConstructionData,
+            )>(),
             size_of::<
                 Option<(
                     PacketRestorationObservationRequest,

@@ -82,11 +82,14 @@ pub(super) fn observe(
                 if let Some(observation) = &row.source_observation {
                     // Every later reauthentication remains independently funded;
                     // completed World or Observe does not refund the old rows.
-                    requested = checked_sum(&[
-                        requested,
-                        observation.requested_peak_bytes_data(),
-                        observation.counter_scratch_bytes_data(),
-                    ], policy.maximum_requested_bytes)?;
+                    requested = checked_sum(
+                        &[
+                            requested,
+                            observation.requested_peak_bytes_data(),
+                            observation.counter_scratch_bytes_data(),
+                        ],
+                        policy.maximum_requested_bytes,
+                    )?;
                 }
                 let signer = row.signer.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
                 let custody = row

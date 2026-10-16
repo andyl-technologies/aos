@@ -297,7 +297,11 @@ impl CompleteOriginalRestorationWindow {
             .get()
             .ok_or(RuntimeError::OwnerUnavailable)?
             .scope_data()?;
-        if self.observation_phases.get(selected).is_some_and(|phase| phase.is_verified()) {
+        if self
+            .observation_phases
+            .get(selected)
+            .is_some_and(|phase| phase.is_verified())
+        {
             return self.with_original_observed_node_custody_data(
                 selected, source, controller, read_owner, inspect,
             );

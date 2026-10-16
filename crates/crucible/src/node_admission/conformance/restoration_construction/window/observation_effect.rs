@@ -240,7 +240,6 @@ impl CompleteOriginalRestorationWindow {
         Ok(claim)
     }
 
-
     pub(crate) fn original_installed_source_observation_data(
         &self,
         selected: usize,

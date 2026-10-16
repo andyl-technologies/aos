@@ -21,8 +21,8 @@ pub use selected_construction::{
 mod observation_population;
 pub use observation_population::{
     PacketCompleteRestoreModelOutputPopulationData,
-    complete_restore_selected_model_output_population_data,
     complete_restore_selected_model_output_population_counter_scratch_data,
+    complete_restore_selected_model_output_population_data,
 };
 
 /// Reports named requested-layout terms for the complete owner-state projector.

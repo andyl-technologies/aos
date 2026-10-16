@@ -92,8 +92,8 @@ pub(super) fn install(
     // The manifest validator has authenticated exact full outer14 DATA on both
     // immutable rosters and content before any Source bank or namespace effect.
     let restoration_observation = selected.schema == "crucible.complete-scene.installation/5";
-    let restoration_activation = restoration_observation
-        || selected.schema == "crucible.complete-scene.installation/4";
+    let restoration_activation =
+        restoration_observation || selected.schema == "crucible.complete-scene.installation/4";
     let invocation_snapshot =
         restoration_activation || selected.schema == "crucible.complete-scene.installation/3";
     let (sources, declarations) = prepare_sources(
@@ -314,7 +314,8 @@ fn prepare_sources(
             // ordinary operator-install phase, like the tuple binders above.
             // Later runtime/native grants do not authorize this earlier work.
             if restoration_observation {
-                source.bind_original_restoration_observation_declaration()
+                source
+                    .bind_original_restoration_observation_declaration()
                     .map_err(|_| refused())?;
             } else if restoration_activation {
                 source
@@ -474,7 +475,10 @@ fn ready_sources(
                 PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE.into(),
             ]);
         }
-        if source.is_original_restoration_observation_declaration_data().map_err(|_| refused())? {
+        if source
+            .is_original_restoration_observation_declaration_data()
+            .map_err(|_| refused())?
+        {
             envelope_extensions.push(crucible_node_provider::reference_packet::service::complete_restore::restoration_observe::PACKET_RESTORATION_OBSERVE_FEATURE.into());
         }
         envelope_extensions.sort();

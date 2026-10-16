@@ -138,9 +138,9 @@ impl CompleteOriginalRestorationWindow {
         let proof = self.original_complete_scope_proof_identity_data()?;
         // A read-only inspection has no owned guard and cannot enter this
         // completion path, even when its underlying saved response is genuine.
-        evidence.original_effect_claim_data()?.authenticate_original_handoff_data(
-            self, selected, source, proof,
-        )?;
+        evidence
+            .original_effect_claim_data()?
+            .authenticate_original_handoff_data(self, selected, source, proof)?;
         self.with_original_observation_signing_inputs_data(selected, source, proof, |inputs| {
             // Native's defining evidence method repeats actual Observe/World/
             // Hold checks, invokes the full saved-row predicate above, then

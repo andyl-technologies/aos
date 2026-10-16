@@ -5,9 +5,9 @@
 //! remain unchanged. Failed and malformed raw bytes stay in the same bank.
 
 use super::*;
-use serde_json::Value;
 use crate::reference_packet::service::ack_emitter::OriginalRestorationObservationRead;
 use crate::reference_packet::service::complete_restore::restoration_observe::PACKET_RESTORATION_OBSERVE_FEATURE;
+use serde_json::Value;
 
 impl<S: ProviderStream> Connection<S> {
     pub(crate) fn receive_original_restoration_observation_data(

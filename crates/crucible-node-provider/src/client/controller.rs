@@ -32,11 +32,14 @@ mod assigned_admit;
 mod assigned_restore;
 mod installed_activation;
 mod installed_observation;
-pub use installed_observation::{CompletedOriginalInstalledRestorationObservation,PreparedOriginalInstalledRestorationObservation};
 pub use installed_activation::{
     CompletedOriginalInstalledRestorationActivation, CompletedOriginalInstalledRestorationUpload,
     OriginalRestorationActivationTargetBindingData, PreparedOriginalInstalledRestorationActivation,
     PreparedOriginalInstalledRestorationUpload,
+};
+pub use installed_observation::{
+    CompletedOriginalInstalledRestorationObservation,
+    PreparedOriginalInstalledRestorationObservation,
 };
 mod assigned_transfer;
 mod fresh_restore_query;
@@ -94,7 +97,8 @@ pub struct CnpController {
     original_installed_restoration_activation:
         [Option<installed_activation::AssignedOriginalInstalledRestorationActivation>; 2],
     original_installed_restoration_upload: [Option<installed_activation::AssignedUpload>; 2],
-    original_installed_restoration_observation: Option<installed_observation::AssignedOriginalInstalledRestorationObservation>,
+    original_installed_restoration_observation:
+        Option<installed_observation::AssignedOriginalInstalledRestorationObservation>,
 }
 
 impl CnpController {
@@ -142,9 +146,10 @@ impl CnpController {
             original_installed_restoration_upload,
             original_installed_restoration_observation,
         } = self;
-        if original_installed_restoration_observation.is_some() || original_installed_restoration_upload
-            .iter()
-            .any(Option::is_some)
+        if original_installed_restoration_observation.is_some()
+            || original_installed_restoration_upload
+                .iter()
+                .any(Option::is_some)
             || original_installed_restoration_activation
                 .iter()
                 .any(Option::is_some)
@@ -498,10 +503,11 @@ impl CnpController {
             &crate::connection::OriginalSupervisorProtocolView<'_>,
         )>,
     ) -> Result<(), ProviderError> {
-        if self.original_installed_restoration_observation.is_some() || self
-            .original_installed_restoration_upload
-            .iter()
-            .any(Option::is_some)
+        if self.original_installed_restoration_observation.is_some()
+            || self
+                .original_installed_restoration_upload
+                .iter()
+                .any(Option::is_some)
             || self
                 .original_installed_restoration_activation
                 .iter()
@@ -1219,7 +1225,7 @@ impl CnpController {
                 original_complete_restore_commit: None,
                 installed_complete_restore: None,
                 original_installed_restoration_activation: [None, None],
-            original_installed_restoration_observation: None,
+                original_installed_restoration_observation: None,
                 original_installed_restoration_upload: [None, None],
                 protocol_owner: std::rc::Rc::new(
                     crate::protocol_snapshot::ProtocolCaptureOwner::new(),

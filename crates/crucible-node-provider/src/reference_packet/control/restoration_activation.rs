@@ -167,40 +167,77 @@ impl PacketControl {
         original: &Envelope,
         terminal: &Envelope,
         scope: &crate::reference_packet::service::complete_restore::activation::PacketRestorationActivationScope,
-        boot: &std::rc::Rc<std::cell::RefCell<crate::reference_packet::service::ack_emitter::NativeAckBoot>>,
-        mapping: &std::rc::Rc<std::cell::RefCell<crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping>>,
+        boot: &std::rc::Rc<
+            std::cell::RefCell<crate::reference_packet::service::ack_emitter::NativeAckBoot>,
+        >,
+        mapping: &std::rc::Rc<
+            std::cell::RefCell<crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping>,
+        >,
         hold: &std::rc::Rc<PacketCompleteRestorePhysicalHold>,
         policy: &crate::reference_packet::Native5Policy,
     ) -> Result<(), ProviderError> {
-        if self.capture_creator != std::process::id() || self.fenced || !self.immediate
-            || !self.restoration_activation_required || original.method != Method::WorldActivate
-            || terminal.method != original.method || terminal.request_id != original.request_id
-            || terminal.session_id != original.session_id || terminal.incarnation_id != original.incarnation_id
-            || self.complete_restored_hold.as_ref().is_none_or(|actual| !std::rc::Rc::ptr_eq(actual, hold))
-            || self.original_physical_gate_held()? || hold.physical_gate_data()?
-        { return Err(refused()); }
+        if self.capture_creator != std::process::id()
+            || self.fenced
+            || !self.immediate
+            || !self.restoration_activation_required
+            || original.method != Method::WorldActivate
+            || terminal.method != original.method
+            || terminal.request_id != original.request_id
+            || terminal.session_id != original.session_id
+            || terminal.incarnation_id != original.incarnation_id
+            || self
+                .complete_restored_hold
+                .as_ref()
+                .is_none_or(|actual| !std::rc::Rc::ptr_eq(actual, hold))
+            || self.original_physical_gate_held()?
+            || hold.physical_gate_data()?
+        {
+            return Err(refused());
+        }
         policy.authenticate_original_control_selection(&self.selection)?;
-        self.complete_restored_evidence.as_ref().ok_or_else(refused)?
+        self.complete_restored_evidence
+            .as_ref()
+            .ok_or_else(refused)?
             .authenticate_released_custody_data(boot, mapping, hold)?;
         let active = self.active.as_ref().ok_or_else(refused)?;
-        if active.transaction_id != scope.target.transaction || active.activation_id != scope.target.activation
-            || active.world_generation != scope.target.generation || active.gate_id != scope.target.gate
-            || active.prepared_token != scope.target.prepared_token || active.world_binding_hash != scope.target.world
-            || original.body.get("activation_manifest").is_none_or(|value|
-                !super::fresh_report::borrowed_reference_matches(value, &active.activation_manifest))
-        { return Err(refused()); }
+        if active.transaction_id != scope.target.transaction
+            || active.activation_id != scope.target.activation
+            || active.world_generation != scope.target.generation
+            || active.gate_id != scope.target.gate
+            || active.prepared_token != scope.target.prepared_token
+            || active.world_binding_hash != scope.target.world
+            || original
+                .body
+                .get("activation_manifest")
+                .is_none_or(|value| {
+                    !super::fresh_report::borrowed_reference_matches(
+                        value,
+                        &active.activation_manifest,
+                    )
+                })
+        {
+            return Err(refused());
+        }
         let request_id = original.request_id.0.as_ref().ok_or_else(refused)?;
         let cached = &self.originals.get(request_id).ok_or_else(refused)?.1;
-        if cached.body != terminal.body { return Err(refused()); }
+        if cached.body != terminal.body {
+            return Err(refused());
+        }
         let (receipt, _) = cached.evidence.last().ok_or_else(refused)?;
-        let actual_receipt = cached.body.get("result").and_then(Value::as_object)
-            .and_then(|result| result.get("activation_receipt")).ok_or_else(refused)?;
+        let actual_receipt = cached
+            .body
+            .get("result")
+            .and_then(Value::as_object)
+            .and_then(|result| result.get("activation_receipt"))
+            .ok_or_else(refused)?;
         if !super::fresh_report::borrowed_reference_matches(actual_receipt, receipt) {
             return Err(refused());
         }
         for (reference, bytes) in &cached.evidence {
             reference.verify(bytes)?;
-            if self.content.get(reference) != Some(bytes) { return Err(refused()); }
+            if self.content.get(reference) != Some(bytes) {
+                return Err(refused());
+            }
         }
         Ok(())
     }
@@ -208,43 +245,88 @@ impl PacketControl {
 
 impl PacketControl {
     pub(crate) fn dispatch_original_restoration_observation_with_preflight(
-        &mut self, request: &Envelope,
+        &mut self,
+        request: &Envelope,
         permit: &crate::reference_packet::service::ack_emitter::OriginalRestorationObservationPermit,
         prepare: &mut dyn FnMut(&PacketControlReply) -> Result<(), ProviderError>,
     ) -> Result<&PacketControlReply, ProviderError> {
-        if request.method != Method::Observe || !self.immediate || self.fenced
-            || request.request_id.0.as_ref().is_none_or(|id| self.originals.contains_key(id))
-        { return Err(refused()); }
+        if request.method != Method::Observe
+            || !self.immediate
+            || self.fenced
+            || request
+                .request_id
+                .0
+                .as_ref()
+                .is_none_or(|id| self.originals.contains_key(id))
+        {
+            return Err(refused());
+        }
         permit.authenticate_control_request_data(request, &self.selection, self)?;
         self.dispatch_prepared_with_restoration_permissions(
-            request, &mut ReplyPreparation { callback: Some(prepare), attempted: false },
-            None, None, None, Some(permit),
+            request,
+            &mut ReplyPreparation {
+                callback: Some(prepare),
+                attempted: false,
+            },
+            None,
+            None,
+            None,
+            Some(permit),
         )
     }
 
     // This checks the actual cached producer result, not a reconstructed DTO or
     // receipt label. The Source independently authenticates the full proof pair.
     pub(crate) fn authenticate_original_restoration_observation_terminal_data(
-        &self, original: &Envelope, terminal: &Envelope,
+        &self,
+        original: &Envelope,
+        terminal: &Envelope,
     ) -> Result<(), ProviderError> {
-        if self.capture_creator != std::process::id() || self.fenced || !self.immediate
-            || original.method != Method::Observe || self.original_physical_gate_held()?
-        { return Err(refused()); }
-        let cached = &self.originals.get(original.request_id.0.as_ref().ok_or_else(refused)?).ok_or_else(refused)?.1;
+        if self.capture_creator != std::process::id()
+            || self.fenced
+            || !self.immediate
+            || original.method != Method::Observe
+            || self.original_physical_gate_held()?
+        {
+            return Err(refused());
+        }
+        let cached = &self
+            .originals
+            .get(original.request_id.0.as_ref().ok_or_else(refused)?)
+            .ok_or_else(refused)?
+            .1;
         if cached.body != terminal.body
             || terminal.body.get("status").and_then(Value::as_str) != Some("completed")
             || terminal.body.get("operation_state").and_then(Value::as_str) != Some("completed")
-        { return Err(refused()); }
-        let result = terminal.body.get("result").and_then(Value::as_object).ok_or_else(refused)?;
-        let observations = result.get("observations").and_then(Value::as_array).ok_or_else(refused)?;
-        let [batch] = observations.as_slice() else { return Err(refused()); };
+        {
+            return Err(refused());
+        }
+        let result = terminal
+            .body
+            .get("result")
+            .and_then(Value::as_object)
+            .ok_or_else(refused)?;
+        let observations = result
+            .get("observations")
+            .and_then(Value::as_array)
+            .ok_or_else(refused)?;
+        let [batch] = observations.as_slice() else {
+            return Err(refused());
+        };
         if result.get("complete").and_then(Value::as_bool) != Some(true)
             || result.get("next_sequence").and_then(Value::as_str) != Some("1")
-            || batch.get("events").and_then(Value::as_array).is_none_or(|events| !events.is_empty())
-        { return Err(refused()); }
+            || batch
+                .get("events")
+                .and_then(Value::as_array)
+                .is_none_or(|events| !events.is_empty())
+        {
+            return Err(refused());
+        }
         for (reference, bytes) in &cached.evidence {
             reference.verify(bytes)?;
-            if self.content.get(reference) != Some(bytes) { return Err(refused()); }
+            if self.content.get(reference) != Some(bytes) {
+                return Err(refused());
+            }
         }
         Ok(())
     }

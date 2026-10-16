@@ -373,56 +373,99 @@ fn historical_commit_hold(
 /// it cannot release, replace or reconstruct that owning token. It only lends
 /// actual saved DATA after MAC/model/history checks, never a phase capability.
 pub(in super::super) fn with_verified_world_under_read_data(
-    source:&PacketCompleteSemanticSource,
-    controller:&CnpController,
-    original:&OriginalAckPeerAssociation,
-    inputs:&OriginalInstalledRestorationActivationSigningInputs<'_>,
-    admitted:&OriginalSourceRestorationActivationConstructionData,
-    key:&[u8;32],
-    mut recheck:impl FnMut()->Result<(),RuntimeError>,
-    inspect:impl FnOnce(&PacketRestorationActivationScope,&ContentRef,&PacketNativeRestoredCommitHold)->Result<(),RuntimeError>,
-)->Result<(),RuntimeError> {
-    if inputs.phase!=OriginalInstalledRestorationActivationPhase::WorldActivate
-        || !std::ptr::eq(inputs.transfer.source.as_ref(),source)
-    { return Err(RuntimeError::ForeignAuthority); }
-    admitted.authenticate_original(source,controller)?;
+    source: &PacketCompleteSemanticSource,
+    controller: &CnpController,
+    original: &OriginalAckPeerAssociation,
+    inputs: &OriginalInstalledRestorationActivationSigningInputs<'_>,
+    admitted: &OriginalSourceRestorationActivationConstructionData,
+    key: &[u8; 32],
+    mut recheck: impl FnMut() -> Result<(), RuntimeError>,
+    inspect: impl FnOnce(
+        &PacketRestorationActivationScope,
+        &ContentRef,
+        &PacketNativeRestoredCommitHold,
+    ) -> Result<(), RuntimeError>,
+) -> Result<(), RuntimeError> {
+    if inputs.phase != OriginalInstalledRestorationActivationPhase::WorldActivate
+        || !std::ptr::eq(inputs.transfer.source.as_ref(), source)
+    {
+        return Err(RuntimeError::ForeignAuthority);
+    }
+    admitted.authenticate_original(source, controller)?;
     admitted.authenticate_same_construction_data(inputs.source_construction)?;
     original.authenticate_transfer_ready_data()?;
-    inputs.scope_proof.verify(inputs.scope_proof_body).map_err(|_|RuntimeError::InvalidReceipt)?;
-    let emitter=original.emitter.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
-    let attempt=original.restoration_activation.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
-    let phase=PacketRestorationActivationPhase::WorldActivate;
+    inputs
+        .scope_proof
+        .verify(inputs.scope_proof_body)
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
+    let emitter = original
+        .emitter
+        .as_ref()
+        .ok_or(RuntimeError::OwnerUnavailable)?;
+    let attempt = original
+        .restoration_activation
+        .as_ref()
+        .ok_or(RuntimeError::OwnerUnavailable)?;
+    let phase = PacketRestorationActivationPhase::WorldActivate;
     attempt.authenticate_verified(phase)?;
-    let artifact:PacketRestorationActivationArtifact=serde::Deserialize::deserialize(attempt.value(phase,1)?)
-        .map_err(|_|RuntimeError::InvalidReceipt)?;
-    let scope=&artifact.request.scope;
-    attempt.authenticate_original(source,controller,blake3::Hash::from_bytes(
-        restoration_activation_scope_digest_data(scope).map_err(|_|RuntimeError::InvalidReceipt)?))?;
-    scope.source_birth.verify(&original.banks[0]).map_err(|_|RuntimeError::InvalidReceipt)?;
-    if scope.source_runtime!=inputs.scope.source_record || scope.scope_proof!=*inputs.scope_proof
-        || scope.target.world!=inputs.scope.target.world_binding_hash
-        || scope.target.activation!=inputs.scope.target.activation_id
-        || scope.target.generation!=inputs.scope.target.generation
-        || scope.restoration.captured_owner_state!=inputs.transfer.ticket.owner()?.state
-        || scope.restoration.captured_control!=inputs.transfer.journal.native_control
-        || scope.restoration.captured_journal!=*inputs.transfer.journal_reference
-    { return Err(RuntimeError::ForeignAuthority); }
-    let pair=controller.original_completed_installed_restoration_activation(emitter,phase)
-        .map_err(|_|RuntimeError::InvalidReceipt)?;
-    if pair.original().request_id.0.as_ref()!=Some(inputs.request_id) { return Err(RuntimeError::ForeignAuthority); }
+    let artifact: PacketRestorationActivationArtifact =
+        serde::Deserialize::deserialize(attempt.value(phase, 1)?)
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+    let scope = &artifact.request.scope;
+    attempt.authenticate_original(
+        source,
+        controller,
+        blake3::Hash::from_bytes(
+            restoration_activation_scope_digest_data(scope)
+                .map_err(|_| RuntimeError::InvalidReceipt)?,
+        ),
+    )?;
+    scope
+        .source_birth
+        .verify(&original.banks[0])
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
+    if scope.source_runtime != inputs.scope.source_record
+        || scope.scope_proof != *inputs.scope_proof
+        || scope.target.world != inputs.scope.target.world_binding_hash
+        || scope.target.activation != inputs.scope.target.activation_id
+        || scope.target.generation != inputs.scope.target.generation
+        || scope.restoration.captured_owner_state != inputs.transfer.ticket.owner()?.state
+        || scope.restoration.captured_control != inputs.transfer.journal.native_control
+        || scope.restoration.captured_journal != *inputs.transfer.journal_reference
+    {
+        return Err(RuntimeError::ForeignAuthority);
+    }
+    let pair = controller
+        .original_completed_installed_restoration_activation(emitter, phase)
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
+    if pair.original().request_id.0.as_ref() != Some(inputs.request_id) {
+        return Err(RuntimeError::ForeignAuthority);
+    }
     recheck()?;
-    authenticate_saved_pair(attempt,controller,emitter,phase,key,admitted)?;
-    let body:crucible_node_provider::bodies::WorldActivateRequest=
-        serde_json::from_value(serde_json::Value::Object(pair.original().body.clone())).map_err(|_|RuntimeError::InvalidReceipt)?;
-    authenticate_world_manifest(source,controller,&body,inputs.world.ok_or(RuntimeError::ForeignAuthority)?,
-        admitted.maximum_activation_manifest_encoded_bytes_data())?;
-    let record=attempt.native_record(phase)?;
-    let bytes=controller.content(&record.native_receipt.native_record).map_err(|_|RuntimeError::InvalidReceipt)?;
-    let observed=controller.authenticate_original_installed_restoration_activation_evidence_data(emitter,phase,record,bytes)
-        .map_err(|_|RuntimeError::InvalidReceipt)?;
-    let (reference,held)=historical_commit_hold(controller,emitter,original,scope)?;
-    authenticate_restoration_activation_held_correspondence_data(record,&observed,&held).map_err(|_|RuntimeError::InvalidReceipt)?;
+    authenticate_saved_pair(attempt, controller, emitter, phase, key, admitted)?;
+    let body: crucible_node_provider::bodies::WorldActivateRequest =
+        serde_json::from_value(serde_json::Value::Object(pair.original().body.clone()))
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+    authenticate_world_manifest(
+        source,
+        controller,
+        &body,
+        inputs.world.ok_or(RuntimeError::ForeignAuthority)?,
+        admitted.maximum_activation_manifest_encoded_bytes_data(),
+    )?;
+    let record = attempt.native_record(phase)?;
+    let bytes = controller
+        .content(&record.native_receipt.native_record)
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
+    let observed = controller
+        .authenticate_original_installed_restoration_activation_evidence_data(
+            emitter, phase, record, bytes,
+        )
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
+    let (reference, held) = historical_commit_hold(controller, emitter, original, scope)?;
+    authenticate_restoration_activation_held_correspondence_data(record, &observed, &held)
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
     recheck()?;
-    inspect(scope,&reference,&held)?;
+    inspect(scope, &reference, &held)?;
     recheck()
 }

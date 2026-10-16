@@ -442,7 +442,6 @@ impl OriginalInstalledRestorationNodeAssociation {
             world,
         )
     }
-
 }
 
 impl OriginalInstalledRestorationNodeAssociation {

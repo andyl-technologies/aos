@@ -342,19 +342,34 @@ impl NativeRestoredControlEvidence {
         mapping: &Rc<RefCell<PreparedArchivedNativeProtocolMapping>>,
         hold: &Rc<PacketCompleteRestorePhysicalHold>,
     ) -> Result<(), ProviderError> {
-        if !Rc::ptr_eq(boot, &self.boot) || !Rc::ptr_eq(hold, &self.hold)
+        if !Rc::ptr_eq(boot, &self.boot)
+            || !Rc::ptr_eq(hold, &self.hold)
             || self.hold.physical_gate_data()?
-        { return Err(refused()); }
+        {
+            return Err(refused());
+        }
         let owner = self.boot.try_borrow().map_err(|_| borrowed())?;
         let flight = self.attempt.try_borrow().map_err(|_| borrowed())?;
         owner.ensure_origin()?;
         flight.ensure_origin()?;
-        if owner.restoration.as_ref().is_none_or(|actual| !Rc::ptr_eq(actual, &self.attempt))
-            || flight.physical_hold.as_ref().is_none_or(|actual| !Rc::ptr_eq(actual, &self.hold))
-            || !Rc::ptr_eq(mapping, &flight.mapping) || !flight.verified || !flight.installation_started
-            || !flight.receipt_started || flight.completed_response.is_none()
-            || flight.response_body.is_empty() || flight.receipt_body.is_empty()
-        { return Err(refused()); }
+        if owner
+            .restoration
+            .as_ref()
+            .is_none_or(|actual| !Rc::ptr_eq(actual, &self.attempt))
+            || flight
+                .physical_hold
+                .as_ref()
+                .is_none_or(|actual| !Rc::ptr_eq(actual, &self.hold))
+            || !Rc::ptr_eq(mapping, &flight.mapping)
+            || !flight.verified
+            || !flight.installation_started
+            || !flight.receipt_started
+            || flight.completed_response.is_none()
+            || flight.response_body.is_empty()
+            || flight.receipt_body.is_empty()
+        {
+            return Err(refused());
+        }
         Ok(())
     }
 }

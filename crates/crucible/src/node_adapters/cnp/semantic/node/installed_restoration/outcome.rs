@@ -526,9 +526,16 @@ mod tests {
         let mut changed_world = original.clone();
         changed_world.activation = foreign_world;
         assert!(changed_world.token().same_authority(original.token()));
-        assert!(authenticate_retained_admission(
-            &[retained.clone()], &[], route, activation, &changed_world,
-        ).is_err());
+        assert!(
+            authenticate_retained_admission(
+                &[retained.clone()],
+                &[],
+                route,
+                activation,
+                &changed_world,
+            )
+            .is_err()
+        );
         assert!(
             authenticate_retained_admission(
                 &[retained.clone(), retained.clone()],

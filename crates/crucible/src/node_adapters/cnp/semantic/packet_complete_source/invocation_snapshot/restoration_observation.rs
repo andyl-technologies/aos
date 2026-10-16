@@ -20,7 +20,9 @@ impl PacketCompleteSemanticSource {
     /// # Errors
     /// Refuses foreign, late or duplicate binding, missing parent premises or a
     /// missing, duplicate, changed Observe schema or unsupported feature roster.
-    pub fn bind_original_restoration_observation_declaration(&mut self) -> Result<(), RuntimeError> {
+    pub fn bind_original_restoration_observation_declaration(
+        &mut self,
+    ) -> Result<(), RuntimeError> {
         self.bind_original_restoration_activation_declaration()?;
         self.invocation_snapshot_declaration = Some(Declaration::Attempted);
         self.authenticate_restoration_observation_declaration_tuple_data()?;
@@ -37,9 +39,14 @@ impl PacketCompleteSemanticSource {
     ///
     /// # Errors
     /// Refuses foreign origin, a poisoned declaration or changed immutable data.
-    pub fn is_original_restoration_observation_declaration_data(&self) -> Result<bool, RuntimeError> {
+    pub fn is_original_restoration_observation_declaration_data(
+        &self,
+    ) -> Result<bool, RuntimeError> {
         self.is_original_invocation_snapshot_declaration_data()?;
-        Ok(matches!(self.invocation_snapshot_declaration, Some(Declaration::RestorationObservation14)))
+        Ok(matches!(
+            self.invocation_snapshot_declaration,
+            Some(Declaration::RestorationObservation14)
+        ))
     }
 
     /// Names the complete inherited borrowed classifier's defining fixed views.
@@ -47,33 +54,50 @@ impl PacketCompleteSemanticSource {
         Self::original_invocation_snapshot_declaration_counter_scratch_data()
     }
 
-    pub(super) fn authenticate_restoration_observation_declaration_tuple_data(&self) -> Result<(), RuntimeError> {
+    pub(super) fn authenticate_restoration_observation_declaration_tuple_data(
+        &self,
+    ) -> Result<(), RuntimeError> {
         authenticate_rosters(self.installation())
     }
 }
 
 fn authenticate_rosters(installation: &CnpSemanticInstallation) -> Result<(), RuntimeError> {
-    for formats in [installation.provider.implementation.formats.as_slice(),
-        installation.binding.compatibility.implementation.formats.as_slice()] {
+    for formats in [
+        installation.provider.implementation.formats.as_slice(),
+        installation
+            .binding
+            .compatibility
+            .implementation
+            .formats
+            .as_slice(),
+    ] {
         let mut found = false;
         for schema in formats {
             if schema.id.as_str() == PACKET_RESTORATION_OBSERVE_FEATURE {
-                if found { return Err(RuntimeError::ForeignAuthority); }
+                if found {
+                    return Err(RuntimeError::ForeignAuthority);
+                }
                 authenticate_restoration_observe_schema_data(schema)
                     .map_err(|_| RuntimeError::ForeignAuthority)?;
                 found = true;
             }
         }
-        if !found { return Err(RuntimeError::ForeignAuthority); }
+        if !found {
+            return Err(RuntimeError::ForeignAuthority);
+        }
     }
     let mut found = false;
     for feature in &installation.provider.extensions_supported {
         if feature.as_str() == PACKET_RESTORATION_OBSERVE_FEATURE {
-            if found { return Err(RuntimeError::ForeignAuthority); }
+            if found {
+                return Err(RuntimeError::ForeignAuthority);
+            }
             found = true;
         }
     }
-    if !found { return Err(RuntimeError::ForeignAuthority); }
+    if !found {
+        return Err(RuntimeError::ForeignAuthority);
+    }
     Ok(())
 }
 
@@ -83,7 +107,9 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<std::array::IntoIter<&[SchemaRef], 2>>()
         + size_of::<std::slice::Iter<'_, SchemaRef>>()
         + size_of::<std::slice::Iter<'_, Id>>()
-        + size_of::<&SchemaRef>() + size_of::<&Id>() + size_of::<&str>()
+        + size_of::<&SchemaRef>()
+        + size_of::<&Id>()
+        + size_of::<&str>()
         + 2 * size_of::<bool>()
         + size_of::<Option<Declaration>>()
         + size_of::<Result<bool, RuntimeError>>()
@@ -101,12 +127,17 @@ mod tests {
         let coordinator = super::super::super::tests::coordinator();
         let mut installed = super::super::super::tests::installation(&coordinator, 0);
         let schema = restoration_observe_schema().unwrap();
-        for formats in [&mut installed.provider.implementation.formats,
-            &mut installed.binding.compatibility.implementation.formats] {
+        for formats in [
+            &mut installed.provider.implementation.formats,
+            &mut installed.binding.compatibility.implementation.formats,
+        ] {
             formats.push(schema.clone());
             formats.sort_by(|a, b| a.id.cmp(&b.id));
         }
-        installed.provider.extensions_supported.push(Id::new(PACKET_RESTORATION_OBSERVE_FEATURE).unwrap());
+        installed
+            .provider
+            .extensions_supported
+            .push(Id::new(PACKET_RESTORATION_OBSERVE_FEATURE).unwrap());
         installed.provider.extensions_supported.sort();
         installed
     }
@@ -117,22 +148,43 @@ mod tests {
         for binding in [false, true] {
             for change in 0..5 {
                 let mut installed = installation();
-                let formats = if binding { &mut installed.binding.compatibility.implementation.formats }
-                    else { &mut installed.provider.implementation.formats };
-                let index = formats.iter().position(|row| row.id.as_str() == PACKET_RESTORATION_OBSERVE_FEATURE).unwrap();
+                let formats = if binding {
+                    &mut installed.binding.compatibility.implementation.formats
+                } else {
+                    &mut installed.provider.implementation.formats
+                };
+                let index = formats
+                    .iter()
+                    .position(|row| row.id.as_str() == PACKET_RESTORATION_OBSERVE_FEATURE)
+                    .unwrap();
                 match change {
-                    0 => { formats.remove(index); }
-                    1 => { formats.push(formats[index].clone()); }
-                    2 => { formats[index].version += 1; }
-                    3 => { formats[index].definition.hash.digest = "0".repeat(64); }
-                    4 => { formats[index].extensions.insert("changed".into(), serde_json::Value::Null); }
+                    0 => {
+                        formats.remove(index);
+                    }
+                    1 => {
+                        formats.push(formats[index].clone());
+                    }
+                    2 => {
+                        formats[index].version += 1;
+                    }
+                    3 => {
+                        formats[index].definition.hash.digest = "0".repeat(64);
+                    }
+                    4 => {
+                        formats[index]
+                            .extensions
+                            .insert("changed".into(), serde_json::Value::Null);
+                    }
                     _ => unreachable!(),
                 }
                 assert!(authenticate_rosters(&installed).is_err());
             }
         }
         let mut installed = installation();
-        installed.provider.extensions_supported.retain(|feature| feature.as_str() != PACKET_RESTORATION_OBSERVE_FEATURE);
+        installed
+            .provider
+            .extensions_supported
+            .retain(|feature| feature.as_str() != PACKET_RESTORATION_OBSERVE_FEATURE);
         assert!(authenticate_rosters(&installed).is_err());
     }
 
@@ -141,12 +193,31 @@ mod tests {
         let coordinator = super::super::super::tests::coordinator();
         let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
             super::super::super::tests::installation(&coordinator, 0),
-            super::super::super::tests::producer(), coordinator,
-            super::super::super::tests::storage_selection()).unwrap();
-        assert!(!source.is_original_restoration_observation_declaration_data().unwrap());
-        assert!(source.bind_original_restoration_observation_declaration().is_err());
-        assert!(source.is_original_restoration_observation_declaration_data().is_err());
-        assert!(source.bind_original_restoration_observation_declaration().is_err());
+            super::super::super::tests::producer(),
+            coordinator,
+            super::super::super::tests::storage_selection(),
+        )
+        .unwrap();
+        assert!(
+            !source
+                .is_original_restoration_observation_declaration_data()
+                .unwrap()
+        );
+        assert!(
+            source
+                .bind_original_restoration_observation_declaration()
+                .is_err()
+        );
+        assert!(
+            source
+                .is_original_restoration_observation_declaration_data()
+                .is_err()
+        );
+        assert!(
+            source
+                .bind_original_restoration_observation_declaration()
+                .is_err()
+        );
         assert!(source.capture_banks.get_mut().is_none());
         assert!(source.ack_peer_birth.get_mut().is_none());
         assert!(source.capture_execution.get_mut().is_none());

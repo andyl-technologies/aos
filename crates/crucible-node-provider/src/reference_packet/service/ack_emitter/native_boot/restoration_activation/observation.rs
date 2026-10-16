@@ -5,8 +5,8 @@
 //! released lifecycle witness supplies chronology only: the separate Source
 //! MAC and recounted observation row precede every model/proof allocation.
 
-use super::*;
 use super::released::OriginalRestorationReleased;
+use super::*;
 use crate::connection::{ExchangeRecord, ReceivedBody};
 use crate::reference_packet::service::complete_restore::restoration_observe::*;
 
@@ -54,26 +54,49 @@ impl NativeAckBoot {
         released.authenticate_current_data(connection, control, records)?;
         let admission = connection.original_native_owned11_admission()?;
         authenticate_restoration_observe_selection_data(
-            admission.policy.original_restoration_activation_selection_data(),
+            admission
+                .policy
+                .original_restoration_activation_selection_data(),
             &admission.authority,
         )?;
         let maximum = usize::try_from(admission.authority.limits().frame_bytes.get())
             .map_err(|_| refused())?;
         let mut owner = admission.boot.try_borrow_mut().map_err(|_| borrowed())?;
         owner.authenticate_original_invocation_prepare_target_data()?;
-        owner.startup.as_ref().ok_or_else(refused)?.allocation.native_birth
-            .authenticate_actual_data(&original_native_restoration_observation_ingress_row_data(maximum)?)?;
+        owner
+            .startup
+            .as_ref()
+            .ok_or_else(refused)?
+            .allocation
+            .native_birth
+            .authenticate_actual_data(&original_native_restoration_observation_ingress_row_data(
+                maximum,
+            )?)?;
         if owner.restoration_observation.is_some() {
-            return Err(ProviderError::Conflict("restored observation already attempted"));
+            return Err(ProviderError::Conflict(
+                "restored observation already attempted",
+            ));
         }
         let attempt = Rc::new(RefCell::new(NativeRestorationObservationAttempt {
-            creator: std::process::id(), thread: std::thread::current().id(),
-            original: None, body: None, artifact: None, context: None, terminal: None,
-            received: false, verified: false, dispatched: false, published: false,
+            creator: std::process::id(),
+            thread: std::thread::current().id(),
+            original: None,
+            body: None,
+            artifact: None,
+            context: None,
+            terminal: None,
+            received: false,
+            verified: false,
+            dispatched: false,
+            published: false,
         }));
         owner.restoration_observation = Some(Rc::clone(&attempt));
         drop(owner);
-        Ok(OriginalRestorationObservationRead { released, attempt, read_started: std::cell::Cell::new(false) })
+        Ok(OriginalRestorationObservationRead {
+            released,
+            attempt,
+            read_started: std::cell::Cell::new(false),
+        })
     }
 }
 
@@ -81,7 +104,12 @@ impl NativeRestorationObservationAttempt {
     // This is the actual ownership cut, before any artifact/header decode.
     fn retain_original_data(&mut self, original: Envelope) -> Result<(), ProviderError> {
         self.ensure_origin()?;
-        if self.original.is_some() || self.received || self.verified || self.dispatched || self.published {
+        if self.original.is_some()
+            || self.received
+            || self.verified
+            || self.dispatched
+            || self.published
+        {
             return Err(refused());
         }
         self.original = Some(original);
@@ -102,14 +130,18 @@ impl OriginalRestorationObservationRead {
     /// # Errors
     /// Refuses a second invocation or changed actual connection/boot ownership.
     pub(crate) fn begin_receive_data<S: ProviderStream>(
-        &self, connection: &Connection<S>,
+        &self,
+        connection: &Connection<S>,
     ) -> Result<(), ProviderError> {
-        if self.read_started.replace(true) { return Err(refused()); }
+        if self.read_started.replace(true) {
+            return Err(refused());
+        }
         self.authenticate_receive_data(connection)
     }
 
     pub(crate) fn authenticate_receive_data<S: ProviderStream>(
-        &self, connection: &Connection<S>,
+        &self,
+        connection: &Connection<S>,
     ) -> Result<(), ProviderError> {
         let admission = connection.original_native_owned11_admission()?;
         admission.authenticate_current(connection)?;
@@ -117,18 +149,32 @@ impl OriginalRestorationObservationRead {
         let flight = self.attempt.try_borrow().map_err(|_| borrowed())?;
         flight.ensure_origin()?;
         if !Rc::ptr_eq(&admission.boot, &self.released.boot)
-            || owner.restoration_observation.as_ref().is_none_or(|slot| !Rc::ptr_eq(slot, &self.attempt))
-            || flight.received || flight.verified || flight.dispatched || flight.published
-        { return Err(refused()); }
+            || owner
+                .restoration_observation
+                .as_ref()
+                .is_none_or(|slot| !Rc::ptr_eq(slot, &self.attempt))
+            || flight.received
+            || flight.verified
+            || flight.dispatched
+            || flight.published
+        {
+            return Err(refused());
+        }
         authenticate_restoration_observe_selection_data(
-            admission.policy.original_restoration_activation_selection_data(), &admission.authority,
+            admission
+                .policy
+                .original_restoration_activation_selection_data(),
+            &admission.authority,
         )
     }
 
     // Move before method, extension, scalar or typed-body validation. On every
     // subsequent refusal this original remains in the same spent boot slot.
     pub(crate) fn retain_original_data(&self, original: Envelope) -> Result<(), ProviderError> {
-        self.attempt.try_borrow_mut().map_err(|_| borrowed())?.retain_original_data(original)
+        self.attempt
+            .try_borrow_mut()
+            .map_err(|_| borrowed())?
+            .retain_original_data(original)
     }
 
     pub(crate) fn original_data(&self) -> Result<std::cell::Ref<'_, Envelope>, ProviderError> {
@@ -140,9 +186,15 @@ impl OriginalRestorationObservationRead {
     pub(crate) fn retain_body_data(&self, body: ReceivedBody) -> Result<(), ProviderError> {
         let mut flight = self.attempt.try_borrow_mut().map_err(|_| borrowed())?;
         flight.ensure_origin()?;
-        if flight.body.is_some() || flight.received { return Err(refused()); }
-        let ReceivedBody::Request(body) = body else { return Err(refused()); };
-        let crate::bodies::RequestBody::Observe(body) = *body else { return Err(refused()); };
+        if flight.body.is_some() || flight.received {
+            return Err(refused());
+        }
+        let ReceivedBody::Request(body) = body else {
+            return Err(refused());
+        };
+        let crate::bodies::RequestBody::Observe(body) = *body else {
+            return Err(refused());
+        };
         flight.body = Some(body);
         Ok(())
     }
@@ -150,7 +202,11 @@ impl OriginalRestorationObservationRead {
     pub(crate) fn complete_receive_data(&self) -> Result<(), ProviderError> {
         let mut flight = self.attempt.try_borrow_mut().map_err(|_| borrowed())?;
         flight.ensure_origin()?;
-        if !self.read_started.get() || flight.original.is_none() || flight.body.is_none() || flight.received {
+        if !self.read_started.get()
+            || flight.original.is_none()
+            || flight.body.is_none()
+            || flight.received
+        {
             return Err(refused());
         }
         flight.received = true;
@@ -163,9 +219,13 @@ impl OriginalRestorationObservationRead {
     /// Refuses changed release owners, invalid Source MAC/World pair, foreign
     /// request scope, typed body disagreement or any short allocation axis.
     pub(crate) fn verify_data<S: ProviderStream>(
-        self, connection: &Connection<S>, control: &PacketControl, records: &[ExchangeRecord],
+        self,
+        connection: &Connection<S>,
+        control: &PacketControl,
+        records: &[ExchangeRecord],
     ) -> Result<OriginalRestorationObservationPermit, ProviderError> {
-        self.released.authenticate_current_data(connection, control, records)?;
+        self.released
+            .authenticate_current_data(connection, control, records)?;
         let admission = connection.original_native_owned11_admission()?;
         admission.authenticate_current(connection)?;
         let maximum_frame = usize::try_from(admission.authority.limits().frame_bytes.get())
@@ -174,13 +234,25 @@ impl OriginalRestorationObservationRead {
             let artifact = {
                 let flight = self.attempt.try_borrow().map_err(|_| borrowed())?;
                 flight.ensure_origin()?;
-                if !flight.received || flight.verified { return Err(refused()); }
+                if !flight.received || flight.verified {
+                    return Err(refused());
+                }
                 let original = flight.original.as_ref().ok_or_else(refused)?;
-                let value = original.extensions.get(PACKET_RESTORATION_OBSERVE_FEATURE).ok_or_else(refused)?;
-                crate::connection::serialized_credit(value, MAXIMUM_RESTORATION_OBSERVE_ARTIFACT_BYTES)?;
-                PacketRestorationObservationArtifact::deserialize(value).map_err(ContractError::from)?
+                let value = original
+                    .extensions
+                    .get(PACKET_RESTORATION_OBSERVE_FEATURE)
+                    .ok_or_else(refused)?;
+                crate::connection::serialized_credit(
+                    value,
+                    MAXIMUM_RESTORATION_OBSERVE_ARTIFACT_BYTES,
+                )?;
+                PacketRestorationObservationArtifact::deserialize(value)
+                    .map_err(ContractError::from)?
             };
-            self.attempt.try_borrow_mut().map_err(|_| borrowed())?.artifact = Some(artifact);
+            self.attempt
+                .try_borrow_mut()
+                .map_err(|_| borrowed())?
+                .artifact = Some(artifact);
         }
         let owner = admission.boot.try_borrow().map_err(|_| borrowed())?;
         owner.authenticate_original_invocation_prepare_target_data()?;
@@ -190,37 +262,72 @@ impl OriginalRestorationObservationRead {
         let artifact = flight.artifact.as_ref().ok_or_else(refused)?;
         artifact.validate_data()?;
         let original = flight.original.as_ref().ok_or_else(refused)?;
-        if original.extensions.len() != 1 { return Err(refused()); }
+        if original.extensions.len() != 1 {
+            return Err(refused());
+        }
         let body = flight.body.as_ref().ok_or_else(refused)?;
         artifact.request.authenticate_body_data(body)?;
-        self.released.authenticate_observation_request_data(&artifact.request, connection, records)?;
+        self.released.authenticate_observation_request_data(
+            &artifact.request,
+            connection,
+            records,
+        )?;
         authenticate_completed_commit(&owner, &commit, &artifact.request.scope)?;
         let assigned = restoration_observe_assigned_request_digest(original, maximum_frame)?;
         let context = PacketRestorationObservationContext {
-            request: artifact.request.clone(), assigned_request: Bytes::new(assigned.to_vec()),
+            request: artifact.request.clone(),
+            assigned_request: Bytes::new(assigned.to_vec()),
         };
         flight.context = Some(context);
         let artifact = flight.artifact.as_ref().ok_or_else(refused)?;
-        let key: &[u8;32] = owner.data.private_key.as_slice().try_into().map_err(|_| refused())?;
-        verify_restoration_observe_proof_data(key, flight.context.as_ref().ok_or_else(refused)?, &artifact.proof)?;
+        let key: &[u8; 32] = owner
+            .data
+            .private_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| refused())?;
+        verify_restoration_observe_proof_data(
+            key,
+            flight.context.as_ref().ok_or_else(refused)?,
+            &artifact.proof,
+        )?;
 
         let inputs = connection.original_complete_restore_input_state()?;
         let request = commit.request.as_ref().ok_or_else(refused)?;
         let launch = commit.launch.as_ref().ok_or_else(refused)?;
         let selected = PacketCompleteRestoreSelectedOwnerInputs {
-            owner_state: inputs.original_input(3)?, journal: inputs.original_input(4)?,
-            control: inputs.original_input(1)?, anchor: inputs.original_input(2)?,
-            maximum_input_bytes: usize::try_from(request.prepare.allocation.maximum_input_bytes.get()).map_err(|_| refused())?,
-            maximum_before_bytes: usize::try_from(launch.capture_profile.native_before_bytes(&launch.storage).get()).map_err(|_| refused())?,
-            maximum_requested_bytes: usize::try_from(artifact.request.native_allocation.requested_bytes_data()?).map_err(|_| refused())?,
+            owner_state: inputs.original_input(3)?,
+            journal: inputs.original_input(4)?,
+            control: inputs.original_input(1)?,
+            anchor: inputs.original_input(2)?,
+            maximum_input_bytes: usize::try_from(
+                request.prepare.allocation.maximum_input_bytes.get(),
+            )
+            .map_err(|_| refused())?,
+            maximum_before_bytes: usize::try_from(
+                launch
+                    .capture_profile
+                    .native_before_bytes(&launch.storage)
+                    .get(),
+            )
+            .map_err(|_| refused())?,
+            maximum_requested_bytes: usize::try_from(
+                artifact.request.native_allocation.requested_bytes_data()?,
+            )
+            .map_err(|_| refused())?,
         };
-        let required = original_native_restoration_observation_required_storage_data(launch, &selected, maximum_frame)?;
+        let required = original_native_restoration_observation_required_storage_data(
+            launch,
+            &selected,
+            maximum_frame,
+        )?;
         authenticate_row(&artifact.request.native_allocation, &required)?;
         flight.verified = true;
         drop(flight);
         drop(commit);
         drop(owner);
-        self.released.authenticate_current_data(connection, control, records)?;
+        self.released
+            .authenticate_current_data(connection, control, records)?;
         Ok(OriginalRestorationObservationPermit { read: self })
     }
 }
@@ -234,11 +341,16 @@ fn borrowed() -> ProviderError {
 }
 
 /// Quotes the actual independent Rc/RefCell once owner, excluding scratch.
-pub(crate) fn original_native_restoration_observation_attempt_backing_data() -> Result<usize, ProviderError> {
+pub(crate) fn original_native_restoration_observation_attempt_backing_data()
+-> Result<usize, ProviderError> {
     size_of::<RefCell<NativeRestorationObservationAttempt>>()
-        .checked_add(crate::retained_metadata::requested_storage::shared_header_storage_data(
-            1, std::mem::align_of::<RefCell<NativeRestorationObservationAttempt>>(),
-        )?).ok_or_else(refused)
+        .checked_add(
+            crate::retained_metadata::requested_storage::shared_header_storage_data(
+                1,
+                std::mem::align_of::<RefCell<NativeRestorationObservationAttempt>>(),
+            )?,
+        )
+        .ok_or_else(refused)
 }
 
 /// Names the complete explicit local views of this native observation path.
@@ -246,7 +358,7 @@ pub(crate) fn original_native_restoration_observation_attempt_backing_data() -> 
 /// These terms describe Rust-owned headers and fixed hash banks. Dynamic raw,
 /// canonical, typed and reply owners are independently charged on their rows.
 pub(crate) fn original_native_restoration_observation_counter_scratch_data() -> usize {
-    use std::cell::{Ref, RefMut, BorrowError, BorrowMutError};
+    use std::cell::{BorrowError, BorrowMutError, Ref, RefMut};
     size_of::<NativeRestorationObservationAttempt>()
         + size_of::<OriginalRestorationObservationRead>()
         + size_of::<OriginalRestorationObservationPermit>()
@@ -296,60 +408,97 @@ pub(crate) fn original_native_restoration_observation_counter_scratch_data() -> 
 /// once allocation. It neither consumes nor reuses a Commit/World phase row.
 pub(crate) fn original_native_restoration_observation_ingress_row_data(
     maximum_frame: usize,
-) -> Result<crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow, ProviderError> {
+) -> Result<
+    crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
+    ProviderError,
+> {
     use crate::retained_metadata::serialization_storage::{
         original_json_value_storage_extent_data,
         original_serialization_tree_node_requested_bytes_data,
     };
     let frame = original_json_value_storage_extent_data(maximum_frame)?;
-    let artifact = original_json_value_storage_extent_data(MAXIMUM_RESTORATION_OBSERVE_ARTIFACT_BYTES)?;
-    let map_roots = frame.maximum_value_nodes.checked_mul(
-        original_serialization_tree_node_requested_bytes_data::<String,serde_json::Value>()?,
-    ).ok_or_else(refused)?;
-    let typed = artifact.maximum_value_nodes.checked_mul(4)
-        .and_then(|nodes| nodes.checked_mul(size_of::<ContentRef>().max(size_of::<crucible_node_contract::HashRef>()).max(size_of::<String>())))
+    let artifact =
+        original_json_value_storage_extent_data(MAXIMUM_RESTORATION_OBSERVE_ARTIFACT_BYTES)?;
+    let map_roots = frame
+        .maximum_value_nodes
+        .checked_mul(original_serialization_tree_node_requested_bytes_data::<
+            String,
+            serde_json::Value,
+        >()?)
+        .ok_or_else(refused)?;
+    let typed = artifact
+        .maximum_value_nodes
+        .checked_mul(4)
+        .and_then(|nodes| {
+            nodes.checked_mul(
+                size_of::<ContentRef>()
+                    .max(size_of::<crucible_node_contract::HashRef>())
+                    .max(size_of::<String>()),
+            )
+        })
         .ok_or_else(refused)?;
     // The ordinary body decoder clones its Map for canonical validation and
     // again for typed construction. Its retained Observe HashRef owns three
     // independent Strings; body extensions were refused empty before decoding.
-    let body_strings = frame.maximum_decoded_string_bytes.checked_mul(4)
-        .and_then(|bytes| bytes.checked_add(3usize.checked_mul(256)?)).ok_or_else(refused)?;
-    let body_map_root = original_serialization_tree_node_requested_bytes_data::<String,serde_json::Value>()?;
-    let retained = frame.value_dom_requested_bytes.checked_add(map_roots)
+    let body_strings = frame
+        .maximum_decoded_string_bytes
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(3usize.checked_mul(256)?))
+        .ok_or_else(refused)?;
+    let body_map_root =
+        original_serialization_tree_node_requested_bytes_data::<String, serde_json::Value>()?;
+    let retained = frame
+        .value_dom_requested_bytes
+        .checked_add(map_roots)
         .and_then(|bytes| bytes.checked_add(body_strings))
         .and_then(|bytes| bytes.checked_add(body_map_root))
         .and_then(|bytes| bytes.checked_add(artifact.value_dom_requested_bytes.checked_mul(2)?))
-        .and_then(|bytes| bytes.checked_add(MAXIMUM_RESTORATION_OBSERVE_ARTIFACT_BYTES.checked_mul(8)?))
+        .and_then(|bytes| {
+            bytes.checked_add(MAXIMUM_RESTORATION_OBSERVE_ARTIFACT_BYTES.checked_mul(8)?)
+        })
         .and_then(|bytes| bytes.checked_add(typed))
         .and_then(|bytes| bytes.checked_add(size_of::<PacketRestorationObservationArtifact>()))
         .and_then(|bytes| bytes.checked_add(size_of::<PacketRestorationObservationContext>()))
         .and_then(|bytes| bytes.checked_add(size_of::<Envelope>()))
-        .ok_or_else(refused)?.checked_add(original_native_restoration_observation_attempt_backing_data()?)
+        .ok_or_else(refused)?
+        .checked_add(original_native_restoration_observation_attempt_backing_data()?)
         .ok_or_else(refused)?;
     let artifact_pass = artifact.canonical_pass_requested_bytes()?;
     // The completed-Commit guard constructs one full expected Source-birth
     // ContentRef. Its four bounded algorithm/domain/digest/media Strings are
     // independent of the incoming artifact/context banks.
     let reference_work = 4usize.checked_mul(4 * 128 + 256).ok_or_else(refused)?;
-    let transient = frame.canonical_pass_requested_bytes()?.checked_add(maximum_frame)
+    let transient = frame
+        .canonical_pass_requested_bytes()?
+        .checked_add(maximum_frame)
         .and_then(|bytes| bytes.checked_add(reference_work))
         .and_then(|bytes| bytes.checked_add(frame.value_dom_requested_bytes))
         .and_then(|bytes| bytes.checked_add(body_strings))
         .and_then(|bytes| bytes.checked_add(size_of::<crate::bodies::ObserveRequest>()))
         .and_then(|bytes| bytes.checked_add(artifact_pass.checked_mul(4)?))
         .and_then(|bytes| bytes.checked_add(typed))
-        .and_then(|bytes| bytes.checked_add(MAXIMUM_RESTORATION_OBSERVE_ARTIFACT_BYTES.checked_mul(4)?))
+        .and_then(|bytes| {
+            bytes.checked_add(MAXIMUM_RESTORATION_OBSERVE_ARTIFACT_BYTES.checked_mul(4)?)
+        })
         .ok_or_else(refused)?;
-    Ok(crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow {
-        retained_requested_bytes: U64::new(u64::try_from(retained).map_err(|_| refused())?),
-        maximum_simultaneous_transient_bytes: U64::new(u64::try_from(transient).map_err(|_| refused())?),
-        declared_counter_scratch_bytes: U64::new(u64::try_from(original_native_restoration_observation_counter_scratch_data()).map_err(|_| refused())?),
-    })
+    Ok(
+        crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow {
+            retained_requested_bytes: U64::new(u64::try_from(retained).map_err(|_| refused())?),
+            maximum_simultaneous_transient_bytes: U64::new(
+                u64::try_from(transient).map_err(|_| refused())?,
+            ),
+            declared_counter_scratch_bytes: U64::new(
+                u64::try_from(original_native_restoration_observation_counter_scratch_data())
+                    .map_err(|_| refused())?,
+            ),
+        },
+    )
 }
 
 impl NativeAckBoot {
     pub(in crate::reference_packet::service::ack_emitter::native_boot) fn observe_restoration_observation_metadata_data(
-        &self, observer: &mut MetadataObserver<'_>,
+        &self,
+        observer: &mut MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {
         self.ensure_origin()?;
         if let Some(attempt) = &self.restoration_observation {
@@ -357,21 +506,40 @@ impl NativeAckBoot {
             let flight = attempt.try_borrow().map_err(|_| borrowed())?;
             flight.ensure_origin()?;
             let NativeRestorationObservationAttempt {
-                creator, thread: _, original, body, artifact, context, terminal,
-                received, verified, dispatched, published,
+                creator,
+                thread: _,
+                original,
+                body,
+                artifact,
+                context,
+                terminal,
+                received,
+                verified,
+                dispatched,
+                published,
             } = &*flight;
             observer.observe(creator)?;
             observer.observe(original)?;
             if let Some(body) = body {
-                let crate::bodies::ObserveRequest {binding_hash, owner_generation, after_observation_sequence, maximum_items, extensions} = body;
+                let crate::bodies::ObserveRequest {
+                    binding_hash,
+                    owner_generation,
+                    after_observation_sequence,
+                    maximum_items,
+                    extensions,
+                } = body;
                 observer.observe(binding_hash)?;
                 observer.observe(owner_generation)?;
                 observer.observe(after_observation_sequence)?;
                 observer.observe(maximum_items)?;
                 observer.observe(extensions)?;
             }
-            if let Some(artifact) = artifact { artifact.observe_owned_metadata_data(observer)?; }
-            if let Some(context) = context { context.observe_owned_metadata_data(observer)?; }
+            if let Some(artifact) = artifact {
+                artifact.observe_owned_metadata_data(observer)?;
+            }
+            if let Some(context) = context {
+                context.observe_owned_metadata_data(observer)?;
+            }
             observer.observe(terminal)?;
             observer.observe(received)?;
             observer.observe(verified)?;
@@ -390,18 +558,23 @@ impl OriginalRestorationObservationPermit {
     pub(crate) fn begin_dispatch_data(&self) -> Result<(), ProviderError> {
         let mut flight = self.read.attempt.try_borrow_mut().map_err(|_| borrowed())?;
         flight.ensure_origin()?;
-        if !flight.verified || flight.dispatched || flight.published { return Err(refused()); }
+        if !flight.verified || flight.dispatched || flight.published {
+            return Err(refused());
+        }
         flight.dispatched = true;
         Ok(())
     }
 
     pub(crate) fn authenticate_control_request_data(
-        &self, original: &Envelope,
+        &self,
+        original: &Envelope,
         selection: &crate::reference_packet::control::PacketControlSelection,
         control: &PacketControl,
     ) -> Result<(), ProviderError> {
         let released = &self.read.released;
-        released.policy.authenticate_original_control_selection(selection)?;
+        released
+            .policy
+            .authenticate_original_control_selection(selection)?;
         let owner = released.boot.try_borrow().map_err(|_| borrowed())?;
         owner.authenticate_original_invocation_prepare_target_data()?;
         let flight = self.read.attempt.try_borrow().map_err(|_| borrowed())?;
@@ -410,31 +583,59 @@ impl OriginalRestorationObservationPermit {
         flight.ensure_origin()?;
         world.ensure_origin()?;
         commit.ensure_origin()?;
-        if !flight.verified || !flight.dispatched || flight.published
+        if !flight.verified
+            || !flight.dispatched
+            || flight.published
             || !std::ptr::eq(original, flight.original.as_ref().ok_or_else(refused)?)
-            || owner.restoration_observation.as_ref().is_none_or(|slot| !Rc::ptr_eq(slot, &self.read.attempt))
-            || owner.restoration_activation[1].as_ref().is_none_or(|slot| !Rc::ptr_eq(slot, &released.world))
-            || owner.restoration.as_ref().is_none_or(|slot| !Rc::ptr_eq(slot, &released.commit))
-            || !world.verified || !world.dispatched || !world.published
+            || owner
+                .restoration_observation
+                .as_ref()
+                .is_none_or(|slot| !Rc::ptr_eq(slot, &self.read.attempt))
+            || owner.restoration_activation[1]
+                .as_ref()
+                .is_none_or(|slot| !Rc::ptr_eq(slot, &released.world))
+            || owner
+                .restoration
+                .as_ref()
+                .is_none_or(|slot| !Rc::ptr_eq(slot, &released.commit))
+            || !world.verified
+            || !world.dispatched
+            || !world.published
             || released.hold.physical_gate_data()?
-        { return Err(refused()); }
+        {
+            return Err(refused());
+        }
         let artifact = flight.artifact.as_ref().ok_or_else(refused)?;
         if artifact.request.scope != world.artifact.as_ref().ok_or_else(refused)?.request.scope {
             return Err(refused());
         }
-        artifact.request.authenticate_body_data(flight.body.as_ref().ok_or_else(refused)?)?;
+        artifact
+            .request
+            .authenticate_body_data(flight.body.as_ref().ok_or_else(refused)?)?;
         control.authenticate_original_restoration_released_control_data(
-            world.original.as_ref().ok_or_else(refused)?, world.terminal.as_ref().ok_or_else(refused)?,
-            &artifact.request.scope, &released.boot, &commit.mapping, &released.hold, &released.policy,
+            world.original.as_ref().ok_or_else(refused)?,
+            world.terminal.as_ref().ok_or_else(refused)?,
+            &artifact.request.scope,
+            &released.boot,
+            &commit.mapping,
+            &released.hold,
+            &released.policy,
         )
     }
 
     pub(crate) fn complete_publication_data<S: ProviderStream>(
-        &self, connection: &Connection<S>, control: &PacketControl, records: &[ExchangeRecord],
+        &self,
+        connection: &Connection<S>,
+        control: &PacketControl,
+        records: &[ExchangeRecord],
     ) -> Result<(), ProviderError> {
-        self.read.released.authenticate_current_data(connection, control, records)?;
+        self.read
+            .released
+            .authenticate_current_data(connection, control, records)?;
         let record = records.last().ok_or_else(refused)?;
-        if record.sent() != record.originals().len() { return Err(refused()); }
+        if record.sent() != record.originals().len() {
+            return Err(refused());
+        }
         let terminal = record.originals().last().ok_or_else(refused)?;
         let mut flight = self.read.attempt.try_borrow_mut().map_err(|_| borrowed())?;
         flight.ensure_origin()?;
@@ -446,16 +647,22 @@ impl OriginalRestorationObservationPermit {
         flight.terminal = Some(terminal.clone());
         let original = flight.original.as_ref().ok_or_else(refused)?;
         if terminal.message != crate::envelope::MessageKind::Response
-            || terminal.method != original.method || terminal.request_id != original.request_id
-            || terminal.session_id != original.session_id || terminal.incarnation_id != original.incarnation_id
-        { return Err(refused()); }
+            || terminal.method != original.method
+            || terminal.request_id != original.request_id
+            || terminal.session_id != original.session_id
+            || terminal.incarnation_id != original.incarnation_id
+        {
+            return Err(refused());
+        }
         control.authenticate_original_restoration_observation_terminal_data(original, terminal)?;
         for index in 0..record.originals().len() {
             record.original_sent_frame(connection, index)?;
         }
         flight.published = true;
         drop(flight);
-        self.read.released.authenticate_current_data(connection, control, records)
+        self.read
+            .released
+            .authenticate_current_data(connection, control, records)
     }
 }
 
@@ -467,14 +674,31 @@ mod tests {
     fn once_original_survives_bad_artifact_and_replacement_refusal() {
         let mut original = crate::envelope::tests::request();
         original.method = crate::envelope::Method::Observe;
-        original.extensions.insert(PACKET_RESTORATION_OBSERVE_FEATURE.into(), serde_json::json!({"invalid":"retained"}));
+        original.extensions.insert(
+            PACKET_RESTORATION_OBSERVE_FEATURE.into(),
+            serde_json::json!({"invalid":"retained"}),
+        );
         let mut attempt = NativeRestorationObservationAttempt {
-            creator: std::process::id(), thread: std::thread::current().id(),
-            original: None, body: None, artifact: None, context: None, terminal: None,
-            received: false, verified: false, dispatched: false, published: false,
+            creator: std::process::id(),
+            thread: std::thread::current().id(),
+            original: None,
+            body: None,
+            artifact: None,
+            context: None,
+            terminal: None,
+            received: false,
+            verified: false,
+            dispatched: false,
+            published: false,
         };
         attempt.retain_original_data(original.clone()).unwrap();
-        let value = attempt.original.as_ref().unwrap().extensions.get(PACKET_RESTORATION_OBSERVE_FEATURE).unwrap();
+        let value = attempt
+            .original
+            .as_ref()
+            .unwrap()
+            .extensions
+            .get(PACKET_RESTORATION_OBSERVE_FEATURE)
+            .unwrap();
         assert!(PacketRestorationObservationArtifact::deserialize(value).is_err());
 
         let mut other = original.clone();

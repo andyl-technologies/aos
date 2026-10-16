@@ -41,16 +41,24 @@ pub(super) fn phase_owners(
     if let Some(response) = observation_completed {
         let facts = crucible_node_provider::reference_packet::service::complete_restore::restoration_observe::RetainedRestorationObservationData::Response(response)
             .original_retained_metadata_facts().map_err(|_| RuntimeError::UnsupportedFacet)?;
-        bytes = storage::sum(&[
-            bytes,
-            PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(&facts, maximum)?,
-        ], maximum)?;
+        bytes = storage::sum(
+            &[
+                bytes,
+                PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+                    &facts, maximum,
+                )?,
+            ],
+            maximum,
+        )?;
     }
     for value in [observation, observation_return].into_iter().flatten() {
-        bytes = storage::sum(&[
-            bytes,
-            NodeRuntime::capture_scheduling_observation_storage_data(value, maximum)?,
-        ], maximum)?;
+        bytes = storage::sum(
+            &[
+                bytes,
+                NodeRuntime::capture_scheduling_observation_storage_data(value, maximum)?,
+            ],
+            maximum,
+        )?;
     }
     for command in commands.iter().flatten() {
         bytes = storage::sum(
@@ -175,8 +183,8 @@ impl super::super::super::state::SemanticRuntimeCustody {
 }
 
 pub(super) fn counter_scratch_data() -> usize {
-    use std::mem::size_of;
     use crate::node_scheduling::NativeSchedulingObservation;
+    use std::mem::size_of;
     size_of::<[&Option<NativeSchedulingObservation>; 2]>()
         + size_of::<std::array::IntoIter<&Option<NativeSchedulingObservation>, 2>>()
         + size_of::<std::iter::Flatten<std::array::IntoIter<&Option<NativeSchedulingObservation>, 2>>>()

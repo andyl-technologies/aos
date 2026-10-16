@@ -72,7 +72,10 @@ pub(super) const SCOPE: V<'static> = V::Object(&[
     ("restoration", ORIGINALS),
 ]);
 const WORLD_REQUEST: V<'static> = V::Object(&[
-    ("schema", V::Text(super::super::activation::PACKET_RESTORATION_ACTIVATION_FEATURE)),
+    (
+        "schema",
+        V::Text(super::super::activation::PACKET_RESTORATION_ACTIVATION_FEATURE),
+    ),
     ("phase", V::Text("world_activate")),
     ("scope", SCOPE),
     ("native_allocation", ROW),
@@ -121,7 +124,10 @@ const WORLD_ORIGINAL: V<'static> = V::Object(&[
     ),
     (
         "extensions",
-        V::Object(&[(super::super::activation::PACKET_RESTORATION_ACTIVATION_FEATURE, WORLD_ARTIFACT)]),
+        V::Object(&[(
+            super::super::activation::PACKET_RESTORATION_ACTIVATION_FEATURE,
+            WORLD_ARTIFACT,
+        )]),
     ),
 ]);
 const WORLD_TERMINAL: V<'static> = V::Object(&[
@@ -155,34 +161,55 @@ const WORLD_TERMINAL: V<'static> = V::Object(&[
     ("extensions", EMPTY),
 ]);
 
-
 const REQUEST: V<'static> = V::Object(&[
-    ("schema",V::Text(PACKET_RESTORATION_OBSERVE_FEATURE)),
-    ("scope",SCOPE),
-    ("world_original",CONTENT),("world_terminal",CONTENT),
-    ("maximum_items",V::Text("1")),("native_allocation",ROW),
+    ("schema", V::Text(PACKET_RESTORATION_OBSERVE_FEATURE)),
+    ("scope", SCOPE),
+    ("world_original", CONTENT),
+    ("world_terminal", CONTENT),
+    ("maximum_items", V::Text("1")),
+    ("native_allocation", ROW),
 ]);
 const ARTIFACT: V<'static> = V::Object(&[
-    ("request",REQUEST),
-    ("proof",V::Object(&[
-        ("schema",V::Text("source-owned.packet-restoration-observe-proof/1")),
-        ("algorithm",V::Text("blake3-256-mac")),
-        ("context_digest",V::Text(BASE64)),("mac",V::Text(BASE64)),
-    ])),
+    ("request", REQUEST),
+    (
+        "proof",
+        V::Object(&[
+            (
+                "schema",
+                V::Text("source-owned.packet-restoration-observe-proof/1"),
+            ),
+            ("algorithm", V::Text("blake3-256-mac")),
+            ("context_digest", V::Text(BASE64)),
+            ("mac", V::Text(BASE64)),
+        ]),
+    ),
 ]);
 const ORIGINAL: V<'static> = V::Object(&[
-    ("protocol",V::Text("CNP/1")),("message",V::Text("request")),
-    ("session_id",V::Text(ID)),("incarnation_id",V::Text(ID)),
-    ("node_id",V::Text(ID)),("execution_owner_id",V::Text(ID)),
-    ("capture_owner_id",V::Text(ID)),("operation_id",V::Text(ID)),
-    ("request_id",V::Text(ID)),("sequence",V::Text(DECIMAL)),
-    ("method",V::Text("observe")),
-    ("body",V::Object(&[
-        ("binding_hash",HASH),("owner_generation",V::Text(DECIMAL)),
-        ("after_observation_sequence",V::Text("0")),("maximum_items",V::Text("1")),
-        ("extensions",EMPTY),
-    ])),
-    ("extensions",V::Object(&[(PACKET_RESTORATION_OBSERVE_FEATURE,ARTIFACT)])),
+    ("protocol", V::Text("CNP/1")),
+    ("message", V::Text("request")),
+    ("session_id", V::Text(ID)),
+    ("incarnation_id", V::Text(ID)),
+    ("node_id", V::Text(ID)),
+    ("execution_owner_id", V::Text(ID)),
+    ("capture_owner_id", V::Text(ID)),
+    ("operation_id", V::Text(ID)),
+    ("request_id", V::Text(ID)),
+    ("sequence", V::Text(DECIMAL)),
+    ("method", V::Text("observe")),
+    (
+        "body",
+        V::Object(&[
+            ("binding_hash", HASH),
+            ("owner_generation", V::Text(DECIMAL)),
+            ("after_observation_sequence", V::Text("0")),
+            ("maximum_items", V::Text("1")),
+            ("extensions", EMPTY),
+        ]),
+    ),
+    (
+        "extensions",
+        V::Object(&[(PACKET_RESTORATION_OBSERVE_FEATURE, ARTIFACT)]),
+    ),
 ]);
 const BANK: V<'static> = V::Object(&[
     ("selected_rows", V::Text(DECIMAL)),
@@ -275,41 +302,71 @@ const RECEIPT: V<'static> = V::Object(&[
 ]);
 
 const BATCH: V<'static> = V::Object(&[
-    ("schema_version",V::Text("1")),("execution_owner_id",V::Text(ID)),
-    ("owner_binding_hash",HASH),("world_binding_hash",HASH),
-    ("activation_id",V::Text(ID)),("world_generation",V::Text(DECIMAL)),
-    ("owner_generation",V::Text(DECIMAL)),("operation_id",V::Text(ID)),
+    ("schema_version", V::Text("1")),
+    ("execution_owner_id", V::Text(ID)),
+    ("owner_binding_hash", HASH),
+    ("world_binding_hash", HASH),
+    ("activation_id", V::Text(ID)),
+    ("world_generation", V::Text(DECIMAL)),
+    ("owner_generation", V::Text(DECIMAL)),
+    ("operation_id", V::Text(ID)),
     // A string node is an independent conservative upper for the real null.
-    ("grant_id",V::Text(ID)),("first_sequence",V::Text("0")),("last_sequence",V::Text("0")),
-    ("events",V::Array(&[])),("visibility",V::Text("staged")),
-    ("measurement_ref",CONTENT),("extensions",EMPTY),
+    ("grant_id", V::Text(ID)),
+    ("first_sequence", V::Text("0")),
+    ("last_sequence", V::Text("0")),
+    ("events", V::Array(&[])),
+    ("visibility", V::Text("staged")),
+    ("measurement_ref", CONTENT),
+    ("extensions", EMPTY),
 ]);
 const TERMINAL: V<'static> = V::Object(&[
-    ("protocol",V::Text("CNP/1")),("message",V::Text("response")),
-    ("session_id",V::Text(ID)),("incarnation_id",V::Text(ID)),
-    ("node_id",V::Text(ID)),("execution_owner_id",V::Text(ID)),
-    ("capture_owner_id",V::Text(ID)),("operation_id",V::Text(ID)),
-    ("request_id",V::Text(ID)),("sequence",V::Text(DECIMAL)),("method",V::Text("observe")),
-    ("body",V::Object(&[
-        ("status",V::Text("completed")),("operation_state",V::Text("completed")),
-        ("result",V::Object(&[
-            ("observations",V::Array(&[BATCH])),("next_sequence",V::Text("1")),
-            // A textual node overcounts the actual boolean's own serialized node.
-            ("complete",V::Text("true")),("inventory_hash",HASH),
-        ])),("extensions",EMPTY),
-    ])),("extensions",EMPTY),
+    ("protocol", V::Text("CNP/1")),
+    ("message", V::Text("response")),
+    ("session_id", V::Text(ID)),
+    ("incarnation_id", V::Text(ID)),
+    ("node_id", V::Text(ID)),
+    ("execution_owner_id", V::Text(ID)),
+    ("capture_owner_id", V::Text(ID)),
+    ("operation_id", V::Text(ID)),
+    ("request_id", V::Text(ID)),
+    ("sequence", V::Text(DECIMAL)),
+    ("method", V::Text("observe")),
+    (
+        "body",
+        V::Object(&[
+            ("status", V::Text("completed")),
+            ("operation_state", V::Text("completed")),
+            (
+                "result",
+                V::Object(&[
+                    ("observations", V::Array(&[BATCH])),
+                    ("next_sequence", V::Text("1")),
+                    // A textual node overcounts the actual boolean's own serialized node.
+                    ("complete", V::Text("true")),
+                    ("inventory_hash", HASH),
+                ]),
+            ),
+            ("extensions", EMPTY),
+        ]),
+    ),
+    ("extensions", EMPTY),
 ]);
 
-pub(super) fn wire_projection_data(maximum:usize)->Result<[OriginalSerializationStorageData;5],ProviderError> {
-    let mut result=[
-        actual_serialization_storage_data(&ORIGINAL,Default::default(),maximum)?,
-        actual_serialization_storage_data(&TERMINAL,Default::default(),maximum)?,
-        actual_serialization_storage_data(&RECEIPT,Default::default(),maximum)?,
-        actual_serialization_storage_data(&WORLD_ORIGINAL,Default::default(),maximum)?,
-        actual_serialization_storage_data(&WORLD_TERMINAL,Default::default(),maximum)?,
+pub(super) fn wire_projection_data(
+    maximum: usize,
+) -> Result<[OriginalSerializationStorageData; 5], ProviderError> {
+    let mut result = [
+        actual_serialization_storage_data(&ORIGINAL, Default::default(), maximum)?,
+        actual_serialization_storage_data(&TERMINAL, Default::default(), maximum)?,
+        actual_serialization_storage_data(&RECEIPT, Default::default(), maximum)?,
+        actual_serialization_storage_data(&WORLD_ORIGINAL, Default::default(), maximum)?,
+        actual_serialization_storage_data(&WORLD_TERMINAL, Default::default(), maximum)?,
     ];
     for row in &mut result {
-        row.serializer_temporary_requested_bytes=row.serializer_temporary_requested_bytes.checked_add(20+43).ok_or_else(super::credit)?;
+        row.serializer_temporary_requested_bytes = row
+            .serializer_temporary_requested_bytes
+            .checked_add(20 + 43)
+            .ok_or_else(super::credit)?;
     }
     Ok(result)
 }
