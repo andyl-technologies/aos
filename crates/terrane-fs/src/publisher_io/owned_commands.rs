@@ -232,6 +232,7 @@ pub(super) struct CommandOwner {
     retirement: NativeRetirementPolicy,
     body_io: BodyIo,
     profile: ChunkProfile,
+    inventory: super::inventory::NativeInventory,
 }
 
 impl CommandOwner {
@@ -242,6 +243,7 @@ impl CommandOwner {
         retirement: NativeRetirementPolicy,
         body_io: BodyIo,
         profile: ChunkProfile,
+        inventory: super::inventory::NativeInventory,
     ) -> Self {
         Self {
             domain,
@@ -253,6 +255,7 @@ impl CommandOwner {
             retirement,
             body_io,
             profile,
+            inventory,
         }
     }
 
@@ -369,6 +372,7 @@ impl CommandOwner {
             self.cache = Some(context.cache_incarnation);
             self.recovery = true;
             self.bodies.clear();
+            self.inventory.reset();
             return Ok(NativeCommandResult::Complete);
         }
         if self.cache != Some(context.cache_incarnation) {
@@ -440,9 +444,7 @@ impl CommandOwner {
                 self.transition(key, incarnation, Transition::FinishNone)
                     .await
             }
-            NativeOperation::Inventory { .. } => Err(unsupported(
-                "inventory requires complete recovery metadata and pending-body rules",
-            )),
+            NativeOperation::Inventory { cursor } => self.inventory.page(cursor).await,
         }
     }
 

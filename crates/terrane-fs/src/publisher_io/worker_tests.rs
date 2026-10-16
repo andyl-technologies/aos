@@ -743,6 +743,52 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion() {
         0o700
     );
     assert_eq!(fs::read_dir(directories[0].path()).unwrap().count(), 0);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        use super::{NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeOperation};
+        let expected = claim();
+        worker
+            .publish(expected.clone(), source(root))
+            .await
+            .unwrap();
+        let context = NativeCommandContext {
+            domain: "public".into(),
+            cache_incarnation: [17; 16],
+        };
+        worker
+            .execute(context.clone(), NativeOperation::Drain)
+            .await
+            .unwrap();
+        let result = worker
+            .execute(context.clone(), NativeOperation::Inventory { cursor: None })
+            .await
+            .unwrap();
+        let NativeCommandResult::Inventory { keys, next_cursor } = result else {
+            panic!("inventory grants no native body authority")
+        };
+        assert_eq!(
+            keys,
+            vec![NativeBodyKey::Sealed {
+                descriptor: expected.descriptor().clone()
+            }]
+        );
+        assert!(next_cursor.is_none());
+        assert!(
+            worker
+                .execute(
+                    context,
+                    NativeOperation::Inventory {
+                        cursor: Some(vec![0; 32])
+                    }
+                )
+                .await
+                .is_err()
+        );
+    });
     drop(worker);
     owner.join().unwrap();
 }

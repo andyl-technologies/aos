@@ -503,7 +503,7 @@ fn compare(expected: &File, actual: &File) -> io::Result<()> {
     Ok(())
 }
 
-fn content_digest(file: &File, kind: IdentityKind) -> io::Result<String> {
+pub(super) fn content_digest(file: &File, kind: IdentityKind) -> io::Result<String> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(
         TERRANE_V1

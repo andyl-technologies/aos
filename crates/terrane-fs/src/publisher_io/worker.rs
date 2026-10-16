@@ -16,6 +16,9 @@ use super::NativePublisher;
 use super::bodies::BodyIo;
 use terrane_core::chunking::ChunkProfile;
 
+#[path = "inventory.rs"]
+mod inventory;
+
 #[path = "owned_commands.rs"]
 mod owned_commands;
 pub use owned_commands::{
@@ -213,6 +216,7 @@ pub struct NativePublisherPrepared {
     retained_state: File,
     retained_layout: (Vec<File>, crate::host_quota::DomainProvisioningGuard),
     body_io: BodyIo,
+    inventory: inventory::NativeInventory,
 }
 
 impl NativePublisherPrepared {
@@ -265,6 +269,13 @@ impl NativePublisherConfig {
             ));
         }
         let retained_layout = super::native::inspect_layout(&self)?;
+        let inventory = inventory::NativeInventory::new(
+            &self,
+            retained_layout
+                .0
+                .first()
+                .ok_or_else(|| io::Error::other("missing retained layout root"))?,
+        )?;
         let body_io = BodyIo::open(&self)?;
         let native = NativePublisher::open_unrecovered(
             self.domain.clone(),
@@ -281,6 +292,7 @@ impl NativePublisherConfig {
             retained_state,
             retained_layout,
             body_io,
+            inventory,
         })
     }
 }
@@ -349,6 +361,7 @@ impl NativePublicationWorker {
             retained_state,
             retained_layout,
             body_io,
+            inventory,
         } = prepared;
         #[cfg(test)]
         let body_io = body_io.with_finish_gate(finish_first_unlink);
@@ -394,6 +407,7 @@ impl NativePublicationWorker {
                         config.retirement,
                         body_io,
                         config.profile,
+                        inventory,
                     );
                     while let Some(command) = receiver.recv().await {
                         match command {
