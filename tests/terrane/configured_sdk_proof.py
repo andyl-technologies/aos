@@ -2,7 +2,7 @@
 
 Installation executes only Cargo discovery and libtest inventory. Ordinary unit
 qualification executes the named pure/token-file tests. Irreversible startup is
-available only through the explicit example launcher in a fresh guest actor.
+available only through explicit example or CLI launchers in fresh guest actors.
 """
 
 import hashlib
@@ -36,6 +36,7 @@ FLAGS = ["--frozen", "--offline", "-p", "terrane-fs",
          "--features", "tokio,terrane/surface-sdk"]
 FS_FEATURES = ["tokio"]
 REPOSITORY_FEATURES = ["send", "std", "surface-sdk", "tokio"]
+KINDS = ["unit", "example", "cli"]
 
 
 def require(condition, message):
@@ -64,27 +65,30 @@ def records(path):
 
 
 def select_artifact(events, packages, workspace, target, kind):
-    """Checks both the FS target and its actually compiled SDK dependency."""
+    """Checks the actual FS/CLI target and its compiled SDK dependency."""
+    package_name = "terrane-cli" if kind == "cli" else "terrane-fs"
     package = [item for item in packages
-               if pathlib.Path(item["manifest_path"]) == workspace / "terrane-fs/Cargo.toml"]
+               if pathlib.Path(item["manifest_path"]) == workspace / package_name / "Cargo.toml"]
     repository = [item for item in packages
                   if pathlib.Path(item["manifest_path"]) == workspace / "terrane/Cargo.toml"]
     require(len(package) == len(repository) == 1, "ambiguous source packages")
-    name = "terrane_fs" if kind == "unit" else "configured_sdk_fixture"
+    name = {"unit": "terrane_fs", "example": "configured_sdk_fixture", "cli": "terrane"}[kind]
     candidates = [event for event in events if event.get("reason") == "compiler-artifact"
                   and event.get("target", {}).get("name") == name
                   and event.get("executable")]
     require(len(candidates) == 1, "ambiguous configured SDK artifact")
     artifact = candidates[0]
-    source = "terrane-fs/src/lib.rs" if kind == "unit" else "terrane-fs/examples/configured_sdk_fixture.rs"
+    source = {"unit": "terrane-fs/src/lib.rs",
+              "example": "terrane-fs/examples/configured_sdk_fixture.rs",
+              "cli": "terrane-cli/src/main.rs"}[kind]
     profile = artifact["profile"]
     executable = pathlib.Path(artifact["executable"])
     test = kind == "unit"
-    require(package[0]["name"] == "terrane-fs"
+    require(package[0]["name"] == package_name
             and artifact["package_id"] == package[0]["id"]
-            and artifact["target"]["kind"] == (["lib"] if test else ["example"])
+            and artifact["target"]["kind"] == {"unit": ["lib"], "example": ["example"], "cli": ["bin"]}[kind]
             and pathlib.Path(artifact["target"]["src_path"]) == workspace / source
-            and sorted(artifact["features"]) == FS_FEATURES
+            and sorted(artifact["features"]) == ([] if kind == "cli" else FS_FEATURES)
             and profile["test"] is test and profile["debug_assertions"] is True
             and profile["overflow_checks"] is True
             and profile["opt_level"] == ("s" if test else "0")
@@ -131,8 +135,11 @@ def discover(artifact, executable, kind, workspace, target, temporary, target_li
     environment = dict(os.environ)
     triple = target_libraries.parent.name.upper().replace("-", "_")
     environment[f"CARGO_TARGET_{triple}_RUNNER"] = str(runner)
-    command = (["cargo", "test", *FLAGS, "--lib", "--", "--list"] if kind == "unit"
-               else ["cargo", "run", *FLAGS, "--example", "configured_sdk_fixture", "--", "--discover"])
+    command = {
+        "unit": ["cargo", "test", *FLAGS, "--lib", "--", "--list"],
+        "example": ["cargo", "run", *FLAGS, "--example", "configured_sdk_fixture", "--", "--discover"],
+        "cli": ["cargo", "run", "--frozen", "--offline", "-p", "terrane-cli", "--bin", "terrane", "--", "--discover"],
+    }[kind]
     before = digest(executable)
     with (temporary / f"configured-sdk-{kind}-discovery.log").open("w") as log:
         subprocess.run(command, env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -210,10 +217,10 @@ def verify(image, source):
     for name, expected in identity["input_sha256"].items():
         require(digest(source / "crates" / name) == expected,
                 "configured SDK immutable crate input mismatch")
-    for name in ["unit", "example"]:
+    for name in KINDS:
         item = identity["artifacts"][name]
         require(item["binary_sha256"] == digest(image / "libexec" / name)
-                and item["features"] == FS_FEATURES
+                and item["features"] == ([] if name == "cli" else FS_FEATURES)
                 and all(event["features"] == REPOSITORY_FEATURES
                         for event in item["repository_compiler_events"]),
                 "configured SDK retained artifact mismatch")
@@ -246,7 +253,7 @@ def install(helper_path):
     identity = {"schema_version": 1, "source": str(source), "input_sha256": hashes,
                 "cases": [PREFIX + case for case in CASES],
                 "requested_features": ["tokio", "terrane/surface-sdk"], "artifacts": {}}
-    for kind in ["unit", "example"]:
+    for kind in KINDS:
         event_path = temporary / f"configured-sdk-{kind}.jsonl"
         artifact, executable, dependencies = select_artifact(
             records(event_path), packages, workspace, target, kind)
@@ -303,8 +310,8 @@ def launch(image, kind, arguments):
     """Verifies the final image before replacing this process with its artifact."""
     identity = json.loads((image / "share/identity.json").read_text())
     verify(image, pathlib.Path(identity["source"]))
-    require(kind in ["unit", "example"], "unknown configured SDK launcher")
-    if kind == "example":
+    require(kind in KINDS, "unknown configured SDK launcher")
+    if kind in ["example", "cli"]:
         status = dict(line.split(":", 1) for line in
                       pathlib.Path("/proc/self/status").read_text().splitlines() if ":" in line)
         require(os.getuid() == os.geteuid() == 840 and os.getgid() == os.getegid() == 840

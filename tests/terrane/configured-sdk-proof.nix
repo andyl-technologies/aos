@@ -23,6 +23,8 @@
       cargo build --frozen --offline -p terrane-fs \
         --features tokio,terrane/surface-sdk --example configured_sdk_fixture \
         --message-format=json > "$TMPDIR/configured-sdk-example.jsonl"
+      cargo build --frozen --offline -p terrane-cli --bin terrane \
+        --message-format=json > "$TMPDIR/configured-sdk-cli.jsonl"
       cargo metadata --frozen --offline --no-deps --format-version=1 \
         > "$TMPDIR/configured-sdk-packages.json"
       rustc --print target-libdir > "$TMPDIR/configured-sdk-target-libdir"
@@ -59,6 +61,8 @@
     rootfsDeps = [image verifiedImage pkgs.python3 pkgs.coreutils pkgs.util-linux];
     testScript = ''
       set -eu
+      # Root-owned sibling receipt logs must be readable by the later verifier.
+      umask 022
       mount -o remount,rw /
       # /var is the writable guest ext4 rootfs, not /tmp or /run tmpfs.
       container=/var/lib/terrane-configured-sdk-proof
@@ -72,6 +76,11 @@
         ${pkgs.util-linux}/bin/setpriv --reuid=840 --regid=840 --clear-groups \
           --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
           ${image}/bin/configured-sdk-example "$@"
+      }
+      cli_actor() {
+        ${pkgs.util-linux}/bin/setpriv --reuid=840 --regid=840 --clear-groups \
+          --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
+          ${image}/bin/configured-sdk-cli --config "$1/config.toml" --role serve
       }
       # Each invocation is a new process. Setup creates its exclusive repository;
       # guest root creates/chowns only the enclosing fixture container.
@@ -89,6 +98,19 @@
       actor deny-late "$container/deny" 840
       [ ! -e "$container/deny/snapshot-first" ]
       [ ! -e "$container/deny/snapshot-second" ]
+      # These cases invoke the actual CLI, independently of example run/deny.
+      # Logs are siblings of the actor-created roots, not repository contents.
+      actor setup "$container/cli-success" 840
+      cli_actor "$container/cli-success" \
+        > "$container/cli-success.stdout" 2> "$container/cli-success.stderr"
+      actor verify-cli "$container/cli-success" 840
+      actor setup "$container/cli-deny" 840
+      rm -- "$container/cli-deny/second.cap"
+      cli_result=0
+      cli_actor "$container/cli-deny" \
+        > "$container/cli-deny.stdout" 2> "$container/cli-deny.stderr" || cli_result=$?
+      [ "$cli_result" -eq 1 ]
+      actor verify-cli-denial "$container/cli-deny" 840
       python3 ${helper} verify ${image} ${pkgs.terrane.src}
     '';
   };
