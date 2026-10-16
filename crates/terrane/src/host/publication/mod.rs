@@ -1,1 +1,13 @@
-//! Owns verified host publication ordering and recovery claims (HOST-7).
+//! Verifies publication claims and orders immutable host publication.
+//!
+//! A manifest identity authenticates metadata, while its chunk commitments
+//! authenticate assembled plaintext. Kernel adapters own descriptor lifetimes;
+//! state adapters acknowledge only durable verity bindings.
+
+mod claim;
+mod sequence;
+mod state;
+
+pub use claim::{PublicationClaim, PublicationRecipe};
+pub use sequence::{PublicationKernel, PublicationState, PublishedObject, Publisher, VerityBinding};
+pub use state::FsPublicationState;

@@ -1,0 +1,143 @@
+//! Requires a real disk-backed ext4 filesystem with the verity feature enabled.
+
+#![cfg(feature = "tokio")]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+
+use terrane::host::publication::{FsPublicationState, PublicationClaim, PublicationRecipe, PublicationState, Publisher, VerityBinding};
+use terrane_core::chunking::ChunkProfile;
+use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
+use terrane_fs::publisher_io::NativePublisher;
+use terrane_fs::verity;
+
+#[derive(Default)]
+struct State { bindings: BTreeMap<Vec<u8>, VerityBinding>, fail: bool }
+
+#[async_trait::async_trait]
+impl PublicationState for State {
+    async fn binding(&self, claim: &PublicationClaim) -> io::Result<Option<VerityBinding>> {
+        Ok(self.bindings.get(claim.descriptor().digest()).cloned())
+    }
+
+    async fn record(&mut self, claim: &PublicationClaim, binding: &VerityBinding) -> io::Result<()> {
+        if self.fail { return Err(io::Error::other("injected binding failure")); }
+        self.bindings.insert(claim.descriptor().digest().to_vec(), binding.clone());
+        Ok(())
+    }
+}
+
+fn claim(domain: &str, bytes: &[u8]) -> PublicationClaim {
+    let identity = TERRANE_V1.calculate(IdentityKind::Chunk, bytes).unwrap();
+    PublicationClaim::new(domain.into(), PublicationRecipe::Inline {
+        chunk: Descriptor::from_identity(&TERRANE_V1, &identity, bytes).unwrap(),
+    }, &ChunkProfile::cdc_1m([0; 32])).unwrap()
+}
+
+fn directories(root: &Path, name: &str) -> [PathBuf; 3] {
+    let base = root.join(name);
+    fs::create_dir(&base).unwrap();
+    let paths = [base.join("sealed"), base.join("staging"), base.join("pending")];
+    for path in &paths { fs::create_dir(path).unwrap(); }
+    paths
+}
+
+fn adapter(domain: &str, paths: &[PathBuf; 3]) -> NativePublisher {
+    NativePublisher::open(domain.into(), &paths[0], &paths[1], &paths[2]).unwrap()
+}
+
+fn source(root: &Path, bytes: &[u8]) -> File {
+    let path = root.join("input");
+    fs::write(&path, bytes).unwrap();
+    File::open(path).unwrap()
+}
+
+#[test]
+#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
+fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+    let root = PathBuf::from(std::env::var_os("TERRANE_PUBLISH_VM_ROOT").expect("VM fixture root"));
+    let paths = directories(&root, "public");
+    let claim = claim("public", b"immutable content");
+    let state_path = root.join("publication-state");
+    fs::create_dir(&state_path).unwrap();
+    fs::set_permissions(&state_path, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut publisher = Publisher::new(adapter("public", &paths),
+        FsPublicationState::new(terrane::store::TokioLocalFs, state_path.clone()));
+    let published = publisher.publish(&claim, source(&root, b"immutable content")).await.unwrap();
+    let measured = published.binding().clone();
+    let mut handle = published.into_handle();
+    let original = handle.metadata().unwrap();
+    assert_eq!(verity::measure(&handle).unwrap(), measured);
+    let mut bytes = Vec::new();
+    handle.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"immutable content");
+
+    let hex: String = claim.descriptor().digest().iter().map(|byte| format!("{byte:02x}")).collect();
+    let canonical = paths[0].join(&hex[..2]).join(&hex);
+    // Owner-controlled mode bits do not defeat the genuine kernel seal.
+    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(OpenOptions::new().write(true).open(&canonical).is_err());
+    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o400)).unwrap();
+
+    let second = publisher.publish(&claim, source(&root, b"immutable content")).await.unwrap().into_handle();
+    assert_eq!(second.metadata().unwrap().ino(), original.ino());
+    assert_eq!(fs::read_dir(&paths[1]).unwrap().count(), 0);
+
+    let (native, _) = publisher.into_parts();
+    drop(native);
+    // Simulate total embedded-state loss while preserving the sealed inode.
+    fs::remove_dir_all(&state_path).unwrap();
+    fs::create_dir(&state_path).unwrap();
+    fs::set_permissions(&state_path, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut publisher = Publisher::new(adapter("public", &paths),
+        FsPublicationState::new(terrane::store::TokioLocalFs, state_path.clone()));
+    let adopted = publisher.adopt(&claim).await.unwrap();
+    assert_eq!(adopted.binding(), &measured);
+    assert_eq!(adopted.into_handle().metadata().unwrap().ino(), original.ino());
+
+    let (mut native, state) = publisher.into_parts();
+    native.retire(&claim).unwrap();
+    assert!(!canonical.exists());
+    native.restore(&claim).unwrap();
+    let mut publisher = Publisher::new(native, state);
+    assert_eq!(publisher.adopt(&claim).await.unwrap().into_handle().metadata().unwrap().ino(), original.ino());
+
+    let (native, _) = publisher.into_parts();
+    let mut state = State::default();
+    state.bindings.insert(claim.descriptor().digest().to_vec(), VerityBinding {
+        algorithm: 1, digest: vec![0; 32],
+    });
+    let mut publisher = Publisher::new(native, state);
+    assert!(publisher.adopt(&claim).await.is_err());
+    drop(publisher);
+
+    let other_paths = directories(&root, "private");
+    let other_claim = crate::claim("private:other", b"immutable content");
+    let mut other = Publisher::new(adapter("private:other", &other_paths), State::default());
+    let private = other.publish(&other_claim, source(&root, b"immutable content")).await.unwrap().into_handle();
+    assert_ne!(private.metadata().unwrap().ino(), original.ino());
+    assert!(other.adopt(&claim).await.is_err());
+
+    let failure_paths = directories(&root, "failure");
+    let mut failure = Publisher::new(adapter("public", &failure_paths), State { fail: true, ..State::default() });
+    assert!(failure.publish(&claim, source(&root, b"immutable content")).await.is_err());
+    assert!(!failure_paths[0].join(&hex[..2]).join(&hex).exists());
+    assert_eq!(fs::read_dir(&failure_paths[1]).unwrap().count(), 0);
+
+    let unsealed_paths = directories(&root, "unsealed");
+    fs::create_dir(unsealed_paths[0].join(&hex[..2])).unwrap();
+    let unsealed = unsealed_paths[0].join(&hex[..2]).join(&hex);
+    fs::write(&unsealed, b"immutable content").unwrap();
+    fs::set_permissions(&unsealed, fs::Permissions::from_mode(0o400)).unwrap();
+    let mut unsealed_publisher = Publisher::new(adapter("public", &unsealed_paths), State::default());
+    assert!(unsealed_publisher.adopt(&claim).await.is_err());
+    assert!(unsealed_publisher.publish(&claim, source(&root, b"immutable content")).await.is_err());
+    assert_eq!(fs::read(&unsealed).unwrap(), b"immutable content");
+    });
+}

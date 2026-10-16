@@ -1,0 +1,192 @@
+//! Orders descriptor publication and verified recovery without filesystem guesses.
+
+use std::io::{self, Read, Seek, SeekFrom};
+
+use super::PublicationClaim;
+
+/// Records the kernel measurement independently of the content identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerityBinding {
+    /// The Linux fs-verity digest algorithm identifier.
+    pub algorithm: u16,
+    /// The measured fs-verity digest, including its distinct digest domain.
+    pub digest: Vec<u8>,
+}
+
+/// Persists only verified bindings; reconstruction witnesses remain metadata.
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+pub trait PublicationState {
+    /// Looks up an existing binding for this exact domain and identity.
+    ///
+    /// # Errors
+    /// Returns state read failures; absence must not hide corruption.
+    async fn binding(&self, claim: &PublicationClaim) -> io::Result<Option<VerityBinding>>;
+
+    /// Durably records a verified binding before publication is acknowledged.
+    ///
+    /// # Errors
+    /// Returns write or synchronization failures without acknowledging success.
+    async fn record(&mut self, claim: &PublicationClaim, binding: &VerityBinding) -> io::Result<()>;
+}
+
+/// Supplies inode-retaining operations unavailable through portable path I/O.
+///
+/// Adapters must not expose staged handles to consumers. The staged reader retains the exact private inode; `close_writers`
+/// consumes every writer before the kernel seal may be enabled.
+/// Ordinary metadata persistence belongs to the caller's existing `LocalFs`.
+pub trait PublicationKernel {
+    /// The incoming owned content descriptor.
+    type Source;
+    /// A private inode retained throughout verification and writer closure.
+    type Staged: Read;
+    /// A retained read-only canonical inode descriptor.
+    type Handle: Read + Seek;
+
+    /// Copies descriptor content into a fresh publisher-private inode.
+    ///
+    /// # Errors
+    /// Returns invalid source, copy, close or private inode creation failures.
+    fn stage(&mut self, claim: &PublicationClaim, source: Self::Source) -> io::Result<Self::Staged>;
+
+    /// Closes every private-inode writer, reporting deferred close errors.
+    ///
+    /// # Errors
+    /// Returns close failures; callers must not proceed to sealing.
+    fn close_writers(&mut self, staged: &mut Self::Staged) -> io::Result<()>;
+
+    /// Enables and independently measures the private inode's kernel seal.
+    ///
+    /// # Errors
+    /// Returns unsupported sealing, outstanding writer or measurement failures.
+    fn seal(&mut self, staged: &Self::Staged) -> io::Result<VerityBinding>;
+
+    /// Synchronizes the retained inode after seal verification.
+    ///
+    /// # Errors
+    /// Returns inode synchronization failures.
+    fn sync_staged(&mut self, staged: &Self::Staged) -> io::Result<()>;
+
+    /// Inserts the canonical link without replacing an existing inode.
+    ///
+    /// Returns false when a canonical entry already exists.
+    ///
+    /// # Errors
+    /// Returns directory mutation failures other than an existing name.
+    fn insert(&mut self, claim: &PublicationClaim, staged: &Self::Staged) -> io::Result<bool>;
+
+    /// Synchronizes the canonical parent directory.
+    ///
+    /// # Errors
+    /// Returns directory synchronization failures.
+    fn sync_parent(&mut self, claim: &PublicationClaim) -> io::Result<()>;
+
+    /// Removes a failed insertion only if it still names the staged inode.
+    ///
+    /// # Errors
+    /// Returns failed or uncertain cleanup, including a replaced entry.
+    fn rollback(&mut self, claim: &PublicationClaim, staged: &Self::Staged) -> io::Result<()>;
+
+    /// Opens the canonical entry read-only without following symlinks.
+    ///
+    /// # Errors
+    /// Returns missing, unsafe or unreadable canonical inode failures.
+    fn open(&mut self, claim: &PublicationClaim) -> io::Result<Self::Handle>;
+
+    /// Measures an existing inode's genuine kernel seal.
+    ///
+    /// # Errors
+    /// Returns missing seal, invalid measurement or kernel failures.
+    fn measure(&mut self, handle: &Self::Handle) -> io::Result<VerityBinding>;
+
+    /// Synchronizes the retained canonical inode during adoption.
+    ///
+    /// # Errors
+    /// Returns inode synchronization failures.
+    fn sync_handle(&mut self, handle: &Self::Handle) -> io::Result<()>;
+}
+
+/// Contains a backing handle only after complete publication or adoption.
+pub struct PublishedObject<H> {
+    handle: H,
+    binding: VerityBinding,
+}
+
+impl<H> PublishedObject<H> {
+    /// Returns the independently measured kernel binding.
+    pub fn binding(&self) -> &VerityBinding { &self.binding }
+
+    /// Transfers the read-only canonical handle to its consumer.
+    pub fn into_handle(self) -> H { self.handle }
+}
+
+/// Coordinates a sole-writer adapter and durable binding state.
+pub struct Publisher<K, S> {
+    kernel: K,
+    state: S,
+}
+
+impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
+    /// Constructs a publisher from already authorized adapters.
+    pub fn new(kernel: K, state: S) -> Self { Self { kernel, state } }
+
+    /// Verifies, seals and durably publishes content from an owned descriptor.
+    ///
+    /// The caller must durably retain reconstruction metadata before calling.
+    /// Any late failure withholds the backing handle and attempts inode-checked
+    /// cleanup. A surviving canonical entry must pass independent adoption.
+    ///
+    /// # Errors
+    /// Returns claim, sealing, publication or durable-state failures.
+    pub async fn publish(&mut self, claim: &PublicationClaim, source: K::Source)
+        -> io::Result<PublishedObject<K::Handle>> {
+        let mut staged = self.kernel.stage(claim, source)?;
+        claim.verify_reader(&mut staged)?;
+        self.kernel.close_writers(&mut staged)?;
+        let binding = self.kernel.seal(&staged)?;
+        self.kernel.sync_staged(&staged)?;
+        if !self.kernel.insert(claim, &staged)? {
+            return self.adopt(claim).await;
+        }
+
+        let finish = async {
+            self.kernel.sync_parent(claim)?;
+            self.state.record(claim, &binding).await?;
+            let handle = self.kernel.open(claim)?;
+            if self.kernel.measure(&handle)? != binding {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                    "canonical seal changed before publication acknowledgment"));
+            }
+            Ok(PublishedObject { handle, binding })
+        }.await;
+        if finish.is_err() {
+            // Cleanup is best effort: its failure cannot turn an unacknowledged
+            // publication into a servable object. Recovery verifies independently.
+            let _cleanup = self.kernel.rollback(claim, &staged);
+        }
+        finish
+    }
+
+    /// Independently verifies an existing canonical inode before adoption.
+    ///
+    /// A conflicting recorded measurement is corruption, never missing state.
+    ///
+    /// # Errors
+    /// Returns unsafe inode, seal, plaintext, binding or synchronization failures.
+    pub async fn adopt(&mut self, claim: &PublicationClaim) -> io::Result<PublishedObject<K::Handle>> {
+        let mut handle = self.kernel.open(claim)?;
+        let binding = self.kernel.measure(&handle)?;
+        claim.verify_reader(&mut handle)?;
+        if self.state.binding(claim).await?.is_some_and(|existing| existing != binding) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "recorded verity binding mismatch"));
+        }
+        handle.seek(SeekFrom::Start(0))?;
+        self.kernel.sync_handle(&handle)?;
+        self.kernel.sync_parent(claim)?;
+        self.state.record(claim, &binding).await?;
+        Ok(PublishedObject { handle, binding })
+    }
+
+    /// Returns the owned adapters for shutdown or administrative maintenance.
+    pub fn into_parts(self) -> (K, S) { (self.kernel, self.state) }
+}
