@@ -37,9 +37,10 @@ mod attempt_owner;
 pub(crate) mod measurement_domain;
 mod memory_control;
 mod memory_events;
-pub(crate) mod target_dispatcher;
+mod target_dispatcher;
 pub(crate) use memory_control::tighten_process_envelope;
 pub use memory_events::LinuxQemuMemoryLimitFailure;
+pub(crate) use target_dispatcher::TargetDispatcher;
 mod original_finish;
 /// Opaque pinned memory authority confined to the physical owner boundary.
 pub(crate) type LinuxQemuCgroupMemoryControl = memory_control::LinuxQemuCgroupMemoryControl;
@@ -240,7 +241,7 @@ impl LinuxQemuCgroupCreateError {
 
     /// Returns the setup failure without consuming retained cleanup authority.
     #[must_use]
-    pub const fn source_error(&self) -> &LinuxQemuCgroupError {
+    pub(crate) const fn source_error(&self) -> &LinuxQemuCgroupError {
         &self.source
     }
 
@@ -420,7 +421,7 @@ impl LinuxQemuCgroupControl {
     ///
     /// Returns [`LinuxQemuCgroupError`] when `cgroup.events` cannot be read or
     /// contains a noncanonical `populated` field.
-    pub fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
+    fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
         read_populated(&mut self.cgroup_events, &self.path)
     }
 }
@@ -1242,7 +1243,7 @@ impl LinuxQemuCgroup {
     /// Returns [`LinuxQemuCgroupError`] when the watcher is not running, the
     /// child credentials overlap the supervisor, descriptors cannot be
     /// duplicated, or the sealed contract rejects their provenance.
-    pub(crate) fn child_process_contract(
+    fn child_process_contract(
         &self,
         maximum_writable_bytes: u64,
         maximum_file_descriptors: u64,
@@ -1367,7 +1368,7 @@ impl LinuxQemuCgroup {
     ///
     /// Returns [`LinuxQemuCgroupError`] when `cgroup.events` cannot be read or
     /// contains a noncanonical `populated` field.
-    pub fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
+    fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
         self.control.is_populated()
     }
 

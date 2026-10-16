@@ -219,7 +219,7 @@ pub struct LinuxQemuAttemptProcessFactory {
     root: LinuxQemuCgroupRoot,
     next_attempt: u64,
     poisoned: bool,
-    target_dispatcher: Option<crate::linux_cgroup::target_dispatcher::TargetDispatcher>,
+    target_dispatcher: Option<crate::linux_cgroup::TargetDispatcher>,
     target_dispatcher_terminal: bool,
 }
 
@@ -529,15 +529,14 @@ impl LinuxQemuAttemptProcessFactory {
             return Err(invalid_config("Target dispatcher factory is terminal"));
         }
         if self.target_dispatcher.is_none() {
-            let peak = crate::linux_cgroup::target_dispatcher::TargetDispatcher::control_peak()
+            let peak = crate::linux_cgroup::TargetDispatcher::control_peak()
                 .ok_or_else(|| invalid_config("Target dispatcher control extent overflow"))?;
             let purpose = original
                 .reserve_target_dispatcher_purpose(peak)
                 .map_err(|source| QemuVmRealizationError::ModelCopy {
                     source: Box::new(source),
                 })?;
-            self.target_dispatcher =
-                Some(crate::linux_cgroup::target_dispatcher::TargetDispatcher::reserved(purpose));
+            self.target_dispatcher = Some(crate::linux_cgroup::TargetDispatcher::reserved(purpose));
             let started = self
                 .target_dispatcher
                 .as_mut()

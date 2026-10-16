@@ -53,8 +53,9 @@ pub(crate) enum PluginStartupCause {
     #[cfg(target_os = "linux")]
     #[error("issued installed process purpose refused: {0}")]
     Purpose(#[source] crate::linux_attempt_host::InstalledProcessPurposeError),
-    #[error("the matched native preexec purpose receiver is unavailable")]
-    ReceiverPurposeUnavailable,
+    #[cfg(target_os = "linux")]
+    #[error("matched native preexec receiver artifact refused: {0}")]
+    Receiver(#[source] crate::artifact_identity::NativeReceiverError),
     #[cfg(target_os = "linux")]
     #[error("device workspace issuance refused: {0}")]
     Workspace(#[source] super::DeviceDigestWorkspaceIssueError),
@@ -399,24 +400,29 @@ impl OriginalPluginStartup {
         }
     }
 
-    /// Refuses native birth until the issued purpose has a matched receiver.
-    ///
-    /// Host preparation is funded by its same-slot outside assignment. It does
-    /// not authorize the old late setup frame to pay earlier native births.
+    /// Checks the receiver declaration retained by this exact admitted Source.
     ///
     /// # Errors
-    /// Preserves an initiating original refusal or the unavailable receiver,
-    /// plus the independent same-original postcut, without completing Setup.
+    /// Refuses the original Setup, changed Source custody, or the actual matched
+    /// artifact's receiver declaration. Independent original postcut remains
+    /// visible without completing Setup or releasing the caller's controls.
     pub(crate) fn require_preexec_receiver(&self) -> Result<(), PluginStartupError> {
         let state = self.state().map_err(Self::state_refusal)?;
-        let source = match state.original.check_original_setup_cancellation() {
-            Ok(()) => PluginStartupCause::ReceiverPurposeUnavailable,
-            Err(source) => PluginStartupCause::Original(source),
-        };
-        Err(PluginStartupError {
-            source,
-            original_after: state.original.wait_slice().err(),
-            _control: None,
+        check_receiver_under_original(&state.original, || {
+            #[cfg(target_os = "linux")]
+            {
+                state
+                    .source
+                    .check()
+                    .map_err(|source| PluginStartupCause::Purpose(source.into()))?;
+                state
+                    .source
+                    .receiver_artifact()
+                    .check_source_activation()
+                    .map_err(PluginStartupCause::Receiver)
+            }
+            #[cfg(not(target_os = "linux"))]
+            Err(PluginStartupCause::InstalledProfileUnavailable)
         })
     }
 
@@ -579,6 +585,33 @@ pub(super) fn event_identity(descriptor: i32) -> io::Result<u64> {
 #[cfg(not(target_os = "linux"))]
 fn require_installed_process_purpose() -> Result<(), PluginStartupCause> {
     Err(PluginStartupCause::InstalledProfileUnavailable)
+}
+
+// The actual startup remains the owner of its body/control on either refusal.
+// A component control may exercise this first/post ordering with a real guard
+// and final-file observation without constructing a Source or startup owner.
+fn check_receiver_under_original(
+    original: &HostOperationGuard,
+    observe: impl FnOnce() -> Result<(), PluginStartupCause>,
+) -> Result<(), PluginStartupError> {
+    let first = original
+        .check_original_setup_cancellation()
+        .map_err(PluginStartupCause::Original)
+        .and_then(|()| observe());
+    let original_after = original.wait_slice().err();
+    match (first, original_after) {
+        (Ok(()), None) => Ok(()),
+        (Ok(()), Some(source)) => Err(PluginStartupError {
+            source: PluginStartupCause::Original(source),
+            original_after: None,
+            _control: None,
+        }),
+        (Err(source), original_after) => Err(PluginStartupError {
+            source,
+            original_after,
+            _control: None,
+        }),
+    }
 }
 
 #[cfg(test)]

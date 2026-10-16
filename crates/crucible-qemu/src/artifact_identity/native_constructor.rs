@@ -28,6 +28,12 @@ const STANDING_SECTION: &[u8] = b".qemu.crucible.standing-constructor";
 const DECLARATION_BYTES: usize = 96;
 const SECTION_HEADER_BYTES: usize = 64;
 
+mod receiver;
+pub(crate) use receiver::{NativeReceiverArtifact, NativeReceiverError};
+
+#[cfg(test)]
+pub(crate) mod test_support;
+
 mod userfaultfd;
 pub(crate) use userfaultfd::UserfaultfdConstructorRequest;
 
@@ -48,6 +54,7 @@ impl StandingConstructorDeclaration {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NativeConstructorDeclarations {
     standing: StandingConstructorDeclaration,
+    receiver: Result<receiver::ReceiverDeclaration, &'static str>,
     userfaultfd: Result<Option<UserfaultfdConstructorRequest>, &'static str>,
 }
 
@@ -62,6 +69,10 @@ pub(super) struct NativeConstructorArtifact {
 }
 
 impl NativeConstructorArtifact {
+    pub(super) fn receiver_artifact(&self) -> NativeReceiverArtifact {
+        NativeReceiverArtifact::from_observed(self.declarations.receiver, self.qemu_sha256)
+    }
+
     /// Borrows request geometry; it issues no descriptor or memory credit.
     ///
     /// # Errors
@@ -183,6 +194,8 @@ fn read_declarations(
     }
     let mut declaration = None;
     let mut userfaultfd = Ok(None);
+    let mut receiver = Err("missing receiver declaration");
+    let mut receiver_seen = false;
     let mut kernel_seen = false;
     for index in 0..count {
         read_at(
@@ -211,10 +224,30 @@ fn read_declarations(
         let actual_name = &name_bytes[..length];
         let standing = exact_name(actual_name, STANDING_SECTION);
         let kernel = exact_name(actual_name, userfaultfd::SECTION);
-        if !standing && !kernel {
+        let is_receiver = exact_name(actual_name, receiver::SECTION);
+        if !standing && !kernel && !is_receiver {
             continue;
         }
         let proper_section = u32_at(&entry, 4) == 1 && u64_at(&entry, 8) == 2;
+        if is_receiver {
+            if receiver_seen {
+                receiver = Err("duplicate receiver declaration");
+                continue;
+            }
+            receiver_seen = true;
+            if !proper_section || u64_at(&entry, 32) != receiver::BYTES as u64 {
+                receiver = Err("receiver declaration section");
+                continue;
+            }
+            let mut bytes = [0; receiver::BYTES];
+            read_at(file, u64_at(&entry, 24), &mut bytes, extent, original)?;
+            receiver = match receiver::decode(&bytes) {
+                Ok(declaration) => Ok(declaration),
+                Err(NativeConstructorReadError::Invalid(reason)) => Err(reason),
+                Err(error) => return Err(error),
+            };
+            continue;
+        }
         if standing {
             if declaration.is_some()
                 || !proper_section
@@ -263,6 +296,7 @@ fn read_declarations(
     ))?;
     Ok(NativeConstructorDeclarations {
         standing: declaration,
+        receiver,
         userfaultfd,
     })
 }
@@ -385,7 +419,7 @@ mod tests {
 
     use super::*;
 
-    fn declaration() -> [u8; 96] {
+    pub(super) fn declaration() -> [u8; 96] {
         let mut bytes = [0; 96];
         bytes[..8].copy_from_slice(b"CRUCSTC2");
         for (index, value) in [

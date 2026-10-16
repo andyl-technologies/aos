@@ -144,6 +144,17 @@ impl InstallerControlIdentity {
             .ok_or(InstallerControlIdentityError::Unavailable)
     }
 
+    /// Borrows the receiver declaration from the same complete selected QEMU.
+    ///
+    /// This value is unavailable on a decoded-only sidecar. It grants no Source
+    /// or process credit, including when the artifact advertises activation.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn native_receiver_artifact(&self) -> Option<super::NativeReceiverArtifact> {
+        self.native_constructor
+            .as_ref()
+            .map(super::native_constructor::NativeConstructorArtifact::receiver_artifact)
+    }
+
     pub(crate) fn belongs_to(&self, artifact: &QemuLaunchArtifactIdentity) -> bool {
         self.launch_binding == Some(launch_binding(artifact))
     }

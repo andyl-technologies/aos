@@ -162,14 +162,16 @@ fn startup_outside_request_keeps_the_actual_body_and_subscriber_extents() {
     assert!(requested > hosted);
 }
 
-// This fixed host fixture exercises the original and receiver cuts only. It
-// constructs no process-purpose loan, native entitlement or spawn capability.
-#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-fn hosted_startup() -> Result<
+// These component controls retain real Setup and resource loans. The actual ELF
+// reader supplies the observation; no PluginStartupState or Source is fabricated.
+#[cfg(target_os = "linux")]
+fn component_setup() -> Result<
     (
-        OriginalPluginStartup,
+        HostOperationSupervisor,
+        HostOperationGuard,
         rustix::fd::OwnedFd,
         HostServiceAllocator,
+        crucible_linux_resource::host_services::HostServiceLease,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -181,97 +183,155 @@ fn hosted_startup() -> Result<
         1,
         OriginalPluginStartup::control_allocation_extent().ok_or("unrepresentable host extent")?,
     )?;
-    let original = supervisor.begin_control(HostOperationClass::Setup)?;
-    let event = rustix::event::eventfd(
-        0,
-        rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
-    )?;
     let subscriber = services.reserve_resources(
         0,
         1,
         HostOperationGuard::original_setup_cancellation_bytes(),
     )?;
+    let event = rustix::event::eventfd(
+        0,
+        rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
+    )?;
     let alias = rustix::io::fcntl_dupfd_cloexec(&event, 3)?;
+    let original = supervisor.begin_control(HostOperationClass::Setup)?;
     original.retain_original_setup_cancellation(alias, subscriber)?;
-    let basis = original.serialize_original_setup_basis()?;
-    let mut cap_id = [0; 32];
-    cap_id.copy_from_slice(&basis[16..48]);
-    let u64_at = |offset: usize| {
-        let mut bytes = [0; 8];
-        bytes.copy_from_slice(&basis[offset..offset + 8]);
-        u64::from_be_bytes(bytes)
-    };
-    let metadata = rustix::fs::fstat(&event)?;
-    let record = StartupOperation::new(StartupOperationFields {
-        cap_id,
-        operation_id: u64_at(48),
-        original_start_ns: u64_at(56),
-        absolute_end_ns: u64_at(64),
-        poll_ns: u64_at(72),
-        process_generation: 1,
-        original_total_metadata_bytes: extent,
-        cancellation_device: metadata.st_dev,
-        cancellation_inode: metadata.st_ino,
-        cancellation_event_id: event_identity(event.as_raw_fd())?,
-        cancellation_descriptor: super::super::QEMU_STARTUP_CANCELLATION_FD,
-    })?;
-    let startup = OriginalPluginStartup {
-        body: Box::new(Some(PluginStartupState {
-            services: services.clone(),
-            workspace: None,
-            original,
-            record,
-        })),
-        _control: control,
-    };
-    Ok((startup, event, services))
+    Ok((supervisor, original, event, services, control))
 }
 
-#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[cfg(target_os = "linux")]
 #[test]
-fn unavailable_receiver_keeps_the_actual_setup_and_control_owned()
+fn receiver_component_refusal_retains_actual_setup_and_control_until_physical_drop()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (startup, event, services) = hosted_startup()?;
-    let before = startup.record()?;
+    use crate::artifact_identity::native_constructor_test_support as artifacts;
+    use std::io::Write;
 
-    let refusal = startup
-        .require_preexec_receiver()
-        .err()
-        .ok_or("receiver unexpectedly issued")?;
+    let (_supervisor, original, event, services, control) = component_setup()?;
+    let mut file = tempfile::tempfile()?;
+    file.write_all(&artifacts::receiver_elf(&[artifacts::receiver_record(
+        0, 0,
+    )]))?;
+    let observation = artifacts::observe_receiver(&file, &original)?;
+    let before = original.serialize_original_setup_basis()?;
+
+    let refusal = check_receiver_under_original(&original, || {
+        observation
+            .check_source_activation()
+            .map_err(PluginStartupCause::Receiver)
+    })
+    .expect_err("current refusal-only artifact cannot accept Source startup");
 
     assert!(matches!(
         refusal.source,
-        PluginStartupCause::ReceiverPurposeUnavailable
+        PluginStartupCause::Receiver(
+            crate::artifact_identity::NativeReceiverError::SourceActivationUnavailable
+        )
     ));
     assert!(refusal.original_after.is_none());
-    assert_eq!(startup.record()?, before);
+    assert_eq!(original.serialize_original_setup_basis()?, before);
     assert_eq!(
-        startup.state()?.original.status()?.state,
+        original.status()?.state,
         crucible_linux_resource::host_supervision::HostOperationState::Running
     );
     assert!(services.reserve_resources(0, 1, 1).is_err());
-    startup.complete()?;
-    drop(startup);
+    drop(refusal);
+    // Error observation does not return either live descriptor/control loan.
+    assert!(services.reserve_resources(0, 1, 1).is_err());
+    original.complete()?;
+    drop(file);
+    drop(original);
     drop(event);
+    drop(control);
     let released =
         services.reserve_resources(0, 2, OriginalPluginStartup::host_allocation_extent()?)?;
     drop(released);
     Ok(())
 }
 
-#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[cfg(target_os = "linux")]
 #[test]
-fn cancelled_setup_precedes_the_receiver_unavailable_refusal()
+fn cancelled_setup_precedes_artifact_refusal_and_preserves_independent_original_post()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (startup, event, _) = hosted_startup()?;
+    use crate::artifact_identity::native_constructor_test_support as artifacts;
+    use std::cell::Cell;
+    use std::io::Write;
+
+    let (_supervisor, original, event, services, control) = component_setup()?;
+    let mut file = tempfile::tempfile()?;
+    file.write_all(&artifacts::receiver_elf(&[artifacts::receiver_record(
+        0, 0,
+    )]))?;
+    let observation = artifacts::observe_receiver(&file, &original)?;
     rustix::io::write(&event, &1u64.to_ne_bytes())?;
+    let expected = original
+        .check_original_setup_cancellation()
+        .expect_err("actual event revoked Setup");
+    let visited = Cell::new(false);
 
-    let refusal = startup
-        .require_preexec_receiver()
-        .err()
-        .ok_or("cancelled Setup continued")?;
+    let refusal = check_receiver_under_original(&original, || {
+        visited.set(true);
+        observation
+            .check_source_activation()
+            .map_err(PluginStartupCause::Receiver)
+    })
+    .expect_err("cancelled Setup cannot consult receiver readiness");
 
-    assert!(matches!(refusal.source, PluginStartupCause::Original(_)));
-    assert!(startup.check().is_err());
+    assert!(!visited.get());
+    assert!(matches!(refusal.source, PluginStartupCause::Original(source) if source == expected));
+    assert_eq!(refusal.original_after, original.wait_slice().err());
+    // The event revocation and raw operation post are independent: reading
+    // the event does not cancel or complete the supervisor's operation.
+    assert!(refusal.original_after.is_none());
+    assert!(services.reserve_resources(0, 1, 1).is_err());
+    drop(refusal);
+    drop(file);
+    drop(original);
+    drop(event);
+    drop(control);
+    let released =
+        services.reserve_resources(0, 2, OriginalPluginStartup::host_allocation_extent()?)?;
+    drop(released);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_artifact_first_cause_keeps_a_later_same_original_cancellation_post()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::artifact_identity::native_constructor_test_support as artifacts;
+    use std::io::Write;
+
+    let (supervisor, original, event, services, control) = component_setup()?;
+    let mut file = tempfile::tempfile()?;
+    file.write_all(&artifacts::receiver_elf(&[artifacts::receiver_record(
+        0, 0,
+    )]))?;
+    let observation = artifacts::observe_receiver(&file, &original)?;
+
+    let refusal = check_receiver_under_original(&original, || {
+        let first = observation
+            .check_source_activation()
+            .map_err(PluginStartupCause::Receiver);
+        supervisor.cancel().map_err(PluginStartupCause::Original)?;
+        first
+    })
+    .expect_err("artifact first and later original post must both survive");
+
+    assert!(matches!(
+        refusal.source,
+        PluginStartupCause::Receiver(
+            crate::artifact_identity::NativeReceiverError::SourceActivationUnavailable
+        )
+    ));
+    assert_eq!(refusal.original_after, original.wait_slice().err());
+    assert!(refusal.original_after.is_some());
+    assert!(services.reserve_resources(0, 1, 1).is_err());
+    drop(refusal);
+    drop(file);
+    drop(original);
+    drop(event);
+    drop(control);
+    let released =
+        services.reserve_resources(0, 2, OriginalPluginStartup::host_allocation_extent()?)?;
+    drop(released);
     Ok(())
 }

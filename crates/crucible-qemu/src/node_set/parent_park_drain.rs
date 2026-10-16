@@ -248,6 +248,9 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use crate::node::test_support::hot_fork::{
+        QemuTestHotForkOutcome, scripted_hot_fork_source_for_test,
+    };
     use crucible::{ContentHash, EventLog, NodeId};
     use crucible_linux_resource::host_supervision::{
         HostOperationBudgets, HostOperationSupervisor,
@@ -263,7 +266,7 @@ mod tests {
         };
         nodes.insert(
             node.clone(),
-            crate::scripted_hot_fork_source_for_test(crate::QemuTestHotForkOutcome::Forked)
+            scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked)
                 .expect("scripted source"),
         );
         let mut token = nodes
