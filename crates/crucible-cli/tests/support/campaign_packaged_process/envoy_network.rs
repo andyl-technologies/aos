@@ -289,6 +289,13 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     require_measured_backup_route(&response)?;
     println!("envoy_five_node_failover_response={response}");
 
+    // The fallback proof is complete. Restore hot-fork retention so the
+    // follow-up recovery forks from the follow-up disruption's parked world
+    // instead of replaying the whole flight from genesis.
+    service.stop()?;
+    let hot_fork_deployment = product_hot_fork_deployment(&fixture)?;
+    service = start_packaged_network_service(&fixture, &authority, Some(&hot_fork_deployment))?;
+
     let followup_disruption = choose(
         &fixture,
         &mut service,
@@ -315,6 +322,12 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     require_semantic_marker(&completion, "fault.followup.primary-probed", "router-a")?;
     require_semantic_marker(&completion, "campaign.complete", "traffic-west")?;
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    guest_choice::assert_materialization_tier(
+        &materialization,
+        json_string(&completion["attempt"], "id")?,
+        "HotFork",
+    )?;
     println!("envoy_five_node_completion={completion}");
 
     prove_pending_recovery_exact_replay(&fixture, &mut service, &disruption, &requeried_recovery)?;
