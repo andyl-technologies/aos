@@ -961,6 +961,12 @@ fn selected_native_definition_bodies(
             restoration_observe_schema().map_err(|_| refused())?,
             restoration_observe_contract_data().to_vec(),
         ));
+        // Original execution may declare the exact grammar needed by its fresh
+        // target without selecting that target's distinct startup carrier.
+        if let Some(definition) = restored_suffix::declared_definition_data(source.installation())?
+        {
+            definitions.push(definition);
+        }
     }
     Ok(definitions)
 }
@@ -1064,3 +1070,6 @@ mod selected_roster_tests {
         assert!(!exact_native_format_roster(&extra, &expected));
     }
 }
+
+#[path = "records/restored_suffix.rs"]
+mod restored_suffix;

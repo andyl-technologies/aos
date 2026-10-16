@@ -598,3 +598,7 @@ impl Drop for Namespace {
 #[path = "source/fresh_target.rs"]
 mod fresh_target;
 pub use fresh_target::InstalledCompleteRestoration;
+
+#[cfg(test)]
+#[path = "source/native_definition_tests.rs"]
+mod native_definition_tests;
