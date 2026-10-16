@@ -50,43 +50,81 @@ fn private_exact_and_one_short_charge_the_independent_typed_launch_carry() -> Te
     let exact = row(actual + carry);
     OriginalNativeFramePreflight::private(&exact, carry).admit(raw)?;
     let short = row(actual + carry - 1);
-    assert!(OriginalNativeFramePreflight::private(&short, carry).admit(raw).is_err());
+    assert!(
+        OriginalNativeFramePreflight::private(&short, carry)
+            .admit(raw)
+            .is_err()
+    );
     // Omitting a simultaneous typed owner cannot borrow credit from another row.
-    assert!(OriginalNativeFramePreflight::private(&row(actual), carry).admit(raw).is_err());
+    assert!(
+        OriginalNativeFramePreflight::private(&row(actual), carry)
+            .admit(raw)
+            .is_err()
+    );
     Ok(())
 }
 
 #[test]
-fn original_reader_preserves_strict_errors_when_funded_and_stops_before_parse_when_short() -> TestResult {
+fn original_reader_preserves_strict_errors_when_funded_and_stops_before_parse_when_short()
+-> TestResult {
     let raw = br#"{"duplicate":0,"duplicate":1}"#;
     let maximum = row(raw_shape::extent(raw)?.canonical_pass_requested_bytes()?);
-    let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(raw.len() + 4, 1)?));
+    let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
+        raw.len() + 4,
+        1,
+    )?));
     let mut reader = FrameReader::new(Cursor::new(wire(raw)), raw.len())?;
     reader.install_originals(Rc::clone(&bank));
     let budget = OriginalNativeFramePreflight::private(&maximum, 0);
-    assert!(matches!(reader.read_original_native_preflight(raw.len(), &budget), Err(ProviderError::Contract(_))));
+    assert!(matches!(
+        reader.read_original_native_preflight(raw.len(), &budget),
+        Err(ProviderError::Contract(_))
+    ));
     assert_eq!(bank.borrow().frames().count(), 1);
-    assert!(matches!(reader.read_original_native_preflight(raw.len(), &budget), Err(ProviderError::Frame("connection already failed"))));
+    assert!(matches!(
+        reader.read_original_native_preflight(raw.len(), &budget),
+        Err(ProviderError::Frame("connection already failed"))
+    ));
 
     let short = row(maximum.maximum_simultaneous_transient_bytes.get() as usize - 1);
-    let second_bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(raw.len() + 4, 1)?));
+    let second_bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
+        raw.len() + 4,
+        1,
+    )?));
     let mut second = FrameReader::new(Cursor::new(wire(raw)), raw.len())?;
     second.install_originals(Rc::clone(&second_bank));
-    assert!(matches!(second.read_original_native_preflight(raw.len(), &OriginalNativeFramePreflight::private(&short, 0)), Err(ProviderError::ResourceExhausted("native original frame layout window"))));
+    assert!(matches!(
+        second.read_original_native_preflight(
+            raw.len(),
+            &OriginalNativeFramePreflight::private(&short, 0)
+        ),
+        Err(ProviderError::ResourceExhausted(
+            "native original frame layout window"
+        ))
+    ));
     assert_eq!(second_bank.borrow().frames().count(), 1);
-    assert!(matches!(second.read(), Err(ProviderError::Frame("connection already failed"))));
+    assert!(matches!(
+        second.read(),
+        Err(ProviderError::Frame("connection already failed"))
+    ));
     Ok(())
 }
 
 #[test]
-fn selected_hello_reader_keeps_the_same_attempt_and_original_journal_on_layout_refusal() -> TestResult {
+fn selected_hello_reader_keeps_the_same_attempt_and_original_journal_on_layout_refusal()
+-> TestResult {
     let raw = br#"{"duplicate":0,"duplicate":1}"#;
     let exact = raw_shape::extent(raw)?.canonical_pass_requested_bytes()?;
     let short = row(exact - 1);
     let journal = crate::native_hello::OriginalNativeHelloJournal::reserve(raw.len(), 64)?;
     let original = journal.original_test_identity();
     let mut exchange = journal.bind(Cursor::new(wire(raw)))?;
-    assert!(matches!(exchange.receive_original_preflight(&OriginalNativeFramePreflight::private(&short, 0)), Err(ProviderError::ResourceExhausted("native original frame layout window"))));
+    assert!(matches!(
+        exchange.receive_original_preflight(&OriginalNativeFramePreflight::private(&short, 0)),
+        Err(ProviderError::ResourceExhausted(
+            "native original frame layout window"
+        ))
+    ));
     let (_, journal) = exchange.into_parts();
     assert!(original(&journal));
     assert_eq!(journal.original_frames().frames().count(), 1);

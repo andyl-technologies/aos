@@ -111,7 +111,10 @@ impl NativeAckBoot {
     pub(crate) fn original_native_hello_preflight<'a>(
         &'a self,
         launch: &'a crate::reference_packet::service::PacketNative5SourceLaunch,
-    ) -> Result<Option<crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'a>>, ProviderError> {
+    ) -> Result<
+        Option<crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'a>>,
+        ProviderError,
+    > {
         self.ensure_origin()?;
         let Some(original) = self.startup.as_ref() else {
             return Ok(None);
@@ -120,13 +123,21 @@ impl NativeAckBoot {
         if self.data.schema != PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA {
             return Ok(None);
         }
-        if !self.ready || self.verified || !original.native_birth_issued || original.baseline_complete {
-            return Err(ProviderError::Correlation("native original Hello scope unavailable"));
+        if !self.ready
+            || self.verified
+            || !original.native_birth_issued
+            || original.baseline_complete
+        {
+            return Err(ProviderError::Correlation(
+                "native original Hello scope unavailable",
+            ));
         }
-        Ok(Some(crate::reference_packet::service::native_startup::OriginalNativeFramePreflight::hello(
-            &original.allocation.native_birth,
-            launch,
-            &self.host_body,
-        )))
+        Ok(Some(
+            crate::reference_packet::service::native_startup::OriginalNativeFramePreflight::hello(
+                &original.allocation.native_birth,
+                launch,
+                &self.host_body,
+            ),
+        ))
     }
 }

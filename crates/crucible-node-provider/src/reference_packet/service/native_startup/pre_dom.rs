@@ -18,8 +18,13 @@ pub(crate) struct OriginalNativeFramePreflight<'a> {
 }
 
 enum FrameKind<'a> {
-    Private { typed_launch_backing: usize },
-    Hello { launch: &'a super::super::PacketNative5SourceLaunch, registration: &'a [u8] },
+    Private {
+        typed_launch_backing: usize,
+    },
+    Hello {
+        launch: &'a super::super::PacketNative5SourceLaunch,
+        registration: &'a [u8],
+    },
 }
 
 impl<'a> OriginalNativeFramePreflight<'a> {
@@ -28,7 +33,12 @@ impl<'a> OriginalNativeFramePreflight<'a> {
         row: &'a PacketNativeStartupAllocationRow,
         typed_launch_backing: usize,
     ) -> Self {
-        Self { row, kind: FrameKind::Private { typed_launch_backing } }
+        Self {
+            row,
+            kind: FrameKind::Private {
+                typed_launch_backing,
+            },
+        }
     }
 
     /// Borrows the original native row and actual retained Hello inputs.
@@ -37,7 +47,13 @@ impl<'a> OriginalNativeFramePreflight<'a> {
         launch: &'a super::super::PacketNative5SourceLaunch,
         registration: &'a [u8],
     ) -> Self {
-        Self { row, kind: FrameKind::Hello { launch, registration } }
+        Self {
+            row,
+            kind: FrameKind::Hello {
+                launch,
+                registration,
+            },
+        }
     }
 
     /// Checks the literal body allocation before its bounded read begins.
@@ -61,14 +77,23 @@ impl<'a> OriginalNativeFramePreflight<'a> {
     /// independently admitted transient/scratch window. Strict parsing follows.
     pub(crate) fn admit(&self, raw: &[u8]) -> Result<(), ProviderError> {
         self.row.requested_peak_data()?;
-        let maximum = usize::try_from(self.row.maximum_simultaneous_transient_bytes.get()).map_err(|_| exhausted())?;
+        let maximum = usize::try_from(self.row.maximum_simultaneous_transient_bytes.get())
+            .map_err(|_| exhausted())?;
         if counter_scratch_data() as u64 > self.row.declared_counter_scratch_bytes.get() {
             return Err(exhausted());
         }
         let extent = raw_shape::extent(raw)?;
         let requested = match self.kind {
-            FrameKind::Private { typed_launch_backing } => extent.canonical_pass_requested_bytes()?.checked_add(typed_launch_backing).ok_or_else(exhausted)?,
-            FrameKind::Hello { launch, registration } => super::storage::hello_frame_work_data(launch, registration, extent, maximum)?,
+            FrameKind::Private {
+                typed_launch_backing,
+            } => extent
+                .canonical_pass_requested_bytes()?
+                .checked_add(typed_launch_backing)
+                .ok_or_else(exhausted)?,
+            FrameKind::Hello {
+                launch,
+                registration,
+            } => super::storage::hello_frame_work_data(launch, registration, extent, maximum)?,
         };
         if requested > maximum {
             return Err(exhausted());
@@ -84,15 +109,35 @@ pub(super) fn counter_scratch_data() -> usize {
         + std::mem::size_of::<Result<(), ProviderError>>()
         + std::mem::size_of::<[usize; 4]>()
         + std::mem::size_of::<Option<OriginalNativeFramePreflight<'static>>>()
-        + std::mem::size_of::<Result<Option<OriginalNativeFramePreflight<'static>>, ProviderError>>()
-        + std::mem::size_of::<Option<std::cell::Ref<'static, crate::reference_packet::service::ack_emitter::NativeAckBoot>>>()
-        + std::mem::size_of::<Result<Option<std::cell::Ref<'static, crate::reference_packet::service::ack_emitter::NativeAckBoot>>, ProviderError>>()
+        + std::mem::size_of::<Result<Option<OriginalNativeFramePreflight<'static>>, ProviderError>>(
+        )
+        + std::mem::size_of::<
+            Option<
+                std::cell::Ref<
+                    'static,
+                    crate::reference_packet::service::ack_emitter::NativeAckBoot,
+                >,
+            >,
+        >()
+        + std::mem::size_of::<
+            Result<
+                Option<
+                    std::cell::Ref<
+                        'static,
+                        crate::reference_packet::service::ack_emitter::NativeAckBoot,
+                    >,
+                >,
+                ProviderError,
+            >,
+        >()
         + std::mem::size_of::<crate::transport::RetainedFrame>()
         + std::mem::size_of::<Result<Option<crate::transport::RetainedFrame>, ProviderError>>()
 }
 
 fn sum(values: &[usize]) -> Result<usize, ProviderError> {
-    values.iter().try_fold(0usize, |sum, value| sum.checked_add(*value).ok_or_else(exhausted))
+    values.iter().try_fold(0usize, |sum, value| {
+        sum.checked_add(*value).ok_or_else(exhausted)
+    })
 }
 
 fn mul(left: usize, right: usize) -> Result<usize, ProviderError> {

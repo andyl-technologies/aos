@@ -179,13 +179,17 @@ impl<R: Read> FrameReader<R> {
     pub(crate) fn read_original_native_preflight(
         &mut self,
         maximum_bytes: usize,
-        preflight: &crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>,
+        preflight: &crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<
+            '_,
+        >,
     ) -> Result<Option<RetainedFrame>, ProviderError> {
         if self.failed {
             return Err(ProviderError::Frame("connection already failed"));
         }
         if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
-            return Err(ProviderError::Frame("selected read exceeds negotiated frame limit"));
+            return Err(ProviderError::Frame(
+                "selected read exceeds negotiated frame limit",
+            ));
         }
         if self.originals.is_none() {
             return Err(ProviderError::Frame("original bank absent"));
@@ -253,7 +257,9 @@ impl<R: Read> FrameReader<R> {
     fn read_original_frame_with_preflight(
         &mut self,
         maximum_bytes: usize,
-        preflight: Option<&crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>>,
+        preflight: Option<
+            &crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>,
+        >,
     ) -> Result<Option<RetainedFrame>, ProviderError> {
         let bank = self
             .originals

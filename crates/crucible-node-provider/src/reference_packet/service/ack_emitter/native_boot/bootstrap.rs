@@ -168,9 +168,16 @@ pub(in crate::reference_packet::service) fn accept_invocation(
 
 impl<S: AsFd> Bootstrap<S> {
     fn prepare(&mut self, socket: &Path) -> Result<PacketSourceService, ProviderError> {
-        let pre_dom_selected = self.startup.as_ref().map(|startup| {
-            startup.has_invocation_prefix().map(|invocation| !invocation)
-        }).transpose()?.unwrap_or(false);
+        let pre_dom_selected = self
+            .startup
+            .as_ref()
+            .map(|startup| {
+                startup
+                    .has_invocation_prefix()
+                    .map(|invocation| !invocation)
+            })
+            .transpose()?
+            .unwrap_or(false);
         self.launch_value = Some(
             if let Some(startup) = self.startup.as_ref().filter(|_| pre_dom_selected) {
                 startup.ensure_original()?;

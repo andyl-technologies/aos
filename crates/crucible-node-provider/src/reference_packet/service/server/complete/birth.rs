@@ -249,16 +249,27 @@ impl CompleteBirth {
         // on self, including every failed-partial owner.
         {
             let value = {
-                let boot = self.boot.as_ref().map(|boot| {
-                    boot.try_borrow().map_err(|_| ProviderError::Conflict("native original Hello boot borrowed"))
-                }).transpose()?;
-                let preflight = boot.as_ref().map(|boot| boot.original_native_hello_preflight(&self.launch)).transpose()?.flatten();
+                let boot = self
+                    .boot
+                    .as_ref()
+                    .map(|boot| {
+                        boot.try_borrow().map_err(|_| {
+                            ProviderError::Conflict("native original Hello boot borrowed")
+                        })
+                    })
+                    .transpose()?;
+                let preflight = boot
+                    .as_ref()
+                    .map(|boot| boot.original_native_hello_preflight(&self.launch))
+                    .transpose()?
+                    .flatten();
                 let exchange = self.exchange.as_mut().ok_or_else(absent)?;
                 match preflight.as_ref() {
                     Some(preflight) => exchange.receive_original_preflight(preflight)?,
                     None => exchange.receive()?,
                 }
-            }.ok_or(ProviderError::Frame("native5 original Hello missing"))?;
+            }
+            .ok_or(ProviderError::Frame("native5 original Hello missing"))?;
             // The immutable boot loan ends before later handshake callbacks.
             let request = Envelope::decode(&canonical::canonical_json(&value)?, 65_536)?;
             let RequestBody::Hello(hello_request) = decode_request(request.method, &request.body)?

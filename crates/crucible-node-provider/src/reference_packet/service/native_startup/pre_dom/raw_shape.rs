@@ -67,7 +67,10 @@ fn occurrences(bytes: &[u8]) -> Option<Occurrences> {
             }
             _ => {
                 let start = cursor;
-                while bytes.get(cursor).is_some_and(|b| !b" \t\r\n,:]}{[\"".contains(b)) {
+                while bytes
+                    .get(cursor)
+                    .is_some_and(|b| !b" \t\r\n,:]}{[\"".contains(b))
+                {
                     cursor += 1;
                 }
                 if cursor == start {
@@ -99,11 +102,18 @@ pub(super) fn extent(bytes: &[u8]) -> Result<OriginalJsonValueStorageExtentData,
     if std::mem::size_of::<usize>() != 8 || mul(5, sort_slot)? > sort_node {
         return Err(exhausted());
     }
-    let dom = sum(&[strings, arrays, mul(mul(2, maps)?, value_node)?, std::mem::size_of::<serde_json::Value>()])?;
+    let dom = sum(&[
+        strings,
+        arrays,
+        mul(mul(2, maps)?, value_node)?,
+        std::mem::size_of::<serde_json::Value>(),
+    ])?;
     let encoded = sum(&[mul(6, counts.string_bytes)?, mul(36, values)?])?;
     let work = sum(&[
-        mul(24, counts.string_bytes)?, mul(264, values)?,
-        mul(8, counts.string_bytes)?, mul(16, members)?,
+        mul(24, counts.string_bytes)?,
+        mul(264, values)?,
+        mul(8, counts.string_bytes)?,
+        mul(16, members)?,
         mul(mul(2, members)?, sort_node)?,
         mul(std::mem::size_of::<[u8; 132]>(), values)?,
         std::mem::size_of::<[u8; 4096]>(),

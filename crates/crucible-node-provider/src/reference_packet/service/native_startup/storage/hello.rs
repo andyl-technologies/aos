@@ -64,7 +64,12 @@ pub(super) fn project(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum: usize,
 ) -> Result<HelloStorage, ProviderError> {
-    project_with_raw(input.launch, input.host_registration, original_json_value_storage_extent_data(NATIVE_HELLO_BYTES)?, maximum)
+    project_with_raw(
+        input.launch,
+        input.host_registration,
+        original_json_value_storage_extent_data(NATIVE_HELLO_BYTES)?,
+        maximum,
+    )
 }
 
 pub(super) fn project_with_raw(

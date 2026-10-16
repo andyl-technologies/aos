@@ -307,14 +307,18 @@ impl<S: Read + Write> OriginalNativeHelloExchange<S> {
     /// failure while retaining the same journal and permanently spent attempt.
     pub(crate) fn receive_original_preflight(
         &mut self,
-        preflight: &crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>,
+        preflight: &crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<
+            '_,
+        >,
     ) -> Result<Option<Value>, ProviderError> {
         self.receive_with_preflight(Some(preflight))
     }
 
     fn receive_with_preflight(
         &mut self,
-        preflight: Option<&crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>>,
+        preflight: Option<
+            &crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>,
+        >,
     ) -> Result<Option<Value>, ProviderError> {
         self.journal.owner.ensure_current()?;
         if self.journal.attempted || self.journal.failed {
@@ -324,7 +328,9 @@ impl<S: Read + Write> OriginalNativeHelloExchange<S> {
         }
         self.journal.attempted = true;
         let received = match preflight {
-            Some(preflight) => self.reader.read_original_native_preflight(self.journal.maximum_bytes, preflight)
+            Some(preflight) => self
+                .reader
+                .read_original_native_preflight(self.journal.maximum_bytes, preflight)
                 .map(|frame| frame.map(|frame| frame.value)),
             None => self.reader.read(),
         };
