@@ -183,10 +183,9 @@ rebinding the model.
 The documented Cargo dev shell passes six-crate, all-feature/all-target checking
 for this stage. On the worktree source, 115 gem5 Provider unit tests pass, including
 all three new command-budget controls; three native controls remain ignored.
-Both new Python temporary-root controls pass. The required application test-target
-build is running separately. Current ARM/x86 profiles still require rebuilding
-and fresh native qualification; these component results do not establish native
-readiness, complete Capture, device parity or restored execution.
+Both new Python temporary-root controls pass. The subsequent profile-v2 stage
+below records the fresh package builds. These component results do not establish
+native readiness, complete Capture, device parity or restored execution.
 
 ### Original-owner preparation and Clock continuation
 
@@ -712,10 +711,71 @@ unrun. Independent review verifies all 144 original waits and releases, source
 and executable closures. The earlier standalone runtime stopped on descriptor
 observation after 35 accepted passes; it remains a failed checkpoint.
 
-Only the five canonical-output files are committed here. First-report and
-lifecycle changes remain outside the branch while the fixture refusal is
-investigated. Neither checkpoint establishes a full 135/143-control pass,
-constructor fit or native restoration.
+At this checkpoint only the five canonical-output files were committed. The
+first-report and lifecycle changes were subsequently integrated in the restored
+suffix stage below. Neither earlier checkpoint establishes a full 135/143-control
+pass, constructor fit or native restoration.
+
+### Restored suffix bootstrap and current startup controls
+
+Commits `88026454cd` and `11565e6dec` integrate the first-report/lifecycle changes,
+restored-suffix bootstrap and retained Host custody. Ordinary six-crate,
+all-feature/all-target checking passes in 2 minutes 19 seconds. The current Core
+executable passes thirteen distinct suffix/continuation controls; the current
+Provider executable passes seventeen. An initial Provider run failed three
+fixtures because their binding purpose used the owner-binding domain instead
+of the required node-binding domain. Correcting that test fixture preserves the
+strict production validator; all seventeen controls then pass.
+
+The 768 MiB positive startup setup was a test assumption, not an RFC or product
+ceiling. A test-only named 2 GiB setup allowance lets controls reach their exact
+and one-byte-short boundaries without changing the production resource policy.
+The explicit 64 KiB-window/512 MiB refusal remains unchanged. With that fixture
+change, the daemon startup selection passes 25 controls and fails three. The two
+Host SDK controls still refuse with `ResourceLimit` while quoting their actual
+constructor budget. The diagnostic's initial-report quote is 451,419,499 bytes,
+which fits its restored 512 MiB policy; its old assertion that this quote must
+exceed the policy is stale. This quote covers a different phase from the earlier
+partial native-finalization probes and supplies no savings comparison. The
+corrected diagnostic requires admission to match the actual observed quote and
+retains birth, attempt and currentness checks. Its rerun remains outstanding.
+
+These results do not qualify recurring native scheduling, complete Capture or
+fresh-world recapture. The actual recurring Observe producer and host scheduling
+caller remain under integration.
+
+### Installed gem5 qualification-source separation
+
+Commit `9545118` and formatting `fc7d89d669` introduce explicit installed profile
+v2. Build-only qualification inputs bind the executed temporary-root test and
+actual controller separately from the unchanged ARM33/x8627 runtime artifact
+rosters. Legacy profile v1 remains explicit and rejects the v2 namespace. Native
+witness, coexistence and capability guards remain unchanged. Independent source
+review finds no blocking issue. All 119 gem5 Provider unit tests pass, with three
+native tests ignored; all three new Python format/provenance tests pass.
+
+The fresh ARM profile package passes its actual checks and emits profile v2.
+The fresh x86 shared-controller check passes, but its profile installation fails
+because the capture witness's helper bindings differ from the installed
+constructor/auditor. The strict check remains enabled while the mismatch is
+investigated. Fresh compile-time manifest bindings and production native
+qualification remain required; an installed mechanism profile is not a complete
+common-node or device-parity result.
+
+### Cargo source packaging correction
+
+The mandatory application test-target build fails on a real packaging error:
+the source filter removes `src/.../target/phase.rs` because it treats every
+directory named `target` as Cargo output. Commits `80640d187b` and `19e8c3e3b2`
+share an ancestor-aware predicate across application, Crucible and dependency
+artifact filters. Rust source modules named `target` survive; outer build output
+and existing runtime-state exclusions remain pruned. The Cargo artifact
+regression check passes, including dummy-source preservation and actual reuse of
+the locked dependency. Its fixture hash changes only for the current Cargo
+checksum-format comment; the locked archive and package bytes are unchanged.
+The release-manifest fixture also models the current required paired QEMU outputs
+without building or executing an emulator. Its ordinary check and the restarted
+full application test-target build remain in progress.
 
 ## Known gaps and exit criteria
 
