@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; sixteen of twenty-two T1 tasks are complete.
+**Status:** In progress; twenty of twenty-two T1 tasks are complete.
 
 The qualified source checkpoint `1d7451dd75` has independently reviewed passing
 outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
@@ -5301,7 +5301,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   — satisfies
   ALG-1 to ALG-14; `checks.terrane.gates.algebra-graft`,
   `checks.terrane.gates.algebra-diff`.
-- [ ] **T-ALG-2** Three-cursor `merge` with conflict values and the
+- [x] **T-ALG-2** Three-cursor `merge` with conflict values and the
   `prefer-ours`, `prefer-theirs`, `prefer-trusted`, `keep-conflict`, and
   `error` policies; fast-forward; fork and fold; recipes for `merge` and
   `overlay` composites. Native delta parity is completed with T-FUSE-3
@@ -5707,7 +5707,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   gate does not qualify those operations.
   — satisfies DRV-1 to DRV-10, DRV-28 (DRV-11 withdrawn);
   `checks.terrane.gates.derived-attr-record`.
-- [ ] **T-DRV-2** Derivations, the common memo form, index trees with
+- [x] **T-DRV-2** Derivations, the common memo form, index trees with
   same-commit incremental maintenance with source discovery, expanded changes
   and canonical resynchronization accounting, `verify_index`, `rebuild_index`,
   attribute-value lookup and SHA-256 index continuity. AD-11 moves this
@@ -7284,7 +7284,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.bucket-file-layout`,
   `checks.terrane.gates.bucket-file-atomic-write`,
   `checks.terrane.gates.bucket-file-cas`.
-- [ ] **T-REF-2** Ref advance protocol (packs, indexes, log, CAS), epochs,
+- [x] **T-REF-2** Ref advance protocol (packs, indexes, log, CAS), epochs,
   single-writer default, tags, reflog, rollback, watch, and commit-set entry
   provenance. Durable disclosure certificate verification and publication are
   incomplete: the shared receipt codec accepts the registered raw shape, but
@@ -8169,7 +8169,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.gc-grace-window`,
   `checks.terrane.gates.gc-two-phase-delete`,
   `checks.terrane.gates.gc-singleton-lease`.
-- [ ] **T-PROV-1** Commit signing and verification, entry provenance,
+- [x] **T-PROV-1** Commit signing and verification, entry provenance,
   selector language and trust presets. Historical signatures, authenticated
   tree evidence, and entry and attribute origins are verified in the pure
   core. Current-ACL commit guarding and durable disclosure certificate
