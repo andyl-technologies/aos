@@ -37,7 +37,7 @@ use tokio::sync::oneshot;
 
 mod executor;
 use executor::NativeOwnerExecutor;
-pub(crate) use executor::PublisherResumeTurn;
+pub(crate) use executor::{PublisherResumeTurn, PublisherRunningTurn};
 
 /// Retains a native queue for durable metadata pins and missing-index repair.
 ///

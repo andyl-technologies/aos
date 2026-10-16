@@ -21,7 +21,7 @@ use std::{
 pub(super) struct NativeOwnerExecutor {
     custody: Arc<Mutex<Custody>>,
     worker: ThreadId,
-    running: Option<PublisherRunningContext>,
+    running: Option<Arc<PublisherRunningContext>>,
     failed_resume: Option<(ResumeFailureStage, CompletedRecovery)>,
 }
 
@@ -54,7 +54,7 @@ impl NativeOwnerExecutor {
         let result = session.resume_completed(completed, &mut self.resume_turn());
         match result {
             Ok(context) => {
-                self.running = Some(context);
+                self.running = Some(Arc::new(context));
                 Ok(())
             }
             Err(failure) => {
@@ -125,5 +125,54 @@ impl PublisherResumeTurn<'_> {
             ));
         }
         completed.check_current()
+    }
+}
+
+/// Retains exclusive physical dispatch through one genuine running operation.
+///
+/// No public constructor or caller-selected session exists. A constructor will
+/// be added only with actual physical dispatch of a supported running command.
+pub(crate) struct PublisherRunningTurn<'executor> {
+    executor: &'executor mut NativeOwnerExecutor,
+}
+
+impl PublisherRunningTurn<'_> {
+    /// Checks the exact executor-owned acknowledged context before an RPC lock.
+    ///
+    /// This never revalidates the old empty recovery snapshot. The caller must
+    /// keep this exclusive turn borrowed through physical completion, and the
+    /// client must check its actual Running phase/epoch under its own mutex.
+    ///
+    /// # Errors
+    /// Refuses another physical thread/context, faulted native owner, required
+    /// recovery or a changed original publisher session.
+    pub(crate) fn check_context(&mut self, context: &PublisherRunningContext) -> io::Result<()> {
+        if self.executor.worker != thread::current().id()
+            || !self
+                .executor
+                .running
+                .as_ref()
+                .is_some_and(|actual| std::ptr::eq(actual.as_ref(), context))
+        {
+            return Err(io::Error::other(
+                "running context belongs to another physical executor",
+            ));
+        }
+        let custody = self
+            .executor
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+        custody.check_current()?;
+        if custody.faulted
+            || custody.recovery_required
+            || !Arc::ptr_eq(
+                context.publisher_session(),
+                &custody.preparation.publisher_session(),
+            )
+        {
+            return Err(io::Error::other("running owner requires recovery"));
+        }
+        Ok(())
     }
 }
