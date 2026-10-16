@@ -2,6 +2,13 @@
 
 use std::task::{Context, Poll};
 
+#[path = "implementation/facets.rs"]
+mod facets;
+
+pub(super) fn selected_facet_counter_scratch_data() -> usize {
+    facets::counter_scratch_data()
+}
+
 use crucible_node_contract::{
     ContentRef, Extensions, Id, NodeBinding, NodeDescriptor, PreparedOwner, U64,
 };
@@ -877,6 +884,21 @@ impl SimulationNode for CnpSemanticNode {
     fn facet(&mut self, kind: FacetKind) -> Result<NodeFacet<'_>, Refusal> {
         if kind == FacetKind::ExactExecution && self.facets().contains(&kind) {
             Ok(NodeFacet::ExactExecution(self))
+        } else if kind == FacetKind::Preservation && self.facets().contains(&kind) {
+            // The description borrows the admitted realized selection. It does
+            // not grant generic Capture or replace the source-owned ticket.
+            facets::preservation(
+                &self
+                    .preparation
+                    .binding()
+                    .compatibility
+                    .operating_contract
+                    .facets,
+            )
+            .map(|selected| NodeFacet::Preservation(selected))
+            .ok_or_else(|| Refusal {
+                reason: "generic native source has no selected qualified facet".into(),
+            })
         } else {
             Err(Refusal {
                 reason: "generic native source has no selected qualified facet".into(),

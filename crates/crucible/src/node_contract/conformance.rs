@@ -216,6 +216,59 @@ impl ConformanceRuntime {
         self.current()
     }
 
+    /// Checks Complete preservation descriptions on actual admitted test nodes.
+    ///
+    /// This test-double observation lends no node, runtime or capture authority.
+    ///
+    /// # Errors
+    /// Refuses an active or non-Complete world, absent selected descriptions,
+    /// changed current custody, or an exact-profile alias for preservation.
+    #[cfg(feature = "test-double")]
+    #[doc(hidden)]
+    pub fn validate_inactive_complete_preservation_descriptions_for_test(
+        &mut self,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        self.validate_inactive_collection_plan(plan)?;
+        let nodes: Vec<_> = self.graph.graph.node_ids().cloned().collect();
+        let mut checked = 0usize;
+        for node in nodes {
+            let binding = self
+                .graph
+                .graph
+                .binding(&node)
+                .ok_or(RuntimeError::UnknownNode)?;
+            if binding
+                .compatibility
+                .implementation
+                .implementation_id
+                .as_str()
+                != "source-owned.packet-native/5"
+            {
+                continue;
+            }
+            let selected = binding
+                .compatibility
+                .operating_contract
+                .facets
+                .iter()
+                .find(|facet| {
+                    facet.id.as_str() == "source-owned.packet-complete-original-lineage/5"
+                        && facet.version == 5
+                })
+                .ok_or(RuntimeError::UnsupportedFacet)?;
+            let acquired = self.runtime.facet(&node, FacetKind::Preservation)?;
+            if acquired.kind() != FacetKind::Preservation || acquired.profile() != &selected.id {
+                return Err(RuntimeError::InvalidReceipt);
+            }
+            checked += 1;
+        }
+        if checked != 3 {
+            return Err(RuntimeError::InvalidRoute);
+        }
+        self.current()
+    }
+
     /// Authenticates the actual retained runtime slot against its original queue.
     ///
     /// # Errors

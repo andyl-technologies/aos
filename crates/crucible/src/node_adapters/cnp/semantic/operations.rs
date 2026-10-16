@@ -55,21 +55,7 @@ impl CnpSemanticNode {
             }
             return original.validate_repeated_begin();
         }
-        let (start, limit, _boundary) = match admission.request() {
-            OperationRequest::ExactRun {
-                start,
-                limit,
-                boundary_policy,
-            } => (*start, *limit, *boundary_policy),
-            OperationRequest::BoundarySettle { start, limit } if start.time_ps == limit.time_ps => {
-                (*start, *limit, ExactBoundaryPolicy::HorizonPark)
-            }
-            _ => {
-                return Err(refused(
-                    "generic installed native source supports exact operations only",
-                ));
-            }
-        };
+        let (start, limit, _boundary) = original_exact_interval(admission.request())?;
         if token.route() != &self.route || start > limit {
             return Err(refused(
                 "generic original grant changed native route or interval",
@@ -440,5 +426,65 @@ impl CnpSemanticNode {
             .ok_or_else(|| unknown("generic original ACK custody disappeared"))?
             .acknowledged = true;
         Ok(())
+    }
+}
+
+// Describing preservation does not expand the generic native Begin grammar.
+fn original_exact_interval(
+    request: &OperationRequest,
+) -> Result<
+    (
+        crucible_node_contract::Position,
+        crucible_node_contract::Position,
+        ExactBoundaryPolicy,
+    ),
+    OperationFailure,
+> {
+    Ok(match request {
+        OperationRequest::ExactRun {
+            start,
+            limit,
+            boundary_policy,
+        } => (*start, *limit, *boundary_policy),
+        OperationRequest::BoundarySettle { start, limit } if start.time_ps == limit.time_ps => {
+            (*start, *limit, ExactBoundaryPolicy::HorizonPark)
+        }
+        _ => {
+            return Err(refused(
+                "generic installed native source supports exact operations only",
+            ));
+        }
+    })
+}
+
+#[cfg(test)]
+mod preservation_tests {
+    // crucible-lint: allow panic-shortcut -- Invalid inert fixtures or failed refusal assertions stop these controls.
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::node_contract::EffectKnowledge;
+    use crucible_node_contract::{Phase, Position, U64};
+
+    #[test]
+    fn preservation_description_does_not_admit_generic_capture() {
+        let refusal = original_exact_interval(&OperationRequest::Capture).unwrap_err();
+        assert_eq!(refusal.effects, EffectKnowledge::None);
+        assert_eq!(
+            refusal.reason,
+            "generic installed native source supports exact operations only"
+        );
+
+        let start = Position::new(U64::new(0), U64::new(0), Phase::BoundaryControl);
+        let limit = Position::new(U64::new(1), U64::new(0), Phase::BoundaryControl);
+        assert_eq!(
+            original_exact_interval(&OperationRequest::ExactRun {
+                start,
+                limit,
+                boundary_policy: ExactBoundaryPolicy::HorizonPark,
+            })
+            .unwrap(),
+            (start, limit, ExactBoundaryPolicy::HorizonPark),
+        );
     }
 }

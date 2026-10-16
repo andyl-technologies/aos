@@ -127,6 +127,7 @@ impl CnpSemanticPreparation {
     /// Counts fixed original-node projection and diagnostic headers.
     pub fn original_conformance_node_construction_counter_scratch_data() -> usize {
         NodeRuntime::capture_serialization_counter_scratch_data()
+            + super::super::implementation::selected_facet_counter_scratch_data()
             + size_of::<CnpConformanceNodeConstructionStorageData>()
             + size_of::<[&Id; 4]>() + size_of::<[usize; 9]>()
             + size_of::<AdmitRequest>() + size_of::<NodeRoute>()

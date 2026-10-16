@@ -706,7 +706,7 @@ impl PacketCompleteExecutionActor {
         self.runtime
             .as_mut()
             .ok_or(PacketCompleteExecutionError::Phase)?
-            .validate_inactive_collection_plan(&self.scene.plan)
+            .validate_inactive_complete_preservation_descriptions_for_test(&self.scene.plan)
             .map_err(failure)
     }
 }
