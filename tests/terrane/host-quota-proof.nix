@@ -113,7 +113,9 @@
         ${image}/bin/host_quota_native --exact host_quota_vm_role --ignored --nocapture
       rmdir /mnt/terrane-host-quota/owner
       export TERRANE_HOST_QUOTA_ADMIN_ROOT=/mnt/terrane-host-quota
-      ${image}/bin/host_quota_config --exact host_quota_admin_ledger_preserves_domain_and_project_vm --ignored --nocapture
+      setpriv --bounding-set=-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid \
+        --clear-groups --inh-caps=-all --ambient-caps=-all \
+        ${image}/bin/host_quota_config --exact host_quota_admin_ledger_preserves_domain_and_project_vm --ignored --nocapture
     '';
   };
 in {

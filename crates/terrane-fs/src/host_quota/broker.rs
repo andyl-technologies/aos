@@ -7,6 +7,7 @@ use prost::Message;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 /// Identifies every allocation class in a single compatible project.
@@ -33,6 +34,20 @@ pub struct ConfiguredRoot {
     pub inode: u64,
 }
 
+/// Retains a provisioned internal directory without inventing a wire root label.
+pub struct ConfiguredScaffold {
+    /// Retained native directory descriptor.
+    pub directory: File,
+    /// Retained ledger-bound parent directory.
+    pub parent: File,
+    /// Exact single-component name beneath that parent.
+    pub name: std::ffi::OsString,
+    /// Ledger-bound device identity.
+    pub device: u64,
+    /// Ledger-bound inode identity.
+    pub inode: u64,
+}
+
 /// Binds one immutable disclosure-domain charge owner to its complete roots.
 pub struct ConfiguredOwner {
     /// Stable host-assigned identifier.
@@ -49,6 +64,8 @@ pub struct ConfiguredOwner {
     pub allowed_client_uids: BTreeSet<u32>,
     /// Every root assigned to this owner.
     pub roots: Vec<ConfiguredRoot>,
+    /// Complete ledger-bound internal directory skeleton for this owner.
+    pub scaffolding: Vec<ConfiguredScaffold>,
 }
 
 impl ConfiguredOwner {
@@ -91,6 +108,24 @@ impl ConfiguredOwner {
             .all(|label| labels.iter().any(|actual| actual.as_str() == *label))
         {
             return Err(io::Error::other("incomplete owner allocation coverage"));
+        }
+        for scaffold in &self.scaffolding {
+            let named = super::open_directory_child(&scaffold.parent, &scaffold.name)?;
+            let named = named.metadata()?;
+            if named.dev() != scaffold.device || named.ino() != scaffold.inode {
+                return Err(io::Error::other(
+                    "native scaffold pathname incarnation changed",
+                ));
+            }
+            let actual = NativeProject::inspect(&scaffold.directory)?;
+            if actual.project_id != self.project_id
+                || !actual.inherit
+                || actual.device != scaffold.device
+                || actual.inode != scaffold.inode
+                || filesystem_uuid(&scaffold.directory)? != self.filesystem_uuid
+            {
+                return Err(io::Error::other("native scaffold binding mismatch"));
+            }
         }
         let quota = NativeQuota::query(&self.roots[0].directory, self.project_id)?;
         if quota.hard_limit_bytes != self.hard_limit_bytes {
@@ -285,7 +320,6 @@ impl HostQuotaClient {
             .parent()
             .ok_or_else(|| io::Error::other("quota socket has no parent"))?;
         let parent = super::open_host_path(parent, true)?;
-        use std::os::unix::fs::MetadataExt;
         let metadata = parent.metadata()?;
         if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
             return Err(io::Error::other(

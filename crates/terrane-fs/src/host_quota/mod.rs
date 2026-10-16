@@ -12,8 +12,8 @@ pub use wire::{QuotaObservation, QuotaQuery, QuotaRoot};
 mod broker;
 mod socket;
 pub use broker::{
-    ConfiguredOwner, ConfiguredRoot, HostQuotaBroker, HostQuotaClient, ROOT_LABELS,
-    VerifiedQuotaObservation,
+    ConfiguredOwner, ConfiguredRoot, ConfiguredScaffold, HostQuotaBroker, HostQuotaClient,
+    ROOT_LABELS, VerifiedQuotaObservation,
 };
 pub use native::filesystem_uuid;
 pub use native::open_host_path;
@@ -44,3 +44,8 @@ pub use guard::DomainProvisioningGuard;
 
 mod namespace;
 pub use namespace::require_host_root_namespace_boundary;
+
+mod custody;
+pub use custody::{
+    DirectoryChild, directory_children, open_directory_child, set_directory_custody,
+};

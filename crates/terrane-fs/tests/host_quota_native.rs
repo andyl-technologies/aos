@@ -131,6 +131,7 @@ fn host_quota_native_privilege_and_helper_vm() {
         hard_limit_bytes: 2 * 1024 * 1024,
         allowed_client_uids: BTreeSet::from([840]),
         roots,
+        scaffolding: Vec::new(),
     };
     let broker =
         HostQuotaBroker::bind(&socket, [1; 16], 4 * 1024 * 1024, vec![owner]).expect("bind broker");
