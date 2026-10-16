@@ -2735,6 +2735,32 @@ is added rather than editing history.
     directories and prove no implementation or gate.
   - **Affects:** HOST-1/20/23/27 and PROTO-60.
 
+- **[D-126] Enforce stable quota ownership against native inode setters.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** HOST-23 requires kernel prevention of project reassignment
+    and inheritance changes by ordinary allocation-capable roles, including
+    direct syscalls, aliases and alternate ABIs. Process confinement covers
+    all threads and descendants before mutable cache work. Trusted host
+    administration isolates those writable identities and bypass channels;
+    privileged provisioning remains separate.
+  - **Rationale:** An inode owner on the reviewed native filesystem can
+    change its project without an administrative capability. A fresh quota
+    query observes enforcement of the selected project but cannot stop a
+    later reassignment to an unlimited project. Root-owned initial scaffolds,
+    advisory provisioning locks and periodic observations leave the same
+    gap for role-created inodes. Exact enforcement therefore needs a
+    non-bypassable writer boundary as well as finite projects and queries.
+  - **Alternatives considered:** Trust the intended syscall sequence or
+    recheck assignments periodically (rejected: leaves a mutable enforcement
+    race); protect only initial directories (rejected: new inodes belong to
+    their creator); require a privileged creator for every mutable inode
+    (valid alternative, with substantially different host composition).
+  - **Compatibility:** Clarifies existing HOST-23's stable charge owner and
+    exact enforcement requirements. No identity, content encoding, bucket
+    key, Store/LocalFs signature, protocol field, requirement ID or gate name
+    changes. Implementation and real native qualification remain required.
+  - **Affects:** HOST-19/20/23, PROTO-60 and THREAT-1.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
