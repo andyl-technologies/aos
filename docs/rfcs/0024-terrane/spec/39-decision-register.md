@@ -2674,6 +2674,67 @@ is added rather than editing history.
   - **Affects:** HOST-19/20/22/23/27, DOM-12, CRATE-7/10, ARCH-5,
     AUTH-4/5 and new PROTO-60.
 
+- **[D-124] Recover pending inode custody without granting backing access.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Register local InspectPending operation 11, returning only
+    a freshly retained lifecycle token, without a descriptor, verity claim or
+    content-validity receipt. Recovery may restore or finish that pending
+    incarnation; sealed service still requires canonical adoption. Define
+    previously unspecified pack/index pending names using their existing
+    content digests within the unchanged `<hash>` grammar, while preserving
+    random pack IDs and canonical storage keys. Recover paired members across
+    canonical and pending namespaces using their existing common header.
+    Durably retain deletion deadlines as leases; state loss reconstructs a
+    conservative bounded deadline, never an assumed expiry.
+  - **Rationale:** Publisher restart invalidates tokens. Canonical adoption
+    cannot issue a new token for an inode that is still pending, and returning
+    a pending sealed file as a backing handle violates HOST-5. Chunk codec
+    variants and inline sealed files can share a digest; no-replace collision
+    handling must serialize them. Packs need their index pair preserved even
+    when a crash interrupts the two namespace moves. A random pack ID remains
+    its storage identifier; a pending content digest is only a recovery name.
+  - **Alternatives considered:** Return pending backing descriptors
+    (rejected: bypasses canonical publication); reuse pre-restart tokens
+    (rejected: loses incarnation custody); add type/codec suffixes or prefixes
+    (rejected: changes frozen key grammar); overwrite an occupied pending name
+    (rejected: destroys another incarnation); infer manifest identity from
+    plaintext or missing pack bytes from an index (rejected: false identity
+    and presence claims); assume lost leases expired (rejected: early removal).
+  - **Compatibility:** Preserves every existing identity calculation,
+    encoded content byte, bucket prefix, key grammar and canonical pack/index
+    name. The pack pending cases were unimplemented and unspecified. Adds a
+    previously unused local opcode before the initial protocol freeze; no
+    existing field or opcode changes meaning. Local vocabulary extensions
+    after that freeze or a conforming release require a new transport version.
+    No task, gate or zero-wipe path is completed by this correction.
+  - **Affects:** HOST-5/28/29/31/32, BKT-15, PACK-15/16 and PROTO-56/58/59.
+
+- **[D-125] Include host layout directory inodes in quota custody.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Register logical quota-query labels `layout-root` and
+    optional `administrative-root`, alongside the seven existing allocation
+    classes. Charge the actual domain-layout inode and explicitly configured
+    administrative scaffolding to finite compatible projects. Never infer a
+    general host ancestor from a common path prefix.
+  - **Rationale:** Querying only seven child directories leaves their parent
+    inode's allocation outside verified coverage. A public data-root override
+    can also leave a separate administrative base to account for. Splitting
+    public state across unrelated layout roots hides the problem and changes
+    runtime layout assumptions. Explicit native directory observations cover
+    these allocations without adding a content key or silently relabeling
+    existing data.
+  - **Alternatives considered:** Ignore parent allocations (rejected: misses
+    physical custody); assume path ancestry grants quota authority (rejected:
+    could affect unrelated host data); move state outside its domain layout
+    (rejected: breaks reconstruction assumptions); invent a bucket marker
+    (rejected: unnecessary frozen-key change).
+  - **Compatibility:** Adds logical labels to the unimplemented host-local
+    query contract before its initial protocol freeze. Existing field numbers,
+    content encodings, identity domains, bucket keys, Store/LocalFs signatures,
+    requirement IDs and gate names remain unchanged. These labels create no
+    directories and prove no implementation or gate.
+  - **Affects:** HOST-1/20/23/27 and PROTO-60.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

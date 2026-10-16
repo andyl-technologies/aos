@@ -31,7 +31,8 @@ operations, zero request IDs, duplicate active request IDs and invalid field
 combinations are rejected before effects. All descriptors received with a
 rejected packet are closed. Version 1 rejects unknown message fields rather
 than applying Distribution's PROTO-51 permissive-field rule; extending this
-closed native-command vocabulary requires a new transport version. No
+closed native-command vocabulary after its initial protocol freeze or a
+conforming release requires a new transport version. No
 message contains a filesystem path, process pointer or executable callback.
 
 ```protobuf
@@ -50,6 +51,7 @@ enum PublisherOperation {
   PUBLISHER_DRAIN = 8;
   PUBLISHER_INVENTORY = 9;
   PUBLISHER_RESUME = 10;
+  PUBLISHER_INSPECT_PENDING = 11;
 }
 
 enum PublisherBodyKind {
@@ -127,6 +129,7 @@ retirement unit. Keys use existing identity and layout rules unchanged.
 | Drain | none | none | Complete earlier accepted work and establish the owner-incarnation barrier |
 | Inventory | none | none | Enumerate at most 64 configured body keys for recovery; no content or serving authority |
 | Resume | none | none | Leave recovery custody after actual cache state reconciliation |
+| InspectPending | none | none | Retain a pending inode incarnation for non-serving lifecycle recovery |
 
 Error responses carry no descriptors, binding or body-incarnation token.
 Replies echo version, request ID, operation, domain and cache incarnation.
@@ -156,6 +159,7 @@ are zero. Claims, bodies and tokens are absent unless required below.
 | Retire, Restore, FinishRetirement | body and body-incarnation token | none |
 | Drain, Resume | none | none |
 | Inventory | optional inventory cursor | inventory and optional next cursor |
+| InspectPending | body | body-incarnation token |
 
 Claim profile and plaintext size must agree with configured profile and
 verified content. Inline claims have zero manifest offset/length and no
@@ -207,14 +211,24 @@ effect and coordinated state are durable. No retirement method silently
 substitutes unlinking for zero wiping. Neither returning a descriptor nor
 unlinking its name revokes existing open descriptors or mappings.
 
+InspectPending is permitted during recovery custody. It independently opens
+the domain's pending entry through its typed key and verifies directory-relative
+inode custody before issuing a fresh token after restart. It returns no file
+descriptor, verity binding, content-validity receipt or serving authority,
+including for a pending sealed file. Restore is then permitted during recovery
+custody, but restores only the namespace; a sealed body MUST subsequently pass
+canonical adoption before any backing descriptor is returned. Pending pack
+pairs are reconciled under HOST-28 before restoration or final removal.
+
 Dropping a waiter, expiring its wait budget, losing a connection or shutting
 down a caller runtime does not release an accepted operation's physical
 ownership. The native owner finishes or cleans up before releasing its holds;
 late reply descriptors are closed. A new cache incarnation MUST first use
 Drain; the publisher rejects conflicting work until all prior-incarnation
 commands finish. Drain then grants the new incarnation exclusive recovery
-custody: Inventory, Probe, InspectBody and Adopt are permitted, while ordinary
-publication and retirement remain blocked. The cache reconstructs its real
+custody: Inventory, Probe, InspectBody, InspectPending and Adopt are permitted.
+Restore and FinishRetirement of verified pending incarnations are permitted;
+ordinary publication and new retirement remain blocked. The cache reconstructs its real
 durable state and pins before sending Resume. Resume succeeds only for that
 incarnation after its recovery native operations complete; the native cache
 owner MUST validate actual reconciliation completion before submission.
@@ -303,9 +317,19 @@ complete root set with matching project identity and inheritance are required
 for admission. Each reply's complete root set means every root assigned to
 that configured owner by the host ledger. The root labels are `chunks`,
 `objects`, `sealed`, `staging`,
-`quarantine`, `pending-delete` and `state`; labels select configured roots,
+`quarantine`, `pending-delete`, `state`, `layout-root` and
+`administrative-root`; labels select configured roots,
 not caller paths. If a host splits these classes across projects, every
 project is a separately configured owner included in the same finite budget.
+`layout-root` identifies the actual domain-layout directory, not a new child
+name, so its inode allocation is explicitly charged. Every domain layout has
+this observation in addition to its seven allocation-class roots. An optional
+`administrative-root` identifies a separately configured host scaffolding
+directory outside the selected data layout; its inode and scaffold allocation
+are also charged to a finite compatible owner project. These are logical query
+labels, not filesystem names or bucket keys. A helper MUST NOT infer permission
+to assign a common ancestor such as a host's general state directory.
+
 The helper checks complete allocation-class coverage over the entire
 configured partition; admission checks observations for every owner whose
 allocation it will increase. Project partitioning preserves the immutable

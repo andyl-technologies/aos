@@ -8730,6 +8730,10 @@ admission holds, and registers the host-supplied privileged read-only query
 boundary. Direct unprivileged project queries cannot establish enforcement;
 T-HOST-1 remains unaccepted until the actual helper, native custody and quota
 gate are qualified. No capability is added to Terrane roles.
+D-124 closes pending-inode token recovery and pack/index retirement naming
+without changing frozen key grammar. D-125 includes actual layout and
+administrative directory inodes in the quota observer's explicit custody.
+Their implementations and real gates remain pending.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,

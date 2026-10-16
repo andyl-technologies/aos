@@ -19,7 +19,7 @@ use super::StoreFailure;
 #[path = "native_effect/immutable_cohort.rs"]
 mod immutable_cohort;
 
-#[cfg(unix)]
+#[cfg(all(feature = "surface-sdk", unix))]
 pub(crate) mod checkout_metadata;
 
 #[cfg(test)]
@@ -498,7 +498,7 @@ impl CreatedDirectory {
 
 /// Fixes one physical command from actual producer-owned paths.
 enum Plan {
-    #[cfg(unix)]
+    #[cfg(all(feature = "surface-sdk", unix))]
     CheckoutMetadata(Box<checkout_metadata::Request>),
     InstallImmutableCohort(immutable_cohort::Request),
     // Only the native worker can populate the result channel or consume a seal
@@ -1084,7 +1084,7 @@ impl NativeFsEffect {
     /// Returns `Unsupported` after private directory creation if restrictive
     /// permissions prevent the actual descriptor from opening for mode repair.
     pub fn execute_inline(self) -> Result<(), NativeEffectFailure> {
-        #[cfg(unix)]
+        #[cfg(all(feature = "surface-sdk", unix))]
         if matches!(&self.plan, Plan::CheckoutMetadata(_)) {
             return checkout_metadata::execute(self);
         }
@@ -1248,7 +1248,7 @@ impl PrimitiveWorker {
         fresh_projection(None)?;
 
         match plan {
-            #[cfg(unix)]
+            #[cfg(all(feature = "surface-sdk", unix))]
             Plan::CheckoutMetadata(_) => {
                 return Err(io::Error::other("incorrect checkout metadata dispatch").into());
             }

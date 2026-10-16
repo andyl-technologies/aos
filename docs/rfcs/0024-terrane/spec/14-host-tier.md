@@ -283,6 +283,29 @@ host once no consumer holds it. The `wipe` property selects the strategy.
   interval. A pin or read that arrives during the interval MUST restore the
   file to its canonical name. *Gate:* `gate:host-two-phase-delete`.
 
+  Pending names retain the registered `pending-delete/<hash>` grammar.
+  Chunk bodies and sealed files use their existing claimed chunk or manifest
+  digest. Pack and detached-index files use the existing domain-separated
+  content digest of their exact encoded bytes. These are pending namespace
+  names, not replacements for the random pack ID or canonical pack/index keys.
+  Every insertion MUST use no-replace semantics. An occupied name leaves the
+  losing inode canonical, under retirement exclusion until retry or recovery;
+  codec variants and an inline sealed file can legitimately share a digest.
+
+  Retirement deadlines MUST be durable leases within HOST-29's state scope
+  before acknowledgment. State loss MUST reconstruct a conservative bounded
+  deadline before removal; it MUST NOT treat an unknown deadline as expired.
+  Recovery MUST distinguish actual sealed inodes from encoded chunk bodies
+  and validate the corresponding claims. A manifest identity MUST NOT be
+  reconstructed by hashing assembled plaintext.
+
+  A pack and its detached index MUST be reconciled as one retirement unit,
+  including a crash with one pending and the other canonical. Recovery uses
+  their existing shared header pack ID. It MUST reconcile both namespaces
+  before restoring service or completing deletion. A missing index MAY be
+  reconstructed from a verified pack under PACK-15/16; a surviving index
+  alone MUST NOT establish the presence or validity of missing pack bytes.
+
 ## Embedded state
 
 A host tier keeps a small embedded key-value store under `state/` for what

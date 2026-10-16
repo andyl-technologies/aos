@@ -38,7 +38,7 @@ pub(crate) use native_effect::RetirementSyncEvent;
 
 #[cfg(all(feature = "std", test, feature = "tokio", unix))]
 pub(crate) use native_effect::MutationSyncEvent;
-#[cfg(all(feature = "std", unix))]
+#[cfg(all(feature = "std", feature = "surface-sdk", unix))]
 pub(crate) use native_effect::checkout_metadata as native_checkout_metadata;
 #[cfg(all(feature = "std", unix))]
 pub(crate) use native_effect::domain_deletion as native_domain_deletion;

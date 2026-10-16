@@ -217,6 +217,14 @@ HOST-1).
 tiers per disclosure domain use one such layout per domain
 ([`../24-disclosure-domains.md`](../24-disclosure-domains.md)).
 
+Under the unchanged `pending-delete/<hash>` grammar, HOST-28 uses the claimed
+chunk/manifest digest for chunk bodies and sealed files. For previously
+unspecified pack retirement, the pack and detached index use their respective
+existing content identity digests as pending names. Their random pack ID and
+canonical `.pack`/`.idx` keys remain unchanged; the existing common header
+associates the pair during recovery. No suffix, prefix or identity domain is
+added. Occupied pending names are serialized with no-replace semantics.
+
 ## Gate names
 
 A gate is written `gate:<name>` where `<name>` matches:
