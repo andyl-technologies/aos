@@ -41,3 +41,6 @@ pub fn validate_domain_label(domain: &str) -> std::io::Result<()> {
 
 mod guard;
 pub use guard::DomainProvisioningGuard;
+
+mod namespace;
+pub use namespace::require_host_root_namespace_boundary;

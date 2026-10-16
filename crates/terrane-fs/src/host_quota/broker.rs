@@ -280,6 +280,7 @@ impl HostQuotaClient {
                 "native quota helper must be root",
             ));
         }
+        super::require_host_root_namespace_boundary()?;
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("quota socket has no parent"))?;

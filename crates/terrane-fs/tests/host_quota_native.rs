@@ -27,6 +27,10 @@ fn host_quota_vm_role() {
         .expect("child role")
         .as_str()
     {
+        "userns" => {
+            assert!(terrane_fs::host_quota::require_host_root_namespace_boundary().is_err());
+            assert!(HostQuotaClient::connect(&root.join("quota.sock"), 0, [1; 16]).is_err());
+        }
         "direct" => {
             let error =
                 NativeQuota::query(&File::open(root.join("chunks")).expect("open root"), 41001)
