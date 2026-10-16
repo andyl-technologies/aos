@@ -168,6 +168,9 @@ pub struct StagedFile {
     reader: File,
     writer: Option<File>,
     directory: Arc<File>,
+    // A staged writer can outlive its adapter. Keep the root flock until that
+    // writer and reader close, so restart cleanup cannot race the live inode.
+    _staging_root: Arc<File>,
     name: String,
 }
 
@@ -192,7 +195,8 @@ impl Drop for StagedFile {
 pub struct NativePublisher {
     domain: String,
     sealed: File,
-    staging: Arc<File>,
+    staging_root: Arc<File>,
+    staging: Option<Arc<File>>,
     pending: File,
     quarantine: File,
     next_staging: u64,
@@ -208,6 +212,7 @@ impl NativePublisher {
     /// # Errors
     /// Returns private creation, writer close, genuine seal, sync or open errors.
     pub fn probe_seal(&mut self) -> io::Result<File> {
+        let staging = Arc::clone(self.private_staging()?);
         loop {
             self.next_staging = self
                 .next_staging
@@ -215,7 +220,7 @@ impl NativePublisher {
                 .ok_or_else(|| io::Error::other("staging sequence exhausted"))?;
             let temporary = format!("probe-{}-{}", std::process::id(), self.next_staging);
             let descriptor = match fs::openat(
-                self.staging.as_ref(),
+                staging.as_ref(),
                 temporary.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o400),
@@ -227,7 +232,7 @@ impl NativePublisher {
             let result = (|| {
                 close_writer(File::from(descriptor))?;
                 let reader = File::from(fs::openat(
-                    self.staging.as_ref(),
+                    staging.as_ref(),
                     temporary.as_str(),
                     OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                     Mode::empty(),
@@ -236,7 +241,7 @@ impl NativePublisher {
                 reader.sync_all()?;
                 Ok(reader)
             })();
-            let cleanup = fs::unlinkat(self.staging.as_ref(), temporary.as_str(), AtFlags::empty());
+            let cleanup = fs::unlinkat(staging.as_ref(), temporary.as_str(), AtFlags::empty());
             cleanup?;
             return result;
         }
@@ -252,6 +257,17 @@ impl NativePublisher {
     /// Rejects unsafe ownership, permissions, filesystem types, cross-device
     /// paths, symlinks and an already-running publisher for this directory.
     pub fn open(domain: String, sealed: &Path, staging: &Path, pending: &Path) -> io::Result<Self> {
+        let mut publisher = Self::open_unrecovered(domain, sealed, staging, pending)?;
+        publisher.initialize_staging()?;
+        Ok(publisher)
+    }
+
+    pub(super) fn open_unrecovered(
+        domain: String,
+        sealed: &Path,
+        staging: &Path,
+        pending: &Path,
+    ) -> io::Result<Self> {
         Domain::parse(&domain)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let quarantine_path = sealed
@@ -292,37 +308,85 @@ impl NativePublisher {
         fs::flock(&sealed, fs::FlockOperation::NonBlockingLockExclusive)?;
         fs::flock(&staging, fs::FlockOperation::NonBlockingLockExclusive)?;
         fs::flock(&pending, fs::FlockOperation::NonBlockingLockExclusive)?;
-        let publisher = Self {
+        Ok(Self {
             domain,
             sealed,
-            staging: Arc::new(staging),
+            staging_root: Arc::new(staging),
+            staging: None,
             pending,
             quarantine,
             next_staging: 0,
-        };
-        publisher.recover_staging()?;
-        Ok(publisher)
+        })
     }
 
-    fn recover_staging(&self) -> io::Result<()> {
-        let entries = fs::Dir::read_from(self.staging.as_ref())?;
+    fn private_staging(&self) -> io::Result<&Arc<File>> {
+        self.staging
+            .as_ref()
+            .ok_or_else(|| io::Error::other("publisher staging is not initialized"))
+    }
+
+    pub(super) fn initialize_staging(&mut self) -> io::Result<()> {
+        let entries = fs::Dir::read_from(self.staging_root.as_ref())?;
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name();
             if name.to_bytes() == b"." || name.to_bytes() == b".." {
                 continue;
             }
-            let metadata = fs::statat(self.staging.as_ref(), name, AtFlags::SYMLINK_NOFOLLOW)?;
-            if metadata.st_uid != rustix::process::geteuid().as_raw()
-                || metadata.st_mode & libc::S_IFMT == libc::S_IFDIR
-            {
+            let directory = File::from(fs::openat(
+                self.staging_root.as_ref(),
+                name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+            check_directory(&directory)?;
+            if directory.metadata()?.mode() & 0o777 != 0o700 {
                 return Err(invalid(
-                    "unexpected staging owner or directory during recovery",
+                    "stale publisher staging must remain private mode0700",
                 ));
             }
-            fs::unlinkat(self.staging.as_ref(), name, AtFlags::empty())?;
+            for child in fs::Dir::read_from(&directory)? {
+                let child = child?;
+                let child_name = child.file_name();
+                if child_name.to_bytes() == b"." || child_name.to_bytes() == b".." {
+                    continue;
+                }
+                let metadata = fs::statat(&directory, child_name, AtFlags::SYMLINK_NOFOLLOW)?;
+                if metadata.st_uid != rustix::process::geteuid().as_raw()
+                    || metadata.st_mode & libc::S_IFMT != libc::S_IFREG
+                {
+                    return Err(invalid("unexpected inode in publisher-private staging"));
+                }
+                fs::unlinkat(&directory, child_name, AtFlags::empty())?;
+            }
+            directory.sync_all()?;
+            fs::unlinkat(self.staging_root.as_ref(), name, AtFlags::REMOVEDIR)?;
         }
-        self.staging.sync_all()
+        self.staging_root.sync_all()?;
+
+        // The registered staging/<publisher-id>/ grammar needs no new key.
+        // Root exclusion prevents PID reuse from racing another live publisher.
+        let publisher_id = std::process::id().to_string();
+        fs::mkdirat(
+            self.staging_root.as_ref(),
+            publisher_id.as_str(),
+            Mode::from_raw_mode(0o700),
+        )?;
+        self.staging_root.sync_all()?;
+        let directory = File::from(fs::openat(
+            self.staging_root.as_ref(),
+            publisher_id.as_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        check_directory(&directory)?;
+        if directory.metadata()?.mode() & 0o777 != 0o700 {
+            return Err(invalid(
+                "publisher staging subdirectory must be private mode0700",
+            ));
+        }
+        self.staging = Some(Arc::new(directory));
+        Ok(())
     }
 
     fn check_claim(&self, claim: &PublicationClaim) -> io::Result<()> {
@@ -541,6 +605,7 @@ impl PublicationKernel for NativePublisher {
 
     fn stage(&mut self, claim: &PublicationClaim, mut source: File) -> io::Result<StagedFile> {
         self.check_claim(claim)?;
+        let staging = Arc::clone(self.private_staging()?);
         let source_metadata = source.metadata()?;
         if !source_metadata.is_file() || source_metadata.len() != claim.plaintext_size() {
             return Err(invalid(
@@ -559,7 +624,7 @@ impl PublicationKernel for NativePublisher {
                 .ok_or_else(|| io::Error::other("staging sequence exhausted"))?;
             let temporary = format!("{}-{}", std::process::id(), self.next_staging);
             let descriptor = match fs::openat(
-                self.staging.as_ref(),
+                staging.as_ref(),
                 temporary.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o400),
@@ -580,12 +645,11 @@ impl PublicationKernel for NativePublisher {
                     Ok(())
                 }
             }) {
-                let _cleanup =
-                    fs::unlinkat(self.staging.as_ref(), temporary.as_str(), AtFlags::empty());
+                let _cleanup = fs::unlinkat(staging.as_ref(), temporary.as_str(), AtFlags::empty());
                 return Err(error);
             }
             let reader = File::from(fs::openat(
-                self.staging.as_ref(),
+                staging.as_ref(),
                 temporary.as_str(),
                 OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
@@ -593,7 +657,8 @@ impl PublicationKernel for NativePublisher {
             return Ok(StagedFile {
                 reader,
                 writer: Some(writer),
-                directory: Arc::clone(&self.staging),
+                directory: Arc::clone(&staging),
+                _staging_root: Arc::clone(&self.staging_root),
                 name: temporary,
             });
         }

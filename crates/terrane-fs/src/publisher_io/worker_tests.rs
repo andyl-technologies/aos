@@ -700,3 +700,75 @@ fn failed_second_unlink_recovers_orphan_index_without_pack_authority() {
     owner.join().unwrap();
     fs::remove_file(survivor).unwrap();
 }
+
+#[test]
+#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
+fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion() {
+    let paths = fixture("worker-prepared-roots");
+    let root = paths[0].parent().unwrap();
+    let previous = paths[1].join("previous-publisher");
+    fs::create_dir(&previous).unwrap();
+    fs::set_permissions(&previous, fs::Permissions::from_mode(0o700)).unwrap();
+    let unfinished = previous.join("unfinished");
+    fs::write(&unfinished, b"unserved staging").unwrap();
+
+    let prepared = configuration(root, NativeWipePolicy::None)
+        .prepare()
+        .unwrap();
+    assert_eq!(prepared.configuration().domain, "public");
+    assert!(unfinished.exists(), "preflight does not perform cleanup");
+    assert_eq!(fs::read_dir(&paths[1]).unwrap().count(), 1);
+    assert!(NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err());
+    let error = configuration(root, NativeWipePolicy::Zero)
+        .prepare()
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(
+        unfinished.exists(),
+        "later unsupported domain cannot trigger earlier effects"
+    );
+
+    let (worker, owner) =
+        NativePublicationWorker::start_prepared_thread(prepared, None, None).unwrap();
+    assert!(!previous.exists());
+    let directories: Vec<_> = fs::read_dir(&paths[1])
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(directories.len(), 1);
+    assert!(directories[0].file_type().unwrap().is_dir());
+    assert_eq!(
+        directories[0].metadata().unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(fs::read_dir(directories[0].path()).unwrap().count(), 0);
+    drop(worker);
+    owner.join().unwrap();
+}
+
+#[test]
+#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
+fn staged_writer_retains_root_exclusion_after_adapter_drop() {
+    use terrane::host::publication::PublicationKernel;
+
+    let paths = fixture("worker-staged-root-retention");
+    let root = paths[0].parent().unwrap();
+    let mut native =
+        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).unwrap();
+    let staged = native.stage(&claim(), source(root)).unwrap();
+    drop(native);
+
+    assert!(
+        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err(),
+        "a live staged writer keeps the actual staging-root flock"
+    );
+    drop(staged);
+    let _native = NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).unwrap();
+    let directories: Vec<_> = fs::read_dir(&paths[1])
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(directories.len(), 1);
+    assert_eq!(fs::read_dir(directories[0].path()).unwrap().count(), 0);
+}

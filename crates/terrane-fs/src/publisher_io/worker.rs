@@ -191,6 +191,90 @@ pub struct NativePublisherConfig {
     pub content_gid: u32,
 }
 
+/// Retains actual native directory and lock custody before startup effects.
+///
+/// Preparation performs no cleanup or content write. The value has no public
+/// constructor or native-handle conversion; startup consumes these same guards.
+/// It establishes directory custody, not complete host quota admission.
+pub struct NativePublisherPrepared {
+    config: NativePublisherConfig,
+    native: NativePublisher,
+    state_directory: PathBuf,
+    retained_state: File,
+    retained_layout: (Vec<File>, crate::host_quota::DomainProvisioningGuard),
+    body_io: BodyIo,
+}
+
+impl NativePublisherPrepared {
+    /// Borrows the trusted operator settings whose actual roots are retained.
+    pub fn configuration(&self) -> &NativePublisherConfig {
+        &self.config
+    }
+}
+
+impl NativePublisherConfig {
+    /// Retains checked directory and publisher exclusion without writing content.
+    ///
+    /// A service prepares every configured domain before consuming any result
+    /// with `NativePublicationWorker::start_prepared`. Root guards prevent host
+    /// provisioning changes during this interval and the complete worker lifetime.
+    ///
+    /// # Errors
+    /// Returns unsupported wipe policy, invalid domain or path, overlapping
+    /// service identity, unsafe native directory custody, incompatible filesystem,
+    /// conflicting publisher or provisioning-lock errors. No failure creates a
+    /// sealed inode or staging subdirectory.
+    pub fn prepare(self) -> io::Result<NativePublisherPrepared> {
+        if self.wipe != NativeWipePolicy::None {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native fs-verity publisher supports only explicitly configured wipe=none",
+            ));
+        }
+        terrane_core::properties::Domain::parse(&self.domain)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        if self.content_uid == rustix::process::geteuid().as_raw() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "publisher and encoded-content owners must use distinct identities",
+            ));
+        }
+        let normalized: PathBuf = self.layout_root.components().collect();
+        if !self.layout_root.is_absolute()
+            || normalized.as_os_str() != self.layout_root.as_os_str()
+            || self.layout_root.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "publisher layout must be an absolute normalized path",
+            ));
+        }
+        let retained_layout = super::native::inspect_layout(&self)?;
+        let body_io = BodyIo::open(&self)?;
+        let native = NativePublisher::open_unrecovered(
+            self.domain.clone(),
+            &self.layout_root.join("sealed"),
+            &self.layout_root.join("staging"),
+            &self.layout_root.join("pending-delete"),
+        )?;
+        let state_directory = self.layout_root.join("state/publication");
+        let retained_state = super::native::open_directory(&state_directory)?;
+        Ok(NativePublisherPrepared {
+            config: self,
+            native,
+            state_directory,
+            retained_state,
+            retained_layout,
+            body_io,
+        })
+    }
+}
+
 /// Submits fixed publication commands to an independently owned native worker.
 ///
 /// Cancellation drops only the response waiter. Once accepted, a command owns
@@ -213,54 +297,55 @@ impl NativePublicationWorker {
     /// Returns `Unsupported` for zero, discard or volatile policies before
     /// creating any sealed or staging inode; no policy silently becomes unlink.
     pub fn start(config: NativePublisherConfig) -> io::Result<Self> {
+        Self::start_prepared(config.prepare()?)
+    }
+
+    /// Starts an owner using the exact actual guards retained by preparation.
+    ///
+    /// Successful startup waits for real staging and embedded-state recovery.
+    /// The worker retains its root/leaf guards through every accepted operation,
+    /// including when the client drops its response waiter.
+    ///
+    /// # Errors
+    /// Returns runtime/thread creation or actual staging/state recovery errors.
+    pub fn start_prepared(prepared: NativePublisherPrepared) -> io::Result<Self> {
         #[cfg(test)]
-        let started = Self::start_thread(config, None, None);
+        let started = Self::start_prepared_thread(prepared, None, None);
         #[cfg(not(test))]
-        let started = Self::start_thread(config);
+        let started = Self::start_prepared_thread(prepared);
         let (worker, thread) = started?;
         drop(thread);
         Ok(worker)
     }
 
+    #[cfg(test)]
     fn start_thread(
         config: NativePublisherConfig,
+        before_record: Option<WorkerGate>,
+        finish_first_unlink: Option<WorkerGate>,
+    ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
+        Self::start_prepared_thread(config.prepare()?, before_record, finish_first_unlink)
+    }
+
+    fn start_prepared_thread(
+        prepared: NativePublisherPrepared,
         #[cfg(test)] before_record: Option<WorkerGate>,
         #[cfg(test)] finish_first_unlink: Option<WorkerGate>,
     ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
-        if config.wipe != NativeWipePolicy::None {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "native fs-verity publisher supports only explicitly configured wipe=none",
-            ));
-        }
-        if config.content_uid == rustix::process::geteuid().as_raw() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "publisher and encoded-content owners must use distinct identities",
-            ));
-        }
-        let retained_layout = super::native::inspect_layout(&config)?;
-        let body_io = BodyIo::open(&config)?;
+        let NativePublisherPrepared {
+            config,
+            mut native,
+            state_directory,
+            retained_state,
+            retained_layout,
+            body_io,
+        } = prepared;
         #[cfg(test)]
         let body_io = body_io.with_finish_gate(finish_first_unlink);
         let domain = config.domain;
-        let sealed = config.layout_root.join("sealed");
-        let staging = config.layout_root.join("staging");
-        let pending = config.layout_root.join("pending-delete");
-        let state_directory = config.layout_root.join("state/publication");
-
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let native = NativePublisher::open(domain.clone(), &sealed, &staging, &pending)?;
-        let retained_state = super::native::open_directory(&state_directory)?;
-        use std::os::unix::fs::PermissionsExt;
-        if retained_state.metadata()?.permissions().mode() & 0o777 != 0o700 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "publication state directory must be publisher-private mode 0700",
-            ));
-        }
         let state = FsPublicationState::new(TokioLocalFs, state_directory.clone());
         let (sender, mut receiver) = mpsc::channel(32);
         let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
@@ -273,6 +358,10 @@ impl NativePublicationWorker {
                 let _retained_state = retained_state;
                 let _retained_layout = retained_layout;
                 runtime.block_on(async {
+                    if let Err(error) = native.initialize_staging() {
+                        let _disconnected = ready_sender.send(Err(error));
+                        return;
+                    }
                     if let Err(error) = state.recover_temporary().await {
                         let _disconnected = ready_sender.send(Err(error));
                         return;

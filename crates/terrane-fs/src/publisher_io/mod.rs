@@ -15,5 +15,6 @@ pub use native::{NativePublisher, StagedFile};
 pub use worker::{
     NativeBodyHandle, NativeBodyIncarnation, NativeBodyKey, NativeCommandContext,
     NativeCommandResult, NativeOperation, NativePublicationWorker, NativePublishedObject,
-    NativePublisherConfig, NativeRetirementPolicy, NativeSealProbe, NativeWipePolicy,
+    NativePublisherConfig, NativePublisherPrepared, NativeRetirementPolicy, NativeSealProbe,
+    NativeWipePolicy,
 };
