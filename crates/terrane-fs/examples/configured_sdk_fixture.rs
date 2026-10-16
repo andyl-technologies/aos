@@ -167,8 +167,9 @@ async fn setup(root: &Path, owner: u32) -> FixtureResult<()> {
         .await?
         .commit;
 
-    // Only the separate setup actor has signing custody. Runtime receives two
-    // explicit read-only attenuations and never reads or substitutes these seeds.
+    // Setup creates explicit read-only exposure capabilities. Runtime reopening
+    // temporarily reads private authority state, then drops its signing handle;
+    // exposure preparation uses these files without an instance-token fallback.
     let secret: [u8; 32] = fs::read(location.authority.join("terminal.seed"))?
         .try_into()
         .map_err(|_| "unexpected fixture terminal seed length")?;

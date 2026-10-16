@@ -4,7 +4,9 @@
 //! effects. [`run`] then installs the irreversible kernel boundary before Tokio,
 //! credential reads, repository reopening or filesystem presentation. It prepares
 //! every exposure before starting any endpoint, using only each exposure's file
-//! capability. No instance authority or token is substituted.
+//! capability. Repository reopening temporarily reads private authority records,
+//! including signing seeds, then drops the returned signing handle. Exposure
+//! preparation never substitutes that authority's token for an exposure capability.
 //!
 //! This component supports only the exact local file-bucket leaf, explicit local
 //! trust and compiled read-only pinned SDK surface. Any `host_tier` is refused:
