@@ -77,7 +77,7 @@
                 shutil.copy2(library, output / "lib" / library.name)
     PYBUILD
     export LD_LIBRARY_PATH="$out/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    "$out/bin/terrane-publication-fixture" --list > "$out/selectors.txt"
+    "$out/bin/terrane-publication-fixture" --list > "$out/all-selectors.txt"
     "$out/bin/terrane-publication-fixture" --fixture-inputs > "$TMPDIR/publication-inputs.txt"
     python3 - "$out" "$TMPDIR/publication-inputs.txt" '${builtins.toJSON nativeNames}' <<'PYASSETS'
     import json
@@ -85,8 +85,13 @@
     import sys
 
     output = pathlib.Path(sys.argv[1])
-    if (output / "selectors.txt").read_text().splitlines() != json.loads(sys.argv[3]):
-        raise SystemExit("native publication selector inventory changed")
+    publication = json.loads(sys.argv[3])
+    transport = ["transport:native-publisher", "transport:native-client"]
+    if (output / "all-selectors.txt").read_text().splitlines() != publication + transport:
+        raise SystemExit("complete native example selector inventory changed")
+    # Transport has its own guest provisioning and gate. This image runs every
+    # publication selector and retains the full inventory for composition review.
+    (output / "selectors.txt").write_text("\n".join(publication) + "\n")
     expected = {f"{root}/objects/pack/{byte}/{byte * 16}.{extension}"
                 for root, byte in [("worker-pack-partial-rename", "31"),
                                    ("worker-pack-partial-unlink", "42")]
@@ -145,9 +150,9 @@
         esac
         root="/mnt/terrane-publication/$fixture_root"
         pack_id="$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte"
-        chown 840:845 "$root/objects/pack" "$root/objects/pack/$byte" \
+        chown 840:845 "$root/objects" "$root/objects/pack" "$root/objects/pack/$byte" \
           "$root/objects/pack/$byte/$pack_id.pack" "$root/objects/pack/$byte/$pack_id.idx"
-        chmod 2770 "$root/objects/pack" "$root/objects/pack/$byte"
+        chmod 2770 "$root/objects" "$root/objects/pack" "$root/objects/pack/$byte"
         chmod 0640 "$root/objects/pack/$byte/$pack_id.pack" "$root/objects/pack/$byte/$pack_id.idx"
       done
       ln /mnt/terrane-publication/worker-pack-partial-unlink/objects/pack/42/42424242424242424242424242424242.idx \
