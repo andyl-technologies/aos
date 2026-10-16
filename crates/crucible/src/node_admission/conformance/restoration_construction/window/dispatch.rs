@@ -47,7 +47,10 @@ impl<'a> RestorationDispatchAttempt<'a> {
     }
 
     pub(super) fn complete(mut self) -> Result<(), RuntimeError> {
-        super::observation::authenticate_started_stage_data(&self.window.stage, WindowStage::TransactionAdmitted)?;
+        super::observation::authenticate_started_stage_data(
+            &self.window.stage,
+            WindowStage::TransactionAdmitted,
+        )?;
         if !self.window.phase_in_flight.get() {
             return Err(RuntimeError::OutstandingObligations);
         }

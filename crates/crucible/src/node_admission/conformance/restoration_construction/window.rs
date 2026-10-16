@@ -1060,7 +1060,10 @@ impl CompleteOriginalRestorationWindow {
         }
         let current = observed_current(&scope, policy, storage)?;
         self.authenticate_registered_member(plan, &inputs)?;
-        observation::authenticate_started_stage_data(&self.stage, WindowStage::TransactionChecking)?;
+        observation::authenticate_started_stage_data(
+            &self.stage,
+            WindowStage::TransactionChecking,
+        )?;
         // No callback, allocation or I/O follows the terminal live fence.
         self.observed_other_retained.set(Some(current));
         self.whole_observation.complete_observation();
