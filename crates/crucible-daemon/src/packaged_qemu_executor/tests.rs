@@ -985,6 +985,43 @@ fn materializer_status_rejects_a_selection_for_a_superseded_pin_fact() {
     assert!(status.selected_roots.is_empty());
 }
 
+#[test]
+fn paged_reconciliation_selects_a_cataloged_exact_pin_for_status() {
+    let directory = tempfile::tempdir().expect("packaged exact-pin directory");
+    let fixture = exact_pin_materializer_fixture(&directory);
+    apply_exact_pin(&fixture);
+    let selection_root = directory.path().join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
+    let mut selections = DirectoryExactPinMaterializationStore::open(&selection_root)
+        .expect("open exact-pin selections");
+    let catalog = std::collections::BTreeMap::from([(
+        fixture.configuration,
+        BTreeSet::from([fixture.checkpoint]),
+    )]);
+
+    exact_pin_materializer::reconcile_exact_pins(
+        &fixture.repository,
+        &fixture.checkpoints,
+        &BTreeSet::from([fixture.campaign.clone()]),
+        &catalog,
+        &mut selections,
+    )
+    .expect("reconcile exact pins");
+    let snapshot = fixture
+        .repository
+        .head(fixture.campaign.as_str())
+        .expect("pinned head")
+        .snapshot_id();
+    let status = exact_pin_materializer::materialization_status(
+        &fixture.repository,
+        &fixture.campaign,
+        snapshot,
+        &mut selections,
+    )
+    .expect("read materialization status");
+
+    assert_eq!(status.selected_roots, BTreeSet::from([fixture.checkpoint]));
+}
+
 #[derive(Default)]
 struct ControlledLifecycleBoundary {
     state: Mutex<(u8, u8)>,

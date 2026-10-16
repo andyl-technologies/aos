@@ -516,9 +516,11 @@ scan admits at most 1,000,000 records and 128 MiB. Operational status is a
 tagged `Unavailable` or `Observed` value. Observed evidence binds preparing,
 running, checkpointing, publishing, canceling, and paused world counts plus
 distinct retained roots and materialized checkpoints to one daemon epoch and
-one inventory generation. A deployment without an owner capable of producing
-one complete stable inventory reports `Unavailable` instead of partial or
-zero-filled operational counts. The version-2 status JSON nests these two
+one inventory generation. The packaged executor folds its assignment-ledger
+records into those counts in campaign-membership batches of 4,096, so the
+inventory is bounded only by the ledger's own runtime-record limit. A
+deployment without an owner capable of producing one complete stable inventory
+reports `Unavailable` instead of partial or zero-filled operational counts. The version-2 status JSON nests these two
 domains as `semantic` and `operational`; watch remains the version-1 head view.
 
 `choices` shows choice opportunities and their branch points, domain, finite and

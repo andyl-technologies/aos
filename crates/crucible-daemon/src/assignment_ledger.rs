@@ -1589,6 +1589,28 @@ pub fn visit_directory_attempt_states_bounded(
     visit_directory_attempt_states_with_authority(&authority, root, maximum, visitor)
 }
 
+/// Streams every durable runtime record from a directory ledger.
+///
+/// This is [`visit_directory_attempt_states_bounded`] at the ledger's own
+/// runtime-record bound, so a caller that buffers nothing per record observes
+/// the complete inventory any opened ledger accepts.
+///
+/// # Errors
+///
+/// Returns [`AssignmentLedgerError`] when the directory shape or any visited
+/// record is malformed, corrupt, or unavailable, or when the inventory exceeds
+/// the ledger's runtime-record bound.
+pub(crate) fn visit_directory_attempt_states(
+    root: &Path,
+    visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+) -> Result<(), AssignmentLedgerError> {
+    if visit_directory_attempt_states_bounded(root, MAX_RUNTIME_ATTEMPT_RECORDS, visitor)? {
+        Ok(())
+    } else {
+        Err(corrupt("runtime-attempt-inventory-limit"))
+    }
+}
+
 fn visit_directory_attempt_states_with_authority(
     authority: &crate::anchored_fs::AnchoredDirectory,
     root: &Path,

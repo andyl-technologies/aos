@@ -681,7 +681,10 @@ pub use queue::{
     AttemptQueue, AttemptQueueCursor, AttemptQueueError, AttemptReservation, ClaimableAttemptPage,
     MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, WorkerSlotId,
 };
-pub use retention::{CampaignPinRetentionRecord, CampaignPinRetentionSummary};
+pub use retention::{
+    CampaignPinRetentionCursor, CampaignPinRetentionPage, CampaignPinRetentionRecord,
+    CampaignPinRetentionSummary, MAX_PIN_RETENTION_PAGE_ENTRIES,
+};
 pub use savepoint::{
     MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, PendingSavepointCapture, PendingSavepointCapturePage,
     SavepointCaptureCursor, SavepointCaptureResolutionResult, SavepointCaptureResult,

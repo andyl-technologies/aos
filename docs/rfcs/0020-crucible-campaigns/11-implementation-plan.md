@@ -1932,8 +1932,10 @@ revalidates every generation before apply. The packaged executor rebuilds a
 production closures. It receives
 later paused roots through bounded backpressure and, after the authoritative
 promotion CAS, replaces each raw source with its replay-validated promoted root
-without waiting for restart. It reprojects up to 65,536 current exact pins on a
-fixed cadence outside the supervisor actor. A missing current-fact selection
+without waiting for restart. It reprojects every current exact pin on a fixed
+cadence outside the supervisor actor, reading the pin projection in
+snapshot-bound pages of 4,096 entries and selecting each page before reading
+the next. A missing current-fact selection
 fails GC closed. Adjacent read-only porcelain
 reports the exact admitted graph and streams one requested content ID through
 deferred EOF authentication without borrowing ref or delete authority. It also

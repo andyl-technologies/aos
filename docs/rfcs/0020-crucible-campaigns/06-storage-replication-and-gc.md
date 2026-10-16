@@ -1720,8 +1720,12 @@ The catalog authenticates the promoted root in either admitted representation,
 requires the same modeled configuration, removes the raw source root, and
 reprojects the journal in the same daemon run; it does not wait for restart to
 discover the replacement. A fixed one-second reconciliation cadence reprojects
-at most 65,536 current exact pins across the configured campaign set, so a pin
-accepted after its checkpoint is still selected. Repository/checkpoint I/O and
+every current exact pin across the configured campaign set, so a pin accepted
+after its checkpoint is still selected. Each pass and each status projection
+reads the pin projection through `CampaignRepository::pin_retention_page_at` in
+pages of 4,096 entries bound to one immutable snapshot, and prepares, selects,
+or looks up one page before reading the next; neither holds every exact pin in
+memory. Repository/checkpoint I/O and
 journal writes occur outside the supervisor actor. Catalog, projection,
 journal, or worker failure stops the packaged executor visibly; restart rebuilds
 the catalog from the durable ledger and exactly reopens prior selections.

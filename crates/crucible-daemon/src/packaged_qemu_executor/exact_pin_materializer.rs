@@ -6,6 +6,10 @@
 //! Repository and checkpoint I/O therefore never run under the supervisor
 //! actor, while a pin created after its checkpoint still gains a durable
 //! materialization record before stopped-owner GC.
+//!
+//! Pin projections are read in bounded snapshot-bound pages, and each page is
+//! prepared, selected, or looked up before the next is read, so neither a
+//! reconciliation pass nor a status projection holds every exact pin.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -17,7 +21,8 @@ use std::time::Duration;
 
 use crucible_campaign::{
     AuthenticatedFindingExactCheckpoint, CampaignExecutorStore, CampaignHash, CampaignName,
-    CampaignRepository, CampaignRepositoryError, ConfigurationId, ExactCheckpointId,
+    CampaignPinRetentionCursor, CampaignPinRetentionPage, CampaignRepository,
+    CampaignRepositoryError, CampaignSnapshotId, ConfigurationId, ExactCheckpointId,
     FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator, PinRetention,
     ScenarioArtifactId, ScenarioDefId,
 };
@@ -38,8 +43,8 @@ use crate::{
 
 /// Maximum distinct durable roots retained by one packaged materializer.
 pub(crate) const MAX_PACKAGED_EXACT_PIN_CHECKPOINTS: usize = 65_536;
-/// Maximum current exact pins reconciled in one bounded projection pass.
-pub(crate) const MAX_PACKAGED_EXACT_PINS_PER_PASS: usize = 65_536;
+/// Pin-projection entries read and acted on before the next page is read.
+const EXACT_PIN_PAGE_ENTRIES: usize = 4_096;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 const STATUS_TIMEOUT: Duration = Duration::from_millis(250);
@@ -603,45 +608,70 @@ fn replace_checkpoint(
     insert_authenticated_checkpoint(catalog, catalog_roots, configuration, promoted)
 }
 
-fn reconcile_exact_pins(
+pub(super) fn reconcile_exact_pins(
     repository: &CampaignRepository,
     checkpoints: &ExactCheckpointStore,
     campaigns: &BTreeSet<CampaignName>,
     catalog: &BTreeMap<ConfigurationId, BTreeSet<ExactCheckpointId>>,
     selections: &mut DirectoryExactPinMaterializationStore,
 ) -> Result<(), PackagedExactPinMaterializerError> {
-    let mut pending = Vec::new();
-    let mut exact_pin_count = 0_usize;
     for campaign in campaigns {
-        let mut overflow = false;
-        repository.visit_pin_retention_roots(campaign.as_str(), &mut |pin| {
-            if pin.retention() != PinRetention::Exact {
-                return;
-            }
-            if exact_pin_count >= MAX_PACKAGED_EXACT_PINS_PER_PASS {
-                overflow = true;
-                return;
-            }
-            exact_pin_count += 1;
-            let configuration = pin.request().change.configuration();
-            let Some(checkpoint) = catalog
-                .get(&configuration)
-                .and_then(|roots| roots.first().copied())
-            else {
-                return;
+        let snapshot = repository.head(campaign.as_str())?.snapshot_id();
+        let mut cursor = None;
+        loop {
+            let page = exact_pin_page(repository, snapshot, cursor)?;
+            select_exact_pin_page(
+                repository,
+                checkpoints,
+                campaign,
+                catalog,
+                selections,
+                &page,
+            )?;
+            let Some(next) = page.next() else {
+                break;
             };
-            pending.push((campaign.clone(), configuration, checkpoint));
-        })?;
-        if overflow {
-            return Err(PackagedExactPinMaterializerError::PinLimit);
+            cursor = Some(next);
         }
     }
+    Ok(())
+}
 
-    for (campaign, configuration, checkpoint) in pending {
+fn exact_pin_page(
+    repository: &CampaignRepository,
+    snapshot: CampaignSnapshotId,
+    cursor: Option<CampaignPinRetentionCursor>,
+) -> Result<CampaignPinRetentionPage, PackagedExactPinMaterializerError> {
+    Ok(repository.pin_retention_page_at(snapshot, cursor, EXACT_PIN_PAGE_ENTRIES)?)
+}
+
+/// Selects the least cataloged root for each exact pin on one projection page.
+///
+/// Selection reauthenticates the pin against the current head, so a page read
+/// from a snapshot that has since advanced cannot select for a removed pin.
+fn select_exact_pin_page(
+    repository: &CampaignRepository,
+    checkpoints: &ExactCheckpointStore,
+    campaign: &CampaignName,
+    catalog: &BTreeMap<ConfigurationId, BTreeSet<ExactCheckpointId>>,
+    selections: &mut DirectoryExactPinMaterializationStore,
+    page: &CampaignPinRetentionPage,
+) -> Result<(), PackagedExactPinMaterializerError> {
+    for pin in page.records() {
+        if pin.retention() != PinRetention::Exact {
+            continue;
+        }
+        let configuration = pin.request().change.configuration();
+        let Some(checkpoint) = catalog
+            .get(&configuration)
+            .and_then(|roots| roots.first().copied())
+        else {
+            continue;
+        };
         match ExactPinMaterializationSelection::prepare(
             repository,
             checkpoints,
-            &campaign,
+            campaign,
             configuration,
             checkpoint,
         ) {
@@ -665,35 +695,33 @@ pub(super) fn materialization_status(
         return Err(PackagedExactPinMaterializerError::StatusSnapshotChanged);
     }
 
-    let mut exact_pins = Vec::new();
-    let mut exact_pin_count = 0_usize;
-    let mut overflow = false;
-    repository.visit_pin_retention_roots(campaign.as_str(), &mut |pin| {
-        if pin.retention() != PinRetention::Exact {
-            return;
+    // Each page's repository reads finish before the selection fence is held,
+    // preserving the campaign-ref-before-selection-journal lock order.
+    let mut selected_roots = BTreeSet::new();
+    let mut cursor = None;
+    loop {
+        let page = exact_pin_page(repository, snapshot, cursor)?;
+        let mut fence = selections.acquire_exact_pin_retention_fence()?;
+        for pin in page.records() {
+            if pin.retention() != PinRetention::Exact {
+                continue;
+            }
+            if let Some(selection) =
+                fence.selection(campaign, pin.request().change.configuration())?
+                && selection.pin_fact() == pin.fact()
+            {
+                selected_roots.insert(selection.checkpoint());
+            }
         }
-        if exact_pin_count >= MAX_PACKAGED_EXACT_PINS_PER_PASS {
-            overflow = true;
-            return;
-        }
-        exact_pin_count += 1;
-        exact_pins.push((pin.request().change.configuration(), pin.fact()));
-    })?;
-    if overflow {
-        return Err(PackagedExactPinMaterializerError::PinLimit);
+        drop(fence);
+
+        let Some(next) = page.next() else {
+            break;
+        };
+        cursor = Some(next);
     }
     if repository.head(campaign.as_str())?.snapshot_id() != snapshot {
         return Err(PackagedExactPinMaterializerError::StatusSnapshotChanged);
-    }
-
-    let mut selected_roots = BTreeSet::new();
-    let mut fence = selections.acquire_exact_pin_retention_fence()?;
-    for (configuration, pin_fact) in exact_pins {
-        if let Some(selection) = fence.selection(campaign, configuration)?
-            && selection.pin_fact() == pin_fact
-        {
-            selected_roots.insert(selection.checkpoint());
-        }
     }
 
     let mut generation_material = Vec::new();
@@ -721,9 +749,6 @@ pub enum PackagedExactPinMaterializerError {
     /// The durable assignment ledger named too many distinct checkpoint roots.
     #[error("packaged exact-pin checkpoint catalog exceeds 65,536 roots")]
     CheckpointLimit,
-    /// One current semantic projection contained too many exact pins.
-    #[error("packaged exact-pin projection exceeds 65,536 selections")]
-    PinLimit,
     /// The bounded status queue or response deadline was exhausted.
     #[error("packaged exact-pin status is temporarily unavailable")]
     StatusUnavailable,
