@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; thirteen of twenty-two T1 tasks are complete.
+**Status:** In progress; fourteen of twenty-two T1 tasks are complete.
 
 The qualified source checkpoint `1d7451dd75` has independently reviewed passing
 outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
@@ -5682,7 +5682,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   current ACL checks and native retention remain joint with T-REF-2. —
   satisfies OBJ-21, OBJ-22, REF-1 to REF-11, REF-24 to REF-26;
   `checks.terrane.gates.ref-names`.
-- [ ] **T-DRV-1** Derived attribute records and classification (`hash.*`,
+- [x] **T-DRV-1** Derived attribute records and classification (`hash.*`,
   `class.magic`), stored per object. Index trees, derivations, and memos
   belong to T-DRV-2 in this milestone under AD-11. The nine reviewed pure paths
   now implement stream hashes, bounded classification, canonical records and
