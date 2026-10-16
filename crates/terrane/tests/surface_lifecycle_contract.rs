@@ -22,6 +22,7 @@ use terrane::{
 struct ExternalSurface {
     events: Arc<Mutex<Vec<&'static str>>>,
 }
+
 struct ExternalExecutor {
     events: Arc<Mutex<Vec<&'static str>>>,
 }
