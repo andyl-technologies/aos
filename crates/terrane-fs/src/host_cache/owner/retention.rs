@@ -35,6 +35,10 @@ use terrane::{
 use terrane_core::identity::{Identity, IdentityKind};
 use tokio::sync::oneshot;
 
+mod executor;
+use executor::NativeOwnerExecutor;
+pub(crate) use executor::PublisherResumeTurn;
+
 /// Retains a native queue for durable metadata pins and missing-index repair.
 ///
 /// This recovery-only owner enables no publication, eviction, admission or
@@ -163,23 +167,24 @@ impl NativeMetadataOwner {
                         return;
                     }
                 };
+                let executor = NativeOwnerExecutor::new(custody);
                 if ready.send(Ok(())).is_err() {
                     return;
                 }
                 while let Ok(command) = receive.recv() {
                     match command {
                         Command::Recover { response } => {
-                            let result = runtime.block_on(super::recovery::run(&custody));
+                            let result = runtime.block_on(super::recovery::run(executor.custody()));
                             let _ = response.send(result);
                         }
                         Command::Retain { identity, response } => {
-                            let result = runtime.block_on(retain(&custody, identity));
+                            let result = runtime.block_on(retain(executor.custody(), identity));
                             // An abandoned reply never releases the registry's source,
                             // durable pins, future hold or exclusive state custody.
                             let _ = response.send(result);
                         }
                         Command::RepairIndex { source, response } => {
-                            let result = runtime.block_on(repair_index(&custody, source));
+                            let result = runtime.block_on(repair_index(executor.custody(), source));
                             // Actual source/temporary custody and durable holds
                             // belong to the worker, never to this reply waiter.
                             let _ = response.send(result);

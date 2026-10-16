@@ -47,6 +47,11 @@ pub struct CompletedRecovery {
 }
 
 impl CompletedRecovery {
+    /// Compares actual producer custody without accepting an external authority token.
+    pub(super) fn matches_custody(&self, custody: &Arc<Mutex<Custody>>) -> bool {
+        Arc::ptr_eq(&self.custody, custody)
+    }
+
     /// Borrows the actual producer session without acquiring its RPC mutex.
     pub(crate) fn publisher_session(&self) -> Arc<Client<HostDomainLocation>> {
         Arc::clone(&self.session)
