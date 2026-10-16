@@ -30,6 +30,8 @@ const NUMERIC_SERIALIZER_SCRATCH: usize = 20;
 const BACKEND_MEDIA: &str = "application/vnd.source-owned.packet-complete-archive-backend.v15+json";
 const STARTUP_BACKEND_MEDIA: &str =
     "application/vnd.source-owned.packet-complete-archive-backend.v16+json";
+const INVOCATION_BACKEND_MEDIA: &str =
+    "application/vnd.source-owned.packet-complete-archive-backend.v17+json";
 
 pub(super) struct OriginalCompleteCaptureExecution {
     backend_bank: Option<CnpSemanticSnapshotReservation>,
@@ -472,10 +474,10 @@ impl PacketCompleteSemanticSource {
                     )?;
                     execution.backend = Some(super::super::semantic_snapshot::take_component(
                         &mut execution.backend_bank,
-                        if snapshot_class.has_allocation() {
-                            STARTUP_BACKEND_MEDIA
-                        } else {
-                            BACKEND_MEDIA
+                        match snapshot_class {
+                            super::archive_owner::CompleteNativeSnapshotClass::Legacy11 => BACKEND_MEDIA,
+                            super::archive_owner::CompleteNativeSnapshotClass::StartupCapture14 => STARTUP_BACKEND_MEDIA,
+                            super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15 => INVOCATION_BACKEND_MEDIA,
                         },
                     )?);
                 }

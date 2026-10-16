@@ -11,7 +11,7 @@ use std::thread::{self, ThreadId};
 use super::*;
 use crate::node_contract::{
     HostSchedulingContinuationLimits, HostSchedulingContinuationRecord,
-    HostSchedulingRuntimeRecord, RuntimeError, RuntimeOriginalCaptureJournal,
+    HostSchedulingRuntimeRecord, OriginalLineageRuntimeRecord, RuntimeError, RuntimeOriginalCaptureJournal,
 };
 use crucible_node_contract::ContentRef;
 
@@ -37,6 +37,7 @@ pub(crate) struct CompleteOriginalSource {
     host: Rc<HostSchedulingContinuationRecord>,
     runtime: ContentRef,
     purpose: CompleteOriginalSourcePurpose,
+    native_restoration_data: [Option<super::CompleteOriginalNativeRestorationData>; 4],
     process: u32,
     thread: ThreadId,
     host_issued: Cell<bool>,
@@ -154,6 +155,25 @@ impl CompleteOriginalRestorationSource {
         &self.inner.content
     }
 
+    /// Borrows the same already verified typed Runtime7 retained in the Host record.
+    ///
+    /// This raw data loan allocates nothing and creates no restoration context.
+    pub(crate) fn original_runtime_record_data(&self) -> Result<&OriginalLineageRuntimeRecord, RuntimeError> {
+        self.inner.authenticate_birth()?;
+        match &self.inner.host.runtime {
+            HostSchedulingRuntimeRecord::OriginalLineage(record) => Ok(record),
+            HostSchedulingRuntimeRecord::Legacy(_) => Err(RuntimeError::UnsupportedFacet),
+        }
+    }
+
+    /// Returns this same admitted archive's retained finite decoding limits.
+    ///
+    /// Limits are DATA and do not renew selected-load or restoration permission.
+    pub(crate) fn original_archive_limits_data(&self) -> Result<NativeArchiveLimits, RuntimeError> {
+        self.inner.authenticate_birth()?;
+        Ok(self.inner.archive.limits)
+    }
+
     /// Borrows the exact archived Runtime7 identity.
     pub fn runtime_object(&self) -> &ContentRef {
         &self.inner.runtime
@@ -212,6 +232,12 @@ impl CompleteOriginalSource {
         *target = Some(Rc::clone(authority));
         Ok(())
     }
+
+
+
+
+
+
 
     pub(crate) fn authenticate_target(&self, authority: &Rc<()>) -> Result<(), RuntimeError> {
         self.authenticate_birth()?;
@@ -280,7 +306,7 @@ impl NativeArchiveRecord {
     ) -> Result<CompleteOriginalRestorationSource, StateError> {
         self.authenticate_complete_load_admission()
             .map_err(super::super::schema)?;
-        let content = self.complete_original_lineage_content(graph, factory, limits.lineage)?;
+        let (content, native_restoration_data) = self.complete_original_lineage_content_with_restoration_data(graph, factory, limits.lineage)?;
         let administrative = super::complete_original_index::authenticate_admitted(
             &self,
             content
@@ -404,6 +430,7 @@ impl NativeArchiveRecord {
                 host: Rc::new(record),
                 runtime,
                 purpose: CompleteOriginalSourcePurpose::new(collecting_plan),
+                native_restoration_data,
                 process: std::process::id(),
                 thread: thread::current().id(),
                 host_issued: Cell::new(false),
@@ -416,6 +443,14 @@ impl NativeArchiveRecord {
 }
 
 impl CompleteOriginalSource {
+    pub(super) fn native_restoration_construction_data(
+        &self, index: usize,
+    ) -> Result<&super::CompleteOriginalNativeRestorationData, RuntimeError> {
+        self.authenticate_birth()?;
+        self.native_restoration_data.get(index).and_then(Option::as_ref)
+            .ok_or(RuntimeError::UnsupportedFacet)
+    }
+
     pub(crate) fn capture_owned_storage(&self) -> Result<usize, RuntimeError> {
         self.authenticate_birth()?;
         use crate::node_contract::NodeRuntime;

@@ -171,6 +171,7 @@ impl NativeEndpointCaptureStateData<'_> {
                 .requested_total()?,
         ])?;
         let scratch = sum(&[
+            self.invocation_counter_scratch_bytes,
             size_of::<Self>(),
             crate::reference_packet::control::original_observe_dispatch_scratch_data(),
             size_of::<NativeCaptureReportObligationsData>(),

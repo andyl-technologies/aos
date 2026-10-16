@@ -93,6 +93,10 @@ mod admission_projection;
 pub(crate) use admission_projection::validate_proof_value;
 
 pub(in crate::reference_packet::service) mod native_boot;
+pub use native_boot::{PacketNativeRestoreCommitConstructionInputs,
+    PacketNativeRestoreCommitConstructionData,
+    original_native_restore_commit_construction_counter_scratch_data,
+    original_native_restore_commit_construction_storage_data};
 pub(crate) use native_boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;
 
 pub(crate) use native_boot::{

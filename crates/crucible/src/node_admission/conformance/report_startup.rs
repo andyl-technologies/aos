@@ -522,3 +522,6 @@ fn add(left: usize, right: usize) -> Result<usize, EvidenceError> {
     left.checked_add(right)
         .ok_or_else(|| failure("original startup requested allocation overflow"))
 }
+
+
+mod invocation;

@@ -120,6 +120,7 @@ pub struct PacketCompleteSemanticSource {
     registry_retention_attempted: std::cell::Cell<bool>,
     registry_retention_failed: std::cell::Cell<bool>,
     complete_bytes_launch_reserved: std::cell::Cell<bool>,
+    invocation_snapshot_declaration: Option<invocation_snapshot::Declaration>,
 }
 
 impl PacketCompleteSemanticSource {
@@ -163,6 +164,7 @@ impl PacketCompleteSemanticSource {
             registry_retention_attempted: std::cell::Cell::new(false),
             registry_retention_failed: std::cell::Cell::new(false),
             complete_bytes_launch_reserved: std::cell::Cell::new(false),
+            invocation_snapshot_declaration: None,
             complete_restore_selection: None,
             restore_input_emitter_selection: None,
         })
@@ -208,6 +210,7 @@ impl PacketCompleteSemanticSource {
             registry_retention_attempted: std::cell::Cell::new(false),
             registry_retention_failed: std::cell::Cell::new(false),
             complete_bytes_launch_reserved: std::cell::Cell::new(false),
+            invocation_snapshot_declaration: None,
             complete_restore_selection: None,
             restore_input_emitter_selection: None,
         })
@@ -1148,6 +1151,7 @@ pub use archive_journal::{
 
 #[path = "packet_complete_source/archive_owner.rs"]
 mod archive_owner;
+pub(crate) use archive_owner::OriginalRestorationColdGroup;
 pub use archive_owner::PacketCompleteArchivedOwnerData;
 
 impl PacketCompleteSemanticSource {
@@ -1296,3 +1300,6 @@ pub use capture_allocation_receipt::{
 pub(crate) use ack_peer::{
     PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
 };
+
+#[path = "packet_complete_source/invocation_snapshot.rs"]
+mod invocation_snapshot;

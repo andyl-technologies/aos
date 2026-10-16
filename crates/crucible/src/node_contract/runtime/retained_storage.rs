@@ -516,3 +516,30 @@ mod tests {
         Ok(())
     }
 }
+
+impl NodeRuntime {
+    pub(crate) fn quote_original_restoration_node_data(
+        &self,
+        inputs: &crate::node_admission::OriginalRestorationNodeInputs<'_>,
+    ) -> Result<crate::node_admission::OriginalRestorationNodeConstructionData, RuntimeError> {
+        let owner = inputs.ticket.owner()?;
+        let [node_id] = owner.participants.as_slice() else {
+            return Err(RuntimeError::UnsupportedFacet);
+        };
+        self.nodes.get(node_id).ok_or(RuntimeError::UnknownNode)?
+            .original_restoration_construction_data(inputs)?
+            .ok_or(RuntimeError::UnsupportedFacet)
+    }
+
+    pub(crate) fn original_restoration_node_counter_scratch_data(
+        &self,
+        ticket: &crate::node_state::CompleteOriginalNativeTicket,
+    ) -> Result<usize, RuntimeError> {
+        let [node] = ticket.owner()?.participants.as_slice() else {
+            return Err(RuntimeError::UnsupportedFacet);
+        };
+        self.nodes.get(node).ok_or(RuntimeError::UnknownNode)?
+            .original_restoration_construction_scratch_data()?
+            .ok_or(RuntimeError::UnsupportedFacet)
+    }
+}

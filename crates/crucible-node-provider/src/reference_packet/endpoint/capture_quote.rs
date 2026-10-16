@@ -36,6 +36,7 @@ pub(super) struct NativeEndpointCaptureStateData<'a> {
     // Finite refusal ceiling of this admitted counter invocation. It grants
     // no output/model/whole allocation and is never reported as actual usage.
     pub(super) counter_requested_limit: usize,
+    pub(super) invocation_counter_scratch_bytes: usize,
     pub(super) observe_publication_shapes:
         crate::reference_packet::control::NativeObservePublicationProjectionData,
     pub(super) stopped_observe_raw_record:
@@ -129,6 +130,19 @@ impl PacketEndpoint<DeadlineStream> {
         let boot = canonical_ack_boot.as_ref().ok_or_else(refused)?;
         let context = service.with_original_endpoint_roots(boot, policy);
         context.authenticate_original(connection, uploads)?;
+        let invocation = boot.try_borrow()
+            .map_err(|_| ProviderError::Conflict("invocation Observe boot borrowed"))?
+            .requires_invocation_codec_data()?;
+        let invocation_counter_scratch_bytes = if invocation {
+            let additional = original_invocation_capture_report_additional_scratch_data();
+            startup.authenticate_compiled_headers(
+                connection,
+                checked_sum(&[std::mem::size_of::<NativeEndpointCaptureStateData<'static>>(), additional])?,
+                super::capture_allocation::original_capture_report_owner_layout_data(),
+            )?;
+            additional
+        } else { 0 };
+
         let complete = complete.as_mut().ok_or_else(refused)?;
         complete.authenticate_live_capture_quote(native)?;
         let before = complete.before.as_mut().ok_or_else(refused)?;
@@ -340,7 +354,10 @@ impl PacketEndpoint<DeadlineStream> {
         // The actual live boot selects the new DATA grammar only after the
         // concrete installer authenticates its full outer13 schema.
         let startup_codec = context.requires_original_native_startup_codec(connection, uploads)?;
-        let outer_edition = if startup_codec {
+        let outer_edition = if invocation {
+            policy.authenticate_invocation_capture_snapshot_definition()?;
+            super::capture_outer_projection::NativeCaptureOuterEdition::Invocation14
+        } else if startup_codec {
             policy.authenticate_startup_capture_snapshot_definition()?;
             super::capture_outer_projection::NativeCaptureOuterEdition::Startup13
         } else {
@@ -497,6 +514,7 @@ impl PacketEndpoint<DeadlineStream> {
             retained_requested_bytes,
             compact_serializer_scratch_bytes,
             counter_requested_limit: maximum_serialization_requested_bytes,
+            invocation_counter_scratch_bytes,
             stopped_observe_raw_record,
             observe_publication_shapes,
             continuation_terminal_shapes,
@@ -532,5 +550,18 @@ pub(crate) fn original_capture_report_quote_layout_data() -> usize {
         super::capture_startup::original_startup_capture_endpoint_counter_scratch_data(),
         crate::reference_packet::control::original_startup_capture_counter_scratch_data(),
         crate::reference_packet::service::native_snapshot::native_owned13_snapshot_schema_counter_scratch_data(),
+    ].into_iter().try_fold(0usize, usize::checked_add).unwrap_or(usize::MAX)
+}
+
+
+/// Names only the new original-purpose writer views before the selected quote.
+pub(crate) fn original_invocation_capture_report_additional_scratch_data() -> usize {
+    [
+        super::capture_invocation::original_invocation_capture_endpoint_counter_scratch_data(),
+        crate::reference_packet::service::OriginalNativeCaptureContext::invocation_additional_counter_scratch_data(),
+        crate::connection::original_native_invocation_history_counter_scratch_data(),
+        crate::reference_packet::service::native_snapshot::native_owned14_snapshot_schema_counter_scratch_data(),
+        std::mem::size_of::<Result<bool, ProviderError>>(),
+        std::mem::size_of::<std::cell::Ref<'static, crate::reference_packet::service::ack_emitter::NativeAckBoot>>(),
     ].into_iter().try_fold(0usize, usize::checked_add).unwrap_or(usize::MAX)
 }

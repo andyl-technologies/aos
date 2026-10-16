@@ -1629,6 +1629,7 @@ pub use archived_mapping::PreparedArchivedProtocolMapping;
 
 pub(crate) use archived_mapping::{
     ArchivedProtocolMappingIdentity, ArchivedProtocolMappingInput, ArchivedProtocolMappingTarget,
+    RestorationMappingClass,
 };
 
 mod native_archived_mapping;

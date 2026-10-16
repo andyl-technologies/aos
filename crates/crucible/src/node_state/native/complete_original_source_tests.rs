@@ -115,6 +115,7 @@ fn source(archive: NativeArchiveRecord) -> CompleteOriginalRestorationSource {
             host: Rc::new(host),
             runtime,
             purpose: CompleteOriginalSourcePurpose::new(None),
+            native_restoration_data: [None; 4],
             process: std::process::id(),
             thread: thread::current().id(),
             host_issued: Cell::new(false),
@@ -265,3 +266,17 @@ fn ordinary_signed_source_never_passes_collecting_prebirth_owner_phase() {
     assert!(source.inner.target.borrow().is_none());
     assert_eq!(source.inner.capture_owned_storage().unwrap(), before);
 }
+
+#[test]
+fn native_ticket_does_not_infer_missing_restoration_data_from_signed_archive() {
+    let (_directory, source) = fixture();
+    let owners = native_ids(&source);
+    let ticket = source.take_native_ticket(&owners[0]).unwrap();
+
+    assert!(matches!(ticket.native_restoration_construction_data(), Err(RuntimeError::UnsupportedFacet)));
+    ticket.authenticate_source(&source).unwrap();
+    assert_eq!(ticket.owner().unwrap().owner, owners[0]);
+    assert!(source.take_native_ticket(&owners[0]).is_err());
+    assert!(source.take_native_ticket(&owners[1]).is_ok());
+}
+

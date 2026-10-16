@@ -70,6 +70,13 @@ pub(crate) struct VerifiedCompleteRestorationHeld {
     hold: Rc<PacketCompleteRestorePhysicalHold>,
 }
 
+#[path = "restore_construction.rs"]
+mod construction;
+pub use construction::{PacketNativeRestoreCommitConstructionInputs,
+    PacketNativeRestoreCommitConstructionData,
+    original_native_restore_commit_construction_counter_scratch_data,
+    original_native_restore_commit_construction_storage_data};
+
 #[path = "restore_canonical.rs"]
 mod canonical_encoding;
 use canonical_encoding::bounded_canonical;
@@ -242,13 +249,13 @@ impl NativeAckBoot {
             return Err(refused());
         }
         let launch = flight.launch.as_ref().ok_or_else(refused)?;
-        let host_executable = crate::conformance::measure_executable(&std::path::PathBuf::from(
-            format!("/proc/{}/exe", launch.controller_pid.get()),
-        ))?;
+        let host_executable = super::restore_prepare::measure_original_restore_controller_executable(
+            launch.controller_pid,
+        )?;
         if host_executable != owner.data.host_executable {
             return Err(refused());
         }
-        let native_executable = crate::conformance::measure_executable(&std::env::current_exe()?)?;
+        let native_executable = super::restore_prepare::measure_original_restore_current_executable()?;
         flight.kernel_binding = Some(serde_json::json!({
             "schema":"source-owned.packet-canonical-ack-kernel-binding/5",
             "controller":{"pid":launch.controller_pid,"uid":launch.controller_uid,"executable":host_executable},

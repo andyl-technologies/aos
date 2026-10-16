@@ -850,3 +850,39 @@ impl SealedHistoricalNativeState {
         super::super::retained_storage::counter_scratch_data()
     }
 }
+
+impl SealedHistoricalNativeState {
+    /// Checks the exact selected encoded class against its completed typed owner.
+    ///
+    /// This allocation-free DATA loan creates no Source, native token, mapping
+    /// permission or renewed historical registration. Old/partial classes refuse.
+    pub(crate) fn original_selected_restoration_mapping_class_data(
+        &self,
+    ) -> Result<crate::protocol_snapshot::RestorationMappingClass, ProviderError> {
+        let historical = self.historical()?;
+        let boot = &historical.connection.admission.boot;
+        if historical.capture_allocation.is_none() || boot.startup.is_none() {
+            return Err(invalid());
+        }
+        let mut outer = Fields::array(self.encoded_body())?;
+        tag(&mut outer, "source-private.cnp-protocol/11")?;
+        let mut data = Fields::array(next(&mut outer)?)?;
+        let class = super::super::typed::plain_string(next(&mut data)?)?;
+        match (class, boot.invocation.is_some()) {
+            (COMPLETE_NATIVE_STARTUP_CAPTURE_FORMAT, false) => Ok(crate::protocol_snapshot::RestorationMappingClass::StartupCapture14),
+            (COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT, true) => Ok(crate::protocol_snapshot::RestorationMappingClass::InvocationCapture15),
+            _ => Err(invalid()),
+        }
+    }
+
+    /// Names the exact fixed selected-class cursor views before their data loan.
+    pub(crate) fn original_selected_restoration_mapping_counter_scratch_data() -> usize {
+        std::mem::size_of::<[Fields<'static>; 2]>()
+            + 3 * std::mem::size_of::<&[u8]>()
+            + std::mem::size_of::<(&str, bool)>()
+            + std::mem::size_of::<&HistoricalNativeState>()
+            + std::mem::size_of::<&super::boot::HistoricalNativeBoot>()
+            + std::mem::size_of::<crate::protocol_snapshot::RestorationMappingClass>()
+            + std::mem::size_of::<Result<crate::protocol_snapshot::RestorationMappingClass, ProviderError>>()
+    }
+}

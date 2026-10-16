@@ -921,6 +921,7 @@ impl NativeArchive {
 /// validates every native snapshot, original capture request/response prefix,
 /// and actual host closure before this archive may be signed or adopted.
 pub struct CompleteOriginalArchiveValidation<'a> {
+    restoration_data: &'a std::cell::RefCell<[Option<super::CompleteOriginalNativeRestorationData>; 4]>,
     lineage_limits: OriginalInputLineageLimits,
 
     /// Borrows the exact admitted original world and source-selected bindings.
@@ -942,6 +943,31 @@ pub struct CompleteOriginalArchiveValidation<'a> {
 }
 
 impl CompleteOriginalArchiveValidation<'_> {
+    /// Retains validated native reconstruction DATA for this exact archive owner.
+    ///
+    /// The Source-specific factory calls this after its genuine cold-owner
+    /// reconstruction and semantic checks. The fixed output contains no heap
+    /// bank or grant; it preserves actual detailed demand that would otherwise
+    /// disappear with the temporary cold decoder. Only the same original owner
+    /// row may populate a slot, once. Historical data never creates live rights.
+    ///
+    /// # Errors
+    /// Refuses a foreign owner row, occupied/busy output or changed source origin.
+    pub fn retain_original_native_restoration_data(
+        &self, owner: &super::NativeOwnerState, data: super::ValidatedCompleteNativeRestorationData<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        self.validation_origin.authenticate(self.archive).map_err(|_| crate::node_contract::RuntimeError::ForeignAuthority)?;
+        let data = data.into_original_data(owner, self.content)?;
+        let index = self.archive.owners().iter().position(|actual| std::ptr::eq(actual, owner))
+            .ok_or(crate::node_contract::RuntimeError::ForeignAuthority)?;
+        let mut output = self.restoration_data.try_borrow_mut()
+            .map_err(|_| crate::node_contract::RuntimeError::OwnerBusy)?;
+        let slot = output.get_mut(index).ok_or(crate::node_contract::RuntimeError::ForeignAuthority)?;
+        if slot.is_some() { return Err(crate::node_contract::RuntimeError::DuplicateOperation); }
+        *slot = Some(data);
+        Ok(())
+    }
+
     /// Returns the unchanged lineage bounds admitted by this Core validation call.
     ///
     /// These limits describe historical input lookup and create no source,
@@ -974,13 +1000,30 @@ impl NativeArchiveRecord {
         self.complete_original_lineage_content_with_origin(graph, factory, limits, &origin)
     }
 
+    pub(super) fn complete_original_lineage_content_with_restoration_data(
+        &self, graph: &crate::node_admission::AdmittedGraph, factory: &dyn NativeWorldFactory,
+        limits: OriginalInputLineageLimits,
+    ) -> Result<(VerifiedStateContent, [Option<super::CompleteOriginalNativeRestorationData>; 4]), StateError> {
+        let origin = super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin::selected_load(self)?;
+        self.complete_original_lineage_content_and_restoration_data_with_origin(graph, factory, limits, &origin)
+    }
+
     fn complete_original_lineage_content_with_origin(
+        &self, graph: &crate::node_admission::AdmittedGraph, factory: &dyn NativeWorldFactory,
+        limits: OriginalInputLineageLimits,
+        origin: &super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin<'_>,
+    ) -> Result<VerifiedStateContent, StateError> {
+        self.complete_original_lineage_content_and_restoration_data_with_origin(graph, factory, limits, origin)
+            .map(|(content, _)| content)
+    }
+
+    fn complete_original_lineage_content_and_restoration_data_with_origin(
         &self,
         graph: &crate::node_admission::AdmittedGraph,
         factory: &dyn NativeWorldFactory,
         limits: OriginalInputLineageLimits,
         origin: &super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin<'_>,
-    ) -> Result<VerifiedStateContent, StateError> {
+    ) -> Result<(VerifiedStateContent, [Option<super::CompleteOriginalNativeRestorationData>; 4]), StateError> {
         origin.authenticate(self)?;
         let administrative = self.original_capture_journal()?;
         if !graph.selected_extensions().is_empty()
@@ -1046,8 +1089,10 @@ impl NativeArchiveRecord {
             ));
         }
         self.validate_complete_original_owner_receipts(graph, &content)?;
+        let restoration_data = std::cell::RefCell::new([None; 4]);
         factory.authenticate_complete_original_lineage_archive(
             CompleteOriginalArchiveValidation {
+                restoration_data: &restoration_data,
                 lineage_limits: limits,
                 graph,
                 archive: self,
@@ -1059,7 +1104,7 @@ impl NativeArchiveRecord {
             },
         )?;
         origin.authenticate(self)?;
-        Ok(content)
+        Ok((content, restoration_data.into_inner()))
     }
 }
 

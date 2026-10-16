@@ -10,6 +10,7 @@
 
 use super::native_startup_protocol::{NativeCurrentConnectionView, NativeInvocationConnectionView};
 use super::*;
+use serde_json::Value;
 use crate::protocol_snapshot::{ProtocolCaptureCut, ProtocolSnapshotReservation};
 use crate::reference_packet::endpoint::OriginalNativeCaptureAllocationOwned12;
 use crate::reference_packet::service::{
@@ -278,4 +279,36 @@ fn after_refused() -> ProviderError {
 
 fn after_credit() -> ProviderError {
     ProviderError::ResourceExhausted("invocation Capture after encoding credit")
+}
+
+impl Connection<crate::client::DeadlineStream> {
+    pub(crate) fn authenticate_invocation_capture_original_data(
+        &mut self,
+        original: &Envelope,
+        sdk: &NativeCaptureSdkCompletedQuote,
+        blobs: &crate::blob::BlobReceiver,
+        context: &OriginalNativeCaptureContext<'_>,
+    ) -> Result<(), ProviderError> {
+        // Authority containment can mutate the actual connection and therefore
+        // precedes any service/registrar loan held by an encoding view.
+        self.native_owned11_preflight(ProtocolCaptureCut::NativeIncomingCapture)?;
+        sdk.authenticate_same_target_data(self, blobs, context)?;
+        self.original_native_owned11_admission()?
+            .boot
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("invocation Capture boot borrowed"))?
+            .authenticate_invocation_capture_data()?;
+        NativeCurrentConnectionView::borrow_original(self)?;
+
+        let mut incoming = self.guard.incoming_requests();
+        if incoming.next() != Some(original)
+            || incoming.next().is_some()
+            || original.message != MessageKind::Request
+            || original.method != Method::Begin
+            || original.body.get("kind").and_then(Value::as_str) != Some("capture")
+        {
+            return Err(after_refused());
+        }
+        Ok(())
+    }
 }

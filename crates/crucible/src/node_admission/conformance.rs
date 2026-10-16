@@ -1315,3 +1315,8 @@ impl ConformanceGraph {
 }
 
 pub(crate) use runtime_construction::original_runtime_construction_failure_reason;
+
+#[path = "conformance/restoration_construction.rs"]
+mod restoration_construction;
+pub use restoration_construction::{OriginalRestorationConstructionInputs,
+    OriginalRestorationNodeConstructionData, OriginalRestorationNodeInputs};

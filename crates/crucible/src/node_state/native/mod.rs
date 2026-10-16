@@ -21,6 +21,8 @@ pub use complete_original_factory_storage::CompleteOriginalCaptureFactoryStorage
 mod complete_original_geometry;
 mod complete_original_index;
 mod complete_original_native_ticket;
+mod complete_original_restoration_data;
+pub use complete_original_restoration_data::{CompleteOriginalNativeRestorationData, CompleteOriginalRestorationIndexConstructionData, ValidatedCompleteNativeRestorationData};
 mod complete_original_source;
 mod driver;
 pub(crate) mod extensions;

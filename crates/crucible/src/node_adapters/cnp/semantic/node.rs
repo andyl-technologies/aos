@@ -409,3 +409,6 @@ impl CnpSemanticNode {
         Ok(self.scope()?.installation.maximum_semantic_bytes)
     }
 }
+
+#[path = "node/restoration_construction.rs"]
+mod restoration_construction;

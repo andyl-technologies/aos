@@ -206,6 +206,14 @@ pub(super) fn load(pin: &InstalledCompleteSceneManifest) -> Result<Manifest, Qua
 fn validate_declaration(selected: &Manifest) -> Result<(), QualificationError> {
     selected.resources.validate()?;
     mechanism::authenticate_selection_data(&selected.schema, selected.mechanism)?;
+    mechanism::authenticate_snapshot_declaration_data(
+        &selected.schema,
+        selected.participants.each_ref().map(|one| (
+            one.installation.provider.implementation.formats.as_slice(),
+            one.installation.binding.compatibility.implementation.formats.as_slice(),
+        )),
+        &selected.content,
+    )?;
     if selected.content.len() > 128
         || selected.maximum_initial_bytes == 0
         || selected.maximum_initial_bytes > 64 * 1024 * 1024

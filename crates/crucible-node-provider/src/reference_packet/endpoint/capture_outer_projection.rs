@@ -30,6 +30,7 @@ pub(super) struct NativeCaptureOuterProjectionData {
 pub(super) enum NativeCaptureOuterEdition {
     Allocation12,
     Startup13,
+    Invocation14,
 }
 
 impl NativeCaptureOuterEdition {
@@ -37,30 +38,35 @@ impl NativeCaptureOuterEdition {
         match self {
             Self::Allocation12 => "source-owned.packet-native-endpoint-state/12",
             Self::Startup13 => "source-owned.packet-native-endpoint-state/13",
+            Self::Invocation14 => "source-owned.packet-native-endpoint-state/14",
         }
     }
     fn context(self) -> &'static str {
         match self {
             Self::Allocation12 => "same-original-native-protocol-service-context/11",
             Self::Startup13 => "same-original-native-protocol-service-context/14",
+            Self::Invocation14 => "same-original-native-protocol-service-context/15",
         }
     }
     fn owner(self) -> &'static str {
         match self {
             Self::Allocation12 => "source-private.native-capture-allocation-owner-reference/12",
             Self::Startup13 => "source-private.native-capture-allocation-owner-reference/13",
+            Self::Invocation14 => "source-private.native-capture-allocation-owner-reference/14",
         }
     }
     fn before(self) -> &'static str {
         match self {
             Self::Allocation12 => "source-private.native-before-protocol/12",
             Self::Startup13 => "source-private.native-before-protocol/13",
+            Self::Invocation14 => "source-private.native-before-protocol/14",
         }
     }
     fn snapshot(self) -> &'static str {
         match self {
             Self::Allocation12 => "source-owned.packet-native-continuation/12",
             Self::Startup13 => "source-owned.packet-native-continuation/13",
+            Self::Invocation14 => "source-owned.packet-native-continuation/14",
         }
     }
 }

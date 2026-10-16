@@ -120,29 +120,36 @@ pub(crate) fn serialized_credit(
     value: &impl Serialize,
     maximum: usize,
 ) -> Result<usize, ProviderError> {
-    struct Counter {
-        used: usize,
-        maximum: usize,
-    }
-
-    impl Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            let next = self
-                .used
-                .checked_add(bytes.len())
-                .filter(|next| *next <= self.maximum)
-                .ok_or_else(|| io::Error::other("prepared frame exceeds complete byte credit"))?;
-            self.used = next;
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let mut counter = Counter { used: 0, maximum };
+    let mut counter = SerializedCreditCounter { used: 0, maximum };
     serde_json::to_writer(&mut counter, value)
         .map_err(|_| ProviderError::ResourceExhausted("prepared whole frame bytes"))?;
     Ok(counter.used)
+}
+
+struct SerializedCreditCounter {
+    used: usize,
+    maximum: usize,
+}
+
+impl Write for SerializedCreditCounter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let next = self
+            .used
+            .checked_add(bytes.len())
+            .filter(|next| *next <= self.maximum)
+            .ok_or_else(|| io::Error::other("prepared frame exceeds complete byte credit"))?;
+        self.used = next;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+
+/// Names actual counting writer/serializer headers before their borrowed walk.
+pub(crate) fn original_serialized_credit_counter_scratch_data() -> usize {
+    std::mem::size_of::<SerializedCreditCounter>()
+        + std::mem::size_of::<serde_json::Serializer<&mut SerializedCreditCounter>>()
 }

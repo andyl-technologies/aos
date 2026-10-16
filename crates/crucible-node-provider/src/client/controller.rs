@@ -35,6 +35,7 @@ mod fresh_restore_query;
 #[path = "controller/input_emitter.rs"]
 mod input_emitter;
 mod owned11_quote;
+mod restore_upload;
 pub use ack_emitter::OriginalCanonicalBlobAckEmitter;
 pub use assigned_admit::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
 pub use assigned_restore::{CompletedOriginalCompleteRestore, PreparedOriginalCompleteRestore};
@@ -44,6 +45,10 @@ pub use assigned_transfer::{
 };
 pub use fresh_restore_query::{OriginalFreshRestoreQuery, OriginalFreshRestoreQueryStorageData};
 pub use input_emitter::OriginalCanonicalRestoreInputEmitter;
+pub use restore_upload::{
+    OriginalCompleteRestoreInputUpload, OriginalCompleteRestoreInputUploadProspectiveStorageData,
+    OriginalCompleteRestoreInputUploadStorageData, OriginalCompleteRestoreUploadBeforeMappingData,
+};
 
 /// Names one node and its indivisible execution owner on an actual connection.
 ///
@@ -1956,3 +1961,6 @@ impl CnpController {
         Ok(body)
     }
 }
+
+#[path = "controller/archived_restoration_mapping.rs"]
+mod archived_restoration_mapping;

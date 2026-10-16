@@ -1,6 +1,6 @@
 //! Selects exact framing and full cold native classes from installed Source data.
 //!
-//! Outer13 names inner14 and its independently authenticated original Report.
+//! Explicit outer13/inner14 and outer14/inner15 retain their original Report.
 //! Decoding these historical owners never constructs a live startup member or
 //! changes the separate restoration signer and fresh-target admission gates.
 
@@ -12,6 +12,8 @@ use crucible_node_provider::reference_packet::service::{
         PacketNativeOwned11SnapshotValidationLayouts, PacketNativeOwned13SnapshotPlan,
         packet_native_owned11_snapshot_validation_layouts,
         packet_native_owned13_snapshot_validation_layouts,
+        PacketNativeOwned14SnapshotPlan, native_owned14_snapshot_schema,
+        packet_native_owned14_snapshot_validation_layouts,
     },
 };
 
@@ -20,18 +22,20 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) enum Complet
 {
     Legacy11,
     StartupCapture14,
+    InvocationCapture15,
 }
 
 pub(in crate::node_adapters::cnp::semantic::packet_complete_source) enum CompleteSnapshotPlan<'a> {
     Legacy(PacketNativeOwned11SnapshotPlan<'a>),
     Startup(PacketNativeOwned13SnapshotPlan<'a>),
+    Invocation(PacketNativeOwned14SnapshotPlan<'a>),
 }
 
 impl CompleteNativeSnapshotClass {
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn has_allocation(
         self,
     ) -> bool {
-        self == Self::StartupCapture14
+        matches!(self, Self::StartupCapture14 | Self::InvocationCapture15)
     }
 
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn schema_id(
@@ -40,6 +44,7 @@ impl CompleteNativeSnapshotClass {
         match self {
             Self::Legacy11 => "source-owned.packet-native-continuation/11",
             Self::StartupCapture14 => "source-owned.packet-native-continuation/13",
+            Self::InvocationCapture15 => "source-owned.packet-native-continuation/14",
         }
     }
 
@@ -49,6 +54,7 @@ impl CompleteNativeSnapshotClass {
         match self {
             Self::Legacy11 => 11,
             Self::StartupCapture14 => 13,
+            Self::InvocationCapture15 => 14,
         }
     }
 
@@ -58,6 +64,7 @@ impl CompleteNativeSnapshotClass {
         match self {
             Self::Legacy11 => native_owned11_snapshot_schema(),
             Self::StartupCapture14 => native_owned13_snapshot_schema(),
+            Self::InvocationCapture15 => native_owned14_snapshot_schema(),
         }
         .map_err(unknown)
     }
@@ -77,6 +84,10 @@ impl CompleteNativeSnapshotClass {
                 PacketNativeOwned13SnapshotPlan::validate(bytes, maximum_input, maximum_before)
                     .map(CompleteSnapshotPlan::Startup)
             }
+            Self::InvocationCapture15 => {
+                PacketNativeOwned14SnapshotPlan::validate(bytes, maximum_input, maximum_before)
+                    .map(CompleteSnapshotPlan::Invocation)
+            }
         }
     }
 
@@ -84,6 +95,7 @@ impl CompleteNativeSnapshotClass {
         let mut layouts = match self {
             Self::Legacy11 => packet_native_owned11_snapshot_validation_layouts(),
             Self::StartupCapture14 => packet_native_owned13_snapshot_validation_layouts(),
+            Self::InvocationCapture15 => packet_native_owned14_snapshot_validation_layouts(),
         };
         layouts.plan_header_bytes = std::mem::size_of::<CompleteSnapshotPlan<'static>>();
         layouts.plan_header_alignment = std::mem::align_of::<CompleteSnapshotPlan<'static>>();
@@ -98,6 +110,9 @@ impl CompleteNativeSnapshotClass {
             Self::Legacy11 => plan.complete_schema_identity().map(|_| ()),
             Self::StartupCapture14 => plan
                 .complete_native_startup_capture_allocation_schema_identity()
+                .map(|_| ()),
+            Self::InvocationCapture15 => plan
+                .complete_native_invocation_capture_schema_identity()
                 .map(|_| ()),
         }
         .map_err(unknown)
@@ -116,18 +131,29 @@ impl CompleteNativeSnapshotClass {
                 .reconstruct_native_startup_capture_allocation_sealed_into(
                     reference, encoded, completed,
                 ),
+            Self::InvocationCapture15 => plan
+                .reconstruct_native_invocation_capture_sealed_into(reference, encoded, completed),
         }
         .map_err(unknown)
     }
 }
 
 impl<'a> CompleteSnapshotPlan<'a> {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn snapshot_class(&self) -> CompleteNativeSnapshotClass {
+        match self {
+            Self::Legacy(_) => CompleteNativeSnapshotClass::Legacy11,
+            Self::Startup(_) => CompleteNativeSnapshotClass::StartupCapture14,
+            Self::Invocation(_) => CompleteNativeSnapshotClass::InvocationCapture15,
+        }
+    }
+
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn before(
         &self,
     ) -> &PacketNativeBeforeProtocolPlan<'a> {
         match self {
             Self::Legacy(plan) => plan.before(),
             Self::Startup(plan) => plan.before(),
+            Self::Invocation(plan) => plan.before(),
         }
     }
 
@@ -137,6 +163,7 @@ impl<'a> CompleteSnapshotPlan<'a> {
         match self {
             Self::Legacy(plan) => plan.control_bytes(),
             Self::Startup(plan) => plan.control_bytes(),
+            Self::Invocation(plan) => plan.control_bytes(),
         }
     }
 
@@ -146,17 +173,39 @@ impl<'a> CompleteSnapshotPlan<'a> {
         match self {
             Self::Legacy(plan) => plan.control_reference_bytes(),
             Self::Startup(plan) => plan.control_reference_bytes(),
+            Self::Invocation(plan) => plan.control_reference_bytes(),
         }
     }
 
-    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn allocation(
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn allocation_reference_bytes(
         &self,
-    ) -> Option<&PacketNativeOwned13SnapshotPlan<'a>> {
+    ) -> Option<&'a [u8]> {
         match self {
             Self::Legacy(_) => None,
-            Self::Startup(plan) => Some(plan),
+            Self::Startup(plan) => Some(plan.allocation_reference_bytes()),
+            Self::Invocation(plan) => Some(plan.allocation_reference_bytes()),
         }
     }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_allocation_bytes(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(), OperationFailure> {
+        match self {
+            Self::Legacy(_) => return Err(refused("legacy snapshot has no original Report")),
+            Self::Startup(plan) => plan.authenticate_allocation_bytes(bytes),
+            Self::Invocation(plan) => plan.authenticate_allocation_bytes(bytes),
+        }.map_err(unknown)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn capture_request_bytes(&self) -> &'a [u8] {
+        match self {
+            Self::Legacy(plan) => plan.capture_request_bytes(),
+            Self::Startup(plan) => plan.capture_request_bytes(),
+            Self::Invocation(plan) => plan.capture_request_bytes(),
+        }
+    }
+
 }
 
 impl PacketCompleteArchivedOwnerData<'_> {
@@ -181,8 +230,8 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 self.before_limits.json.maximum_input_bytes,
             )
             .map_err(unknown)?;
-        let plan = plan
-            .allocation()
+        let allocation_reference_bytes = plan
+            .allocation_reference_bytes()
             .ok_or_else(|| refused("cold selected Report marker absent"))?;
         let before = self
             .before
@@ -219,8 +268,8 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 "cold original Report evidence or native owner differs",
             ));
         }
-        crate::node_adapters::cnp::semantic::semantic_snapshot::authenticate_canonical_reference_bytes(plan.allocation_reference_bytes(), reference)?;
-        plan.authenticate_allocation_bytes(body).map_err(unknown)?;
+        crate::node_adapters::cnp::semantic::semantic_snapshot::authenticate_canonical_reference_bytes(allocation_reference_bytes, reference)?;
+        plan.authenticate_allocation_bytes(body)?;
         let control = self
             .content
             .get(&journal.native_control)
@@ -250,6 +299,67 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 "cold outer Capture differs from the original incoming literal",
             ));
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod invocation_plan_tests {
+    use super::*;
+    use crucible_node_provider::protocol_snapshot::compact_bytes::BorrowedCompactBytes;
+    use serde_json::json;
+
+    #[test]
+    fn selected_invocation_plan_preserves_report_bytes_without_promoting_framing_to_cold_owner()
+    -> Result<(), OperationFailure> {
+        // This is framing DATA with an intentionally invalid native model.
+        // It is never a birth, archive owner, opaque ticket or live permission.
+        let before = br#"["source-private.cnp-protocol/11",["source-private.native-state/15",null,null,null,null],[],[]]"#;
+        let report = br#"{"report":"original borrowed body"}"#;
+        let reference = canonical::content_ref(report,
+            crucible_node_provider::reference_packet::service::capture_allocation::PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA).map_err(unknown)?;
+        let control = json!({
+            "administrative_cut":{}, "captured_process":"1", "control":{},
+            "local_cursor":{}, "model":{}, "schema":"source-owned.packet-native-control-state/6"
+        });
+        let control_bytes = canonical::canonical_json(&control).map_err(unknown)?;
+        let value = json!({
+            "capture":{}, "capture_request":{}, "control":control,
+            "control_reference":canonical::content_ref(&control_bytes,"application/json").map_err(unknown)?,
+            "endpoint":["source-owned.packet-native-endpoint-state/14",{},null,null,null,{},
+                "same-original-native-protocol-service-context/15",[],0,[],0,1,0,true,
+                ["source-private.native-capture-allocation-owner-reference/14",reference]],
+            "protocol":["source-private.native-before-protocol/14",
+                canonical::content_ref(before,"application/json").map_err(unknown)?,before.len()+17,
+                serde_json::to_value(BorrowedCompactBytes::new(before)).map_err(unknown)?],
+            "schema":"source-owned.packet-native-continuation/14"
+        });
+        let encoded = canonical::canonical_json(&value).map_err(unknown)?;
+        let plan = CompleteNativeSnapshotClass::InvocationCapture15.validate_snapshot(
+            &encoded,encoded.len(),before.len()+17).map_err(unknown)?;
+        assert_eq!(plan.snapshot_class(), CompleteNativeSnapshotClass::InvocationCapture15);
+        plan.before().authenticate_original_bytes(before).map_err(unknown)?;
+        plan.authenticate_allocation_bytes(report)?;
+        let decoded: ContentRef = serde_json::from_slice(plan.allocation_reference_bytes().unwrap()).map_err(unknown)?;
+        assert_eq!(decoded,reference);
+        assert_eq!(plan.control_bytes(),control_bytes);
+        assert_eq!(plan.capture_request_bytes(),b"{}");
+
+        let mut changed = report.to_vec();
+        changed[1] ^= 1;
+        assert!(plan.authenticate_allocation_bytes(&changed).is_err());
+        for old in [CompleteNativeSnapshotClass::Legacy11,CompleteNativeSnapshotClass::StartupCapture14] {
+            assert!(old.validate_snapshot(&encoded,encoded.len(),before.len()+17).is_err());
+        }
+        let limits = OwnedProtocol11DataLimits {
+            json: HistoricalJsonLimits { maximum_input_bytes: before.len(), maximum_nodes:256,
+                maximum_depth:16,maximum_owned_backing_bytes:8192,maximum_tree_entries:256 },
+            content:CompactMetadata8Limits { content:CompactContentLimits { max_input_bytes:before.len(),max_rows:16,
+                max_groups:16,max_first_group_capacity_bytes:8192 },maximum_metadata_capacity_bytes:8192 },
+            maximum_metadata_rows:32,maximum_literal_backing_bytes:8192,
+        };
+        let mut aliases = [];
+        assert!(ValidatedNativeOwnedProtocol11::validate(before,limits,&mut aliases).is_err());
         Ok(())
     }
 }

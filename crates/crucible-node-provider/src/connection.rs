@@ -33,6 +33,7 @@ mod restore_proof_quote;
 pub(crate) use restore_proof_quote::OriginalRestoreHeldProofAllocationQuote;
 mod restore_inputs;
 mod restore_response;
+mod restore_upload;
 pub(crate) use ack_admission::{
     OriginalNativeAckConnectionIdentity, OriginalNativeFreshFrontierData,
 };
@@ -40,6 +41,9 @@ pub(crate) use restore_identity::{
     OriginalNativeRestorationConnectionIdentity, authenticate_original_native_prepare_header_data,
 };
 pub(crate) use restore_input_quote::NativeRestoreInputAllocationQuote;
+pub use restore_input_quote::{OriginalNativeRestoreInputConstructionData,
+    original_native_restore_input_construction_counter_scratch_data,
+    original_native_restore_input_construction_storage_data};
 pub(crate) use restore_inputs::{
     OriginalCompleteRestoreInputCustody, OriginalCompleteRestoreInputProgress,
 };
@@ -93,6 +97,7 @@ pub use supervisor_state::{
 mod packet_schema;
 
 mod prepared;
+pub(crate) use prepared::original_serialized_credit_counter_scratch_data;
 pub(crate) use prepared::serialized_credit;
 
 pub(crate) use exchange::OriginalPacketCompletedRecordEncodingData;

@@ -31,7 +31,11 @@ mod registry;
 #[path = "archive_owner/snapshot.rs"]
 mod snapshot;
 use crucible_node_provider::protocol_snapshot::owned11::host_registry::SealedHistoricalHostExtensionRegistry;
-pub(super) use snapshot::CompleteNativeSnapshotClass;
+pub(super) use snapshot::{CompleteNativeSnapshotClass, CompleteSnapshotPlan};
+
+#[path = "archive_owner/retained.rs"]
+mod retained;
+pub(crate) use retained::OriginalRestorationColdGroup;
 
 /// Retains one bounded owner linked to the actual immutable archive closure.
 ///
@@ -69,6 +73,7 @@ pub struct PacketCompleteArchivedOwnerData<'a> {
     host: Option<SealedHistoricalControllerState>,
     native: Option<SealedHistoricalNativeState>,
     known_requested: Option<usize>,
+    native_restoration_demand: Option<crucible_node_provider::protocol_snapshot::owned11::native::outer::NativeOwnedProtocol11AllocationDemand>,
     attempted: bool,
     failed: bool,
 }
@@ -254,6 +259,7 @@ impl PacketCompleteSemanticSource {
             host: None,
             native: None,
             known_requested: None,
+            native_restoration_demand: None,
             attempted: false,
             failed: false,
         });
@@ -652,6 +658,100 @@ impl PacketCompleteArchivedOwnerData<'_> {
             .ok_or_else(|| refused("cold sealed native absent"))
     }
 
+    /// Returns actual native-after reconstruction demand after full cold checks.
+    ///
+    /// This fixed DATA row preserves the independently decoded native demand;
+    /// it is neither the whole cold known_requested sum nor a native grant.
+    /// The actual archive factory binds it to its original owner slot before
+    /// these temporary historical decoder owners are released.
+    ///
+    /// # Errors
+    /// Refuses an incomplete/foreign cold owner or an absent original native plan.
+    pub fn original_native_restoration_data(
+        &self,
+    ) -> Result<crate::node_state::ValidatedCompleteNativeRestorationData<'_>, OperationFailure>
+    {
+        self.ensure_complete()?;
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| refused("cold journal absent"))?;
+        let demand = self
+            .native_restoration_demand
+            .ok_or_else(|| refused("cold native restoration demand absent"))?;
+        let mut lengths = [0usize; 5];
+        for (slot, reference) in lengths.iter_mut().zip([
+            &journal.native_after_protocol,
+            &journal.native_control,
+            &journal.native_anchor,
+            &self.owner.state,
+            self.journal_reference,
+        ]) {
+            *slot = self
+                .content
+                .get(reference)
+                .ok_or_else(|| refused("cold restoration body absent"))?
+                .len();
+        }
+        let selected_owner = if self.snapshot_class == CompleteNativeSnapshotClass::StartupCapture14
+        {
+            use crucible_node_provider::reference_packet::service::complete_restore::transfer::{
+                PacketCompleteRestoreSelectedOwnerInputs,
+                complete_restore_selected_owner_construction_storage_data,
+            };
+            let body = |reference| {
+                self.content
+                    .get(reference)
+                    .ok_or_else(|| refused("cold restoration body absent"))
+            };
+            let inputs = PacketCompleteRestoreSelectedOwnerInputs {
+                owner_state: body(&self.owner.state)?,
+                journal: body(self.journal_reference)?,
+                control: body(&journal.native_control)?,
+                anchor: body(&journal.native_anchor)?,
+                maximum_input_bytes: self.maximum,
+                maximum_before_bytes: self.before_limits.json.maximum_input_bytes,
+                maximum_requested_bytes: self.maximum,
+            };
+            match complete_restore_selected_owner_construction_storage_data(&inputs) {
+                Ok(data) => Some(data),
+                // Valid archive data is not promoted into future restoration
+                // permission. Preserve an unavailable future row explicitly.
+                Err(crucible_node_provider::ProviderError::ResourceExhausted(_)) => None,
+                Err(error) => return Err(unknown(error)),
+            }
+        } else {
+            None
+        };
+        Ok(
+            crate::node_state::ValidatedCompleteNativeRestorationData::from_validated_native_data(
+                demand,
+                self.native_limits,
+                lengths,
+                [
+                    &journal.native_after_protocol,
+                    &journal.native_control,
+                    &journal.native_anchor,
+                    &self.owner.state,
+                    self.journal_reference,
+                ],
+                self.known_requested_bytes()?,
+                checked_sum(
+                    [
+                        NodeRuntime::capture_reference_storage(&journal.host_protocol)
+                            .map_err(unknown)?,
+                        NodeRuntime::capture_reference_storage(&journal.native_after_protocol)
+                            .map_err(unknown)?,
+                    ],
+                    self.maximum,
+                )?,
+                selected_owner,
+                self.owner,
+                self.content,
+            ),
+        )
+    }
+
     fn prepare_demand(&mut self) -> Result<usize, OperationFailure> {
         self.ensure_origin()?;
         let journal = self
@@ -725,6 +825,7 @@ impl PacketCompleteArchivedOwnerData<'_> {
             .map_err(unknown)?;
             self.snapshot_class.authenticate_native(&native)?;
             let demand = native.allocation_demand();
+            self.native_restoration_demand = Some(*demand);
             total = checked_sum(
                 [
                     total,
@@ -932,6 +1033,15 @@ pub(super) fn snapshot_parser_known_storage_for_class(
             layouts.raw_chunk_array_bytes,
             layouts.streaming_hash_header_bytes,
             layouts.streaming_hash_output_bytes,
+            // The selected facade retains its borrowed full reference across
+            // decode and Report authentication, alongside the parser itself.
+            size_of::<&CompleteSnapshotPlan<'_>>(),
+            size_of::<CompleteNativeSnapshotClass>(),
+            size_of::<&[u8]>(),
+            size_of::<Option<&[u8]>>(),
+            size_of::<Result<&[u8], OperationFailure>>(),
+            size_of::<Result<(), OperationFailure>>(),
+            size_of::<Result<usize, OperationFailure>>(),
         ],
         maximum,
     )

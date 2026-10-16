@@ -83,7 +83,11 @@ impl PacketCompleteSemanticSource {
     /// do not certify compiler frames, recursive serde stack, allocator rounding
     /// or external Host/factory counters, which remain separate resource terms.
     pub fn original_report_startup_observer_scratch_data() -> usize {
-        size_of::<RetainedCompleteSourceMetadata<'_>>()
+        let original_purpose = match Self::original_capture_invocation_counter_scratch_data() {
+            Ok(bytes) => bytes,
+            Err(_) => usize::MAX,
+        };
+        (size_of::<RetainedCompleteSourceMetadata<'_>>()
             + size_of::<RetainedProtocolMetadataFacts>()
             + crucible_node_provider::retained_metadata::original_metadata_observer_layout_bytes()
             + size_of::<[usize; 7]>()
@@ -97,6 +101,10 @@ impl PacketCompleteSemanticSource {
             + 2 * size_of::<std::fs::File>()
             + 2 * size_of::<super::HostRevision>()
             + returned_layout(blake3::Hash::to_hex)
+            + Self::original_invocation_snapshot_declaration_counter_scratch_data()
+            + size_of::<Result<usize, crate::node_contract::RuntimeError>>()
+            + size_of::<usize>())
+            .saturating_add(original_purpose)
     }
 
     pub(crate) fn authenticate_original_report_startup_launch_data(

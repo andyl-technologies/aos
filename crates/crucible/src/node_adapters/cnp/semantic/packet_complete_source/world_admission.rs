@@ -361,3 +361,26 @@ impl OriginalCompletedCanonicalAckWorldAdmission {
         &mut self.fresh_query
     }
 }
+
+impl OriginalCompletedCanonicalAckWorldAdmission {
+    pub(in crate::node_adapters::cnp::semantic) fn original_restoration_query_data(
+        &self,
+        source: &Rc<PacketCompleteSemanticSource>,
+    ) -> Result<&crucible_node_provider::client::OriginalFreshRestoreQuery, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        if self.process != std::process::id()
+            || self.thread != std::thread::current().id()
+            || !self.issued || !self.spent || !self.host_query_issued.get()
+            || !Rc::ptr_eq(&self.source, source) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.fresh_query.as_ref().ok_or(RuntimeError::OwnerUnavailable)
+    }
+}
+
+impl OriginalCompletedCanonicalAckWorldAdmission {
+    pub(in crate::node_adapters::cnp::semantic) fn original_restoration_query_counter_scratch_data() -> usize {
+        std::mem::size_of::<std::cell::Ref<'static, Option<Self>>>()
+            + std::mem::size_of::<&Self>()
+    }
+}

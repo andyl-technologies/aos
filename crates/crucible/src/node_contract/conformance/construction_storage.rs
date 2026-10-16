@@ -26,6 +26,10 @@ impl ConformanceRuntime {
         if self.activation.is_some() {
             return Err(RuntimeError::OutstandingObligations);
         }
+        self.retained_inactive_wrapper_storage_data(maximum)
+    }
+
+    fn retained_inactive_wrapper_storage_data(&self, maximum: usize) -> Result<usize, RuntimeError> {
         let runtime = self
             .runtime
             .original_retained_requested_storage_precredit_data(maximum)?;
@@ -112,5 +116,42 @@ impl ConformanceRuntime {
         runtime
             .checked_add(size_of::<RetainedRuntimeCounter>())
             .ok_or(RuntimeError::ResourceLimit)
+    }
+}
+
+impl ConformanceRuntime {
+    /// Observes the actual inactive restoration owner without an initial-origin escape.
+    ///
+    /// This separate raw path authenticates the same archive/plan/activation and
+    /// live scheduler before and after the complete original owning walk. The
+    /// old initial-only observation retains its original origin guard. Equal
+    /// archive or world labels cannot substitute another runtime allocation.
+    ///
+    /// # Errors
+    /// Refuses another runtime purpose/plan/activation, live scheduler revocation,
+    /// unsupported node/slot/authority leaves, busy owners, overflow or the bound.
+    pub(crate) fn original_restoration_retained_storage_precredit_data(
+        &self,
+        archive: &crate::node_state::CompleteOriginalRestorationSource,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &ActivationRecord,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.authenticate_original_restoration_target_data(archive, plan, activation)?;
+        let bytes = self.retained_inactive_wrapper_storage_data(maximum)?;
+        self.authenticate_original_restoration_target_data(archive, plan, activation)?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn original_restoration_descriptor_views_precredit_data(
+        &self,
+        archive: &crate::node_state::CompleteOriginalRestorationSource,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &ActivationRecord,
+    ) -> Result<usize, RuntimeError> {
+        self.authenticate_original_restoration_target_data(archive, plan, activation)?;
+        let count = self.runtime.original_inactive_descriptor_views_precredit_data()?;
+        self.authenticate_original_restoration_target_data(archive, plan, activation)?;
+        Ok(count)
     }
 }

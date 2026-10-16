@@ -41,6 +41,36 @@ pub struct RetainedRetirementHistory {
 /// descriptions do not provide alternate mutation paths. Implementations need
 /// not be `Send` or `Sync`; a worker requires explicit custody transfer.
 pub trait SimulationNode {
+    /// Names fixed original-node restoration quote views before its data walk.
+    ///
+    /// Unknown adapters return None. This raw getter performs no callback,
+    /// serializer, owning traversal, kernel read or allocation.
+    ///
+    /// # Errors
+    /// Refuses foreign creators, missing originals or checked layout overflow.
+    #[doc(hidden)]
+    fn original_restoration_construction_scratch_data(&self) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
+
+    /// Quotes an installed restoration suffix on this same retained CNP node.
+    ///
+    /// This internal adapter hook borrows the original preparation/controller;
+    /// it cannot extract or reconstruct them. Core alone constructs its input
+    /// loans. Unknown implementations return None, never a zero-sized phase.
+    /// Numeric output grants no restoration or allocation action.
+    ///
+    /// # Errors
+    /// Refuses foreign/busy owners, an inactive-target mismatch, absent completed
+    /// Query, unsupported selected phases or any independently supplied bound.
+    #[doc(hidden)]
+    fn original_restoration_construction_data(
+        &self,
+        _inputs: &crate::node_admission::OriginalRestorationNodeInputs<'_>,
+    ) -> Result<Option<crate::node_admission::OriginalRestorationNodeConstructionData>, RuntimeError> {
+        Ok(None)
+    }
+
     /// Observes actual descriptor owners in this concrete inactive node.
     ///
     /// # Errors

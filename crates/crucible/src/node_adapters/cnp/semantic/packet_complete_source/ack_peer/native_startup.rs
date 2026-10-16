@@ -121,7 +121,7 @@ impl PacketCompleteSemanticSource {
         })
     }
 
-    pub(super) fn authenticate_native_launch_data(
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source::ack_peer) fn authenticate_native_launch_data(
         &self,
         launch: &PacketNative5SourceLaunch,
     ) -> Result<(), RuntimeError> {

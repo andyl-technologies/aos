@@ -399,3 +399,11 @@ fn refused() -> ProviderError {
 pub(crate) fn original_fresh_schema_generation_storage_data() -> Result<usize, ProviderError> {
     schema_generation::fresh_requested_data()
 }
+
+
+mod invocation;
+
+pub use invocation::{
+    original_invocation_report_startup_storage_data,
+    original_invocation_report_startup_counter_scratch_data,
+};

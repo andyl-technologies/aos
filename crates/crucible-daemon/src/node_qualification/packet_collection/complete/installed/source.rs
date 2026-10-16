@@ -89,12 +89,17 @@ pub(super) fn install(
         return Err(refused());
     }
 
+    // The manifest validator has authenticated exact full outer14 DATA on both
+    // immutable rosters and content before any Source bank or namespace effect.
+    let invocation_snapshot = selected.schema == "crucible.complete-scene.installation/3";
     let (sources, declarations) = prepare_sources(
         selected.participants,
         &selected.coordinator,
         selected.maximum_native_rows,
         selected.maximum_initial_bytes,
         selected.mechanism,
+        invocation_snapshot,
+        &content,
     )?;
     let mut namespace = Namespace::create(directory)?;
     let directories = namespace.peer_directories()?;
@@ -233,10 +238,12 @@ fn prepare_sources(
     maximum_native_rows: usize,
     maximum_initial_bytes: usize,
     mechanism: Option<CompleteMechanism>,
+    invocation_snapshot: bool,
+    content: &std::collections::BTreeMap<ContentRef, Vec<u8>>,
 ) -> Result<([PacketCompleteSemanticSource; 3], [LaunchDeclaration; 3]), QualificationError> {
     let mut sources = Vec::with_capacity(3);
     let mut declarations = Vec::with_capacity(3);
-    for participant in participants {
+    for (member, participant) in participants.into_iter().enumerate() {
         let installation = participant.installation.into_source_selection();
         let mut source = match &participant.program {
             PacketConnectedSourceProgram::Producer { program } => {
@@ -290,6 +297,16 @@ fn prepare_sources(
             .map_err(|_| refused())?;
         if let Some(mechanism) = mechanism {
             mechanism.bind_source(&mut source)?;
+        }
+        if invocation_snapshot {
+            if mechanism.is_none() {
+                return Err(refused());
+            }
+            // This fixed-stack, allocation-free DATA binder belongs to the
+            // ordinary operator-install phase, like the tuple binders above.
+            // Later runtime/native grants do not authorize this earlier work.
+            source.bind_original_invocation_snapshot_declaration().map_err(|_| refused())?;
+            super::super::records::validate_original_native_definition_data(&source, content, member)?;
         }
         let host_protocol_bytes = match &participant.capture_profile {
             PacketNative5CaptureProfile::OwnedProtocol11 {

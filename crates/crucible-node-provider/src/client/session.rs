@@ -24,6 +24,7 @@ mod fresh_restore_query;
 pub(super) mod original_conflict;
 #[path = "session/resend.rs"]
 mod resend;
+mod restore_upload;
 
 #[path = "session/lifecycle_resend.rs"]
 mod lifecycle_resend;
@@ -1879,5 +1880,20 @@ impl ClientSession {
         self.authenticate_native5_source_codec()?;
         self.connection
             .original_capture_allocation_observe_hash_data(original)
+    }
+}
+
+impl ClientSession {
+    pub(in crate::client) fn prepare_original_selected_archived_mapping(
+        &mut self,
+        input: crate::protocol_snapshot::ArchivedProtocolMappingInput<'_>,
+        controller: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    ) -> Result<crate::protocol_snapshot::PreparedArchivedProtocolMapping, ProviderError> {
+        self.protocol_capture_preflight(crate::protocol_snapshot::ProtocolCaptureCut::HostSettled)?;
+        self.connection.prepare_original_selected_archived_mapping(
+            input,
+            controller,
+            self.deadline.original_cut(),
+        )
     }
 }

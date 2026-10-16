@@ -615,9 +615,24 @@ fn validate_native_definitions(
     request: &PacketCompleteGraphRequest<'_>,
     member: usize,
 ) -> Result<(), QualificationError> {
+    validate_original_native_definition_data(&request.roster.sources[member], request.content, member)
+}
+
+/// Authenticates the same concrete Source's immutable native grammar and content.
+///
+/// Installation edition three invokes this DATA check before capture banks or
+/// namespace acquisition. This issues no startup, graph or execution permission.
+///
+/// # Errors
+/// Refuses incomplete, foreign, extended, duplicate or extra native definitions.
+pub(super) fn validate_original_native_definition_data(
+    source: &crucible::node_adapters::cnp::PacketCompleteSemanticSource,
+    content: &BTreeMap<ContentRef, Vec<u8>>,
+    member: usize,
+) -> Result<(), QualificationError> {
     use crucible_node_provider::reference_packet::contracts;
 
-    let selected = request.roster.sources[member].installation();
+    let selected = source.installation();
     let octets = contracts::immediate_packet_contract()
         .map_err(|error| QualificationError::Evidence(error.to_string()))?;
     let connected = contracts::connected_packet_contract()
@@ -638,7 +653,7 @@ fn validate_native_definitions(
         (&ingress_ref, &ingress),
         (&complete_ref, &complete),
     ] {
-        if request.content.get(reference) != Some(bytes) {
+        if content.get(reference) != Some(bytes) {
             return Err(refused());
         }
     }
@@ -667,10 +682,10 @@ fn validate_native_definitions(
     // The same concrete Source fixes selected additional grammar before any
     // binding hashes or native preparation. Declarations grant no collection,
     // currentness, graph admission or Capture authority here.
-    let additional = selected_native_definition_bodies(&request.roster.sources[member])?;
+    let additional = selected_native_definition_bodies(source)?;
     for (schema, bytes) in &additional {
         schema.definition.verify(bytes)?;
-        if request.content.get(&schema.definition) != Some(bytes) {
+        if content.get(&schema.definition) != Some(bytes) {
             return Err(refused());
         }
         expected.push((schema.id.as_str(), schema.version, &schema.definition));
@@ -678,6 +693,9 @@ fn validate_native_definitions(
     expected.sort_by_key(|(id, _, _)| *id);
     let formats = &selected.provider.implementation.formats;
     if !exact_native_format_roster(formats, &expected)
+        || (source.is_original_invocation_snapshot_declaration_data()
+            .map_err(|_| refused())?
+            && !exact_native_format_roster(&selected.binding.compatibility.implementation.formats, &expected))
         || selected.descriptor.ports.iter().any(|port| {
             !port.extensions.is_empty()
                 || port.lanes.iter().any(|lane| {
@@ -838,6 +856,47 @@ fn selected_native_definition_bodies(
             ));
         }
     }
+    if source.is_original_invocation_snapshot_declaration_data()
+        .map_err(|_| refused())?
+    {
+        use crucible_node_provider::{
+            client::CanonicalAckCodecMetadataExtent,
+            reference_packet::service::{
+                PacketNative5CaptureProfile,
+                capture_allocation::PacketNative5CaptureAllocationSelection,
+                complete_restore::{PacketNative5CompleteRestoreSelection, PacketNative5RestoreInputEmitterSelection},
+                fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection,
+                native_snapshot::{native_owned14_snapshot_contract, native_owned14_snapshot_schema},
+            },
+        };
+        // The actual Source-retained declaration is independent of invocation
+        // purpose. The full original/target roster is identical; live private
+        // purpose/currentness and full class15 reconstruction remain required.
+        if confirmation != Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5)
+            || ack != Some(PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
+            || source.selected_complete_restore_selection().map_err(|_| refused())?
+                != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+            || source.selected_restore_input_emitter_selection().map_err(|_| refused())?
+                != Some(PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12)
+            || source.selected_fresh_restore_allocation_selection().map_err(|_| refused())?
+                != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
+            || source.selected_capture_allocation_selection().map_err(|_| refused())?
+                != Some(PacketNative5CaptureAllocationSelection::OriginalObserve12)
+            || !matches!(source.selected_capture_profile().map_err(|_| refused())?, PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+            || source.selected_protocol_metadata_limits().map_err(|_| refused())?.is_none()
+            || source.selected_ack_codec_metadata_extent().map_err(|_| refused())?
+                != Some(CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
+            || source.selected_native_ack_codec_metadata_extent().map_err(|_| refused())?
+                != Some(CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
+        {
+            return Err(refused());
+        }
+        // Append: the independent Transfer12 roster still requires snapshot11.
+        definitions.push((
+            native_owned14_snapshot_schema().map_err(|_| refused())?,
+            native_owned14_snapshot_contract().map_err(|_| refused())?,
+        ));
+    }
     Ok(definitions)
 }
 
@@ -891,5 +950,35 @@ mod selected_roster_tests {
             .extensions
             .insert("unexpected".into(), serde_json::Value::Null);
         assert!(!exact_native_format_roster(&[extended], &expected));
+    }
+
+
+    #[test]
+    fn invocation_snapshot_is_additive_to_actual_transfer_snapshot_roster() {
+        use crucible_node_provider::reference_packet::service::{
+            complete_restore::{PacketNative5CompleteRestoreSelection, complete_restore_selected_contracts},
+            native_owned11_snapshot_schema,
+            native_snapshot::{native_owned14_snapshot_contract, native_owned14_snapshot_schema},
+        };
+        let mut definitions = complete_restore_selected_contracts(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12).unwrap();
+        let old = native_owned11_snapshot_schema().unwrap();
+        let invocation = native_owned14_snapshot_schema().unwrap();
+        assert!(definitions.iter().any(|(schema, _)| schema == &old));
+        definitions.push((invocation.clone(), native_owned14_snapshot_contract().unwrap()));
+        definitions.sort_by(|(left, _), (right, _)| left.id.cmp(&right.id));
+        let formats: Vec<_> = definitions.iter().map(|(schema, _)| schema.clone()).collect();
+        let expected: Vec<_> = definitions.iter().map(|(schema, _)| (schema.id.as_str(), schema.version, &schema.definition)).collect();
+
+        assert!(exact_native_format_roster(&formats, &expected));
+        for removed in [&old, &invocation] {
+            let missing: Vec<_> = formats.iter().filter(|schema| *schema != removed).cloned().collect();
+            assert!(!exact_native_format_roster(&missing, &expected));
+        }
+        for (schema, body) in &definitions {
+            schema.definition.verify(body).unwrap();
+        }
+        let mut extra = formats.clone();
+        extra.push(invocation);
+        assert!(!exact_native_format_roster(&extra, &expected));
     }
 }

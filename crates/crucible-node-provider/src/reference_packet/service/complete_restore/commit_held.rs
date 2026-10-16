@@ -151,43 +151,26 @@ impl Serialize for PacketNativeRestoredCommitHold {
 /// The bound includes every 128-byte identifier, all maximum U64 counters,
 /// 128-byte hash domains at their worst six-byte ASCII escaping, maximum full
 /// ContentRefs with doubled quote media bytes, the 32-byte digest's exact
-/// unpadded base64 width and the complete coordinate. It allocates no string or
-/// JSON value and grants no selected protocol credit.
+/// unpadded base64 width and the complete coordinate. It constructs no ID or
+/// JSON value and grants no selected protocol credit. Its U64 decimal formatter
+/// temporary is named by the separate counter-scratch getter.
 ///
 /// # Errors
 /// Reports serialization/count overflow; it does not admit an input lease.
 pub fn maximum_complete_restore_held_evidence_bytes() -> Result<usize, ProviderError> {
-    #[derive(Serialize)]
-    struct Hash<'a> {
-        algorithm: &'static str,
-        domain: &'a str,
-        digest: &'a str,
-    }
-    #[derive(Serialize)]
-    struct Content<'a> {
-        hash: Hash<'a>,
-        length: U64,
-        media_type: &'a str,
-    }
-    #[derive(Serialize)]
-    struct Coordinate {
-        time_ps: U64,
-        microstep: U64,
-        phase: u16,
-    }
     let domains = [0u8; 128];
     let identifiers = [b'x'; 128];
     let media = [b'"'; 128];
     let hexadecimal = [b'0'; 64];
     let digest = [b'x'; 43];
     let maximum = U64::new(u64::MAX);
-    let hash = Hash {
+    let hash = MaximumHeldHash {
         algorithm: "blake3-256",
         domain: bound_ascii(&domains)?,
         digest: bound_ascii(&hexadecimal)?,
     };
-    let content = Content {
-        hash: Hash {
+    let content = MaximumHeldContent {
+        hash: MaximumHeldHash {
             algorithm: "blake3-256",
             domain: "cnp.blob.v1",
             digest: bound_ascii(&hexadecimal)?,
@@ -195,7 +178,7 @@ pub fn maximum_complete_restore_held_evidence_bytes() -> Result<usize, ProviderE
         length: maximum,
         media_type: bound_ascii(&media)?,
     };
-    let coordinate = Coordinate {
+    let coordinate = MaximumHeldCoordinate {
         time_ps: maximum,
         microstep: maximum,
         phase: 3,
@@ -225,4 +208,39 @@ pub fn maximum_complete_restore_held_evidence_bytes() -> Result<usize, ProviderE
 
 fn bound_ascii(bytes: &[u8]) -> Result<&str, ProviderError> {
     std::str::from_utf8(bytes).map_err(|_| ProviderError::Frame("closed held proof bound ASCII"))
+}
+
+#[derive(Serialize)]
+struct MaximumHeldHash<'a> {
+    algorithm: &'static str,
+    domain: &'a str,
+    digest: &'a str,
+}
+#[derive(Serialize)]
+struct MaximumHeldContent<'a> {
+    hash: MaximumHeldHash<'a>,
+    length: U64,
+    media_type: &'a str,
+}
+#[derive(Serialize)]
+struct MaximumHeldCoordinate {
+    time_ps: U64,
+    microstep: U64,
+    phase: u16,
+}
+
+/// Names actual fixed maximum-Hold views before its decimal serialization.
+///
+/// The twenty-byte temporary is U64's actual Display-to-String formatter;
+/// each occurrence is serialized and dropped before the next one. Compiler
+/// and recursive serde frames and allocator physical overhead remain separate.
+pub fn maximum_complete_restore_held_evidence_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+    3 * size_of::<[u8; 128]>() + size_of::<[u8; 64]>() + size_of::<[u8; 43]>()
+        + size_of::<U64>() + size_of::<MaximumHeldHash<'static>>()
+        + size_of::<MaximumHeldContent<'static>>() + size_of::<MaximumHeldCoordinate>()
+        + size_of::<HoldView<'static, MaximumHeldHash<'static>, MaximumHeldContent<'static>,
+            str, MaximumHeldCoordinate, str>>()
+        + crate::connection::original_serialized_credit_counter_scratch_data()
+        + 20
 }

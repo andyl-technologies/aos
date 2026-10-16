@@ -106,3 +106,52 @@ impl CompleteOriginalNativeTicket {
         Ok(())
     }
 }
+
+
+impl CompleteOriginalNativeTicket {
+
+
+
+
+    pub(crate) fn is_original_restoration_owner_data(&self, other: &Self) -> bool {
+        self.owner_index == other.owner_index && Rc::ptr_eq(&self.source, &other.source)
+    }
+
+    /// Borrows the actual native-after demand retained by this archive's validator.
+    ///
+    /// This contains historical DATA only. It cannot reconstruct a native graph,
+    /// sign a request or grant memory; the same installed whole-restoration
+    /// window must conjoin all fresh and future owners before its first effect.
+    ///
+    /// # Errors
+    /// Refuses another creator or an archive whose actual codec supplied no row.
+    pub fn native_restoration_construction_data(&self) -> Result<&super::CompleteOriginalNativeRestorationData, RuntimeError> {
+        self.source.authenticate_birth()?;
+        self.source.native_restoration_construction_data(self.owner_index)
+    }
+
+    /// Counts the actual archive while its genuine inactive runtime/ticket agree.
+    ///
+    /// This raw owning walk is valid during the inactive target phase, unlike the distinct
+    /// prebirth observer. It authenticates private original identities only and
+    /// performs no currentness callbacks, serializer, hash, formatting or I/O.
+    /// The enclosing ticket root and fixed observer scratch remain separate.
+    ///
+    /// # Errors
+    /// Refuses foreign origin/source/runtime/proposal/plan, unavailable actual backing,
+    /// overflow or complete archive requested storage above the bound.
+    pub fn retained_original_restoration_source_precredit_data(
+        &self, archive: &CompleteOriginalRestorationSource,
+        runtime: &crate::node_contract::ConformanceRuntime,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &crate::node_contract::ActivationRecord,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.authenticate_source(archive)?;
+        runtime.authenticate_original_restoration_target_data(archive, plan, activation)?;
+        let bytes = self.source.capture_owned_storage()?;
+        if bytes > maximum { return Err(RuntimeError::ResourceLimit); }
+        Ok(bytes)
+    }
+}
+

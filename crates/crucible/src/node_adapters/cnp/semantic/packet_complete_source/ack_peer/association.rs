@@ -963,6 +963,9 @@ impl PacketCompleteSemanticSource {
             return Err(refused("complete owning mechanism selection absent"));
         }
         let snapshot_class = self.selected_complete_native_snapshot_class()?;
+        if snapshot_class == super::super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15 {
+            self.authenticate_original_capture_invocation_data().map_err(unknown)?;
+        }
         let schema = snapshot_class.schema()?;
         let installation = self.installation();
         if !installation
@@ -1019,9 +1022,7 @@ impl PacketCompleteSemanticSource {
             .as_ref()
             .ok_or_else(|| refused("complete original private birth absent"))?;
         birth.authenticate_original()?;
-        if snapshot_class
-            == super::super::archive_owner::CompleteNativeSnapshotClass::StartupCapture14
-        {
+        if snapshot_class.has_allocation() {
             birth.authenticate_selected_native_startup(self)?;
         }
         self.original_extension_registry_storage_data(512 * 1024 * 1024)?;
@@ -1179,6 +1180,11 @@ impl PacketCompleteSemanticSource {
         };
 
         self.ensure_origin()?;
+        // The explicit installed edition is DATA only; live original purpose
+        // and full cold class ownership are authenticated by their callers.
+        if self.is_original_invocation_snapshot_declaration_data().map_err(unknown)? {
+            return Ok(CompleteNativeSnapshotClass::InvocationCapture15);
+        }
         match self.selected_capture_allocation_selection()? {
             None => Ok(CompleteNativeSnapshotClass::Legacy11),
             Some(PacketNative5CaptureAllocationSelection::OriginalObserve12) => {
@@ -1201,3 +1207,6 @@ impl PacketCompleteSemanticSource {
         }
     }
 }
+
+#[path = "association/restoration_construction.rs"]
+mod restoration_construction;

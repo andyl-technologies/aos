@@ -26,6 +26,10 @@ pub(crate) use prepare_measurement::{
     measure_executable as measure_original_prepare_executable_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
+pub(super) use prepare_measurement::{
+    measure_controller_executable as measure_original_restore_controller_executable,
+    measure_current_executable as measure_original_restore_current_executable,
+};
 #[path = "prepare_target.rs"]
 mod prepare_target;
 pub(super) use prepare_target::authenticate_target;

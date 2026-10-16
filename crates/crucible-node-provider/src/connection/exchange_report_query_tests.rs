@@ -198,10 +198,27 @@ fn returned_observe_box_backing_fits_the_carried_typed_query_row() -> TestResult
     let carried =
         OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)?;
     assert!(observed.extensions.is_empty());
-    // The live generic observer includes this possible root even for the
-    // freshly decoded empty map. The selected carry must dominate that SAME
-    // metric; the old typed/hash-only row does not cover it on this fixture.
-    assert!(actual > receive.typed_query_requested_bytes);
+    // Observe the two backing populations independently. The typed receive
+    // row has conservative header/string-growth allowances, so it may already
+    // dominate this fixture's backing. Root attribution must not depend on
+    // that incidental headroom.
+    let mut hash_fields = crate::retained_metadata::MetadataObserver::new();
+    hash_fields.observe(&observed.binding_hash)?;
+    let hash_backing =
+        crate::retained_metadata::requested_metadata_backing_storage_data(&hash_fields.finish())?;
+    let mut extension_fields = crate::retained_metadata::MetadataObserver::new();
+    extension_fields.observe(&observed.extensions)?;
+    let extension_facts = extension_fields.finish();
+    let empty_root =
+        crate::retained_metadata::requested_metadata_backing_storage_data(&extension_facts)?;
+
+    assert_eq!(extension_facts.tree_containers, 1);
+    assert_eq!(extension_facts.tree_entries, 0);
+    assert!(empty_root > 0);
+    assert_eq!(children, hash_backing.checked_add(empty_root).ok_or_else(query_error)?);
+    // Omitting the root from the carry fails this equality even when the
+    // receive row's unrelated conservative terms cover the actual total.
+    assert_eq!(carried, receive.typed_query_requested_bytes.checked_add(empty_root).ok_or_else(query_error)?);
     assert!(actual <= carried);
     assert!(receive.requested_bytes()? > carried);
     assert_eq!(

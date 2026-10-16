@@ -174,82 +174,9 @@ impl<S: ProviderStream> Connection<S> {
             .observe_owned11_metadata(&mut observer)?;
         let prior_roots = requested_facts(&observer.finish())?;
 
-        // Final Blob body has exactly5/3/3 object containers and9/4/2 entries
-        // for Begin/Chunk/Finish. Envelope extensions are included. A staged
-        // correlation owns a second deep body copy and its own Id map key.
-        let containers = sum(&[5, mul(chunks, 3)?, 3])?;
-        let entries = sum(&[9, mul(chunks, 4)?, 2])?;
-        let body_tree = tree_storage(
-            mul(2, containers)?,
-            mul(2, entries)?,
-            size_of::<String>() + size_of::<serde_json::Value>(),
-            align_of::<String>().max(align_of::<serde_json::Value>()),
-        )?;
-        let staging_tree = tree_storage(
-            1,
-            frames,
-            size_of::<Id>() + size_of::<Envelope>(),
-            align_of::<Id>().max(align_of::<Envelope>()),
-        )?;
-        // These are predictive UTF-8 bounds, not reported actual capacities.
-        // Canonical input bytes bound the sum of cloned key/value String lengths.
-        // Success ACK bodies are closed; one malformed raw ACK may additionally
-        // own an arbitrary negotiated JSON object and is charged separately.
-        let frame_strings = mul(mul(frames, maximum_frame)?, 4)?;
-        let vectors = sum(&[
-            mul(add(frames, 1)?, size_of::<Envelope>())?,
-            mul(frames, size_of::<Vec<u8>>())?,
-            mul(frames, size_of::<Option<usize>>())?,
-            mul(frames, size_of::<ReceivedFrame>())?,
-            mul(frames, size_of::<ResponseBody>())?,
-            // Canonical Vec growth and one simultaneous escaped String scratch.
-            mul(mul(frames, maximum_frame.max(128))?, 4)?,
-        ])?;
-        let ack_trees = tree_storage(
-            mul(frames, 8)?,
-            mul(frames, 32)?,
-            size_of::<String>() + size_of::<serde_json::Value>(),
-            align_of::<String>().max(align_of::<serde_json::Value>()),
-        )?;
-        // The retained exact Commit and at most one malformed ACK/parse scratch
-        // can use the negotiated JSON byte budget. Each node consumes at least
-        // one wire byte; this broad inverse bound is deliberately not a claim
-        // that a wire ceiling equals an observed heap capacity.
-        let open_json = tree_storage(
-            mul(maximum_frame, 2)?,
-            mul(maximum_frame, 2)?,
-            size_of::<String>() + size_of::<serde_json::Value>(),
-            align_of::<String>().max(align_of::<serde_json::Value>()),
-        )?;
-        // Canonical writer's actual temporary BTreeMap<Vec<u16>,(&str,&Value)>
-        // visits at most the13 envelope keys plus9 body/content/hash entries.
-        let sorted = tree_storage(
-            6,
-            22,
-            size_of::<Vec<u16>>() + size_of::<(&str, &serde_json::Value)>(),
-            align_of::<Vec<u16>>().max(align_of::<(&str, &serde_json::Value)>()),
-        )?;
-        let scratch = sum(&[
-            open_json,
-            sorted,
-            mul(maximum_frame.max(128), 8)?,
-            mul(22, mul(4, maximum_closed_key_bytes())?)?,
-            size_of::<crate::session::OriginalRestoreProofRegistration>(),
-            size_of::<PreparedOriginalRestoreHeldProof<DeadlineStream>>(),
-            size_of::<Self>(),
-        ])?;
-        let requested_bytes = sum(&[
-            prior_roots,
-            frame_strings,
-            vectors,
-            body_tree,
-            staging_tree,
-            ack_trees,
-            scratch,
-        ])?;
-        if requested_bytes > 512 * 1024 * 1024 {
-            return Err(credit());
-        }
+        let requested_bytes = held_proof_geometry(
+            maximum_frame, chunk, prior_roots, size_of::<Self>(), held,
+        )?.1;
         Ok(OriginalRestoreHeldProofAllocationQuote {
             actor: Rc::clone(&self.protocol_owner),
             codec: Rc::clone(codec),
@@ -328,4 +255,94 @@ fn maximum_closed_key_bytes() -> usize {
     .map(str::len)
     .max()
     .unwrap_or(0)
+}
+
+/// Projects the exact closed proof banks without fabricating a frame owner.
+pub(super) fn held_proof_geometry(
+    maximum_frame: usize, chunk: usize, prior_roots: usize,
+    connection_header_bytes: usize, maximum_held_evidence: usize,
+) -> Result<(usize, usize), ProviderError> {
+    if maximum_frame == 0 || maximum_frame > 65_536 || chunk == 0 || chunk > 4096 || maximum_held_evidence == 0 {
+        return Err(credit());
+    }
+    let chunks = maximum_held_evidence.div_ceil(chunk);
+    let frames = add(chunks, 2)?;
+    // Final Blob body has exactly5/3/3 object containers and9/4/2 entries
+    // for Begin/Chunk/Finish. Envelope extensions are included. A staged
+    // correlation owns a second deep body copy and its own Id map key.
+    let containers = sum(&[5, mul(chunks, 3)?, 3])?;
+    let entries = sum(&[9, mul(chunks, 4)?, 2])?;
+    let body_tree = tree_storage(
+        mul(2, containers)?,
+        mul(2, entries)?,
+        size_of::<String>() + size_of::<serde_json::Value>(),
+        align_of::<String>().max(align_of::<serde_json::Value>()),
+    )?;
+    let staging_tree = tree_storage(
+        1,
+        frames,
+        size_of::<Id>() + size_of::<Envelope>(),
+        align_of::<Id>().max(align_of::<Envelope>()),
+    )?;
+    // These are predictive UTF-8 bounds, not reported actual capacities.
+    // Canonical input bytes bound the sum of cloned key/value String lengths.
+    // Success ACK bodies are closed; one malformed raw ACK may additionally
+    // own an arbitrary negotiated JSON object and is charged separately.
+    let frame_strings = mul(mul(frames, maximum_frame)?, 4)?;
+    let vectors = sum(&[
+        mul(add(frames, 1)?, size_of::<Envelope>())?,
+        mul(frames, size_of::<Vec<u8>>())?,
+        mul(frames, size_of::<Option<usize>>())?,
+        mul(frames, size_of::<ReceivedFrame>())?,
+        mul(frames, size_of::<ResponseBody>())?,
+        // Canonical Vec growth and one simultaneous escaped String scratch.
+        mul(mul(frames, maximum_frame.max(128))?, 4)?,
+    ])?;
+    let ack_trees = tree_storage(
+        mul(frames, 8)?,
+        mul(frames, 32)?,
+        size_of::<String>() + size_of::<serde_json::Value>(),
+        align_of::<String>().max(align_of::<serde_json::Value>()),
+    )?;
+    // The retained exact Commit and at most one malformed ACK/parse scratch
+    // can use the negotiated JSON byte budget. Each node consumes at least
+    // one wire byte; this broad inverse bound is deliberately not a claim
+    // that a wire ceiling equals an observed heap capacity.
+    let open_json = tree_storage(
+        mul(maximum_frame, 2)?,
+        mul(maximum_frame, 2)?,
+        size_of::<String>() + size_of::<serde_json::Value>(),
+        align_of::<String>().max(align_of::<serde_json::Value>()),
+    )?;
+    // Canonical writer's actual temporary BTreeMap<Vec<u16>,(&str,&Value)>
+    // visits at most the13 envelope keys plus9 body/content/hash entries.
+    let sorted = tree_storage(
+        6,
+        22,
+        size_of::<Vec<u16>>() + size_of::<(&str, &serde_json::Value)>(),
+        align_of::<Vec<u16>>().max(align_of::<(&str, &serde_json::Value)>()),
+    )?;
+    let scratch = sum(&[
+        open_json,
+        sorted,
+        mul(maximum_frame.max(128), 8)?,
+        mul(22, mul(4, maximum_closed_key_bytes())?)?,
+        size_of::<crate::session::OriginalRestoreProofRegistration>(),
+        size_of::<PreparedOriginalRestoreHeldProof<DeadlineStream>>(),
+        connection_header_bytes,
+    ])?;
+    let requested_bytes = sum(&[
+        prior_roots,
+        frame_strings,
+        vectors,
+        body_tree,
+        staging_tree,
+        ack_trees,
+        scratch,
+    ])?;
+    if requested_bytes > 512 * 1024 * 1024 {
+        return Err(credit());
+    }
+
+    Ok((frames, requested_bytes))
 }

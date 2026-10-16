@@ -1,16 +1,16 @@
 //! Copies the same original Report into its pre-Child Source return bank.
 //!
-//! The outer13 marker supplies only a full reference. The actual original SDK
+//! An explicit selected outer marker supplies only a full reference. The original SDK
 //! content loan authenticates the same retained proof bytes before copying;
-//! full native14 cold validation separately joins its typed and raw owner.
+//! full selected cold validation separately joins its typed and raw owner.
 
 use super::*;
-use crucible_node_provider::reference_packet::service::native_snapshot::PacketNativeOwned13SnapshotPlan;
+use super::super::archive_owner::{CompleteSnapshotPlan, CompleteNativeSnapshotClass};
 
 impl OriginalCompleteCaptureExecution {
     pub(super) fn retain_original_allocation_report(
         &mut self,
-        plan: &PacketNativeOwned13SnapshotPlan<'_>,
+        plan: &CompleteSnapshotPlan<'_>,
         scope: &CnpSemanticRealizationScope<'_>,
         maximum: usize,
     ) -> Result<(), OperationFailure> {
@@ -21,8 +21,10 @@ impl OriginalCompleteCaptureExecution {
         {
             return Err(refused("original Report return bank is absent or spent"));
         }
+        let reference_bytes = plan.allocation_reference_bytes()
+            .ok_or_else(|| refused("original Report marker absent"))?;
         let decode = NodeRuntime::capture_selected_json_decode_storage(
-            plan.allocation_reference_bytes(),
+            reference_bytes,
             size_of::<ContentRef>(),
             NodeRuntime::capture_map_node_storage::<String, serde_json::Value>(),
             maximum,
@@ -33,7 +35,7 @@ impl OriginalCompleteCaptureExecution {
             .as_ref()
             .ok_or_else(|| refused("original Report phase has no pre-effect dependency plan"))?
             .maximum_lookup_scratch_data();
-        let phase = allocation_reference_phase_storage_data(maximum)?;
+        let phase = allocation_reference_phase_storage_for_class_data(plan.snapshot_class(), maximum)?;
         if decode > phase || phase > admitted {
             return Err(refused(
                 "original Report decoder exceeds its pre-effect phase credit",
@@ -41,7 +43,7 @@ impl OriginalCompleteCaptureExecution {
         }
         retained_values::sum([self.retained_storage(maximum)?, phase], maximum)?;
         let reference: ContentRef =
-            serde_json::from_slice(plan.allocation_reference_bytes()).map_err(unknown)?;
+            serde_json::from_slice(reference_bytes).map_err(unknown)?;
         // Install both owners before the next fallible SDK loan or hash check.
         self.allocation = Some(InputPayload {
             reference,
@@ -55,7 +57,7 @@ impl OriginalCompleteCaptureExecution {
             .controller
             .original_capture_allocation_body_data(&report.reference)
             .map_err(unknown)?;
-        plan.authenticate_allocation_bytes(body).map_err(unknown)?;
+        plan.authenticate_allocation_bytes(body)?;
         if body.len() > allocation_report_capacity() || body.len() > report.bytes.capacity() {
             return Err(refused("original Report exceeds its pre-Child bank"));
         }
@@ -85,10 +87,17 @@ struct AllocationHashProjection<'a> {
     domain: &'static str,
 }
 
+#[cfg(test)]
 pub(super) fn allocation_reference_phase_storage_data(
     maximum: usize,
 ) -> Result<usize, OperationFailure> {
-    use super::super::archive_owner::CompleteNativeSnapshotClass;
+    allocation_reference_phase_storage_for_class_data(CompleteNativeSnapshotClass::StartupCapture14, maximum)
+}
+
+pub(super) fn allocation_reference_phase_storage_for_class_data(
+    class: CompleteNativeSnapshotClass,
+    maximum: usize,
+) -> Result<usize, OperationFailure> {
     let projection = AllocationReferenceProjection {
         hash: AllocationHashProjection {
             algorithm: "blake3-256", digest: "0000000000000000000000000000000000000000000000000000000000000000",
@@ -105,7 +114,7 @@ pub(super) fn allocation_reference_phase_storage_data(
             size_of::<blake3::Hasher>(),
             size_of::<blake3::Hash>(),
             super::super::archive_owner::snapshot_parser_known_storage_for_class(
-                CompleteNativeSnapshotClass::StartupCapture14,
+                class,
                 maximum,
             )?,
         ],
@@ -136,6 +145,30 @@ mod tests {
         assert!(actual <= bound);
         assert_eq!(allocation_reference_phase_storage_data(bound)?, bound);
         assert!(allocation_reference_phase_storage_data(bound - 1).is_err());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod invocation_phase_tests {
+    use super::*;
+
+    #[test]
+    fn invocation_report_reference_decode_fits_its_selected_parser_phase_at_exact_limit()
+    -> Result<(), OperationFailure> {
+        let body = vec![b'r';allocation_report_capacity()];
+        let reference = canonical::content_ref(&body,
+            crucible_node_provider::reference_packet::service::capture_allocation::PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA).map_err(unknown)?;
+        let bytes = canonical::canonical_json(&serde_json::to_value(&reference).map_err(unknown)?).map_err(unknown)?;
+        let actual_decode = NodeRuntime::capture_selected_json_decode_storage(&bytes,size_of::<ContentRef>(),
+            NodeRuntime::capture_map_node_storage::<String,serde_json::Value>(),usize::MAX).map_err(unknown)?;
+        let class = CompleteNativeSnapshotClass::InvocationCapture15;
+        let bound = allocation_reference_phase_storage_for_class_data(class,usize::MAX)?;
+
+        assert!(actual_decode <= bound);
+        assert_eq!(allocation_reference_phase_storage_for_class_data(class,bound)?,bound);
+        assert!(allocation_reference_phase_storage_for_class_data(class,bound-1).is_err());
+        assert_eq!(reference.length.get(),u64::try_from(allocation_report_capacity()).map_err(unknown)?);
         Ok(())
     }
 }

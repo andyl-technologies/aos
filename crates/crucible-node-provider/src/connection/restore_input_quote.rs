@@ -15,6 +15,12 @@ use crucible_node_contract::{ContentRef, ExtensionSelection};
 use serde::Serialize;
 use std::mem::{align_of, size_of};
 
+#[path = "restore_input_quote/prospective.rs"]
+mod prospective;
+pub use prospective::{OriginalNativeRestoreInputConstructionData,
+    original_native_restore_input_construction_counter_scratch_data,
+    original_native_restore_input_construction_storage_data};
+
 const MAXIMUM_SELECTION_BYTES: usize = 512 * 1024 * 1024;
 
 /// Reports bounded requested storage, without issuing an input-bank lease.
@@ -223,121 +229,11 @@ impl<S: ProviderStream> Connection<S> {
         let facts = observer.finish();
         let allocation = &request.allocation;
         let input_lengths = input_lengths(request)?;
-        let raw_input_bytes = input_lengths
-            .iter()
-            .try_fold(0usize, |n, length| add(n, *length))?;
-        if input_lengths[0] > selected(allocation.maximum_input_bytes.get())? {
-            return Err(credit());
-        }
-        let rows = selected(allocation.maximum_metadata_rows.get())?;
-        let nodes = selected(allocation.maximum_nodes.get())?;
-        let depth = selected(allocation.maximum_depth.get())?;
-        if rows > 131_072 || depth > 64 {
-            return Err(credit());
-        }
-        // Validate every signed field even if an empty category needs no bank.
-        for value in [
-            allocation.maximum_known_requested_bytes.get(),
-            allocation.maximum_owned_backing_bytes.get(),
-            allocation.maximum_tree_entries.get(),
-            allocation.maximum_literal_backing_bytes.get(),
-            allocation.maximum_content_transfers.get(),
-            allocation.maximum_content_objects.get(),
-            allocation.maximum_content_groups.get(),
-            allocation.maximum_content_bytes.get(),
-            allocation.maximum_content_metadata_bytes.get(),
-            allocation.maximum_model_bytes.get(),
-        ] {
-            selected(value)?;
-        }
-        let (native_entry, historical_payload, payload_alignment, final_owner) =
-            outer::original_restore_decoder_layouts();
-        let summary = multiply(rows, size_of::<HistoricalAliasSummary>())?;
-        let native_groups = multiply(rows, native_entry)?;
-        let selected_groups = multiply(
-            rows,
-            size_of::<Option<std::sync::Arc<[ExtensionSelection]>>>(),
-        )?;
-        let selected_staging = multiply(rows, 2 * size_of::<ExtensionSelection>())?;
-        let content_rows = add(
-            selected(allocation.maximum_content_transfers.get())?,
-            selected(allocation.maximum_content_objects.get())?,
-        )?;
-        let content_group_count = selected(allocation.maximum_content_groups.get())?;
-        if content_rows > 8192 || content_group_count > 8192 {
-            return Err(credit());
-        }
-        let content_groups = multiply(content_rows, 2 * size_of::<Option<Rc<Vec<u8>>>>())?;
-        let reconstruction_lookup_bytes = sum(&[
-            summary,
-            native_groups,
-            selected_groups,
-            selected_staging,
-            content_groups,
-        ])?;
-        // Literal/content bounds may overlap recorded Vec rows. Charging both
-        // is conservative; an archive cannot claim dedup credit from labels.
-        let historical_backing_bytes = sum(&[
-            selected(allocation.maximum_owned_backing_bytes.get())?,
-            selected(allocation.maximum_literal_backing_bytes.get())?,
-            selected(allocation.maximum_content_bytes.get())?,
-            selected(allocation.maximum_content_metadata_bytes.get())?,
-            multiply(rows, historical_payload)?,
-            // Native mapping preparation retains its own canonical Vec and a
-            // host projection within it while the original input is retained.
-            input_lengths[5],
-            input_lengths[0],
-            512, // Sealed native full ContentRef backing, distinct from its source DTO.
-        ])?;
-        let (tree_value, tree_alignment) = tree_layout(facts);
-        let trees = tree_storage(
-            rows,
-            selected(allocation.maximum_tree_entries.get())?,
-            tree_value,
-            tree_alignment,
-        )?;
-        let headers = shared_header_storage(
-            add(rows, content_group_count)?,
-            payload_alignment.max(facts.maximum_shared_value_alignment),
-        )?;
-        let requested_geometry_bytes = add(trees, headers)?;
-        let declared_scratch_and_owner_bytes = sum(&[
-            crate::protocol_snapshot::owned11::json_value::original_reconstruction_stack_bytes(),
-            // Native blob correspondence keeps this fixed identity bitset.
-            2048 * size_of::<u64>(),
-            5462, // Selected BlobChunk typed/raw correspondence stack buffer.
-            final_owner,
-            size_of::<
-                std::cell::RefCell<crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping>,
-            >(),
-            2 * size_of::<usize>()
-                + align_of::<
-                    std::cell::RefCell<
-                        crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping,
-                    >,
-                >()
-                - 1,
-            size_of::<Self>(),
-            size_of::<NativeRestoreInputAllocationQuote>(),
-            // Both original Prepare/Commit responses can coexist. Include
-            // canonical banks, final response owners and bounded DTO/Value
-            // transients used by the actual selected response constructor.
-            multiply(
-                2,
-                original_restore_response_requested_bound(selected(
-                    self.authority.limits().frame_bytes.get(),
-                )?)?,
-            )?,
-        ])?;
-        // Each baseline nonempty BlobChunk consumes a node-budgeted descriptor.
-        // The actual selected path enforces this global bound before appending.
-        let custody_layout_bytes = add(
-            multiply(
-                nodes,
-                size_of::<super::restore_inputs::OriginalRestoreInputChunk>(),
-            )?,
-            super::restore_inputs::original_input_custody_layout(),
-        )?;
+        let InputGeometry {
+            raw_input_bytes, historical_backing_bytes, reconstruction_lookup_bytes,
+            requested_geometry_bytes, declared_scratch_and_owner_bytes, custody_layout_bytes,
+        } = input_geometry(allocation, input_lengths, facts,
+            selected(self.authority.limits().frame_bytes.get())?, size_of::<Self>())?;
         let held_proof = self.quote_original_restore_held_proof_allocation()?;
         let sdk_requested_bytes = sum(&[
             raw_input_bytes,
@@ -351,6 +247,8 @@ impl<S: ProviderStream> Connection<S> {
         if sdk_requested_bytes > selected(allocation.maximum_known_requested_bytes.get())? {
             return Err(credit());
         }
+        let rows = selected(allocation.maximum_metadata_rows.get())?;
+        let nodes = selected(allocation.maximum_nodes.get())?;
         Ok(NativeRestoreInputAllocationQuote {
             actor: Rc::clone(&self.protocol_owner),
             codec: Rc::clone(codec),
@@ -568,4 +466,140 @@ fn original_restore_response_requested_bound(maximum_frame: usize) -> Result<usi
         maximum_frame,
         super::restore_response::original_restore_response_owner_layout(),
     ])
+}
+
+/// Borrows the same allocation geometry used by the actual custody constructor.
+struct InputGeometry {
+    raw_input_bytes: usize,
+    historical_backing_bytes: usize,
+    reconstruction_lookup_bytes: usize,
+    requested_geometry_bytes: usize,
+    declared_scratch_and_owner_bytes: usize,
+    custody_layout_bytes: usize,
+}
+
+fn input_geometry(
+    allocation: &crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreInputAllocation,
+    input_lengths: [usize; 6], facts: RetainedProtocolMetadataFacts,
+    maximum_frame: usize, connection_header_bytes: usize,
+) -> Result<InputGeometry, ProviderError> {
+    let raw_input_bytes = input_lengths
+        .iter()
+        .try_fold(0usize, |n, length| add(n, *length))?;
+    if input_lengths[0] > selected(allocation.maximum_input_bytes.get())? {
+        return Err(credit());
+    }
+    let rows = selected(allocation.maximum_metadata_rows.get())?;
+    let nodes = selected(allocation.maximum_nodes.get())?;
+    let depth = selected(allocation.maximum_depth.get())?;
+    if rows > 131_072 || depth > 64 {
+        return Err(credit());
+    }
+    // Validate every signed field even if an empty category needs no bank.
+    for value in [
+        allocation.maximum_known_requested_bytes.get(),
+        allocation.maximum_owned_backing_bytes.get(),
+        allocation.maximum_tree_entries.get(),
+        allocation.maximum_literal_backing_bytes.get(),
+        allocation.maximum_content_transfers.get(),
+        allocation.maximum_content_objects.get(),
+        allocation.maximum_content_groups.get(),
+        allocation.maximum_content_bytes.get(),
+        allocation.maximum_content_metadata_bytes.get(),
+        allocation.maximum_model_bytes.get(),
+    ] {
+        selected(value)?;
+    }
+    let (native_entry, historical_payload, payload_alignment, final_owner) =
+        outer::original_restore_decoder_layouts();
+    let summary = multiply(rows, size_of::<HistoricalAliasSummary>())?;
+    let native_groups = multiply(rows, native_entry)?;
+    let selected_groups = multiply(
+        rows,
+        size_of::<Option<std::sync::Arc<[ExtensionSelection]>>>(),
+    )?;
+    let selected_staging = multiply(rows, 2 * size_of::<ExtensionSelection>())?;
+    let content_rows = add(
+        selected(allocation.maximum_content_transfers.get())?,
+        selected(allocation.maximum_content_objects.get())?,
+    )?;
+    let content_group_count = selected(allocation.maximum_content_groups.get())?;
+    if content_rows > 8192 || content_group_count > 8192 {
+        return Err(credit());
+    }
+    let content_groups = multiply(content_rows, 2 * size_of::<Option<Rc<Vec<u8>>>>())?;
+    let reconstruction_lookup_bytes = sum(&[
+        summary,
+        native_groups,
+        selected_groups,
+        selected_staging,
+        content_groups,
+    ])?;
+    // Literal/content bounds may overlap recorded Vec rows. Charging both
+    // is conservative; an archive cannot claim dedup credit from labels.
+    let historical_backing_bytes = sum(&[
+        selected(allocation.maximum_owned_backing_bytes.get())?,
+        selected(allocation.maximum_literal_backing_bytes.get())?,
+        selected(allocation.maximum_content_bytes.get())?,
+        selected(allocation.maximum_content_metadata_bytes.get())?,
+        multiply(rows, historical_payload)?,
+        // Native mapping preparation retains its own canonical Vec and a
+        // host projection within it while the original input is retained.
+        input_lengths[5],
+        input_lengths[0],
+        512, // Sealed native full ContentRef backing, distinct from its source DTO.
+    ])?;
+    let (tree_value, tree_alignment) = tree_layout(facts);
+    let trees = tree_storage(
+        rows,
+        selected(allocation.maximum_tree_entries.get())?,
+        tree_value,
+        tree_alignment,
+    )?;
+    let headers = shared_header_storage(
+        add(rows, content_group_count)?,
+        payload_alignment.max(facts.maximum_shared_value_alignment),
+    )?;
+    let requested_geometry_bytes = add(trees, headers)?;
+    let declared_scratch_and_owner_bytes = sum(&[
+        crate::protocol_snapshot::owned11::json_value::original_reconstruction_stack_bytes(),
+        // Native blob correspondence keeps this fixed identity bitset.
+        2048 * size_of::<u64>(),
+        5462, // Selected BlobChunk typed/raw correspondence stack buffer.
+        final_owner,
+        size_of::<
+            std::cell::RefCell<crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping>,
+        >(),
+        2 * size_of::<usize>()
+            + align_of::<
+                std::cell::RefCell<
+                    crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping,
+                >,
+            >()
+            - 1,
+        connection_header_bytes,
+        size_of::<NativeRestoreInputAllocationQuote>(),
+        // Both original Prepare/Commit responses can coexist. Include
+        // canonical banks, final response owners and bounded DTO/Value
+        // transients used by the actual selected response constructor.
+        multiply(
+            2,
+            original_restore_response_requested_bound(selected(
+                maximum_frame as u64,
+            )?)?,
+        )?,
+    ])?;
+    // Each baseline nonempty BlobChunk consumes a node-budgeted descriptor.
+    // The actual selected path enforces this global bound before appending.
+    let custody_layout_bytes = add(
+        multiply(
+            nodes,
+            size_of::<super::restore_inputs::OriginalRestoreInputChunk>(),
+        )?,
+        super::restore_inputs::original_input_custody_layout(),
+    )?;
+
+    Ok(InputGeometry {raw_input_bytes, historical_backing_bytes,
+        reconstruction_lookup_bytes, requested_geometry_bytes,
+        declared_scratch_and_owner_bytes, custody_layout_bytes})
 }

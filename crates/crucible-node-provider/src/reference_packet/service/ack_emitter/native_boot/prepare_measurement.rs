@@ -33,14 +33,14 @@ pub(crate) const fn original_prepare_executable_measurement_counter_scratch_data
 }
 
 /// Remeasures the actual running image through the kernel's executable link.
-pub(super) fn measure_current_executable() -> Result<ContentRef, ProviderError> {
+pub(in crate::reference_packet::service::ack_emitter::native_boot) fn measure_current_executable() -> Result<ContentRef, ProviderError> {
     // This selected native service already requires Linux /proc for the host
     // executable. Opening this link measures the running image directly and
     // avoids allocating an OS-returned pathname before its construction grant.
     measure_executable(Path::new("/proc/self/exe"))
 }
 
-pub(super) fn measure_controller_executable(pid: U64) -> Result<ContentRef, ProviderError> {
+pub(in crate::reference_packet::service::ack_emitter::native_boot) fn measure_controller_executable(pid: U64) -> Result<ContentRef, ProviderError> {
     let path = ControllerExecutablePath::new(pid);
     measure_executable(path.as_path()?)
 }

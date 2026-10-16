@@ -27,7 +27,7 @@ use crucible_node_provider::{
 };
 
 const BACKEND_BYTES: usize = 512 * 1024;
-const MAPPING_BYTES: usize = 64 * 1024;
+pub(super) const MAPPING_BYTES: usize = 64 * 1024;
 const JOURNAL_BYTES: usize = 64 * 1024;
 const RESTORE_FIXED_BANKS: [usize; 5] = [BACKEND_BYTES, MAPPING_BYTES, 8192, 2048, 256];
 

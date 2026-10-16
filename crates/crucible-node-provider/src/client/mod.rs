@@ -19,8 +19,9 @@ pub use content::ClientContent;
 pub use controller::{
     CnpController, CnpRegistrarRead, ControllerRoute, InstalledArchivedProtocolState,
     OriginalCanonicalBlobAckEmitter, OriginalCanonicalRestoreInputEmitter,
-    OriginalFreshRestorePrepareBindingStorageData, OriginalFreshRestoreQuery,
-    OriginalFreshRestoreQueryStorageData,
+    OriginalCompleteRestoreInputUpload, OriginalCompleteRestoreInputUploadProspectiveStorageData, OriginalCompleteRestoreUploadBeforeMappingData,
+    OriginalCompleteRestoreInputUploadStorageData, OriginalFreshRestorePrepareBindingStorageData,
+    OriginalFreshRestoreQuery, OriginalFreshRestoreQueryStorageData,
 };
 pub use controller::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
 pub use controller::{

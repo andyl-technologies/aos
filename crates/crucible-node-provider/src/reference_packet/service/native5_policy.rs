@@ -883,6 +883,10 @@ impl BodySchemaVerifier for Native5Policy {
 }
 
 impl crate::reference_packet::endpoint::PacketEndpointPolicy for Native5Policy {
+    fn authenticate_invocation_capture_snapshot_definition(&self) -> Result<(), ProviderError> {
+        Native5Policy::authenticate_invocation_capture_snapshot_definition(self)
+    }
+
     fn authenticate_startup_capture_snapshot_definition(&self) -> Result<(), ProviderError> {
         Native5Policy::authenticate_startup_capture_snapshot_definition(self)
     }
@@ -1076,6 +1080,46 @@ impl Native5Policy {
             if !found {
                 return Err(ProviderError::Correlation(
                     "startup Capture full schema absent",
+                ));
+            }
+            Ok(())
+        };
+        select(&self.selection.provider.implementation.formats)?;
+        select(
+            &self.selection.realization.bindings[0]
+                .compatibility
+                .implementation
+                .formats,
+        )
+    }
+
+    pub(crate) fn authenticate_invocation_capture_snapshot_definition(
+        &self,
+    ) -> Result<(), ProviderError> {
+        use super::native_snapshot::authenticate_native_owned14_snapshot_schema_data;
+        if self.capture_allocation_selection != Some(super::capture_allocation::PacketNative5CaptureAllocationSelection::OriginalObserve12)
+            || self.fresh_restore_allocation_selection() != Some(super::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
+            || !matches!(self.capture_profile, super::PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+            || self.selection.realization.bindings.len() != 1
+        {
+            return Err(ProviderError::Correlation("native invocation Capture schema selection differs"));
+        }
+        let select = |formats: &[SchemaRef]| -> Result<(), ProviderError> {
+            let mut found = false;
+            for schema in formats {
+                if schema.id.as_str() == "source-owned.packet-native-continuation/14" {
+                    if found {
+                        return Err(ProviderError::Correlation(
+                            "duplicate invocation Capture schema",
+                        ));
+                    }
+                    authenticate_native_owned14_snapshot_schema_data(schema)?;
+                    found = true;
+                }
+            }
+            if !found {
+                return Err(ProviderError::Correlation(
+                    "invocation Capture full schema absent",
                 ));
             }
             Ok(())

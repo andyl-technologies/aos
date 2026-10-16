@@ -54,6 +54,15 @@ impl CompleteOriginalArchiveValidation<'_> {
             .capture_owned_storage()
             .map_err(super::super::schema)?;
         [
+            // These actual explicit fixed views remain live throughout the
+            // same admitted cold callback; the rows own no child heap/FD.
+            std::mem::size_of::<Self>(),
+            std::mem::size_of::<std::cell::RefCell<[Option<super::CompleteOriginalNativeRestorationData>; 4]>>(),
+            std::mem::size_of::<std::cell::RefMut<'_, [Option<super::CompleteOriginalNativeRestorationData>; 4]>>(),
+            std::mem::size_of::<super::CompleteOriginalNativeRestorationData>(),
+            std::mem::size_of::<super::ValidatedCompleteNativeRestorationData<'_>>(),
+            crucible_node_provider::reference_packet::service::complete_restore::transfer::complete_restore_selected_owner_construction_counter_scratch_data(),
+            super::CompleteOriginalNativeRestorationData::reference_counter_scratch_data(),
             runtime,
             scheduling,
             administrative,

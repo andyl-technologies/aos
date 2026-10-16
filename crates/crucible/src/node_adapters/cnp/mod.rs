@@ -109,3 +109,5 @@ pub(crate) use semantic::{
 pub(crate) use semantic::{
     OriginalInitialLifecycleDiagnostics, original_construction_failure_reason,
 };
+
+pub(crate) use semantic::OriginalRestorationColdGroup;

@@ -145,8 +145,7 @@ impl PacketCompleteSemanticSource {
                 )
                 .map_err(unknown)?;
             execution.retain_original_allocation_report(
-                plan.allocation()
-                    .ok_or_else(|| refused("original Report marker absent"))?,
+                &plan,
                 &realized,
                 limits.maximum_total_record_bytes,
             )?;

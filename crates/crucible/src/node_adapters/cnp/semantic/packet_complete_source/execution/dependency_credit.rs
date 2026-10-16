@@ -99,8 +99,9 @@ fn generated_reference_bytes(role: born::OriginalBornRole) -> usize {
         HostExtensionRegistry => registry_capture::HOST_REGISTRY_MEDIA,
         Semantic => "application/vnd.source-owned.packet-semantic-custody.v5+json",
         Ancestry => "application/vnd.source-owned.packet-original-ancestry.v12+json",
-        // The explicit v15/v16 media have the same closed encoded extent.
-        Backend => STARTUP_BACKEND_MEDIA,
+        // The explicit v15/v16/v17 media have the same closed encoded extent.
+        Backend => return generated_hash_bytes()
+            + BACKEND_MEDIA.len().max(STARTUP_BACKEND_MEDIA.len()).max(INVOCATION_BACKEND_MEDIA.len()),
         Journal => "application/vnd.source-owned.packet-native-settled-journal.v12+json",
     };
     generated_hash_bytes() + media.len()
@@ -237,7 +238,8 @@ impl PacketCompleteSemanticSource {
                 maximum,
             )?;
             plan.data.maximum_lookup_scratch = plan.data.maximum_lookup_scratch.max(
-                allocation_report::allocation_reference_phase_storage_data(maximum)?,
+                allocation_report::allocation_reference_phase_storage_for_class_data(
+                    self.selected_complete_native_snapshot_class()?, maximum)?,
             );
         }
         let mut semantic = RowQuote::new(maximum);

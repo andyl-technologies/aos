@@ -23,6 +23,7 @@ pub(crate) struct NativeArchivedMappingInput<'a> {
 }
 
 pub(crate) struct PreparedArchivedNativeProtocolMapping {
+    class: RestorationMappingClass,
     actor: Rc<ProtocolCaptureOwner>,
     authority: ConnectionAuthority,
     codec: Rc<crate::connection::Native5CodecOwner>,
@@ -33,7 +34,60 @@ pub(crate) struct PreparedArchivedNativeProtocolMapping {
 }
 
 impl PreparedArchivedNativeProtocolMapping {
+    /// Names fixed selected mapping decode and constructor views, excluding frames.
+    pub(crate) fn original_selected_construction_counter_scratch_data() -> usize {
+        SealedHistoricalNativeState::original_selected_restoration_mapping_counter_scratch_data()
+            + std::mem::size_of::<NativeArchivedMappingInput<'static>>()
+            + 4 * std::mem::size_of::<Fields<'static>>()
+            + std::mem::size_of::<[&str; 4]>()
+            + 2 * std::mem::size_of::<(&'static str, &'static str)>()
+            + std::mem::size_of::<std::array::IntoIter<&str, 4>>()
+            + std::mem::size_of::<std::ops::Range<usize>>()
+            + std::mem::size_of::<std::array::IntoIter<u8, 32>>()
+            + 4 * std::mem::size_of::<&[u8]>()
+            + std::mem::size_of::<RestorationMappingClass>()
+            + std::mem::size_of::<Result<RestorationMappingClass, ProviderError>>()
+            + std::mem::size_of::<Result<(), ProviderError>>()
+    }
+
     pub(crate) fn prepare_into(
+        completed: &mut Option<Self>,
+        input: NativeArchivedMappingInput<'_>,
+        authority: &ConnectionAuthority,
+        actor: &Rc<ProtocolCaptureOwner>,
+        codec: &Rc<crate::connection::Native5CodecOwner>,
+    ) -> Result<(), ProviderError> {
+        Self::prepare_for_class_into(
+            RestorationMappingClass::Legacy11,
+            completed,
+            input,
+            authority,
+            actor,
+            codec,
+        )
+    }
+
+    /// Retains the selected mapping only from a completed class-checked decoder owner.
+    ///
+    /// The verified Prepare caller supplies its separate native admission token;
+    /// this private data constructor never issues one or weakens the old path.
+    pub(crate) fn prepare_original_selected_into(
+        completed: &mut Option<Self>,
+        input: NativeArchivedMappingInput<'_>,
+        authority: &ConnectionAuthority,
+        actor: &Rc<ProtocolCaptureOwner>,
+        codec: &Rc<crate::connection::Native5CodecOwner>,
+    ) -> Result<(), ProviderError> {
+        let class = input
+            .historical
+            .as_ref()
+            .ok_or_else(invalid)?
+            .original_selected_restoration_mapping_class_data()?;
+        Self::prepare_for_class_into(class, completed, input, authority, actor, codec)
+    }
+
+    fn prepare_for_class_into(
+        class: RestorationMappingClass,
         completed: &mut Option<Self>,
         input: NativeArchivedMappingInput<'_>,
         authority: &ConnectionAuthority,
@@ -56,7 +110,7 @@ impl PreparedArchivedNativeProtocolMapping {
             .authenticate_capture_correspondence()?;
         input.reference.verify(input.normalization)?;
         let mut fields = Fields::array(input.normalization)?;
-        tag(&mut fields, "source-private.archived-protocol-mapping/11")?;
+        tag(&mut fields, class.normalization_format())?;
         next(&mut fields)?; // Full archive reference is independently bound by Source proof.
         let native_reference = next(&mut fields)?;
         let sealed_reference = input
@@ -65,14 +119,7 @@ impl PreparedArchivedNativeProtocolMapping {
             .ok_or_else(invalid)?
             .body_reference();
         owned11::correspondence::content_reference(sealed_reference, native_reference)?;
-        for class in [
-            owned11::outer::COMPLETE_CONTROLLER_FORMAT,
-            owned11::outer::COMPLETE_CONNECTION_FORMAT,
-            owned11::native::outer::COMPLETE_NATIVE_CONNECTION_FORMAT,
-            owned11::native::outer::COMPLETE_NATIVE_SERVICE_FORMAT,
-        ] {
-            tag(&mut fields, class)?;
-        }
+        class.authenticate_protocol_tags(&mut fields)?;
         let raw_authority = next(&mut fields)?;
         let mut host_authority = Fields::array(raw_authority)?;
         tag(
@@ -112,6 +159,7 @@ impl PreparedArchivedNativeProtocolMapping {
         tag(&mut fields, "original-fresh-request-cut-retained")?;
         fields.finish()?;
         *completed = Some(Self {
+            class,
             actor: Rc::clone(actor),
             authority: authority.clone(),
             codec: Rc::clone(codec),
@@ -153,7 +201,7 @@ impl PreparedArchivedNativeProtocolMapping {
 
     pub(crate) fn host_authority_projection(&self) -> Result<&[u8], ProviderError> {
         let mut fields = Fields::array(&self.normalization)?;
-        tag(&mut fields, "source-private.archived-protocol-mapping/11")?;
+        tag(&mut fields, self.class.normalization_format())?;
         for _ in 0..6 {
             next(&mut fields)?;
         }

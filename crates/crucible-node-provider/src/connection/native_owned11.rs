@@ -601,3 +601,44 @@ impl NativeConnectionView<'_> {
         token.observe_unique_capture_metadata(connection, roots, observer)
     }
 }
+
+impl<S: ProviderStream> Connection<S> {
+    pub(crate) fn prepare_original_selected_archived_mapping(
+        &mut self,
+        input: crate::protocol_snapshot::ArchivedProtocolMappingInput<'_>,
+        controller: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+        cut: crate::operational_time::OperationalDeadline,
+    ) -> Result<crate::protocol_snapshot::PreparedArchivedProtocolMapping, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        if self.role != EndpointRole::Controller {
+            return Err(ProviderError::Correlation(
+                "archived mapping requires actual controller",
+            ));
+        }
+        self.protocol_capture_preflight(ProtocolCaptureCut::HostSettled)?;
+        let codec = self
+            .native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "archived mapping sealed codec absent",
+            ))?;
+        if !matches!(
+            self.original_native5_capture_profile()?,
+            crate::reference_packet::service::PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ) {
+            return Err(ProviderError::Correlation(
+                "archived mapping target requires complete owned profile",
+            ));
+        }
+        crate::protocol_snapshot::PreparedArchivedProtocolMapping::prepare_selected(
+            input,
+            crate::protocol_snapshot::ArchivedProtocolMappingTarget {
+                fresh: &self.authority,
+                controller_owner: controller,
+                connection_owner: &self.protocol_owner,
+                codec,
+                cut,
+            },
+        )
+    }
+}

@@ -7,6 +7,58 @@
 use super::*;
 use crucible_node_contract::ContentRef;
 
+/// Describes only the exact historical native grammar retained by this mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RestorationMappingClass {
+    Legacy11,
+    StartupCapture14,
+    InvocationCapture15,
+}
+
+impl RestorationMappingClass {
+    pub(super) fn normalization_format(self) -> &'static str {
+        match self {
+            Self::Legacy11 => "source-private.archived-protocol-mapping/11",
+            Self::StartupCapture14 | Self::InvocationCapture15 => {
+                "source-private.archived-protocol-mapping/12"
+            }
+        }
+    }
+
+    pub(super) fn native_formats(self) -> (&'static str, &'static str) {
+        use owned11::native::outer::*;
+        match self {
+            Self::Legacy11 => (
+                COMPLETE_NATIVE_CONNECTION_FORMAT,
+                COMPLETE_NATIVE_SERVICE_FORMAT,
+            ),
+            Self::StartupCapture14 => (
+                COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT,
+                COMPLETE_NATIVE_STARTUP_SERVICE_FORMAT,
+            ),
+            Self::InvocationCapture15 => (
+                COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT,
+                COMPLETE_NATIVE_INVOCATION_SERVICE_FORMAT,
+            ),
+        }
+    }
+
+    pub(super) fn authenticate_protocol_tags(
+        self,
+        fields: &mut owned11::OriginalOwned11Fields<'_>,
+    ) -> Result<(), ProviderError> {
+        for expected in [
+            owned11::outer::COMPLETE_CONTROLLER_FORMAT,
+            owned11::outer::COMPLETE_CONNECTION_FORMAT,
+            self.native_formats().0,
+            self.native_formats().1,
+        ] {
+            owned11::state::tag(fields, expected)?;
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct ArchivedProtocolMappingInput<'a> {
     pub(crate) host: &'a owned11::outer::SealedHistoricalControllerState,
     pub(crate) native: &'a owned11::native::outer::SealedHistoricalNativeState,
@@ -36,6 +88,7 @@ pub(crate) struct ArchivedProtocolMappingIdentity;
 /// Source/Core enrollment and a genuine native proof remain separate requirements.
 pub struct PreparedArchivedProtocolMapping {
     identity: Rc<ArchivedProtocolMappingIdentity>,
+    class: RestorationMappingClass,
     archive_protocol: ContentRef,
     native_protocol: ContentRef,
     nonce: [u8; 32],
@@ -56,6 +109,7 @@ impl PreparedArchivedProtocolMapping {
     ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
         let Self {
             identity,
+            class: _,
             archive_protocol,
             native_protocol,
             nonce: _,
@@ -83,6 +137,24 @@ impl PreparedArchivedProtocolMapping {
     pub(crate) fn prepare(
         input: ArchivedProtocolMappingInput<'_>,
         target: ArchivedProtocolMappingTarget<'_>,
+    ) -> Result<Self, ProviderError> {
+        Self::prepare_for_class(input, target, RestorationMappingClass::Legacy11)
+    }
+
+    pub(crate) fn prepare_selected(
+        input: ArchivedProtocolMappingInput<'_>,
+        target: ArchivedProtocolMappingTarget<'_>,
+    ) -> Result<Self, ProviderError> {
+        let class = input
+            .native
+            .original_selected_restoration_mapping_class_data()?;
+        Self::prepare_for_class(input, target, class)
+    }
+
+    fn prepare_for_class(
+        input: ArchivedProtocolMappingInput<'_>,
+        target: ArchivedProtocolMappingTarget<'_>,
+        class: RestorationMappingClass,
     ) -> Result<Self, ProviderError> {
         let ArchivedProtocolMappingInput {
             host,
@@ -124,6 +196,7 @@ impl PreparedArchivedProtocolMapping {
         }
         Ok(Self {
             identity: Rc::new(ArchivedProtocolMappingIdentity),
+            class,
             archive_protocol: archive_protocol.clone(),
             native_protocol: native_protocol.clone(),
             nonce,
@@ -166,19 +239,58 @@ impl PreparedArchivedProtocolMapping {
         &self.nonce
     }
 
+    /// Names exact borrowed normalization and decimal formatter scratch.
+    ///
+    /// This constructs only the same borrowing tuple used by normalization_view;
+    /// it performs no serialization, cloning, current callback or allocation.
+    /// Recursive/compiler frames and allocator physical overhead are separate.
+    pub fn normalization_counter_scratch_data(&self) -> usize {
+        Self::original_normalization_counter_scratch_data(&self.fresh)
+    }
+
+    /// Names the same normalization view before constructing its mapping owner.
+    ///
+    /// Only the actual authority's borrowed historical view is constructed. No
+    /// archive reference, nonce, mapping, serialization or permission is created.
+    /// Compiler/recursive frames and allocator physical overhead remain separate.
+    pub fn original_normalization_counter_scratch_data(fresh: &ConnectionAuthority) -> usize {
+        fn tuple_layout<A>(_: A) -> usize {
+            std::mem::size_of::<(
+                &str,
+                &ContentRef,
+                &ContentRef,
+                &str,
+                &str,
+                &str,
+                &str,
+                A,
+                [u8; 32],
+                &str,
+            )>()
+        }
+        tuple_layout(fresh.historical_owned_view())
+            // Both actual class-format calls return an independent pair view.
+            + 2 * std::mem::size_of::<(&'static str, &'static str)>()
+            + std::mem::size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageProjection>()
+            + crate::retained_metadata::serialization_storage::original_serialization_counter_scratch_data()
+            // U64's actual decimal serializer allocates at most twenty bytes.
+            // Decimal fields are visited sequentially under this same window.
+            + 20
+    }
+
     /// Borrows the closed normalization whose canonical bytes bind source proof.
     ///
     /// The source retains/counts its own normalization bank. Registration/actor
     /// identity and opaque cut are authenticated separately and are not portable.
     pub fn normalization_view(&self) -> impl Serialize + '_ {
         (
-            "source-private.archived-protocol-mapping/11",
+            self.class.normalization_format(),
             &self.archive_protocol,
             &self.native_protocol,
             owned11::outer::COMPLETE_CONTROLLER_FORMAT,
             owned11::outer::COMPLETE_CONNECTION_FORMAT,
-            owned11::native::outer::COMPLETE_NATIVE_CONNECTION_FORMAT,
-            owned11::native::outer::COMPLETE_NATIVE_SERVICE_FORMAT,
+            self.class.native_formats().0,
+            self.class.native_formats().1,
             self.fresh.historical_owned_view(),
             self.nonce,
             "original-fresh-request-cut-retained",
@@ -238,5 +350,60 @@ impl PreparedArchivedProtocolMapping {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod selected_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_mapping_protocol_tags_preserve_the_original_literal() {
+        let tags = [
+            owned11::outer::COMPLETE_CONTROLLER_FORMAT,
+            owned11::outer::COMPLETE_CONNECTION_FORMAT,
+            RestorationMappingClass::Legacy11.native_formats().0,
+            RestorationMappingClass::Legacy11.native_formats().1,
+        ];
+        let bytes = serde_json::to_vec(&tags).unwrap();
+        assert_eq!(bytes, br#"["source-private.controller-restorable-complete/11","source-private.connection-with-reader/11","source-private.native-connection-complete/11","source-private.native-service/11"]"#);
+        assert_eq!(
+            RestorationMappingClass::Legacy11.normalization_format(),
+            "source-private.archived-protocol-mapping/11"
+        );
+        let mut fields = owned11::OriginalOwned11Fields::array(&bytes).unwrap();
+        RestorationMappingClass::Legacy11
+            .authenticate_protocol_tags(&mut fields)
+            .unwrap();
+        fields.finish().unwrap();
+    }
+
+    #[test]
+    fn selected_mapping_protocol_tags_refuse_legacy_and_the_other_selected_class() {
+        for class in [
+            RestorationMappingClass::Legacy11,
+            RestorationMappingClass::StartupCapture14,
+            RestorationMappingClass::InvocationCapture15,
+        ] {
+            let bytes = serde_json::to_vec(&[
+                owned11::outer::COMPLETE_CONTROLLER_FORMAT,
+                owned11::outer::COMPLETE_CONNECTION_FORMAT,
+                class.native_formats().0,
+                class.native_formats().1,
+            ])
+            .unwrap();
+            for expected in [
+                RestorationMappingClass::Legacy11,
+                RestorationMappingClass::StartupCapture14,
+                RestorationMappingClass::InvocationCapture15,
+            ] {
+                let mut fields = owned11::OriginalOwned11Fields::array(&bytes).unwrap();
+                let accepted = expected.authenticate_protocol_tags(&mut fields).is_ok();
+                assert_eq!(accepted, class == expected);
+                if accepted {
+                    fields.finish().unwrap();
+                }
+            }
+        }
     }
 }

@@ -490,3 +490,6 @@ pub use conformance::{
 };
 
 pub(crate) use conformance::original_runtime_construction_failure_reason;
+
+pub use conformance::{OriginalRestorationConstructionInputs,
+    OriginalRestorationNodeConstructionData, OriginalRestorationNodeInputs};

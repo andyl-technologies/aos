@@ -91,6 +91,15 @@ pub trait PacketEndpointPolicy: BlobSchemaVerifier {
         ))
     }
 
+    /// Authenticates the full original-invocation four-owner outer14 schema.
+    ///
+    /// # Errors
+    /// Refuses unless the concrete installer supplies the exact full definition.
+    /// This check alone never supplies the private original invocation purpose.
+    fn authenticate_invocation_capture_snapshot_definition(&self) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation("invocation Capture snapshot definition not installed"))
+    }
+
     /// Selects the independently installed consuming schema for an exact upload.
     ///
     /// # Errors
@@ -863,3 +872,8 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
 mod capture_startup;
 
 mod confirmation_startup;
+
+#[path = "endpoint/capture_invocation.rs"]
+mod capture_invocation;
+
+pub(crate) use capture_quote::original_invocation_capture_report_additional_scratch_data;

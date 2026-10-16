@@ -24,6 +24,17 @@ impl FacetDescription for CnpSemanticNode {
 }
 
 impl SimulationNode for CnpSemanticNode {
+    fn original_restoration_construction_scratch_data(&self) -> Result<Option<usize>, RuntimeError> {
+        self.original_restoration_construction_counter_scratch_data().map(Some)
+    }
+
+    fn original_restoration_construction_data(
+        &self,
+        inputs: &crate::node_admission::OriginalRestorationNodeInputs<'_>,
+    ) -> Result<Option<crate::node_admission::OriginalRestorationNodeConstructionData>, RuntimeError> {
+        CnpSemanticNode::original_restoration_construction_data(self, inputs).map(Some)
+    }
+
     fn retained_descriptor_views_precredit_data(&self) -> Result<Option<usize>, RuntimeError> {
         self.preparation
             .retained_descriptor_views_precredit_data()

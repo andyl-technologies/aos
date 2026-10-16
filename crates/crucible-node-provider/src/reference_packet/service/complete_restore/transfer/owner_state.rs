@@ -21,6 +21,9 @@ use crate::{
 use crucible_node_contract::IdSet;
 pub use owner_decode::{
     PacketCompleteRestoreOwnerValidationStorage, complete_restore_owner_validation_storage_data,
+    PacketCompleteRestoreSelectedOwnerInputs,
+    complete_restore_selected_owner_construction_storage_data,
+    complete_restore_selected_owner_construction_counter_scratch_data,
 };
 pub(crate) use owner_decode::{
     selected_issuer_decode_counter_scratch_data, selected_issuer_decode_storage_data,

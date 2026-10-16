@@ -582,3 +582,155 @@ mod member_edition_data_tests {
         );
     }
 }
+
+
+impl PacketCompleteSemanticSource {
+    /// Checks only this live Source's completed genuine-original invocation.
+    ///
+    /// The caller precharges the defining getter before entry. Raw member and
+    /// WeakPlan liveness checks invoke no authority callback under the birth
+    /// loan. Full installed rights, source/kernel currency, selected snapshot
+    /// declaration and complete historical reconstruction remain conjuncts of
+    /// the actual Capture caller; this predicate issues none of those rights.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, a busy/missing/unready/failed/unstarted birth,
+    /// missing or legacy member, dead/foreign plan/source, incomplete Source15,
+    /// malformed full purpose, or any restoration-target purpose.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_original_capture_invocation_data(
+        &self,
+    ) -> Result<(), RuntimeError> {
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let slot = self.ack_peer_birth.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        let birth = slot.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        birth.authenticate_original_initial_lifecycle_data()?;
+        let state = birth.native_startup.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        state.member.authenticate_original_invocation_source_identity_data(self)?;
+        if !state.member.requires_original_invocation_data()? {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if !state.complete || state.additions.is_some() || !state.replacement.is_empty() {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        let body = state.body.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        original_capture_purpose_data(body)?;
+        drop(slot);
+        self.storage_origin_with_error::<RuntimeError>()
+    }
+
+    /// Names the raw original-invocation validator's fixed borrowed/parse views.
+    ///
+    /// No requested heap, compiler/recursive frame or Source action permission
+    /// is inferred from this fixed DATA. The existing conservative full purpose
+    /// decoder getter is added explicitly; no unrelated padding is credited.
+    ///
+    /// # Errors
+    /// Returns `ResourceLimit` if checked layout arithmetic overflows.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn original_capture_invocation_counter_scratch_data()
+    -> Result<usize, RuntimeError> {
+        [
+            Self::original_fresh_query_invocation_counter_scratch_data()?,
+            crucible_node_provider::reference_packet::service::native_startup::original_native_invocation_counter_scratch_data(),
+            size_of::<&OriginalNativeStartupMember>(),
+            size_of::<&crate::node_admission::WeakInstalledConformancePlan>(),
+            size_of::<Result<PacketNativeInvocationPurposeData, RuntimeError>>(),
+            size_of::<Result<PacketNativeInvocationPurposeData, crucible_node_provider::ProviderError>>(),
+            size_of::<[&str; 19]>(),
+            size_of::<std::slice::Iter<'_, &str>>(),
+            size_of::<&serde_json::Map<String, serde_json::Value>>(),
+        ].into_iter().try_fold(0usize, |sum, bytes| {
+            sum.checked_add(bytes).ok_or(RuntimeError::ResourceLimit)
+        })
+    }
+}
+
+// This leaf validates immutable constructor-produced DATA only. Its caller has
+// already authenticated the actual private member edition/Source and completion;
+// no decoded field or public argument can bypass that original owner boundary.
+fn original_capture_purpose_data(body: &serde_json::Value)
+-> Result<PacketNativeInvocationPurposeData, RuntimeError> {
+    let source = body.as_object().ok_or(RuntimeError::ForeignAuthority)?;
+    let keys = [
+        "ack_emitter_selection", "capture_allocation_selection", "capture_profile",
+        "codec_metadata_extent", "complete_restore_selection", "confirmation_selection",
+        "coordinator", "fresh_restore_allocation_selection", "invocation", "limits",
+        "native_codec_metadata_extent", "native_startup_allocation", "program",
+        "protocol_metadata_limits", "report_startup_allocation", "restore_input_emitter_selection",
+        "schema", "selection", "storage",
+    ];
+    if source.len() != keys.len() || keys.iter().any(|key| !source.contains_key(*key))
+        || body.get("schema").and_then(serde_json::Value::as_str)
+            != Some(PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA)
+    { return Err(RuntimeError::ForeignAuthority); }
+    let purpose = PacketNativeInvocationPurposeData::from_original_value_data(
+        body.get("invocation").ok_or(RuntimeError::ForeignAuthority)?,
+    ).map_err(|_| RuntimeError::ForeignAuthority)?;
+    if !purpose.is_original_execution_data() {
+        return Err(RuntimeError::ForeignAuthority);
+    }
+    Ok(purpose)
+}
+
+#[cfg(test)]
+mod original_capture_purpose_data_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    // A pure parser bank with intentionally uninterpreted other Source fields;
+    // it is not a native birth, Source member, installed action or permission.
+    fn source_data() -> Value {
+        let mut source = serde_json::Map::new();
+        for key in [
+            "ack_emitter_selection", "capture_allocation_selection", "capture_profile",
+            "codec_metadata_extent", "complete_restore_selection", "confirmation_selection",
+            "coordinator", "fresh_restore_allocation_selection", "invocation", "limits",
+            "native_codec_metadata_extent", "native_startup_allocation", "program",
+            "protocol_metadata_limits", "report_startup_allocation", "restore_input_emitter_selection",
+            "schema", "selection", "storage",
+        ] { source.insert(key.into(), Value::Null); }
+        source.insert("schema".into(), PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA.into());
+        source.insert("invocation".into(), json!({
+            "schema":"source-owned.packet-native-invocation-purpose/1",
+            "purpose":"original_execution", "source":null,
+            "target":{
+                "world":canonical::hash("cnp.world-binding.v1", b"data").unwrap(),
+                "binding":canonical::hash("cnp.node-binding.v1", b"data").unwrap(),
+                "node":"node", "owner":"owner", "session":"session",
+                "incarnation":"incarnation", "owner_generation":"1",
+                "prepared_token":"prepared", "admission":"admission"
+            }
+        }));
+        Value::Object(source)
+    }
+
+    #[test]
+    fn original_capture_purpose_data_refuses_target_legacy_and_incomplete_full_grammars() {
+        let original = source_data();
+        assert!(original_capture_purpose_data(&original).unwrap().is_original_execution_data());
+        let bytes = canonical::canonical_json(&original).unwrap();
+        let reference = canonical::content_ref(b"archive data", "application/json").unwrap();
+        let mut target = original.clone();
+        target["invocation"]["purpose"] = "restoration_target".into();
+        target["invocation"]["source"] = json!({
+            "runtime":reference, "native_state":reference, "owner":"owner"
+        });
+        assert!(!PacketNativeInvocationPurposeData::from_original_value_data(
+            &target["invocation"]).unwrap().is_original_execution_data());
+        assert!(original_capture_purpose_data(&target).is_err());
+        for axis in 0..7 {
+            let mut changed = original.clone();
+            match axis {
+                0 => changed["schema"] = "source-owned.packet-canonical-ack-source-binding/14".into(),
+                1 => { changed.as_object_mut().unwrap().remove("native_startup_allocation"); },
+                2 => changed["unknown"] = true.into(),
+                3 => changed["invocation"]["source"] = json!({}),
+                4 => changed["invocation"]["unknown"] = true.into(),
+                5 => { changed["invocation"]["target"].as_object_mut().unwrap().remove("incarnation"); },
+                _ => changed["invocation"]["target"]["world"]["domain"] = "cnp.foreign.v1".into(),
+            }
+            assert!(original_capture_purpose_data(&changed).is_err());
+        }
+        assert!(original_capture_purpose_data(&Value::Null).is_err());
+        assert_eq!(canonical::canonical_json(&original).unwrap(), bytes);
+    }
+}
