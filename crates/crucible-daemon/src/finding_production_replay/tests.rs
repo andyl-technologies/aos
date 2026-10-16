@@ -657,7 +657,7 @@ fn deployment_capture_survives_removal_of_source_paths() {
         initrd_bytes,
     )));
     let finding = finding_for_world(World::from_nodes(vec![node]).expect("world"));
-    let config = crucible_api::ProductionVmLifecycleConfig::new(
+    let config = crate::ProductionVmLifecycleConfig::new(
         "installed-qemu",
         "installed-plugin",
         &kernel,
@@ -719,7 +719,7 @@ fn deployment_static_limit_counts_duplicate_content_once() {
     node.kernel = Some(ContentAddressedBlobRef::from_hash(identity));
     node.root_image = Some(ContentAddressedBlobRef::from_hash(identity));
     let finding = finding_for_world(World::from_nodes(vec![node]).expect("world"));
-    let config = crucible_api::ProductionVmLifecycleConfig::new(
+    let config = crate::ProductionVmLifecycleConfig::new(
         "installed-qemu",
         "installed-plugin",
         &kernel,
@@ -766,7 +766,7 @@ fn deployment_rejects_streamed_asset_before_bounded_copy() {
         root_bytes,
     )));
     let finding = finding_for_world(World::from_nodes(vec![node]).expect("world"));
-    let config = crucible_api::ProductionVmLifecycleConfig::new(
+    let config = crate::ProductionVmLifecycleConfig::new(
         "installed-qemu",
         "installed-plugin",
         &kernel,
@@ -825,7 +825,7 @@ fn static_limit_counts_guest_and_world_roles_by_content_identity() {
     )
     .expect("world with shared root and block base");
     let finding = finding_for_world(world);
-    let config = crucible_api::ProductionVmLifecycleConfig::new(
+    let config = crate::ProductionVmLifecycleConfig::new(
         "installed-qemu",
         "installed-plugin",
         &kernel,

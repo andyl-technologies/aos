@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use clap::Parser;
-use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::CampaignRepository;
 use crucible_campaign::{
     AssertionViolationWitness, BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceCoordinate,
@@ -17,6 +16,7 @@ use crucible_campaign::{
     SelectionOrigin,
 };
 use crucible_daemon::LinuxQemuAttemptHostConfig;
+use crucible_daemon::ProductionVmLifecycleConfig;
 use crucible_daemon::campaign_store_composition::{
     DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend,
 };

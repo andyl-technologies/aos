@@ -267,14 +267,13 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
                         "campaign checkpoint fixture has no executed configuration",
                     ),
                 })?;
-        let fixture = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(
-            &self.checkpoint_directory,
-        )
-        .map_err(|error: crucible_api::LifecycleApiError| {
-            SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })?;
+        let fixture =
+            crate::build_exact_ram_production_checkpoint_codec_fixture(&self.checkpoint_directory)
+                .map_err(|error: crucible_api::LifecycleApiError| {
+                    SchedulerError::BoundaryViolation {
+                        message: error.to_string(),
+                    }
+                })?;
         if fixture.configuration() != configuration {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -290,7 +289,7 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
 
     fn replay_launch_profiles(
         &self,
-    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+    ) -> Result<Vec<crate::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("campaign save fixture has no replay launch profiles"),
         })
@@ -298,7 +297,7 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
 
     fn fault_evidence_snapshot(
         &self,
-    ) -> Result<crucible_api::ProductionFaultEvidenceSnapshot, SchedulerError> {
+    ) -> Result<crate::ProductionFaultEvidenceSnapshot, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("campaign save fixture has no fault evidence"),
         })

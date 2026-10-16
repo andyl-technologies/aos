@@ -238,12 +238,12 @@ pub(super) fn lifecycle_config(
     run_state_root: &Path,
     recipe: crucible_daemon::FindingProductionReplayRecipe,
     objects: Arc<crucible::MemoryDagStore>,
-) -> Result<crucible_api::ProductionVmLifecycleConfig, CliError> {
+) -> Result<crucible_daemon::ProductionVmLifecycleConfig, CliError> {
     let first = guests
         .guest_assets()
         .first()
         .ok_or_else(|| backend_error("finding capture contains no guest assets"))?;
-    let mut config = crucible_api::ProductionVmLifecycleConfig::new_for_guest_architecture(
+    let mut config = crucible_daemon::ProductionVmLifecycleConfig::new_for_guest_architecture(
         qemu,
         plugin,
         first.architecture(),

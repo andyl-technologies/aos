@@ -1,10 +1,10 @@
 //! Joins actual before-effects custody to the boxed Source launcher and API.
 
 use super::*;
+use crate::ProductionVmNodeLauncher;
 use crate::qemu_lifecycle_launcher::{
     PendingSourceConstruction, UnbornSourceConstruction, retain_source_owner,
 };
-use crucible_api::{ProductionVmCleanupOwner, ProductionVmNodeLauncher};
 mod retained;
 pub(super) use retained::RetainedSourceInstall;
 
@@ -28,7 +28,7 @@ pub enum SourcePostInstallationRefusal {
     Native(#[from] QemuVmRealizationError),
     /// Actual host RAM ownership or publication refused.
     #[error(transparent)]
-    HostRam(#[from] crucible_api::vm_lifecycle::HostRamAdmissionError),
+    HostRam(#[from] crucible_api::host_operational::HostRamAdmissionError),
 }
 
 impl SourcePostInstallationRefusal {
@@ -111,11 +111,7 @@ where
                     let first = match pending {
                         Some(mut owner) => {
                             let reservation = owner.take_cleanup_reservation();
-                            match retain_source_owner(
-                                reservation,
-                                ProductionVmCleanupOwner::Launcher(owner),
-                                first,
-                            ) {
+                            match retain_source_owner(reservation, owner, first) {
                                 Ok((first, handoff)) => {
                                     self.retain_cleanup_handoff(handoff);
                                     first
@@ -188,7 +184,7 @@ where
         park_drain_registration: ConfiguredParkDrainRegistration,
         build: impl FnOnce(
             Box<dyn ProductionVmNodeLauncher>,
-        ) -> Result<T, crucible_api::ProductionVmConstructionFailure>,
+        ) -> Result<T, crate::ProductionVmConstructionFailure>,
     ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
         self.require_install_vacancy()?;
         // All fallible ordinary copies precede native begin. The selected
@@ -248,11 +244,7 @@ where
         });
         if let Err(first) = installed {
             let reservation = launcher.take_cleanup_reservation();
-            let first = match retain_source_owner(
-                reservation,
-                ProductionVmCleanupOwner::Launcher(launcher),
-                first,
-            ) {
+            let first = match retain_source_owner(reservation, launcher, first) {
                 Ok((first, handoff)) => {
                     self.retain_cleanup_handoff(handoff);
                     first

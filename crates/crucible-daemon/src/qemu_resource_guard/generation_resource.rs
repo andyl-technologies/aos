@@ -19,8 +19,8 @@ pub(crate) enum ProcessStageContractRefusal {
 
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 impl ProcessStageContractRefusal {
-    pub(crate) fn failure(&self) -> crucible_api::ProductionVmParentParkStageOwnerCause<'_> {
-        use crucible_api::ProductionVmParentParkStageOwnerCause as Cause;
+    pub(crate) fn failure(&self) -> crate::ProductionVmParentParkStageOwnerCause<'_> {
+        use crate::ProductionVmParentParkStageOwnerCause as Cause;
         match self {
             Self::NotCurrent => Cause::NotCurrent,
             Self::Owner(first) => Cause::Owner(first),

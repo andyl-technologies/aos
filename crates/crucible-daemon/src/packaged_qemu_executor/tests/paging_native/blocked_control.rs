@@ -12,12 +12,12 @@ use super::lazy_restore::discover_target;
 use super::*;
 use crate::packaged_qemu_executor::hot_fork::retained_service::RetainedTemplateServiceFactory;
 use crate::packaged_qemu_executor::preparation::PackagedPreparation;
+use crate::vm_lifecycle::ProductionRamSourceDecorator;
 use crate::{
     AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct, RepositoryAttemptWorker,
     decode_crucible_attempt_execution,
 };
 use crucible_api::host_operational::{HostOuterCapTarget, HostResourceVector};
-use crucible_api::vm_lifecycle::ProductionRamSourceDecorator;
 use crucible_campaign::CampaignExecutorStore;
 use crucible_linux_resource::host_supervision::{HostOperationState, HostOperationSupervisor};
 use crucible_qemu::ram_source::{QemuRamBacking, QemuRamSourceError};

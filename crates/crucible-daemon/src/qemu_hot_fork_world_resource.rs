@@ -12,7 +12,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, TryLockError, Weak};
 
 // crucible-lint: allow host-nondeterminism-state -- exact node generations index operational resource ownership, not scheduler decisions or guest time.
-use crucible_api::ProductionVmNodeGeneration;
+use crate::ProductionVmNodeGeneration;
 use crucible_campaign::AttemptResourceLimits;
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
@@ -47,7 +47,7 @@ where
     G: QemuAttemptResourceGuard,
 {
     guard: G,
-    source_world: Option<Arc<Mutex<crucible_api::ProductionVmHotForkSourceWorld>>>,
+    source_world: Option<Arc<Mutex<crate::ProductionVmHotForkSourceWorld>>>,
     maximum_nodes: usize,
     issued: BTreeSet<ProductionVmNodeGeneration>,
     released: BTreeSet<ProductionVmNodeGeneration>,
@@ -187,7 +187,7 @@ where
     pub(crate) fn new_fork_target(
         guard: G,
         maximum_nodes: usize,
-        source_world: Arc<Mutex<crucible_api::ProductionVmHotForkSourceWorld>>,
+        source_world: Arc<Mutex<crate::ProductionVmHotForkSourceWorld>>,
     ) -> Result<Self, QemuVmRealizationError> {
         let owner = match Self::new(guard, maximum_nodes) {
             Ok(owner) => owner,

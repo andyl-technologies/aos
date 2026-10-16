@@ -17,7 +17,7 @@
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   sessionEventLogStream = builtins.readFile ../../crates/crucible-session/tests/event_log_stream.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
-  productionDebugLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
+  productionDebugLoop = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
   gatewayOwner = builtins.readFile ../../crates/crucible-api/src/debug_gateway.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -236,7 +236,7 @@
         needle = "event_log_generation_reset_preserves_retained_prefix_for_lagging_stream";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" productionDebugLoop [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs" productionDebugLoop [
       {
         label = "production gdbstub attaches through gateway";
         needle = "DebugGatewayProcess::launch_with_owner_unix";

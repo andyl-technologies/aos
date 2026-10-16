@@ -8,7 +8,7 @@ fn decoded_ram_root_credit_survives_the_last_delayed_reader_clone() {
         crate::exact_checkpoint_store::test_support::fixture_decode_scope();
 
     let directory = tempfile::tempdir().expect("RAM-root credit fixture directory");
-    let fixture = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(
+    let fixture = crate::build_exact_ram_production_checkpoint_codec_fixture(
         &directory.path().join("source"),
     )
     .expect("authenticated persistent RAM fixture");

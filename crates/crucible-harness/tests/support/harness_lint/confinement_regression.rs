@@ -471,7 +471,7 @@ fn operational_boundary_regression_failures() -> Vec<String> {
             "reviewed operator-only API namespace rejected: {findings:?}"
         ));
     }
-    let bootstrap = "pub(crate) fn bootstrap_limits() -> Option<crucible_api::vm_lifecycle::HostRamBootstrapLimits> { consume(std::time::Instant::now()); None }";
+    let bootstrap = "pub(crate) fn bootstrap_limits() -> Option<crucible_api::host_operational::HostRamBootstrapLimits> { consume(std::time::Instant::now()); None }";
     let findings = package_source_confinement_findings(
         "crucible-daemon",
         Path::new("crucible-daemon"),

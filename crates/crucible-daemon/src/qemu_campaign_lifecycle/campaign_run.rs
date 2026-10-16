@@ -11,12 +11,12 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+use crate::ProductionVmLifecycleConfig;
 pub use crate::packaged_qemu_executor::guarded::{
     GuardedCampaignOwner, GuardedFindingMidpointError, GuardedImportedFindingMidpoint,
 };
 use crucible::{Checkpoint, CheckpointKind, Configuration};
 use crucible::{ScenarioDefForm, Schedule, Seed, VirtualTime};
-use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     ApplyCampaignCommandRequest, Attempt, AttemptResourceLimits, AttemptStart, BranchBudget,
     BranchRequest, BranchRequestCause, BudgetGrant, CampaignAuthorizationError, CampaignClient,
@@ -249,7 +249,7 @@ pub enum GuardedDefaultCampaignRunConfigurationError {
     Decoding(#[source] crucible::owned_decode::DecodeAdmissionError),
     /// An active configured copy could not retain original metadata custody.
     #[error("guarded replay lifecycle copy: {0}")]
-    ConfigurationCopy(#[source] crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
+    ConfigurationCopy(#[source] crate::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
 }
 
 impl GuardedDefaultCampaignRunRequest {

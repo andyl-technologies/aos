@@ -11,7 +11,7 @@ use std::alloc::Layout;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{OnceLock, TryLockError};
 
-use crucible_api::ProductionVmParentParkDrainRefusal as Refusal;
+use crate::ProductionVmParentParkDrainRefusal as Refusal;
 use crucible_linux_resource::host_supervision::HostSupervisionError;
 use crucible_qemu::QmpParentParkResult;
 use crucible_ram::ResourceLoan;

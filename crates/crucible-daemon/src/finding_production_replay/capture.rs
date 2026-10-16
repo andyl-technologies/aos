@@ -296,7 +296,7 @@ pub(crate) fn capture_finding_replay_lifecycle_objects_with_budget(
         ));
     }
     let mut objects = match signal_store {
-        Some(store) => match crucible_api::collect_signal_artifact_objects_with_budget(
+        Some(store) => match crate::collect_signal_artifact_objects_with_budget(
             plan,
             store,
             limits.max_lifecycle_bytes,
@@ -665,7 +665,7 @@ pub(super) fn validate_lifecycle_objects(
     }
 
     let mut expected =
-        crucible_api::collect_signal_artifact_objects(scenario.plan().fault_signals(), &memory)
+        crate::collect_signal_artifact_objects(scenario.plan().fault_signals(), &memory)
             .map_err(FindingProductionReplayCaptureError::SignalArtifacts)?;
     for node in scenario.world().io_nodes() {
         let identity = match &node.kind {

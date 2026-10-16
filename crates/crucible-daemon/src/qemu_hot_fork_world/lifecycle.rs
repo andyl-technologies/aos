@@ -11,17 +11,18 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- The lifecycle owns canonical scheduler progress; host observations only govern process cleanup and never select modeled transitions.
+use crate::{
+    ProductionFaultEvidenceSnapshot, ProductionVmHotForkNodeServiceState,
+    ProductionVmHotForkSourceWorld, ProductionVmLifecycleLoop, ProductionVmNodeGeneration,
+    ProductionVmNodeReplayLaunchProfile,
+    build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
+};
 use crucible::{
     Configuration, ContentHash, FingerprintSample, NodeId, QuantumLoop, QuantumOutcome,
     QuantumRequest, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
     SchedulerOperationalFailureClass, SelectionDecision, VirtualTime,
 };
-use crucible_api::{
-    LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmHotForkNodeServiceState,
-    ProductionVmHotForkSourceWorld, ProductionVmLifecycleLoop, ProductionVmNodeGeneration,
-    ProductionVmNodeReplayLaunchProfile,
-    build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
-};
+use crucible_api::LifecycleApiError;
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 

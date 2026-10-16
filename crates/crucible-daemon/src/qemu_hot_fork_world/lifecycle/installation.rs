@@ -5,10 +5,8 @@
 //! a replacement owner or an operational allowance.
 
 use super::*;
-use crucible_api::{
-    ProductionVmCleanupHandoff, ProductionVmCleanupStage, ProductionVmConstructionCleanupError,
-    ProductionVmConstructionFailure,
-};
+use crate::{ProductionVmConstructionCleanupError, ProductionVmConstructionFailure};
+use crucible_api::{ProductionVmCleanupHandoff, ProductionVmCleanupStage};
 use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
 use crucible_qemu::QemuVmRealizationError;
 

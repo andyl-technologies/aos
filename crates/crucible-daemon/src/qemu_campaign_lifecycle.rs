@@ -10,17 +10,18 @@
 //! physical resume path; newly selected continuation control cold executes
 //! because a checkpoint captured before selection cannot contain that input.
 
+use crate::{
+    ProductionFaultEvidenceSnapshot, ProductionVmExactHotForkSourceBoundary,
+    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
+    build_production_vm_exact_resume_lifecycle, build_production_vm_lifecycle_loop_with_launcher,
+};
 use crucible::{
     CheckpointTerminalCause, Configuration, ContentHash, Decision, FingerprintSample, NodeId,
     QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
     ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
     SchedulerOperationalFailureClass, SchedulerQuiescence, Seed, SelectionDecision, VirtualTime,
 };
-use crucible_api::{
-    LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmExactHotForkSourceBoundary,
-    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
-    build_production_vm_exact_resume_lifecycle, build_production_vm_lifecycle_loop_with_launcher,
-};
+use crucible_api::LifecycleApiError;
 use crucible_campaign::{
     AttemptContinuationInput, AttemptStartMode, CampaignHash, ChoiceDiscovery, ChoiceOpportunityId,
     ChoiceSource, ConfigurationArtifact, ConfigurationId, ExactCheckpointId,
@@ -197,7 +198,7 @@ pub enum QemuAttemptProductionVmLifecycleError {
     ModelCopy(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// The complete operational RAM partition could not be retained before launch.
     #[error("admit operational host RAM: {0}")]
-    HostRamAdmission(#[source] crucible_api::vm_lifecycle::HostRamAdmissionError),
+    HostRamAdmission(#[source] crucible_api::host_operational::HostRamAdmissionError),
     /// The fresh lifecycle path was asked to resume an exact checkpoint.
     #[error("fresh production VM lifecycle cannot resume exact checkpoint `{0}`")]
     ResumeCheckpointUnsupported(ExactCheckpointId),
@@ -2305,14 +2306,13 @@ where
         checkpoint: ExactCheckpointId,
         basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
-    ) -> Result<crucible_api::ProductionVmStoppedLifecycle, QemuAttemptProductionVmLifecycleError>
-    {
+    ) -> Result<crate::ProductionVmStoppedLifecycle, QemuAttemptProductionVmLifecycleError> {
         self.begin_resume_with_builder(
             checkpoints,
             checkpoint,
             basis,
             context,
-            crucible_api::build_production_vm_exact_stopped_lifecycle,
+            crate::build_production_vm_exact_stopped_lifecycle,
         )
     }
 
@@ -2326,9 +2326,9 @@ where
             &ScenarioDef,
             &ScenarioDefForm,
             &ProductionVmLifecycleConfig,
-            crucible_api::DecodedProductionExactCheckpoint,
-            Box<dyn crucible_api::ProductionVmNodeLauncher>,
-        ) -> Result<T, crucible_api::ProductionVmConstructionFailure>,
+            crate::DecodedProductionExactCheckpoint,
+            Box<dyn crate::ProductionVmNodeLauncher>,
+        ) -> Result<T, crate::ProductionVmConstructionFailure>,
     ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
         validate_exact_resume_request(checkpoint, basis, context)?;
         let QemuExactResumeBasis {
@@ -2497,7 +2497,7 @@ where
             .map_err(QemuAttemptProductionVmLifecycleError::ResourceRefusal)?;
         let registration = config.host_ram_registration_factory().ok_or_else(|| {
             QemuAttemptProductionVmLifecycleError::HostRamAdmission(
-                crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+                crucible_api::host_operational::HostRamAdmissionError::contract(
                     "native process limits require retained host RAM ownership",
                 ),
             )
@@ -2507,7 +2507,7 @@ where
             .vm_nodes()
             .iter()
             .map(
-                |node| crucible_api::vm_lifecycle::ProductionHostRamLaunchShape {
+                |node| crucible_api::host_operational::ProductionHostRamLaunchShape {
                     node: node.id.name.clone(),
                     declared_ram_bytes: u64::from(node.memory_mib) * 1024 * 1024,
                     vcpus: u32::from(node.smp_vcpus),
@@ -2531,7 +2531,7 @@ where
         )
         .map_err(|error| {
             QemuAttemptProductionVmLifecycleError::HostRamAdmission(
-                crucible_api::vm_lifecycle::HostRamAdmissionError::contract(error.to_string()),
+                crucible_api::host_operational::HostRamAdmissionError::contract(error.to_string()),
             )
         })?;
         let consumer_control_bytes = QemuAttemptProductionVmNodeLauncher::<R::Guard, R>::
@@ -2575,7 +2575,7 @@ where
     ) -> Result<(), SourcePostInstallationRefusal> {
         let registration = config.host_ram_registration_factory().ok_or_else(|| {
             SourcePostInstallationRefusal::HostRam(
-                crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+                crucible_api::host_operational::HostRamAdmissionError::contract(
                     "native process limits require retained host RAM ownership",
                 ),
             )
@@ -2643,7 +2643,7 @@ where
                         .cloned()
                         .ok_or_else(|| {
                             SourcePostInstallationRefusal::HostRam(
-                                crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+                                crucible_api::host_operational::HostRamAdmissionError::contract(
                                     "qualification lacks admitted registry",
                                 ),
                             )
@@ -2655,7 +2655,7 @@ where
                 )
                 .map_err(|error| {
                     SourcePostInstallationRefusal::HostRam(
-                        crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+                        crucible_api::host_operational::HostRamAdmissionError::contract(
                             error.to_string(),
                         ),
                     )
@@ -2669,7 +2669,7 @@ where
             if let Some(operation) = operation {
                 operation.complete().map_err(|error| {
                     SourcePostInstallationRefusal::HostRam(
-                        crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+                        crucible_api::host_operational::HostRamAdmissionError::contract(
                             error.to_string(),
                         ),
                     )

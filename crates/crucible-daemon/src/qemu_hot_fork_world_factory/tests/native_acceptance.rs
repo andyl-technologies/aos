@@ -9,9 +9,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::ProductionVmLifecycleConfig;
 use crucible::LocalDagStore;
 use crucible::model::DagStore;
-use crucible_api::ProductionVmLifecycleConfig;
 use crucible_qemu::QemuRootImageFormat;
 
 use super::*;

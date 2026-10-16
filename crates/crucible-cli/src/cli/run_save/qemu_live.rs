@@ -355,8 +355,8 @@ fn verify_qemu_lifecycle_config(
     profile: VerifyHostProfile,
 ) -> Result<
     (
-        production_api::ProductionVmLifecycleConfig,
-        Option<crucible_api::BoundedSchedulerPreemptionEvidence>,
+        crucible_daemon::ProductionVmLifecycleConfig,
+        Option<crucible_daemon::BoundedSchedulerPreemptionEvidence>,
     ),
     CliError,
 > {
@@ -371,7 +371,7 @@ fn verify_qemu_lifecycle_config(
         .with_maximum_host_workers(profile.executor_workers);
     let preemption_evidence = profile
         .requires_scheduler_preemption()
-        .then(crucible_api::BoundedSchedulerPreemptionEvidence::default);
+        .then(crucible_daemon::BoundedSchedulerPreemptionEvidence::default);
     if let Some(evidence) = preemption_evidence.as_ref() {
         config = config.with_bounded_scheduler_preemption(evidence.clone());
     }
@@ -381,7 +381,7 @@ fn verify_qemu_lifecycle_config(
 fn run_local_qemu_campaign_with_hostile_deadlines(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
-    lifecycle: production_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
     profile: VerifyHostProfile,
 ) -> Result<RunWorkflowReport, CliError> {
     let completion_timeout = lifecycle.completion_timeout();
@@ -571,10 +571,10 @@ impl VerifyQemuHostPressure {
 }
 
 pub(crate) fn required_scheduler_preemption_snapshot(
-    evidence: &crucible_api::BoundedSchedulerPreemptionEvidence,
+    evidence: &crucible_daemon::BoundedSchedulerPreemptionEvidence,
     operation: &str,
     minimum_requested_stopped_milliseconds: u64,
-) -> Result<crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot, CliError> {
+) -> Result<crucible_daemon::BoundedSchedulerPreemptionEvidenceSnapshot, CliError> {
     let snapshot = evidence.snapshot().ok_or_else(|| {
         backend_error(format!(
             "{operation} did not publish authenticated scheduler-preemption evidence"
@@ -595,7 +595,7 @@ pub(crate) fn required_scheduler_preemption_snapshot(
 
 pub(crate) fn production_qemu_lifecycle_config(
     backend: &ResolvedLocalBackend,
-) -> Result<production_api::ProductionVmLifecycleConfig, CliError> {
+) -> Result<crucible_daemon::ProductionVmLifecycleConfig, CliError> {
     let (qemu, plugin) = match backend {
         ResolvedLocalBackend::Qemu { qemu, plugin, .. } => (qemu, plugin),
         #[cfg(any(test, feature = "test-double"))]
@@ -624,7 +624,7 @@ pub(crate) fn production_qemu_lifecycle_config(
         })?;
     let native_guest_architecture = live_qemu_native_guest_architecture()?;
     let mut config = crucible_daemon::with_production_qemu_raw_root_image(
-        production_api::ProductionVmLifecycleConfig::new_for_guest_architecture(
+        crucible_daemon::ProductionVmLifecycleConfig::new_for_guest_architecture(
             qemu,
             plugin,
             native_guest_architecture,

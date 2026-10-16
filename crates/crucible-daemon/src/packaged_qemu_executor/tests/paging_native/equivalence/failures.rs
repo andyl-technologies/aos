@@ -11,6 +11,9 @@ use super::super::super::hot_fork_native::assert_resource_charge;
 use super::failure_guards::FinishFailingFactory;
 use super::*;
 use crate::packaged_qemu_executor::hot_fork::retained_service::RetainedTemplateService;
+use crate::vm_lifecycle::{
+    hot_fork_adoption_count_for_test, reset_hot_fork_adoption_count_for_test,
+};
 use crate::{
     AttemptExecutionDisposition, AttemptResultStageOutcome, AttemptWorkerReconcileOutcome,
     CompletionOutcome, PreparedAttemptWorkResult, QemuFreshModeledDriver,
@@ -19,9 +22,6 @@ use crate::{
     stage_prepared_attempt_result,
 };
 use crucible_api::host_operational::{HostOperationalError, HostResourceVector};
-use crucible_api::vm_lifecycle::{
-    hot_fork_adoption_count_for_test, reset_hot_fork_adoption_count_for_test,
-};
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, ObjectKind,
     PutReceipt, StoreError, StorePhysicalQuotaGuard,

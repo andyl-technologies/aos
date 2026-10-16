@@ -8,13 +8,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
+use crate::ProductionVmNodeGeneration;
+#[cfg(target_os = "linux")]
 use crucible::NodeId;
 use crucible::{
     Configuration, Decision, DeliveryOrderDecision, EventLogTime, FailureTriageReplayEvidence,
     Icount, Schedule, SchedulerEventLogEntry, VirtualTime,
 };
-#[cfg(target_os = "linux")]
-use crucible_api::ProductionVmNodeGeneration;
 #[cfg(target_os = "linux")]
 use crucible_campaign::FindingReplaySignature;
 use crucible_campaign::{

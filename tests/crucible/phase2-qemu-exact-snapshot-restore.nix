@@ -33,10 +33,10 @@
     (builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/admission.rs)
   ];
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
-  productionLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
-  productionCapture = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_snapshot.rs;
-  productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
-  productionConstruction = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/construction.rs;
+  productionLoop = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
+  productionCapture = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/quantum_loop/checkpoint_snapshot.rs;
+  productionRuntime = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle.rs;
+  productionConstruction = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/construction.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
@@ -140,13 +140,13 @@
         needle = ''else "bsp-busy-aps-halted";'';
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" productionLoop [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs" productionLoop [
       {
         label = "snapshot control boundary capture";
         needle = "self.capture_exact_checkpoint_set(&configuration)?";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_snapshot.rs" productionCapture [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/quantum_loop/checkpoint_snapshot.rs" productionCapture [
       {
         label = "running-node publication capture";
         needle = ".capture_exact_checkpoint_for_publication_guarded(";
@@ -172,13 +172,13 @@
         needle = "let expected_record = exact_capture.paged_record().clone();";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" productionRuntime [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle.rs" productionRuntime [
       {
         label = "artifact authentication";
         needle = "failed content authentication";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/construction.rs" productionConstruction [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/construction.rs" productionConstruction [
       {
         label = "restored fingerprint check";
         needle = "restored_fingerprint != expected_fingerprint";

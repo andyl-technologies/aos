@@ -34,6 +34,10 @@ use crate::{
     prepare_production_paused_checkpoint_promotion_restart, publish_next_objective_evaluation,
     resolve_production_paused_checkpoint_promotion_recovery,
 };
+use crate::{
+    AuthenticatedProductionCheckpointCodecFixture,
+    build_authenticated_production_checkpoint_codec_fixture,
+};
 use crucible::model::{
     Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
     MeasurementId, MeasurementTerminalState, MetricDefinition, MetricId, MetricSource,
@@ -41,10 +45,6 @@ use crucible::model::{
 };
 use crucible::{
     Configuration, Icount, Plan, Properties, ScenarioDefForm, Seed, VirtualTime, World,
-};
-use crucible_api::{
-    AuthenticatedProductionCheckpointCodecFixture,
-    build_authenticated_production_checkpoint_codec_fixture,
 };
 use crucible_campaign::{
     ActiveAttemptPolicy, ApplyCampaignCommandRequest, AssignmentId, Attempt, AttemptId,
@@ -499,7 +499,7 @@ impl ProductionPausedCheckpointReplayFactory for CountingProductionReplayFactory
         &mut self,
         _world: &World,
         _configuration: &Configuration,
-        _target: crucible_api::ProductionVmReplayExactNodeRestoreAdmission,
+        _target: crate::ProductionVmReplayExactNodeRestoreAdmission,
         _guard: &mut Self::Guard,
     ) -> Result<ProductionPausedCheckpointReplaySession, crucible_qemu::QemuVmRealizationError>
     {

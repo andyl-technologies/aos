@@ -16,12 +16,12 @@ use super::*;
 use crate::packaged_qemu_executor::{
     RetainedTemplateServiceFactory, preparation::PackagedPreparation,
 };
+use crate::vm_lifecycle::ProductionRamSourceDecorator;
 use crate::{
     AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct, RepositoryAttemptWorker,
     decode_crucible_attempt_execution,
 };
 use crucible_api::host_operational::HostResourceVector;
-use crucible_api::vm_lifecycle::ProductionRamSourceDecorator;
 use crucible_campaign::CampaignExecutorStore;
 use crucible_qemu::ram_source::{QemuRamBacking, QemuRamResponseFault, QemuRamSourceError};
 use std::sync::Mutex;

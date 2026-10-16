@@ -418,7 +418,7 @@ pub enum GuardedTransferError {
     Original(#[from] HostSupervisionError),
     /// Actual stopped process ownership or native runstate refused.
     #[error("guarded transfer stopped World refused")]
-    Stopped(#[source] crucible_api::ProductionStoppedLifecycleError),
+    Stopped(#[source] crate::ProductionStoppedLifecycleError),
     /// The existing sole-writer actor refused its route.
     #[error("guarded transfer actor refused")]
     Route(#[from] crucible_api::host_operational::HostOperationalError),

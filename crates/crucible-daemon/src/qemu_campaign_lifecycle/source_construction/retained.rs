@@ -9,7 +9,7 @@ pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall<
 > {
     Unborn(crate::qemu_lifecycle_launcher::UnbornSourceConstruction<F>),
     Api {
-        owner: crucible_api::ProductionVmConstructionFailure,
+        owner: crate::ProductionVmConstructionFailure,
         handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
     },
     Handoff(Box<dyn ProductionVmCleanupHandoff>),

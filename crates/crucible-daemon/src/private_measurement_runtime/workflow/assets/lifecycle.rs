@@ -6,9 +6,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::ProductionVmLifecycleConfig;
+use crate::vm_lifecycle::ProductionVmGuestAssetPaths;
 use crucible::model::VmArchitecture;
-use crucible_api::ProductionVmLifecycleConfig;
-use crucible_api::vm_lifecycle::ProductionVmGuestAssetPaths;
 use crucible_qemu::QemuRootImageFormat;
 
 use super::*;

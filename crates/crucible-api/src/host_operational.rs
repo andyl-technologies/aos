@@ -557,3 +557,13 @@ pub fn host_operational_request_digest(
     digest.update(&bytes);
     Ok(*digest.finalize().as_bytes())
 }
+
+mod ram_resources;
+pub use ram_resources::{
+    HostRamAdmissionError, HostRamBootstrapLimits, HostRamProcessFamilyNativeAllowances,
+    HostRamProcessFamilyPartition, HostRamProcessNativeAllowance,
+    ProductionHostRamLaunchRequirements, ProductionHostRamLaunchShape,
+    ProductionHostRamNativeNodeLimits, ProductionHostRamNativeWorldIdentity,
+    ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
+    partition_host_ram_launch_resources,
+};

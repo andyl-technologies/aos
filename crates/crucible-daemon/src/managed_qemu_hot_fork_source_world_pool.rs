@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld;
+use crate::vm_lifecycle::ProductionVmHotForkSourceWorld;
 use thiserror::Error;
 
 use crate::qemu_hot_fork_source_capture::{
@@ -385,7 +385,7 @@ impl std::error::Error for ManagedQemuHotForkSourceWorldBindingFailure {
 pub enum ManagedQemuHotForkSourceWorldBindingError {
     /// The complete continuation is unavailable; the binding failure keeps its source.
     #[error("authenticate retained source continuation")]
-    Continuation(#[source] crucible_api::vm_lifecycle::ProductionVmHotForkContinuationUnavailable),
+    Continuation(#[source] crate::vm_lifecycle::ProductionVmHotForkContinuationUnavailable),
     /// Captured semantic content differs from the internally derived reuse key.
     #[error("source world scenario/configuration differs from its managed reuse key")]
     SourceKeyMismatch {
@@ -461,7 +461,7 @@ impl<E> std::fmt::Display for ManagedQemuHotForkAuthenticatedAdmissionFailure<E>
 }
 
 fn canonical_genesis_reuse_boundary_error(
-    continuation: &crucible_api::ProductionVmHotForkWorldContinuation,
+    continuation: &crate::ProductionVmHotForkWorldContinuation,
 ) -> Option<String> {
     let event_log = continuation.event_log_offset();
     let scheduler = continuation.scheduler();
@@ -484,14 +484,13 @@ fn canonical_genesis_reuse_boundary_error(
 
     for node in continuation.nodes() {
         let ready_point = scheduler.epoch_ready_point_counter_for_node(node.node());
-        let physical_matches = match (node.physical_time(), ready_point) {
-            (Some(physical), Some(counter)) => physical.ticks == counter.ticks,
-            (None, Some(_)) => {
-                node.service_state()
-                    == crucible_api::vm_lifecycle::ProductionVmHotForkNodeServiceState::PermanentlyFailed
-            }
-            _ => false,
-        };
+        let physical_matches =
+            match (node.physical_time(), ready_point) {
+                (Some(physical), Some(counter)) => physical.ticks == counter.ticks,
+                (None, Some(_)) => node.service_state()
+                    == crate::vm_lifecycle::ProductionVmHotForkNodeServiceState::PermanentlyFailed,
+                _ => false,
+            };
         if node.scheduler_time().ticks != 0 || !physical_matches {
             return Some(format!(
                 "node={} scheduler_time={} physical_time={:?} epoch_ready_point={ready_point:?} service_state={:?}",

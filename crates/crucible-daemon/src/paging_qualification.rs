@@ -8,8 +8,8 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use crate::vm_lifecycle::ProductionVmLifecycleConfig;
 use crucible_api::host_operational::{HostRamBackend, HostRamQualification};
-use crucible_api::vm_lifecycle::ProductionVmLifecycleConfig;
 use crucible_linux_resource::host_supervision::HostOperationSupervisor;
 use crucible_linux_resource::ram_policy::{HostRamPolicy, HostRamTarget, HostResourceVector};
 use crucible_protocol::ram_control::RamControlError;

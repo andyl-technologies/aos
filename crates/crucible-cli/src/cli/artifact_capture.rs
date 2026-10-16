@@ -364,7 +364,7 @@ pub(crate) fn lifecycle_artifact_payloads(
     store: &dyn crucible::DagStore,
     mutation: Option<&crucible::MaterializedSearchPlan>,
 ) -> Result<Vec<ReproductionArtifactComponentPayload>, CliError> {
-    let mut objects = crucible_api::collect_signal_artifact_objects(plan, store)
+    let mut objects = crucible_daemon::collect_signal_artifact_objects(plan, store)
         .map_err(|error| artifact_error(format!("collect signal artifact closure: {error}")))?;
     let limits = plan.resource_limits();
     let mut retained_bytes = lifecycle_object_bytes(&objects)?;

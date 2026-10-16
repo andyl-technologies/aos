@@ -117,32 +117,48 @@ post-check errors remain separate typed history after physical closure. The
 component executor's separate no-Main shutdown path closes any saved dispatcher
 without requiring a native dispatcher to have been created.
 
-The normal Cargo workspace check passes with all targets. The local API library
-has 487 passes. The latest full daemon run has 1,172 passes, 18 failures and
-43 ignored tests. Four component executor shutdown regressions now pass,
-along with all eight Source history and saved-Cleanup controls. One of the
-18 failures exposed a GC fixture observation error; after its correction all
-seven membership controls pass. The other 17 failed names are native lifecycle
-and Target integration controls; their required positive behavior remains open.
-All three worker-custody, five cleanup-receipt and two status-ordering controls
-pass, including 24 epochs through one physical cleanup cell and actual file
-destruction before an expired operation's final observation. The component
-worker destruction regression passes without changing its assertions. All ten
-shared-dispatcher controls pass; the QEMU library has 1,045 passes, five
-capture-related failures and three ignored probes. These component controls
-issue no Main or native Source and do not qualify deployed resource return.
+Concrete VM construction, runtime, checkpoint and cleanup ownership now live in
+`crucible-daemon`. The API owns transport-neutral operational data and cleanup
+operations; it no longer depends on the QEMU implementation. Handoff upcasts the
+same preallocated backend body into its existing exact cleanup cell, without a
+replacement allocation or owner. The cutover removes 112 obsolete QEMU boundary
+allowances and preserves all 380 lifecycle and RAM unit-test declarations.
+Independent default-feature library builds now include their own unit fixtures
+without depending on workspace-wide feature unification. External fixtures
+remain opt-in, and native permission requirements are unchanged.
 
-Native Source activation, genuine Target preparation, owner-driven capture,
-API backend separation and full qualification remain open. The normal-service
-VM target now uses the source-built client-script builder; its local evaluation
-reaches the QEMU build, whose dirty-iterator fixture still fails. No VM lane was
-executed. The required application-target build passed locally for commit
+The normal Cargo workspace check passes with all targets. The current API
+library has 119 passes; the full daemon run has 1,541 passes, 17 failures and
+43 ignored tests. All 17 failing names match the preceding native lifecycle and
+Target integration failures; their required positive behavior remains open.
+The prior GC fixture correction now passes in the full run, including the large
+packed-volume control. All eight Source history/saved-Cleanup controls, four
+component shutdown regressions, three worker-custody controls, five exact receipt
+controls and two status-ordering controls pass. These include 24 epochs through
+one physical cleanup cell and actual body destruction before expired-operation
+observation. The last QEMU library run has 1,045 passes, five capture-related
+failures and three ignored probes. Component results do not qualify deployed
+resource return or VM performance.
+
+All 31 Rust ABI, licensing, crate-layer and scheduler-boundary checks pass, as do
+26 gate-traceability checks, five engineering-hygiene controls, the two production
+effect-matrix checks, the schema-registry control and all three daemon doctests.
+The testing-standards suite has 22 passes and six failures: obsolete plugin-worker
+contracts, changed native-retirement/dispatcher contracts and missing exact
+operational classifications remain to be reconciled. Its live guard and custody
+requirements have not been waived. The Nix scheduler boundary now checks the
+production adapter in the daemon; its separate raw source scan still incorrectly
+includes CLI test-only delegation, while the Rust production-aware scan passes.
+
+Native Source activation, genuine Target preparation, owner-driven capture and
+full qualification remain open. The normal-service VM evaluation reaches the
+QEMU build, whose dirty-iterator fixture still fails; no VM lane was executed.
+The required application-target build passed locally for commit
 `f11edff9846b31dfec36633f8ad06c8ce73d7e5a`, including all application unit and
-integration targets. The subsequent never-born return changes pass the normal
-Cargo workspace/all-targets check, all 148 Linux resource tests, source-shape
-review and formatting. The daemon results above distinguish the full run from
-the final fixture correction's focused rerun; a fully passing integrated suite
-is not claimed.
+integration targets. Its successor for the backend cutover is running locally
+with remote builders disabled. All 148 Linux resource tests passed in the
+preceding never-born return cohort. A fully passing integrated suite and VM
+performance parity are not claimed.
 
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.

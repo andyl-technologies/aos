@@ -389,7 +389,7 @@ impl AttemptExecutionContext {
     #[must_use]
     pub fn host_ram_bootstrap_limits(
         &self,
-    ) -> Option<crucible_api::vm_lifecycle::HostRamBootstrapLimits> {
+    ) -> Option<crucible_api::host_operational::HostRamBootstrapLimits> {
         self.host_operational_registry.as_ref()?.bootstrap_limits()
     }
 

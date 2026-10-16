@@ -265,7 +265,7 @@ where
         #[cfg(not(test))]
         return Err(PackagedQemuExecutorError::MissingNormalProcessOwner);
     };
-    let bootstrap = crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(
+    let bootstrap = crucible_api::host_operational::HostRamBootstrapLimits::new(
         u64::from(config.host.maximum_tasks()),
         config.host.maximum_file_descriptors(),
         config.host.maximum_node_host_service_tasks(),
@@ -464,7 +464,7 @@ pub(super) fn run_capture<T>(
         return run_original_capture(preparation, config, scenario, original, capture);
     }
     use crucible_api::host_operational::HostOperationalError;
-    use crucible_api::vm_lifecycle::{
+    use crucible_api::host_operational::{
         ProductionHostRamLaunchShape, partition_host_ram_launch_resources,
     };
 
@@ -633,7 +633,7 @@ fn run_original_capture<T>(
     capture: impl FnOnce(&AttemptExecutionContext) -> Result<T, PackagedQemuExecutorError>,
 ) -> Result<T, PackagedQemuExecutorError> {
     use crucible_api::host_operational::HostOperationalError;
-    use crucible_api::vm_lifecycle::{
+    use crucible_api::host_operational::{
         ProductionHostRamLaunchShape, partition_host_ram_launch_resources,
     };
 

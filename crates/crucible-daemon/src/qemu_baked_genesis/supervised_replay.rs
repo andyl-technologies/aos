@@ -6,10 +6,9 @@
 
 use super::*;
 use crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure as ReplayBeginFailure;
+use crate::vm_lifecycle::ProductionHostRamRegistrationFactory;
 use crate::{QemuAttemptOperationalBoundary, QemuAttemptResourceGuard};
-use crucible_api::vm_lifecycle::{
-    ProductionHostRamLaunchShape, ProductionHostRamRegistrationFactory,
-};
+use crucible_api::host_operational::ProductionHostRamLaunchShape;
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
     QemuPreparedRunDirectory,

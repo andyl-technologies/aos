@@ -12,6 +12,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use crate::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig};
 use crucible::model::{FaultReplayMode, ResolvedEffectTrace};
 use crucible::{
     AssertionDef, AssertionId, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
@@ -21,7 +22,6 @@ use crucible::{
     SchedulerError, SchedulerEventLogEntry, Seed, SelectionDecision, VirtualTime, WhiteBoxPolicy,
     World, WorldNode,
 };
-use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig};
 use crucible_campaign::{
     AttemptResourceLimits, BooleanDomain, CampaignState, ChoiceClassContext, ChoiceDiscovery,
     ChoiceDomain, ChoiceSource, ChoiceValue, ExactRational, IntegerDomain, IntegerRepresentation,
@@ -301,7 +301,7 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
                 message: error.to_string(),
             })?
             .keep();
-        let fixture = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(&directory)
+        let fixture = crate::build_exact_ram_production_checkpoint_codec_fixture(&directory)
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: error.to_string(),
             })?;
@@ -334,7 +334,7 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
 
     fn replay_launch_profiles(
         &self,
-    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+    ) -> Result<Vec<crate::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("terminal fixture has no replay launch profiles"),
         })
@@ -520,7 +520,7 @@ impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
 
     fn replay_launch_profiles(
         &self,
-    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+    ) -> Result<Vec<crate::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("selectable fixture has no replay launch profiles"),
         })
@@ -2389,7 +2389,7 @@ fn checkpoint_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
     // authentication path without exposing a source-parameterized test API.
     let fixture_directory = tempfile::TempDir::new().expect("checkpoint request fixture root");
     let fixture =
-        crucible_api::build_exact_ram_production_checkpoint_codec_fixture(fixture_directory.path())
+        crate::build_exact_ram_production_checkpoint_codec_fixture(fixture_directory.path())
             .expect("authenticated checkpoint request fixture");
     let scenario = fixture.source().clone();
     let seed = scenario.seed();

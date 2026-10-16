@@ -7,10 +7,10 @@
 //! factory can mint [`AuthenticatedCanonicalQemuHotForkSource`], so managed
 //! admission never accepts a caller-authored key or compatibility label.
 
-use crucible::{Configuration, ScenarioDefForm, SchedulerOperationalFailureClass};
-use crucible_api::vm_lifecycle::{
+use crate::vm_lifecycle::{
     ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
 };
+use crucible::{Configuration, ScenarioDefForm, SchedulerOperationalFailureClass};
 use crucible_campaign::{
     CampaignExecutorStore, CampaignLineage, CampaignLineageId, CampaignRepositoryError,
     ConfigurationArtifactId, ExactCheckpointId, ExecutorCompatibilityProfile, ScenarioArtifactId,
@@ -382,7 +382,7 @@ pub struct AuthenticatedExactQemuHotForkSource {
 impl AuthenticatedExactQemuHotForkSource {
     pub(crate) fn with_cleanup_observer(
         mut self,
-        observer: std::sync::Arc<dyn crucible_api::vm_lifecycle::ProductionHotForkCleanupObserver>,
+        observer: std::sync::Arc<dyn crate::vm_lifecycle::ProductionHotForkCleanupObserver>,
     ) -> Self {
         self.source = self.source.with_cleanup_observer(observer);
         self
@@ -415,7 +415,7 @@ impl AuthenticatedExactQemuHotForkSource {
 impl AuthenticatedCanonicalQemuHotForkSource {
     pub(crate) fn with_cleanup_observer(
         mut self,
-        observer: std::sync::Arc<dyn crucible_api::vm_lifecycle::ProductionHotForkCleanupObserver>,
+        observer: std::sync::Arc<dyn crate::vm_lifecycle::ProductionHotForkCleanupObserver>,
     ) -> Self {
         self.source = self.source.with_cleanup_observer(observer);
         self
@@ -480,7 +480,7 @@ pub enum ProductionQemuHotForkSourceCaptureError {
 pub enum ProductionQemuHotForkExactSourceCaptureError {
     /// The prepared continuation is unavailable; its complete source remains retained.
     #[error("authenticate prepared exact source continuation; source retained")]
-    Continuation(#[source] crucible_api::vm_lifecycle::ProductionVmHotForkContinuationUnavailable),
+    Continuation(#[source] crate::vm_lifecycle::ProductionVmHotForkContinuationUnavailable),
     /// Exact capture requires an authenticated checkpoint execution origin.
     #[error("exact hot-fork source capture has no resume checkpoint")]
     MissingCheckpoint,

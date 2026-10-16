@@ -7,11 +7,9 @@
 
 use std::sync::Arc;
 
+use crate::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
 use crucible::Configuration;
-use crucible_api::{
-    LifecycleApiError, ProductionVmLifecycleConfig, ProductionVmLifecycleLoop,
-    ResumeObservationPreparationContext, ResumeSessionRequest,
-};
+use crucible_api::{LifecycleApiError, ResumeObservationPreparationContext, ResumeSessionRequest};
 #[cfg(test)]
 use crucible_campaign::AttemptResourceLimits;
 use crucible_campaign::ObservationStopProof;

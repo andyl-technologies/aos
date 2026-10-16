@@ -12,6 +12,7 @@ fn accepted_step(
 
 use std::collections::BTreeMap;
 
+use crate::ProductionFaultEvidenceSnapshot;
 use crucible::model::{
     BindingActionCause, BindingActionKind, EffectKind, EffectLifetime, FaultPhase,
 };
@@ -20,7 +21,6 @@ use crucible::{
     ObservableEventPayload, QuantumOutcome, QuantumRequest, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SelectionDecision,
 };
-use crucible_api::ProductionFaultEvidenceSnapshot;
 use crucible_campaign::{ChoiceValue, ConfigurationId, IntegerValue, Selection};
 
 use super::*;

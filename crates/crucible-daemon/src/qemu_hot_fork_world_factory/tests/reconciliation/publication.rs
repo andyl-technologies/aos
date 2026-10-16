@@ -1,7 +1,7 @@
 //! Adoption, publication, preflight, and routing regressions.
 
 use super::*;
-use crucible_api::vm_lifecycle::prepared_multi_node_hot_fork_source_world_with_time_limit_for_scenario_for_test;
+use crate::vm_lifecycle::prepared_multi_node_hot_fork_source_world_with_time_limit_for_scenario_for_test;
 use crucible_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS;
 
 #[test]

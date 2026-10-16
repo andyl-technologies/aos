@@ -205,11 +205,13 @@ fn cold_preparation_uses_real_service_and_releases_only_after_capture_and_join()
                 crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
                     .expect("production factory accepts genuine service");
             factory
-                .configure_world(&[crucible_api::vm_lifecycle::ProductionHostRamLaunchShape {
-                    node: String::from("prepared-node"),
-                    declared_ram_bytes: 16 * 1024 * 1024,
-                    vcpus: 1,
-                }])
+                .configure_world(&[
+                    crucible_api::host_operational::ProductionHostRamLaunchShape {
+                        node: String::from("prepared-node"),
+                        declared_ram_bytes: 16 * 1024 * 1024,
+                        vcpus: 1,
+                    },
+                ])
                 .expect("factory resolves admitted service partition");
             Ok(())
         })
@@ -253,11 +255,13 @@ fn unfinished_preparation_retains_all_charges_and_original_failure() {
                 crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
                     .expect("production RAM authority");
             factory
-                .configure_world(&[crucible_api::vm_lifecycle::ProductionHostRamLaunchShape {
-                    node: String::from("prepared-node"),
-                    declared_ram_bytes: 16 * 1024 * 1024,
-                    vcpus: 1,
-                }])
+                .configure_world(&[
+                    crucible_api::host_operational::ProductionHostRamLaunchShape {
+                        node: String::from("prepared-node"),
+                        declared_ram_bytes: 16 * 1024 * 1024,
+                        vcpus: 1,
+                    },
+                ])
                 .expect("world");
             // This component reserves an unpublished budget owner, without
             // claiming a native cgroup/controller or creating a guest process.
@@ -325,8 +329,8 @@ fn unfinished_preparation_retains_all_charges_and_original_failure() {
 #[test]
 fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
     use super::super::hot_fork::retained_service::RetainedTemplateServiceFactory;
+    use crate::vm_lifecycle::ProductionHotForkCleanupObserver;
     use crucible_api::host_operational::HostResourceVector;
-    use crucible_api::vm_lifecycle::ProductionHotForkCleanupObserver;
     use crucible_qemu::ram_control::RamControlRegistrar;
 
     let directory = tempfile::TempDir::new().expect("directory");
@@ -455,11 +459,13 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
     let factory = crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
         .expect("same real service registrar");
     factory
-        .configure_world(&[crucible_api::vm_lifecycle::ProductionHostRamLaunchShape {
-            node: "prepared-node".into(),
-            declared_ram_bytes: 16 * 1024 * 1024,
-            vcpus: 1,
-        }])
+        .configure_world(&[
+            crucible_api::host_operational::ProductionHostRamLaunchShape {
+                node: "prepared-node".into(),
+                declared_ram_bytes: 16 * 1024 * 1024,
+                vcpus: 1,
+            },
+        ])
         .expect("whole world partition");
     let target = crucible_api::host_operational::HostRamTarget {
         daemon_epoch: context.host_daemon_epoch(),

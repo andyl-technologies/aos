@@ -28,7 +28,7 @@ fn lifecycle_assets_require_installed_catalog_scope_and_retain_original_credit()
         assert!(matches!(
             install_lifecycle_assets(&mut config, &lifecycle),
             Err(PackagedQemuExecutorError::LifecycleConfiguration(
-                crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError::MissingAdmission
+                crate::vm_lifecycle::ProductionVmLifecycleConfigCloneError::MissingAdmission
             ))
         ));
         assert!(Arc::ptr_eq(&config.lifecycle, &original));

@@ -11,10 +11,10 @@ pub use commit::{
     GuardedSourceTransferOffer, GuardedSourceTransferOperation, GuardedTransferError,
 };
 
+use crate::ProductionVmStoppedLifecycle;
 use crate::imported_checkpoint::{
     AuthenticatedImportedCheckpoint, ImportedCheckpointBasis, ImportedCheckpointMaintenance,
 };
-use crucible_api::ProductionVmStoppedLifecycle;
 use crucible_linux_resource::host_supervision::HostSupervisionError;
 
 /// Retains the whole stopped World, source root and original receiver charge.

@@ -133,7 +133,7 @@ fn genuine_guarded_owner_refuses_uninstalled_quota_before_publication(
 )]
 fn genuine_standalone_main_retirement_retains_busy_custody_and_closes_once(
     mut owner: guarded::GuardedCampaignOwner,
-    mut source: crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld,
+    mut source: crate::vm_lifecycle::ProductionVmHotForkSourceWorld,
     target_resources: AttemptResourceLimits,
 ) {
     owner

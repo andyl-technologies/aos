@@ -12,12 +12,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible::{
     Configuration, ContentHash, ExecutionFingerprint, FingerprintSample, Icount, NodeId, Plan,
     Properties, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
     ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, Seed, VirtualTime, World,
 };
-use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_campaign::{
     AssignmentId, AttemptId, BudgetGrant, CampaignCommandId, CampaignControlAction,
     CampaignLineage, CampaignLineageId, CampaignMode, CampaignOperationalStatus, CampaignPolicy,
@@ -937,9 +937,8 @@ struct ExactPinMaterializerFixture {
 
 fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMaterializerFixture {
     let production_root = directory.path().join("production-checkpoint");
-    let production =
-        crucible_api::build_exact_ram_production_checkpoint_codec_fixture(&production_root)
-            .expect("build exact-RAM production checkpoint");
+    let production = crate::build_exact_ram_production_checkpoint_codec_fixture(&production_root)
+        .expect("build exact-RAM production checkpoint");
     let backend = Arc::new(DirectoryBlobBackend::new(
         "packaged-exact-pin-store",
         directory.path().join("objects"),

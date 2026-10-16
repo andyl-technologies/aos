@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
+use crate::build_authenticated_production_checkpoint_codec_fixture;
 use crucible::{
     Configuration, ContentHash, ScenarioDef, SchedulerLivenessScenario, SimInstant,
     SingleScheduler, VirtualTime,
 };
-use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
 use crucible_campaign::{
     AttemptRetentionPolicyDisposition, CampaignHash, ExecutionRetentionIntent,
 };

@@ -1123,8 +1123,7 @@ mod tests {
             crate::exact_checkpoint_store::test_support::fixture_decode_scope();
 
         let directory = tempfile::tempdir()?;
-        let fixture =
-            crucible_api::build_exact_ram_production_checkpoint_codec_fixture(directory.path())?;
+        let fixture = crate::build_exact_ram_production_checkpoint_codec_fixture(directory.path())?;
         let repository_backend = Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
             "campaign-run-exact-retention-integration",
             u64::MAX,

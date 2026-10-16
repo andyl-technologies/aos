@@ -19,7 +19,7 @@ use crucible::{
 // crucible-lint: allow host-nondeterminism-state -- the observer forwards scheduler-owned quantum requests and records successful outcomes without selecting modeled state.
 use crucible::{QuantumOutcome, QuantumRequest};
 // crucible-lint: allow host-nondeterminism-state -- replay and fault snapshots remain typed evidence forwarded from the guarded lifecycle.
-use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
+use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 use thiserror::Error;

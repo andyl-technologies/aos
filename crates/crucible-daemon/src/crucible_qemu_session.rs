@@ -685,7 +685,7 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
         cancellation: ExecutionCancellation,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
         _consumer_control_bytes: u64,
-        _registration: &dyn crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory,
+        _registration: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
         _before_effects: &mut NativeWorldBeforeEffects<'_>,
     ) -> Result<Self::Guard, QemuAttemptResourceGuardBeginFailure> {
         let _ = (resources, cancellation);

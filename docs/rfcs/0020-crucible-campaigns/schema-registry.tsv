@@ -158,10 +158,10 @@ crucible.executor.hot-checkpoint-fallback	1	crucible-daemon::hot_checkpoint_rete
 crucible.qemu.vm-snapshot	4	crucible-qemu::realization	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.scheduler-continuation	6	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
-crucible.production-exact-closure	10	crucible-api::vm_lifecycle	device-state	gate:content-address,gate:exact-closure-streaming
-crucible.production-network-adapter-checkpoint	11	crucible-api::vm_lifecycle::network_faults	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
-crucible.production-run-lock	1	crucible-api::vm_lifecycle	operational-record	gate:campaign-cold-continuity
-crucible.production-run-state	2	crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence	operational-record	gate:campaign-cold-continuity,gate:exact-closure-streaming
+crucible.production-exact-closure	10	crucible-daemon::vm_lifecycle	device-state	gate:content-address,gate:exact-closure-streaming
+crucible.production-network-adapter-checkpoint	11	crucible-daemon::vm_lifecycle::network_faults	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
+crucible.production-run-lock	1	crucible-daemon::vm_lifecycle	operational-record	gate:campaign-cold-continuity
+crucible.production-run-state	2	crucible-daemon::vm_lifecycle::quantum_loop::lifecycle::persistence	operational-record	gate:campaign-cold-continuity,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-object	6	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-index	1	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
 crucible.executor.checkpoint-choice-closure	1	crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure	observation	gate:typed-choice,gate:campaign-replay,gate:exact-closure-streaming

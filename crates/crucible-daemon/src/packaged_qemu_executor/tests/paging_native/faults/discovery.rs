@@ -19,7 +19,7 @@ pub(super) fn with_discovered_world(run: impl FnOnce(&World)) {
             // This original Service spans the six sequential execution/replay
             // lanes; its finite lifetime is admitted before its watchdog starts.
             config.lifecycle = Arc::new(
-                crucible_api::vm_lifecycle::ProductionVmLifecycleConfig::new(
+                crate::vm_lifecycle::ProductionVmLifecycleConfig::new(
                     environment_path("CRUCIBLE_PAGING_QEMU"),
                     environment_path("CRUCIBLE_PAGING_PLUGIN"),
                     environment_path("CRUCIBLE_PAGING_KERNEL"),

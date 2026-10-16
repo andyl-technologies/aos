@@ -282,7 +282,7 @@ pub(super) enum SynchronousCampaignExecutorError<E> {
     #[cfg(any(test, feature = "test-support"))]
     CaptureAbort(Box<CheckpointResultAbortError<LocalExecutorError<Infallible>>>),
     #[cfg(any(test, feature = "test-support"))]
-    CaptureNativeRetirement(crucible_api::ProductionExactCheckpointRetirementError),
+    CaptureNativeRetirement(crate::ProductionExactCheckpointRetirementError),
     #[cfg(any(test, feature = "test-support"))]
     CaptureNotPaused,
     UnexpectedCheckpoint,

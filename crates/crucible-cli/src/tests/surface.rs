@@ -1845,7 +1845,7 @@ pub(super) fn trusted_serve_debugging_does_not_enable_campaign_worker_gdbstubs()
     };
     let authorization = debug_authorization_policy(args)
         .unwrap_or_else(|error| panic!("trusted serve authorization should parse: {error}"));
-    let campaign_config = crucible_api::ProductionVmLifecycleConfig::new(
+    let campaign_config = crucible_daemon::ProductionVmLifecycleConfig::new(
         "/aos/bin/qemu-system-x86_64",
         "/aos/lib/crucible-plugin.so",
         "/aos/kernel",
@@ -1877,7 +1877,7 @@ pub(super) fn mtls_serve_without_debug_roles_omits_session_fingerprints() {
     };
     let authorization = debug_authorization_policy(args)
         .unwrap_or_else(|error| panic!("mTLS serve authorization should parse: {error}"));
-    let campaign_config = crucible_api::ProductionVmLifecycleConfig::new(
+    let campaign_config = crucible_daemon::ProductionVmLifecycleConfig::new(
         "/aos/bin/qemu-system-x86_64",
         "/aos/lib/crucible-plugin.so",
         "/aos/kernel",

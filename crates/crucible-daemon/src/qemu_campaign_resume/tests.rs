@@ -17,11 +17,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleResumeState};
 use crucible::{
     Configuration, ContentHash, Decision, ExecutionFingerprint, FingerprintSample, NodeId,
     SchedulerEventLogEntry, SchedulerQuiescence, SelectionDecision, VirtualTime,
 };
-use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleResumeState};
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath, BranchPathSegment,
     CampaignFactId, CampaignHash, CampaignLineage, CampaignRepository, ChoiceClassContext,
@@ -129,7 +129,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
 
     fn replay_launch_profiles(
         &self,
-    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+    ) -> Result<Vec<crate::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("resume fixture has no replay launch profiles"),
         })
@@ -1058,7 +1058,7 @@ fn test_checkpoint_product() -> AttemptExecutionProduct {
     let directory = tempfile::tempdir()
         .expect("resume production checkpoint directory")
         .keep();
-    let fixture = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(&directory)
+    let fixture = crate::build_exact_ram_production_checkpoint_codec_fixture(&directory)
         .expect("build resume production checkpoint");
 
     AttemptExecutionProduct::exact_checkpoint(CapturedAttemptCheckpoint::from_production_closure(

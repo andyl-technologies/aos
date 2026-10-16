@@ -62,7 +62,8 @@
           test -f "$daemon_test"
           mkdir -p "$out/bin"
           cp "$daemon_test" "$out/bin/crucible-daemon-scaling"
-          for package in crucible_api crucible_qemu; do
+          ln -s crucible-daemon-scaling "$out/bin/crucible_daemon-clone-cost"
+          for package in crucible_qemu; do
             binary=$(jq -r --arg package "$package" \
               'select(.reason == "compiler-artifact" and .target.name == $package and .profile.test == true and .executable != null) | .executable' \
               "$TMPDIR/messages.jsonl")
@@ -361,7 +362,7 @@ in
       fi
 
       run_host_clone_test \
-        crucible_api \
+        crucible_daemon \
         vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings \
         /tmp/host-clone-cost-result
       require_exact_test_marker host_continuation_siblings=64 /tmp/host-clone-cost-result

@@ -167,13 +167,15 @@ impl DebugGatewayProcess {
 
     /// Unlocks guest-write RSP packets after the owner actor records its fork.
     ///
+    /// The owning backend calls this after its session actor has recorded the
+    /// noncanonical branch and paused guest execution. Authorization stays on
+    /// this process's private control connection and owner Unix endpoint.
+    ///
     /// # Errors
     ///
     /// Returns [`DebugGatewayClientError`] when the private gateway rejects
     /// the transition or the control transport fails.
-    pub(crate) fn authorize_noncanonical_guest_write(
-        &mut self,
-    ) -> Result<(), DebugGatewayClientError> {
+    pub fn authorize_noncanonical_guest_write(&mut self) -> Result<(), DebugGatewayClientError> {
         self.client.authorize_noncanonical_guest_write()
     }
 

@@ -191,7 +191,7 @@ impl FindingProductionReplayRecipe {
     /// Returns [`FindingProductionReplayCaptureError::InvalidRecipe`] when a
     /// configured execution bound is zero.
     fn from_lifecycle_config(
-        config: &crucible_api::ProductionVmLifecycleConfig,
+        config: &crate::ProductionVmLifecycleConfig,
     ) -> Result<Self, FindingProductionReplayCaptureError> {
         let mut recipe = Self::new(
             config.run_ceiling_ticks(),

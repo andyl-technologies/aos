@@ -202,7 +202,7 @@ fn guarded_continuation_stop(
 pub(super) fn run_local_qemu_campaign_replay(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
-    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
     schedule: crucible::Schedule,
     replay_closure: GuardedCampaignReplayClosure,
     owner: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
@@ -915,7 +915,7 @@ pub(super) fn run_local_qemu_interactive_workflow(
 pub(crate) fn run_local_qemu_campaign_report(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
-    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
 ) -> Result<RunWorkflowReport, CliError> {
     let (campaign, decoding) = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
     let _scope = decoding.enter();

@@ -366,7 +366,7 @@ pub(super) fn prepare_cli_packaged_executor(
     campaigns: std::collections::BTreeSet<crucible_campaign::CampaignName>,
     executor_socket: &Path,
     deployment_path: &Path,
-    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
     process_owner: &crucible_daemon::campaign_process::CampaignProcessOwner,
 ) -> Result<PreparedCliPackagedExecutor, CliError> {
     let process_heap = process_owner.heap();
@@ -484,7 +484,7 @@ impl GuardedCampaignRunDeployment {
     /// ownership, or a complete physical/configuration contract that cannot fit.
     pub(crate) fn execution_config(
         &self,
-        lifecycle: crucible_api::ProductionVmLifecycleConfig,
+        lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
         campaign: crucible_campaign::CampaignName,
         state: &Path,
         limits: crucible_campaign::AttemptResourceLimits,
@@ -535,7 +535,7 @@ struct PackagedExecutorBinding<'a> {
     campaigns: std::collections::BTreeSet<crucible_campaign::CampaignName>,
     endpoint: crucible_daemon::ExecutorLoopbackEndpointConfig,
     state: &'a Path,
-    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
     host: crucible_daemon::LinuxQemuAttemptHostConfig,
     capacity: crucible_daemon::ExecutorCapacity,
     host_operational_capacity: crucible_daemon::HostOperationalCapacity,
@@ -722,7 +722,7 @@ fn deployment_guest_selectable_boundary_diagnostics(
 
 fn deployment_hot_fork_policy(
     deployment: &PackagedExecutorDeployment,
-    lifecycle: &crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: &crucible_daemon::ProductionVmLifecycleConfig,
 ) -> Result<Option<crucible_daemon::PackagedQemuHotForkConfig>, CliError> {
     let Some(policy) = deployment.hot_fork.as_ref() else {
         return Ok(None);
@@ -1257,7 +1257,7 @@ file_descriptors = 1056
         )
     }
 
-    fn hot_fork_artifacts(directory: &Path) -> crucible_api::ProductionVmLifecycleConfig {
+    fn hot_fork_artifacts(directory: &Path) -> crucible_daemon::ProductionVmLifecycleConfig {
         let qemu = directory.join("bin/qemu-system-x86_64");
         let plugin = directory.join("lib/libcrucible-qemu-plugin.so");
         let qemu_marker = directory.join("share/aos/crucible/qemu-build-identity.env");
@@ -1296,7 +1296,7 @@ file_descriptors = 1056
             ),
         )
         .expect("write plugin marker");
-        crucible_api::ProductionVmLifecycleConfig::new(
+        crucible_daemon::ProductionVmLifecycleConfig::new(
             &qemu,
             &plugin,
             directory.join("kernel"),

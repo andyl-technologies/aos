@@ -54,7 +54,7 @@ pub(super) fn capture_campaign_save(
     };
     let mut save_plan = plan_save_invocation(args, temporary.path(), &artifact_directory)
         .or_panic("campaign save plan");
-    let checkpoint_fixture = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(
+    let checkpoint_fixture = crucible_daemon::build_exact_ram_production_checkpoint_codec_fixture(
         &temporary.path().join("request-checkpoint-fixture"),
     )
     .or_panic("authenticated campaign request fixture");

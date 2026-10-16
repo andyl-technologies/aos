@@ -23,9 +23,9 @@ The untagged-writer review found these independently versioned contracts:
 
 | Format | Source evidence | Registry entry |
 | --- | --- | --- |
-| Durable production lifecycle state | `crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence` writes `run-state.json` with `PRODUCTION_RUN_STATE_VERSION = 2`; `recovery` checks that version before decoding. | `crucible.production-run-state` |
-| Production run ownership lock | `crucible-api::vm_lifecycle` writes and rereads `active-run.lock` across process lifetimes. Its record requires version 1, and the reader rejects unversioned or unsupported records. | `crucible.production-run-lock` |
-| Production network adapter continuation | `crucible-api::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 11` and validates that version on restore. | `crucible.production-network-adapter-checkpoint` |
+| Durable production lifecycle state | `crucible-daemon::vm_lifecycle::quantum_loop::lifecycle::persistence` writes `run-state.json` with `PRODUCTION_RUN_STATE_VERSION = 2`; `recovery` checks that version before decoding. | `crucible.production-run-state` |
+| Production run ownership lock | `crucible-daemon::vm_lifecycle` writes and rereads `active-run.lock` across process lifetimes. Its record requires version 1, and the reader rejects unversioned or unsupported records. | `crucible.production-run-lock` |
+| Production network adapter continuation | `crucible-daemon::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 11` and validates that version on restore. | `crucible.production-network-adapter-checkpoint` |
 | Pending network output | `crucible::backend::io::network_checkpoint` independently encodes and decodes canonical CBOR for each routed frame, with `BACKEND_NETWORK_OUTPUT_VERSION = 2`. | `crucible.execution.backend-network-output` |
 | Scheduler event-log segment | `crucible::scheduler` writes a binary segment with `EVENT_LOG_SEGMENT_BINARY_VERSION = 4`; the exact checkpoint store retains and authenticates segment bytes for resume. | `crucible.execution.event-log-segment` |
 | Scheduler-owned nested continuations | `crucible::device_subnode::checkpoint` encodes and checks `crucible.device-scheduling-subnode.v1`; `crucible::scheduler::runtime_state::network_checkpoint` independently encodes and checks `crucible.scheduler-network.v2`. Both are decoded from the registered single-scheduler continuation. | `crucible.execution.device-scheduling-subnode`, `crucible.execution.scheduler-network` |
@@ -118,8 +118,10 @@ rows. They do not create an additional wire or durable schema:
   scenario, reproduction, schedule, or checkpoint payloads. Their source tags
   live in `crucible::model::toml`; they do not create a new RFC-0020 contract.
 
-The `crucible-api/src` production `write_all` and `serde_json::{to_*,from_*}`
-paths were reviewed as a bounded source family, excluding test fixtures:
+The following production `write_all` and `serde_json::{to_*,from_*}` paths
+were reviewed as a bounded source family, excluding test fixtures. The VM
+lifecycle paths now live under `crucible-daemon/src`; the debugger transport
+paths remain under `crucible-api/src`:
 
 | Source paths | Classification |
 | --- | --- |
@@ -130,8 +132,8 @@ paths were reviewed as a bounded source family, excluding test fixtures:
 | `vm_lifecycle/checkpoint_store/{storage,sparse}.rs` and `storage/{file_io,copy}.rs` writes | Authenticated copies or sparse reconstruction of existing checkpoint artifacts and content-addressed bytes. Their formats are owned by the corresponding checkpoint and QEMU VM-state registry rows; copying does not introduce a new decoder. |
 | `debug_gateway.rs` frame write and `debug_relay.rs` stream write | The former writes `crucible.debug-gateway.frame` encoded by `crucible-protocol`; the latter forwards opaque debugger stream bytes without a Crucible schema. |
 
-This review is limited to those `crucible-api/src` production calls and the
-`modules/services/crucible-campaign.nix` outputs. That Nix module emits the
+This review is limited to those lifecycle and debugger production calls and
+the `modules/services/crucible-campaign.nix` outputs. That Nix module emits the
 registered `aos.crucible.campaign-runtime` file and the registered
 `crucible.campaign-local-policy` TOML file parsed by
 `crucible-daemon::campaign_policy`; its systemd unit is service-manager

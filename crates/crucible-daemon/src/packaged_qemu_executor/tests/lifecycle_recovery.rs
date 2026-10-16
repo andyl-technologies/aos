@@ -316,7 +316,7 @@ fn actor_status_snapshots_reject_intervening_ownership_changes() {
 )]
 fn genuine_main_retirement_closes_its_existing_target_dispatcher(
     mut executor: PackagedQemuExecutor,
-    mut source: crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld,
+    mut source: crate::vm_lifecycle::ProductionVmHotForkSourceWorld,
     target_resources: AttemptResourceLimits,
 ) {
     executor

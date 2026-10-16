@@ -176,7 +176,7 @@ fn asset_number(name: &str) -> u64 {
 
 fn byte_config(mut config: PackagedQemuExecutorConfig) -> PackagedQemuExecutorConfig {
     config.lifecycle = Arc::new(
-        crucible_api::vm_lifecycle::ProductionVmLifecycleConfig::new(
+        crate::vm_lifecycle::ProductionVmLifecycleConfig::new(
             environment_path("CRUCIBLE_PAGING_QEMU"),
             environment_path("CRUCIBLE_PAGING_PLUGIN"),
             environment_path("CRUCIBLE_BYTE_KERNEL"),
@@ -644,7 +644,7 @@ impl AttemptExecutionModel for ServiceModel<'_> {
 // zero of pc.ram, and the guest's first 2 MiB are identity mapped. This is a
 // source-bound profile assertion, not a mapping inferred from portable topology.
 fn assert_captured_store_result(
-    backing: &crucible_api::vm_lifecycle::ProductionPagedRamSource,
+    backing: &crate::vm_lifecycle::ProductionPagedRamSource,
     context: &AttemptExecutionContext,
     address: u64,
 ) -> u8 {

@@ -311,9 +311,7 @@ impl PreparedCheckpointResult {
         self.checkpoint.root()
     }
 
-    pub(crate) fn native_retirement(
-        &self,
-    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+    pub(crate) fn native_retirement(&self) -> Option<crate::ProductionExactCheckpointRetirement> {
         self.checkpoint.native_retirement()
     }
 }
@@ -425,9 +423,7 @@ impl CheckpointResultAbortToken {
         }
     }
 
-    pub(crate) fn native_retirement(
-        &self,
-    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+    pub(crate) fn native_retirement(&self) -> Option<crate::ProductionExactCheckpointRetirement> {
         match self {
             Self::Prepared(prepared) => prepared.native_retirement(),
             Self::Staged(staged) => staged.prepared.native_retirement(),

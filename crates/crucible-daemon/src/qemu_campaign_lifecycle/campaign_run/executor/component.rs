@@ -559,7 +559,7 @@ fn abort_checkpoint_capture<E>(
 
 fn checkpoint_result_retirement(
     checkpoint: crate::AttemptCheckpointResult,
-) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+) -> Option<crate::ProductionExactCheckpointRetirement> {
     match checkpoint.into_state() {
         crate::exact_checkpoint_store::AttemptCheckpointResultState::Captured(checkpoint) => {
             Some((*checkpoint).into_closure().native_retirement())
@@ -571,12 +571,12 @@ fn checkpoint_result_retirement(
 }
 
 fn retire_checkpoint_source<E>(
-    retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
+    retirement: Option<crate::ProductionExactCheckpointRetirement>,
 ) -> Result<(), SynchronousCampaignExecutorError<E>> {
     let Some(retirement) = retirement else {
         return Ok(());
     };
-    crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+    crate::retire_production_exact_checkpoint_catalog(&retirement)
         .map(|_| ())
         .map_err(SynchronousCampaignExecutorError::CaptureNativeRetirement)
 }

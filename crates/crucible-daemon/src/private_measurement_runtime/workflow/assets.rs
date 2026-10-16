@@ -35,7 +35,7 @@ const COMPACT_ROOT: &str = "/etc/crucible/measurement-inputs";
 
 pub(super) struct OriginalWorkflowArtifactsOwner {
     executor_config: Option<Box<crate::PackagedQemuExecutorConfig>>,
-    lifecycle: Option<std::sync::Arc<crucible_api::ProductionVmLifecycleConfig>>,
+    lifecycle: Option<std::sync::Arc<crate::ProductionVmLifecycleConfig>>,
     projection: Option<Projection>,
     files: Vec<PinnedInput>,
     models: Vec<LoadedAttempt>,
@@ -91,7 +91,7 @@ enum ArtifactCause {
     #[error("prepared campaign import refused: {0}")]
     Import(#[from] crate::campaign_bootstrap::OriginalPreparedServiceError),
     #[error("authenticated lifecycle construction refused: {0}")]
-    Lifecycle(#[from] crucible_api::vm_lifecycle::ProductionVmGuestAssetAdmissionError),
+    Lifecycle(#[from] crate::vm_lifecycle::ProductionVmGuestAssetAdmissionError),
     #[error("retained campaign state refused: {0}")]
     State(#[from] crate::campaign_bootstrap::OriginalCampaignStateError),
     #[error("a runtime still retains the authenticated lifecycle configuration")]

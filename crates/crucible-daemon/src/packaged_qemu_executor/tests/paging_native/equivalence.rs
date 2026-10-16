@@ -8,11 +8,16 @@
 use super::super::hot_fork_native::{enqueue_promoted_resume, native_repository};
 use super::accepted_promotion::{extend_native_operations, promote_accepted_checkpoint_with_model};
 use super::*;
+use crate::ProductionVmLifecycleConfig;
 use crate::packaged_qemu_executor::RetainedTemplateServiceFactory;
 use crate::packaged_qemu_executor::preparation::PackagedPreparation;
 use crate::qemu_hot_fork_world_factory::{
     QemuHotForkSourceWorldKey, QemuHotForkWorldLifecycleFactory, QemuHotForkWorldLifecycleStart,
     QemuSingleHotForkSourceWorldProvider,
+};
+use crate::vm_lifecycle::{
+    ProductionVmHotForkIoNodeKind, ProductionVmHotForkNodeServiceState,
+    ProductionVmHotForkSourceWorld,
 };
 use crate::{
     AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct,
@@ -20,12 +25,7 @@ use crate::{
     RepositoryAttemptWorker, decode_crucible_attempt_execution,
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
 };
-use crucible_api::ProductionVmLifecycleConfig;
 use crucible_api::host_operational::HostResourceVector;
-use crucible_api::vm_lifecycle::{
-    ProductionVmHotForkIoNodeKind, ProductionVmHotForkNodeServiceState,
-    ProductionVmHotForkSourceWorld,
-};
 use crucible_campaign::CampaignExecutorStore;
 use crucible_campaign::{
     CampaignMode, CampaignPolicy, ExplorerPolicy, FairnessPolicy, ProgressiveWideningPolicy,
@@ -263,8 +263,7 @@ fn install_lifecycle_assets(
 ) -> Result<(), PackagedQemuExecutorError> {
     if crucible::owned_decode::current_budget().is_none() {
         return Err(
-            crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError::MissingAdmission
-                .into(),
+            crate::vm_lifecycle::ProductionVmLifecycleConfigCloneError::MissingAdmission.into(),
         );
     }
     let provider = config

@@ -1,6 +1,6 @@
 //! `crucible-api` owns the versioned programmatic API surface.
 //!
-//! Implementation contract: Host lifecycle composition, exact checkpoints, and temporal graph APIs.
+//! Implementation contract: Session lifecycle, versioned control transport, and host operational contracts.
 //!
 //! This L4 crate defines the session lifecycle, stepping, query, and
 //! temporal-graph API types. It is a
@@ -15,8 +15,8 @@
 //! owns the unary discovery and lifecycle API; [`streaming`] owns the typed
 //! `Control` and `Watch`+`Send` attach-and-command facade; [`server`] owns the
 //! HTTP/2 daemon transport; [`open_set`] owns the dotted-kind plus
-//! typed-attribute payload model; [`vm_lifecycle`] owns production local-VM
-//! loop construction; [`debug_gateway`] owns the Apache-side Unix
+//! typed-attribute payload model; [`cleanup_owner`] defines backend-owned
+//! cleanup operations and physical observations; [`debug_gateway`] owns the Apache-side Unix
 //! control client for the separate GPL debugger gateway process;
 //! [`transport_security`] owns remote mutual-TLS authentication;
 //! [`host_operational`] owns bounded target, policy, resource, and deadline
@@ -29,6 +29,7 @@
 mod admitted_output;
 pub use admitted_output::{AdmittedOutput, AdmittedShared};
 
+pub mod cleanup_owner;
 pub mod client;
 pub mod control_responsive;
 pub mod debug_access;
@@ -44,8 +45,10 @@ pub mod server;
 pub mod session_mapping;
 pub mod streaming;
 pub mod transport_security;
-#[cfg(target_os = "linux")]
-pub mod vm_lifecycle;
+pub use cleanup_owner::{
+    ProductionVmCleanupHandoff, ProductionVmCleanupOwner, ProductionVmCleanupReservation,
+    ProductionVmCleanupStage,
+};
 pub use client::{
     ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
     ControlTransportKind, ControlWireModel, DebugControllerAccess, DebugControllerAcquisition,
@@ -109,52 +112,6 @@ pub use rpc_abi::{
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
-pub use vm_lifecycle::{
-    AuthenticatedProductionCheckpointCodecFixture, AuthenticatedProductionExactRamCodecFixture,
-    build_authenticated_production_checkpoint_codec_fixture,
-    build_exact_ram_production_checkpoint_codec_fixture,
-    build_streaming_production_checkpoint_codec_fixture,
-};
-#[cfg(target_os = "linux")]
-pub use vm_lifecycle::{
-    BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
-    DecodedProductionExactCheckpoint, OriginalCheckpointDecodeError,
-    OriginalDecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
-    ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionBlockFaultEvidence,
-    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
-    ProductionExactCheckpointReadSources, ProductionExactCheckpointRetirement,
-    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
-    ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
-    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionPagedRamSource,
-    ProductionStoppedLifecycleError, ProductionVmConstructionCleanupError,
-    ProductionVmConstructionCustody, ProductionVmConstructionFailure,
-    ProductionVmExactNodeRestoreAdmission, ProductionVmExactNodeRestoreAdmissions,
-    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState,
-    ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
-    ProductionVmNodeLauncher, ProductionVmNodeLease, ProductionVmNodeReplayLaunchProfile,
-    ProductionVmPortableReplayAssetPaths, ProductionVmPortableReplayGuestAssetPaths,
-    ProductionVmReplayExactNodeRestoreAdmission, ProductionVmStoppedLifecycle,
-    build_production_vm_exact_resume_lifecycle, build_production_vm_exact_stopped_lifecycle,
-    build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
-    collect_signal_artifact_objects_bounded, collect_signal_artifact_objects_with_budget,
-    decode_authenticated_production_exact_checkpoint,
-    decode_authenticated_production_exact_checkpoint_under_original, open_exact_checkpoint_closure,
-    production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
-};
-#[cfg(all(feature = "test-support", target_os = "linux"))]
-#[cfg(target_os = "linux")]
-pub use vm_lifecycle::{
-    ProductionVmCleanupHandoff, ProductionVmCleanupOwner, ProductionVmCleanupReservation,
-    ProductionVmCleanupStage,
-};
-#[cfg(target_os = "linux")]
-pub use vm_lifecycle::{
-    ProductionVmExactHotForkSourceBoundary, ProductionVmHotForkNodeAdoption,
-    ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
-    ProductionVmHotForkWorldContinuation,
-    authenticate_production_vm_exact_hot_fork_source_boundary,
-    build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
-};
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*
 // guest-host protocol version in a reproduction artifact's provenance triple
 // without reaching past the control plane into `crucible-protocol` directly
@@ -190,14 +147,4 @@ pub use streaming::{
 };
 pub use transport_security::{
     DebugTransportIdentity, MutualTlsServerConfigError, mutual_tls_acceptor_from_pem,
-};
-
-#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-pub use vm_lifecycle::{
-    ProductionVmParentParkDrain, ProductionVmParentParkDrainCause,
-    ProductionVmParentParkDrainFailure, ProductionVmParentParkDrainRefusal,
-    ProductionVmParentParkDrainRequest, ProductionVmParentParkStageAdmissionCause,
-    ProductionVmParentParkStageEarlyCause, ProductionVmParentParkStageEnteredCause,
-    ProductionVmParentParkStageFailure, ProductionVmParentParkStageOwnerCause,
-    ProductionVmParentParkStageReborrowCause,
 };

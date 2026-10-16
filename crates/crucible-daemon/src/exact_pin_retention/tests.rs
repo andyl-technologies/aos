@@ -546,10 +546,9 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
         .expect("same original namespace decode account");
     let _namespace_scope = decoding.enter();
     let production_directory = tempfile::tempdir().expect("production checkpoint fixture");
-    let production = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(
-        production_directory.path(),
-    )
-    .expect("production checkpoint fixture");
+    let production =
+        crate::build_exact_ram_production_checkpoint_codec_fixture(production_directory.path())
+            .expect("production checkpoint fixture");
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = CampaignRepository::new(
         backend.clone(),
@@ -641,7 +640,7 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
 // Inspect the actual lifecycle object named by the same closure being published.
 // The v5 abandoned-request fields change that object's identity even when zero.
 fn assert_current_catalog_continuation(
-    closure: &crucible_api::ProductionExactCheckpointClosure,
+    closure: &crate::ProductionExactCheckpointClosure,
     original: &crucible::owned_decode::DecodeBudget,
 ) {
     use std::io::Read;

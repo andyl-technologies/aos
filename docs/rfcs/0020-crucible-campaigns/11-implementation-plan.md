@@ -1645,7 +1645,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
 
 ## 11.7 Phase 5 — Composable content stores and durable closure efficiency
 
-Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
+Primary crates: `crucible-cas` and `crucible-daemon` lifecycle/checkpoint code.
 
 - [x] **T-CAM-5.1** Introduce separate streaming `ImmutableBlobBackend` and
   conditional `MutableRefBackend` traits, capability and error models, and

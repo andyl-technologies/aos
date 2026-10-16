@@ -5,7 +5,7 @@ use super::*;
 pub(super) fn execute_local_qemu_campaign(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
-    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
 ) -> Result<(GuardedDefaultCampaignRun, DecodeBudget), CliError> {
     if !batch_campaign_run_eligible(run_plan) {
         return Err(backend_error(

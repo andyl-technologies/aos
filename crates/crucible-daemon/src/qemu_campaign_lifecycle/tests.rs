@@ -32,11 +32,11 @@ fn accepted_step(configuration: &Configuration, decision: Decision) -> Configura
         Err(error) => panic!("test configuration step should be accepted: {error}"),
     }
 }
-use crucible_api::vm_lifecycle::production_permanently_failed_loop_for_test;
-use crucible_api::{
-    LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
-    ProductionVmNodeLauncher,
+use crate::vm_lifecycle::production_permanently_failed_loop_for_test;
+use crate::{
+    ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig, ProductionVmNodeLauncher,
 };
+use crucible_api::LifecycleApiError;
 use crucible_campaign::{
     Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, BooleanDomain,
     BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId, CampaignControlAction,
@@ -398,11 +398,11 @@ fn context(
 
 struct GuardOnlyRamPartition(AttemptResourceLimits);
 
-impl crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardOnlyRamPartition {
+impl crate::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardOnlyRamPartition {
     fn configure_world(
         &self,
-        _shapes: &[crucible_api::vm_lifecycle::ProductionHostRamLaunchShape],
-    ) -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError> {
+        _shapes: &[crucible_api::host_operational::ProductionHostRamLaunchShape],
+    ) -> Result<(), crucible_api::host_operational::HostRamAdmissionError> {
         Ok(())
     }
 
@@ -410,20 +410,22 @@ impl crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardO
         &self,
         _node: &str,
         _registrar: Arc<dyn crucible_qemu::ram_control::RamControlRegistrar>,
-    ) -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError> {
-        Err(crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
-            "guard-only fixture has no native RAM registration authority",
-        ))
+    ) -> Result<(), crucible_api::host_operational::HostRamAdmissionError> {
+        Err(
+            crucible_api::host_operational::HostRamAdmissionError::contract(
+                "guard-only fixture has no native RAM registration authority",
+            ),
+        )
     }
 
     fn native_world_limits(
         &self,
     ) -> Result<
-        crucible_api::vm_lifecycle::ProductionHostRamNativeWorldLimits,
-        crucible_api::vm_lifecycle::HostRamAdmissionError,
+        crucible_api::host_operational::ProductionHostRamNativeWorldLimits,
+        crucible_api::host_operational::HostRamAdmissionError,
     > {
         Ok(
-            crucible_api::vm_lifecycle::ProductionHostRamNativeWorldLimits {
+            crucible_api::host_operational::ProductionHostRamNativeWorldLimits {
                 cpu_slots: self.0.maximum_vcpus(),
                 resident_bytes: self.0.maximum_resident_bytes(),
                 writable_bytes: self.0.maximum_disk_bytes(),
@@ -436,25 +438,31 @@ impl crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardO
     fn native_world_identity(
         &self,
     ) -> Result<
-        crucible_api::vm_lifecycle::ProductionHostRamNativeWorldIdentity,
-        crucible_api::vm_lifecycle::HostRamAdmissionError,
+        crucible_api::host_operational::ProductionHostRamNativeWorldIdentity,
+        crucible_api::host_operational::HostRamAdmissionError,
     > {
-        Err(crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
-            "guard-only fixture has no native world assignment",
-        ))
+        Err(
+            crucible_api::host_operational::HostRamAdmissionError::contract(
+                "guard-only fixture has no native world assignment",
+            ),
+        )
     }
 
     fn visit_native_nodes(
         &self,
         _visitor: &mut dyn FnMut(
             &str,
-            crucible_api::vm_lifecycle::ProductionHostRamNativeNodeLimits,
+            crucible_api::host_operational::ProductionHostRamNativeNodeLimits,
+        ) -> Result<
+            (),
+            crucible_api::host_operational::HostRamAdmissionError,
+        >,
+    ) -> Result<(), crucible_api::host_operational::HostRamAdmissionError> {
+        Err(
+            crucible_api::host_operational::HostRamAdmissionError::contract(
+                "guard-only fixture has no native node reservations",
+            ),
         )
-            -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError>,
-    ) -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError> {
-        Err(crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
-            "guard-only fixture has no native node reservations",
-        ))
     }
 
     fn reserve_native_controller_resources(
@@ -462,7 +470,7 @@ impl crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardO
         _node: &str,
     ) -> Result<
         Option<crucible_linux_resource::host_services::HostServiceLease>,
-        crucible_api::vm_lifecycle::HostRamAdmissionError,
+        crucible_api::host_operational::HostRamAdmissionError,
     > {
         Ok(None)
     }
@@ -471,7 +479,7 @@ impl crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardO
         &self,
         _node: &str,
         _controller: Option<crucible_qemu::LinuxQemuNativeResourceController>,
-    ) -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError> {
+    ) -> Result<(), crucible_api::host_operational::HostRamAdmissionError> {
         Ok(())
     }
 
@@ -483,11 +491,13 @@ impl crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardO
         _vcpus: u32,
     ) -> Result<
         crucible_qemu::ram_control::RamControlRegistration,
-        crucible_api::vm_lifecycle::HostRamAdmissionError,
+        crucible_api::host_operational::HostRamAdmissionError,
     > {
-        Err(crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
-            "guard-only fixture cannot authorize a native launch",
-        ))
+        Err(
+            crucible_api::host_operational::HostRamAdmissionError::contract(
+                "guard-only fixture cannot authorize a native launch",
+            ),
+        )
     }
 }
 
@@ -691,9 +701,8 @@ fn promoted_portable_resume_preflight_uses_no_native_recovery_catalog() {
     let directory = tempfile::tempdir().expect("portable resume fixture directory");
     let native_root = directory.path().join("native-source");
     std::fs::create_dir(&native_root).expect("native source directory");
-    let fixture =
-        crucible_api::build_authenticated_production_checkpoint_codec_fixture(&native_root)
-            .expect("authenticated production checkpoint");
+    let fixture = crate::build_authenticated_production_checkpoint_codec_fixture(&native_root)
+        .expect("authenticated production checkpoint");
     let source = fixture.source().clone();
     let expected_configuration = fixture.configuration().clone();
     let scenario = source.scenario_def();
@@ -3776,7 +3785,7 @@ fn test_checkpoint_capture() -> CapturedAttemptCheckpoint {
     let directory = tempfile::tempdir()
         .expect("fresh runner production checkpoint directory")
         .keep();
-    let fixture = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(&directory)
+    let fixture = crate::build_exact_ram_production_checkpoint_codec_fixture(&directory)
         .expect("build fresh runner production checkpoint");
 
     CapturedAttemptCheckpoint::from_production_closure(fixture.closure().clone())

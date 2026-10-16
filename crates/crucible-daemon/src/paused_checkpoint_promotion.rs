@@ -9,8 +9,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::ProductionVmReplayExactNodeRestoreAdmission;
 use crucible::{Configuration, ScenarioDefForm, World};
-use crucible_api::{LifecycleApiError, ProductionVmReplayExactNodeRestoreAdmission};
+use crucible_api::LifecycleApiError;
 use crucible_campaign::{
     AttemptResourceLimits, AttemptStart, AttemptStartMode, CampaignExecutorStore,
     CampaignRepositoryError, ExactCheckpointId, ExecutionId,
@@ -266,7 +267,7 @@ impl PreparedPausedCheckpointPromotion {
 
     pub(crate) fn into_native_retirement(
         self,
-    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+    ) -> Option<crate::ProductionExactCheckpointRetirement> {
         let retirement = self.promotion.replacement().native_retirement();
         drop(self);
         retirement
@@ -282,7 +283,7 @@ pub(crate) struct StagedPausedCheckpointPromotion {
 impl StagedPausedCheckpointPromotion {
     pub(crate) fn into_native_retirement(
         self,
-    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+    ) -> Option<crate::ProductionExactCheckpointRetirement> {
         self.prepared.into_native_retirement()
     }
 }

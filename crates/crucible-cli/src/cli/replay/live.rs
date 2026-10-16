@@ -310,7 +310,7 @@ pub(super) fn replay_live_qemu_evidence(
         .map(|node| node.id.name.clone())
         .collect::<std::collections::BTreeSet<_>>();
     let preemption_evidence = bounded_scheduler_preemption
-        .then(crucible_api::BoundedSchedulerPreemptionEvidence::default);
+        .then(crucible_daemon::BoundedSchedulerPreemptionEvidence::default);
     let (_run_plan, report) = run_live_qemu_artifact_replay(
         backend,
         cli.campaign_deployment.as_deref(),

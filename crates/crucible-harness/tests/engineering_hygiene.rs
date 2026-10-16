@@ -411,21 +411,20 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
 }
 
 #[test]
-fn extracted_host_replay_bridge_exceptions_remain_path_package_and_token_specific()
--> Result<(), Box<dyn Error>> {
+fn extracted_host_replay_bridge_is_owned_only_by_the_backend() -> Result<(), Box<dyn Error>> {
     let root = repo_root();
     let baseline = HygieneBaseline::load(&root)?;
     let paths = [
         (
-            "crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary.rs",
+            "crates/crucible-daemon/src/vm_lifecycle/checkpoint_store/replay/boundary.rs",
             &["qemu", "Qemu", "crucible_qemu"][..],
         ),
         (
-            "crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary/tests.rs",
+            "crates/crucible-daemon/src/vm_lifecycle/checkpoint_store/replay/boundary/tests.rs",
             &["Qemu"][..],
         ),
         (
-            "crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary/tests/sqlite_scope.rs",
+            "crates/crucible-daemon/src/vm_lifecycle/checkpoint_store/replay/boundary/tests/sqlite_scope.rs",
             &["Qemu"][..],
         ),
     ];
@@ -433,17 +432,19 @@ fn extracted_host_replay_bridge_exceptions_remain_path_package_and_token_specifi
     for (relative, tokens) in paths {
         let path = root.join(relative);
         let content = fs::read_to_string(&path)?;
-        let findings = qemu_specific_boundary_failures("crucible-api", &path, &content);
+        assert!(qemu_specific_boundary_failures("crucible-daemon", &path, &content).is_empty());
+        let former_path = root.join(relative.replace("crucible-daemon", "crucible-api"));
+        let findings = qemu_specific_boundary_failures("crucible-api", &former_path, &content);
         assert_eq!(findings.len(), tokens.len(), "{relative}: {findings:?}");
-        assert!(findings.iter().all(|finding| baseline.allows_qemu_token(
+        assert!(findings.iter().all(|finding| !baseline.allows_qemu_token(
             "crucible-api",
-            &path,
+            &former_path,
             finding
         )));
 
         for token in tokens {
             let finding = format!("QEMU-specific token `{token}`");
-            assert!(baseline.allows_qemu_token("crucible-api", &path, &finding));
+            assert!(!baseline.allows_qemu_token("crucible-api", &former_path, &finding));
             assert!(!baseline.allows_qemu_token("crucible", &path, &finding));
             assert!(!baseline.allows_qemu_token(
                 "crucible-api",

@@ -8,12 +8,12 @@
 
 use super::super::preparation::run_capture;
 use super::*;
+use crate::vm_lifecycle::ProductionVmLifecycleLoop;
 use crate::{ComposedQemuAttemptResourceGuardFactory, QemuAttemptProductionVmLifecycleFactory};
 use crucible_api::host_operational::{
     HostOperationalControl, HostOperationalDisposition, HostOperationalRequest,
     HostOperationalResponse, HostRamActivity, HostRamOwnerTarget, HostRamStatus, HostRamTarget,
 };
-use crucible_api::vm_lifecycle::ProductionVmLifecycleLoop;
 use crucible_linux_resource::host_supervision::{HostOperationBudget, HostOperationClass};
 
 use environment::{OPERATOR, environment_path};

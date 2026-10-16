@@ -9,11 +9,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use crucible_api::{
-    DecodedProductionExactCheckpoint, LifecycleApiError, ProductionExactCheckpointClosure,
+use crate::{
+    DecodedProductionExactCheckpoint, ProductionExactCheckpointClosure,
     ProductionVmExactNodeRestoreAdmission, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
     ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher, ProductionVmNodeLease,
 };
+use crucible_api::LifecycleApiError;
 use crucible_qemu::{
     QemuChildProcessContract, QemuLiveNodeIdentity, QemuNode, QemuPreparedRunDirectory,
     QemuProductionFreshLaunchAdmission,
@@ -61,7 +62,7 @@ where
     // existing host Arc. The field itself exposes no permit or process contract.
     fork_target_factory: Option<F>,
     cleanup_reservation: Option<Box<dyn crucible_api::ProductionVmCleanupReservation>>,
-    construction_custody: Option<Box<crucible_api::ProductionVmConstructionCustody>>,
+    construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
     failed_launch: Option<RetainedFailedLaunch>,
     owner: QemuAttemptGenerationResourceOwner<G>,
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
@@ -160,7 +161,7 @@ where
             .max(retained_launcher)
             .checked_add(generations)
             .and_then(|bytes| {
-                bytes.checked_add(crucible_api::ProductionVmConstructionCustody::allocation_bytes())
+                bytes.checked_add(crate::ProductionVmConstructionCustody::allocation_bytes())
             })
             .ok_or_else(|| launcher_message("selected Source control extent overflow"))
     }
@@ -177,7 +178,7 @@ where
     /// Moves the initialized same construction carrier into the actual launcher.
     pub(crate) fn with_construction_custody(
         mut self,
-        custody: Box<crucible_api::ProductionVmConstructionCustody>,
+        custody: Box<crate::ProductionVmConstructionCustody>,
     ) -> Self {
         self.construction_custody = Some(custody);
         self
@@ -526,14 +527,26 @@ where
     }
 }
 
+impl<G, F> crucible_api::ProductionVmCleanupOwner for QemuAttemptProductionVmNodeLauncher<G, F>
+where
+    G: QemuAttemptProcessResourceGuard + Send,
+    F: Send,
+{
+    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
+        ProductionVmNodeLauncher::finish(self).map_err(|error| {
+            crucible::SchedulerError::BoundaryViolation {
+                message: error.to_string(),
+            }
+        })
+    }
+}
+
 impl<G, F> ProductionVmNodeLauncher for QemuAttemptProductionVmNodeLauncher<G, F>
 where
     G: QemuAttemptProcessResourceGuard + Send,
     F: Send,
 {
-    fn take_construction_custody(
-        &mut self,
-    ) -> Option<Box<crucible_api::ProductionVmConstructionCustody>> {
+    fn take_construction_custody(&mut self) -> Option<Box<crate::ProductionVmConstructionCustody>> {
         self.construction_custody.take()
     }
 
@@ -580,16 +593,15 @@ where
     fn parent_park_drain(
         &mut self,
         source: &mut crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
-        request: crucible_api::ProductionVmParentParkDrainRequest<'_>,
-    ) -> Result<crucible_qemu::QmpParentParkResult, crucible_api::ProductionVmParentParkDrainRefusal>
-    {
+        request: crate::ProductionVmParentParkDrainRequest<'_>,
+    ) -> Result<crucible_qemu::QmpParentParkResult, crate::ProductionVmParentParkDrainRefusal> {
         self.invoke_parent_park_drain(source, request)
     }
 
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     fn contain_parent_park_drain(
         &mut self,
-    ) -> Result<(), crucible_api::ProductionVmParentParkDrainRefusal> {
+    ) -> Result<(), crate::ProductionVmParentParkDrainRefusal> {
         // Use the actual containing guard's existing kill/reap quarantine.
         // Its owner stays inside the complete lifecycle; phase custody below
         // is not refunded by this transfer or by a scalar successful return.
@@ -599,9 +611,7 @@ where
     }
 
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    fn parent_park_drain_failure(
-        &self,
-    ) -> Option<crucible_api::ProductionVmParentParkDrainFailure<'_>> {
+    fn parent_park_drain_failure(&self) -> Option<crate::ProductionVmParentParkDrainFailure<'_>> {
         self.parent_park_phase.as_ref().map(|phase| phase.failure())
     }
 

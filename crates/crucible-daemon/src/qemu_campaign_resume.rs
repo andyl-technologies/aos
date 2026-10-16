@@ -16,10 +16,10 @@
 
 use std::sync::Arc;
 
+use crate::{ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState};
 use crucible::{
     Configuration, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerOperationalFailureClass,
 };
-use crucible_api::{ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState};
 use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_store::StoreError;
 
