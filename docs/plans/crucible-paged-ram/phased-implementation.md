@@ -117,6 +117,14 @@ post-check errors remain separate typed history after physical closure. The
 component executor's separate no-Main shutdown path closes any saved dispatcher
 without requiring a native dispatcher to have been created.
 
+Retained constructor finalization now separates physical closure from its
+independent Cleanup postcheck. After the actual owner and Main controls close,
+the same containing body is removed and destroyed outside its cell lock, even
+when the postcheck expires. Initiating, work, control and post failures remain
+typed reports. An open owner or control still retains the complete body. A late
+report neither starts another Cleanup nor requires a retry before releasing
+already-closed resources.
+
 Concrete VM construction, runtime, checkpoint and cleanup ownership now live in
 `crucible-daemon`. The API owns transport-neutral operational data and cleanup
 operations; it no longer depends on the QEMU implementation. Handoff upcasts the
@@ -142,8 +150,8 @@ the actual retained thread table. The input alias control proves last strong-ali
 closure and credit retention; its test-only Weak witness does not prove Arc
 backing deallocation. Production keeps the body graph free of Weak/raw escapes
 and drops that allocation before its decoder custody. The full private-feature
-library run has 1,655 passes, the same 17 native integration failures and
-43 ignored tests; its complete failed-name set matches the prior default run.
+library run has 1,658 passes, the same 17 native integration failures and
+43 ignored tests; its complete failed-name set matches the preceding run.
 
 The supplemental service VM checks build the actual private controller into the
 installed Main policy and retain the original guest/request vectors. Ordinary
@@ -155,40 +163,59 @@ its required embedded scenario. The four-vCPU VM build reaches the unchanged
 QEMU dirty-iterator fixture failure before execution. Neither service flight nor
 VM performance is qualified by the compile and component results.
 
-The normal Cargo workspace check passes with all targets. The current API
-library has 119 passes; the full daemon run has 1,541 passes, 17 failures and
-43 ignored tests. All 17 failing names match the preceding native lifecycle and
-Target integration failures; their required positive behavior remains open.
-The prior GC fixture correction now passes in the full run, including the large
-packed-volume control. All eight Source history/saved-Cleanup controls, four
-component shutdown regressions, three worker-custody controls, five exact receipt
-controls and two status-ordering controls pass. These include 24 epochs through
+The API library has 119 passes. All eight Source history/saved-Cleanup controls,
+four component shutdown regressions, three worker-custody controls, five exact
+receipt controls and two status-ordering controls pass. These include 24 epochs through
 one physical cleanup cell and actual body destruction before expired-operation
-observation. The last QEMU library run has 1,045 passes, five capture-related
+observation. Three constructor finalization controls pass with actual files,
+mutex cells and worker storage, covering late expiry, combined typed reports and
+an unclosed body. The last QEMU library run has 1,045 passes, five capture-related
 failures and three ignored probes. Component results do not qualify deployed
 resource return or VM performance.
 
 All 31 Rust ABI, licensing, crate-layer and scheduler-boundary checks pass, as do
 26 gate-traceability checks, five engineering-hygiene controls, the two production
 effect-matrix checks, the schema-registry control and all three daemon doctests.
-The testing-standards suite has 22 passes and six failures: changed plugin
-admission, native-retirement/dispatcher contracts and missing exact operational
-classifications remain to be reconciled. The stale contract for the fully retired
-plugin worker has been removed; its two controls now reach admission-contract
-drift instead of a missing file. Live guard and custody requirements and negative
-mutation controls have not been waived. The Nix scheduler boundary now checks the
+The testing-standards suite has 29 passes and one failure: the broader source
+classifier still requires exact review of operational retry paths. Admission
+checks now bind both existing waits to the same original Setup. Shared Target
+clauses bind saved Cleanup entry and physical return; dispatcher clauses retain
+both fixed five-second bounds, all five polling loops, and same-control recovery.
+All ten actual dispatcher component tests pass. These file-backed mechanisms
+establish no native Main/Source issuance. The retired plugin-worker contract and
+two resolved admission-sleep exemptions are removed. Live guards, custody and
+negative mutation controls remain required. The Nix scheduler boundary checks the
 production adapter in the daemon; its separate raw source scan still incorrectly
 includes CLI test-only delegation, while the Rust production-aware scan passes.
+
+Remaining cleanup review must preserve collected component failures when a
+later pre-dispatch check or dispatcher fails, separately from its independent
+postcheck. Attached cleanup history must coexist with the initiating service
+failure in its already-priced Main. A healthy pending World body must retain
+its debt while allowing independent admission within the existing limits;
+uncertain published claims must remain poisoned and owned. Terminal-parent
+cleanup also needs same-owner join and debit-return eligibility, a retained
+first admission refusal, and physical closure distinct from historical panic.
+These are implementation obligations before those routes receive source or
+native qualification, not additional allowances for their retry names.
+
+The retry-path review also identifies an unqualified debug-replay route: replay
+loops can be dropped after shutdown refusal without a canonical cleanup handoff.
+The actual Source launcher currently refuses independent replay worlds. Before
+enabling that route, success and failure must retain the real replay owners
+through their exact cleanup receipts; a source-classifier exemption cannot
+establish that missing lifecycle.
 
 Native Source activation, genuine Target preparation, owner-driven capture and
 full qualification remain open. The normal-service VM evaluation reaches the
 QEMU build, whose dirty-iterator fixture still fails; no VM lane was executed.
 The required application-target build passes locally for the backend-cutover
 snapshot, including every application's unit and integration target compilation,
-with remote builders disabled. The later private-observation snapshot has the
-workspace, feature and full private-library results above; its final packaged
-qualification remains required. All 148 Linux resource tests passed in the
-preceding never-born return cohort. A fully passing integrated suite and VM
+with remote builders disabled. A new local packaged run covers the observation
+and constructor-finalization code; its result remains pending. The workspace,
+feature and full private-library results are recorded above. All 148 Linux
+resource tests passed in the preceding never-born return cohort. A fully
+passing integrated suite and VM
 performance parity are not claimed.
 
 ### Canonical native observation gate cutover (required)
@@ -234,6 +261,15 @@ cutover must preserve all existing predicates and perform these steps:
 
 These are pending implementation and runtime obligations. The new component
 controls, source-closure equality and supplemental checks do not discharge them.
+
+The existing trace/result normalization and complete evidence validator now
+share one helper. Local Nix evaluation with import-from-derivation disabled
+confirms identical rendered scripts, string contexts, resource specifications,
+dependencies and VM derivations for the main gate and both diagnostics when
+compared against the same final source snapshot. This extraction preserves the
+old execution entry; its libtest completion marker cannot be fabricated by a
+future service adapter. All 26 traceability and five hygiene controls pass after
+the extraction. No native execution or canonical service cutover is implied.
 
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.
