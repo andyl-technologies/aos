@@ -236,3 +236,48 @@ fn installed_source_rejects_arbitrary_metadata_even_with_valid_syntax() {
     let input = record();
     assert!(input.source.installed_source().is_err());
 }
+
+
+#[test]
+fn archived_original_exit_fields_cannot_be_inferred_from_the_reason_or_rewritten_wire() {
+    fn original_exit(cause: serde_json::Value, code: serde_json::Value) -> ArmRootArchiveImport {
+        let mut input = wire_record();
+        let old = input.original_outcomes[0].clone();
+        let mut body: serde_json::Value = serde_json::from_slice(&old).unwrap();
+        body["reason"] = json!("guest_exit");
+        body["exit_cause"] = cause;
+        body["exit_code"] = code;
+        let bytes = canonical::canonical_json(&body).unwrap();
+        input.original_outcomes[0] = bytes.clone();
+        for packet in &mut input.control_history.packets {
+            if packet.kind == crate::gem5::ArmRootControlKind::Response && packet.bytes == old {
+                packet.bytes = bytes.clone();
+            }
+        }
+        input
+    }
+
+    let original = original_exit(json!("native exit"), json!(-1));
+    let outcomes = validate_outcomes(&original).unwrap();
+    validate_protocol_custody(&original, &outcomes).unwrap();
+    assert_eq!(outcomes.values().next().unwrap().bytes(), original.original_outcomes[0]);
+
+    // Rewriting both original-data banks consistently cannot supply missing
+    // native exit evidence, change its closed types or attach it to output.
+    for (cause, code) in [
+        (json!(null), json!(null)),
+        (json!("native exit"), json!(null)),
+        (json!(null), json!(0)),
+        (json!(1), json!(0)),
+        (json!("native exit"), json!("0")),
+        (json!("native exit"), json!(i64::from(i32::MAX) + 1)),
+    ] {
+        assert!(validate_outcomes(&original_exit(cause, code)).is_err());
+    }
+
+    let mut changed = original_exit(json!("native exit"), json!(0));
+    let mut body: serde_json::Value = serde_json::from_slice(&changed.original_outcomes[0]).unwrap();
+    body["reason"] = json!("output");
+    changed.original_outcomes[0] = canonical::canonical_json(&body).unwrap();
+    assert!(validate_outcomes(&changed).is_err());
+}

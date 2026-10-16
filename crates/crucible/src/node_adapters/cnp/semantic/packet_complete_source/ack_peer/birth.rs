@@ -57,6 +57,9 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
     report_startup_required: bool,
     report_startup: Option<report_startup::OriginalReportStartupFinalization>,
     native_startup: Option<native_startup::OriginalNativeStartupFinalization>,
+    // The link is inline and weak. Its one shared allocation is precharged by
+    // Core before all three links are attached; members keep that owner alive.
+    native_host_finalization: Option<crate::node_admission::OriginalHostFinalizationSource>,
     host_startup: std::cell::RefCell<Option<host_startup::OriginalHostStartupMarker>>,
 }
 
@@ -176,6 +179,7 @@ impl OriginalAckPeerBirth {
             report_startup_required,
             report_startup: None,
             native_startup: None,
+            native_host_finalization: None,
             host_startup: std::cell::RefCell::new(None),
         });
         let original = completed
@@ -306,7 +310,8 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
         use std::mem::size_of;
         // The exact same material uses its retained file and fixed stream bank.
         // File-open conversion is the pinned small-C-string stack path.
-        16 * 1024
+        super::super::PacketCompleteSemanticSource::original_native_host_barrier_authentication_scratch_data()
+            + 16 * 1024
             + size_of::<blake3::Hasher>()
             + size_of::<File>()
             + 2 * size_of::<std::fs::Metadata>()

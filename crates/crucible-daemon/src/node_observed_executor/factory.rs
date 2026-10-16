@@ -3,6 +3,7 @@
 mod acceptance;
 mod archive_artifacts;
 mod arm_root;
+mod x86_root;
 mod cached_artifacts;
 mod capabilities;
 mod clock_label;
@@ -79,6 +80,15 @@ mod semantic_terminal_tests;
 mod semantic_profile_tests;
 
 pub(super) use transcript::replay_stepper::{ReplayStep, ReplayStepper};
+
+pub use x86_root::public_catalog::{
+    InstalledPreparedX86RootWorld, InstalledX86RootPreservation, InstalledX86RootRestore,
+    X86RootInitialRetirementFailure, X86RootRestoredRetirementFailure, X86RootUnstartedRetirementFailure,
+};
+pub use x86_root::{
+    InstalledX86RootCleanupFailure, InstalledX86RootCleanupStatus, InstalledX86RootRetirement,
+    X86RootNamespaceReleaseFailure,
+};
 
 pub use arm_root::public_catalog::{
     InstalledPreparedRootWorld, InstalledRootPreservation, InstalledRootRestore,
@@ -199,6 +209,8 @@ pub enum InstalledNodeKind {
     },
     /// Selects the fixed parent-zero ARM Linux Root/Clock model and its distinct codec.
     Gem5ArmRoot,
+    /// Selects the distinct parent-zero fixed PC Linux Root/Clock model.
+    Gem5X86Root,
     /// Runs a separately selected genuine native event-condition control observer.
     HostConditionDebug {
         /// Binds the independently enrolled compact condition and native route.
@@ -320,6 +332,7 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
             }
             InstalledNodeKindWire::HostSemantics { profile } => Self::HostSemantics { profile },
             InstalledNodeKindWire::Gem5ArmRoot {} => Self::Gem5ArmRoot,
+            InstalledNodeKindWire::Gem5X86Root {} => Self::Gem5X86Root,
             InstalledNodeKindWire::HostConditionDebugPreserving { profile } => {
                 Self::HostConditionDebugPreserving { profile }
             }
@@ -406,6 +419,8 @@ enum InstalledNodeKindWire {
         profile: InstalledHostSemanticProfile,
     },
     Gem5ArmRoot {},
+    /// Selects the separate fixed PC root model without ARM or SE fallback.
+    Gem5X86Root {},
     HostConditionDebug {
         profile: InstalledConditionDebugProfile,
     },
@@ -742,6 +757,12 @@ impl InstalledNodeCatalog {
         }
         if selections
             .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5X86Root))
+        {
+            return x86_root::public_catalog::scenario(self, selections);
+        }
+        if selections
+            .iter()
             .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5ArmRoot))
         {
             return arm_root::public_catalog::scenario(self, selections);
@@ -827,6 +848,11 @@ impl InstalledNodeCatalog {
                 native_state::public_catalog::publisher(stored)?
             } else if selections
                 .iter()
+                .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5X86Root))
+            {
+                x86_root::public_catalog::publisher(stored)?
+            } else if selections
+                .iter()
                 .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5ArmRoot))
             {
                 arm_root::public_catalog::publisher(stored)?
@@ -875,6 +901,15 @@ impl InstalledNodeCatalog {
         }
         if vendor_selection::is_selected(selections) {
             return vendor_selection::prepare(self, selections, scenario, execution);
+        }
+        if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5X86Root))
+        {
+            self.require_behavioral_host_scope()?;
+            return Ok(x86_root::public_catalog::prepare_native(
+                self, selections, scenario, execution,
+            )?.world);
         }
         if selections
             .iter()
@@ -966,6 +1001,43 @@ impl InstalledNodeCatalog {
     ) -> Result<InstalledRootRestore, NodeObservedError> {
         self.require_behavioral_host_scope()?;
         arm_root::public_catalog::prepare_restore(self, selections, archive)
+    }
+
+    /// Prepares the distinct fixed x86 Linux Root world beneath original custody.
+    ///
+    /// Source-installed constructor bytes supply no native readiness. Preparation
+    /// requires the actual parked child, full current image audit and complete
+    /// common owner barrier; only the declared no-ingress Serial facet is selected.
+    ///
+    /// # Errors
+    /// Refuses foreign selections, absent source binding, unavailable finite
+    /// custody, changed installed bytes or original native/current audit failures.
+    pub fn prepare_x86_root_native_world(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        scenario: NodeScenario,
+        execution: ExecutionId,
+    ) -> Result<InstalledPreparedX86RootWorld, NodeObservedError> {
+        self.require_behavioral_host_scope()?;
+        x86_root::public_catalog::prepare_native(self, selections, scenario, execution)
+    }
+
+    /// Reserves x86 Root restoration from its separately authenticated source codec.
+    ///
+    /// Historical Ready and image metadata remain inert. Each fresh owner must
+    /// reconstruct, recapture and audit its actual current closure before the
+    /// complete world can publish or receive execution permission.
+    ///
+    /// # Errors
+    /// Refuses another model/codec, changed source, stale fencing, unavailable
+    /// original custody or incomplete signed public preparation ancestry.
+    pub fn prepare_x86_root_native_restore(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        archive: crucible::node_state::NativeArchiveRecord,
+    ) -> Result<InstalledX86RootRestore, NodeObservedError> {
+        self.require_behavioral_host_scope()?;
+        x86_root::public_catalog::prepare_restore(self, selections, archive)
     }
 
     /// Seals fresh installed host authority for an authenticated complete source.
@@ -1328,6 +1400,7 @@ impl InstalledNodeCatalog {
                     ));
                 }
                 InstalledNodeKind::Gem5ArmRoot
+                | InstalledNodeKind::Gem5X86Root
                 | InstalledNodeKind::Gem5Closed { .. }
                 | InstalledNodeKind::Gem5ClosedPreserving { .. }
                 | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {

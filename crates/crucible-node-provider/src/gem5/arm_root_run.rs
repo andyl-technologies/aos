@@ -211,6 +211,17 @@ pub(crate) fn validate(
             "ARM exact original prefix progress differs",
         ));
     }
+
+    // The controller sets both fields only from the actual native exit event.
+    // Keep that evidence attached even when the exit also publishes a byte or
+    // reaches the exact limit; a reason string alone cannot establish an exit.
+    let exited = prefix.reason == "guest_exit";
+    if prefix.exit_cause.is_some() != exited || prefix.exit_code.is_some() != exited {
+        return Err(ProviderError::Correlation(
+            "ARM completion reason differs from original native exit metadata",
+        ));
+    }
+
     if matches!(prefix.reason.as_str(), "horizon" | "idle") {
         if prefix.after.logical_position != range.limit
             || prefix
@@ -403,6 +414,69 @@ mod tests {
         forged = valid.clone();
         forged.after.ordinal = 0.into();
         assert!(validate(&forged, &valid.original, &valid.before, 0.into()).is_err());
+    }
+
+    fn completion_for_reason(reason: &str) -> ArmRootPrefix {
+        let mut value = prefix();
+        value.reason = reason.to_owned();
+        if reason != "output" {
+            value.output.clear();
+            value.publications.clear();
+        }
+        if matches!(reason, "horizon" | "idle") {
+            value.after.logical_position = value.original.exact_range.as_ref().unwrap().limit;
+            value.after.has_next_event = reason == "horizon";
+            value.after.next_tick = if reason == "horizon" { 101 } else { 0 }.into();
+        }
+        if reason == "guest_exit" {
+            value.exit_cause = Some("native exit".to_owned());
+            value.exit_code = Some(0);
+        }
+        value
+    }
+
+    #[test]
+    fn actual_native_completion_reasons_require_their_original_exit_field_pair() {
+        for reason in ["output", "event_budget", "horizon", "idle", "guest_exit"] {
+            let original = completion_for_reason(reason);
+            validate(&original, &original.original, &original.before, 0.into()).unwrap();
+
+            for fields in 0..4 {
+                let mut changed = original.clone();
+                changed.exit_cause = (fields & 1 != 0).then(|| "native exit".to_owned());
+                changed.exit_code = (fields & 2 != 0).then_some(0);
+                assert_eq!(
+                    validate(&changed, &original.original, &original.before, 0.into()).is_ok(),
+                    fields == if reason == "guest_exit" { 3 } else { 0 },
+                    "reason {reason}, fields {fields}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_exit_at_exact_boundary_or_with_serial_keeps_its_original_pair() {
+        for code in [i32::MIN, -1, 0, i32::MAX] {
+            for cause in ["", "native exit"] {
+                for with_output in [false, true] {
+                    let mut original = completion_for_reason("guest_exit");
+                    original.exit_cause = Some(cause.to_owned());
+                    original.exit_code = Some(code);
+                    if with_output {
+                        let serial = prefix();
+                        original.output = serial.output;
+                        original.publications = serial.publications;
+                    }
+                    let limit = original.after.logical_position;
+                    original.original.exact_range.as_mut().unwrap().limit = limit;
+                    original.original.exclusive_tick = limit.time_ps;
+
+                    validate(&original, &original.original, &original.before, 0.into()).unwrap();
+                    assert_eq!(original.exit_cause.as_deref(), Some(cause));
+                    assert_eq!(original.exit_code, Some(code));
+                }
+            }
+        }
     }
 
     #[test]

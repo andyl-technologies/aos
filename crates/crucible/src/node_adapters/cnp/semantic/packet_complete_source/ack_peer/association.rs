@@ -213,6 +213,7 @@ impl PacketCompleteSemanticSource {
         hello: &mut Option<OriginalHelloJournal>,
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        self.authenticate_original_native_host_barrier()?;
         if matches!(
             self.selected_capture_profile()?,
             PacketNative5CaptureProfile::OwnedProtocol11 { .. }
@@ -430,6 +431,7 @@ impl PacketCompleteSemanticSource {
         initial: bool,
     ) -> Result<PreparedOriginalCanonicalAckAdmit<'a>, OperationFailure> {
         self.ensure_origin()?;
+        self.authenticate_original_native_host_barrier()?;
         let slot = self
             .ack_peer_association
             .try_borrow()
@@ -487,6 +489,7 @@ impl PacketCompleteSemanticSource {
         prepared: &mut PreparedOriginalCanonicalAckAdmit<'_>,
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        self.authenticate_original_native_host_barrier()?;
         let mut slot = self
             .ack_peer_association
             .try_borrow_mut()
@@ -580,6 +583,7 @@ impl PacketCompleteSemanticSource {
         expected: &AdmitRequest,
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        self.authenticate_original_native_host_barrier()?;
         self.authenticate_witness_scope(scope)?;
         let slot = self
             .ack_peer_association
@@ -697,6 +701,7 @@ impl PacketCompleteSemanticSource {
         initial: bool,
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        self.authenticate_original_native_host_barrier()?;
         let mut slot = self
             .ack_peer_association
             .try_borrow_mut()
@@ -787,6 +792,7 @@ impl CnpSemanticPreparation {
         initial: bool,
     ) -> Result<(), OperationFailure> {
         source.ensure_origin()?;
+        source.authenticate_original_native_host_barrier()?;
         if completed.is_some() {
             return Err(refused("original protocol ACK Admit result is occupied"));
         }
@@ -953,6 +959,7 @@ impl PacketCompleteSemanticSource {
         require_completed: bool,
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        self.authenticate_original_native_host_barrier()?;
         if !matches!(self.selected_capture_profile()?,PacketNative5CaptureProfile::OwnedProtocol11 { .. })
             || self.selected_confirmation_selection()? != Some(crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5)
             || self.selected_ack_emitter_selection()? != Some(crucible_node_provider::reference_packet::service::PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
@@ -1054,6 +1061,7 @@ impl PacketCompleteSemanticSource {
         prepared: &PreparedOriginalCompleteRestoreTransfer<'_>,
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        self.authenticate_original_native_host_barrier()?;
         self.authenticate_current_native()?;
         self.authenticate_original_preconstruction()?;
         if self.selected_restore_input_emitter_selection()?.is_none() {

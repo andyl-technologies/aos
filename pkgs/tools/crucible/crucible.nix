@@ -20,6 +20,7 @@
   dmtcp-source-owners-check,
   gem5-arm-model-profile,
   gem5-arm-root-model-profile,
+  gem5-x86-root-model-profile,
   crucible-reference-implementation,
   crucible-reference-lineage-implementation,
   crucible-reference-lineage-reader-typed-implementation,
@@ -160,6 +161,9 @@
   # These fixed source-owned bundles remain separate from the SE profile.
   # Root bytes support the native mechanism API; the older model is fixture-only.
   armRootMechanismInputs = [gem5-arm-root-model-profile];
+  # These bytes install only the x86 root constructor and its actual auditor;
+  # current native/public preparation and conformance remain separate gates.
+  x86RootConstructorInputs = [gem5-x86-root-model-profile];
   armModelFixtureInputs = [gem5-arm-model-profile];
   controllerCargoEnv =
     {
@@ -176,6 +180,7 @@
       # Distinct compiled bindings cannot turn fixed ARM mechanism evidence
       # into an ordinary execution selector or substitute the old model profile.
       CRUCIBLE_GEM5_ARM_ROOT_MODEL_MANIFEST = "${gem5-arm-root-model-profile}/share/crucible/gem5/arm-model-profile.json";
+      CRUCIBLE_GEM5_X86_ROOT_MODEL_MANIFEST = "${gem5-x86-root-model-profile}/share/crucible/gem5/x86-root-model-profile.json";
       CRUCIBLE_GEM5_ARM_MODEL_MANIFEST = "${gem5-arm-model-profile}/share/crucible/gem5/arm-model-profile.json";
     }
     // lib.optionalAttrs (!stdenv.isCross) {
@@ -194,7 +199,7 @@
       ++ referenceLineageMechanismInputs
       ++ referenceTypedLineageInputs
       ++ referenceProgressMechanismInputs
-      ++ armRootMechanismInputs
+      ++ armRootMechanismInputs ++ x86RootConstructorInputs
       ++ armModelFixtureInputs
     );
     licenseScope = "Apache-2.0";
@@ -217,10 +222,10 @@
       ++ referenceLineageMechanismInputs
       ++ referenceTypedLineageInputs
       ++ referenceProgressMechanismInputs
-      ++ armRootMechanismInputs
+      ++ armRootMechanismInputs ++ x86RootConstructorInputs
       ++ armModelFixtureInputs
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs ++ x86RootConstructorInputs;
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
@@ -335,9 +340,9 @@
       ++ referenceLineageMechanismInputs
       ++ referenceTypedLineageInputs
       ++ referenceProgressMechanismInputs
-      ++ armRootMechanismInputs
+      ++ armRootMechanismInputs ++ x86RootConstructorInputs
       ++ armModelFixtureInputs;
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs ++ x86RootConstructorInputs;
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.

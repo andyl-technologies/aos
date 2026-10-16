@@ -224,6 +224,7 @@ impl CompleteOriginalNativeInvocationAdmission<'_> {
     /// resource demand or failed Source construction. The same member and partial
     /// Source owners stay retained after the first fallible allocating phase.
     pub fn finalize_original_source(&mut self, index: usize) -> Result<(), RuntimeError> {
+        let phase = self.baseline.begin_host_finalization(index)?;
         self.authenticate_current()?;
         let mut member = self.take_original_member(index)?;
         let source = &self.baseline.scope.sources[index];
@@ -237,7 +238,8 @@ impl CompleteOriginalNativeInvocationAdmission<'_> {
         )?;
         self.authenticate_current()?;
         source.complete_original_native_invocation_birth()?;
-        self.authenticate_current()
+        self.authenticate_current()?;
+        phase.finish()
     }
 
     fn take_original_member(
@@ -290,6 +292,8 @@ impl CompleteOriginalNativeInvocationAdmission<'_> {
         // moved to Source. No public numeric/purpose DATA can reach this constructor.
         self.baseline.spent[index] = true;
         Ok(OriginalNativeStartupMember {
+            host_finalization: Rc::clone(self.baseline.host_finalization.as_ref().ok_or(RuntimeError::OwnerUnavailable)?),
+            host_finalization_index: index,
             edition: NativeStartupMemberEdition::Invocation15,
             process: self.baseline.process,
             thread: self.baseline.thread,

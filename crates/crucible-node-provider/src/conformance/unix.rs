@@ -1,15 +1,13 @@
 //! Deadline-bounded Unix probes with actual kernel peer and executable measurements.
 
-use std::fs::File;
 use std::io::{Read, Write};
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::operational_time::OperationalDeadline;
 
-use crucible_node_contract::{ContentRef, U64, canonical};
+use crucible_node_contract::{ContentRef, U64};
 use serde_json::Value;
 
 use crate::ProviderError;
@@ -18,8 +16,6 @@ use crate::transport::{FrameReader, write_frame_with_limits};
 
 use super::original_responses::{Journal, OriginalProbeResponses};
 use super::{EndpointMeasurement, ProbeConnector, ProbeSession};
-
-const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Connects protocol probes to a privately installed, independently measured peer.
 ///
@@ -287,46 +283,14 @@ impl Write for DeadlineIo<'_> {
     }
 }
 
-/// Measures exact executable bytes under a finite 256-MiB read allowance.
+/// Streams exact executable bytes through an 8-KiB bank under a 256-MiB allowance.
 ///
 /// # Errors
 /// Returns an error for inaccessible, oversized or changing files, or a failed
 /// canonical content identity. This measurement does not qualify its behavior.
 pub fn measure_executable(path: &Path) -> Result<ContentRef, ProviderError> {
-    let file = File::open(path)?;
-    let before = file.metadata()?;
-    if before.len() > MAX_EXECUTABLE_BYTES {
-        return Err(ProviderError::ResourceExhausted(
-            "probe executable measurement",
-        ));
-    }
-    let mut bytes = Vec::new();
-    (&file)
-        .take(MAX_EXECUTABLE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_EXECUTABLE_BYTES {
-        return Err(ProviderError::ResourceExhausted(
-            "probe executable measurement",
-        ));
-    }
-    let after = file.metadata()?;
-    if bytes.len() as u64 != before.len()
-        || before.len() != after.len()
-        || (
-            before.mtime(),
-            before.mtime_nsec(),
-            before.ctime(),
-            before.ctime_nsec(),
-        ) != (
-            after.mtime(),
-            after.mtime_nsec(),
-            after.ctime(),
-            after.ctime_nsec(),
-        )
-    {
-        return Err(ProviderError::Correlation(
-            "executable changed during measurement",
-        ));
-    }
-    Ok(canonical::content_ref(&bytes, "application/octet-stream")?)
+    // Reuse the actual fixed-bank CNP measurement primitive. This generic path
+    // preserves its old read-to-cap and post-read metadata/error ordering;
+    // selected Prepare keeps its distinct early-growth refusal policy.
+    crate::reference_packet::service::ack_emitter::measure_conformance_executable_data(path)
 }

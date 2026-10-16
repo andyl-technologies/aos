@@ -636,6 +636,7 @@ pub(crate) use control_admit::OriginalCanonicalAckControlAdmit;
 
 pub(crate) use restore_prepare::{
     OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,
+    measure_conformance_executable_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
 pub use restore_prepare::{

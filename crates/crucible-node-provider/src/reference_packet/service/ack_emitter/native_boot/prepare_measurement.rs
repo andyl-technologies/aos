@@ -1,7 +1,8 @@
-//! Remeasures the same Prepare executables without retaining whole-file buffers.
+//! Remeasures probe and Prepare executables without whole-file buffers.
 //!
 //! The normative ContentRef framing and before/after change checks match the
-//! existing conformance measurement. Only its temporary storage strategy differs.
+//! existing conformance measurement. Generic probes preserve read-to-bound error
+//! ordering; selected Prepare preserves its earlier immediate-growth refusal.
 
 use crate::ProviderError;
 use crucible_node_contract::{ContentRef, HashRef, U64, Validate};
@@ -9,6 +10,20 @@ use std::{fs::File, io::Read, os::unix::fs::MetadataExt, path::Path};
 
 const MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const STREAM_BUFFER_BYTES: usize = 8192;
+
+// Legacy probes finish their bounded read before comparing the original length
+// and post-read metadata. Prepare already refuses immediately on growth. Keep
+// both existing error-order contracts while sharing the same hash/read bank.
+#[derive(Clone, Copy)]
+enum GrowthPolicy {
+    RefuseImmediately,
+    ReadToBound,
+}
+
+struct MeasuredExecutableStream {
+    length: u64,
+    digest: blake3::Hash,
+}
 
 /// Reports explicit streamed measurement buffers and borrowed/owned headers.
 ///
@@ -30,6 +45,13 @@ pub(crate) const fn original_prepare_executable_measurement_counter_scratch_data
         + 8 * std::mem::size_of::<usize>()
         + std::mem::size_of::<ControllerExecutablePath>()
         + std::mem::size_of::<[u8; 20]>()
+        + 2 * std::mem::size_of::<GrowthPolicy>()
+        + std::mem::size_of::<MeasuredExecutableStream>()
+        + std::mem::size_of::<Result<MeasuredExecutableStream, ProviderError>>()
+        + std::mem::size_of::<Result<ContentRef, ProviderError>>()
+        + std::mem::size_of::<Result<File, std::io::Error>>()
+        + std::mem::size_of::<Result<std::fs::Metadata, std::io::Error>>()
+        + std::mem::size_of::<Result<usize, std::io::Error>>()
 }
 
 /// Remeasures the actual running image through the kernel's executable link.
@@ -109,6 +131,27 @@ pub(crate) fn measure_executable(path: &Path) -> Result<ContentRef, ProviderErro
     Ok(reference)
 }
 
+/// Preserves the generic probe's bounded read and post-read error precedence.
+///
+/// # Errors
+/// Returns original file/read errors, the unchanged 256-MiB refusal, or the
+/// unchanged correlation refusal for a short/grown/metadata-changed descriptor.
+/// A canonical reference is constructed only after those checks pass.
+pub(crate) fn measure_conformance_executable(path: &Path) -> Result<ContentRef, ProviderError> {
+    let mut file = File::open(path)?;
+    let before = file.metadata()?;
+    if before.len() > MAXIMUM_EXECUTABLE_BYTES {
+        return Err(ProviderError::ResourceExhausted("probe executable measurement"));
+    }
+    let measured = measure_bounded_stream(&mut file, before.len(), GrowthPolicy::ReadToBound)?;
+    let after = file.metadata()?;
+    if measured.length != before.len() {
+        return Err(ProviderError::Correlation("executable changed during measurement"));
+    }
+    authenticate_metadata(&before, &after)?;
+    reference_from_stream(measured)
+}
+
 fn authenticate_metadata(
     before: &std::fs::Metadata,
     after: &std::fs::Metadata,
@@ -147,6 +190,18 @@ fn measure_stream(
     reader: &mut impl Read,
     expected_length: u64,
 ) -> Result<ContentRef, ProviderError> {
+    let measured = measure_bounded_stream(reader, expected_length, GrowthPolicy::RefuseImmediately)?;
+    if measured.length != expected_length {
+        return Err(ProviderError::Correlation("executable changed during measurement"));
+    }
+    reference_from_stream(measured)
+}
+
+fn measure_bounded_stream(
+    reader: &mut impl Read,
+    expected_length: u64,
+    growth: GrowthPolicy,
+) -> Result<MeasuredExecutableStream, ProviderError> {
     if expected_length > MAXIMUM_EXECUTABLE_BYTES {
         return Err(ProviderError::ResourceExhausted(
             "probe executable measurement",
@@ -185,23 +240,23 @@ fn measure_stream(
                 "probe executable measurement",
             ));
         }
-        if length > expected_length {
+        if length > expected_length && matches!(growth, GrowthPolicy::RefuseImmediately) {
             return Err(ProviderError::Correlation(
                 "executable changed during measurement",
             ));
         }
         hasher.update(&bytes[..count]);
     }
-    if length != expected_length {
-        return Err(ProviderError::Correlation(
-            "executable changed during measurement",
-        ));
-    }
+    Ok(MeasuredExecutableStream { length, digest: hasher.finalize() })
+}
+
+fn reference_from_stream(measured: MeasuredExecutableStream) -> Result<ContentRef, ProviderError> {
+    let length = measured.length;
     let reference = ContentRef {
         hash: HashRef {
             algorithm: "blake3-256".to_owned(),
             domain: "cnp.blob.v1".to_owned(),
-            digest: hasher.finalize().to_hex().to_string(),
+            digest: measured.digest.to_hex().to_string(),
         },
         length: U64::new(length),
         media_type: "application/octet-stream".to_owned(),
@@ -295,6 +350,29 @@ mod tests {
     }
 
     #[test]
+    fn growth_policy_preserves_prepare_refusal_and_generic_read_error_precedence() {
+        struct GrowthThenError { first: bool }
+        impl Read for GrowthThenError {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                if std::mem::replace(&mut self.first, false) {
+                    bytes[..3].copy_from_slice(b"new");
+                    Ok(3)
+                } else {
+                    Err(io::Error::from(io::ErrorKind::BrokenPipe))
+                }
+            }
+        }
+
+        let prepare = measure_bounded_stream(&mut GrowthThenError { first: true }, 1,
+            GrowthPolicy::RefuseImmediately);
+        let generic = measure_bounded_stream(&mut GrowthThenError { first: true }, 1,
+            GrowthPolicy::ReadToBound);
+
+        assert!(matches!(prepare, Err(ProviderError::Correlation("executable changed during measurement"))));
+        assert!(matches!(generic, Err(ProviderError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe));
+    }
+
+    #[test]
     fn same_actual_descriptor_metadata_growth_refuses_unchanged_snapshot_passes() -> TestResult {
         use std::io::Write;
         struct CreatedFile(std::path::PathBuf);
@@ -319,8 +397,12 @@ mod tests {
         file.write_all(b"original")?;
         let before = file.metadata()?;
         authenticate_metadata(&before, &file.metadata()?)?;
+        assert_eq!(crate::conformance::measure_executable(&_created.0)?,
+            canonical::content_ref(b"original", "application/octet-stream")?);
         file.write_all(b"grown")?;
         assert!(authenticate_metadata(&before, &file.metadata()?).is_err());
+        assert_eq!(crate::conformance::measure_executable(&_created.0)?,
+            canonical::content_ref(b"originalgrown", "application/octet-stream")?);
         Ok(())
     }
 

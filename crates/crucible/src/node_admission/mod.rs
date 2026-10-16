@@ -467,7 +467,8 @@ pub use conformance::{
 };
 
 pub(crate) use conformance::{
-    NativeStartupRows, OriginalNativeStartupMember, OriginalNativeStartupQuote,
+    NativeStartupRows, OriginalHostFinalizationBarrier, OriginalHostFinalizationSource,
+    OriginalNativeStartupMember, OriginalNativeStartupQuote,
 };
 
 pub use conformance::{

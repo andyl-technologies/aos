@@ -457,7 +457,7 @@ impl Gem5SerialPublication {
         self.validate_birth_at_terminal(before, after, original_id, original_parent, terminal)
     }
 
-    fn validate_birth_at_terminal(
+    pub(super) fn validate_birth_at_terminal(
         &self,
         before: &Gem5Boundary,
         after: &Gem5Boundary,

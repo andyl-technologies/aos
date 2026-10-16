@@ -28,6 +28,7 @@ pub(super) use prepare_measurement::{
 };
 pub(crate) use prepare_measurement::{
     measure_executable as measure_original_prepare_executable_data,
+    measure_conformance_executable as measure_conformance_executable_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
 #[path = "prepare_target.rs"]

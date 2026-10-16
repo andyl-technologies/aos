@@ -111,6 +111,7 @@ pub(crate) use native_boot::{
 };
 pub(crate) use native_boot::{
     OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,
+    measure_conformance_executable_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
 

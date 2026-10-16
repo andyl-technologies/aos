@@ -21,6 +21,7 @@ mod coordinator_decode;
 mod decoded;
 mod hello;
 mod initial;
+mod launch_decode;
 mod private_bootstrap;
 mod schemas;
 mod source_binding;
@@ -119,6 +120,7 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + coordinator_decode::counter_scratch_data()
         + decoded::counter_scratch_data()
         + launch_validation_counter_scratch_data()
+        + launch_decode::counter_scratch_data()
         // Private second-frame projection retains its independent raw extent
         // beside the original max-raw result and nested helper views.
         + size_of::<crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData>()
@@ -245,11 +247,7 @@ fn birth_storage_with_source(
 
     // Each raw walk uses actual occurrences and compiled DTO/map layouts. It
     // allocates no fake Envelope, boot, model, coordinator or permission object.
-    let launch_decode = decode(
-        input.encoded_launch,
-        size_of::<PacketNative5SourceLaunch>(),
-        maximum,
-    )?;
+    let launch_decode = launch_decode::quote(input.encoded_launch, maximum)?;
     let coordinator_decode = original_native_coordinator_decode_storage_data(
         launch.initial_coordinator.bytes.as_slice(),
         maximum,
@@ -427,11 +425,7 @@ fn launch_validation_work(
     // children beside the temporary decoder/validator work.
     sum(
         &[
-            decode(
-                input.encoded_launch,
-                size_of::<PacketNative5SourceLaunch>(),
-                maximum,
-            )?,
+            launch_decode::quote(input.encoded_launch, maximum)?,
             original_native_coordinator_decode_storage_data(
                 launch.initial_coordinator.bytes.as_slice(),
                 maximum,
@@ -460,12 +454,6 @@ fn launch_validation_counter_scratch_data() -> usize {
         + size_of::<[usize; 10]>()
         + size_of::<&[usize]>()
         + size_of::<std::slice::Iter<'static, usize>>()
-}
-
-fn decode(bytes: &[u8], typed: usize, maximum: usize) -> Result<usize, ProviderError> {
-    super::super::complete_restore::transfer::selected_issuer_decode_storage_data(
-        bytes, typed, maximum,
-    )
 }
 
 /// Counts the selected complete coordinator and its actual validation phases.

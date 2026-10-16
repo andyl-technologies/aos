@@ -27,7 +27,8 @@ pub use host_startup::{
 };
 pub(crate) use host_startup::{OriginalNativeHostStartupMember, OriginalNativeHostStartupQuote};
 pub(crate) use native_startup::{
-    NativeStartupRows, OriginalNativeStartupMember, OriginalNativeStartupQuote,
+    NativeStartupRows, OriginalHostFinalizationBarrier, OriginalHostFinalizationSource,
+    OriginalNativeStartupMember, OriginalNativeStartupQuote,
 };
 
 pub use runtime_construction::{

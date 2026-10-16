@@ -180,6 +180,7 @@ impl PreparedModelRoster {
                     );
                 }
                 InstalledNodeKind::Gem5ArmRoot
+            | InstalledNodeKind::Gem5X86Root
                 | InstalledNodeKind::Gem5Closed { .. }
                 | InstalledNodeKind::Gem5ClosedPreserving { .. }
                 | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {

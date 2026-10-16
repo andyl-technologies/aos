@@ -230,6 +230,7 @@ fn has_closed_source_qualification(kind: &super::InstalledNodeKind) -> bool {
         | InstalledNodeKind::HostRateAlarmClockProducer { .. }
         | InstalledNodeKind::HostSemantics { .. }
         | InstalledNodeKind::Gem5ArmRoot
+            | InstalledNodeKind::Gem5X86Root
         | InstalledNodeKind::HostConditionDebug { .. }
         | InstalledNodeKind::HostConditionDebugPreserving { .. }
         | InstalledNodeKind::Gem5Closed { .. }

@@ -18,6 +18,9 @@ use crucible_node_provider::reference_packet::service::{
 use super::{InstalledConformancePlan, WeakInstalledConformancePlan};
 use crate::{node_adapters::cnp::PacketCompleteSemanticSource, node_contract::RuntimeError};
 
+mod host_finalization;
+pub(crate) use host_finalization::{OriginalHostFinalizationBarrier, OriginalHostFinalizationSource};
+
 /// Borrows the actual original policy roster and both retained launch views.
 ///
 /// Core constructs this scope. The policy compares each reference against its
@@ -182,6 +185,7 @@ pub struct CompleteOriginalNativeStartupAdmission<'a> {
     source_bytes: [usize; 3],
     spent: [bool; 3],
     requested_peak: usize,
+    host_finalization: Option<Rc<OriginalHostFinalizationBarrier>>,
 }
 
 impl InstalledConformancePlan {
@@ -190,13 +194,20 @@ impl InstalledConformancePlan {
     /// # Errors
     /// Refuses checked layout arithmetic overflow.
     pub fn original_native_startup_counter_scratch_data() -> Result<usize, RuntimeError> {
-        sum(&[size_of::<CompleteOriginalNativeStartupAdmission<'_>>(),
-            size_of::<OriginalNativeStartupScope<'_>>(),
-            size_of::<OriginalNativeStartupMemberScope<'_>>(),
-            size_of::<[OriginalNativeStartupQuote; 3]>(),
-            size_of::<[Option<OriginalNativeStartupQuote>; 3]>(),
-            crate::node_adapters::cnp::CnpSemanticLaunchReservation::unlaunched_storage_counter_scratch_data(),
-            PacketCompleteSemanticSource::original_native_startup_counter_scratch_data()?], usize::MAX)
+        sum(
+            &[
+                size_of::<CompleteOriginalNativeStartupAdmission<'_>>(),
+                size_of::<OriginalNativeStartupScope<'_>>(),
+                size_of::<OriginalNativeStartupMemberScope<'_>>(),
+                size_of::<[OriginalNativeStartupQuote; 3]>(),
+                size_of::<[Option<OriginalNativeStartupQuote>; 3]>(),
+                crate::node_adapters::cnp::CnpSemanticLaunchReservation::unlaunched_storage_counter_scratch_data(),
+                PacketCompleteSemanticSource::original_native_startup_counter_scratch_data()?,
+                OriginalHostFinalizationBarrier::counter_scratch_data(),
+                PacketCompleteSemanticSource::original_native_host_barrier_slot_scratch_data(),
+            ],
+            usize::MAX,
+        )
     }
 
     /// Admits native baseline allocations on the same actual pre-Child roster.
@@ -249,6 +260,10 @@ impl InstalledConformancePlan {
             storage.retained_holder_bytes,
             policy.maximum_requested_bytes,
         )?;
+        // This same allocation remains owned by Core and each issued member.
+        // Source links are weak; the complete shared allocation is charged once.
+        observed = add(observed, OriginalHostFinalizationBarrier::allocation_requested_bytes(),
+            policy.maximum_requested_bytes)?;
         let mut pending = [None, None, None];
         for index in 0..3 {
             if (0..index).any(|previous| Rc::ptr_eq(&sources[previous], &sources[index])) {
@@ -295,7 +310,7 @@ impl InstalledConformancePlan {
             policy.maximum_requested_bytes,
         )?;
         let [a, b, c] = pending;
-        let admission = CompleteOriginalNativeStartupAdmission {
+        let mut admission = CompleteOriginalNativeStartupAdmission {
             scope,
             process: std::process::id(),
             thread: std::thread::current().id(),
@@ -309,8 +324,16 @@ impl InstalledConformancePlan {
             source_bytes,
             spent: [false; 3],
             requested_peak: observed,
+            host_finalization: None,
         };
         admission.recheck()?;
+        // Acquire and validate all original birth loans before allocating the
+        // gate. Holding all three excludes callbacks/reentry during attachment.
+        // Every assignment below is infallible, so no alias is left unguarded.
+        let slots = PacketCompleteSemanticSource::original_native_host_barrier_slots(sources)?;
+        let barrier = Rc::new(OriginalHostFinalizationBarrier::new(self, sources));
+        slots.attach(&barrier);
+        admission.host_finalization = Some(barrier);
         Ok(admission)
     }
 }
@@ -327,6 +350,7 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
     /// Refuses a foreign/repeated member, changed holder or widened owner. A
     /// failed finalization stays spent and retains its same partial Source owner.
     pub fn finalize_original_source(&mut self, index: usize) -> Result<(), RuntimeError> {
+        let phase = self.begin_host_finalization(index)?;
         self.origin()?;
         if index >= 3 || self.spent[index] {
             return Err(RuntimeError::DuplicateOperation);
@@ -371,6 +395,8 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
         }
         self.spent[index] = true;
         let member = OriginalNativeStartupMember {
+            host_finalization: Rc::clone(self.host_finalization.as_ref().ok_or(RuntimeError::OwnerUnavailable)?),
+            host_finalization_index: index,
             edition: NativeStartupMemberEdition::Startup14,
             process: self.process,
             thread: self.thread,
@@ -390,7 +416,20 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
         source.finalize_original_native_startup_birth(member, &self.scope.launches[index])?;
         self.recheck()?;
         source.complete_original_native_startup_birth()?;
-        self.origin()
+        self.origin()?;
+        // Complete the original post-fences before the final member can open
+        // the shared roster barrier through any retained Source alias.
+        self.recheck()?;
+        phase.finish()
+    }
+
+    fn begin_host_finalization(&self, index: usize) -> Result<host_finalization::OriginalHostFinalizationLease, RuntimeError> {
+        let barrier = self.host_finalization.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        let source = self.scope.sources.get(index).ok_or_else(|| {
+            barrier.abandon();
+            RuntimeError::DuplicateOperation
+        })?;
+        barrier.begin(index, self.scope.plan, source)
     }
 
     fn origin(&self) -> Result<(), RuntimeError> {
@@ -446,6 +485,14 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
     }
 }
 
+impl Drop for CompleteOriginalNativeStartupAdmission<'_> {
+    fn drop(&mut self) {
+        if let Some(barrier) = &self.host_finalization {
+            barrier.abandon();
+        }
+    }
+}
+
 // Issued only by the two genuine once-spent member constructors. Neither a
 // decoded Source body nor the absence of a partial body can choose an edition.
 #[derive(Clone, Copy)]
@@ -455,6 +502,8 @@ enum NativeStartupMemberEdition {
 }
 
 pub(crate) struct OriginalNativeStartupMember {
+    host_finalization: Rc<OriginalHostFinalizationBarrier>,
+    host_finalization_index: usize,
     edition: NativeStartupMemberEdition,
     process: u32,
     thread: ThreadId,
@@ -474,6 +523,16 @@ pub(crate) struct OriginalNativeStartupMember {
 }
 
 impl OriginalNativeStartupMember {
+    /// Retains installed member authentication beneath the shared boot barrier.
+    ///
+    /// # Errors
+    /// Refuses a foreign/spent member or incomplete, aborted or abandoned roster.
+    pub(crate) fn authenticate_boot_ready(&self, source: &PacketCompleteSemanticSource) -> Result<(), RuntimeError> {
+        self.host_finalization.authenticate_ready(self.host_finalization_index, source)?;
+        self.authenticate(source)?;
+        self.host_finalization.authenticate_ready(self.host_finalization_index, source)
+    }
+
     pub(crate) fn requires_original_invocation_data(&self) -> Result<bool, RuntimeError> {
         if self.process != std::process::id() {
             return Err(RuntimeError::ForeignAuthority);
@@ -488,6 +547,9 @@ impl OriginalNativeStartupMember {
     }
 
     pub(crate) fn retained_shared_storage_data(&self) -> Result<usize, RuntimeError> {
+        // This actual Source walker names the shared gate it keeps alive.
+        // Prospective finalization precredits the same conservative term for
+        // every member, in addition to the complete roster's upfront charge.
         self.plan
             .retained_allocation_bytes()
             .checked_add(
@@ -495,7 +557,13 @@ impl OriginalNativeStartupMember {
                     PacketCompleteSemanticSource,
                 >(),
             )
+            .and_then(|bytes| bytes.checked_add(Self::host_finalization_allocation_requested_data()))
             .ok_or(RuntimeError::ResourceLimit)
+    }
+
+    /// Counts the same gate allocation retained through an installed member.
+    pub(crate) fn host_finalization_allocation_requested_data() -> usize {
+        OriginalHostFinalizationBarrier::allocation_requested_bytes()
     }
 
     pub(crate) fn authenticate(
