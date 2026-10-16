@@ -23,5 +23,9 @@ native-test-fixtures = ["tokio"]
 name = "publication_fixture"
 required-features = ["native-test-fixtures"]
 
+[[example]]
+name = "configured_sdk_fixture"
+required-features = ["tokio"]
+
 [lints]
 workspace = true
