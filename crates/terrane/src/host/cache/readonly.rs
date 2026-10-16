@@ -8,7 +8,7 @@ use super::DomainHostLayout;
 use crate::store::{NativeOrdinaryRead, OrdinaryReadOutcome};
 use crate::{
     bucket::BucketBinding,
-    pack::PackReader,
+    pack::{PackId, PackReader},
     store::{
         ByteRange, Capabilities, CapabilityReport, ContentStore, ContentUpload, ContentValidator,
         CorruptSubject, Durability, IdentityPrefix, InvalidReason, LocalFs, MetaUpload,
@@ -233,15 +233,27 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
                     .calculate(IdentityKind::Pack, &bytes)
                     .map_err(|_| invalid())?;
                 if &actual == identity {
-                    PackReader::open(&bytes).map_err(|error| corrupt(identity, error))?;
+                    let reader =
+                        PackReader::open(&bytes).map_err(|error| corrupt(identity, error))?;
+                    if self.layout.root().join(reader.header().id().pack_key()) != path {
+                        return Err(invalid());
+                    }
                     return Ok(bytes);
                 }
                 continue;
             }
             let index_path = path.with_extension("idx");
             let index_bytes = self.read_file(&index_path).await?;
-            let (_, records) = terrane_core::pack_format::decode_detached_index(&index_bytes)
+            let (header, records) = terrane_core::pack_format::decode_detached_index(&index_bytes)
                 .map_err(|error| corrupt(identity, error))?;
+            if self
+                .layout
+                .root()
+                .join(PackId::from_random_bytes(*header.id()).pack_key())
+                != path
+            {
+                return Err(invalid());
+            }
             let Some(record) = records.iter().find(|record| {
                 crate::pack::EntryKind::try_from(record.kind)
                     .is_ok_and(|kind| kind.identity_kind() == identity.kind())
@@ -254,6 +266,9 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             if !before.is_file() || before.file_type().is_symlink() {
                 return Err(invalid());
             }
+            self.verify_pack_index(&path, before.len(), &index_bytes, &records)
+                .await
+                .map_err(|source| corrupt(identity, source))?;
             let bytes = self
                 .fs
                 .read_range(
@@ -270,6 +285,17 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
                 return Err(invalid());
             }
             self.close_parents(parents).await?;
+            if bytes.len() != record.body_len as usize
+                || (identity.kind() == IdentityKind::Chunk && bytes.first() != Some(&record.codec))
+            {
+                return Err(corrupt(
+                    identity,
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "pack body differs from detached index declarations",
+                    ),
+                ));
+            }
             if identity.kind() == IdentityKind::Chunk {
                 self.verify_chunk(
                     &bytes,
@@ -335,6 +361,95 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             }
         }
         Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())))
+    }
+
+    async fn verify_pack_index(
+        &self,
+        path: &Path,
+        file_size: u64,
+        detached: &[u8],
+        records: &[terrane_core::pack_format::Record],
+    ) -> Result<(), StoreFailure> {
+        use terrane_core::pack_format::{FOOTER_SIZE, HEADER_SIZE, crc32c};
+        let footer_start = file_size
+            .checked_sub(FOOTER_SIZE as u64)
+            .ok_or_else(invalid)?;
+        let header = self
+            .fs
+            .read_range(
+                path,
+                ByteRange {
+                    start: 0,
+                    length: HEADER_SIZE as u64,
+                },
+            )
+            .await
+            .map_err(io_failure)?;
+        if detached.get(..HEADER_SIZE) != Some(header.as_slice()) {
+            return Err(invalid());
+        }
+        let footer = self
+            .fs
+            .read_range(
+                path,
+                ByteRange {
+                    start: footer_start,
+                    length: FOOTER_SIZE as u64,
+                },
+            )
+            .await
+            .map_err(io_failure)?;
+        if footer.len() != FOOTER_SIZE || footer.get(12..) != Some(b"TRPE".as_slice()) {
+            return Err(invalid());
+        }
+        let offset = u64::from_le_bytes(
+            footer
+                .get(..8)
+                .ok_or_else(invalid)?
+                .try_into()
+                .map_err(|_| invalid())?,
+        );
+        let checksum = u32::from_le_bytes(
+            footer
+                .get(8..12)
+                .ok_or_else(invalid)?
+                .try_into()
+                .map_err(|_| invalid())?,
+        );
+        let expected = detached.get(HEADER_SIZE..).ok_or_else(invalid)?;
+        if offset < HEADER_SIZE as u64
+            || footer_start.checked_sub(offset) != Some(expected.len() as u64)
+            || crc32c(expected) != checksum
+        {
+            return Err(invalid());
+        }
+        let last_end = records
+            .iter()
+            .try_fold(HEADER_SIZE as u64, |last, record| {
+                let end = record
+                    .offset
+                    .checked_add(u64::from(record.body_len))
+                    .ok_or_else(invalid)?;
+                Ok::<_, StoreFailure>(last.max(end))
+            })?;
+        if last_end != offset {
+            return Err(invalid());
+        }
+        let actual = self
+            .fs
+            .read_range(
+                path,
+                ByteRange {
+                    start: offset,
+                    length: expected.len() as u64,
+                },
+            )
+            .await
+            .map_err(io_failure)?;
+        if actual != expected {
+            return Err(invalid());
+        }
+        Ok(())
     }
 
     async fn verify_chunk(

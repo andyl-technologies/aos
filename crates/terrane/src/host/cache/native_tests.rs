@@ -169,6 +169,11 @@ async fn host_cache_native_pack_body_range_never_returns_plaintext_encoding() {
             .unwrap(),
         b"pack"
     );
+    let mut damaged = pack.bytes().to_vec();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    std::fs::write(&pack_path, damaged).unwrap();
+    assert!(reader.get(&identity, None).await.is_err());
 }
 
 #[tokio::test]
