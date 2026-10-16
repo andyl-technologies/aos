@@ -188,7 +188,6 @@ fn choice_validation_cache_is_compact_shared_and_checks_copied_contracts() {
         representative.get_or_insert(opportunity);
     }
     assert_eq!(cache.contracts.len(), 1);
-    assert_eq!(cache.insertion_order.len(), 1);
 
     let mut forged_bytes =
         crate::codec::encode(representative.as_ref().expect("representative opportunity"));

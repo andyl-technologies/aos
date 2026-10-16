@@ -313,110 +313,192 @@ impl CampaignRepository {
         self.read_attempt_cached(id, &mut ChoiceValidationCache::default())
     }
 
+    /// Reads one attempt and validates its complete continuation chain.
+    ///
+    /// An `AfterAttempt` continuation must share its origin's branch path and
+    /// reach a configuration of its origin's scenario lineage, back to a
+    /// `Discover` or `Branch` root. Validation holds constant state: it walks
+    /// origins until it reaches a cached validated attempt or the root, then
+    /// caches a bounded prefix of the chain. Cycles cannot occur because each
+    /// attempt's content ID commits to its origin's ID.
     pub(in crate::repository) fn read_attempt_cached(
         &self,
         id: ContentId,
         cache: &mut ChoiceValidationCache,
     ) -> Result<Attempt, CampaignRepositoryError> {
-        if let Some(validated) = cache.validated_attempts.get(&id) {
-            return Ok(validated.attempt.clone());
+        if let Some(validated) = cache.validated_attempts.get(&id).cloned() {
+            self.cache_validated_attempt_origin(&validated, cache);
+            return Ok(validated.attempt);
         }
 
         let attempt = self.read_attempt_record(id)?;
-        let path = self.read_branch_path(attempt.path().content_id())?;
-        let mut current = Some(attempt.clone());
-        let mut current_id = id;
-        let mut visited = BTreeSet::new();
-        let mut pending = Vec::new();
+        let lineage = self.validate_attempt_chain(&attempt, cache)?;
+        self.cache_validated_attempt_chain(id, attempt.clone(), lineage, cache)?;
+        Ok(attempt)
+    }
+
+    /// Validates `attempt`'s chain and returns its scenario lineage.
+    ///
+    /// Each link's lineage must equal its origin's, so every link in a valid
+    /// chain carries the requested attempt's lineage. Checking each link
+    /// against that one expected value needs no per-link state.
+    fn validate_attempt_chain(
+        &self,
+        attempt: &Attempt,
+        cache: &ChoiceValidationCache,
+    ) -> Result<AttemptLineage, CampaignRepositoryError> {
+        let path_id = attempt.path();
+        let path = self.read_branch_path(path_id.content_id())?;
+        let mut expected = None;
+        let mut start = attempt.start();
 
         loop {
-            if !visited.insert(current_id) {
-                return Err(integrity("attempt-continuation-origin-cycle"));
-            }
+            let (origin, reached) = match start {
+                AttemptStart::AfterAttempt { origin, reached } => (origin, reached),
+                AttemptStart::Discover { .. } | AttemptStart::Branch { .. } => {
+                    let lineage = self.validate_attempt_root(start, &path)?;
+                    return match_attempt_lineage(expected, lineage);
+                }
+            };
 
-            if let Some(validated) = cache.validated_attempts.get(&current_id).cloned() {
-                if validated.path != attempt.path() {
+            let reached = self.read_configuration_artifact(reached.content_id())?;
+            let lineage =
+                match_attempt_lineage(expected, (reached.scenario(), reached.scenario_artifact()))?;
+            expected = Some(lineage);
+
+            if let Some(validated) = cache.validated_attempts.get(&origin.content_id()) {
+                if validated.path != path_id {
                     return Err(integrity("attempt-continuation-path-mismatch"));
                 }
-                return cache_attempt_continuation_prefix(cache, id, pending, validated);
+                return match_attempt_lineage(expected, validated.lineage);
             }
-
-            let current = match current.take() {
-                Some(current) => current,
-                None => self.read_attempt_record(current_id)?,
-            };
-            if current.path() != attempt.path() {
+            let origin = self.read_attempt_record(origin.content_id())?;
+            if origin.path() != path_id {
                 return Err(integrity("attempt-continuation-path-mismatch"));
             }
+            start = origin.start();
+        }
+    }
 
-            let validated = match current.start() {
-                AttemptStart::Discover { configuration } => {
-                    let configuration =
-                        self.read_configuration_artifact(configuration.content_id())?;
-                    ValidatedAttempt {
-                        attempt: current,
-                        path: attempt.path(),
-                        lineage: (configuration.scenario(), configuration.scenario_artifact()),
-                        origin_depth: 1,
-                    }
+    /// Validates a `Discover` or `Branch` chain root against the chain's path.
+    fn validate_attempt_root(
+        &self,
+        start: AttemptStart,
+        path: &BranchPath,
+    ) -> Result<AttemptLineage, CampaignRepositoryError> {
+        match start {
+            AttemptStart::Discover { configuration } => {
+                let configuration = self.read_configuration_artifact(configuration.content_id())?;
+                Ok((configuration.scenario(), configuration.scenario_artifact()))
+            }
+            AttemptStart::Branch {
+                edge,
+                parent,
+                selection,
+            } => {
+                if path.edges().last() != Some(&edge) {
+                    return Err(integrity("attempt-branch-path-terminal-edge-mismatch"));
                 }
-                AttemptStart::Branch {
-                    edge,
-                    parent,
-                    selection,
-                } => {
-                    if path.edges().last() != Some(&edge) {
-                        return Err(integrity("attempt-branch-path-terminal-edge-mismatch"));
-                    }
-                    let parent = self.read_configuration_artifact(parent.content_id())?;
-                    let resolved = self.resolve_selection(selection)?;
-                    let branch_point = resolved
-                        .opportunity()
-                        .branch_point_id(parent.configuration());
-                    resolved.selection().validate_branch_replay(
-                        resolved.opportunity(),
-                        resolved.domain(),
-                        branch_point,
-                    )?;
-                    if let crate::SelectionOrigin::CampaignBranch {
-                        edge: selected_edge,
-                        ..
-                    } = resolved.selection().origin()
-                        && selected_edge != edge
-                    {
-                        return Err(integrity("attempt-branch-edge-mismatch"));
-                    }
-                    if path.segments().last().copied()
-                        != Some(crate::BranchPathSegment::new(branch_point, edge))
-                    {
-                        return Err(integrity("attempt-branch-path-terminal-scope-mismatch"));
-                    }
-                    ValidatedAttempt {
-                        attempt: current,
-                        path: attempt.path(),
-                        lineage: (parent.scenario(), parent.scenario_artifact()),
-                        origin_depth: 1,
-                    }
+                let parent = self.read_configuration_artifact(parent.content_id())?;
+                let resolved = self.resolve_selection(selection)?;
+                let branch_point = resolved
+                    .opportunity()
+                    .branch_point_id(parent.configuration());
+                resolved.selection().validate_branch_replay(
+                    resolved.opportunity(),
+                    resolved.domain(),
+                    branch_point,
+                )?;
+                if let crate::SelectionOrigin::CampaignBranch {
+                    edge: selected_edge,
+                    ..
+                } = resolved.selection().origin()
+                    && selected_edge != edge
+                {
+                    return Err(integrity("attempt-branch-edge-mismatch"));
                 }
-                AttemptStart::AfterAttempt { origin, reached } => {
-                    let reached = self.read_configuration_artifact(reached.content_id())?;
-                    pending.push((
-                        current_id,
-                        current,
-                        (reached.scenario(), reached.scenario_artifact()),
-                    ));
-                    if pending.len() >= MAX_AFTER_ATTEMPT_ORIGIN_DEPTH {
-                        return Err(integrity("attempt-continuation-origin-depth-exceeded"));
-                    }
-                    current_id = origin.content_id();
-                    continue;
+                if path.segments().last().copied()
+                    != Some(crate::BranchPathSegment::new(branch_point, edge))
+                {
+                    return Err(integrity("attempt-branch-path-terminal-scope-mismatch"));
                 }
+                Ok((parent.scenario(), parent.scenario_artifact()))
+            }
+            AttemptStart::AfterAttempt { .. } => Err(integrity("attempt-continuation-root-shape")),
+        }
+    }
+
+    /// Caches the validated attempt and a bounded prefix of its origins.
+    ///
+    /// Validation proved every link back to the anchor, so the prefix nearest
+    /// the requested attempt is re-read and cached until the anchor, the root,
+    /// or the fill bound. Reads that walk the same chain then stop early.
+    fn cache_validated_attempt_chain(
+        &self,
+        id: ContentId,
+        attempt: Attempt,
+        lineage: AttemptLineage,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        let path = attempt.path();
+        let mut current = (id, attempt);
+
+        for _ in 0..MAX_ATTEMPT_CHAIN_CACHE_FILL {
+            let (current_id, current_attempt) = current;
+            let origin = match current_attempt.start() {
+                AttemptStart::AfterAttempt { origin, .. } => Some(origin.content_id()),
+                AttemptStart::Discover { .. } | AttemptStart::Branch { .. } => None,
             };
+            cache.validated_attempts.insert(
+                current_id,
+                ValidatedAttempt {
+                    attempt: current_attempt,
+                    path,
+                    lineage,
+                },
+            );
 
-            cache
-                .validated_attempts
-                .insert(current_id, validated.clone());
-            return cache_attempt_continuation_prefix(cache, id, pending, validated);
+            let Some(origin) = origin.filter(|id| !cache.validated_attempts.contains_key(id))
+            else {
+                break;
+            };
+            current = (origin, self.read_attempt_record(origin)?);
+        }
+        Ok(())
+    }
+
+    /// Extends a cached validated continuation to its immediate origin.
+    ///
+    /// A validated chain vouches for every origin, so caching the next one on
+    /// each hit lets a newest-to-oldest walk of an arbitrarily long chain, as
+    /// closure traversal performs, validate each link with constant reads.
+    /// This is best effort: a failed read only forgoes the cache entry, and
+    /// reading that origin itself reports the failure.
+    fn cache_validated_attempt_origin(
+        &self,
+        validated: &ValidatedAttempt,
+        cache: &mut ChoiceValidationCache,
+    ) {
+        let AttemptStart::AfterAttempt { origin, .. } = validated.attempt.start() else {
+            return;
+        };
+        let origin = origin.content_id();
+        if cache.validated_attempts.contains_key(&origin) {
+            return;
+        }
+
+        let Ok(attempt) = self.read_attempt_record(origin) else {
+            return;
+        };
+        if attempt.path() == validated.path {
+            cache.validated_attempts.insert(
+                origin,
+                ValidatedAttempt {
+                    attempt,
+                    path: validated.path,
+                    lineage: validated.lineage,
+                },
+            );
         }
     }
 
@@ -428,4 +510,15 @@ impl CampaignRepository {
         }
         Ok(attempt)
     }
+}
+
+/// Returns `lineage` when it matches the chain's expected lineage, if any.
+fn match_attempt_lineage(
+    expected: Option<AttemptLineage>,
+    lineage: AttemptLineage,
+) -> Result<AttemptLineage, CampaignRepositoryError> {
+    if expected.is_some_and(|expected| expected != lineage) {
+        return Err(integrity("attempt-continuation-lineage-mismatch"));
+    }
+    Ok(lineage)
 }

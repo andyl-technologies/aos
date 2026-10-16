@@ -157,7 +157,7 @@ impl CampaignRepository {
         self.read_attempt(id.content_id())
     }
 
-    /// Loads one attempt followed by its complete bounded continuation ancestry.
+    /// Loads one attempt followed by its complete continuation ancestry.
     ///
     /// The returned vector is ordered from the requested attempt toward its
     /// oldest discovery or branch root. All entries are authenticated with one
@@ -166,7 +166,7 @@ impl CampaignRepository {
     /// # Errors
     ///
     /// Returns a store, codec, or integrity error when the attempt chain is
-    /// missing, corrupt, cyclic, too deep, or semantically inconsistent.
+    /// missing, corrupt, or semantically inconsistent.
     pub fn load_attempt_origin_chain(
         &self,
         id: AttemptId,

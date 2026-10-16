@@ -623,6 +623,8 @@ mod discovery;
 mod execution;
 mod executor_driver;
 mod fact_references;
+mod fifo_cache;
+use fifo_cache::FifoCache;
 #[cfg(feature = "destructive-recovery-faults")]
 mod fault_injection;
 mod finding;
@@ -700,21 +702,35 @@ struct LoadedSnapshot {
     snapshot: CampaignSnapshot,
 }
 
-#[derive(Default)]
+/// Memoized validation results shared by one validation pass.
+///
+/// Every map is FIFO-bounded: a miss only costs re-reading authenticated
+/// records, so memory stays fixed however long the campaign grows.
 struct ChoiceValidationCache {
-    contracts: BTreeMap<(ContentId, ContentId), CampaignHash>,
-    insertion_order: VecDeque<(ContentId, ContentId)>,
-    objective_contracts: BTreeMap<CampaignPolicyId, CampaignHash>,
-    objective_insertion_order: VecDeque<CampaignPolicyId>,
-    validated_attempts: BTreeMap<ContentId, ValidatedAttempt>,
+    contracts: FifoCache<(ContentId, ContentId), CampaignHash>,
+    objective_contracts: FifoCache<CampaignPolicyId, CampaignHash>,
+    validated_attempts: FifoCache<ContentId, ValidatedAttempt>,
 }
 
+/// An attempt whose whole continuation chain has been validated.
+///
+/// Every link of a validated chain shares its path and scenario lineage, so
+/// an `AfterAttempt` entry also vouches for its origin.
 #[derive(Clone)]
 struct ValidatedAttempt {
     attempt: Attempt,
     path: BranchPathId,
     lineage: (ScenarioDefId, ScenarioArtifactId),
-    origin_depth: usize,
+}
+
+impl Default for ChoiceValidationCache {
+    fn default() -> Self {
+        Self {
+            contracts: FifoCache::new(MAX_CHOICE_VALIDATION_CACHE_ENTRIES),
+            objective_contracts: FifoCache::new(MAX_CHOICE_VALIDATION_CACHE_ENTRIES),
+            validated_attempts: FifoCache::new(MAX_CHOICE_VALIDATION_CACHE_ENTRIES),
+        }
+    }
 }
 
 impl ChoiceValidationCache {
@@ -723,16 +739,7 @@ impl ChoiceValidationCache {
     }
 
     fn insert(&mut self, key: (ContentId, ContentId), contract: CampaignHash) {
-        if self.contracts.contains_key(&key) {
-            return;
-        }
-        if self.contracts.len() >= MAX_CHOICE_VALIDATION_CACHE_ENTRIES
-            && let Some(evicted) = self.insertion_order.pop_front()
-        {
-            self.contracts.remove(&evicted);
-        }
         self.contracts.insert(key, contract);
-        self.insertion_order.push_back(key);
     }
 
     fn objective_contract(&self, policy: CampaignPolicyId) -> Option<CampaignHash> {
@@ -740,16 +747,7 @@ impl ChoiceValidationCache {
     }
 
     fn insert_objective_contract(&mut self, policy: CampaignPolicyId, contract: CampaignHash) {
-        if self.objective_contracts.contains_key(&policy) {
-            return;
-        }
-        if self.objective_contracts.len() >= MAX_CHOICE_VALIDATION_CACHE_ENTRIES
-            && let Some(evicted) = self.objective_insertion_order.pop_front()
-        {
-            self.objective_contracts.remove(&evicted);
-        }
         self.objective_contracts.insert(policy, contract);
-        self.objective_insertion_order.push_back(policy);
     }
 }
 

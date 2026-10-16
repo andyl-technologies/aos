@@ -959,16 +959,19 @@ fn selected_continuation_identity_deduplicates_distinct_capture_causes() {
     assert!(replay.replayed);
 }
 
-#[test]
-fn continuation_origin_loading_rejects_overdeep_chains_iteratively() {
-    const ORIGIN_LIMIT: usize = 4096;
-
-    let (repository, lineage, _policy) = fixture();
+/// Publishes a `Discover` attempt followed by `continuations` links on the
+/// empty path, each reaching the configuration chosen by `reached_for`.
+fn publish_continuation_chain(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    continuations: usize,
+    mut reached_for: impl FnMut(usize) -> ConfigurationArtifactId,
+) -> Vec<Attempt> {
     let path = BranchPath::new(Vec::new()).expect("empty path");
     repository
         .put_branch_path(&path)
         .expect("publish empty path");
-    let mut origin = Attempt::new(
+    let mut attempt = Attempt::new(
         AttemptStart::Discover {
             configuration: lineage.genesis_content(),
         },
@@ -976,90 +979,110 @@ fn continuation_origin_loading_rejects_overdeep_chains_iteratively() {
         StopCondition::ExecutionQuanta(1),
     )
     .expect("base attempt");
-    repository.put_attempt(&origin).expect("publish base");
+    repository.put_attempt(&attempt).expect("publish base");
+    let mut chain = vec![attempt.clone()];
 
-    for quantum in 2..=ORIGIN_LIMIT + 1 {
-        origin = Attempt::new(
+    for link in 1..=continuations {
+        attempt = Attempt::new(
             AttemptStart::AfterAttempt {
-                origin: origin.id().expect("origin ID"),
-                reached: lineage.genesis_content(),
+                origin: attempt.id().expect("origin ID"),
+                reached: reached_for(link),
             },
             path.id().expect("path ID"),
-            StopCondition::ExecutionQuanta(quantum as u64),
+            StopCondition::ExecutionQuanta(link as u64 + 1),
         )
         .expect("continuation attempt");
         repository
-            .put_attempt(&origin)
+            .put_attempt(&attempt)
             .expect("publish continuation");
+        chain.push(attempt.clone());
     }
-
-    assert!(matches!(
-        repository.load_attempt(origin.id().expect("deep origin ID")),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "attempt-continuation-origin-depth-exceeded"
-        })
-    ));
+    chain
 }
 
 #[test]
-fn continuation_origin_loading_rejects_an_overdeep_prefix_joined_to_a_cached_suffix() {
-    const ORIGIN_LIMIT: usize = 4096;
-
+fn continuation_chains_longer_than_the_cache_fill_load_with_linear_reads() {
+    // Beyond the bounded cache fill, so origin propagation must carry the walk.
+    let continuations = records::MAX_ATTEMPT_CHAIN_CACHE_FILL + 64;
     let (repository, lineage, _policy) = fixture();
-    let path = BranchPath::new(Vec::new()).expect("empty path");
-    repository
-        .put_branch_path(&path)
-        .expect("publish empty path");
-    let mut suffix = Attempt::new(
-        AttemptStart::Discover {
-            configuration: lineage.genesis_content(),
-        },
-        path.id().expect("path ID"),
-        StopCondition::ExecutionQuanta(1),
-    )
-    .expect("base attempt");
-    repository.put_attempt(&suffix).expect("publish base");
+    let chain = publish_continuation_chain(&repository, &lineage, continuations, |_| {
+        lineage.genesis_content()
+    });
+    let newest = chain
+        .last()
+        .expect("newest attempt")
+        .id()
+        .expect("newest ID");
 
-    for quantum in 2..=ORIGIN_LIMIT {
-        suffix = Attempt::new(
-            AttemptStart::AfterAttempt {
-                origin: suffix.id().expect("origin ID"),
-                reached: lineage.genesis_content(),
-            },
-            path.id().expect("path ID"),
-            StopCondition::ExecutionQuanta(quantum as u64),
+    let reads = Arc::new(CaptureReadCountingBackend {
+        inner: Arc::clone(&repository.blobs),
+        reads: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+    });
+    let cold = CampaignRepository::new(reads.clone(), Arc::clone(&repository.refs));
+
+    let loaded = cold
+        .load_attempt_origin_chain(newest)
+        .expect("load an unbounded continuation chain");
+
+    assert_eq!(loaded.len(), continuations + 1);
+    assert_eq!(loaded.first(), chain.last());
+    assert_eq!(loaded.last(), chain.first());
+    let read_count = reads.reads.load(Ordering::SeqCst);
+    let linear_read_bound = loaded.len() * 4 + 64;
+    assert!(
+        read_count <= linear_read_bound,
+        "{}-record chain used {read_count} reads; bound {linear_read_bound}",
+        loaded.len()
+    );
+}
+
+#[test]
+fn continuation_validation_rejects_a_link_reaching_a_foreign_lineage() {
+    let (repository, lineage, _policy) = fixture();
+    let foreign_scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"foreign"));
+    let foreign_scenario_content = repository
+        .publish_scenario_artifact(foreign_scenario, 1, b"foreign scenario".to_vec())
+        .expect("foreign scenario artifact");
+    let foreign = repository
+        .publish_configuration_artifact(
+            foreign_scenario,
+            foreign_scenario_content,
+            ConfigurationId::from_hash(CampaignHash::derive("test", b"foreign configuration")),
+            1,
+            b"foreign configuration".to_vec(),
         )
-        .expect("continuation attempt");
-        repository
-            .put_attempt(&suffix)
-            .expect("publish continuation");
-    }
+        .expect("foreign configuration artifact");
+    let chain = publish_continuation_chain(&repository, &lineage, 3, |link| {
+        if link == 2 {
+            foreign
+        } else {
+            lineage.genesis_content()
+        }
+    });
+    let id = |index: usize| chain[index].id().expect("attempt ID").content_id();
 
     let mut cache = ChoiceValidationCache::default();
     repository
-        .read_attempt_cached(suffix.id().expect("suffix ID").content_id(), &mut cache)
-        .expect("validate maximum-depth suffix");
+        .read_attempt_cached(id(1), &mut cache)
+        .expect("the prefix before the foreign link is valid");
 
-    let overdeep = Attempt::new(
-        AttemptStart::AfterAttempt {
-            origin: suffix.id().expect("suffix ID"),
-            reached: lineage.genesis_content(),
-        },
-        path.id().expect("path ID"),
-        StopCondition::ExecutionQuanta((ORIGIN_LIMIT + 1) as u64),
-    )
-    .expect("overdeep continuation attempt");
-    repository
-        .put_attempt(&overdeep)
-        .expect("publish overdeep continuation");
-
-    assert!(matches!(
-        repository
-            .read_attempt_cached(overdeep.id().expect("overdeep ID").content_id(), &mut cache,),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "attempt-continuation-origin-depth-exceeded"
-        })
-    ));
+    for (label, mut cache) in [
+        ("cold", ChoiceValidationCache::default()),
+        ("cached anchor", cache),
+    ] {
+        for index in [2, 3] {
+            assert!(
+                matches!(
+                    repository.read_attempt_cached(id(index), &mut cache),
+                    Err(CampaignRepositoryError::Integrity {
+                        reason: "attempt-continuation-lineage-mismatch"
+                    })
+                ),
+                "{label} read of link {index}"
+            );
+        }
+    }
 }
 
 #[test]
