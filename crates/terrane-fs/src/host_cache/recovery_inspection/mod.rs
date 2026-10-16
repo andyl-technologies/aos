@@ -5,11 +5,26 @@
 //! module may enumerate and verify candidates, including deriving an index
 //! repair plan. It does not mutate state or namespaces, adopt sealed objects,
 //! issue retention/completed-recovery receipts, release pins or send Resume.
+//! Registered publisher inspections can synchronize publisher-owned names and
+//! retirement leases; their failures remain unresolved owner-recovery work.
 
 use super::{NativeCachePreparation, NativeHostLayout};
 use crate::{publisher_local::client::Client, quota_confinement::Installed};
 use std::{io, sync::Arc};
 use terrane::host::cache::{HostDomainLocation, HostReadLimits};
+
+mod collection;
+mod files;
+mod inspection;
+mod verification;
+
+#[cfg(test)]
+mod tests;
+
+pub use inspection::{NativeRecoveryCandidate, NativeRecoveryInspection, RecoveryIssue};
+pub use verification::{
+    DerivedIndexRepair, DetachedIndexStatus, VerifiedEncodedBody, VerifiedStandaloneChunk,
+};
 
 /// Retains genuine native inputs for bounded readonly recovery inspection.
 ///
@@ -18,6 +33,7 @@ use terrane::host::cache::{HostDomainLocation, HostReadLimits};
 /// not proof of complete recovery or authority to serve or mutate a candidate.
 /// Publisher-issued observations remain scoped to their actual drain epoch;
 /// the physical owner must reject stale observations before lifecycle effects.
+#[derive(Clone)]
 pub struct NativeRecoveryInspector {
     session: Arc<Client<HostDomainLocation>>,
     layout: Arc<NativeHostLayout<HostDomainLocation>>,
