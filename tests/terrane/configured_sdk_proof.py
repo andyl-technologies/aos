@@ -37,6 +37,8 @@ FLAGS = ["--frozen", "--offline", "-p", "terrane-fs",
 FS_FEATURES = ["tokio"]
 REPOSITORY_FEATURES = ["send", "std", "surface-sdk", "tokio"]
 KINDS = ["unit", "example", "cli"]
+TARGET_PLATFORM = "x86_64-linux"
+PLATFORM_MARKER = "nix-support/aos-target-platform"
 
 
 def require(condition, message):
@@ -199,18 +201,41 @@ def external_runtime(executable, directories, target, native):
 
 
 def file_manifest(image):
-    """Includes every retained file except the manifest's own recursive hash."""
+    """Hashes retained files except self and the separately checked platform marker."""
+    # AOS emits this exact packaging marker after the image's check/fixup phases.
+    # Completed verification requires its bytes separately; no other nix-support
+    # files, logs, helpers, identities or runtime inputs receive an exemption.
     return {path.relative_to(image).as_posix(): digest(path)
             for path in sorted(image.rglob("*"))
-            if path.is_file() and path != image / "share/checksums.json"}
+            if path.is_file() and path.relative_to(image).as_posix()
+            not in ["share/checksums.json", PLATFORM_MARKER]}
 
 
 def verify(image, source):
     """Checks all final launch/runtime/identity bytes before any consumer effects."""
+    identity = _verify_payload(image, source)
+    marker = image / PLATFORM_MARKER
+    require(marker.is_file() and marker.read_bytes() == (TARGET_PLATFORM + "\n").encode(),
+            "completed configured SDK image platform marker mismatch")
+    return identity
+
+
+def _verify_before_platform_metadata(image, source):
+    """Checks installation before AOS appends its required platform metadata."""
+    identity = _verify_payload(image, source)
+    marker = image / PLATFORM_MARKER
+    require(not marker.exists() or marker.read_bytes() == (TARGET_PLATFORM + "\n").encode(),
+            "pre-metadata configured SDK image platform marker mismatch")
+    return identity
+
+
+def _verify_payload(image, source):
+    """Checks the complete owned image payload independently of phase metadata."""
     manifest = json.loads((image / "share/checksums.json").read_text())
     require(manifest == file_manifest(image), "configured SDK image byte manifest mismatch")
     identity = json.loads((image / "share/identity.json").read_text())
     require(identity["schema_version"] == 1 and identity["source"] == str(source)
+            and identity["target_platform"] == TARGET_PLATFORM
             and identity["cases"] == [PREFIX + case for case in CASES]
             and identity["requested_features"] == ["tokio", "terrane/surface-sdk"],
             "configured SDK image source/feature/inventory mismatch")
@@ -246,11 +271,14 @@ def install(helper_path):
     target_libraries = pathlib.Path((temporary / "configured-sdk-target-libdir").read_text().strip())
     require(target_libraries.is_dir() and target_libraries.resolve().is_relative_to("/nix/store"),
             "untrusted Rust runtime location")
+    require(target_libraries.parent.name == "x86_64-unknown-linux-gnu",
+            "configured SDK proof requires the audited x86_64 Linux target")
     for name in ["bin", "libexec", "share", "lib"]:
         (output / name).mkdir()
     shutil.copy2(__file__, output / "share/configured_sdk_proof.py")
     shutil.copy2(helper_path, output / "share/native_sdk_test_image.py")
     identity = {"schema_version": 1, "source": str(source), "input_sha256": hashes,
+                "target_platform": TARGET_PLATFORM,
                 "cases": [PREFIX + case for case in CASES],
                 "requested_features": ["tokio", "terrane/surface-sdk"], "artifacts": {}}
     for kind in KINDS:
@@ -303,7 +331,7 @@ def install(helper_path):
     shutil.copy2(temporary / "configured-sdk-packages.json", output / "share/packages.json")
     (output / "share/identity.json").write_text(json.dumps(identity, indent=2) + "\n")
     (output / "share/checksums.json").write_text(json.dumps(file_manifest(output), indent=2) + "\n")
-    verify(output, source)
+    _verify_before_platform_metadata(output, source)
 
 
 def launch(image, kind, arguments):
