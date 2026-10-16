@@ -183,8 +183,15 @@ fn cancel(
         .block_on(owner.recover())
         .err()
         .ok_or_else(|| io::Error::other("serialized barrier unexpectedly cleared prior hold"))?;
-    if error.kind() != io::ErrorKind::WouldBlock {
-        return Err(io::Error::other(format!("cancel barrier failed: {error}")));
+    // This fixture-only diagnostic distinguishes successful physical work
+    // followed by refusal to erase its cold hold from the earlier faulted-owner
+    // branch, which also returns WouldBlock after a late failed command.
+    if error.kind() != io::ErrorKind::WouldBlock
+        || error.to_string() != "cold policy records require actual native reconciliation"
+    {
+        return Err(io::Error::other(format!(
+            "cancel barrier did not reach cold-policy refusal: {error}"
+        )));
     }
     verify_hold(runtime, inputs)?;
     let mut client = HostQuotaClient::connect(&inputs.quota, 0, EPOCH)?;
