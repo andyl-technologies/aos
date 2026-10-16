@@ -6329,10 +6329,12 @@ dependencies = [
 name = "terrane-fs"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "libc",
  "rustix 1.1.4",
  "terrane",
  "terrane-core",
+ "tokio",
 ]
 
 [[package]]

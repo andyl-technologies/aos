@@ -2513,6 +2513,61 @@ is added rather than editing history.
     trait, requirement ID, gate name and golden byte remain unchanged.
   - **Affects:** CRATE-28 and the surface feature-flag table.
 
+- **[D-119] Separate native host commands from portable filesystem I/O.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Keep the existing portable filesystem interface unchanged.
+    Express CRATE-10's native host lifecycles through separate kernel binding
+    interfaces implemented in `terrane-fs`. Portable policy supplies fixed
+    typed commands rather than performing native I/O. Native command owners
+    retain physical resources through completion, stream bounded chunks and
+    return backing handles only after actual durability.
+  - **Rationale:** CRATE-7's unqualified filesystem-interface wording conflicts
+    with CRATE-10's assignment of descriptor sealing, filesystem inspection
+    and quotas to a separate Linux crate. The existing portable interface
+    cannot express those mechanisms or a bounded streaming reassembly writer.
+    Adding methods after its freeze would change the shared contract; using
+    direct host I/O in portable policy or buffering whole objects would hide
+    the problem. A separate fixed-command boundary preserves the layering and
+    lets the native owner survive cancellation without releasing its holds.
+  - **Alternatives considered:** Extend the frozen portable trait (rejected:
+    violates its implementation freeze); add an upward dependency from policy
+    to the Linux crate (rejected: violates dependency direction); perform raw
+    kernel operations in portable policy (rejected: bypasses CRATE-10);
+    accept callback success or a claimed capability boolean (rejected: does
+    not establish physical completion or kernel capability).
+  - **Compatibility:** No existing trait signature, content identity,
+    encoding, bucket key, requirement ID, gate name or golden byte changes.
+    The exception is limited to previously unimplemented native host commands;
+    HTTP, clocks and ordinary portable filesystem operations retain their
+    existing boundaries. It neither registers a process transport nor
+    resolves zero wiping, and completes no task or gate.
+  - **Affects:** CRATE-7/10/19, HOST-1/3/7/13/23 and native command lifetime.
+
+- **[D-120] Distinguish canonical times from native inode lifecycle times.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** TREE-10 canonicalizes presented access and modification
+    times. Native inode-change and birth times that a surface cannot set
+    remain local presentation-instance metadata and carry no content identity
+    or canonical-timestamp claim.
+  - **Rationale:** A native directory checkout can set access and modification
+    times, but ownership, mode and timestamp operations themselves update its
+    kernel-maintained change time. Ordinary filesystem interfaces do not let
+    it set that time or filesystem birth time to a canonical value. Treating
+    every native stat timestamp as a reproducibility promise would make the
+    registered SDK checkout impossible despite the tree carrying no such
+    fields. Kernel surfaces that synthesize metadata may still use canonical
+    values for all times they control.
+  - **Alternatives considered:** Report native change times as canonical
+    (rejected: false); alter filesystem internals or the host clock to forge
+    them (rejected: outside the surface's authority and meaning); introduce
+    timestamp fields into the content format (rejected: changes frozen bytes
+    and ties identity to extraction).
+  - **Compatibility:** No encoded field, property, identity, trait, key,
+    requirement ID, gate name or golden byte changes. The correction narrows
+    the presentation claim to the timestamps the native interface controls;
+    it does not qualify any implementation or gate.
+  - **Affects:** TREE-10, SURF-1/27 and the SDK checkout surface.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

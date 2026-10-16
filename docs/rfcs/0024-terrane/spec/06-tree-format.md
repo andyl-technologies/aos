@@ -106,9 +106,13 @@ content-ref = [ 0, chunk: bstr .size 32 ]         ; inline single chunk
   that trees produced for canonical read-only stores carry none and trees
   produced from live filesystems may carry them.
 - **[TREE-10]** Timestamps are not entry fields. A surface that must present
-  times uses a fixed canonical time unless the root's properties name an
-  attribute to present ([`08-properties.md`](08-properties.md)). This keeps
-  identity independent of extraction time.
+  access and modification times uses a fixed canonical time unless the root's
+  properties name an attribute to present
+  ([`08-properties.md`](08-properties.md)). This keeps identity independent
+  of extraction time. An interface implemented over native inodes may also
+  expose kernel-maintained inode-change or birth times that it cannot set;
+  these are local presentation-instance metadata, not Terrane entry
+  timestamps, and MUST NOT be claimed as canonical or included in identity.
 - **[TREE-11]** `link-id` identifies a hard-link set within one tree: two
   `file` entries with equal `link-id` denote one inode. Entries in a set
   MUST have identical `mode`, `size`, `content`, `attrs`, and `xattrs`; a

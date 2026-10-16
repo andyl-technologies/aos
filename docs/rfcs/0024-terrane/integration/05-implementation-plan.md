@@ -8707,6 +8707,14 @@ path is stopped; unlinking or replacing the inode is not credited as wiping.
 D-117 resolves the separate manifest-identity, post-publication failure and
 reconstruction-metadata contradictions without changing frozen formats or
 traits. D-118 corrects the surface feature table's unimplemented aliases.
+D-119 reconciles the native host command boundary with the frozen portable
+filesystem trait; D-120 distinguishes controllable access/modification times
+from native inode-change and birth times. The shared metadata executor uses
+the existing retained-effect method and requires an actual durability receipt.
+Its native library build passes; focused execution and task gates remain
+pending. The separate module branch has 33 passing declarative checks, but
+actual parser integration, full trunk qualification and task acceptance remain
+pending. No worker branch is accepted by these preparation checks.
 Other T2 implementation continues. T3 and branch worklines remain unopened.
 
 Deployable as: one machine that holds a local cache of any commit, seals

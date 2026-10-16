@@ -5,10 +5,15 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-terrane = { workspace = true, features = ["std"] }
+terrane = { workspace = true, features = ["std", "send"] }
 terrane-core.workspace = true
+async-trait.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["net", "process"] }
+tokio = { workspace = true, optional = true }
+
+[features]
+tokio = ["dep:tokio", "terrane/tokio"]
 
 [lints]
 workspace = true

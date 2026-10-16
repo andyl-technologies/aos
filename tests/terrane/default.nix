@@ -224,6 +224,7 @@
           }
           // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "shared-dir.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
+          // lib.optionalAttrs (file == "host-publish.nix") {inherit sourceGateWithInputs;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
       in

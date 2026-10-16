@@ -79,12 +79,26 @@ Nothing in this set depends on a glue crate.
   garbage collection ([`17-garbage-collection.md`](17-garbage-collection.md)),
   tree jobs ([`32-tree-jobs.md`](32-tree-jobs.md)), and the client and server
   halves of the wire protocol ([`18-protocol.md`](18-protocol.md)).
-- **[CRATE-7]** `terrane` MUST perform all I/O through the traits
+- **[CRATE-7]** `terrane` MUST perform portable I/O through the traits
   `HttpClient` and `Clock`, plus a `LocalFs` trait that is only available
   under the `std` feature. It MUST NOT depend on a specific async runtime in
   its library target. Async operations use `async fn` in traits and return
   futures that are `Send` when the `send` feature is enabled. *Gate:*
   `gate:runtime-agnostic`.
+
+  Native host mechanisms assigned to `terrane-fs` by CRATE-10 MAY use
+  separate host-kernel binding interfaces without adding methods to
+  `LocalFs`. Portable policy issues fixed typed commands; it MUST NOT
+  perform kernel I/O itself or accept caller-controlled paths, callbacks
+  or boolean assertions as proof of successful native effects. Native
+  commands that assemble backing files MUST stream bounded chunks rather
+  than buffer an entire object. The native owner MUST retain descriptors,
+  reservations and exclusion through actual completion and durability,
+  including when an asynchronous waiter is cancelled. A backing handle
+  MUST NOT be returned before that completion. Ordinary portable filesystem
+  operations continue to use `LocalFs`; this exception is confined to the
+  descriptor, sealing, reassembly, mount-inspection and quota lifecycles of
+  CRATE-10 and does not permit a runtime dependency in `terrane`.
 - **[CRATE-8]** `terrane` MUST provide the features `tokio` (native runtime
   binding for `HttpClient`, `Clock`, and `LocalFs`) and `wasm` (bindings for
   a WebAssembly host's fetch and time primitives). Exactly one of the two

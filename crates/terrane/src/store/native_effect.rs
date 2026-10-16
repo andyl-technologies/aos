@@ -19,6 +19,9 @@ use super::StoreFailure;
 #[path = "native_effect/immutable_cohort.rs"]
 mod immutable_cohort;
 
+#[cfg(unix)]
+pub(crate) mod checkout_metadata;
+
 #[cfg(test)]
 #[path = "native_effect/check_timings.rs"]
 mod check_timings;
@@ -495,6 +498,8 @@ impl CreatedDirectory {
 
 /// Fixes one physical command from actual producer-owned paths.
 enum Plan {
+    #[cfg(unix)]
+    CheckoutMetadata(Box<checkout_metadata::Request>),
     InstallImmutableCohort(immutable_cohort::Request),
     // Only the native worker can populate the result channel or consume a seal
     // into a protected creation-journal commitment.
@@ -1079,6 +1084,10 @@ impl NativeFsEffect {
     /// Returns `Unsupported` after private directory creation if restrictive
     /// permissions prevent the actual descriptor from opening for mode repair.
     pub fn execute_inline(self) -> Result<(), NativeEffectFailure> {
+        #[cfg(unix)]
+        if matches!(&self.plan, Plan::CheckoutMetadata(_)) {
+            return checkout_metadata::execute(self);
+        }
         if artifact_seal::owns(&self.plan) {
             return artifact_seal::execute(self);
         }
@@ -1239,6 +1248,10 @@ impl PrimitiveWorker {
         fresh_projection(None)?;
 
         match plan {
+            #[cfg(unix)]
+            Plan::CheckoutMetadata(_) => {
+                return Err(io::Error::other("incorrect checkout metadata dispatch").into());
+            }
             Plan::SealMutationPublication(_)
             | Plan::SealRawPublication(_)
             | Plan::SealRestorePublication(_)
