@@ -18,10 +18,11 @@ def load(name, path):
 
 
 root = Path(__file__).parent
-source_root = Path(sys.argv[1]) if len(sys.argv) == 2 else root
+source_root = Path(sys.argv[1]) if len(sys.argv) >= 2 else root
+arm_writer = Path(sys.argv[2]) if len(sys.argv) == 3 else root / "arm-root-model-profile-manifest.py"
 sys.argv[1:] = []
 writers = [
-    load("arm_qualification_writer", root / "arm-root-model-profile-manifest.py"),
+    load("arm_qualification_writer", arm_writer),
     load("x86_qualification_writer", root / "x86-root-model-profile.py"),
 ]
 # Source-only bytes, never an installed profile or native permission.
@@ -72,6 +73,41 @@ class QualificationInputs(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         writer.qualification_inputs(selected, {})
                     measure.assert_not_called()
+
+    def test_x86_runtime_helper_binding_is_exact_for_actual_sources(self):
+        writer = writers[1]
+        artifacts = {}
+        for name, role in writer.RUNTIME_HELPER_ROLES.items():
+            leaf = "native-controller-x86-root-image-check.py" if name == "native-controller-image-check.py" else name
+            artifacts[role] = {"sha256": hashlib.sha256((source_root / leaf).read_bytes()).hexdigest()}
+        bindings = {name: artifacts[role]["sha256"] for name, role in writer.RUNTIME_HELPER_ROLES.items()}
+        writer.validate_helper_bindings(bindings, artifacts)
+
+        # This build-only source must remain verified in qualification_inputs,
+        # rather than silently broadening the original runtime helper roster.
+        self.assertNotIn("native-controller-temporary-root-check.py", writer.RUNTIME_HELPER_ROLES)
+        added = dict(bindings)
+        added["native-controller-temporary-root-check.py"] = check
+        with self.assertRaises(ValueError):
+            writer.validate_helper_bindings(added, artifacts)
+        for name in bindings:
+            missing = dict(bindings)
+            del missing[name]
+            with self.subTest(missing=name), self.assertRaises(ValueError):
+                writer.validate_helper_bindings(missing, artifacts)
+            substituted = dict(bindings)
+            digest = substituted[name]
+            substituted[name] = ("0" if digest[0] != "0" else "1") + digest[1:]
+            with self.subTest(substituted=name), self.assertRaises(ValueError):
+                writer.validate_helper_bindings(substituted, artifacts)
+
+    def test_x86_build_check_source_remains_independently_bound(self):
+        writer = writers[1]
+        writer.validate_qualification_document(source, controller, check)
+        changed = copy.deepcopy(source)
+        changed["checks"]["native-controller-temporary-root-check.py"] = "0" * 64
+        with self.assertRaises(ValueError):
+            writer.validate_qualification_document(changed, controller, check)
 
 
 if __name__ == "__main__":

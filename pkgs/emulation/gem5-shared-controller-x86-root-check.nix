@@ -70,6 +70,10 @@ in
           }
           pathlib.Path("qualification-sources.json").write_text(json.dumps(record, sort_keys=True) + "\n")
           PY
+          # The witness hashes every Python file in its runtime source directory.
+          # Keep the separately bound build check out of that closed inventory.
+          mkdir qualification-source
+          mv helper-source/native-controller-temporary-root-check.py qualification-source/
           ${python3}/bin/python3 -B helper-source/native-controller-x86-root-model-check.py
           export LD_LIBRARY_PATH="${abseil-cpp}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           ${python3}/bin/python3 -I -B - <<'PY'
@@ -96,6 +100,7 @@ in
           mkdir -p "$out/share/checks" "$out/share/gem5/x86-root-proof-source"
           cp result.json "$out/share/checks/x86-root-shared-controller.json"
           cp helper-source/*.py "$out/share/gem5/x86-root-proof-source/"
+          cp qualification-source/native-controller-temporary-root-check.py "$out/share/gem5/x86-root-proof-source/"
           cp qualification-sources.json "$out/share/gem5/x86-root-proof-source/qualification-sources.json"
           cp ${./gem5-shared-controller-x86-root-check.nix} "$out/share/gem5/x86-root-proof-source/recipe.nix"
           cp ${../../LICENSES/MIT.txt} "$out/share/gem5/x86-root-proof-source/LICENSE"

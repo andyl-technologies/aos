@@ -37,7 +37,14 @@ ASSET_ROLES = {
     "initramfs": "initramfs", "native_source_manifest": "native_source_manifest",
 }
 
-
+RUNTIME_HELPER_ROLES = {
+    "native-controller.py": "controller", "native-controller-models.py": "publication_model",
+    "native-controller-x86-root.py": "entrypoint", "native-controller-x86-model.py": "board_model",
+    "native-controller-x86-root-model.py": "model", "native-controller-x86-root-model-check.py": "root_model_check",
+    "native-controller-x86-root-check.py": "witness", "native-controller-image-check.py": "image_witness",
+    "native-model-assets.py": "asset_checker", "process-image-audit-core.py": "auditor_core",
+    "x86-root-process-image-audit.py": "auditor", "x86-linux-loader.py": "loader",
+}
 
 QUALIFICATION_ROLES = {"source_manifest", "temporary_root_check"}
 TEMPORARY_ROOT_CHECK = "native-controller-temporary-root-check.py"
@@ -64,6 +71,13 @@ def qualification_inputs(selected, artifacts):
         inputs["temporary_root_check"]["sha256"],
     )
     return inputs
+
+
+def validate_helper_bindings(bindings, artifacts):
+    """Requires every native runtime helper hash and refuses extra build inputs."""
+    expected = {name: artifacts[role]["sha256"] for name, role in RUNTIME_HELPER_ROLES.items()}
+    if bindings != expected:
+        raise ValueError("x86 root proof helpers differ from installed constructor/auditor")
 
 
 def fingerprint(metadata):
@@ -158,16 +172,7 @@ def validate_witness(witness, artifacts, original):
     roles = ("native_executable", "image_guard", "dmtcp_launch", "dmtcp_restart", "mtcp_restart", "python")
     if witness.get("implementation_bindings") != {role: artifacts[role]["sha256"] for role in roles}:
         raise ValueError("x86 root proof used another native/tool implementation")
-    helper_roles = {
-        "native-controller.py": "controller", "native-controller-models.py": "publication_model",
-        "native-controller-x86-root.py": "entrypoint", "native-controller-x86-model.py": "board_model",
-        "native-controller-x86-root-model.py": "model", "native-controller-x86-root-model-check.py": "root_model_check",
-        "native-controller-x86-root-check.py": "witness", "native-controller-image-check.py": "image_witness",
-        "native-model-assets.py": "asset_checker", "process-image-audit-core.py": "auditor_core",
-        "x86-root-process-image-audit.py": "auditor", "x86-linux-loader.py": "loader",
-    }
-    if witness.get("helper_bindings") != {name: artifacts[role]["sha256"] for name, role in helper_roles.items()}:
-        raise ValueError("x86 root proof helpers differ from installed constructor/auditor")
+    validate_helper_bindings(witness.get("helper_bindings"), artifacts)
     scope = witness.get("model_scope")
     if (type(scope) is not dict or scope.get("model_id") != "x86-linux-pc-atomic-root-functional-v1"
             or scope.get("full_system") is not True
