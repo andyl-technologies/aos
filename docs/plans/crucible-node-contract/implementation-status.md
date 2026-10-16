@@ -147,6 +147,29 @@ common-node readiness, complete Linux preservation, device parity and CPU timing
 remain unqualified. The 139.34-second package check is validation time, not a
 boot performance measurement.
 
+Commit `e94a5faea0` strengthens the ARM Linux-root capture witness with an
+explicit rendezvous. Both restored branches must finish recapture and remain
+alive in distinct, authenticated process groups before either branch continues
+its suffix or shuts down. Existing source-removal, pending-receipt, eight-future-
+publication and reclamation assertions remain in place.
+
+The new installed profile check passes, including 83 Python unit cases.
+Independent review verifies both simultaneous process anchors, all 33 immutable
+artifacts, 168 configuration files and the new source/foundation bindings. The
+native compiler output is reused; the 74.06-second package check is validation
+time. This qualifies the selected opaque restoration mechanism. Common-node
+readiness, full-world preservation, device parity and CPU timing remain
+unqualified.
+
+A fresh x86-bound production fixture compiles but fails during initial native
+preparation, before readiness, Arm or World publication: zero passes and one
+failure. The retained error reports that the native owner exited; its exact
+exit status is unavailable. Source tracing identifies an inherited descriptor
+number ceiling of 256 that conflicts with DMTCP's fixed descriptors above 820,
+and a separate missing temporary-directory route. Both require correction before
+the next native run. No production-path success is inferred from the package
+witnesses.
+
 ### Original-owner preparation and Clock continuation
 
 Commit `a836c25274` observes retained host and provider storage before
