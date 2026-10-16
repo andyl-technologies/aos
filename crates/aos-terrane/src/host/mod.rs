@@ -826,15 +826,22 @@ fn provisioning_test_checkpoint(stage: &str) -> io::Result<()> {
     if std::env::var("TERRANE_QUOTA_TEST_STOP").as_deref() != Ok(stage) {
         return Ok(());
     }
-    let marker = std::env::var_os("TERRANE_QUOTA_TEST_MARKER")
-        .ok_or_else(|| io::Error::other("test checkpoint lacks marker"))?;
+    let marker = PathBuf::from(
+        std::env::var_os("TERRANE_QUOTA_TEST_MARKER")
+            .ok_or_else(|| io::Error::other("test checkpoint lacks marker"))?,
+    );
+    let temporary = marker.with_extension("marker-partial");
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(marker)?;
+        .open(&temporary)?;
     file.write_all(stage.as_bytes())?;
     file.sync_all()?;
+    // Publish only the completed marker. Its pathname must never signal a
+    // checkpoint while the stage bytes are still being written or synced.
+    fs::hard_link(&temporary, &marker)?;
+    fs::remove_file(&temporary)?;
     loop {
         std::thread::park();
     }

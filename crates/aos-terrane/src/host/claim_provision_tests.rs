@@ -136,7 +136,9 @@ impl Fixture {
     fn kill_provision_at(&self, stage: &str) {
         let marker = self.config.with_extension("marker");
         let mut worker = self.worker("provision", Some(stage));
-        wait_for(&mut worker, || marker.exists());
+        wait_for(&mut worker, || {
+            fs::read_to_string(&marker).is_ok_and(|actual| actual == stage)
+        });
         assert_eq!(
             fs::read_to_string(&marker).expect("durable checkpoint"),
             stage
@@ -148,7 +150,9 @@ impl Fixture {
 
     fn broker(&self) -> Worker {
         let mut worker = self.worker("serve", None);
-        wait_for(&mut worker, || self.socket.exists());
+        // A socket pathname is visible before listen/accept readiness. Require
+        // a real correlated observation from the retained native partition.
+        wait_for(&mut worker, || self.query(0).is_ok());
         worker
     }
 
