@@ -643,21 +643,29 @@ fn check_authenticated_client(root: &Path, expected_inode: u64) {
         )
         .unwrap(),
     );
-    let client = Client::connect(
-        ClientConfig {
-            socket_path: root.join("publisher.sock"),
-            identities: identities(),
-            chunk_profile_name: "cdc-1m".into(),
-            wait_budget_ms: 10_000,
-        },
-        layout.clone(),
-    )
-    .unwrap();
+    let client = Arc::new(
+        Client::connect(
+            ClientConfig {
+                socket_path: root.join("publisher.sock"),
+                identities: identities(),
+                chunk_profile_name: "cdc-1m".into(),
+                wait_budget_ms: 10_000,
+            },
+            layout.clone(),
+        )
+        .unwrap(),
+    );
     assert!(
         client.probe().is_err(),
         "a new client requires actual drain custody"
     );
+    assert!(
+        client.recovery_context().is_err(),
+        "no barrier can be fabricated before actual Drain"
+    );
     client.drain().unwrap();
+    let context = client.recovery_context().unwrap();
+    client.check_recovery_context(&context).unwrap();
     let probe = client.probe().unwrap();
     assert!(Arc::ptr_eq(probe.layout(), &layout));
     assert_eq!(probe.handle().metadata().unwrap().nlink(), 0);
@@ -713,6 +721,10 @@ fn check_authenticated_client(root: &Path, expected_inode: u64) {
     );
     client.drain().unwrap();
     assert!(
+        client.check_recovery_context(&context).is_err(),
+        "a new actual Drain invalidates the old recovery context"
+    );
+    assert!(
         client.restore(&observation).is_err(),
         "a new drain invalidates prior epoch observations"
     );
@@ -727,6 +739,7 @@ fn check_authenticated_client(root: &Path, expected_inode: u64) {
     assert_eq!(adopted.incarnation().len(), 32);
 
     drop(probe);
+    drop(context);
     drop(client);
     drop(layout);
     // The receipt itself still owns the real root guard and measured inode.
