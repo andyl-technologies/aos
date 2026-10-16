@@ -244,6 +244,14 @@ fn canonical_session_reuses_one_manifest_without_retaining_descriptors_or_locks(
     let baseline = fixture.quota.0.usage().unwrap();
     let mut session =
         super::super::canonical_session::Session::new(&fixture.backend, &fixture.original).unwrap();
+    assert_eq!(
+        fixture.quota.0.usage().unwrap(),
+        (
+            baseline.0,
+            baseline.1 + std::mem::size_of::<super::super::canonical_session::Session>() as u64
+        ),
+        "session construction prepays its actual inline body before manifest lookup"
+    );
     for (id, expected) in &fixture.objects[..2] {
         let handle = session
             .lookup(&fixture.backend, &fixture.original, *id, &mut || Ok(()))

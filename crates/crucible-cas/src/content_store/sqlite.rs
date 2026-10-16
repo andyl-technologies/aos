@@ -2099,9 +2099,15 @@ mod tests {
                 OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .expect("open independent reader");
+        // Exercise both maximum width and the unchanged total staging bound.
+        let batch_bytes = usize::try_from(MAX_BATCH_BYTES).expect("bounded batch bytes");
+        let object_bytes = batch_bytes / MAX_BATCH_OBJECTS;
+        assert_ne!(object_bytes, 0);
+        assert_eq!(object_bytes * MAX_BATCH_OBJECTS, batch_bytes);
+
         let objects = (0..MAX_BATCH_OBJECTS)
             .map(|index| {
-                let bytes = vec![index as u8; MAX_CHUNK_BYTES];
+                let bytes = vec![index as u8; object_bytes];
                 let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
                 (id, BlobHandle::from_bytes(bytes))
             })

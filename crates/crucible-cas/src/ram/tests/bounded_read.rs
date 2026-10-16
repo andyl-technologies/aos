@@ -421,8 +421,8 @@ fn complete_read_never_overrides_later_provider_cleanup_or_incomplete_success() 
 
 #[test]
 fn concrete_error_layout_preserves_both_existing_prepaid_extents() {
-    // These declarations preserve the frozen predecessor's exact field types;
-    // the comparison measures the replacement category slot, not a model size.
+    // Keep independent session fields identical so this comparison measures
+    // only the replaced account/error representation, not later cache growth.
     // crucible-lint: allow rust-allow -- The predecessor fields are retained only to compare their exact layout.
     #[allow(dead_code)]
     struct PreviousAccount<'a> {
@@ -434,8 +434,10 @@ fn concrete_error_layout_preserves_both_existing_prepaid_extents() {
     }
     // crucible-lint: allow rust-allow -- The predecessor fields are retained only to compare their exact layout.
     #[allow(dead_code)]
-    struct PreviousWork<'a> {
+    struct WorkWithPreviousAccounts<'a> {
         pending: Option<crate::ram::PendingBatch>,
+        canonical_session: Option<crate::content_store::PackedCanonicalSession>,
+        canonical_session_enabled: bool,
         limits: RamStoreLimits,
         visits: u64,
         io_bytes: u64,
@@ -448,7 +450,7 @@ fn concrete_error_layout_preserves_both_existing_prepaid_extents() {
         std::mem::size_of::<crate::ram::store_boundary::WorkAccount<'_>>(),
         104
     );
-    assert!(std::mem::size_of::<Work<'_>>() <= std::mem::size_of::<PreviousWork<'_>>());
+    assert!(std::mem::size_of::<Work<'_>>() <= std::mem::size_of::<WorkWithPreviousAccounts<'_>>());
     assert_eq!(std::mem::size_of::<StoreError>(), 56);
     assert_eq!(std::mem::size_of::<RamStoreError>(), 56);
     assert_eq!(std::mem::size_of::<RamReadContinuation>(), 40);
@@ -475,11 +477,11 @@ fn concrete_error_layout_preserves_both_existing_prepaid_extents() {
         std::mem::size_of::<BoundedReadRequest<'_, '_>>()
     );
     eprintln!(
-        "actual_account={} predecessor_account={} actual_work={} predecessor_work={}",
+        "actual_account={} predecessor_account={} actual_work={} work_with_predecessor_accounts={}",
         std::mem::size_of::<crate::ram::store_boundary::WorkAccount<'_>>(),
         std::mem::size_of::<PreviousAccount<'_>>(),
         std::mem::size_of::<Work<'_>>(),
-        std::mem::size_of::<PreviousWork<'_>>()
+        std::mem::size_of::<WorkWithPreviousAccounts<'_>>()
     );
 }
 

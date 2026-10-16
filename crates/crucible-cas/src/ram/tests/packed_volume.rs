@@ -743,6 +743,16 @@ fn packed_archive_sender_reuses_paid_manifest_and_allows_same_store_archive() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(directory.path());
     let root = capture_pages(&fixture, 8);
+    let tree = root.regions[0];
+    let child = {
+        let mut boundary = || Ok(());
+        let mut work = Work::new(fixture.store.limits, &fixture.original, &mut boundary).unwrap();
+        let TreeNode::Branch { left, .. } = fixture.store.read_tree(tree, &mut work).unwrap()
+        else {
+            panic!("eight pages have a real child catalog");
+        };
+        left
+    };
     let baseline = fixture.quota.0.usage().unwrap();
     let world = ContentId::for_bytes(
         ObjectKind::ExactManifest,
@@ -779,7 +789,6 @@ fn packed_archive_sender_reuses_paid_manifest_and_allows_same_store_archive() {
         .unwrap();
     assert_eq!(sender.canonical_manifest_reads_for_test(), 1);
     drop(root_response);
-    let tree = root.regions[0];
     let catalog_response = sender
         .respond(
             RamTransferMessage {
@@ -796,9 +805,34 @@ fn packed_archive_sender_reuses_paid_manifest_and_allows_same_store_archive() {
             &mut || Ok(()),
         )
         .unwrap();
-    assert_eq!(sender.canonical_manifest_reads_for_test(), 1);
+    // Capture flushes the page/catalog pack before publishing the root in a
+    // separate pack. Crossing that physical placement must authenticate again.
+    assert_eq!(sender.canonical_manifest_reads_for_test(), 2);
     assert_eq!(fixture.quota.0.usage().unwrap().0, baseline.0);
     drop(catalog_response);
+
+    let child_response = sender
+        .respond(
+            RamTransferMessage {
+                operation,
+                control: RamTransferControl::WantNode {
+                    coordinate: RamTransferNodeCoordinate::Catalog {
+                        region_id: "main".into(),
+                        first_page: 0,
+                        height: child.height,
+                    },
+                    object: child.id.to_string(),
+                },
+            },
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(
+        sender.canonical_manifest_reads_for_test(),
+        2,
+        "the distinct child shares the real catalog pack's paid manifest"
+    );
+    drop(child_response);
 
     // The first source remains live while the real coordinator reads/publishes
     // the same namespace. No retained source lock may block this archive.
@@ -873,13 +907,38 @@ fn packed_archive_sender_request_limit_closes_cache_without_extra_source_read() 
     drop(sender.respond(want.clone(), &mut || Ok(())).unwrap());
     assert_eq!(sender.canonical_manifest_reads_for_test(), 1);
     let visits = sender.state_for_test().1;
+    let error = sender.respond(want.clone(), &mut || Ok(())).err().unwrap();
+    let RamStoreError::Store(StoreError::RamValidation { source: first }) = error else {
+        panic!("the request limit retains the operation's prepaid validation cause");
+    };
     assert!(matches!(
-        sender.respond(want, &mut || Ok(())),
-        Err(RamStoreError::Limit("transfer requests"))
+        first.storage_failure(),
+        RamStoreError::Limit("transfer requests")
     ));
     assert_eq!(sender.state_for_test().1, visits);
     assert_eq!(sender.canonical_manifest_reads_for_test(), 0);
+    let retry = sender
+        .respond(want, &mut || {
+            panic!("a failed sender cannot poll or read again")
+        })
+        .err()
+        .unwrap();
+    let RamStoreError::Store(StoreError::RamValidation { source: retry }) = retry else {
+        panic!("retry returns the same retained validation cause");
+    };
+    assert_eq!(first, retry);
+    assert_eq!(sender.state_for_test().1, visits);
     drop(sender);
+    assert_eq!(
+        fixture.quota.0.usage().unwrap(),
+        (
+            baseline.0,
+            baseline.1
+                + PreparedRamFailure::<std::convert::Infallible>::allocation_bytes().unwrap()
+        ),
+        "the actual retained cause keeps its existing prepayment"
+    );
+    drop((first, retry));
     assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
 }
 
@@ -976,5 +1035,15 @@ fn packed_archive_sender_warm_cache_does_not_admit_a_forbidden_catalog_kind() {
     assert_eq!(sender.canonical_manifest_reads_for_test(), 0);
     assert_eq!(fixture.quota.0.usage().unwrap().0, baseline.0);
     drop(sender);
+    assert_eq!(
+        fixture.quota.0.usage().unwrap(),
+        (
+            baseline.0,
+            baseline.1
+                + PreparedRamFailure::<std::convert::Infallible>::allocation_bytes().unwrap()
+        ),
+        "the returned forbidden-kind cause outlives its sender"
+    );
+    drop(error);
     assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
 }
