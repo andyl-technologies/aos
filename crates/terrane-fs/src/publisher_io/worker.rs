@@ -2,7 +2,8 @@
 
 use std::fs::File;
 use std::io;
-use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use terrane::host::publication::{
     FsPublicationState, PublicationClaim, PublicationState, PublishedObject, Publisher,
@@ -116,6 +117,49 @@ pub enum NativeWipePolicy {
     Volatile,
 }
 
+/// Defines a bounded retirement interval independently of pin-release grace.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeRetirementPolicy(Duration);
+
+impl NativeRetirementPolicy {
+    /// Validates an explicit interval of at most five minutes.
+    ///
+    /// # Errors
+    /// Rejects zero intervals and intervals exceeding 300 seconds.
+    pub fn new(interval: Duration) -> io::Result<Self> {
+        if interval.is_zero() || interval > Duration::from_secs(300) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "retirement interval must be nonzero and at most 300 seconds",
+            ));
+        }
+        Ok(Self(interval))
+    }
+
+    /// Returns the configured bounded interval.
+    pub fn interval(self) -> Duration {
+        self.0
+    }
+}
+
+/// Supplies trusted operator configuration for one fixed domain layout.
+///
+/// Request packets never contain these paths or ownership settings.
+pub struct NativePublisherConfig {
+    /// The disclosure domain bound to this owner.
+    pub domain: String,
+    /// The configured absolute domain root containing registered directories.
+    pub layout_root: PathBuf,
+    /// The explicit registered wipe policy; currently only none is supported.
+    pub wipe: NativeWipePolicy,
+    /// The separate bounded pending-retirement interval.
+    pub retirement: NativeRetirementPolicy,
+    /// The configured owner of encoded content directories.
+    pub content_uid: u32,
+    /// The configured shared encoded-content group.
+    pub content_gid: u32,
+}
+
 /// Submits fixed publication commands to an independently owned native worker.
 ///
 /// Cancellation drops only the response waiter. Once accepted, a command owns
@@ -137,52 +181,38 @@ impl NativePublicationWorker {
     /// publisher, runtime creation, state recovery or thread creation errors.
     /// Returns `Unsupported` for zero, discard or volatile policies before
     /// creating any sealed or staging inode; no policy silently becomes unlink.
-    pub fn start(
-        domain: String,
-        wipe: NativeWipePolicy,
-        sealed: &Path,
-        staging: &Path,
-        pending: &Path,
-        state_directory: &Path,
-    ) -> io::Result<Self> {
+    pub fn start(config: NativePublisherConfig) -> io::Result<Self> {
         #[cfg(test)]
-        let started = Self::start_thread(
-            domain,
-            wipe,
-            sealed,
-            staging,
-            pending,
-            state_directory,
-            None,
-        );
+        let started = Self::start_thread(config, None);
         #[cfg(not(test))]
-        let started = Self::start_thread(domain, wipe, sealed, staging, pending, state_directory);
+        let started = Self::start_thread(config);
         let (worker, thread) = started?;
         drop(thread);
         Ok(worker)
     }
 
     fn start_thread(
-        domain: String,
-        wipe: NativeWipePolicy,
-        sealed: &Path,
-        staging: &Path,
-        pending: &Path,
-        state_directory: &Path,
+        config: NativePublisherConfig,
         #[cfg(test)] before_record: Option<WorkerGate>,
     ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
-        if wipe != NativeWipePolicy::None {
+        if config.wipe != NativeWipePolicy::None {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "native fs-verity publisher supports only explicitly configured wipe=none",
             ));
         }
+        let retained_layout = super::native::inspect_layout(&config)?;
+        let domain = config.domain;
+        let sealed = config.layout_root.join("sealed");
+        let staging = config.layout_root.join("staging");
+        let pending = config.layout_root.join("pending-delete");
+        let state_directory = config.layout_root.join("state/publication");
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let native = NativePublisher::open(domain.clone(), sealed, staging, pending)?;
-        let retained_state = super::native::open_directory(state_directory)?;
+        let native = NativePublisher::open(domain.clone(), &sealed, &staging, &pending)?;
+        let retained_state = super::native::open_directory(&state_directory)?;
         use std::os::unix::fs::PermissionsExt;
         if retained_state.metadata()?.permissions().mode() & 0o777 != 0o700 {
             return Err(io::Error::new(
@@ -190,7 +220,7 @@ impl NativePublicationWorker {
                 "publication state directory must be publisher-private mode 0700",
             ));
         }
-        let state = FsPublicationState::new(TokioLocalFs, state_directory.to_path_buf());
+        let state = FsPublicationState::new(TokioLocalFs, state_directory.clone());
         let (sender, mut receiver) = mpsc::channel(32);
         let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
         // A dedicated physical owner retains its own runtime. Cancellation or
@@ -200,6 +230,7 @@ impl NativePublicationWorker {
             .name("terrane-publisher".into())
             .spawn(move || {
                 let _retained_state = retained_state;
+                let _retained_layout = retained_layout;
                 runtime.block_on(async {
                     if let Err(error) = state.recover_temporary().await {
                         let _disconnected = ready_sender.send(Err(error));
@@ -215,7 +246,12 @@ impl NativePublicationWorker {
                         before_record,
                     };
                     let publisher = Publisher::new(native, state);
-                    let mut owner = owned_commands::CommandOwner::new(domain, publisher);
+                    let mut owner = owned_commands::CommandOwner::new(
+                        domain,
+                        publisher,
+                        state_directory,
+                        config.retirement,
+                    );
                     while let Some(command) = receiver.recv().await {
                         match command {
                             Command::Publish {

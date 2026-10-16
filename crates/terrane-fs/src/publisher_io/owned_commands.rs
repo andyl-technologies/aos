@@ -8,8 +8,10 @@ use terrane::host::publication::{PublicationClaim, VerityBinding};
 use terrane::store::{LocalFs, TokioLocalFs};
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
-use super::{NativePublishedObject, NativePublisher, WorkerState};
+use super::{NativePublishedObject, NativePublisher, NativeRetirementPolicy, WorkerState};
+use std::path::PathBuf;
 use terrane::host::publication::Publisher;
+use terrane::host::publication::{FsPublicationState, RetirementInode};
 
 /// Selects a configured domain and one cache owner's current incarnation.
 #[derive(Clone, Debug)]
@@ -100,6 +102,11 @@ pub enum NativeOperation {
         /// Required only for sealed-body independent adoption.
         claim: Option<PublicationClaim>,
     },
+    /// Retains pending namespace custody without content or serving authority.
+    InspectPending {
+        /// The registered body key whose pending entry is inspected.
+        key: NativeBodyKey,
+    },
     /// Begins two-phase deletion of an exact retained incarnation.
     Retire {
         /// Its configured domain's body key.
@@ -175,6 +182,11 @@ pub enum NativeCommandResult {
         /// Its retained-inode token.
         incarnation: NativeBodyIncarnation,
     },
+    /// A pending lifecycle token with no descriptor or content-validity proof.
+    Pending {
+        /// The actual retained pending inode incarnation.
+        incarnation: NativeBodyIncarnation,
+    },
     /// A completed fixed lifecycle or barrier operation.
     Complete,
     /// A bounded unverified key-name inventory page.
@@ -201,7 +213,7 @@ enum Location {
 
 struct RetainedBody {
     key: NativeBodyKey,
-    claim: PublicationClaim,
+    claim: Option<PublicationClaim>,
     token: [u8; 32],
     file: File,
     location: Location,
@@ -213,16 +225,25 @@ pub(super) struct CommandOwner {
     cache: Option<[u8; 16]>,
     recovery: bool,
     bodies: Vec<RetainedBody>,
+    leases: FsPublicationState<TokioLocalFs>,
+    retirement: NativeRetirementPolicy,
 }
 
 impl CommandOwner {
-    pub(super) fn new(domain: String, publisher: Publisher<NativePublisher, WorkerState>) -> Self {
+    pub(super) fn new(
+        domain: String,
+        publisher: Publisher<NativePublisher, WorkerState>,
+        state_directory: PathBuf,
+        retirement: NativeRetirementPolicy,
+    ) -> Self {
         Self {
             domain,
             publisher: Some(publisher),
             cache: None,
             recovery: true,
             bodies: Vec::new(),
+            leases: FsPublicationState::new(TokioLocalFs, state_directory),
+            retirement,
         }
     }
 
@@ -255,13 +276,14 @@ impl CommandOwner {
         let key = NativeBodyKey::Sealed {
             descriptor: claim.descriptor().clone(),
         };
-        for retained in &self.bodies {
+        for retained in &mut self.bodies {
             let previous = retained.file.metadata()?;
             if retained.key == key
                 && retained.location == Location::Canonical
                 && previous.dev() == metadata.dev()
                 && previous.ino() == metadata.ino()
             {
+                retained.claim = Some(claim.clone());
                 return Ok(NativeCommandResult::Published {
                     object,
                     incarnation: NativeBodyIncarnation(retained.token),
@@ -281,7 +303,7 @@ impl CommandOwner {
         let file = object.object.handle().try_clone()?;
         self.bodies.push(RetainedBody {
             key,
-            claim,
+            claim: Some(claim),
             token,
             file,
             location: Location::Canonical,
@@ -305,6 +327,7 @@ impl CommandOwner {
         }
         match &operation {
             NativeOperation::InspectBody { key, .. }
+            | NativeOperation::InspectPending { key }
             | NativeOperation::Retire { key, .. }
             | NativeOperation::Restore { key, .. }
             | NativeOperation::FinishRetirement { key, .. } => key.validate()?,
@@ -327,10 +350,7 @@ impl CommandOwner {
         if self.recovery
             && matches!(
                 operation,
-                NativeOperation::Publish { .. }
-                    | NativeOperation::Retire { .. }
-                    | NativeOperation::Restore { .. }
-                    | NativeOperation::FinishRetirement { .. }
+                NativeOperation::Publish { .. } | NativeOperation::Retire { .. }
             )
         {
             return Err(io::Error::new(
@@ -384,19 +404,72 @@ impl CommandOwner {
             NativeOperation::InspectBody { .. } => Err(unsupported(
                 "unsealed inspection awaits configured content roots",
             )),
+            NativeOperation::InspectPending { key } => self.inspect_pending(key).await,
             NativeOperation::Retire { key, incarnation } => {
-                self.transition(key, incarnation, Transition::Retire)
+                self.transition(key, incarnation, Transition::Retire).await
             }
             NativeOperation::Restore { key, incarnation } => {
-                self.transition(key, incarnation, Transition::Restore)
+                self.transition(key, incarnation, Transition::Restore).await
             }
             NativeOperation::FinishRetirement { key, incarnation } => {
                 self.transition(key, incarnation, Transition::FinishNone)
+                    .await
             }
             NativeOperation::Inventory { .. } => Err(unsupported(
                 "inventory requires complete recovery metadata and pending-body rules",
             )),
         }
+    }
+
+    async fn inspect_pending(&mut self, key: NativeBodyKey) -> io::Result<NativeCommandResult> {
+        let NativeBodyKey::Sealed { descriptor } = &key else {
+            return Err(unsupported(
+                "unsealed pending inspection awaits configured content roots",
+            ));
+        };
+        let file = self.kernel(|native| native.inspect_pending_sealed(descriptor))?;
+        let metadata = file.metadata()?;
+        self.leases
+            .retirement_lease(
+                &self.domain,
+                &descriptor.encode(),
+                retirement_inode(&metadata),
+                self.retirement.interval(),
+            )
+            .await?;
+        for retained in &self.bodies {
+            let previous = retained.file.metadata()?;
+            if retained.key == key
+                && retained.location == Location::Pending
+                && previous.dev() == metadata.dev()
+                && previous.ino() == metadata.ino()
+            {
+                return Ok(NativeCommandResult::Pending {
+                    incarnation: NativeBodyIncarnation(retained.token),
+                });
+            }
+        }
+        if self.bodies.len() >= 4096 {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "publisher incarnation budget exhausted",
+            ));
+        }
+        let token = TokioLocalFs
+            .random_bytes(32)
+            .await?
+            .try_into()
+            .map_err(|_| io::Error::other("invalid native random length"))?;
+        self.bodies.push(RetainedBody {
+            key,
+            claim: None,
+            token,
+            file,
+            location: Location::Pending,
+        });
+        Ok(NativeCommandResult::Pending {
+            incarnation: NativeBodyIncarnation(token),
+        })
     }
 
     async fn adopt(&mut self, claim: PublicationClaim) -> io::Result<NativeCommandResult> {
@@ -415,7 +488,7 @@ impl CommandOwner {
         self.retain(claim, NativePublishedObject { object }).await
     }
 
-    fn transition(
+    async fn transition(
         &mut self,
         key: NativeBodyKey,
         token: [u8; 32],
@@ -438,15 +511,49 @@ impl CommandOwner {
         } else if body.location != Location::Canonical {
             return Err(invalid("body is not canonical"));
         }
-        if matches!(transition, Transition::Restore) {
-            self.kernel(|native| native.restore_checked(&claim, &expected))?;
-            self.bodies[index].location = Location::Canonical;
-        } else if matches!(transition, Transition::FinishNone) {
-            self.kernel(|native| native.finish_none_checked(&claim, &expected))?;
+        let NativeBodyKey::Sealed { descriptor } = &key else {
+            return Err(unsupported(
+                "encoded retirement awaits configured content custody",
+            ));
+        };
+        let lease_key = descriptor.encode();
+        let metadata = expected.metadata()?;
+        if matches!(transition, Transition::FinishNone) {
+            let lease = self
+                .leases
+                .retirement_lease(
+                    &self.domain,
+                    &lease_key,
+                    retirement_inode(&metadata),
+                    self.retirement.interval(),
+                )
+                .await?;
+            if !lease.expired()? {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "pending retirement lease has not expired",
+                ));
+            }
+            self.kernel(|native| native.finish_pending_sealed(descriptor, &expected))?;
             self.bodies.remove(index);
+        } else if matches!(transition, Transition::Restore) {
+            self.kernel(|native| native.restore_pending_sealed(descriptor, &expected))?;
+            // Namespace restoration is not adoption. A token obtained from
+            // InspectPending still has no content claim or backing authority.
+            self.bodies[index].location = Location::Canonical;
         } else {
+            let claim = claim.ok_or_else(|| invalid("retirement requires canonical adoption"))?;
             self.kernel(|native| native.retire_checked(&claim, &expected))?;
             self.bodies[index].location = Location::Pending;
+            let metadata = expected.metadata()?;
+            self.leases
+                .begin_retirement_lease(
+                    &self.domain,
+                    &lease_key,
+                    retirement_inode(&metadata),
+                    self.retirement.interval(),
+                )
+                .await?;
         }
         Ok(NativeCommandResult::Complete)
     }
@@ -460,4 +567,13 @@ fn unsupported(message: &'static str) -> io::Error {
 }
 fn unreachable_operation() -> io::Result<NativeCommandResult> {
     Err(invalid("drain dispatch state mismatch"))
+}
+
+fn retirement_inode(metadata: &std::fs::Metadata) -> RetirementInode {
+    RetirementInode {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    }
 }

@@ -10,6 +10,7 @@ use rustix::fs::{self, AtFlags, Mode, OFlags, ResolveFlags};
 use terrane::host::publication::{
     AdoptionFailure, PublicationClaim, PublicationKernel, VerityBinding,
 };
+use terrane_core::identity::Descriptor;
 use terrane_core::properties::Domain;
 
 use crate::verity;
@@ -61,6 +62,67 @@ fn check_directory(file: &File) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(feature = "tokio")]
+pub(super) fn inspect_layout(config: &super::NativePublisherConfig) -> io::Result<Vec<File>> {
+    if !config.layout_root.is_absolute()
+        || config
+            .layout_root
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(invalid(
+            "publisher layout must be absolute without parent traversal",
+        ));
+    }
+    let mut retained = Vec::new();
+    let mut device = None;
+    let mut inodes = Vec::new();
+    for (relative, content, private) in [
+        ("", false, false),
+        ("state", false, false),
+        ("chunks", true, false),
+        ("objects", true, false),
+        ("quarantine", true, false),
+        ("sealed", false, true),
+        ("staging", false, true),
+        ("pending-delete", false, true),
+        ("state/publication", false, true),
+    ] {
+        let path = config.layout_root.join(relative);
+        let file = File::from(fs::openat2(
+            fs::CWD,
+            &path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS,
+        )?);
+        let metadata = file.metadata()?;
+        let permissions = metadata.mode() & 0o7777;
+        let valid = if content {
+            metadata.uid() == config.content_uid
+                && metadata.gid() == config.content_gid
+                && permissions == 0o2770
+        } else if private {
+            metadata.uid() == rustix::process::geteuid().as_raw() && permissions == 0o700
+        } else {
+            (metadata.uid() == 0 || metadata.uid() == rustix::process::geteuid().as_raw())
+                && permissions & 0o022 == 0
+        };
+        if !valid
+            || device.is_some_and(|expected| expected != metadata.dev())
+            || inodes.contains(&metadata.ino())
+        {
+            return Err(invalid(
+                "publisher layout has unsafe ownership, mode, device or alias",
+            ));
+        }
+        device = Some(metadata.dev());
+        inodes.push(metadata.ino());
+        retained.push(file);
+    }
+    Ok(retained)
 }
 
 fn child_directory(parent: &File, name: &str) -> io::Result<File> {
@@ -314,24 +376,69 @@ impl NativePublisher {
         self.retire(claim)
     }
 
-    pub(super) fn restore_checked(
-        &mut self,
-        claim: &PublicationClaim,
-        expected: &File,
-    ) -> io::Result<()> {
-        let current = self.open_pending(claim)?;
-        compare_inode(expected, &current)?;
-        self.restore(claim)
+    // This observation intentionally does not measure verity or hash bytes.
+    // A pending sealed entry may be corrupt and still need safe retirement.
+    pub(super) fn inspect_pending_sealed(&self, descriptor: &Descriptor) -> io::Result<File> {
+        let name: String = descriptor
+            .digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let file = File::from(fs::openat(
+            &self.pending,
+            name.as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o022 != 0
+            || metadata.dev() != self.pending.metadata()?.dev()
+        {
+            return Err(invalid("unsafe pending sealed inode custody"));
+        }
+        Ok(file)
     }
 
-    pub(super) fn finish_none_checked(
+    pub(super) fn restore_pending_sealed(
         &mut self,
-        claim: &PublicationClaim,
+        descriptor: &Descriptor,
         expected: &File,
     ) -> io::Result<()> {
-        let current = self.open_pending(claim)?;
+        let current = self.inspect_pending_sealed(descriptor)?;
         compare_inode(expected, &current)?;
-        self.complete_unlink_none(claim)
+        let name: String = descriptor
+            .digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let shard = child_directory(&self.sealed, &name[..2])?;
+        fs::renameat_with(
+            &self.pending,
+            name.as_str(),
+            &shard,
+            name.as_str(),
+            fs::RenameFlags::NOREPLACE,
+        )?;
+        self.pending.sync_all()?;
+        shard.sync_all()
+    }
+
+    pub(super) fn finish_pending_sealed(
+        &mut self,
+        descriptor: &Descriptor,
+        expected: &File,
+    ) -> io::Result<()> {
+        let current = self.inspect_pending_sealed(descriptor)?;
+        compare_inode(expected, &current)?;
+        let name: String = descriptor
+            .digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        fs::unlinkat(&self.pending, name.as_str(), AtFlags::empty())?;
+        self.pending.sync_all()
     }
 
     fn open_pending(&self, claim: &PublicationClaim) -> io::Result<File> {

@@ -43,14 +43,14 @@ fn source(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
-fn hexadecimal(bytes: &[u8]) -> String {
+pub(super) fn hexadecimal(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Stores only immutable verified bindings under a publisher-private state root.
 pub struct FsPublicationState<F> {
-    fs: F,
-    directory: PathBuf,
+    pub(super) fs: F,
+    pub(super) directory: PathBuf,
 }
 
 impl<F: LocalFs + Sync> FsPublicationState<F> {

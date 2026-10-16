@@ -5,8 +5,10 @@
 //! state adapters acknowledge only durable verity bindings.
 
 mod claim;
+mod leases;
 mod sequence;
 mod state;
+pub use leases::{RetirementInode, RetirementLease};
 
 pub use claim::{PublicationClaim, PublicationRecipe};
 pub use sequence::{
