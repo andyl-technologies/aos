@@ -365,6 +365,7 @@ mod tests {
         drop(InFlightRetention::begin(&phase));
         assert!(phase.get() == RecoveryPhase::Faulted);
     }
+
     #[test]
     fn abandoned_rpc_effect_faults_without_a_state_or_client_lock() {
         let phase = Rc::new(Cell::new(RecoveryPhase::Active));

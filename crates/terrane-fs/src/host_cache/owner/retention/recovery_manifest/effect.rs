@@ -94,6 +94,11 @@ impl<'phase, 'executor> RecoveryManifestEffect<'phase, 'executor> {
     /// context and source/pin checks, synchronizes real retained backing/source
     /// allocation and fresh authenticated quota/holds, then releases the phase.
     /// The backing must be the genuine independently verified response receipt.
+    /// The consumer must bind its canonical inode/lifecycle to that same RPC
+    /// response and put the adopted body in the actual executor-owned registry
+    /// before any later fallible completion or cancellable reply. This method
+    /// checks claim/root and allocation, not same-response correlation. The
+    /// metadata source registry alone does not retain the adopted body.
     ///
     /// # Errors
     /// Returns actual retained backing custody with a faulted phase when final

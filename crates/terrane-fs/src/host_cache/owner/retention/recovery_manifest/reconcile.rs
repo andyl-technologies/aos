@@ -9,10 +9,21 @@ use crate::publisher_local::client::PeerPublishedObject;
 
 /// Reports scoped synchronized inodes separately from full owner quota charge.
 pub(super) struct EffectMeasurement {
+    /// Deduplicated synchronized blocks for the retained source and body inodes.
     pub(super) retained_source_and_body_bytes: u64,
+    /// Separate fresh authenticated charged-and-reserved usage for the full owner.
     pub(super) charged_reserved_bytes: u64,
 }
 
+/// Synchronizes retained effect inodes and reconciles actual quota with holds.
+///
+/// The downstream owner must already retain the adopted body and its actual
+/// same-response canonical inode/lifecycle observation. A matching private body
+/// receipt alone does not establish that response correlation.
+///
+/// # Errors
+/// Refuses changed phase/source/body/root custody, failed synchronization,
+/// overflow, unavailable quota observations and charge exceeding policy.
 pub(super) fn complete_effect(
     effect: &RecoveryManifestEffect<'_, '_>,
     body: &PeerPublishedObject<HostDomainLocation>,

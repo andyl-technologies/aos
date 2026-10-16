@@ -17,8 +17,10 @@ pub(crate) struct RecoveryManifestBackingRetention {
 }
 
 impl RecoveryManifestBackingRetention {
-    // Accept only a genuine private phase-bound receipt, never an ordinary
-    // receipt, raw descriptor, registration ID or caller-selected file.
+    /// Transfers durable custody from a genuine consumed phase-bound receipt.
+    ///
+    /// Only the effect guard calls this after reconciliation or explicit failure.
+    /// It accepts no ordinary receipt, raw descriptor, ID or caller-selected file.
     pub(super) fn from_phase(
         receipt: RecoveryRetainedManifest<'_, '_>,
         measurement: Option<super::reconcile::EffectMeasurement>,
