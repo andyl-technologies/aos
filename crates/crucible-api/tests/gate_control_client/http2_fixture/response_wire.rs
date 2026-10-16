@@ -170,6 +170,7 @@ pub(crate) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
         | LifecycleApiError::ActorFailed { .. }
         | LifecycleApiError::LoopFactory { .. }
         | LifecycleApiError::ConstructionCustodyUnavailable
+        | LifecycleApiError::CleanupRetained
         | LifecycleApiError::BackendConstruction { .. }
         | LifecycleApiError::AttemptOperational { .. } => typed_rpc_status_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,

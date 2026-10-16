@@ -1891,6 +1891,7 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::LoopFactory { .. }
         | LifecycleApiError::ConstructionCustodyUnavailable
+        | LifecycleApiError::CleanupRetained
         | LifecycleApiError::BackendConstruction { .. }
         | LifecycleApiError::ConfigurationCopy(_)
         | LifecycleApiError::AttemptOperational { .. }

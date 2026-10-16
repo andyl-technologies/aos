@@ -45,8 +45,16 @@ where
 {
     guard: G,
     generations: Arc<Mutex<QemuAttemptGenerationState>>,
-    terminal: bool,
+    retirement: GenerationResourceRetirement,
     terminal_failure: Option<String>,
+}
+
+/// Physical disposition is independent of optional diagnostic presentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GenerationResourceRetirement {
+    Active,
+    Returned,
+    Quarantined,
 }
 
 impl<G> fmt::Debug for QemuAttemptGenerationResourceOwner<G>
@@ -57,7 +65,7 @@ where
         formatter
             .debug_struct("QemuAttemptGenerationResourceOwner")
             .field("guard", &self.guard)
-            .field("terminal", &self.terminal)
+            .field("retirement", &self.retirement)
             .field("terminal_failure", &self.terminal_failure)
             .finish_non_exhaustive()
     }
@@ -79,7 +87,7 @@ where
         Self {
             guard,
             generations: storage.generations,
-            terminal: false,
+            retirement: GenerationResourceRetirement::Active,
             terminal_failure: None,
         }
     }
@@ -100,7 +108,7 @@ where
         &mut self,
         identity: ProductionVmNodeGeneration,
     ) -> Result<QemuAttemptGenerationLease, LifecycleApiError> {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(generation_error(
                 "QEMU attempt generation owner is already terminal",
             ));
@@ -163,12 +171,20 @@ where
     ///
     /// Returns [`LifecycleApiError::LoopFactory`] when a lease remains active or
     /// abandoned, the registry is poisoned, or underlying guard cleanup fails.
+    /// Returns [`LifecycleApiError::CleanupRetained`] after original launch
+    /// quarantine, whose actual cause remains with the enclosing owner.
     pub fn finish(&mut self) -> Result<(), LifecycleApiError> {
-        if self.terminal {
-            return self
-                .terminal_failure
-                .as_ref()
-                .map_or(Ok(()), |message| Err(generation_error(message.clone())));
+        match self.retirement {
+            GenerationResourceRetirement::Active => {}
+            GenerationResourceRetirement::Returned => return Ok(()),
+            GenerationResourceRetirement::Quarantined => {
+                return Err(self
+                    .terminal_failure
+                    .as_ref()
+                    .map_or(LifecycleApiError::CleanupRetained, |message| {
+                        generation_error(message.clone())
+                    }));
+            }
         }
         let release_allowed = self
             .generations
@@ -188,22 +204,27 @@ where
                     "QEMU attempt aggregate release has an active or abandoned generation",
                 );
                 self.guard.quarantine();
-                self.terminal = true;
+                self.retirement = GenerationResourceRetirement::Quarantined;
                 self.terminal_failure = Some(message.clone());
                 return Err(generation_error(message));
             }
             Err(error) => {
                 let message = error.to_string();
                 self.guard.quarantine();
-                self.terminal = true;
+                self.retirement = GenerationResourceRetirement::Quarantined;
                 self.terminal_failure = Some(message);
                 return Err(error);
             }
         }
         let result = self.guard.finish();
-        self.terminal = true;
+        // Latch containment before formatting a failure can unwind. Only the
+        // successful result below can attest aggregate return.
+        self.retirement = GenerationResourceRetirement::Quarantined;
         match result {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.retirement = GenerationResourceRetirement::Returned;
+                Ok(())
+            }
             Err(error) => {
                 let message = format!("finish QEMU attempt aggregate resources: {error}");
                 self.terminal_failure = Some(message.clone());
@@ -214,11 +235,11 @@ where
 
     /// Transfers the aggregate guard to quarantine without releasing resources.
     pub fn quarantine(&mut self) {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return;
         }
         self.guard.quarantine();
-        self.terminal = true;
+        self.retirement = GenerationResourceRetirement::Quarantined;
         self.terminal_failure = Some(String::from(
             "QEMU attempt aggregate resources were transferred to quarantine",
         ));
@@ -226,13 +247,13 @@ where
 
     /// Retains terminal original launch custody without allocating a diagnostic.
     pub(crate) fn quarantine_original_launch(&mut self) {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return;
         }
         self.guard.quarantine();
-        self.terminal = true;
-        // The enclosing typed error retains the actual cause. Replacing it
-        // with a separately allocated terminal message would lose that custody.
+        self.retirement = GenerationResourceRetirement::Quarantined;
+        // The enclosing typed error retains the actual cause. Its absence here
+        // must neither allocate a replacement nor attest physical return.
         self.terminal_failure = None;
     }
 
@@ -243,7 +264,7 @@ where
     /// Returns [`LifecycleApiError::AttemptOperational`] after terminal cleanup,
     /// cancellation, resource exhaustion, or enforcement-state failure.
     pub fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(terminal_attempt_operational_error(
                 "QEMU attempt generation owner is already terminal",
             ));
@@ -266,7 +287,9 @@ where
         cancellation: &ExecutionCancellation,
         invoke: impl FnOnce(&QemuChildProcessContract) -> T,
     ) -> Result<T, ProcessStageContractRefusal> {
-        if self.terminal || !self.guard.cancellation().same_incarnation(cancellation) {
+        if self.retirement != GenerationResourceRetirement::Active
+            || !self.guard.cancellation().same_incarnation(cancellation)
+        {
             return Err(ProcessStageContractRefusal::NotCurrent);
         }
         self.guard
@@ -287,7 +310,7 @@ where
         &self,
         node: &NodeId,
     ) -> Result<&QemuChildProcessContract, LifecycleApiError> {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(generation_error("QEMU generation owner is terminal"));
         }
         self.guard
@@ -313,7 +336,7 @@ where
         node: &NodeId,
     ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
     {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(
                 crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
                     source: crucible_qemu::OriginalActorAccountError::Unavailable,
@@ -330,7 +353,7 @@ where
         config: &crucible_qemu::QemuLiveNodeStepGateConfig,
         admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
     ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(
                 crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
                     source: crucible_qemu::OriginalActorAccountError::Unavailable,
@@ -350,7 +373,7 @@ where
         crucible_qemu::QemuProductionExactRestoreLaunch,
         crucible_qemu::QemuLiveNodeStepGateError,
     > {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(
                 crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
                     source: crucible_qemu::OriginalActorAccountError::Unavailable,
@@ -408,7 +431,9 @@ where
         cancellation: &ExecutionCancellation,
         invoke: impl FnOnce(&QemuChildProcessContract) -> T,
     ) -> Result<T, ProcessStageContractRefusal> {
-        if self.terminal || !self.guard.cancellation().same_incarnation(cancellation) {
+        if self.retirement != GenerationResourceRetirement::Active
+            || !self.guard.cancellation().same_incarnation(cancellation)
+        {
             return Err(ProcessStageContractRefusal::NotCurrent);
         }
         self.guard
@@ -461,7 +486,7 @@ where
             QemuVmRealizationError,
         >,
     ) -> Result<crucible_qemu::ram_control::RamControlRegistration, QemuVmRealizationError> {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(QemuVmRealizationError::ExecutorUnavailable {
                 operation: "borrow selected Target RAM admission",
                 message: String::from("generation owner is terminal"),
@@ -495,7 +520,7 @@ where
         &mut self,
         requirements: QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, LifecycleApiError> {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(generation_error(
                 "QEMU attempt generation owner is already terminal",
             ));
@@ -514,7 +539,7 @@ where
     /// Returns [`LifecycleApiError::LoopFactory`] after aggregate cleanup or
     /// when the guard cannot authenticate the retained process contract.
     pub fn child_process_contract(&self) -> Result<&QemuChildProcessContract, LifecycleApiError> {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(generation_error(
                 "QEMU attempt generation owner is already terminal",
             ));
@@ -530,7 +555,7 @@ where
         config: &crucible_qemu::QemuLiveNodeStepGateConfig,
         admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
     ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(
                 crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
                     source: crucible_qemu::OriginalActorAccountError::Unavailable,
@@ -551,7 +576,7 @@ where
         crucible_qemu::QemuProductionExactRestoreLaunch,
         crucible_qemu::QemuLiveNodeStepGateError,
     > {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(
                 crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
                     source: crucible_qemu::OriginalActorAccountError::Unavailable,
@@ -573,7 +598,7 @@ where
     /// Returns [`LifecycleApiError::AttemptOperational`] on cancellation, terminal
     /// ownership, or exact quantum/resource exhaustion.
     pub fn charge_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(terminal_attempt_operational_error(
                 "QEMU attempt generation owner is already terminal",
             ));
@@ -798,7 +823,7 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptGenerationResourceOwner<G> {
         crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
         QemuVmRealizationError,
     > {
-        if self.terminal {
+        if self.retirement != GenerationResourceRetirement::Active {
             return Err(QemuVmRealizationError::ExecutorUnavailable {
                 operation: "reserve retired generation contract controls",
                 message: String::from("generation ownership is terminal"),

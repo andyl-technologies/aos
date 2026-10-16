@@ -237,6 +237,24 @@ Five real worker/file report controls and three new guard-state controls pass;
 existing controls are retained. The joined full private-library run has exactly
 the preceding 17 daemon and six QEMU failed names, with no new failures.
 
+Generation ownership also separates successful return from retained quarantine.
+Original launch containment keeps its initiating cause in the enclosing owner;
+an absent local diagnostic cannot turn a later finish into successful release.
+The allocation-free retained-cleanup observation preserves the existing HTTP,
+campaign availability and terminal scheduling policies. Repeated calls neither
+reenter guard cleanup nor reopen generation admission. All 32 selected generation
+controls pass, and the fresh private-feature workspace/all-targets check passes.
+The worker-custody source contract now binds its existing queue revisit to the
+same Main, saved Cleanup and independent physical observations. Its full omission,
+extra-call and failed-test-rerun mutation controls pass; the broader standards
+gate still reports 27 findings across 26 unresolved operational paths. Neither
+the inventory nor the escape matcher was relaxed.
+
+The local packaged application unit/integration-target build has completed for
+the earlier immutable World-return/replay snapshot, with remote builders disabled.
+It predates the subsequent guard, associated-failure, policy and generation edits;
+it does not qualify their packaged integration or any VM execution.
+
 The Guarded cause and complete returned report measure 616 and 832 bytes;
 retained-constructor cleanup and retirement reports measure 1,032 and 1,200 bytes.
 These are returned diagnostics, not newly stored actor fields. Main remains 5,024
