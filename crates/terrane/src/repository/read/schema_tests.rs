@@ -7,7 +7,7 @@ use crate::{
         Repository,
     },
     store::{LocalFs, TokioClock, TokioLocalFs},
-    surface::{TreeSchema, View},
+    surface::{SchemaEntryKind, TreeSchema, View},
 };
 use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -115,7 +115,11 @@ async fn schema_metadata_reads_never_fetch_plaintext_chunks() -> TestResult {
             &View::parse(reference)?,
             authority.token(),
             "sdk",
-            &TreeSchema::default(),
+            &TreeSchema {
+                required_entries: vec![(b"file".to_vec(), SchemaEntryKind::File)],
+                required_properties: vec![("hashes".into(), vec![vec![0x80]])],
+                ..TreeSchema::default()
+            },
         )
         .await?;
     let schema_counts = observation.snapshot();
