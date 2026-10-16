@@ -242,7 +242,6 @@ fn returned_observe_box_backing_fits_the_carried_typed_query_row() -> TestResult
     Ok(())
 }
 
-
 #[test]
 fn selected_query_refines_only_canonical_output_and_keeps_fresh_fallback() -> TestResult {
     let (_handshake, authority, _selection, _) =
@@ -262,12 +261,30 @@ fn selected_query_refines_only_canonical_output_and_keeps_fresh_fallback() -> Te
         old.raw_and_envelope_requested_bytes - selected.raw_and_envelope_requested_bytes,
         old_ack.returning - new_ack.returning
     );
-    assert_eq!(selected.maximum_frame_body_bytes, old.maximum_frame_body_bytes);
-    assert_eq!(selected.typed_query_requested_bytes, old.typed_query_requested_bytes);
-    assert_eq!(selected.correlation_requested_bytes, old.correlation_requested_bytes);
-    assert_eq!(selected.original_literal_required_bytes, old.original_literal_required_bytes);
-    assert_eq!(selected.original_descriptor_required_bytes, old.original_descriptor_required_bytes);
+    assert_eq!(
+        selected.maximum_frame_body_bytes,
+        old.maximum_frame_body_bytes
+    );
+    assert_eq!(
+        selected.typed_query_requested_bytes,
+        old.typed_query_requested_bytes
+    );
+    assert_eq!(
+        selected.correlation_requested_bytes,
+        old.correlation_requested_bytes
+    );
+    assert_eq!(
+        selected.original_literal_required_bytes,
+        old.original_literal_required_bytes
+    );
+    assert_eq!(
+        selected.original_descriptor_required_bytes,
+        old.original_descriptor_required_bytes
+    );
     assert_eq!(fresh.requested_bytes()?, old_fresh.requested_bytes()?);
-    assert_eq!(fresh.raw_and_envelope_requested_bytes, old_fresh.raw_and_envelope_requested_bytes);
+    assert_eq!(
+        fresh.raw_and_envelope_requested_bytes,
+        old_fresh.raw_and_envelope_requested_bytes
+    );
     Ok(())
 }

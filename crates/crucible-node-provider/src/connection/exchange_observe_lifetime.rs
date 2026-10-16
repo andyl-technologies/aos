@@ -246,9 +246,8 @@ impl OriginalPacketPrefixStorageData {
         if self.requests != 0 {
             // The old full cap was authenticated above. Keep every uncertain
             // owner; only the same returning canonical output banks narrow.
-            let ack = acknowledgements::native_original_open_ack_lifetime_storage_data(
-                maximum_frame,
-            )?;
+            let ack =
+                acknowledgements::native_original_open_ack_lifetime_storage_data(maximum_frame)?;
             lifetime.acknowledgement = ack.returning;
         }
         Ok(lifetime)

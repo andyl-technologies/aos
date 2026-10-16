@@ -134,11 +134,10 @@ impl<S: ProviderStream> Connection<S> {
     pub(crate) fn original_observe_returned_query_storage_data(
         &self,
     ) -> Result<usize, ProviderError> {
-        let receive =
-            native_query_receive_storage_from_limits(
-                self.authority.limits(),
-                Purpose::OriginalObserve12,
-            )?;
+        let receive = native_query_receive_storage_from_limits(
+            self.authority.limits(),
+            Purpose::OriginalObserve12,
+        )?;
         OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)
     }
 }
