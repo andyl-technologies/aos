@@ -333,7 +333,7 @@ impl std::error::Error for OriginalParkDrainPhase {
     }
 }
 
-impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> {
+impl<G: QemuAttemptProcessResourceGuard, F> QemuAttemptProductionVmNodeLauncher<G, F> {
     fn begin_next_parent_park_drain(
         &mut self,
         source: &mut QemuNodeSetPreparedHotForkSource<'_>,

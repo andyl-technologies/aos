@@ -1,6 +1,6 @@
 //! Attempt-owned guarded launcher for the production VM lifecycle.
 //!
-//! This adapter is the daemon-side owner of the API lifecycle's linear QEMU
+//! This adapter is the backend owner of the production lifecycle's linear QEMU
 //! generations. It admits and pins fresh generation directories, runs image
 //! tools under the attempt contract, streams repository checkpoints, and lends
 //! the sealed process contract only after preparation. Any unreaped QEMU or
@@ -31,9 +31,16 @@ mod parent_park_drain;
 pub(crate) use parent_park_drain::OriginalParkDrainDisposition;
 
 mod pending_construction;
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+pub(crate) use pending_construction::publish_source_owner;
 pub(crate) use pending_construction::retain_source_owner;
-mod failed_launch;
-use failed_launch::RetainedFailedLaunch;
+mod fresh_generation;
+mod retained_node;
+use retained_node::RetainedNodeLaunch;
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+mod native_observation;
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+pub(crate) use native_observation::ObservedNativeNode;
 pub use pending_construction::SourceConstructionCustodyFailure;
 pub(crate) use pending_construction::{PendingSourceConstruction, UnbornSourceConstruction};
 
@@ -63,7 +70,9 @@ where
     fork_target_factory: Option<F>,
     cleanup_reservation: Option<Box<dyn crucible_api::ProductionVmCleanupReservation>>,
     construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
-    failed_launch: Option<RetainedFailedLaunch>,
+    retained_node: Option<RetainedNodeLaunch>,
+    #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+    pub(crate) native_observation_config: Option<crate::ProductionVmLifecycleConfig>,
     owner: QemuAttemptGenerationResourceOwner<G>,
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
     image_helpers: Arc<Mutex<ImageHelperCleanupDebt>>,
@@ -98,7 +107,9 @@ where
             fork_target_factory,
             cleanup_reservation: None,
             construction_custody: None,
-            failed_launch: None,
+            retained_node: None,
+            #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+            native_observation_config: None,
             owner,
             run_directories: Arc::new(Mutex::new(BTreeMap::new())),
             image_helpers: Arc::new(Mutex::new(ImageHelperCleanupDebt::default())),
@@ -310,156 +321,6 @@ where
         self.owner.with_guard_mut(apply)
     }
 
-    fn launch_fresh_generation(
-        &mut self,
-        request: ProductionVmNodeLaunchRequest<'_>,
-        qemu_executable: &std::path::Path,
-        root_image: &std::path::Path,
-        lease: QemuAttemptGenerationLease,
-        run_directories: &mut BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>,
-    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        if request.launch().qemu_executable() != qemu_executable
-            || request.launch().root_image() != Some(root_image)
-        {
-            return Err(abort_unspawned_generation(
-                lease,
-                launcher_message(
-                    "fresh image-tool inputs do not match the exact QEMU launch profile",
-                ),
-            ));
-        }
-        if let Err(error) = self.owner.check_operational_boundary() {
-            return Err(abort_unspawned_generation(lease, error));
-        }
-        let mut run_directory = match self.owner.prepare_generation_run_directory_for_node(
-            request.node(),
-            request.launch().resource_requirements(),
-        ) {
-            Ok(run_directory) => run_directory,
-            Err(error) => return Err(abort_unspawned_generation(lease, error)),
-        };
-        let preparation = {
-            let process_contract = match self.owner.child_process_contract_for_node(request.node())
-            {
-                Ok(contract) => contract,
-                Err(error) => return Err(abort_unspawned_generation(lease, error)),
-            };
-            run_directory.prepare_fresh_artifacts_guarded(
-                qemu_executable,
-                Some(root_image),
-                process_contract,
-            )
-        };
-        if let Err(mut error) = preparation {
-            let message = launch_error_chain(&error);
-            if let Some(child) = error.take_unreaped_child() {
-                self.owner
-                    .retain_failed_launch_child_for_node(request.node(), child);
-                drop(lease);
-                self.owner.quarantine();
-                return Err(launcher_message(format!(
-                    "prepare fresh QEMU node `{}` failed and transferred an unreaped image-tool child to quarantine: {message}",
-                    request.node_name(),
-                )));
-            }
-            return Err(abort_unspawned_generation(
-                lease,
-                launcher_message(format!(
-                    "prepare fresh QEMU node `{}` failed after synchronous helper cleanup: {message}",
-                    request.node_name(),
-                )),
-            ));
-        }
-        if let Err(error) = self.owner.check_operational_boundary() {
-            return Err(abort_unspawned_generation(lease, error));
-        }
-
-        let launch = request
-            .launch()
-            .clone()
-            .with_run_directory(run_directory.path());
-        let identity = QemuLiveNodeIdentity::new(
-            request.node_name(),
-            request.router_name(),
-            request.crash_detector(),
-        );
-        let (launched, retained_contract) = {
-            let process_contract = match self.owner.child_process_contract_for_node(request.node())
-            {
-                Ok(contract) => contract,
-                Err(error) => return Err(abort_unspawned_generation(lease, error)),
-            };
-            let retained_contract = match process_contract.try_clone_for_attempt_generation() {
-                Ok(contract) => contract,
-                Err(error) => {
-                    return Err(abort_unspawned_generation(
-                        lease,
-                        launcher_message(format!("retain fresh generation contract: {error}")),
-                    ));
-                }
-            };
-            let launched = QemuProductionFreshLaunchAdmission::admit(
-                &launch,
-                &run_directory,
-                process_contract,
-                identity,
-            )
-            .and_then(|admission| {
-                self.owner
-                    .launch_fresh_node_for_node(request.node(), &launch, admission)
-            });
-            (launched, retained_contract)
-        };
-        let node = match launched {
-            Ok(node) => node,
-            Err(mut error) => {
-                #[cfg(feature = "private-measurement-domain")]
-                if let crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeLaunch { source } =
-                    error
-                {
-                    // The original slot already owns this exact prepaid Arc,
-                    // including any node created before the independent postcut.
-                    // No ordinary error formatting or second shared allocation
-                    // may replace that first cause or release its native credit.
-                    self.owner.quarantine_original_launch();
-                    drop(lease);
-                    return Err(LifecycleApiError::BackendConstruction {
-                        source: crucible_api::LifecycleBackendConstructionError::from_shared(
-                            source,
-                        ),
-                    });
-                }
-                let message = launch_error_chain(&error);
-                if let Some(child) = error.take_unreaped_child() {
-                    self.owner
-                        .retain_failed_launch_child_for_node(request.node(), child);
-                    drop(lease);
-                    self.owner.quarantine();
-                    return Err(launcher_message(format!(
-                        "launch guarded fresh QEMU node `{}` failed and transferred an unreaped child to quarantine: {message}",
-                        request.node_name(),
-                    )));
-                }
-                return Err(abort_unspawned_generation(
-                    lease,
-                    launcher_message(format!(
-                        "launch guarded fresh QEMU node `{}` failed after synchronous cleanup: {message}",
-                        request.node_name(),
-                    )),
-                ));
-            }
-        };
-
-        self.record_launched_generation(
-            request,
-            lease,
-            run_directory,
-            node,
-            retained_contract,
-            run_directories,
-        )
-    }
-
     fn record_launched_generation(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
@@ -469,6 +330,36 @@ where
         process_contract: QemuChildProcessContract,
         run_directories: &mut BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        let (node, lease, run_directory_path) = self.record_launched_parts(
+            request.launch().qemu_executable(),
+            lease,
+            run_directory,
+            node,
+            process_contract,
+            run_directories,
+        );
+        match ProductionVmNodeLaunch::new_in_run_directory(request, run_directory_path, node, lease)
+        {
+            Ok(launch) => Ok(launch),
+            Err((first, launch)) => {
+                // Both launch methods exclude an earlier failed pairing before
+                // any effects, so this pre-existing slot cannot be overwritten.
+                self.retained_node = Some(RetainedNodeLaunch::new(launch));
+                Err(first)
+            }
+        }
+    }
+
+    /// Moves the same born process and its directory into generation custody.
+    fn record_launched_parts(
+        &mut self,
+        qemu_executable: &std::path::Path,
+        lease: QemuAttemptGenerationLease,
+        run_directory: QemuPreparedRunDirectory,
+        node: QemuNode,
+        process_contract: QemuChildProcessContract,
+        run_directories: &mut BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>,
+    ) -> (QemuNode, QemuLifecycleGenerationLease, std::path::PathBuf) {
         let generation = lease.identity().clone();
         let run_directory_path = run_directory.path().to_path_buf();
         let prior = run_directories.insert(generation, run_directory);
@@ -476,22 +367,13 @@ where
         let lease = QemuLifecycleGenerationLease {
             inner: lease,
             run_directories: Arc::clone(&self.run_directories),
-            qemu_executable: request.launch().qemu_executable().to_path_buf(),
+            qemu_executable: qemu_executable.to_path_buf(),
             process_contract,
             image_helpers: Arc::clone(&self.image_helpers),
             directory_released: false,
         };
 
-        match ProductionVmNodeLaunch::new_in_run_directory(request, run_directory_path, node, lease)
-        {
-            Ok(launch) => Ok(launch),
-            Err((first, launch)) => {
-                // Both launch methods exclude an earlier failed pairing before
-                // any effects, so this pre-existing slot cannot be overwritten.
-                self.failed_launch = Some(RetainedFailedLaunch::new(launch));
-                Err(first)
-            }
-        }
+        (node, lease, run_directory_path)
     }
 
     fn transfer_image_helper_debt(&mut self) {
@@ -671,7 +553,7 @@ where
         qemu_executable: &std::path::Path,
         root_image: &std::path::Path,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        if self.failed_launch.is_some() {
+        if self.retained_node.is_some() {
             return Err(launcher_message(
                 "a refused QEMU pairing retains generation cleanup",
             ));
@@ -714,7 +596,7 @@ where
         request: ProductionVmNodeLaunchRequest<'_>,
         admission: ProductionVmExactNodeRestoreAdmission,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        if self.failed_launch.is_some() {
+        if self.retained_node.is_some() {
             return Err(launcher_message(
                 "a refused QEMU pairing retains generation cleanup",
             ));
@@ -768,15 +650,31 @@ where
         if self.parent_park_phase.is_some() {
             return Err(LifecycleApiError::ParentParkHeld);
         }
-        if let Some(failed) = self.failed_launch.as_mut() {
+        if let Some(failed) = self.retained_node.as_mut() {
             failed.finish()?;
         }
-        self.failed_launch = None;
+        self.retained_node = None;
+        // The exact observation registrar/configuration aliases remain until
+        // its real node and generation lease have physically closed.
+        #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+        {
+            if self.native_observation_config.take().is_some() {
+                self.park_drain_registration = None;
+            }
+        }
         self.transfer_image_helper_debt();
         self.owner.finish()?;
         self.fork_target_factory = None;
         Ok(())
     }
+}
+
+/// Moves the existing fresh-generation owners between two private launch cuts.
+struct PreparedFreshGeneration {
+    lease: QemuAttemptGenerationLease,
+    directory: QemuPreparedRunDirectory,
+    node: QemuNode,
+    contract: QemuChildProcessContract,
 }
 
 /// Shared wait authority survives generation-lease abandonment.

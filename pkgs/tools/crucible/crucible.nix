@@ -27,6 +27,7 @@
   openssh,
   buildPackages,
   controllerOnly ? false,
+  privateNativeObservation ? false,
   pagingQualificationReceipt ? null,
 }: let
   version = "0.1.0";
@@ -386,7 +387,7 @@
         --offline \
         -j$NIX_BUILD_CORES \
         -p crucible-cli \
-        --bin crucible
+        --bin crucible ${lib.optionalString privateNativeObservation "--features crucible-cli/private-native-observation"}
       cargo build \
         --release \
         --frozen \

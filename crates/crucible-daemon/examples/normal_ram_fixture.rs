@@ -28,6 +28,12 @@ use crucible_campaign::{
 };
 use crucible_daemon::{encode_crucible_configuration_artifact, encode_crucible_scenario_artifact};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeAssertionProgram {
+    FourVcpu,
+    BlockRecovery,
+}
+
 fn main() -> ExitCode {
     match build() {
         Ok(()) => ExitCode::SUCCESS,
@@ -40,9 +46,20 @@ fn main() -> ExitCode {
 
 fn build() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let [output, kernel, root, initrd, qemu, plugin] = arguments.as_slice() else {
-        return Err("expected output, kernel, root image, initrd, QEMU and plugin".into());
+    let (arguments, flight) = match arguments.as_slice() {
+        [output, kernel, root, initrd, qemu, plugin] =>
+            ([output, kernel, root, initrd, qemu, plugin], None),
+        [output, kernel, root, initrd, qemu, plugin, kind] => {
+            let flight = match kind.as_str() {
+                "four-vcpu" => Some(NativeAssertionProgram::FourVcpu),
+                "block-recovery" => Some(NativeAssertionProgram::BlockRecovery),
+                _ => return Err("unknown native plugin assertion program".into()),
+            };
+            ([output, kernel, root, initrd, qemu, plugin], flight)
+        }
+        _ => return Err("expected output, kernel, root image, initrd, QEMU, plugin and optional native assertion program".into()),
     };
+    let [output, kernel, root, initrd, qemu, plugin] = arguments;
     let output = Path::new(output);
     if !output.is_absolute() || output.exists() {
         return Err("output must be a new absolute directory".into());
@@ -53,19 +70,39 @@ fn build() -> Result<(), Box<dyn Error>> {
     )?;
     let world = World::from_nodes(vec![WorldNode {
         id: NodeId {
-            name: String::from("memory"),
+            name: String::from(match flight {
+                None => "memory",
+                Some(NativeAssertionProgram::FourVcpu) => "plugin-flight-node",
+                Some(NativeAssertionProgram::BlockRecovery) => "block-recovery-hot-fork-node",
+            }),
         },
         arch: VmArchitecture::X86_64,
-        memory_mib: 64,
+        memory_mib: if flight.is_some() { 128 } else { 64 },
         cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 1 },
         },
         white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: 1,
-        kernel: Some(reference(kernel)?),
-        root_image: Some(reference(root)?),
-        initrd: Some(reference(initrd)?),
+        smp_vcpus: if flight == Some(NativeAssertionProgram::FourVcpu) {
+            4
+        } else {
+            1
+        },
+        kernel: if flight.is_some() {
+            None
+        } else {
+            Some(reference(kernel)?)
+        },
+        root_image: if flight.is_some() {
+            None
+        } else {
+            Some(reference(root)?)
+        },
+        initrd: if flight.is_some() {
+            None
+        } else {
+            Some(reference(initrd)?)
+        },
     }])?;
     // A declared future terminal event keeps the semantic plan unfinished
     // while the external caller controls the actual live incarnation. The
@@ -75,7 +112,11 @@ fn build() -> Result<(), Box<dyn Error>> {
         .when(Condition::at(VirtualTime { ticks: 120_000_000 }))
         .action(Action::pass())
         .build_for_world(&world)?;
-    let plan = Plan::from_event_graph_for_world(&world, graph)?;
+    let plan = if flight.is_some() {
+        Plan::empty()
+    } else {
+        Plan::from_event_graph_for_world(&world, graph)?
+    };
     let scenario =
         ScenarioDefForm::from_components(&world, &plan, &Properties::empty(), Seed::from_u64(42))?;
     let schedule = Schedule::empty();

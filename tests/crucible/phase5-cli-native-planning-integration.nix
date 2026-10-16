@@ -48,11 +48,7 @@
   nativePlugin = pkgs.crucible-qemu-plugin;
   rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
   # The native planning tests select the reviewed idle Linux workload.
-  production = import ./phase7-production-rust-plugin-flight.nix {
-    inherit pkgs lib;
-    attrPath = "checks.crucible.phase7.productionRustPluginFlight";
-  };
-  guest = production.passthru.idleGuest;
+  guest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   quotaInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
   nativeCliTests = import ../../pkgs/tools/crucible/_native-cli-tests.nix {inherit lib;};
   executions = nativeCliTests.byGate.planning;

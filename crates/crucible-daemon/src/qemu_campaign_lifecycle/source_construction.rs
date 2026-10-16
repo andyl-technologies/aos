@@ -5,7 +5,11 @@ use crate::ProductionVmNodeLauncher;
 use crate::qemu_lifecycle_launcher::{
     PendingSourceConstruction, UnbornSourceConstruction, retain_source_owner,
 };
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+mod native_observation;
 mod retained;
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+pub(crate) use native_observation::NativeObservationOwner;
 pub(super) use retained::RetainedSourceInstall;
 
 /// Preserves metadata refusal and the native boundary's independent result.
@@ -175,17 +179,16 @@ where
         }
     }
 
-    pub(super) fn with_attempt_launcher<T>(
+    fn prepare_attempt_launcher(
         &mut self,
         context: &AttemptExecutionContext,
         source: &ScenarioDefForm,
-        _maximum_nodes: usize,
         config: &ProductionVmLifecycleConfig,
         park_drain_registration: ConfiguredParkDrainRegistration,
-        build: impl FnOnce(
-            Box<dyn ProductionVmNodeLauncher>,
-        ) -> Result<T, crate::ProductionVmConstructionFailure>,
-    ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
+    ) -> Result<
+        Box<QemuAttemptProductionVmNodeLauncher<R::Guard, R>>,
+        QemuAttemptProductionVmLifecycleError,
+    > {
         self.require_install_vacancy()?;
         // All fallible ordinary copies precede native begin. The selected
         // generation storage itself is paid and built inside before_effects.
@@ -271,6 +274,22 @@ where
                 context.cancellation().clone(),
             );
         }
+        Ok(launcher)
+    }
+
+    pub(super) fn with_attempt_launcher<T>(
+        &mut self,
+        context: &AttemptExecutionContext,
+        source: &ScenarioDefForm,
+        _maximum_nodes: usize,
+        config: &ProductionVmLifecycleConfig,
+        park_drain_registration: ConfiguredParkDrainRegistration,
+        build: impl FnOnce(
+            Box<dyn ProductionVmNodeLauncher>,
+        ) -> Result<T, crate::ProductionVmConstructionFailure>,
+    ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
+        let launcher =
+            self.prepare_attempt_launcher(context, source, config, park_drain_registration)?;
         match build(launcher) {
             Ok(lifecycle) => {
                 self.lifecycle_outstanding = true;

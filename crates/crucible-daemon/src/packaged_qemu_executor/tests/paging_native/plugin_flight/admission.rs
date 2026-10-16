@@ -327,3 +327,25 @@ impl SimulationBackend for AdmittedFlightNode {
         self.node.drain_network_outputs()
     }
 }
+
+impl crate::packaged_qemu_executor::native_plugin_flight::admission::FlightAdmission
+    for AdmittedFlightFactory<'_>
+{
+    fn begin(
+        &mut self,
+        _vcpus: u32,
+        _memory: u64,
+        _disk: u64,
+    ) -> Result<
+        crate::packaged_qemu_executor::native_plugin_flight::admission::FlightOwner<'_>,
+        Box<dyn Error>,
+    > {
+        Err(crucible_qemu::QemuVmRealizationError::ExecutorUnavailable {
+            operation: "observe production plugin flight",
+            message: String::from(
+                "the component process does not own the service Main Source factory",
+            ),
+        }
+        .into())
+    }
+}

@@ -102,7 +102,7 @@
     else ''
       schema = "crucible.campaign-process.v1"
       unit = "crucible-campaign.service"
-      executable = "${pkgs.crucible.passthru.controller}/bin/crucible"
+      executable = "${cfg.package.passthru.controller}/bin/crucible"
       memory_max_bytes = ${toString process.memoryMaxBytes}
       tasks_max = ${toString process.tasksMax}
       file_descriptors = ${toString process.fileDescriptors}
@@ -157,6 +157,12 @@ in {
       type = lib.types.str;
       default = "/run/crucible-campaign/service.sock";
       description = "Owner-only Unix socket for the local campaign service.";
+    };
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.crucible;
+      description = "Complete source-retaining Crucible suite whose controller is bound by the installed Main policy.";
     };
 
     stateDirectory = lib.mkOption {
@@ -379,7 +385,7 @@ in {
           KERNEL=="userfaultfd", GROUP="${toString executor.userfaultfdGroupId}", MODE="0660"
         '';
       };
-      environment.systemPackages = [pkgs.crucible];
+      environment.systemPackages = [cfg.package];
       environment.etc."crucible/campaign-process.toml".text = processPolicy;
       environment.etc."crucible/campaign-policy.toml".text = ''
         schema = "crucible.campaign-local-policy"
@@ -504,7 +510,7 @@ in {
           ''}
         '';
         script = ''
-          exec ${pkgs.crucible}/bin/crucible serve \
+          exec ${cfg.package}/bin/crucible serve \
             --listen ${lib.escapeShellArg cfg.listenAddress} \
             ${lib.escapeShellArgs transportArguments} \
             --campaign-socket ${lib.escapeShellArg cfg.socketPath} \

@@ -16,7 +16,7 @@ use crucible_api::host_operational::{HostOperationalError, HostResourceVector};
 use crucible_campaign::{CampaignExecutorStore, ExecutorService, SubmitAttemptDisposition};
 
 pub(super) mod admission;
-mod driver;
+use crate::packaged_qemu_executor::native_plugin_flight::driver;
 
 #[test]
 #[ignore = "requires the isolated AOS production plugin VM, actual quota and managed native RAM"]

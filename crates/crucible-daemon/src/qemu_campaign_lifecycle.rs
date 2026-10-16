@@ -75,6 +75,9 @@ mod remote_observation_resume;
 pub use remote_observation_resume::RemoteObservationResumeFactory;
 
 mod source_construction;
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+pub(crate) use source_construction::NativeObservationOwner;
+
 pub use source_construction::{SourceGenerationStorageRefusal, SourcePostInstallationRefusal};
 
 mod resume_admission;

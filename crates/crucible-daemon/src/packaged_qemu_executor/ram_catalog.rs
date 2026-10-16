@@ -13,7 +13,7 @@ use crucible_api::host_operational::HostResourceVector;
 
 pub(crate) mod provider;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "private-measurement-domain"))]
 pub(crate) use provider::CatalogEvidenceSpool;
 pub(super) use provider::GuardedCampaignStorage;
 
@@ -253,7 +253,7 @@ impl PackagedRamCatalogConfig {
     /// Refuses missing admission, an escaped directory, exhausted descriptor or
     /// metadata credit, invalid byte bounds, expired original supervision, and
     /// failed kernel quota authentication or filesystem operations.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "private-measurement-domain"))]
     pub(crate) fn create_evidence_spool(
         &self,
         directory: &Path,
@@ -275,7 +275,7 @@ impl PackagedRamCatalogConfig {
     /// # Errors
     /// Refuses missing admission, empty or exhausted credit, failed quota
     /// authentication, or expired original supervision.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "private-measurement-domain"))]
     pub(crate) fn reserve_evidence_resident(
         &self,
         bytes: u64,
@@ -438,5 +438,48 @@ mod tests {
                 .is_err()
         );
         assert!(!root.exists());
+    }
+}
+
+/// Borrows the already admitted catalog; cloning adds no containing allocation.
+#[cfg(any(test, feature = "private-measurement-domain"))]
+#[derive(Clone)]
+pub(super) struct EvidenceCatalog {
+    provider: Arc<AdmittedCatalogProvider>,
+}
+
+#[cfg(any(test, feature = "private-measurement-domain"))]
+impl PackagedRamCatalogConfig {
+    pub(super) fn evidence_catalog(&self) -> EvidenceCatalog {
+        EvidenceCatalog {
+            provider: Arc::clone(&self.provider),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "private-measurement-domain"))]
+impl EvidenceCatalog {
+    pub(super) fn reserve(
+        &self,
+        bytes: u64,
+        original: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
+        self.provider
+            .admitted
+            .get()
+            .ok_or(StoreError::Quota)?
+            .reserve_evidence_resident(bytes, original)
+    }
+
+    pub(super) fn spool(
+        &self,
+        maximum_bytes: u64,
+        original: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<CatalogEvidenceSpool, StoreError> {
+        self.provider
+            .admitted
+            .get()
+            .ok_or(StoreError::Quota)?
+            .create_root_evidence_spool(maximum_bytes, original)
     }
 }

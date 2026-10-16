@@ -31,7 +31,7 @@ struct PartitionStep {
 }
 
 pub(super) fn run(
-    node: &mut QemuNode,
+    node: &mut ObservedNativeNode<'_>,
     wake_tick: u64,
     step_ps: u64,
 ) -> Result<PartitionProbe, Box<dyn Error>> {

@@ -723,3 +723,8 @@ pub use vm_lifecycle::{
     ProductionVmParentParkStageFailure, ProductionVmParentParkStageOwnerCause,
     ProductionVmParentParkStageReborrowCause,
 };
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use packaged_qemu_executor::{
+    NativePluginFlightInputError, NativePluginFlightInputs, NativePluginFlightKind,
+};

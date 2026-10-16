@@ -1,5 +1,7 @@
 //! Focused contracts for production-flight evidence and comparison.
 
+#![cfg(test)]
+
 use super::*;
 use crucible::{ContentHash, MarkerId};
 use crucible_device::block::BlockTransportRequestIds;

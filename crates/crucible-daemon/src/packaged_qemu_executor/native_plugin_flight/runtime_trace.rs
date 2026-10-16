@@ -4,8 +4,10 @@ use crate::packaged_qemu_executor::ram_catalog::CatalogEvidenceSpool;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::error::Error;
+#[cfg(test)]
+use std::io::Cursor;
 use std::io::{BufRead, BufReader, Seek, Write};
-use std::io::{Cursor, Read, SeekFrom};
+use std::io::{Read, SeekFrom};
 
 use crucible_qemu::{QemuRuntimeDeterminismTraceRecord, QemuRuntimeDeterminismTraceValidator};
 use sha2::{Digest, Sha256};
@@ -267,6 +269,7 @@ fn read_bounded_line(reader: &mut dyn BufRead, line: &mut Vec<u8>) -> Result<boo
 /// Owns either the admitted native spool or an explicitly in-memory codec fixture.
 enum TraceSpool {
     Catalog(CatalogEvidenceSpool),
+    #[cfg(test)]
     Fixture(Cursor<Vec<u8>>),
     Closed,
 }
@@ -281,6 +284,7 @@ impl Read for TraceSpool {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         match self {
             Self::Catalog(spool) => spool.read(bytes),
+            #[cfg(test)]
             Self::Fixture(spool) => spool.read(bytes),
             Self::Closed => Err(std::io::Error::other("trace spool is closed")),
         }
@@ -291,6 +295,7 @@ impl Write for TraceSpool {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         match self {
             Self::Catalog(spool) => spool.write(bytes),
+            #[cfg(test)]
             Self::Fixture(spool) => spool.write(bytes),
             Self::Closed => Err(std::io::Error::other("trace spool is closed")),
         }
@@ -299,6 +304,7 @@ impl Write for TraceSpool {
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             Self::Catalog(spool) => spool.flush(),
+            #[cfg(test)]
             Self::Fixture(spool) => spool.flush(),
             Self::Closed => Err(std::io::Error::other("trace spool is closed")),
         }
@@ -309,6 +315,7 @@ impl Seek for TraceSpool {
     fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
         match self {
             Self::Catalog(spool) => spool.seek(position),
+            #[cfg(test)]
             Self::Fixture(spool) => spool.seek(position),
             Self::Closed => Err(std::io::Error::other("trace spool is closed")),
         }
@@ -320,11 +327,14 @@ impl RuntimeTraceSummary {
         let spool = std::mem::replace(&mut *self.normalized_spool.borrow_mut(), TraceSpool::Closed);
         match spool {
             TraceSpool::Catalog(spool) => spool.finish().map_err(Into::into),
-            TraceSpool::Fixture(_) | TraceSpool::Closed => Ok(()),
+            #[cfg(test)]
+            TraceSpool::Fixture(_) => Ok(()),
+            TraceSpool::Closed => Ok(()),
         }
     }
 }
 
+#[cfg(test)]
 pub(super) fn summarize_fixture(
     reader: &mut dyn BufRead,
     raw_boundary: u64,
