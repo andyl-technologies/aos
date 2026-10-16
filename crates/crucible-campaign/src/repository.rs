@@ -16,7 +16,6 @@ use crucible_cas::content_store::{
 };
 use thiserror::Error;
 
-use crate::CampaignViewId;
 use crate::{
     ActiveAttemptPolicy, AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId,
     AttemptAdmissionRole, AttemptId, AttemptRetentionPolicyBasis, AttemptStart, AttemptStartMode,
@@ -78,13 +77,16 @@ const MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH: usize = 4_000_000;
 const MAX_FEEDBACK_FRONTIER_UPDATES: usize = 65_536;
 // One fixed-depth trie insertion rewrites at most one node per digest nibble.
 const MERKLE_UPDATE_NODE_UPPER: usize = 64;
-// Graph has three fixed keys, observations six, corpus/coverage/coordination one
-// each, and strict accounting three. Every discovered choice adds two graph keys
-// plus one nested choice-index insertion. Every credited branch point adds one
+// Graph has three fixed keys, observations seven (including the choice-source
+// anchor), corpus/coverage/coordination one each, and strict accounting three.
+// Every discovered choice adds two graph keys plus one nested choice-index and
+// one nested choice-source insertion. Every credited branch point adds one
 // nested credit insertion, one outer observation-index update, and one immutable
 // credit record.
-const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 15;
-const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((3 * crate::observation::MAX_DISCOVERED_CHOICES
+const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 16;
+const OBSERVATION_PER_CHOICE_OWNER_UPSERTS: usize = 4;
+const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((OBSERVATION_PER_CHOICE_OWNER_UPSERTS
+    * crate::observation::MAX_DISCOVERED_CHOICES
     + OBSERVATION_FIXED_OWNER_UPSERTS)
     * MERKLE_UPDATE_NODE_UPPER)
     + (crate::exploration::MAX_BRANCH_PATH_EDGES * ((2 * MERKLE_UPDATE_NODE_UPPER) + 1))
@@ -556,10 +558,6 @@ pub struct CampaignRepository {
     // validated parent through one of the repository's exact owner mutations.
     // The map is optional bounded acceleration state, never campaign truth.
     validated_heads: Mutex<BTreeMap<ContentId, ValidationCheckpoint>>,
-    // Beam projection is immutable for one exact semantic view and policy.
-    // Retaining only the latest entry bounds memory while allowing planner
-    // pages and response preflight to share the expensive root scans.
-    beam_projection_cache: Mutex<Option<projection::BeamProjectionCacheEntry>>,
     planner_authority: Option<PlannerAuthorityKey>,
     debugger_authority: Option<DebuggerAuthorityKey>,
 }
@@ -616,6 +614,7 @@ mod acceptance;
 mod ancestry;
 mod attempt_closure;
 mod budget;
+mod choice_source_index;
 mod closure;
 #[cfg(feature = "test-support")]
 pub use closure::CampaignValidationCheckpointMetrics;
@@ -656,6 +655,7 @@ mod transfer;
 
 use attempt_closure::non_modeled_attempt_key;
 pub use budget::CampaignBudgetProjection;
+use choice_source_index::choice_source_index_anchor_key;
 use finding::finding_occurrence_key;
 pub(crate) use finding::{finding_candidate_occurrence_key, finding_signature_key};
 pub use finding_candidate::{
@@ -830,7 +830,7 @@ fn observation_successor_growth(
     frontier_update_count: usize,
 ) -> Result<usize, CampaignRepositoryError> {
     let owner_upserts = choice_count
-        .checked_mul(3)
+        .checked_mul(OBSERVATION_PER_CHOICE_OWNER_UPSERTS)
         .and_then(|choices| choices.checked_add(OBSERVATION_FIXED_OWNER_UPSERTS))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
     let growth = owner_upserts

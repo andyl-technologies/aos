@@ -589,6 +589,17 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     );
     assert_eq!(scan_index[3], "merkle-node");
     owned_campaign_schemas.insert(scan_index_schema);
+    let choice_source_schema = "crucible.campaign.observation-choice-source-index";
+    let choice_source = rows
+        .get(choice_source_schema)
+        .unwrap_or_else(|| panic!("missing observation choice-source index schema"));
+    assert_eq!(choice_source[1], "1");
+    assert_eq!(
+        choice_source[2],
+        "crucible-campaign::repository::choice_source_index"
+    );
+    assert_eq!(choice_source[3], "merkle-node");
+    owned_campaign_schemas.insert(choice_source_schema);
     for (schema, version, owner, kind) in [
         (
             "crucible.campaign.query-campaign-request-attempts-request",

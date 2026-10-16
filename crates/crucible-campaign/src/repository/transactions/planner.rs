@@ -540,7 +540,9 @@ impl CampaignRepository {
                 .capabilities()
                 .contains(crate::CANONICAL_FRONTIER_SEARCH_ORDER_CAPABILITY);
             let beam_projection = use_beam
-                .then(|| self.project_beam_planner(&snapshot, &policy))
+                .then(|| {
+                    self.project_beam_page(&snapshot, &policy, invocation.scan_page().positions())
+                })
                 .transpose()?;
             let budget = engine
                 .capabilities()

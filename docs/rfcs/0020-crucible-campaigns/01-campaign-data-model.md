@@ -1046,6 +1046,19 @@ position only on the final allowed proposal ordinal. Historical membership
 remains authenticated in exploration. Cold validation recomputes every delta,
 so a lineage cannot omit an unspent request or restore a spent one.
 
+New genesis also anchors one canonical empty
+`crucible.campaign.observation-choice-source-index.v1` map under the observation
+root. Each key is `H("crucible.campaign.observation-choice-source.v1",
+parent_artifact || opportunity)` for a choice discovered by a canonical
+observation whose child artifact is `parent_artifact`; each value is the content
+ID of the earliest such observation in ascending `(AdmissionOrdinal,
+ObservationId)` order. Streaming completions may arrive out of admission order,
+so observation publication compares against the current slot and lowers it
+rather than keeping the first arrival. Determinism-conflict observations never
+change the index. Cold validation recomputes the same read-compare-upsert from
+the parent snapshot. Snapshots without this anchor are rejected before ordinary
+runtime admission.
+
 Planner page construction reads only the requested ordered window plus one
 lookahead position. Invocation closure validation reuses exact roots already
 authenticated by the current head, checks all newly supplied basis objects and

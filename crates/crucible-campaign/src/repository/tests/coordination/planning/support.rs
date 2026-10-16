@@ -182,7 +182,7 @@ pub(super) fn exercise_beam_out_of_order_completion(
             .read_snapshot(second_requested.new_snapshot.content_id())
             .expect("load partially closed streaming cohort");
         let projection = repository
-            .project_beam_planner(&snapshot, &policy)
+            .project_beam_frontier(&snapshot, &policy)
             .expect("project partially closed streaming cohort");
         let second_position = PlanningScanPosition::new(
             second_continuation.branch_point(),
@@ -217,7 +217,7 @@ pub(super) fn exercise_beam_out_of_order_completion(
             .read_snapshot(first_requested.new_snapshot.content_id())
             .expect("load partially closed strict cohort");
         let projection = repository
-            .project_beam_planner(&snapshot, &policy)
+            .project_beam_frontier(&snapshot, &policy)
             .expect("project partially closed strict cohort");
         let first_position = PlanningScanPosition::new(
             first_continuation.branch_point(),
@@ -268,7 +268,7 @@ pub(super) fn exercise_beam_out_of_order_completion(
         .read_snapshot(settled_snapshot.content_id())
         .expect("load settled Beam closure cohort");
     let projection = repository
-        .project_beam_planner(&snapshot, &policy)
+        .project_beam_frontier(&snapshot, &policy)
         .expect("project settled Beam closure cohort");
     let first_position = PlanningScanPosition::new(
         first_continuation.branch_point(),
@@ -279,7 +279,7 @@ pub(super) fn exercise_beam_out_of_order_completion(
         .read_snapshot(settled_snapshot.content_id())
         .expect("load closure cohort after restart");
     let restarted_projection = restarted
-        .project_beam_planner(&restarted_snapshot, &policy)
+        .project_beam_frontier(&restarted_snapshot, &policy)
         .expect("cold replay closure cohort");
     assert_eq!(restarted_projection.candidates, projection.candidates);
     assert_eq!(restarted_projection.selections, projection.selections);

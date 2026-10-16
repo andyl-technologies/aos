@@ -773,8 +773,19 @@ impl CampaignRepository {
             }
         }
 
+        let observations = self.merkle.inspect_shallow(roots.observations)?;
+        if observations.entry_count() != 1 {
+            return Err(integrity("genesis-choice-source-index-root-mismatch"));
+        }
+        let choice_sources = self
+            .merkle
+            .get(roots.observations, choice_source_index_anchor_key())?
+            .ok_or_else(|| integrity("genesis-choice-source-index-root-mismatch"))?;
+        if self.merkle.inspect_shallow(choice_sources)?.entry_count() != 0 {
+            return Err(integrity("genesis-choice-source-index-root-mismatch"));
+        }
+
         let empty_roots = [
-            roots.observations,
             roots.coverage,
             roots.findings,
             roots.pins,
@@ -818,6 +829,11 @@ impl CampaignRepository {
                 roots.graph,
                 choice_index_anchor_key(),
                 "current-campaign-choice-index-is-missing",
+            ),
+            (
+                roots.observations,
+                choice_source_index_anchor_key(),
+                "current-campaign-choice-source-index-is-missing",
             ),
             (
                 roots.exploration,

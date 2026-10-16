@@ -28,7 +28,6 @@ impl CampaignRepository {
             merkle,
             mutation_lock: Mutex::new(()),
             validated_heads: Mutex::new(BTreeMap::new()),
-            beam_projection_cache: Mutex::new(None),
             planner_authority: None,
             debugger_authority: None,
         }
@@ -541,6 +540,9 @@ impl CampaignRepository {
             map_key_hash("corpus.configuration", lineage.genesis().as_hash()),
             lineage.genesis_content().content_id(),
         )?;
+        let observations = self
+            .merkle
+            .insert(empty, choice_source_index_anchor_key(), empty)?;
         let exploration = self
             .merkle
             .insert(empty, frontier_index_anchor_key(), frontier_index)?;
@@ -563,7 +565,7 @@ impl CampaignRepository {
             crate::CampaignRoots {
                 graph: graph.content_id(),
                 exploration: exploration.content_id(),
-                observations: empty,
+                observations: observations.content_id(),
                 corpus: corpus.content_id(),
                 coverage: empty,
                 findings: empty,

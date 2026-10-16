@@ -245,7 +245,7 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
         .read_snapshot(filtered_requested.new_snapshot.content_id())
         .expect("load settled Beam snapshot");
     let projection = repository
-        .project_beam_planner(&snapshot, &policy)
+        .project_beam_frontier(&snapshot, &policy)
         .expect("project Beam cohort");
     let selected_position = PlanningScanPosition::new(
         selected_continuation.branch_point(),
@@ -276,16 +276,23 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
         RankingDisposition::Filtered(rejections)
             if rejections.contains(&ObjectiveRejection::MissingMeasurement(metric.to_owned()))
     ));
-    let cached_projection = repository
-        .project_beam_planner(&snapshot, &policy)
-        .expect("reuse exact-view Beam projection");
-    assert!(Arc::ptr_eq(&projection, &cached_projection));
+    for position in [selected_position, filtered_position] {
+        let page = repository
+            .project_beam_page(&snapshot, &policy, &[position])
+            .expect("project single-position Beam page");
+        assert_eq!(
+            page.candidates.get(&position),
+            projection.candidates.get(&position),
+            "a page-scoped candidate must equal its whole-frontier projection"
+        );
+        assert_eq!(page.selections, projection.selections);
+    }
     let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     let restarted_snapshot = restarted
         .read_snapshot(filtered_requested.new_snapshot.content_id())
         .expect("load Beam snapshot after repository restart");
     let restarted_projection = restarted
-        .project_beam_planner(&restarted_snapshot, &policy)
+        .project_beam_frontier(&restarted_snapshot, &policy)
         .expect("cold-replay Beam cohort after restart");
     assert_eq!(restarted_projection.candidates, projection.candidates);
     assert_eq!(restarted_projection.selections, projection.selections);
@@ -396,7 +403,7 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
 }
 
 #[test]
-fn beam_projection_failure_discards_partial_cache_state() {
+fn beam_page_without_a_source_observation_fails_closed_without_retained_state() {
     let (repository, lineage, base_policy) = fixture();
     let policy = CampaignPolicy::new(
         CampaignPolicy::identity(
@@ -418,24 +425,24 @@ fn beam_projection_failure_discards_partial_cache_state() {
             base_policy.admits_scenario_defaults(),
         ),
     )
-    .expect("Beam cache failure policy");
-    let name = "beam-cache-failure";
+    .expect("Beam missing-source policy");
+    let name = "beam-missing-source";
     let created = repository
         .create_funded(name, &lineage, &policy, &BTreeMap::new())
-        .expect("create Beam cache campaign");
+        .expect("create Beam missing-source campaign");
     let initial_snapshot = repository
         .read_snapshot(created.snapshot_id().content_id())
         .expect("load initial Beam snapshot");
     let initial = repository
-        .project_beam_planner(&initial_snapshot, &policy)
-        .expect("warm empty Beam projection");
+        .project_beam_frontier(&initial_snapshot, &policy)
+        .expect("project empty Beam frontier");
 
     let request = branch_request(
         &repository,
         &lineage,
         lineage.genesis_content(),
         lineage.genesis(),
-        "beam-cache-missing-source",
+        "beam-missing-source-request",
     );
     let requested = repository
         .submit_known_branch_request(name, created.snapshot_id(), &request)
@@ -444,23 +451,19 @@ fn beam_projection_failure_discards_partial_cache_state() {
         .read_snapshot(requested.new_snapshot.content_id())
         .expect("load source-less frontier snapshot");
     assert!(matches!(
-        repository.project_beam_planner(&invalid_snapshot, &policy),
+        repository.project_beam_frontier(&invalid_snapshot, &policy),
         Err(CampaignRepositoryError::Integrity {
             reason: "beam-frontier-source-observation-is-missing"
         })
     ));
-    assert!(
-        repository
-            .beam_projection_cache
-            .lock()
-            .expect("Beam projection cache")
-            .is_none(),
-        "a failed incremental projection must discard partial cache state"
-    );
+    let unrelated_page = repository
+        .project_beam_page(&invalid_snapshot, &policy, &[])
+        .expect("a page without the source-less position still projects");
+    assert!(unrelated_page.candidates.is_empty());
 
     let recovered = repository
-        .project_beam_planner(&initial_snapshot, &policy)
-        .expect("cold retry after failed incremental projection");
+        .project_beam_frontier(&initial_snapshot, &policy)
+        .expect("retry an earlier snapshot after a failed projection");
     assert_eq!(recovered.candidates, initial.candidates);
     assert_eq!(recovered.selections, initial.selections);
 }

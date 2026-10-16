@@ -820,6 +820,15 @@ survivor-selection record is at most 32 MiB. One decision admits at most 128 MiB
 of aggregate canonical evaluation and explanation bodies, charged while
 records are loaded or built.
 
+A Beam survivor decision belongs to one closed cohort: the modeled observations
+of one producing request, or of one standalone attempt. Beam membership is
+projected per served planner page from snapshot indexes; no owner retains
+campaign-wide decoded observations. Novelty scoring may visit at most
+4,000,000 coverage identities and retain at most 256 MiB of representative
+coverage projections per cohort. One page's projected candidates and survivor
+bundles total at most 256 MiB. Each bound is charged per decision or per page,
+never across the campaign's history.
+
 A survivor decision is a content-addressed fact naming the exact policy,
 selection rule, every considered objective evaluation, selected configuration
 set, and one explanation per considered configuration. Explanations distinguish

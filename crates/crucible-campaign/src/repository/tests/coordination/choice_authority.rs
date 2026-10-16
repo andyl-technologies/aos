@@ -344,8 +344,8 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
             &debugger_bytes,
         )
         .to_hex(),
-        // The v3 active scan-index anchor changes the authenticated snapshot precondition.
-        "2fec8c39c706f7be694e061175b30cb714fd48f72d5926f3e665e808a6c07151",
+        // The genesis choice-source index anchor changes the authenticated snapshot precondition.
+        "2e33842203061dde44a069148fcc44d6ff02cc035ddc37d4ef5e39196b3dc3b5",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -457,8 +457,8 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     assert_eq!(
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
-        // The v3 active scan-index anchor changes the authenticated snapshot precondition.
-        "1d7d211325d9dc315b60e5712bd957727d6cfa4fd89984acfbddb408801caa00",
+        // The genesis choice-source index anchor changes the authenticated snapshot precondition.
+        "f4b4fb067f5112ad43e141f8fd1a1dc2ffacd47831da804cec3f37c5f27cfd03",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");

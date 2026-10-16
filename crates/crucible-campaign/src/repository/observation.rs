@@ -14,6 +14,7 @@ struct ObservationProjection {
     )>,
     graph: BTreeMap<CampaignHash, ContentId>,
     choice_index: BTreeMap<CampaignHash, ContentId>,
+    choice_sources: BTreeMap<CampaignHash, ContentId>,
     exploration: BTreeMap<CampaignHash, ContentId>,
     observations: BTreeMap<CampaignHash, ContentId>,
     corpus: BTreeMap<CampaignHash, ContentId>,
@@ -248,6 +249,21 @@ impl CampaignRepository {
                 return Err(integrity("observation-choice-index-publication-mismatch"));
             }
         }
+        if !projection.choice_sources.is_empty() {
+            let prior_choice_sources = self.choice_source_index(roots.observations)?;
+            let published_choice_sources =
+                self.insert_upserts(prior_choice_sources, &projection.choice_sources)?;
+            if projection
+                .observations
+                .get(&choice_source_index_anchor_key())
+                .copied()
+                != Some(published_choice_sources)
+            {
+                return Err(integrity(
+                    "observation-choice-source-index-publication-mismatch",
+                ));
+            }
+        }
         for credit in &projection.credits {
             let anchor = branch_credit_index_key(credit.branch_point());
             let prior_credit_index = self
@@ -453,6 +469,7 @@ impl CampaignRepository {
                 frontier_updates: Vec::new(),
                 graph: BTreeMap::new(),
                 choice_index: BTreeMap::new(),
+                choice_sources: BTreeMap::new(),
                 exploration: BTreeMap::new(),
                 observations: BTreeMap::from([(
                     observation_conflict_key(observation.attempt(), observation_id),
@@ -608,6 +625,25 @@ impl CampaignRepository {
                 )?,
             );
         }
+
+        // The anchor is required for every current snapshot, even when this
+        // observation discovers nothing, so a lineage cannot drop it silently.
+        let choice_source_index = self.choice_source_index(roots.observations)?;
+        let choice_source_upserts = self.choice_source_upserts(
+            roots.accounting,
+            choice_source_index,
+            observation_content,
+            observation,
+            ordinal,
+        )?;
+        if !choice_source_upserts.is_empty() {
+            observations.insert(
+                choice_source_index_anchor_key(),
+                self.merkle
+                    .root_after_upserts(choice_source_index, &choice_source_upserts)?,
+            );
+        }
+
         let coverage = BTreeMap::from([(
             map_key_content("coverage.projection", observation.coverage().content_id()),
             observation.coverage().content_id(),
@@ -694,6 +730,7 @@ impl CampaignRepository {
             frontier_updates,
             graph,
             choice_index: choice_index_upserts,
+            choice_sources: choice_source_upserts,
             exploration,
             observations,
             corpus,

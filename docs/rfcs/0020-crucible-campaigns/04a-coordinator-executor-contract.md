@@ -1463,6 +1463,19 @@ lookahead; current-head authentication supplies trusted roots for reused
 invocation dependencies. Basis objects require closure authentication, and the global closure bound is
 preserved. Roots lacking the scan index fail closed.
 
+Beam membership is projected per served page from snapshot indexes; no owner
+retains campaign-wide decoded observations. For each `Ready` page position the
+owner reads the earliest canonical discovering observation from the
+observation-root choice-source index (RFC 01), then enumerates that
+observation's cohort: the producing request's dense proposal ordinals, their
+proposal admissions, and `observations.attempt` for a request barrier, or the
+single attempt for a standalone barrier. One walk yields both modeled members
+and closure counts, and the walk fails closed when an attempt's execution basis
+differs from its proposal admission. A settled cohort decodes only its own
+members' observations, coverage projections, and evaluations. Request preflight
+and owner validation recompute the same page, so a candidate is identical in
+every page that contains its position.
+
 Bounded model-resolved finite masses and modeled generated sources are retained
 in the sole current branch-request schema v10. Their model and generator IDs are
 exact-checked against the opportunity. The

@@ -12,7 +12,8 @@ mod beam;
 mod branch;
 mod candidate_generation;
 
-pub(super) use beam::BeamProjectionCacheEntry;
+#[cfg(test)]
+pub(super) use beam::BeamPageWork;
 pub(super) use candidate_generation::*;
 
 const PROJECTION_SCAN_PAGE_ITEMS: usize = 10_000;

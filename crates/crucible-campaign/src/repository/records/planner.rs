@@ -239,7 +239,13 @@ impl CampaignRepository {
             .engine()
             .capabilities()
             .contains(crate::CANONICAL_BEAM_SURVIVORS_CAPABILITY)
-            .then(|| self.project_beam_planner(&snapshot, request.policy()))
+            .then(|| {
+                self.project_beam_page(
+                    &snapshot,
+                    request.policy(),
+                    request.invocation().scan_page().positions(),
+                )
+            })
             .transpose()?;
         let budget_ledger = request
             .engine()
