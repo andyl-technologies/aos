@@ -55,7 +55,10 @@
   # APR authenticates every output of the evaluated source build, including
   # outputs that are not separate published packages. Keep them registered in
   # the fixture store alongside their recipes and package metadata.
-  retainArtifact = artifact: [artifact (builtins.unsafeDiscardOutputDependency artifact.drvPath)];
+  # The closure exporter includes outputs of recipe dependencies. Keep the deep
+  # dependency context so Nix realizes them before exporting the fixture store,
+  # including when historical compiler outputs have left the local cache.
+  retainArtifact = artifact: [artifact artifact.drvPath];
   packageArtifacts = import ../../lib/packages/artifacts.nix {};
   selectedPackages = builtins.attrValues publicationPackages;
   # Deployment modules resolve provider packages through the authenticated
