@@ -116,6 +116,25 @@ impl NativeRecoveryInspection {
         &mut self.candidates
     }
 
+    /// Transfers genuine candidates only when both namespace scans succeeded.
+    ///
+    /// The owner must preflight every candidate issue and check actual context
+    /// before extraction, then retain its final exhaustive second report.
+    /// Extraction performs no currentness check, clears no candidate issue and
+    /// grants no lifecycle, completed-recovery or serving authority.
+    ///
+    /// # Errors
+    /// Returns the entire original report, including context, resources and
+    /// typed failures, if publisher inventory or shared namespace scanning failed.
+    pub(in crate::host_cache) fn try_into_candidates(
+        self,
+    ) -> Result<Vec<NativeRecoveryCandidate>, Box<Self>> {
+        if self.inventory_failure.is_some() || self.namespace_failure.is_some() {
+            return Err(Box::new(self));
+        }
+        Ok(self.candidates)
+    }
+
     /// Returns publisher key occurrences counted before deduplication.
     pub fn publisher_entries(&self) -> usize {
         self.publisher_entries
