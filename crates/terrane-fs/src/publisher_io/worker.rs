@@ -13,6 +13,11 @@ use terrane::store::TokioLocalFs;
 use tokio::sync::{mpsc, oneshot};
 
 use super::NativePublisher;
+use super::bodies::BodyIo;
+use terrane_core::chunking::ChunkProfile;
+
+#[path = "inventory.rs"]
+mod inventory;
 
 #[path = "owned_commands.rs"]
 mod owned_commands;
@@ -87,7 +92,11 @@ enum Command {
     },
 }
 
+#[path = "binding_repair.rs"]
+mod binding_repair;
+
 struct WorkerState {
+    repair: binding_repair::RetainedBinding,
     inner: FsPublicationState<TokioLocalFs>,
     #[cfg(test)]
     before_record: Option<WorkerGate>,
@@ -96,6 +105,8 @@ struct WorkerState {
 #[async_trait::async_trait]
 impl PublicationState for WorkerState {
     async fn binding(&self, claim: &PublicationClaim) -> io::Result<Option<VerityBinding>> {
+        self.repair
+            .capture(&self.inner.binding_record_path(claim))?;
         self.inner.binding(claim).await
     }
 
@@ -111,17 +122,21 @@ impl PublicationState for WorkerState {
 
         self.inner.record(claim, binding).await
     }
+
+    fn forget_quarantined(&mut self, claim: &PublicationClaim) -> io::Result<()> {
+        self.repair.remove(&self.inner.binding_record_path(claim))
+    }
 }
 
 #[cfg(test)]
-struct WorkerGate {
+pub(super) struct WorkerGate {
     arrived: std::sync::mpsc::SyncSender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
 #[cfg(test)]
 impl WorkerGate {
-    fn wait(self) -> io::Result<()> {
+    pub(super) fn wait(self) -> io::Result<()> {
         self.arrived.send(()).map_err(io::Error::other)?;
         self.release
             .into_inner()
@@ -175,6 +190,8 @@ impl NativeRetirementPolicy {
 pub struct NativePublisherConfig {
     /// The disclosure domain bound to this owner.
     pub domain: String,
+    /// The immutable configured chunk profile used to validate every claim.
+    pub profile: ChunkProfile,
     /// The configured absolute domain root containing registered directories.
     pub layout_root: PathBuf,
     /// The explicit registered wipe policy; currently only none is supported.
@@ -185,6 +202,99 @@ pub struct NativePublisherConfig {
     pub content_uid: u32,
     /// The configured shared encoded-content group.
     pub content_gid: u32,
+}
+
+/// Retains actual native directory and lock custody before startup effects.
+///
+/// Preparation performs no cleanup or content write. The value has no public
+/// constructor or native-handle conversion; startup consumes these same guards.
+/// It establishes directory custody, not complete host quota admission.
+pub struct NativePublisherPrepared {
+    config: NativePublisherConfig,
+    native: NativePublisher,
+    state_directory: PathBuf,
+    retained_state: File,
+    retained_layout: (Vec<File>, crate::host_quota::DomainProvisioningGuard),
+    body_io: BodyIo,
+    inventory: inventory::NativeInventory,
+}
+
+impl NativePublisherPrepared {
+    /// Borrows the trusted operator settings whose actual roots are retained.
+    pub fn configuration(&self) -> &NativePublisherConfig {
+        &self.config
+    }
+}
+
+impl NativePublisherConfig {
+    /// Retains checked directory and publisher exclusion without writing content.
+    ///
+    /// A service prepares every configured domain before consuming any result
+    /// with `NativePublicationWorker::start_prepared`. Root guards prevent host
+    /// provisioning changes during this interval and the complete worker lifetime.
+    ///
+    /// # Errors
+    /// Returns unsupported wipe policy, invalid domain or path, overlapping
+    /// service identity, unsafe native directory custody, incompatible filesystem,
+    /// conflicting publisher or provisioning-lock errors. No failure creates a
+    /// sealed inode or staging subdirectory.
+    pub fn prepare(self) -> io::Result<NativePublisherPrepared> {
+        if self.wipe != NativeWipePolicy::None {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native fs-verity publisher supports only explicitly configured wipe=none",
+            ));
+        }
+        terrane_core::properties::Domain::parse(&self.domain)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        if self.content_uid == rustix::process::geteuid().as_raw() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "publisher and encoded-content owners must use distinct identities",
+            ));
+        }
+        let normalized: PathBuf = self.layout_root.components().collect();
+        if !self.layout_root.is_absolute()
+            || normalized.as_os_str() != self.layout_root.as_os_str()
+            || self.layout_root.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "publisher layout must be an absolute normalized path",
+            ));
+        }
+        let retained_layout = super::native::inspect_layout(&self)?;
+        let inventory = inventory::NativeInventory::new(
+            &self,
+            retained_layout
+                .0
+                .first()
+                .ok_or_else(|| io::Error::other("missing retained layout root"))?,
+        )?;
+        let body_io = BodyIo::open(&self)?;
+        let native = NativePublisher::open_unrecovered(
+            self.domain.clone(),
+            &self.layout_root.join("sealed"),
+            &self.layout_root.join("staging"),
+            &self.layout_root.join("pending-delete"),
+        )?;
+        let state_directory = self.layout_root.join("state/publication");
+        let retained_state = super::native::open_directory(&state_directory)?;
+        Ok(NativePublisherPrepared {
+            config: self,
+            native,
+            state_directory,
+            retained_state,
+            retained_layout,
+            body_io,
+            inventory,
+        })
+    }
 }
 
 /// Submits fixed publication commands to an independently owned native worker.
@@ -209,44 +319,56 @@ impl NativePublicationWorker {
     /// Returns `Unsupported` for zero, discard or volatile policies before
     /// creating any sealed or staging inode; no policy silently becomes unlink.
     pub fn start(config: NativePublisherConfig) -> io::Result<Self> {
+        Self::start_prepared(config.prepare()?)
+    }
+
+    /// Starts an owner using the exact actual guards retained by preparation.
+    ///
+    /// Successful startup waits for real staging and embedded-state recovery.
+    /// The worker retains its root/leaf guards through every accepted operation,
+    /// including when the client drops its response waiter.
+    ///
+    /// # Errors
+    /// Returns runtime/thread creation or actual staging/state recovery errors.
+    pub fn start_prepared(prepared: NativePublisherPrepared) -> io::Result<Self> {
         #[cfg(test)]
-        let started = Self::start_thread(config, None);
+        let started = Self::start_prepared_thread(prepared, None, None);
         #[cfg(not(test))]
-        let started = Self::start_thread(config);
+        let started = Self::start_prepared_thread(prepared);
         let (worker, thread) = started?;
         drop(thread);
         Ok(worker)
     }
 
+    #[cfg(test)]
     fn start_thread(
         config: NativePublisherConfig,
-        #[cfg(test)] before_record: Option<WorkerGate>,
+        before_record: Option<WorkerGate>,
+        finish_first_unlink: Option<WorkerGate>,
     ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
-        if config.wipe != NativeWipePolicy::None {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "native fs-verity publisher supports only explicitly configured wipe=none",
-            ));
-        }
-        let retained_layout = super::native::inspect_layout(&config)?;
-        let domain = config.domain;
-        let sealed = config.layout_root.join("sealed");
-        let staging = config.layout_root.join("staging");
-        let pending = config.layout_root.join("pending-delete");
-        let state_directory = config.layout_root.join("state/publication");
+        Self::start_prepared_thread(config.prepare()?, before_record, finish_first_unlink)
+    }
 
+    fn start_prepared_thread(
+        prepared: NativePublisherPrepared,
+        #[cfg(test)] before_record: Option<WorkerGate>,
+        #[cfg(test)] finish_first_unlink: Option<WorkerGate>,
+    ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
+        let NativePublisherPrepared {
+            config,
+            mut native,
+            state_directory,
+            retained_state,
+            retained_layout,
+            body_io,
+            inventory,
+        } = prepared;
+        #[cfg(test)]
+        let body_io = body_io.with_finish_gate(finish_first_unlink);
+        let domain = config.domain;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let native = NativePublisher::open(domain.clone(), &sealed, &staging, &pending)?;
-        let retained_state = super::native::open_directory(&state_directory)?;
-        use std::os::unix::fs::PermissionsExt;
-        if retained_state.metadata()?.permissions().mode() & 0o777 != 0o700 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "publication state directory must be publisher-private mode 0700",
-            ));
-        }
         let state = FsPublicationState::new(TokioLocalFs, state_directory.clone());
         let (sender, mut receiver) = mpsc::channel(32);
         let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
@@ -259,6 +381,10 @@ impl NativePublicationWorker {
                 let _retained_state = retained_state;
                 let _retained_layout = retained_layout;
                 runtime.block_on(async {
+                    if let Err(error) = native.initialize_staging() {
+                        let _disconnected = ready_sender.send(Err(error));
+                        return;
+                    }
                     if let Err(error) = state.recover_temporary().await {
                         let _disconnected = ready_sender.send(Err(error));
                         return;
@@ -268,6 +394,7 @@ impl NativePublicationWorker {
                     }
 
                     let state = WorkerState {
+                        repair: binding_repair::RetainedBinding::new(_retained_state),
                         inner: state,
                         #[cfg(test)]
                         before_record,
@@ -278,6 +405,9 @@ impl NativePublicationWorker {
                         publisher,
                         state_directory,
                         config.retirement,
+                        body_io,
+                        config.profile,
+                        inventory,
                     );
                     while let Some(command) = receiver.recv().await {
                         match command {
@@ -287,6 +417,7 @@ impl NativePublicationWorker {
                                 response,
                             } => {
                                 let result = async {
+                                    owner.validate_claim(&claim)?;
                                     let object = owner.publisher()?.publish(&claim, source).await?;
                                     Ok(NativePublishedObject { object })
                                 }
@@ -295,6 +426,7 @@ impl NativePublicationWorker {
                             }
                             Command::Adopt { claim, response } => {
                                 let result = async {
+                                    owner.validate_claim(&claim)?;
                                     let object = owner.publisher()?.adopt(&claim).await?;
                                     Ok(NativePublishedObject { object })
                                 }

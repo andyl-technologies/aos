@@ -68,6 +68,27 @@ pub struct Listener {
     _socket_node: OwnedFd,
 }
 
+/// Retains checked socket ancestry before native startup can allocate.
+///
+/// The listener independently rechecks this ancestry at actual bind. This
+/// custody permits whole-service startup checks without creating a socket.
+///
+/// # Errors
+///
+/// Rejects invalid identities, another process identity, an invalid Unix address
+/// or any unsafe/missing ancestor directory.
+pub(crate) fn retain_listener_parent(
+    path: &Path,
+    identities: RoleIdentities,
+) -> Result<Vec<OwnedFd>, Error> {
+    identities.check()?;
+    if rustix::process::geteuid().as_raw() != identities.publish_uid {
+        return Err(Error::Denied);
+    }
+    net::SocketAddrUnix::new(path)?;
+    protect_parent(path, identities.publish_uid)
+}
+
 impl Listener {
     /// Binds the configured socket as the publisher identity.
     ///
@@ -82,11 +103,7 @@ impl Listener {
     /// Rejects role collisions, the wrong process identity, unsafe ancestors,
     /// invalid socket paths and kernel bind/listen failures.
     pub fn bind(path: &Path, identities: RoleIdentities) -> Result<Self, Error> {
-        identities.check()?;
-        if rustix::process::geteuid().as_raw() != identities.publish_uid {
-            return Err(Error::Denied);
-        }
-        let directories = protect_parent(path, identities.publish_uid)?;
+        let directories = retain_listener_parent(path, identities)?;
         let descriptor = new_socket()?;
         net::bind(&descriptor, &net::SocketAddrUnix::new(path)?)?;
         let parent = directories.last().ok_or(Error::Invalid("socket parent"))?;

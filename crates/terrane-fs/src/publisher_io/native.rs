@@ -10,6 +10,7 @@ use rustix::fs::{self, AtFlags, Mode, OFlags, ResolveFlags};
 use terrane::host::publication::{
     AdoptionFailure, PublicationClaim, PublicationKernel, VerityBinding,
 };
+#[cfg(feature = "tokio")]
 use terrane_core::identity::Descriptor;
 use terrane_core::properties::Domain;
 
@@ -167,6 +168,9 @@ pub struct StagedFile {
     reader: File,
     writer: Option<File>,
     directory: Arc<File>,
+    // A staged writer can outlive its adapter. Keep the root flock until that
+    // writer and reader close, so restart cleanup cannot race the live inode.
+    _staging_root: Arc<File>,
     name: String,
 }
 
@@ -191,7 +195,8 @@ impl Drop for StagedFile {
 pub struct NativePublisher {
     domain: String,
     sealed: File,
-    staging: Arc<File>,
+    staging_root: Arc<File>,
+    staging: Option<Arc<File>>,
     pending: File,
     quarantine: File,
     next_staging: u64,
@@ -207,6 +212,7 @@ impl NativePublisher {
     /// # Errors
     /// Returns private creation, writer close, genuine seal, sync or open errors.
     pub fn probe_seal(&mut self) -> io::Result<File> {
+        let staging = Arc::clone(self.private_staging()?);
         loop {
             self.next_staging = self
                 .next_staging
@@ -214,7 +220,7 @@ impl NativePublisher {
                 .ok_or_else(|| io::Error::other("staging sequence exhausted"))?;
             let temporary = format!("probe-{}-{}", std::process::id(), self.next_staging);
             let descriptor = match fs::openat(
-                self.staging.as_ref(),
+                staging.as_ref(),
                 temporary.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o400),
@@ -226,7 +232,7 @@ impl NativePublisher {
             let result = (|| {
                 close_writer(File::from(descriptor))?;
                 let reader = File::from(fs::openat(
-                    self.staging.as_ref(),
+                    staging.as_ref(),
                     temporary.as_str(),
                     OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                     Mode::empty(),
@@ -235,7 +241,7 @@ impl NativePublisher {
                 reader.sync_all()?;
                 Ok(reader)
             })();
-            let cleanup = fs::unlinkat(self.staging.as_ref(), temporary.as_str(), AtFlags::empty());
+            let cleanup = fs::unlinkat(staging.as_ref(), temporary.as_str(), AtFlags::empty());
             cleanup?;
             return result;
         }
@@ -251,6 +257,17 @@ impl NativePublisher {
     /// Rejects unsafe ownership, permissions, filesystem types, cross-device
     /// paths, symlinks and an already-running publisher for this directory.
     pub fn open(domain: String, sealed: &Path, staging: &Path, pending: &Path) -> io::Result<Self> {
+        let mut publisher = Self::open_unrecovered(domain, sealed, staging, pending)?;
+        publisher.initialize_staging()?;
+        Ok(publisher)
+    }
+
+    pub(super) fn open_unrecovered(
+        domain: String,
+        sealed: &Path,
+        staging: &Path,
+        pending: &Path,
+    ) -> io::Result<Self> {
         Domain::parse(&domain)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let quarantine_path = sealed
@@ -291,37 +308,89 @@ impl NativePublisher {
         fs::flock(&sealed, fs::FlockOperation::NonBlockingLockExclusive)?;
         fs::flock(&staging, fs::FlockOperation::NonBlockingLockExclusive)?;
         fs::flock(&pending, fs::FlockOperation::NonBlockingLockExclusive)?;
-        let publisher = Self {
+        Ok(Self {
             domain,
             sealed,
-            staging: Arc::new(staging),
+            staging_root: Arc::new(staging),
+            staging: None,
             pending,
             quarantine,
             next_staging: 0,
-        };
-        publisher.recover_staging()?;
-        Ok(publisher)
+        })
     }
 
-    fn recover_staging(&self) -> io::Result<()> {
-        let entries = fs::Dir::read_from(self.staging.as_ref())?;
+    fn private_staging(&self) -> io::Result<&Arc<File>> {
+        self.staging
+            .as_ref()
+            .ok_or_else(|| io::Error::other("publisher staging is not initialized"))
+    }
+
+    pub(super) fn initialize_staging(&mut self) -> io::Result<()> {
+        let entries = fs::Dir::read_from(self.staging_root.as_ref())?;
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name();
             if name.to_bytes() == b"." || name.to_bytes() == b".." {
                 continue;
             }
-            let metadata = fs::statat(self.staging.as_ref(), name, AtFlags::SYMLINK_NOFOLLOW)?;
-            if metadata.st_uid != rustix::process::geteuid().as_raw()
-                || metadata.st_mode & libc::S_IFMT == libc::S_IFDIR
+            let directory = File::from(fs::openat(
+                self.staging_root.as_ref(),
+                name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+            check_directory(&directory)?;
+            let directory_metadata = directory.metadata()?;
+            if directory_metadata.mode() & 0o777 != 0o700
+                || directory_metadata.dev() != self.staging_root.metadata()?.dev()
             {
                 return Err(invalid(
-                    "unexpected staging owner or directory during recovery",
+                    "stale publisher staging must remain private on the retained filesystem",
                 ));
             }
-            fs::unlinkat(self.staging.as_ref(), name, AtFlags::empty())?;
+            for child in fs::Dir::read_from(&directory)? {
+                let child = child?;
+                let child_name = child.file_name();
+                if child_name.to_bytes() == b"." || child_name.to_bytes() == b".." {
+                    continue;
+                }
+                let metadata = fs::statat(&directory, child_name, AtFlags::SYMLINK_NOFOLLOW)?;
+                if metadata.st_uid != rustix::process::geteuid().as_raw()
+                    || metadata.st_dev != directory_metadata.dev()
+                    || metadata.st_mode & libc::S_IFMT != libc::S_IFREG
+                {
+                    return Err(invalid("unexpected inode in publisher-private staging"));
+                }
+                fs::unlinkat(&directory, child_name, AtFlags::empty())?;
+            }
+            directory.sync_all()?;
+            fs::unlinkat(self.staging_root.as_ref(), name, AtFlags::REMOVEDIR)?;
         }
-        self.staging.sync_all()
+        self.staging_root.sync_all()?;
+
+        // The registered staging/<publisher-id>/ grammar needs no new key.
+        // Root exclusion prevents PID reuse from racing another live publisher.
+        let publisher_id = std::process::id().to_string();
+        fs::mkdirat(
+            self.staging_root.as_ref(),
+            publisher_id.as_str(),
+            Mode::from_raw_mode(0o700),
+        )?;
+        self.staging_root.sync_all()?;
+        let directory = File::from(fs::openat(
+            self.staging_root.as_ref(),
+            publisher_id.as_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        check_directory(&directory)?;
+        if directory.metadata()?.mode() & 0o777 != 0o700 {
+            return Err(invalid(
+                "publisher staging subdirectory must be private mode0700",
+            ));
+        }
+        self.staging = Some(Arc::new(directory));
+        Ok(())
     }
 
     fn check_claim(&self, claim: &PublicationClaim) -> io::Result<()> {
@@ -377,6 +446,7 @@ impl NativePublisher {
         shard.sync_all()
     }
 
+    #[cfg(feature = "tokio")]
     pub(super) fn retire_checked(
         &mut self,
         claim: &PublicationClaim,
@@ -389,6 +459,7 @@ impl NativePublisher {
 
     // This observation intentionally does not measure verity or hash bytes.
     // A pending sealed entry may be corrupt and still need safe retirement.
+    #[cfg(feature = "tokio")]
     pub(super) fn inspect_pending_sealed(&self, descriptor: &Descriptor) -> io::Result<File> {
         let name: String = descriptor
             .digest()
@@ -429,6 +500,7 @@ impl NativePublisher {
         Ok(file)
     }
 
+    #[cfg(feature = "tokio")]
     pub(super) fn restore_pending_sealed(
         &mut self,
         descriptor: &Descriptor,
@@ -453,6 +525,7 @@ impl NativePublisher {
         shard.sync_all()
     }
 
+    #[cfg(feature = "tokio")]
     pub(super) fn finish_pending_sealed(
         &mut self,
         descriptor: &Descriptor,
@@ -469,20 +542,6 @@ impl NativePublisher {
         self.pending.sync_all()
     }
 
-    fn open_pending(&self, claim: &PublicationClaim) -> io::Result<File> {
-        self.check_claim(claim)?;
-        let current = File::from(fs::openat(
-            &self.pending,
-            name(claim).as_str(),
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?);
-        if !current.metadata()?.is_file() {
-            return Err(invalid("pending body is not a regular inode"));
-        }
-        Ok(current)
-    }
-
     /// Unlinks an expired pending inode for a domain with `wipe = none`.
     ///
     /// This operation does not implement zero, discard or volatile wiping.
@@ -497,8 +556,9 @@ impl NativePublisher {
 
     /// Moves an independently rejected canonical entry to scoped quarantine.
     ///
-    /// The retained target directory must come from trusted configuration, not
-    /// a request pathname. Cache policy retains quarantine until scrub confirms
+    /// The canonical entry must still match the retained rejected inode. The
+    /// target directory comes from trusted configuration, not a request pathname.
+    /// Cache policy retains quarantine until scrub confirms
     /// another good copy or the configured retention expires.
     ///
     /// # Errors
@@ -507,6 +567,7 @@ impl NativePublisher {
     pub fn quarantine_rejected(
         &mut self,
         claim: &PublicationClaim,
+        rejected: &File,
         quarantine: &File,
     ) -> io::Result<()> {
         self.check_claim(claim)?;
@@ -519,6 +580,13 @@ impl NativePublisher {
         }
         let shard = self.shard(claim)?;
         let name = name(claim);
+        let canonical = File::from(fs::openat(
+            &shard,
+            name.as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        compare_inode(rejected, &canonical)?;
         fs::renameat_with(
             &shard,
             name.as_str(),
@@ -549,6 +617,7 @@ impl PublicationKernel for NativePublisher {
 
     fn stage(&mut self, claim: &PublicationClaim, mut source: File) -> io::Result<StagedFile> {
         self.check_claim(claim)?;
+        let staging = Arc::clone(self.private_staging()?);
         let source_metadata = source.metadata()?;
         if !source_metadata.is_file() || source_metadata.len() != claim.plaintext_size() {
             return Err(invalid(
@@ -567,7 +636,7 @@ impl PublicationKernel for NativePublisher {
                 .ok_or_else(|| io::Error::other("staging sequence exhausted"))?;
             let temporary = format!("{}-{}", std::process::id(), self.next_staging);
             let descriptor = match fs::openat(
-                self.staging.as_ref(),
+                staging.as_ref(),
                 temporary.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o400),
@@ -577,23 +646,28 @@ impl PublicationKernel for NativePublisher {
                 Err(error) => return Err(error.into()),
             };
             let mut writer = File::from(descriptor);
+            // Never write the lookahead byte: at an allocation boundary it
+            // would consume a block outside the claimed plaintext reservation.
             let copied = io::copy(
-                &mut source.take(claim.plaintext_size().saturating_add(1)),
+                &mut Read::by_ref(&mut source).take(claim.plaintext_size()),
                 &mut writer,
             );
-            if let Err(error) = copied.and_then(|copied| {
+            let verified_length = copied.and_then(|copied| {
                 if copied != claim.plaintext_size() {
-                    Err(invalid("source length changed during copy"))
-                } else {
-                    Ok(())
+                    return Err(invalid("source length changed during copy"));
                 }
-            }) {
-                let _cleanup =
-                    fs::unlinkat(self.staging.as_ref(), temporary.as_str(), AtFlags::empty());
+                let mut extra = [0];
+                if source.read(&mut extra)? != 0 {
+                    return Err(invalid("source length changed during copy"));
+                }
+                Ok(())
+            });
+            if let Err(error) = verified_length {
+                let _cleanup = fs::unlinkat(staging.as_ref(), temporary.as_str(), AtFlags::empty());
                 return Err(error);
             }
             let reader = File::from(fs::openat(
-                self.staging.as_ref(),
+                staging.as_ref(),
                 temporary.as_str(),
                 OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
@@ -601,7 +675,8 @@ impl PublicationKernel for NativePublisher {
             return Ok(StagedFile {
                 reader,
                 writer: Some(writer),
-                directory: Arc::clone(&self.staging),
+                directory: Arc::clone(&staging),
+                _staging_root: Arc::clone(&self.staging_root),
                 name: temporary,
             });
         }
@@ -686,6 +761,7 @@ impl PublicationKernel for NativePublisher {
     fn quarantine_adoption_failure(
         &mut self,
         claim: &PublicationClaim,
+        rejected: &Self::Handle,
         cause: &AdoptionFailure,
     ) -> io::Result<()> {
         let corrupt = match cause {
@@ -699,13 +775,13 @@ impl PublicationKernel for NativePublisher {
                     || error.kind() == io::ErrorKind::UnexpectedEof
                     || error.raw_os_error() == Some(libc::EIO)
             }
-            AdoptionFailure::Quarantine { .. } => false,
+            AdoptionFailure::Quarantine { .. } | AdoptionFailure::BindingRepair(_) => false,
         };
         if !corrupt {
             return Ok(());
         }
         let quarantine = self.quarantine.try_clone()?;
-        self.quarantine_rejected(claim, &quarantine)
+        self.quarantine_rejected(claim, rejected, &quarantine)
     }
 }
 

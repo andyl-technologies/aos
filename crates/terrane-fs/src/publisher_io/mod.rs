@@ -4,6 +4,8 @@
 //! the registered local protocol adapter. One adapter owns one domain; callers
 //! cannot select another directory by changing a content claim.
 
+#[cfg(feature = "tokio")]
+mod bodies;
 mod native;
 #[cfg(feature = "tokio")]
 mod worker;
@@ -13,5 +15,6 @@ pub use native::{NativePublisher, StagedFile};
 pub use worker::{
     NativeBodyHandle, NativeBodyIncarnation, NativeBodyKey, NativeCommandContext,
     NativeCommandResult, NativeOperation, NativePublicationWorker, NativePublishedObject,
-    NativePublisherConfig, NativeRetirementPolicy, NativeSealProbe, NativeWipePolicy,
+    NativePublisherConfig, NativePublisherPrepared, NativeRetirementPolicy, NativeSealProbe,
+    NativeWipePolicy,
 };

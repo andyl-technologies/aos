@@ -1,0 +1,393 @@
+//! Composes the native publisher from explicit host configuration and kernel facts.
+//!
+//! Configuration is checked for every domain before confinement or filesystem
+//! effects. Authenticated quota observations are then bound to retained native
+//! roots before publication startup can allocate. No repository credentials or
+//! read tokens participate in the publisher role.
+
+#![cfg(feature = "tokio")]
+
+use std::{
+    collections::BTreeSet,
+    fs::File,
+    io,
+    os::fd::OwnedFd,
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+
+use terrane::config::host::{HostTier, Wipe};
+
+use crate::{
+    host_quota::{
+        DomainProvisioningGuard, HostQuotaClient, NativeProject, ROOT_LABELS,
+        VerifiedQuotaObservation, filesystem_uuid, open_host_path,
+    },
+    publisher_io::{NativePublisherConfig, NativeRetirementPolicy, NativeWipePolicy},
+    publisher_local::{server::ServerConfig, socket::RoleIdentities},
+};
+
+struct Preflight {
+    endpoint: ServerConfig,
+    domains: Vec<Domain>,
+    quota_path: PathBuf,
+    quota_epoch: [u8; 16],
+    tier_budget: u64,
+    administrative_root: PathBuf,
+}
+
+struct Domain {
+    native: NativePublisherConfig,
+    profile_name: String,
+    owner_id: String,
+}
+
+// These actual files, observations and shared guards remain together. A wire
+// boolean or successful configuration parse cannot construct this custody.
+struct CheckedQuota {
+    observation: VerifiedQuotaObservation,
+    roots: Vec<File>,
+    _guard: DomainProvisioningGuard,
+}
+
+/// Retains actual configured-role enforcement and allocation-root custody.
+///
+/// Only this module constructs the value after native checks. Concrete socket
+/// owners retain it until all accepted physical work finishes, even if the
+/// listening service exits first.
+pub(crate) struct ConfiguredPublisherCustody {
+    confinement: Arc<crate::quota_confinement::Installed>,
+    quotas: Vec<CheckedQuota>,
+    _socket_ancestors: Vec<OwnedFd>,
+}
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+fn preflight(host: &HostTier) -> io::Result<Preflight> {
+    let publisher = host
+        .publisher
+        .as_ref()
+        .ok_or_else(|| invalid("publisher configuration required"))?;
+    let quota = host
+        .quota
+        .as_ref()
+        .ok_or_else(|| invalid("authenticated quota helper required"))?;
+    if host.domains.is_empty()
+        || host.size_bytes == 0
+        || !(1..=1024).contains(&publisher.max_connections)
+        || [
+            publisher.serve_uid,
+            publisher.publish_uid,
+            publisher.content_uid,
+            publisher.content_gid,
+        ]
+        .contains(&u32::MAX)
+        || publisher.serve_uid == publisher.publish_uid
+        || publisher.content_uid == publisher.publish_uid
+    {
+        return Err(invalid(
+            "invalid publisher identities, domains or resource policy",
+        ));
+    }
+    if rustix::process::geteuid().as_raw() != publisher.publish_uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "publisher role identity mismatch",
+        ));
+    }
+    let administrative_root = normalized_path(&host.path)?;
+    let socket_path = normalized_path(&publisher.socket_path)?;
+    let quota_path = normalized_path(&quota.socket_path)?;
+    rustix::net::SocketAddrUnix::new(&socket_path)?;
+    rustix::net::SocketAddrUnix::new(&quota_path)?;
+    if socket_path == quota_path {
+        return Err(invalid("publisher and quota endpoints must be distinct"));
+    }
+    let mut domains = Vec::with_capacity(host.domains.len());
+    let mut paths = Vec::<PathBuf>::new();
+    let mut owners = BTreeSet::new();
+    for (label, directory) in &host.domains {
+        crate::host_quota::validate_domain_label(label)?;
+        if directory.wipe != Wipe::None {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "publisher wipe policy unsupported",
+            ));
+        }
+        let policy = directory
+            .publisher
+            .as_ref()
+            .ok_or_else(|| invalid("domain publisher policy required"))?;
+        let profile = policy.profile().map_err(io::Error::other)?;
+        let retirement =
+            NativeRetirementPolicy::new(Duration::from_millis(policy.retirement_grace_ms))?;
+        let path = normalized_path(&directory.path)?;
+        if paths
+            .iter()
+            .any(|other| path.starts_with(other) || other.starts_with(&path))
+        {
+            return Err(invalid("publisher domain roots overlap"));
+        }
+        paths.push(path.clone());
+        let owner_id = directory
+            .quota_owner_id
+            .as_ref()
+            .ok_or_else(|| invalid("domain quota owner required"))?;
+        if owner_id.is_empty() || owner_id.len() > 256 || !owners.insert(owner_id.clone()) {
+            return Err(invalid("invalid or duplicate domain quota owner"));
+        }
+        domains.push(Domain {
+            native: NativePublisherConfig {
+                domain: label.clone(),
+                profile,
+                layout_root: path,
+                wipe: NativeWipePolicy::None,
+                retirement,
+                content_uid: publisher.content_uid,
+                content_gid: publisher.content_gid,
+            },
+            profile_name: policy.chunk_profile.clone(),
+            owner_id: owner_id.clone(),
+        });
+    }
+    Ok(Preflight {
+        endpoint: ServerConfig {
+            socket_path,
+            identities: RoleIdentities {
+                serve_uid: publisher.serve_uid,
+                publish_uid: publisher.publish_uid,
+            },
+            max_connections: publisher.max_connections,
+        },
+        domains,
+        quota_path,
+        quota_epoch: quota.configuration_epoch,
+        tier_budget: host.size_bytes,
+        administrative_root,
+    })
+}
+
+fn normalized_path(text: &str) -> io::Result<PathBuf> {
+    let path = Path::new(text);
+    let normalized: PathBuf = path.components().collect();
+    if text.as_bytes().contains(&0)
+        || !path.is_absolute()
+        || path == Path::new("/")
+        || normalized.as_os_str() != path.as_os_str()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+    {
+        return Err(invalid(
+            "publisher configuration requires normalized absolute paths",
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn check_quotas(config: &Preflight) -> io::Result<Vec<CheckedQuota>> {
+    let mut helper = HostQuotaClient::connect(&config.quota_path, 0, config.quota_epoch)?;
+    let mut checked = Vec::with_capacity(config.domains.len());
+    let mut projects = BTreeSet::new();
+    let mut actual_roots = BTreeSet::new();
+    let mut limit_sum = 0u64;
+    let mut ledger_sum = None;
+    for domain in &config.domains {
+        let root = open_host_path(&domain.native.layout_root, true)?;
+        let guard = DomainProvisioningGuard::shared(&root)?;
+        let verified = helper.query(&domain.owner_id, &domain.native.domain)?;
+        let observation = verified.observation();
+        if !observation.accounting
+            || !observation.enforcement
+            || observation.project_id == 0
+            || observation.hard_limit_bytes == 0
+            || observation.hard_limit_bytes > config.tier_budget
+            || observation.charged_reserved_bytes > observation.hard_limit_bytes
+            || observation.tier_charge_budget_bytes != config.tier_budget
+            || observation.configured_limit_sum_bytes > config.tier_budget
+            || observation.configured_limit_sum_bytes < observation.hard_limit_bytes
+            || ledger_sum.is_some_and(|sum| sum != observation.configured_limit_sum_bytes)
+            || !projects.insert((observation.filesystem_uuid.clone(), observation.project_id))
+        {
+            return Err(invalid(
+                "quota enforcement or configured partition budget mismatch",
+            ));
+        }
+        ledger_sum = Some(observation.configured_limit_sum_bytes);
+        limit_sum = limit_sum
+            .checked_add(observation.hard_limit_bytes)
+            .ok_or_else(|| invalid("quota partition sum overflow"))?;
+        let mut labels = BTreeSet::new();
+        let mut roots = Vec::new();
+        for expected in &observation.roots {
+            if !labels.insert(expected.role_directory.as_str()) {
+                return Err(invalid("duplicate quota root"));
+            }
+            let file = match expected.role_directory.as_str() {
+                "layout-root" => root.try_clone()?,
+                "administrative-root" => {
+                    if config.administrative_root == domain.native.layout_root {
+                        return Err(invalid("administrative quota root aliases domain root"));
+                    }
+                    open_host_path(&config.administrative_root, true)?
+                }
+                label if ROOT_LABELS.contains(&label) => File::from(rustix::fs::openat(
+                    &root,
+                    label,
+                    rustix::fs::OFlags::RDONLY
+                        | rustix::fs::OFlags::DIRECTORY
+                        | rustix::fs::OFlags::NOFOLLOW
+                        | rustix::fs::OFlags::CLOEXEC,
+                    rustix::fs::Mode::empty(),
+                )?),
+                _ => return Err(invalid("unknown quota allocation root")),
+            };
+            let actual = NativeProject::inspect(&file)?;
+            if actual.device != expected.device
+                || actual.inode != expected.inode
+                || actual.project_id != observation.project_id
+                || !actual.inherit
+                || !expected.project_inherit
+                || filesystem_uuid(&file)?.as_slice() != observation.filesystem_uuid
+                || !actual_roots.insert((actual.device, actual.inode))
+            {
+                return Err(invalid(
+                    "quota root differs from live native allocation custody",
+                ));
+            }
+            roots.push(file);
+        }
+        if ROOT_LABELS.iter().any(|label| !labels.contains(label)) {
+            return Err(invalid("quota observation lacks allocation root coverage"));
+        }
+        checked.push(CheckedQuota {
+            observation: verified,
+            roots,
+            _guard: guard,
+        });
+    }
+    if limit_sum > ledger_sum.unwrap_or(0) {
+        return Err(invalid(
+            "configured owners exceed authenticated ledger partition",
+        ));
+    }
+    Ok(checked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use terrane::config::host::{DomainDirectory, DomainPublisher, Publisher, Quota, Reassembly};
+
+    fn configuration() -> HostTier {
+        let publish_uid = rustix::process::geteuid().as_raw();
+        let serve_uid = if publish_uid == 1001 { 1002 } else { 1001 };
+        HostTier {
+            path: "/var/lib/terrane".into(),
+            size_bytes: 1 << 30,
+            reassembly: Reassembly::Never,
+            domains: ["public", "private:fixture"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, label)| {
+                    (
+                        label.into(),
+                        DomainDirectory {
+                            path: format!("/var/lib/terrane/domain-{index}"),
+                            wipe: Wipe::None,
+                            publisher: Some(DomainPublisher {
+                                retirement_grace_ms: 30_000,
+                                chunk_profile: "cdc-1m".into(),
+                                chunk_seed: [index as u8; 32],
+                            }),
+                            quota_owner_id: Some(format!("owner-{index}")),
+                        },
+                    )
+                })
+                .collect(),
+            publisher: Some(Publisher {
+                socket_path: "/run/terrane-publish/publisher.sock".into(),
+                serve_uid,
+                publish_uid,
+                content_uid: serve_uid,
+                content_gid: 1003,
+                max_connections: 32,
+            }),
+            quota: Some(Quota {
+                socket_path: "/run/terrane-host-helper/quota.sock".into(),
+                configuration_epoch: [1; 16],
+            }),
+        }
+    }
+
+    #[test]
+    fn configured_preflight_requires_real_quota_inputs_before_startup() {
+        let mut config = configuration();
+        assert!(preflight(&config).is_ok());
+        config.quota = None;
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let mut config = configuration();
+        config.domains.get_mut("public").unwrap().quota_owner_id = None;
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn configured_preflight_rejects_later_domain_policy_before_any_open() {
+        let mut config = configuration();
+        config
+            .domains
+            .get_mut("public")
+            .unwrap()
+            .publisher
+            .as_mut()
+            .unwrap()
+            .chunk_profile = "unknown".into();
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::Other
+        );
+
+        let mut config = configuration();
+        config.domains.get_mut("public").unwrap().wipe = Wipe::Zero;
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn configured_preflight_refuses_overlapping_roots_and_aliasing_endpoints() {
+        let mut config = configuration();
+        let private_path = config.domains["private:fixture"].path.clone();
+        config.domains.get_mut("public").unwrap().path = format!("{private_path}/child");
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let mut config = configuration();
+        config.publisher.as_mut().unwrap().socket_path =
+            config.quota.as_ref().unwrap().socket_path.clone();
+        assert_eq!(
+            preflight(&config).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn configured_preflight_rejects_unrepresentable_unix_socket() {
+        let mut config = configuration();
+        config.publisher.as_mut().unwrap().socket_path = format!("/run/{}", "x".repeat(128));
+        assert!(preflight(&config).is_err());
+    }
+}

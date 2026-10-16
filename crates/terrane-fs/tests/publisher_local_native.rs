@@ -257,6 +257,7 @@ fn publisher_local_native_role() {
             {
                 let worker = NativePublicationWorker::start(NativePublisherConfig {
                     domain: label.into(),
+                    profile: ChunkProfile::cdc_1m([seed; 32]),
                     layout_root: root.join(name),
                     wipe: NativeWipePolicy::None,
                     retirement: NativeRetirementPolicy::new(Duration::from_millis(100)).unwrap(),

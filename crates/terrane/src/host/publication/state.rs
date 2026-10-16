@@ -80,7 +80,11 @@ impl<F: LocalFs + Sync> FsPublicationState<F> {
         self.fs.sync_directory(&self.directory).await
     }
 
-    fn path(&self, claim: &PublicationClaim) -> PathBuf {
+    /// Returns the fixed private record path for native identity retention.
+    ///
+    /// This path grants no mutation authority. Native owners retain a nofollow
+    /// descriptor before loading and compare the actual record before repair.
+    pub fn binding_record_path(&self, claim: &PublicationClaim) -> PathBuf {
         // This digest is only an internal filename, never a content identity.
         let domain = blake3::hash(claim.domain().as_bytes());
         self.directory.join(format!(
@@ -130,7 +134,7 @@ impl<F: LocalFs + Sync> FsPublicationState<F> {
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 impl<F: LocalFs + Send + Sync> PublicationState for FsPublicationState<F> {
     async fn binding(&self, claim: &PublicationClaim) -> io::Result<Option<VerityBinding>> {
-        self.load(&self.path(claim), claim).await
+        self.load(&self.binding_record_path(claim), claim).await
     }
 
     async fn record(
@@ -141,7 +145,7 @@ impl<F: LocalFs + Send + Sync> PublicationState for FsPublicationState<F> {
         if !matches!((binding.algorithm, binding.digest.len()), (1, 32) | (2, 64)) {
             return Err(invalid("invalid publication kernel digest"));
         }
-        let path = self.path(claim);
+        let path = self.binding_record_path(claim);
         if let Some(existing) = self.load(&path, claim).await? {
             if existing != *binding {
                 return Err(invalid("conflicting existing publication binding"));
