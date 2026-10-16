@@ -333,12 +333,8 @@ mod tests {
     #[test]
     fn unfinished_group_cannot_complete_after_consuming_its_only_row() {
         let mut scratch = [HistoricalAliasSummary::default(); 1];
-        let mut plan = ValidatedHistoricalAliases::validate(
-            br#"[["codec",0]]"#,
-            &mut scratch,
-            1,
-        )
-        .unwrap();
+        let mut plan =
+            ValidatedHistoricalAliases::validate(br#"[["codec",0]]"#, &mut scratch, 1).unwrap();
         let mut views = plan.views().unwrap();
         assert_eq!(views.begin(MetadataSharedKind::Codec).unwrap(), 0);
         assert_eq!(views.remaining, 0);
