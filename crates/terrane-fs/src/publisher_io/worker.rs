@@ -390,7 +390,6 @@ impl NativePublicationWorker {
         } = prepared;
         #[cfg(feature = "native-test-fixtures")]
         let body_io = body_io.with_finish_gate(finish_first_unlink);
-        let domain = config.domain;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -427,12 +426,10 @@ impl NativePublicationWorker {
                     };
                     let publisher = Publisher::new(native, state);
                     let mut owner = owned_commands::CommandOwner::new(
-                        domain,
+                        config,
                         publisher,
                         state_directory,
-                        config.retirement,
                         body_io,
-                        config.profile,
                         inventory,
                         Arc::clone(&confinement),
                     );

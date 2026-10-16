@@ -11,7 +11,8 @@ use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
 use super::super::bodies::{BodyIo, EncodedUnit};
 use super::{
-    NativePublishedObject, NativePublisher, NativeRetirementPolicy, NativeSealProbe, WorkerState,
+    NativePublishedObject, NativePublisher, NativePublisherConfig, NativeRetirementPolicy,
+    NativeSealProbe, WorkerState,
 };
 use std::path::PathBuf;
 use terrane::host::publication::Publisher;
@@ -238,26 +239,24 @@ pub(super) struct CommandOwner {
 
 impl CommandOwner {
     pub(super) fn new(
-        domain: String,
+        config: NativePublisherConfig,
         publisher: Publisher<NativePublisher, WorkerState>,
         state_directory: PathBuf,
-        retirement: NativeRetirementPolicy,
         body_io: BodyIo,
-        profile: ChunkProfile,
         inventory: super::inventory::NativeInventory,
         confinement: std::sync::Arc<crate::quota_confinement::Installed>,
     ) -> Self {
         Self {
             confinement,
-            domain,
+            domain: config.domain,
             publisher: Some(publisher),
             cache: None,
             recovery: true,
             bodies: Vec::new(),
             leases: FsPublicationState::new(TokioLocalFs, state_directory),
-            retirement,
+            retirement: config.retirement,
             body_io,
-            profile,
+            profile: config.profile,
             inventory,
         }
     }
