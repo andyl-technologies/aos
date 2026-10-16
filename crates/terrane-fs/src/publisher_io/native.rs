@@ -231,21 +231,24 @@ impl NativePublisher {
                 staging.as_ref(),
                 temporary.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o400),
+                Mode::from_raw_mode(0o600),
             ) {
                 Ok(descriptor) => descriptor,
                 Err(error) if error == rustix::io::Errno::EXIST => continue,
                 Err(error) => return Err(error.into()),
             };
             let result = (|| {
-                close_writer(File::from(descriptor))?;
+                let writer = File::from(descriptor);
+                fs::fchmod(&writer, Mode::from_raw_mode(0o600))?;
                 let reader = File::from(fs::openat(
                     staging.as_ref(),
                     temporary.as_str(),
                     OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                     Mode::empty(),
                 )?);
-                verity::enable(&reader)?;
+                compare_inode(&writer, &reader)?;
+                close_writer(writer)?;
+                seal_private_inode(&reader)?;
                 reader.sync_all()?;
                 Ok(reader)
             })();
@@ -681,6 +684,57 @@ fn compare_inode(expected: &File, actual: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Enables the real seal while owner write permission remains on the inode.
+///
+/// Linux checks MAY_WRITE even though fs-verity must receive a read-only FD
+/// with every writer closed. Private mode0600 permits that check without any
+/// capability. Final mode0400 is installed on the same sealed inode before
+/// durability or canonical publication; mode bits never substitute for sealing.
+///
+/// # Errors
+/// Refuses unsafe private metadata or a writable descriptor, genuine seal or
+/// measurement failure, failed final permissions and changed inode identity.
+fn seal_private_inode(reader: &File) -> io::Result<VerityBinding> {
+    let before = reader.metadata()?;
+    let flags = fs::fcntl_getfl(reader)?;
+    if !before.is_file()
+        || before.uid() != rustix::process::geteuid().as_raw()
+        || before.mode() & 0o7777 != 0o600
+        || before.nlink() != 1
+        || flags.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
+    {
+        return Err(invalid(
+            "private seal requires an owned mode0600 inode and read-only descriptor",
+        ));
+    }
+    let binding = verity::enable(reader)?;
+    fs::fchmod(reader, Mode::from_raw_mode(0o400))?;
+    let after = reader.metadata()?;
+    if !after.is_file()
+        || (
+            after.dev(),
+            after.ino(),
+            after.uid(),
+            after.gid(),
+            after.len(),
+            after.nlink(),
+        ) != (
+            before.dev(),
+            before.ino(),
+            before.uid(),
+            before.gid(),
+            before.len(),
+            before.nlink(),
+        )
+        || after.mode() & 0o7777 != 0o400
+    {
+        return Err(invalid(
+            "sealed private inode changed before final mode0400 custody",
+        ));
+    }
+    Ok(binding)
+}
+
 impl PublicationKernel for NativePublisher {
     type Source = File;
     type Staged = StagedFile;
@@ -711,13 +765,16 @@ impl PublicationKernel for NativePublisher {
                 staging.as_ref(),
                 temporary.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o400),
+                Mode::from_raw_mode(0o600),
             ) {
                 Ok(descriptor) => descriptor,
                 Err(error) if error == rustix::io::Errno::EXIST => continue,
                 Err(error) => return Err(error.into()),
             };
             let mut writer = File::from(descriptor);
+            // Keep owner MAY_WRITE for the later read-only fs-verity ioctl,
+            // including when the caller's umask removed a requested owner bit.
+            fs::fchmod(&writer, Mode::from_raw_mode(0o600))?;
             // Never write the lookahead byte: at an allocation boundary it
             // would consume a block outside the claimed plaintext reservation.
             let copied = io::copy(
@@ -744,6 +801,7 @@ impl PublicationKernel for NativePublisher {
                 OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
             )?);
+            compare_inode(&writer, &reader)?;
             return Ok(StagedFile {
                 reader,
                 writer: Some(writer),
@@ -768,7 +826,7 @@ impl PublicationKernel for NativePublisher {
         if staged.writer.is_some() {
             return Err(invalid("private inode still has a writer"));
         }
-        verity::enable(&staged.reader)
+        seal_private_inode(&staged.reader)
     }
 
     fn sync_staged(&mut self, staged: &StagedFile) -> io::Result<()> {
