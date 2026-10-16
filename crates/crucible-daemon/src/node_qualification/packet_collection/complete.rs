@@ -26,7 +26,9 @@ pub use publication::{PacketCompletePublicationRequest, StoredPacketCompleteResu
 mod records;
 pub(crate) mod retained;
 mod roster;
-pub use installed::{InstalledCompleteScene, InstalledCompleteSceneManifest};
+pub use installed::{
+    InstalledCompleteRestoration, InstalledCompleteScene, InstalledCompleteSceneManifest,
+};
 
 pub use graph::{
     InstalledPacketCompleteGraphPolicy, PacketCompleteGraphOwner, PacketCompleteGraphRequest,

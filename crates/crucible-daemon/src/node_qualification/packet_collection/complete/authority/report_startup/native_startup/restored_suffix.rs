@@ -31,7 +31,8 @@ impl PacketCompleteReportStartupHolder {
     }
 
     pub(super) fn restored_suffix_selection_counter_scratch_data() -> usize {
-        crucible::node_adapters::cnp::PacketCompleteSemanticSource::original_restored_suffix_declaration_counter_scratch_data()
+        crate::node_qualification::packet_collection::complete::InstalledCompleteRestoration::counter_scratch_data()
+            + crucible::node_adapters::cnp::PacketCompleteSemanticSource::original_restored_suffix_declaration_counter_scratch_data()
             + size_of::<&Self>()
             + size_of::<std::slice::Iter<'static, Rc<crucible::node_adapters::cnp::PacketCompleteSemanticSource>>>()
             + size_of::<&Rc<crucible::node_adapters::cnp::PacketCompleteSemanticSource>>()

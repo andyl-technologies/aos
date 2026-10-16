@@ -47,6 +47,11 @@ pub(super) fn install(
     selected: Manifest,
     directory: PathBuf,
 ) -> Result<InstalledCompleteScene, QualificationError> {
+    if selected.schema == "crucible.complete-scene.installation/6" {
+        // A suffix target must retain actual archive tickets and their restored
+        // Host. The original-scene installer cannot issue that ancestry.
+        return Err(refused());
+    }
     // Bounded declarations, measured files and concrete source constructors
     // precede namespace creation. The independent full graph check follows.
     let measurements = selected.measurements.map(|one| PacketFixtureMeasurements {
@@ -105,6 +110,7 @@ pub(super) fn install(
         invocation_snapshot,
         restoration_activation,
         restoration_observation,
+        false,
         &content,
     )?;
     let mut namespace = Namespace::create(directory)?;
@@ -247,6 +253,7 @@ fn prepare_sources(
     invocation_snapshot: bool,
     restoration_activation: bool,
     restoration_observation: bool,
+    restored_suffix: bool,
     content: &std::collections::BTreeMap<ContentRef, Vec<u8>>,
 ) -> Result<([PacketCompleteSemanticSource; 3], [LaunchDeclaration; 3]), QualificationError> {
     let mut sources = Vec::with_capacity(3);
@@ -313,7 +320,11 @@ fn prepare_sources(
             // This fixed-stack, allocation-free DATA binder belongs to the
             // ordinary operator-install phase, like the tuple binders above.
             // Later runtime/native grants do not authorize this earlier work.
-            if restoration_observation {
+            if restored_suffix {
+                source
+                    .bind_original_restored_suffix_declaration()
+                    .map_err(|_| refused())?;
+            } else if restoration_observation {
                 source
                     .bind_original_restoration_observation_declaration()
                     .map_err(|_| refused())?;
@@ -583,3 +594,7 @@ impl Drop for Namespace {
         let _ = fs::remove_dir(&self.path);
     }
 }
+
+#[path = "source/fresh_target.rs"]
+mod fresh_target;
+pub use fresh_target::InstalledCompleteRestoration;

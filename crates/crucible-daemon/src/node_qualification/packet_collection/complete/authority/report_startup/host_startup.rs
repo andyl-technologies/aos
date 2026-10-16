@@ -692,3 +692,34 @@ mod constructor_controls {
         assert!(held.authority.roster.current_native().is_err());
     }
 }
+
+impl PacketCompleteReportStartupHolder {
+    /// Retains a fresh operator's actual content before its first report issue.
+    ///
+    /// The same original content observer counts these banks in report, native
+    /// and SDK phases. This early transfer changes no construction permission.
+    ///
+    /// # Errors
+    /// Refuses a nonfresh/foreign/attempted holder, occupied bank or absent input.
+    pub(in crate::node_qualification::packet_collection::complete) fn retain_fresh_installation_content_into(
+        original: &Rc<RefCell<Self>>,
+        incoming: &mut Option<ContentBanks>,
+    ) -> Result<(), RuntimeError> {
+        let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        held.authenticate_native_origin_data()?;
+        if !matches!(held.purpose, StartupHolderPurpose::FreshRestoration(_))
+            || held.attempted.get()
+            || held.native_attempted.get()
+            || held.host_sdk_attempted.get()
+            || held.host_sdk_content.get().is_some()
+        {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        let content = incoming.take().ok_or(RuntimeError::OwnerUnavailable)?;
+        if let Err(content) = held.host_sdk_content.set(content) {
+            *incoming = Some(content);
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        Ok(())
+    }
+}

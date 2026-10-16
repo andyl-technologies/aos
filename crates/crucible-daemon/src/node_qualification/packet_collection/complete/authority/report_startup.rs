@@ -435,6 +435,9 @@ impl PacketCompleteReportStartupHolder {
                     .map_err(|_| refused())?,
             )
             .ok_or_else(refused)?;
+        let scratch = scratch
+            .checked_add(super::super::InstalledCompleteRestoration::counter_scratch_data())
+            .ok_or_else(refused)?;
         Ok(OriginalReportStartupPolicy {
             maximum_requested_bytes: maximum,
             declared_observer_scratch_bytes: scratch,

@@ -21,6 +21,7 @@
 
 mod manifest;
 mod source;
+pub use source::InstalledCompleteRestoration;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, task::Poll};
 

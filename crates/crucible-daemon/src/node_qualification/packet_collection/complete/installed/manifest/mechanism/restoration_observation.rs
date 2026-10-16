@@ -36,7 +36,7 @@ pub(super) fn authenticate_profile_declaration_data(
     authenticate_observation_rosters_data(schema, rosters, features, &selected.content)
 }
 
-fn authenticate_five_profile_data(
+pub(super) fn authenticate_five_profile_data(
     rosters: [(&[SchemaRef], &[SchemaRef]); 3],
     features: [&[Id]; 3],
     content: &[Content],
