@@ -26,6 +26,9 @@ use super::{ActivationRecord, NodeRoute, OperationFailure, OwnerIdentity, Runtim
 mod capture_dependencies;
 pub use capture_dependencies::{HostCaptureDependencyLookupData, HostCaptureDependencyStorageData};
 
+mod construction_storage;
+pub use construction_storage::HostCollectionNodeConstructionStorageData;
+
 mod continuation;
 mod prebirth_storage;
 mod requested_storage;
