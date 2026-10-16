@@ -14,6 +14,8 @@ use super::{
 mod cache;
 #[path = "operational_operations/cleanup_delegation.rs"]
 mod cleanup_delegation;
+#[path = "operational_operations/worker_custody.rs"]
+mod worker_custody;
 
 struct Companion {
     path: &'static str,
@@ -642,6 +644,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .iter()
         .chain(cache::CONTRACTS)
         .chain(cleanup_delegation::CONTRACTS)
+        .chain(worker_custody::CONTRACTS)
 }
 
 pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
@@ -858,6 +861,7 @@ fn continuation_waits_require_original_posts_and_physical_custody()
                 .replace("from_millis(10)", "from_millis(11)")
                 .replace("(&error)", "(&other_error)")
                 .replace("retry_unsettled()", "retry_unsettled(altered)")
+                .replace("retry_pending()", "retry_pending(altered)")
                 .replace("(slot)", "(other_slot)")
                 .replace("(provider)", "(other_provider)")
                 .replace("(&mut self)", "(&mut other)");

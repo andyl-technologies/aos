@@ -851,6 +851,7 @@ fn map_lifecycle_failure(error: LifecycleApiError) -> CampaignServiceFailure {
         | LifecycleApiError::ResourceLimit(_)
         | LifecycleApiError::ConfigurationCopy(_) => CampaignServiceFailure::ResourceExhausted,
         LifecycleApiError::LoopFactory { .. }
+        | LifecycleApiError::CleanupRetained
         | LifecycleApiError::BackendConstruction { .. }
         | LifecycleApiError::AttemptOperational { .. } => CampaignServiceFailure::Unavailable,
         _ => CampaignServiceFailure::IntegrityFailure,
@@ -869,6 +870,21 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn retained_cleanup_has_the_same_availability_policy_as_factory_refusal() {
+        for error in [
+            LifecycleApiError::CleanupRetained,
+            LifecycleApiError::LoopFactory {
+                message: String::from("component cleanup refusal"),
+            },
+        ] {
+            assert_eq!(
+                map_lifecycle_failure(error),
+                CampaignServiceFailure::Unavailable
+            );
+        }
+    }
 
     #[test]
     fn selection_distinguishes_host_refusal_from_checkpoint_corruption() {

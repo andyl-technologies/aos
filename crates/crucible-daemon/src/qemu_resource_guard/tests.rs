@@ -873,9 +873,103 @@ fn generation_owner_releases_only_after_exact_monotone_leases_finish() {
         .expect("release reaped replacement generation");
     owner.finish().expect("release aggregate attempt resources");
     owner.finish().expect("aggregate finish is idempotent");
+    owner.quarantine_original_launch();
+    owner.quarantine();
+    owner
+        .finish()
+        .expect("post-return quarantine cannot reopen ownership");
+    assert!(owner.check_operational_boundary().is_err());
+    assert!(owner.register_generation(generation("vm-a", 3)).is_err());
+    drop(owner);
 
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn original_generation_quarantine_never_attests_aggregate_return() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default(), None)
+        .expect("component resource guard");
+    let mut owner =
+        QemuAttemptGenerationResourceOwner::new(guard, test_generation_storage(&["vm-a"]));
+    let mut lease = owner
+        .register_generation(generation("vm-a", 1))
+        .expect("actual finite generation lease");
+
+    // This exercises retained component custody, not Main or native issuance.
+    // The enclosing launch/park owner keeps its initiating typed cause.
+    owner.quarantine_original_launch();
+    assert_eq!(owner.finish(), Err(LifecycleApiError::CleanupRetained));
+    lease
+        .finish()
+        .expect("close the exact local generation body");
+    owner.quarantine_original_launch();
+    owner.quarantine();
+    assert_eq!(owner.finish(), Err(LifecycleApiError::CleanupRetained));
+    assert!(owner.register_generation(generation("vm-a", 2)).is_err());
+    assert!(owner.check_operational_boundary().is_err());
+    drop(owner);
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn generation_quarantine_preserves_its_existing_failure_presentation() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default(), None)
+        .expect("component resource guard");
+    let mut owner =
+        QemuAttemptGenerationResourceOwner::new(guard, test_generation_storage(&["vm-a"]));
+
+    owner.quarantine();
+    let first = owner.finish().expect_err("quarantine cannot attest return");
+    assert_eq!(
+        first,
+        LifecycleApiError::LoopFactory {
+            message: String::from(
+                "QEMU attempt aggregate resources were transferred to quarantine"
+            ),
+        }
+    );
+    owner.quarantine_original_launch();
+    assert_eq!(owner.finish().expect_err("same quarantine"), first);
+    drop(owner);
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn generation_guard_finish_failure_never_retries_or_attests_return() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    factory.host.finish_error = true;
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default(), None)
+        .expect("component resource guard");
+    let mut owner =
+        QemuAttemptGenerationResourceOwner::new(guard, test_generation_storage(&["vm-a"]));
+
+    let first = owner.finish().expect_err("actual component host refusal");
+    assert!(matches!(&first, LifecycleApiError::LoopFactory { message }
+        if message.contains("reap is unavailable")));
+    owner.quarantine_original_launch();
+    owner.quarantine();
+    assert_eq!(owner.finish().expect_err("same retained failure"), first);
+    assert!(owner.check_operational_boundary().is_err());
+    drop(owner);
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
 }
 
 #[test]

@@ -337,6 +337,9 @@ pub enum LifecycleApiError {
     /// The launcher cannot lend empty storage admitted before its first effects.
     #[error("prepaid lifecycle construction custody is unavailable")]
     ConstructionCustodyUnavailable,
+    /// Cleanup transferred resources to quarantine without attesting their return.
+    #[error("lifecycle resources remain retained in quarantine")]
+    CleanupRetained,
     /// The actual retained parent park phase excludes this lifecycle effect.
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     #[error("parent park owns the source")]

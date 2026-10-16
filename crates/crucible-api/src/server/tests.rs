@@ -373,6 +373,24 @@ fn debug_guest_wire_parsers_preserve_node_and_bounded_record() {
 }
 
 #[tokio::test]
+async fn retained_cleanup_has_the_same_internal_response_policy_as_factory_refusal() {
+    for error in [
+        LifecycleApiError::CleanupRetained,
+        LifecycleApiError::LoopFactory {
+            message: String::from("component cleanup refusal"),
+        },
+    ] {
+        let response = lifecycle_error_response(error);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_text(response)
+            .await
+            .expect("typed internal response must decode");
+        assert!(body.contains("status=internal"));
+        assert!(body.contains("reason=internal"));
+    }
+}
+
+#[tokio::test]
 async fn debugger_session_rejection_is_a_typed_conflict_not_internal_error() {
     let response = lifecycle_error_response(LifecycleApiError::SessionCommandRejected {
         message: String::from("non-canonical debug branch required"),

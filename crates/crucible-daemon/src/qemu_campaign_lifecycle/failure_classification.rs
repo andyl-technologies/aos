@@ -165,6 +165,23 @@ mod tests {
     }
 
     #[test]
+    fn retained_cleanup_keeps_factory_refusal_terminal_policy() {
+        for error in [
+            LifecycleApiError::CleanupRetained,
+            LifecycleApiError::LoopFactory {
+                message: String::from("component cleanup refusal"),
+            },
+        ] {
+            assert!(matches!(
+                classify_production_lifecycle_failure(
+                    QemuAttemptProductionVmLifecycleError::Lifecycle(error),
+                ),
+                AttemptWorkerFailure::Terminal(_)
+            ));
+        }
+    }
+
+    #[test]
     fn single_begin_reports_preserve_unavailability_and_cancellation() {
         let unavailable = QemuVmRealizationError::ExecutorUnavailable {
             operation: "component admission",
