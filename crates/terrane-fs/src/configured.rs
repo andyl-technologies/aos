@@ -10,7 +10,7 @@
 use std::{
     collections::BTreeSet,
     fs::File,
-    io,
+    io::{self, Read},
     os::fd::OwnedFd,
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -24,9 +24,106 @@ use crate::{
         DomainProvisioningGuard, HostQuotaClient, NativeProject, ROOT_LABELS,
         VerifiedQuotaObservation, filesystem_uuid, open_host_path,
     },
-    publisher_io::{NativePublisherConfig, NativeRetirementPolicy, NativeWipePolicy},
-    publisher_local::{server::ServerConfig, socket::RoleIdentities},
+    publisher_io::{
+        NativeCommandContext, NativeCommandResult, NativeOperation, NativePublicationWorker,
+        NativePublisherConfig, NativeRetirementPolicy, NativeWipePolicy,
+    },
+    publisher_local::{
+        server::{DomainPublisher, Server, ServerConfig},
+        socket::{RoleIdentities, retain_listener_parent},
+    },
 };
+
+/// Runs the actual configured native publisher until its listener fails.
+///
+/// Validates every domain before installing one irreversible process boundary.
+/// Actual authenticated quota/root evidence precedes all native startup writes;
+/// each prepared owner and accepted command retains that evidence. The role
+/// never opens a Store, repository, read token or backend credential.
+///
+/// Callers invoke this synchronous entry in a fresh single-threaded process.
+/// Failure after confinement installation requires process exit, never fallback
+/// to another role or an unconfined retry. Manifest retention and cache recovery
+/// authorization remain unavailable without their actual cache-owner bridges.
+///
+/// # Errors
+///
+/// Rejects incomplete/invalid configuration, another process identity, unsafe
+/// socket ancestry, unsupported wipe, failed confinement, unavailable quota
+/// evidence, root/project/budget mismatches, preparation/recovery errors, a
+/// failed actual seal probe or listener/connection-owner startup failures.
+pub fn run_configured_publisher(host: &HostTier) -> io::Result<()> {
+    let config = preflight(host)?;
+    let confinement = Arc::new(crate::quota_confinement::install()?);
+    let socket_ancestors =
+        retain_listener_parent(&config.endpoint.socket_path, config.endpoint.identities)
+            .map_err(io::Error::other)?;
+    let quotas = check_quotas(&config)?;
+    let custody = Arc::new(ConfiguredPublisherCustody {
+        confinement: confinement.clone(),
+        quotas,
+        _socket_ancestors: socket_ancestors,
+    });
+
+    // Preparation is readonly and retains actual roots. No domain starts
+    // allocation until every configured owner passed these same checks.
+    let mut prepared_domains = Vec::with_capacity(config.domains.len());
+    for domain in config.domains {
+        let mut prepared = domain.native.prepare(confinement.clone())?;
+        prepared.retain_configured_custody(custody.clone())?;
+        prepared_domains.push((prepared, domain.profile_name));
+    }
+    let mut domains = Vec::with_capacity(prepared_domains.len());
+    for (prepared, profile_name) in prepared_domains {
+        let domain = prepared.configuration().domain.clone();
+        let profile = prepared.configuration().profile.clone();
+        let worker = NativePublicationWorker::start_prepared(prepared)?;
+        domains.push(DomainPublisher {
+            domain,
+            chunk_profile_name: profile_name,
+            chunk_profile: profile,
+            worker,
+        });
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mut bootstrap_incarnation = [0; 16];
+    File::open("/dev/urandom")?.read_exact(&mut bootstrap_incarnation)?;
+    for domain in &domains {
+        let context = NativeCommandContext {
+            domain: domain.domain.clone(),
+            cache_incarnation: bootstrap_incarnation,
+        };
+        match runtime.block_on(
+            domain
+                .worker
+                .execute(context.clone(), NativeOperation::Drain),
+        )? {
+            NativeCommandResult::Complete => {}
+            _ => return Err(invalid("unexpected native startup drain result")),
+        }
+        match runtime.block_on(domain.worker.execute(context, NativeOperation::Probe))? {
+            NativeCommandResult::Probe { probe } => {
+                let measured = crate::verity::measure(probe.handle())?;
+                if measured.algorithm != probe.binding().algorithm
+                    || measured.digest != probe.binding().digest
+                {
+                    return Err(invalid("native startup seal measurement changed"));
+                }
+            }
+            _ => return Err(invalid("unexpected native startup probe result")),
+        }
+    }
+    drop(runtime);
+    confinement.check_current()?;
+    Server::bind(config.endpoint, domains)
+        .map_err(io::Error::other)?
+        .with_configured_custody(custody)
+        .run()
+        .map_err(io::Error::other)
+}
 
 struct Preflight {
     endpoint: ServerConfig,
@@ -48,6 +145,7 @@ struct Domain {
 struct CheckedQuota {
     observation: VerifiedQuotaObservation,
     roots: Vec<File>,
+    publication_state: File,
     _guard: DomainProvisioningGuard,
 }
 
@@ -94,6 +192,19 @@ impl ConfiguredPublisherCustody {
         if actual_root.device != expected_root.device || actual_root.inode != expected_root.inode {
             return Err(invalid(
                 "prepared root differs from authenticated quota root",
+            ));
+        }
+        let state = open_publication_state(root)?;
+        let actual_state = NativeProject::inspect(&state)?;
+        let retained_state = NativeProject::inspect(&checked.publication_state)?;
+        if actual_state.device != retained_state.device
+            || actual_state.inode != retained_state.inode
+            || actual_state.project_id != observation.project_id
+            || !actual_state.inherit
+            || filesystem_uuid(&state)?.as_slice() != observation.filesystem_uuid
+        {
+            return Err(invalid(
+                "publication state differs from authenticated charge owner",
             ));
         }
         for (file, expected) in checked.roots.iter().zip(&observation.roots) {
@@ -312,9 +423,22 @@ fn check_quotas(config: &Preflight) -> io::Result<Vec<CheckedQuota>> {
         if ROOT_LABELS.iter().any(|label| !labels.contains(label)) {
             return Err(invalid("quota observation lacks allocation root coverage"));
         }
+        let publication_state = open_publication_state(&root)?;
+        let state_project = NativeProject::inspect(&publication_state)?;
+        if state_project.project_id != observation.project_id
+            || !state_project.inherit
+            || state_project.device != NativeProject::inspect(&root)?.device
+            || filesystem_uuid(&publication_state)?.as_slice() != observation.filesystem_uuid
+            || !actual_roots.insert((state_project.device, state_project.inode))
+        {
+            return Err(invalid(
+                "publication state lacks actual quota root coverage",
+            ));
+        }
         checked.push(CheckedQuota {
             observation: verified,
             roots,
+            publication_state,
             _guard: guard,
         });
     }
@@ -324,6 +448,20 @@ fn check_quotas(config: &Preflight) -> io::Result<Vec<CheckedQuota>> {
         ));
     }
     Ok(checked)
+}
+
+fn open_publication_state(root: &File) -> io::Result<File> {
+    let flags = rustix::fs::OFlags::RDONLY
+        | rustix::fs::OFlags::DIRECTORY
+        | rustix::fs::OFlags::NOFOLLOW
+        | rustix::fs::OFlags::CLOEXEC;
+    let state = rustix::fs::openat(root, "state", flags, rustix::fs::Mode::empty())?;
+    Ok(File::from(rustix::fs::openat(
+        &state,
+        "publication",
+        flags,
+        rustix::fs::Mode::empty(),
+    )?))
 }
 
 #[cfg(test)]
