@@ -13,6 +13,8 @@ use terrane::store::TokioLocalFs;
 use tokio::sync::{mpsc, oneshot};
 
 use super::NativePublisher;
+use super::bodies::BodyIo;
+use terrane_core::chunking::ChunkProfile;
 
 #[path = "owned_commands.rs"]
 mod owned_commands;
@@ -114,14 +116,14 @@ impl PublicationState for WorkerState {
 }
 
 #[cfg(test)]
-struct WorkerGate {
+pub(super) struct WorkerGate {
     arrived: std::sync::mpsc::SyncSender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
 #[cfg(test)]
 impl WorkerGate {
-    fn wait(self) -> io::Result<()> {
+    pub(super) fn wait(self) -> io::Result<()> {
         self.arrived.send(()).map_err(io::Error::other)?;
         self.release
             .into_inner()
@@ -175,6 +177,8 @@ impl NativeRetirementPolicy {
 pub struct NativePublisherConfig {
     /// The disclosure domain bound to this owner.
     pub domain: String,
+    /// The immutable configured chunk profile used to validate every claim.
+    pub profile: ChunkProfile,
     /// The configured absolute domain root containing registered directories.
     pub layout_root: PathBuf,
     /// The explicit registered wipe policy; currently only none is supported.
@@ -210,7 +214,7 @@ impl NativePublicationWorker {
     /// creating any sealed or staging inode; no policy silently becomes unlink.
     pub fn start(config: NativePublisherConfig) -> io::Result<Self> {
         #[cfg(test)]
-        let started = Self::start_thread(config, None);
+        let started = Self::start_thread(config, None, None);
         #[cfg(not(test))]
         let started = Self::start_thread(config);
         let (worker, thread) = started?;
@@ -221,6 +225,7 @@ impl NativePublicationWorker {
     fn start_thread(
         config: NativePublisherConfig,
         #[cfg(test)] before_record: Option<WorkerGate>,
+        #[cfg(test)] finish_first_unlink: Option<WorkerGate>,
     ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
         if config.wipe != NativeWipePolicy::None {
             return Err(io::Error::new(
@@ -228,7 +233,16 @@ impl NativePublicationWorker {
                 "native fs-verity publisher supports only explicitly configured wipe=none",
             ));
         }
+        if config.content_uid == rustix::process::geteuid().as_raw() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "publisher and encoded-content owners must use distinct identities",
+            ));
+        }
         let retained_layout = super::native::inspect_layout(&config)?;
+        let body_io = BodyIo::open(&config)?;
+        #[cfg(test)]
+        let body_io = body_io.with_finish_gate(finish_first_unlink);
         let domain = config.domain;
         let sealed = config.layout_root.join("sealed");
         let staging = config.layout_root.join("staging");
@@ -278,6 +292,8 @@ impl NativePublicationWorker {
                         publisher,
                         state_directory,
                         config.retirement,
+                        body_io,
+                        config.profile,
                     );
                     while let Some(command) = receiver.recv().await {
                         match command {
@@ -287,6 +303,7 @@ impl NativePublicationWorker {
                                 response,
                             } => {
                                 let result = async {
+                                    owner.validate_claim(&claim)?;
                                     let object = owner.publisher()?.publish(&claim, source).await?;
                                     Ok(NativePublishedObject { object })
                                 }
@@ -295,6 +312,7 @@ impl NativePublicationWorker {
                             }
                             Command::Adopt { claim, response } => {
                                 let result = async {
+                                    owner.validate_claim(&claim)?;
                                     let object = owner.publisher()?.adopt(&claim).await?;
                                     Ok(NativePublishedObject { object })
                                 }

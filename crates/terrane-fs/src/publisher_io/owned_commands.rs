@@ -4,10 +4,12 @@ use std::fs::File;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 
-use terrane::host::publication::PublicationClaim;
+use terrane::host::publication::{PublicationClaim, PublicationRecipe};
 use terrane::store::{LocalFs, TokioClock, TokioLocalFs};
+use terrane_core::chunking::ChunkProfile;
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
+use super::super::bodies::{BodyIo, EncodedUnit};
 use super::{
     NativePublishedObject, NativePublisher, NativeRetirementPolicy, NativeSealProbe, WorkerState,
 };
@@ -217,6 +219,7 @@ struct RetainedBody {
     token: [u8; 32],
     file: File,
     location: Location,
+    encoded: Option<EncodedUnit>,
 }
 
 pub(super) struct CommandOwner {
@@ -227,6 +230,8 @@ pub(super) struct CommandOwner {
     bodies: Vec<RetainedBody>,
     leases: FsPublicationState<TokioLocalFs>,
     retirement: NativeRetirementPolicy,
+    body_io: BodyIo,
+    profile: ChunkProfile,
 }
 
 impl CommandOwner {
@@ -235,6 +240,8 @@ impl CommandOwner {
         publisher: Publisher<NativePublisher, WorkerState>,
         state_directory: PathBuf,
         retirement: NativeRetirementPolicy,
+        body_io: BodyIo,
+        profile: ChunkProfile,
     ) -> Self {
         Self {
             domain,
@@ -244,6 +251,8 @@ impl CommandOwner {
             bodies: Vec::new(),
             leases: FsPublicationState::new(TokioLocalFs, state_directory),
             retirement,
+            body_io,
+            profile,
         }
     }
 
@@ -251,6 +260,26 @@ impl CommandOwner {
         self.publisher
             .as_mut()
             .ok_or_else(|| io::Error::other("native publisher unavailable"))
+    }
+
+    pub(super) fn validate_claim(&self, claim: &PublicationClaim) -> io::Result<()> {
+        if claim.domain() != self.domain {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "publisher claim domain mismatch",
+            ));
+        }
+        let recipe = match claim.canonical_manifest() {
+            Some(bytes) => PublicationRecipe::Manifest {
+                object: claim.descriptor().clone(),
+                canonical_manifest: bytes.to_owned(),
+            },
+            None => PublicationRecipe::Inline {
+                chunk: claim.descriptor().clone(),
+            },
+        };
+        PublicationClaim::new(self.domain.clone(), recipe, &self.profile)?;
+        Ok(())
     }
 
     fn kernel<T>(
@@ -307,6 +336,7 @@ impl CommandOwner {
             token,
             file,
             location: Location::Canonical,
+            encoded: None,
         });
         Ok(NativeCommandResult::Published {
             object,
@@ -372,12 +402,7 @@ impl CommandOwner {
                 })
             }),
             NativeOperation::Publish { claim, source } => {
-                if claim.domain() != self.domain {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "publisher claim domain mismatch",
-                    ));
-                }
+                self.validate_claim(&claim)?;
                 if claim.manifest().is_some() {
                     return Err(unsupported(
                         "manifest publication requires actual metadata retention custody",
@@ -403,9 +428,7 @@ impl CommandOwner {
             NativeOperation::InspectBody { claim: Some(_), .. } => {
                 Err(invalid("unsealed inspection cannot carry a content claim"))
             }
-            NativeOperation::InspectBody { .. } => Err(unsupported(
-                "unsealed inspection awaits configured content roots",
-            )),
+            NativeOperation::InspectBody { key, .. } => self.inspect_encoded(key, false).await,
             NativeOperation::InspectPending { key } => self.inspect_pending(key).await,
             NativeOperation::Retire { key, incarnation } => {
                 self.transition(key, incarnation, Transition::Retire).await
@@ -425,9 +448,7 @@ impl CommandOwner {
 
     async fn inspect_pending(&mut self, key: NativeBodyKey) -> io::Result<NativeCommandResult> {
         let NativeBodyKey::Sealed { descriptor } = &key else {
-            return Err(unsupported(
-                "unsealed pending inspection awaits configured content roots",
-            ));
+            return self.inspect_encoded(key, true).await;
         };
         let file = self.kernel(|native| native.inspect_pending_sealed(descriptor))?;
         let metadata = file.metadata()?;
@@ -471,19 +492,106 @@ impl CommandOwner {
             token,
             file,
             location: Location::Pending,
+            encoded: None,
         });
         Ok(NativeCommandResult::Pending {
             incarnation: NativeBodyIncarnation(token),
         })
     }
 
-    async fn adopt(&mut self, claim: PublicationClaim) -> io::Result<NativeCommandResult> {
-        if claim.domain() != self.domain {
+    async fn inspect_encoded(
+        &mut self,
+        key: NativeBodyKey,
+        pending: bool,
+    ) -> io::Result<NativeCommandResult> {
+        let unit = match &key {
+            NativeBodyKey::Chunk { descriptor, codec } => {
+                self.body_io.inspect_chunk(descriptor, *codec, pending)?
+            }
+            NativeBodyKey::Pack { pack_id } => self.body_io.inspect_pack(pack_id, pending)?,
+            NativeBodyKey::Sealed { .. } => {
+                return Err(invalid("sealed inspection requires adoption"));
+            }
+        };
+        unit.sync_names(&self.body_io)?;
+        if pending {
+            for lease in unit.lease_inputs(&key)? {
+                self.leases
+                    .retirement_lease(
+                        &TokioClock,
+                        RetirementLeaseRequest {
+                            domain: &self.domain,
+                            key: &lease.key,
+                            incarnation: lease.incarnation,
+                            interval: self.retirement.interval(),
+                        },
+                    )
+                    .await?;
+            }
+        }
+        let handle = unit.handle()?;
+        for body in &mut self.bodies {
+            let same = match &body.encoded {
+                Some(previous) if body.key == key => previous.same_inode(&unit)?,
+                _ => false,
+            };
+            if same {
+                let token = body.token;
+                body.encoded = Some(unit);
+                body.location = if pending {
+                    Location::Pending
+                } else {
+                    Location::Canonical
+                };
+                return Ok(if pending {
+                    NativeCommandResult::Pending {
+                        incarnation: NativeBodyIncarnation(token),
+                    }
+                } else {
+                    NativeCommandResult::Inspected {
+                        body: NativeBodyHandle(handle),
+                        incarnation: NativeBodyIncarnation(token),
+                    }
+                });
+            }
+        }
+        if self.bodies.len() >= 4096 {
             return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "publisher claim domain mismatch",
+                io::ErrorKind::OutOfMemory,
+                "publisher incarnation budget exhausted",
             ));
         }
+        let token = TokioLocalFs
+            .random_bytes(32)
+            .await?
+            .try_into()
+            .map_err(|_| io::Error::other("invalid native random length"))?;
+        self.bodies.push(RetainedBody {
+            key,
+            claim: None,
+            token,
+            file: handle.try_clone()?,
+            location: if pending {
+                Location::Pending
+            } else {
+                Location::Canonical
+            },
+            encoded: Some(unit),
+        });
+        Ok(if pending {
+            NativeCommandResult::Pending {
+                incarnation: NativeBodyIncarnation(token),
+            }
+        } else {
+            NativeCommandResult::Inspected {
+                body: NativeBodyHandle(handle),
+                incarnation: NativeBodyIncarnation(token),
+            }
+        })
+    }
+
+    async fn adopt(&mut self, claim: PublicationClaim) -> io::Result<NativeCommandResult> {
+        self.validate_claim(&claim)?;
         if claim.manifest().is_some() {
             return Err(unsupported(
                 "manifest adoption requires actual metadata retention custody",
@@ -491,6 +599,80 @@ impl CommandOwner {
         }
         let object = self.publisher()?.adopt(&claim).await?;
         self.retain(claim, NativePublishedObject { object }).await
+    }
+
+    async fn transition_encoded(
+        &mut self,
+        index: usize,
+        key: &NativeBodyKey,
+        transition: Transition,
+    ) -> io::Result<NativeCommandResult> {
+        let location = self.bodies[index].location;
+        if matches!(transition, Transition::Retire) && location != Location::Canonical
+            || !matches!(transition, Transition::Retire) && location != Location::Pending
+        {
+            return Err(invalid("encoded body lifecycle state mismatch"));
+        }
+        let mut unit = self.bodies[index]
+            .encoded
+            .take()
+            .ok_or_else(|| io::Error::other("encoded unit unavailable"))?;
+        let result = async {
+            match transition {
+                Transition::Retire => {
+                    unit.retire(&self.body_io)?;
+                    for lease in unit.lease_inputs(key)? {
+                        self.leases
+                            .begin_retirement_lease(
+                                &TokioClock,
+                                RetirementLeaseRequest {
+                                    domain: &self.domain,
+                                    key: &lease.key,
+                                    incarnation: lease.incarnation,
+                                    interval: self.retirement.interval(),
+                                },
+                            )
+                            .await?;
+                    }
+                }
+                Transition::Restore => unit.restore(&self.body_io)?,
+                Transition::FinishNone => {
+                    for lease in unit.lease_inputs(key)? {
+                        let deadline = self
+                            .leases
+                            .retirement_lease(
+                                &TokioClock,
+                                RetirementLeaseRequest {
+                                    domain: &self.domain,
+                                    key: &lease.key,
+                                    incarnation: lease.incarnation,
+                                    interval: self.retirement.interval(),
+                                },
+                            )
+                            .await?;
+                        if !deadline.expired(&TokioClock)? {
+                            return Err(io::Error::new(
+                                io::ErrorKind::WouldBlock,
+                                "pending retirement lease has not expired",
+                            ));
+                        }
+                    }
+                    unit.finish(&self.body_io)?;
+                }
+            }
+            Ok(NativeCommandResult::Complete)
+        }
+        .await;
+        self.bodies[index].location = if unit.any_pending() {
+            Location::Pending
+        } else {
+            Location::Canonical
+        };
+        self.bodies[index].encoded = Some(unit);
+        if result.is_ok() && matches!(transition, Transition::FinishNone) {
+            self.bodies.remove(index);
+        }
+        result
     }
 
     async fn transition(
@@ -506,6 +688,9 @@ impl CommandOwner {
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::PermissionDenied, "unknown body incarnation")
             })?;
+        if self.bodies[index].encoded.is_some() {
+            return self.transition_encoded(index, &key, transition).await;
+        }
         let body = &self.bodies[index];
         let claim = body.claim.clone();
         let expected = body.file.try_clone()?;

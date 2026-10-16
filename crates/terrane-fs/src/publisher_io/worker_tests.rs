@@ -29,6 +29,7 @@ fn fixture(name: &str) -> [PathBuf; 4] {
     fs::create_dir(&root).unwrap();
     for name in ["chunks", "objects", "quarantine"] {
         fs::create_dir(root.join(name)).unwrap();
+        std::os::unix::fs::chown(root.join(name), Some(840), Some(845)).unwrap();
         fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o2770)).unwrap();
     }
     fs::create_dir(root.join("state")).unwrap();
@@ -48,11 +49,12 @@ fn fixture(name: &str) -> [PathBuf; 4] {
 fn configuration(root: &Path, wipe: NativeWipePolicy) -> NativePublisherConfig {
     NativePublisherConfig {
         domain: "public".into(),
+        profile: ChunkProfile::cdc_1m([0; 32]),
         layout_root: root.to_owned(),
         wipe,
         retirement: NativeRetirementPolicy::new(Duration::from_millis(10)).unwrap(),
-        content_uid: rustix::process::geteuid().as_raw(),
-        content_gid: rustix::process::getegid().as_raw(),
+        content_uid: 840,
+        content_gid: 845,
     }
 }
 
@@ -90,6 +92,7 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability() {
     let (worker, owner) = NativePublicationWorker::start_thread(
         configuration(paths[0].parent().unwrap(), NativeWipePolicy::None),
         Some(gate),
+        None,
     )
     .unwrap();
     assert!(
@@ -189,7 +192,7 @@ fn pending_restart_rebuilds_lease_and_requires_canonical_adoption() {
         domain: "public".into(),
         cache_incarnation: [1; 16],
     };
-    let (worker, owner) = NativePublicationWorker::start_thread(make_config(), None).unwrap();
+    let (worker, owner) = NativePublicationWorker::start_thread(make_config(), None, None).unwrap();
 
     let old_token = runtime.block_on(async {
         worker
@@ -258,7 +261,7 @@ fn pending_restart_rebuilds_lease_and_requires_canonical_adoption() {
         }
     }
     File::open(&paths[3]).unwrap().sync_all().unwrap();
-    let (worker, owner) = NativePublicationWorker::start_thread(make_config(), None).unwrap();
+    let (worker, owner) = NativePublicationWorker::start_thread(make_config(), None, None).unwrap();
     let context = NativeCommandContext {
         domain: "public".into(),
         cache_incarnation: [2; 16],
@@ -357,4 +360,343 @@ fn pending_restart_rebuilds_lease_and_requires_canonical_adoption() {
     });
     drop(worker);
     owner.join().unwrap();
+}
+
+fn shared_directory(path: &Path) {
+    fs::create_dir(path).unwrap();
+    std::os::unix::fs::chown(path, Some(840), Some(845)).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o2770)).unwrap();
+}
+
+fn shared_file(path: &Path, bytes: &[u8]) {
+    fs::write(path, bytes).unwrap();
+    std::os::unix::fs::chown(path, Some(840), Some(845)).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
+}
+
+fn pack_fixture(root: &Path, id: [u8; 16]) -> (PathBuf, PathBuf, String, String, Vec<u8>) {
+    use terrane_core::pack_format::{HEADER_SIZE, Header, PackView, Record, encode_pack};
+    let bytes = b"pack-payload";
+    let identity = TERRANE_V1.calculate(IdentityKind::Chunk, bytes).unwrap();
+    let mut body = vec![0];
+    body.extend_from_slice(bytes);
+    let record = Record {
+        hash: identity.digest().try_into().unwrap(),
+        offset: HEADER_SIZE as u64,
+        body_len: body.len() as u32,
+        plaintext_len: bytes.len() as u32,
+        codec: 0,
+        kind: 0,
+        dictionary_id: 0,
+    };
+    let pack = encode_pack(Header::new(id, false, false), &body, &[record]).unwrap();
+    let index = PackView::decode(&pack).unwrap().index_object();
+    let hex = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let id_hex = hex(&id);
+    shared_directory(&root.join("objects/pack"));
+    let shard = root.join("objects/pack").join(&id_hex[..2]);
+    shared_directory(&shard);
+    let pack_path = shard.join(format!("{id_hex}.pack"));
+    let index_path = shard.join(format!("{id_hex}.idx"));
+    shared_file(&pack_path, &pack);
+    shared_file(&index_path, &index);
+    let pack_pending = hex(TERRANE_V1
+        .calculate(IdentityKind::Pack, &pack)
+        .unwrap()
+        .digest());
+    let index_pending = hex(TERRANE_V1
+        .calculate(IdentityKind::Index, &index)
+        .unwrap()
+        .digest());
+    (pack_path, index_path, pack_pending, index_pending, pack)
+}
+
+#[test]
+#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
+fn pack_pair_reconciles_actual_partial_rename_without_replacing_collision() {
+    use super::{NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeOperation};
+    use std::io::Read;
+
+    let paths = fixture("worker-pack-partial-rename");
+    let root = paths[0].parent().unwrap();
+    let id = [0x31; 16];
+    let key = NativeBodyKey::Pack { pack_id: id };
+    let (pack, index, pack_name, index_name, expected) = pack_fixture(root, id);
+    let collision = paths[2].join(&index_name);
+    fs::write(&collision, b"unrelated pending inode").unwrap();
+    let context = NativeCommandContext {
+        domain: "public".into(),
+        cache_incarnation: [3; 16],
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (worker, owner) = NativePublicationWorker::start_thread(
+        configuration(root, NativeWipePolicy::None),
+        None,
+        None,
+    )
+    .unwrap();
+    runtime.block_on(async {
+        worker
+            .execute(context.clone(), NativeOperation::Drain)
+            .await
+            .unwrap();
+        worker
+            .execute(context.clone(), NativeOperation::Resume)
+            .await
+            .unwrap();
+        let result = worker
+            .execute(
+                context.clone(),
+                NativeOperation::InspectBody {
+                    key: key.clone(),
+                    claim: None,
+                },
+            )
+            .await
+            .unwrap();
+        let NativeCommandResult::Inspected { body, incarnation } = result else {
+            panic!("unsealed custody result")
+        };
+        drop(body);
+        let error = worker
+            .execute(
+                context.clone(),
+                NativeOperation::Retire {
+                    key: key.clone(),
+                    incarnation: *incarnation.bytes(),
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    });
+    assert!(!pack.exists());
+    assert!(index.exists());
+    assert!(paths[2].join(pack_name).exists());
+    assert_eq!(fs::read(&collision).unwrap(), b"unrelated pending inode");
+    drop(worker);
+    owner.join().unwrap();
+
+    fs::remove_file(&collision).unwrap();
+    let (worker, owner) = NativePublicationWorker::start_thread(
+        configuration(root, NativeWipePolicy::None),
+        None,
+        None,
+    )
+    .unwrap();
+    runtime.block_on(async {
+        worker
+            .execute(context.clone(), NativeOperation::Drain)
+            .await
+            .unwrap();
+        let result = worker
+            .execute(
+                context.clone(),
+                NativeOperation::InspectPending { key: key.clone() },
+            )
+            .await
+            .unwrap();
+        let NativeCommandResult::Pending { incarnation } = result else {
+            panic!("lifecycle-only pair result")
+        };
+        assert!(
+            !index.exists(),
+            "recovery reconciles canonical index into the pending unit"
+        );
+        worker
+            .execute(
+                context.clone(),
+                NativeOperation::Restore {
+                    key: key.clone(),
+                    incarnation: *incarnation.bytes(),
+                },
+            )
+            .await
+            .unwrap();
+        let result = worker
+            .execute(
+                context.clone(),
+                NativeOperation::InspectBody { key, claim: None },
+            )
+            .await
+            .unwrap();
+        let NativeCommandResult::Inspected { body, .. } = result else {
+            panic!("unsealed body, no serving proof")
+        };
+        let mut actual = Vec::new();
+        body.into_handle().read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+    });
+    assert!(pack.exists() && index.exists());
+    drop(worker);
+    owner.join().unwrap();
+}
+
+#[test]
+#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
+fn failed_second_unlink_recovers_orphan_index_without_pack_authority() {
+    use super::{NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeOperation};
+
+    let paths = fixture("worker-pack-partial-unlink");
+    let root = paths[0].parent().unwrap();
+    let id = [0x42; 16];
+    let key = NativeBodyKey::Pack { pack_id: id };
+    let (pack, index, pack_name, index_name, _) = pack_fixture(root, id);
+    let survivor = root.join("index-survivor");
+    fs::hard_link(&index, &survivor).unwrap();
+    let make_config = || {
+        let mut config = configuration(root, NativeWipePolicy::None);
+        config.retirement = NativeRetirementPolicy::new(Duration::from_millis(1)).unwrap();
+        config
+    };
+    let (arrived_sender, arrived) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let gate = WorkerGate {
+        arrived: arrived_sender,
+        release: Mutex::new(released),
+    };
+    let (worker, owner) =
+        NativePublicationWorker::start_thread(make_config(), None, Some(gate)).unwrap();
+    let context = NativeCommandContext {
+        domain: "public".into(),
+        cache_incarnation: [4; 16],
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let token = runtime.block_on(async {
+        worker
+            .execute(context.clone(), NativeOperation::Drain)
+            .await
+            .unwrap();
+        worker
+            .execute(context.clone(), NativeOperation::Resume)
+            .await
+            .unwrap();
+        let result = worker
+            .execute(
+                context.clone(),
+                NativeOperation::InspectBody {
+                    key: key.clone(),
+                    claim: None,
+                },
+            )
+            .await
+            .unwrap();
+        let NativeCommandResult::Inspected { body, incarnation } = result else {
+            panic!("actual pair custody")
+        };
+        drop(body);
+        let token = *incarnation.bytes();
+        worker
+            .execute(
+                context.clone(),
+                NativeOperation::Retire {
+                    key: key.clone(),
+                    incarnation: token,
+                },
+            )
+            .await
+            .unwrap();
+        token
+    });
+    std::thread::sleep(Duration::from_millis(30));
+    let requester = worker.clone();
+    let request_context = context.clone();
+    let request_key = key.clone();
+    let waiting = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(requester.execute(
+            request_context,
+            NativeOperation::FinishRetirement {
+                key: request_key,
+                incarnation: token,
+            },
+        ))
+    });
+    arrived.recv_timeout(Duration::from_secs(20)).unwrap();
+    assert!(
+        !paths[2].join(pack_name).exists(),
+        "first actual unlink and fsync completed"
+    );
+    let index_pending = paths[2].join(index_name);
+    fs::remove_file(&index_pending).unwrap();
+    fs::create_dir(&index_pending).unwrap();
+    release.send(()).unwrap();
+    assert!(
+        waiting.join().unwrap().is_err(),
+        "the second actual unlink must fail on a directory"
+    );
+    assert!(
+        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err(),
+        "failure retains publisher custody"
+    );
+    fs::remove_dir(&index_pending).unwrap();
+    fs::hard_link(&survivor, &index_pending).unwrap();
+    File::open(&paths[2]).unwrap().sync_all().unwrap();
+    drop(worker);
+    owner.join().unwrap();
+
+    let (worker, owner) = NativePublicationWorker::start_thread(make_config(), None, None).unwrap();
+    let token = runtime.block_on(async {
+        worker
+            .execute(context.clone(), NativeOperation::Drain)
+            .await
+            .unwrap();
+        let result = worker
+            .execute(
+                context.clone(),
+                NativeOperation::InspectPending { key: key.clone() },
+            )
+            .await
+            .unwrap();
+        let NativeCommandResult::Pending { incarnation } = result else {
+            panic!("orphan grants no FD or binding")
+        };
+        let token = *incarnation.bytes();
+        let error = worker
+            .execute(
+                context.clone(),
+                NativeOperation::Restore {
+                    key: key.clone(),
+                    incarnation: token,
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "index cannot establish missing pack bytes"
+        );
+        token
+    });
+    std::thread::sleep(Duration::from_millis(30));
+    runtime
+        .block_on(worker.execute(
+            context,
+            NativeOperation::FinishRetirement {
+                key,
+                incarnation: token,
+            },
+        ))
+        .unwrap();
+    assert!(!pack.exists() && !index.exists() && !index_pending.exists());
+    drop(worker);
+    owner.join().unwrap();
+    fs::remove_file(survivor).unwrap();
 }

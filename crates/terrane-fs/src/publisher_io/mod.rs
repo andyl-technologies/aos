@@ -4,6 +4,8 @@
 //! the registered local protocol adapter. One adapter owns one domain; callers
 //! cannot select another directory by changing a content claim.
 
+#[cfg(feature = "tokio")]
+mod bodies;
 mod native;
 #[cfg(feature = "tokio")]
 mod worker;

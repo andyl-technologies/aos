@@ -10,6 +10,7 @@ use rustix::fs::{self, AtFlags, Mode, OFlags, ResolveFlags};
 use terrane::host::publication::{
     AdoptionFailure, PublicationClaim, PublicationKernel, VerityBinding,
 };
+#[cfg(feature = "tokio")]
 use terrane_core::identity::Descriptor;
 use terrane_core::properties::Domain;
 
@@ -377,6 +378,7 @@ impl NativePublisher {
         shard.sync_all()
     }
 
+    #[cfg(feature = "tokio")]
     pub(super) fn retire_checked(
         &mut self,
         claim: &PublicationClaim,
@@ -389,6 +391,7 @@ impl NativePublisher {
 
     // This observation intentionally does not measure verity or hash bytes.
     // A pending sealed entry may be corrupt and still need safe retirement.
+    #[cfg(feature = "tokio")]
     pub(super) fn inspect_pending_sealed(&self, descriptor: &Descriptor) -> io::Result<File> {
         let name: String = descriptor
             .digest()
@@ -429,6 +432,7 @@ impl NativePublisher {
         Ok(file)
     }
 
+    #[cfg(feature = "tokio")]
     pub(super) fn restore_pending_sealed(
         &mut self,
         descriptor: &Descriptor,
@@ -453,6 +457,7 @@ impl NativePublisher {
         shard.sync_all()
     }
 
+    #[cfg(feature = "tokio")]
     pub(super) fn finish_pending_sealed(
         &mut self,
         descriptor: &Descriptor,
@@ -467,20 +472,6 @@ impl NativePublisher {
             .collect();
         fs::unlinkat(&self.pending, name.as_str(), AtFlags::empty())?;
         self.pending.sync_all()
-    }
-
-    fn open_pending(&self, claim: &PublicationClaim) -> io::Result<File> {
-        self.check_claim(claim)?;
-        let current = File::from(fs::openat(
-            &self.pending,
-            name(claim).as_str(),
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?);
-        if !current.metadata()?.is_file() {
-            return Err(invalid("pending body is not a regular inode"));
-        }
-        Ok(current)
     }
 
     /// Unlinks an expired pending inode for a domain with `wipe = none`.
@@ -531,6 +522,7 @@ impl NativePublisher {
     }
 }
 
+#[cfg(feature = "tokio")]
 fn compare_inode(expected: &File, actual: &File) -> io::Result<()> {
     let expected = expected.metadata()?;
     let actual = actual.metadata()?;

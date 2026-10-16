@@ -101,7 +101,9 @@
       for worker_case in \
         canceled_waiter_retains_owner_through_actual_binding_durability \
         startup_reports_actual_private_state_recovery_failure \
-        pending_restart_rebuilds_lease_and_requires_canonical_adoption; do
+        pending_restart_rebuilds_lease_and_requires_canonical_adoption \
+        pack_pair_reconciles_actual_partial_rename_without_replacing_collision \
+        failed_second_unlink_recovers_orphan_index_without_pack_authority; do
         worker_selector="publisher_io::worker::tests::$worker_case"
         grep -Fx "$worker_selector: test" /var/lib/terrane-publication/worker-inventory.log
         if ! ${image}/bin/terrane-publication-worker-tests --ignored --exact \
