@@ -26,50 +26,6 @@ use super::{
     InventorySummaryReceipt, PlannedDeleteDisposition, PutBatchReceipt, PutReceipt, StoreError,
 };
 
-const MAX_PHYSICAL_QUOTA_POLICY_ID_BYTES: usize = 512;
-const MAX_PHYSICAL_QUOTA_POLICY_SEGMENT_BYTES: usize = 255;
-
-/// Validated non-secret identity of one physical-filesystem quota policy.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StorePhysicalQuotaPolicyId(String);
-
-impl StorePhysicalQuotaPolicyId {
-    /// Validates one bounded slash-separated quota-policy identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::InvalidComposition`] when the value is empty,
-    /// exceeds 512 bytes, contains an empty, `.` or `..` segment, has a segment
-    /// longer than 255 bytes, or uses characters outside ASCII letters,
-    /// digits, `.`, `_`, and `-`.
-    pub fn new(value: impl Into<String>) -> Result<Self, StoreError> {
-        let value = value.into();
-        let valid = !value.is_empty()
-            && value.len() <= MAX_PHYSICAL_QUOTA_POLICY_ID_BYTES
-            && value.split('/').all(|segment| {
-                !segment.is_empty()
-                    && segment.len() <= MAX_PHYSICAL_QUOTA_POLICY_SEGMENT_BYTES
-                    && segment != "."
-                    && segment != ".."
-                    && segment.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-                    })
-            });
-        if !valid {
-            return Err(StoreError::InvalidComposition {
-                reason: "store physical-quota policy identifier is invalid",
-            });
-        }
-        Ok(Self(value))
-    }
-
-    /// Returns the validated policy identifier spelling.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 /// Bound authority for one exact kernel-enforced physical quota incarnation.
 pub trait StorePhysicalQuotaGuard: Send + Sync {
     /// Checks original provider authority using its own precharged error slot.
@@ -104,6 +60,21 @@ pub trait StorePhysicalQuotaGuard: Send + Sync {
         Err(StoreError::Unsupported {
             capability: "decoded-metadata-limit",
         })
+    }
+
+    /// Executes one scoped Packed manifest read under this physical owner.
+    ///
+    /// The request is created only by the checked Packed reader. Implementors
+    /// may use their existing service-owned cache; the default retains the
+    /// original single-manifest path. Cached rows grant no read authority.
+    ///
+    /// # Errors
+    /// Returns original, integrity, physical ownership or resource refusal.
+    fn read_packed_manifest(
+        &self,
+        request: &mut super::PackedManifestRead<'_>,
+    ) -> Result<(), StoreError> {
+        request.without_retention()
     }
 
     /// Opens an isolated GC mark backend under this exact retained namespace.
@@ -212,8 +183,10 @@ pub trait StorePhysicalQuotaBinder: Send + Sync {
 }
 
 mod binder_handle;
+mod policy_id;
 
 pub use binder_handle::StorePhysicalQuotaBinderHandle;
+pub use policy_id::StorePhysicalQuotaPolicyId;
 
 /// External physical-quota capabilities used while constructing a store graph.
 #[derive(Default)]

@@ -20,13 +20,15 @@ use crate::content_store::{
 use crate::owned_decode::DecodeBudget;
 
 mod archive_sender;
+mod cost;
 mod pending_publication;
+mod shared_metadata;
 
 const VOLUME_BYTES: u64 = 512 << 20;
 const VOLUME_PAGES: u64 = VOLUME_BYTES / 4096;
 const VOLUME_OBJECTS: u64 = 3 * VOLUME_PAGES;
 
-struct Binder(Arc<FixtureRamQuota>);
+struct Binder(Arc<dyn StorePhysicalQuotaGuard>);
 
 impl StorePhysicalQuotaBinder for Binder {
     fn bind(
@@ -75,6 +77,16 @@ impl Fixture {
         quota: Arc<FixtureRamQuota>,
         admitted_kinds: BTreeSet<ObjectKind>,
     ) -> Self {
+        let guard: Arc<dyn StorePhysicalQuotaGuard> = quota.clone();
+        Self::with_guard(root, quota, guard, admitted_kinds)
+    }
+
+    fn with_guard(
+        root: &Path,
+        quota: Arc<FixtureRamQuota>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+        admitted_kinds: BTreeSet<ObjectKind>,
+    ) -> Self {
         let physical = StoreNodeId::new("physical").unwrap();
         let packed = StoreNodeId::new("packed").unwrap();
         let policy = StorePhysicalQuotaPolicyId::new("model/packed-volume").unwrap();
@@ -82,7 +94,7 @@ impl Fixture {
         binders
             .insert(
                 policy.clone(),
-                StorePhysicalQuotaBinderHandle::new(Binder(quota.clone())),
+                StorePhysicalQuotaBinderHandle::new(Binder(guard)),
             )
             .unwrap();
         let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
@@ -262,32 +274,12 @@ fn packed_incompressible_512_mib_capture_archive_restore_and_repack() {
 
 #[test]
 fn packed_repack_depth_first_read_costs() {
-    let directory = tempfile::tempdir().unwrap();
-    let fixture = Fixture::new(directory.path());
-    let pages = (32 << 20) / 4096;
-    let root = capture_pages(&fixture, pages);
-    assert_restored(&fixture, &root, pages, "cost_before_repack");
-    let before = crate::content_store::packed_read_costs();
+    cost::assert_repack_read_costs(32 << 20);
+}
 
-    let repack = fixture.admin.packed_repack();
-    let plan = repack[0]
-        .plan_repack_with_boundary(&fixture.original, &mut || Ok(()))
-        .unwrap();
-    let report = repack[0]
-        .apply_repack_with_boundary(&fixture.original, &plan, &mut || Ok(()))
-        .unwrap();
-    assert_eq!(report.before().logical_objects(), 3 * pages);
-    assert_eq!(report.after().logical_objects(), 3 * pages);
-    assert_restored(&fixture, &root, pages, "cost_after_repack");
-    let after = crate::content_store::packed_read_costs();
-
-    assert_eq!(before.lookups, 3 * pages - 1);
-    assert_eq!(after.lookups, before.lookups);
-    assert!(before.authenticated_manifests > 0);
-    assert!(after.authenticated_manifests > 0);
-    assert!(after.authenticated_manifests <= after.pack_switches);
-    // crucible-lint: allow direct-diagnostic -- counts real same-root reads, not permissions or performance parity.
-    eprintln!("packed_repack_dfs_costs pages={pages} before={before:?} after={after:?}");
+#[test]
+fn packed_repack_512_mib_depth_first_read_costs() {
+    cost::assert_repack_read_costs(VOLUME_BYTES);
 }
 
 fn exercise_volume(bytes: u64) {

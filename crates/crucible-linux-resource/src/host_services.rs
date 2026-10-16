@@ -248,6 +248,57 @@ impl HostServiceAllocator {
         Ok((first.into_lease(), second.into_lease()))
     }
 
+    /// Reclaims retained storage before admitting the same two byte accounts.
+    ///
+    /// The callback receives the current resident shortfall, without any
+    /// accounting lock held. It must physically destroy reclaimable bodies and
+    /// their leases before reporting freed bytes. The final paired reservation
+    /// rechecks both real counters; a snapshot or callback grants no capacity.
+    /// Concurrent admissions can still cause that final reservation to refuse.
+    ///
+    /// # Errors
+    /// Refuses empty requests, arithmetic overflow,
+    /// poisoned ownership, callback failure, or exhausted final admission.
+    pub fn reserve_paired_bytes_reclaiming(
+        &self,
+        other: &Self,
+        bytes: u64,
+        reclaim: impl FnOnce(u64) -> Result<u64, HostServiceError>,
+    ) -> Result<(HostServiceLease, HostServiceLease), HostServiceError> {
+        if bytes == 0 {
+            return Err(HostServiceError::InvalidContract);
+        }
+        let required = if self == other {
+            self.resident_shortfall(
+                bytes
+                    .checked_mul(2)
+                    .ok_or(HostServiceError::CapacityExhausted)?,
+            )?
+        } else {
+            self.resident_shortfall(bytes)?
+                .max(other.resident_shortfall(bytes)?)
+        };
+        if required != 0 {
+            // A concurrent physical close may refund other leases during the
+            // callback. Only the final real counters decide admission.
+            let _freed = reclaim(required)?;
+        }
+        self.reserve_paired_bytes(other, bytes)
+    }
+
+    fn resident_shortfall(&self, bytes: u64) -> Result<u64, HostServiceError> {
+        let used = self
+            .capacity
+            .used
+            .lock()
+            .map_err(|_| HostServiceError::Unavailable)?;
+        let requested = used
+            .resident_bytes
+            .checked_add(bytes)
+            .ok_or(HostServiceError::CapacityExhausted)?;
+        Ok(requested.saturating_sub(self.capacity.resident_bytes))
+    }
+
     // Only the fixed lease and identity completions are used here. Their
     // owner remains live before commit, through unlock, and into completion.
     fn reserve_completed<T>(
@@ -505,6 +556,53 @@ mod tests {
             account.probe_one_resident_byte(),
             ResidentProbe::Refused(HostServiceError::Unavailable)
         ));
+    }
+
+    #[test]
+    fn reclaiming_pair_reports_actual_shortfall_before_any_new_lease_control() {
+        let first = HostServiceAllocator::new(1, 1, 100).unwrap();
+        let second = HostServiceAllocator::new(1, 1, 100).unwrap();
+        let mut retained = Some(first.reserve_paired_bytes(&second, 70).unwrap());
+        LEASE_CONTROL_CONSTRUCTIONS.with(|count| count.set(0));
+        let pair = first
+            .reserve_paired_bytes_reclaiming(&second, 60, |required| {
+                assert_eq!(required, 30);
+                assert_eq!(LEASE_CONTROL_CONSTRUCTIONS.with(std::cell::Cell::get), 0);
+                // Both original accounting mutexes are free during physical close.
+                assert!(first.capacity.used.try_lock().is_ok());
+                assert!(second.capacity.used.try_lock().is_ok());
+                drop(retained.take());
+                Ok(70)
+            })
+            .unwrap();
+        assert_eq!(first.observed_resident_bytes(), Some(60));
+        assert_eq!(second.observed_resident_bytes(), Some(60));
+        assert_eq!(LEASE_CONTROL_CONSTRUCTIONS.with(std::cell::Cell::get), 2);
+        drop(pair);
+        assert!(first.reserve_paired_bytes(&second, 100).is_ok());
+    }
+
+    #[test]
+    fn reclaiming_observation_never_replaces_actual_pair_admission() {
+        let first = HostServiceAllocator::new(1, 1, 100).unwrap();
+        let second = HostServiceAllocator::new(1, 1, 100).unwrap();
+        let retained = first.reserve_paired_bytes(&second, 70).unwrap();
+        LEASE_CONTROL_CONSTRUCTIONS.with(|count| count.set(0));
+        assert_eq!(
+            first
+                .reserve_paired_bytes_reclaiming(&second, 60, |_| Ok(70))
+                .unwrap_err(),
+            HostServiceError::CapacityExhausted,
+            "claimed reclamation grants no bytes"
+        );
+        assert_eq!(LEASE_CONTROL_CONSTRUCTIONS.with(std::cell::Cell::get), 0);
+        drop(retained);
+        let pair = first
+            .reserve_paired_bytes_reclaiming(&second, 100, |_| {
+                panic!("already admitted work does not run a reclamation callback")
+            })
+            .unwrap();
+        drop(pair);
     }
 
     #[test]

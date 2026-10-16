@@ -9,15 +9,33 @@ use std::os::unix::fs::FileExt;
 const BYTES: u64 = 4 << 20;
 const FDS: u64 = 8;
 
-struct Quota(FixtureResourceBudget);
+struct Quota(
+    FixtureResourceBudget,
+    super::super::shared_cache::PackedManifestCache<ResourceLoan>,
+    u64,
+);
 
 impl StorePhysicalQuotaGuard for Quota {
+    fn read_packed_manifest(
+        &self,
+        request: &mut crate::content_store::PackedManifestRead<'_>,
+    ) -> Result<(), StoreError> {
+        request.retain_in(&self.1, |bytes, check| {
+            check()?;
+            assert!(
+                self.1.reclaim(0)?.is_some(),
+                "admission never holds the cache mutex"
+            );
+            self.0.reserve_with_control(bytes)
+        })
+    }
+
     fn verify(&self) -> Result<(), StoreError> {
         Ok(())
     }
 
     fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
-        Ok(BYTES)
+        Ok(self.2)
     }
 
     fn reserve_resources(&self, fds: u64, bytes: u64) -> Result<ResourceLoan, StoreError> {
@@ -35,12 +53,23 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_pack_batches(&[64, 64], BYTES, 1 << 20)
+    }
+
+    fn with_pack_batches(batches: &[usize], metadata_bytes: u64, cache_bytes: u64) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let backend =
             PackedBlobBackend::open("view", directory.path(), MIN_TARGET_PACK_BYTES).unwrap();
-        let quota = Arc::new(Quota(FixtureResourceBudget::new(FDS, BYTES)));
+        let quota = Arc::new(Quota(
+            FixtureResourceBudget::new(FDS, metadata_bytes),
+            super::super::shared_cache::PackedManifestCache::new(
+                cache_bytes,
+                FixtureResourceBudget::loan_control_bytes(),
+            ),
+            metadata_bytes,
+        ));
         let original = DecodeBudget::for_store(quota.clone()).unwrap();
-        let objects = (0_u64..128)
+        let objects = (0..batches.iter().sum::<usize>() as u64)
             .map(|index| {
                 let bytes = index.to_be_bytes().repeat(3);
                 (
@@ -49,11 +78,14 @@ impl Fixture {
                 )
             })
             .collect::<Vec<_>>();
-        for batch in objects.chunks(64) {
+        let mut offset = 0;
+        for &count in batches {
+            let batch = &objects[offset..offset + count];
             let receipt = backend
                 .put_many_if_absent_with_boundary(&original, batch, &mut || Ok(()))
                 .unwrap();
             drop(receipt.accept_with_boundary(&mut || Ok(())).unwrap());
+            offset += count;
         }
         Self {
             _directory: directory,
@@ -77,7 +109,9 @@ fn pinned_view_reuses_one_pack_and_keeps_actual_sources_after_view_close() {
     let mut saved = None;
     for (id, expected) in &fixture.objects {
         let handle = reader
-            .lookup(&fixture.backend, &fixture.original, *id, &mut || Ok(()))
+            .lookup(&fixture.backend, &fixture.original, *id, None, &mut || {
+                Ok(())
+            })
             .unwrap();
         let bytes = handle
             .read_all_with_boundary(&fixture.original, 24, &mut || Ok(()))
@@ -113,16 +147,24 @@ fn actual_pack_mutation_refuses_cached_metadata_and_old_handle_at_eof() {
         .unwrap();
     let id = fixture.objects[0].0;
     let handle = reader
-        .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+        .lookup(
+            &fixture.backend,
+            &fixture.original,
+            id,
+            None,
+            &mut || Ok(()),
+        )
         .unwrap();
     let pack = reader.last_pack.as_ref().unwrap();
     let position = pack
         .manifest
+        .as_ref()
+        .unwrap()
         .entries
         .binary_search_by_key(&id, |entry| entry.id)
         .unwrap();
-    let entry = &pack.manifest.entries[position];
-    let name = index_io::pack_name(pack.manifest.id);
+    let entry = &pack.manifest.as_ref().unwrap().entries[position];
+    let name = index_io::pack_name(pack.id);
     let path = fixture
         .backend
         .packs
@@ -131,7 +173,7 @@ fn actual_pack_mutation_refuses_cached_metadata_and_old_handle_at_eof() {
     writable.write_all_at(&[0xee], entry.offset).unwrap();
     drop(writable);
     assert!(
-        matches!(reader.lookup(&fixture.backend, &fixture.original, id, &mut || Ok(())), Err(StoreError::Corrupt { id: found }) if found == id)
+        matches!(reader.lookup(&fixture.backend, &fixture.original, id, None, &mut || Ok(())), Err(StoreError::Corrupt { id: found }) if found == id)
     );
     assert!(
         matches!(handle.read_all_with_boundary(&fixture.original, 24, &mut || Ok(())), Err(StoreError::Corrupt { id: found }) if found == id)
@@ -153,11 +195,17 @@ fn original_refusal_and_unwind_close_view_fds_and_all_paid_buffers() {
             .unwrap();
         let id = fixture.objects[0].0;
         let handle = reader
-            .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                id,
+                None,
+                &mut || Ok(()),
+            )
             .unwrap();
         drop(handle);
         let error = reader
-            .lookup(&fixture.backend, &fixture.original, id, &mut || {
+            .lookup(&fixture.backend, &fixture.original, id, None, &mut || {
                 Err(StoreError::Unauthorized)
             })
             .err()
@@ -203,12 +251,24 @@ fn cached_root_still_rereads_and_refuses_a_changed_arena_page() {
     let id = fixture.objects[0].0;
     drop(
         reader
-            .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                id,
+                None,
+                &mut || Ok(()),
+            )
             .unwrap(),
     );
     drop(
         reader
-            .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                id,
+                None,
+                &mut || Ok(()),
+            )
             .unwrap(),
     );
     assert_eq!(reader.root.as_ref().unwrap().identical_reads, 1);
@@ -224,7 +284,13 @@ fn cached_root_still_rereads_and_refuses_a_changed_arena_page() {
     drop(writable);
 
     let error = reader
-        .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+        .lookup(
+            &fixture.backend,
+            &fixture.original,
+            id,
+            None,
+            &mut || Ok(()),
+        )
         .err()
         .unwrap();
     assert!(matches!(error, StoreError::Incompatible));
@@ -254,7 +320,9 @@ fn canonical_session_reuses_one_manifest_without_retaining_descriptors_or_locks(
     );
     for (id, expected) in &fixture.objects[..2] {
         let handle = session
-            .lookup(&fixture.backend, &fixture.original, *id, &mut || Ok(()))
+            .lookup(&fixture.backend, &fixture.original, *id, None, &mut || {
+                Ok(())
+            })
             .unwrap();
         let bytes = handle
             .read_all_with_boundary(&fixture.original, 24, &mut || Ok(()))
@@ -281,6 +349,7 @@ fn canonical_session_reuses_one_manifest_without_retaining_descriptors_or_locks(
             &fixture.backend,
             &fixture.original,
             fixture.objects[0].0,
+            None,
             &mut || Ok(()),
         )
         .unwrap();
@@ -307,7 +376,13 @@ fn canonical_session_reopens_replaced_pack_before_reusing_manifest() {
     let id = fixture.objects[0].0;
     drop(
         session
-            .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                id,
+                None,
+                &mut || Ok(()),
+            )
             .unwrap(),
     );
     let retained = fixture.quota.0.usage().unwrap();
@@ -318,10 +393,16 @@ fn canonical_session_reopens_replaced_pack_before_reusing_manifest() {
         .unwrap();
     drop(
         reader
-            .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                id,
+                None,
+                &mut || Ok(()),
+            )
             .unwrap(),
     );
-    let name = index_io::pack_name(reader.last_pack.as_ref().unwrap().manifest.id);
+    let name = index_io::pack_name(reader.last_pack.as_ref().unwrap().id);
     let path = fixture
         .backend
         .packs
@@ -332,7 +413,13 @@ fn canonical_session_reopens_replaced_pack_before_reusing_manifest() {
     std::fs::rename(&path, &previous).unwrap();
     std::fs::write(&path, []).unwrap();
     let error = session
-        .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+        .lookup(
+            &fixture.backend,
+            &fixture.original,
+            id,
+            None,
+            &mut || Ok(()),
+        )
         .err()
         .unwrap();
     assert!(matches!(error, StoreError::Corrupt { id: found } if found == id));
@@ -353,13 +440,19 @@ fn canonical_session_original_refusal_precedes_fresh_path_and_keeps_paid_metadat
     let id = fixture.objects[0].0;
     drop(
         session
-            .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                id,
+                None,
+                &mut || Ok(()),
+            )
             .unwrap(),
     );
     let retained = fixture.quota.0.usage().unwrap();
     let mut cuts = 0;
     let error = session
-        .lookup(&fixture.backend, &fixture.original, id, &mut || {
+        .lookup(&fixture.backend, &fixture.original, id, None, &mut || {
             cuts += 1;
             Err(StoreError::Unauthorized)
         })
@@ -383,14 +476,24 @@ fn canonical_session_refuses_another_original_without_transferring_cache_credit(
     let id = fixture.objects[0].0;
     drop(
         session
-            .lookup(&fixture.backend, &fixture.original, id, &mut || Ok(()))
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                id,
+                None,
+                &mut || Ok(()),
+            )
             .unwrap(),
     );
     let retained = fixture.quota.0.usage().unwrap();
     assert!(matches!(
-        session.lookup(&fixture.backend, &other.original, id, &mut || Ok(())),
+        session.lookup(&fixture.backend, &other.original, id, None, &mut || Ok(())),
         Err(StoreError::Incompatible)
     ));
     assert_eq!(other.quota.0.usage().unwrap(), before);
     assert_eq!(fixture.quota.0.usage().unwrap(), retained);
 }
+
+mod shared_cache;
+
+mod costs;

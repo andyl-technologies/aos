@@ -90,7 +90,7 @@ fn original_physical_guard_refuses_body_after_successful_cached_lookup() {
             |caller: &DecodeBudget,
              requested,
              boundary: &mut dyn FnMut() -> Result<(), StoreError>| {
-                let handle = reader.lookup(&backend, caller, requested, boundary)?;
+                let handle = reader.lookup(&backend, caller, requested, None, boundary)?;
                 physical.closed.store(true, Ordering::SeqCst);
                 Ok(handle)
             };
@@ -211,7 +211,7 @@ fn original_expiry_at_authenticated_eof_refuses_bytes_and_keeps_committed_root()
                 |caller: &DecodeBudget,
                  requested,
                  boundary: &mut dyn FnMut() -> Result<(), StoreError>| {
-                    let handle = reader.lookup(&backend, caller, requested, boundary)?;
+                    let handle = reader.lookup(&backend, caller, requested, None, boundary)?;
                     let observed = ExpireAtEof {
                         source: handle.clone(),
                         supervisor: supervisor.clone(),

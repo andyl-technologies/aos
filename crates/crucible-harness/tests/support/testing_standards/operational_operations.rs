@@ -9,6 +9,9 @@ use super::{
     source_pattern,
 };
 
+#[path = "operational_operations/cache.rs"]
+mod cache;
+
 struct Companion {
     path: &'static str,
     required: &'static [(&'static str, usize)],
@@ -649,10 +652,13 @@ const CONTRACTS: &[Contract] = &[
     },
 ];
 
+fn contracts() -> impl Iterator<Item = &'static Contract> {
+    CONTRACTS.iter().chain(cache::CONTRACTS)
+}
+
 pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
-    let Some(contract) = CONTRACTS
-        .iter()
-        .find(|contract| contract.package == package && contract.target == target)
+    let Some(contract) =
+        contracts().find(|contract| contract.package == package && contract.target == target)
     else {
         return code.to_owned();
     };
@@ -739,7 +745,7 @@ fn continuation_waits_require_original_posts_and_physical_custody()
             .iter()
             .any(|finding| finding.contains("`retry`") || finding.contains("`thread::sleep`"))
     };
-    for contract in CONTRACTS {
+    for contract in contracts() {
         let source = std::fs::read_to_string(
             root.join("crates")
                 .join(contract.package)
@@ -785,6 +791,15 @@ fn continuation_waits_require_original_posts_and_physical_custody()
                 compact_code(&code).match_indices(&obligation).count(),
                 *count
             );
+            if *count == 0 {
+                let added = format!("{code}\n{obligation}");
+                assert!(
+                    rejects(&added, &companions),
+                    "new clock or phase constructor was masked: {} {requirement}",
+                    contract.target
+                );
+                continue;
+            }
             let changed =
                 replace_one_obligation(&code, &obligation, " removed_original_obligation() ");
             assert!(
@@ -801,6 +816,16 @@ fn continuation_waits_require_original_posts_and_physical_custody()
                     compact_code(&source).match_indices(&obligation).count(),
                     *count
                 );
+                if *count == 0 {
+                    let mut changed = companions.clone();
+                    changed[index] = format!("{source}\n{obligation}");
+                    assert!(
+                        rejects(&code, &changed),
+                        "new companion clock was masked: {} {requirement}",
+                        binding.path
+                    );
+                    continue;
+                }
                 let mut changed = companions.clone();
                 changed[index] =
                     replace_one_obligation(&source, &obligation, " removed_original_obligation() ");

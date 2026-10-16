@@ -171,7 +171,7 @@ impl BoundedReadRequest<'_, '_> {
                     if let Some(admit) = admission {
                         admit(id)?;
                     }
-                    reader.lookup(backend, original, id, boundary)
+                    reader.lookup(backend, original, id, selected_physical(physical), boundary)
                 };
             let mut verify = |original: &crate::owned_decode::DecodeBudget| {
                 if let (Some(admit), Some(id)) = (admission, selected.get()) {

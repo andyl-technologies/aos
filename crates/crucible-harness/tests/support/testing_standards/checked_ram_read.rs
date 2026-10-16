@@ -109,7 +109,8 @@ const INPUTS: &[Input] = &[
             "let previous = self.inventory_admission;",
             "if let Some(previous) = previous { previous(id)?; } admit(id)",
             "inventory_admission: Some(&admitted)",
-            "selected.set(Some(id)); reader.lookup(backend, original, id, boundary)",
+            "selected.set(Some(id)); reader.lookup(backend, original, id, selected_physical(physical), boundary)",
+            "physical.map(|check| check.guard)",
             "if let (Some(admit), Some(id)) = (admission, selected.get()) { admit(id)?; } verify_physical(original, physical)",
             "let result = result.and_then(|()| { self.work.checked(|original, boundary| { crate::content_store::checked_reader::check(original, boundary)?; verify_physical(original, physical) }) });",
             "state: &'read mut ReadState",
@@ -129,6 +130,10 @@ const INPUTS: &[Input] = &[
             "self.complete_session_read(pending_error.take(), result.map(ReadValue::Canonical), eof_refused.get(),)",
         ],
         counts: &[
+            (
+                "reader.lookup(backend, original, id, selected_physical(physical), boundary)",
+                1,
+            ),
             (
                 "let previous = std::mem::replace(&mut self.state.phase, ReadPhase::Consumed);",
                 1,
@@ -448,6 +453,32 @@ mod tests {
             let changed = source.replacen(before, after, 1);
             assert_ne!(changed, source);
             assert!(!input_failures(merkle, &changed).is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn packed_inventory_keeps_the_selected_physical_guard_at_the_checked_lookup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = super::super::super::workspace_root();
+        let input = INPUTS
+            .iter()
+            .find(|input| input.path == "crates/crucible-cas/src/ram/bounded_read.rs")
+            .expect("checked inventory contract");
+        let source = fs::read_to_string(root.join(input.path))?;
+        assert!(input_failures(input, &source).is_empty());
+        let source = compact(&source);
+        for (before, after) in [
+            (
+                "reader.lookup(backend,original,id,selected_physical(physical),boundary)",
+                "reader.lookup(backend,original,id,None,boundary)",
+            ),
+            ("physical.map(|check|check.guard)", "None"),
+            ("selected.set(Some(id));", ""),
+        ] {
+            assert!(source.contains(before));
+            let changed = source.replacen(before, after, 1);
+            assert!(!input_failures(input, &changed).is_empty());
         }
         Ok(())
     }

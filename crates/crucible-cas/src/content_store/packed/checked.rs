@@ -29,9 +29,17 @@ pub(super) fn lookup_cached(
     original: &DecodeBudget,
     id: ContentId,
     session: &mut super::canonical_session::Session,
+    physical: Option<&dyn super::super::StorePhysicalQuotaGuard>,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<BlobHandle, StoreError> {
-    lookup_using_session(backend, original, id, None, Some(session), boundary)
+    lookup_using_session(
+        backend,
+        original,
+        id,
+        None,
+        Some((session, physical)),
+        boundary,
+    )
 }
 
 fn lookup_using_session(
@@ -39,14 +47,17 @@ fn lookup_using_session(
     original: &DecodeBudget,
     id: ContentId,
     range: Option<ByteRange>,
-    mut session: Option<&mut super::canonical_session::Session>,
+    mut session: Option<(
+        &mut super::canonical_session::Session,
+        Option<&dyn super::super::StorePhysicalQuotaGuard>,
+    )>,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<BlobHandle, StoreError> {
     checked_reader::check(original, boundary)?;
     let _lifecycle = checked_io::lock(backend, LIFECYCLE_LOCK_FILE, true, original, boundary)?;
     let _state = checked_io::lock(backend, STATE_LOCK_FILE, false, original, boundary)?;
     let index = index_snapshot::IndexSnapshot::read(backend, original, boundary)?;
-    if let Some(session) = session.as_mut() {
+    if let Some((session, _)) = session.as_mut() {
         session.bind_generation(backend, original, index.digest())?;
     }
     if index.header.count == 0 {
@@ -80,7 +91,10 @@ fn open_entry_with_session(
     id: ContentId,
     entry: IndexEntry,
     range: Option<ByteRange>,
-    session: Option<&mut super::canonical_session::Session>,
+    session: Option<(
+        &mut super::canonical_session::Session,
+        Option<&dyn super::super::StorePhysicalQuotaGuard>,
+    )>,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<BlobHandle, StoreError> {
     // Source and file controls share one credit. Every source/reader alias
@@ -118,8 +132,16 @@ fn open_entry_with_session(
         }
     })?;
     let file_length = checked_io::length(&file, original, boundary)?;
-    if let Some(session) = session {
-        session.authenticate(file.file(), backend, original, id, entry, boundary)?;
+    if let Some((session, physical)) = session {
+        session.authenticate(
+            file.file(),
+            backend,
+            original,
+            id,
+            entry,
+            physical,
+            boundary,
+        )?;
     } else {
         authenticate_manifest(
             file.file(),

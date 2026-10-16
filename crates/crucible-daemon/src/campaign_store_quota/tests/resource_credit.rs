@@ -182,3 +182,47 @@ fn exhausted_metadata_precedes_invalid_descriptor_request_without_lease_publicat
         Some(&HostServiceError::InvalidContract)
     );
 }
+
+#[test]
+fn empty_service_cache_reserves_no_window_from_either_original_account() {
+    let binder = config().build().unwrap();
+    let baselines = original_baselines(&binder);
+    assert_eq!(
+        binder.service.packed_metadata.reclaim(u64::MAX).unwrap(),
+        Some(0)
+    );
+    let grants = [&binder.service.resources, &binder.service.metadata]
+        .into_iter()
+        .zip(baselines)
+        .map(|(account, baseline)| {
+            account
+                .reserve_resources(0, 0, account.maximum_resident_bytes() - baseline)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(grants.len(), 2);
+    drop(grants);
+}
+
+#[test]
+fn same_caller_refusal_precedes_waiting_on_metadata_admission() {
+    let binder = config().build().unwrap();
+    let held = binder.service.metadata_admission.lock().unwrap();
+    let mut polls = 0;
+    let mut caller = || {
+        polls += 1;
+        if polls == 2 {
+            Err(StoreError::Unauthorized)
+        } else {
+            Ok(())
+        }
+    };
+    let error = binder
+        .service
+        .reserve_metadata_checked(128, Some(&mut caller))
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Unauthorized));
+    assert_eq!(polls, 2);
+    drop(held);
+    assert!(binder.service.reserve_metadata(128).is_ok());
+}
