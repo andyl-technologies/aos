@@ -1020,7 +1020,12 @@ impl QemuLaunchCommandBuilder {
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
 
-        let plugin_setup_plan = self.plugin.plugin_setup_plan();
+        let plugin_coverage = self.plugin.coverage();
+        let plugin_fault_node_hash = self.plugin.fault_node_hash();
+        let plugin_process_generation = self.plugin.process_generation();
+        let ram_control = self.plugin.ram_control();
+        let ram_backing_quota_bytes = self.plugin.ram_spill_quota();
+        let plugin_setup_plan = self.plugin.into_plugin_setup_plan();
         let plugin_setup_plan_bytes = plugin_setup_plan
             .encode()
             .map_err(|_source| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
@@ -1032,11 +1037,11 @@ impl QemuLaunchCommandBuilder {
             vm_hash_material,
             gdbstub: self.gdbstub,
             qmp: self.qmp,
-            plugin_coverage: self.plugin.coverage(),
-            plugin_fault_node_hash: self.plugin.fault_node_hash(),
-            plugin_process_generation: self.plugin.process_generation(),
-            ram_control: self.plugin.ram_control(),
-            ram_backing_quota_bytes: self.plugin.ram_spill_quota(),
+            plugin_coverage,
+            plugin_fault_node_hash,
+            plugin_process_generation,
+            ram_control,
+            ram_backing_quota_bytes,
             fault_capability_requirement,
             resource_requirements,
             plugin_setup_plan,

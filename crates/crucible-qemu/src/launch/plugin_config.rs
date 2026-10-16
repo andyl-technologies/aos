@@ -512,6 +512,22 @@ impl QemuLaunchPluginConfig {
         plan
     }
 
+    /// Moves already-owned plans into the command without a second deep copy.
+    pub(crate) fn into_plugin_setup_plan(
+        self,
+    ) -> crucible_protocol::plugin_setup_plan::PluginSetupPlan {
+        let app_random = self
+            .app_random
+            .map(|config| config.branch_plan)
+            .unwrap_or_default();
+        let catalog = self.selectable_catalog_plan.unwrap_or_default();
+        let plan = crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(app_random, catalog);
+        match self.original_startup {
+            Some(startup) => plan.with_startup_operation(startup),
+            None => plan,
+        }
+    }
+
     /// Returns the single-VM fingerprint sampling switch passed to the plugin.
     #[must_use]
     pub const fn fingerprint(&self) -> QemuLaunchPluginSwitch {
