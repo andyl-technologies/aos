@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; eleven of twenty-two T1 tasks are complete.
+**Status:** In progress; twelve of twenty-two T1 tasks are complete.
 
 The qualified source checkpoint `1d7451dd75` has independently reviewed passing
 outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
@@ -5416,7 +5416,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cases. No task or milestone advances.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
-- [ ] **T-PROP-1** Property resolution, types, boundary properties,
+- [x] **T-PROP-1** Property resolution, types, boundary properties,
   completeness, commit-time requirement checks, and strict attribute-name
   validation. Boundary validation compares AUTH-22's implied verbs and
   preserves inherited administrator rights under AUTH-25 before applying
