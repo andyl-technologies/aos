@@ -99,8 +99,30 @@ def actor(case, mode, uuid):
     return result.stdout
 
 
+def administrative_preflight(stage):
+    """Reports bounded fixed guest ancestry without weakening native validation."""
+    protected = [pathlib.Path(path) for path in ["/", "/var", "/var/lib", "/mnt", "/run"]]
+    protected.extend([MOUNT, ADMIN, ADMIN / "project-claims", RUNTIME])
+    for path in [*protected, PUB_RUNTIME]:
+        if not path.exists():
+            print(f"administrative preflight {stage}: {path} missing", flush=True)
+            require(stage == "before", "missing configured guest ancestor: " + str(path))
+            continue
+        value = path.lstat()
+        print(f"administrative preflight {stage}: {path} uid={value.st_uid} "
+              f"gid={value.st_gid} mode={value.st_mode & 0o7777:04o}", flush=True)
+        if stage == "after" and path in protected:
+            require(path.is_dir() and not path.is_symlink()
+                    and value.st_uid == 0 and value.st_mode & 0o022 == 0,
+                    "unsafe configured guest ancestor: " + str(path))
+
+
 def scaffold():
     """Creates only directory scaffolding before genuine explicit provisioning."""
+    # The minimal Firecracker init mounts /run without a mode option, so
+    # Linux defaults it to sticky 01777. Match the deployed protected runtime
+    # parent before the real helper traverses it; child modes cannot repair it.
+    metadata(pathlib.Path("/run"), 0, 0, 0o755)
     ADMIN.mkdir(parents=True, exist_ok=True)
     metadata(ADMIN, 0, 0, 0o700)
     (ADMIN / "project-claims").mkdir()
@@ -334,7 +356,9 @@ def main():
     """Runs actual helper, actual CLI publisher and isolated native controls."""
     require(os.geteuid() == 0, "VM supervisor requires explicit root administration")
     verify_image()
+    administrative_preflight("before")
     scaffold()
+    administrative_preflight("after")
     quota_config, publisher_config = configurations()
     ledger = ADMIN / "ledger.toml"
     helper_bin = IMAGE / "bin/aos-terrane-host"
