@@ -326,6 +326,42 @@ Fresh-selected receive window requires Query before the ordinary Arm path can
 proceed. Snapshot data helpers alone do not establish a reachable original
 Capture or a settled restoration path.
 
+### Inactive collecting runtime construction
+
+Commit `d0552817e8` connects completed initial lifecycle custody to the actual inactive four-node runtime constructor. Three
+separate Core-issued actions fund input owners, the collecting graph and nodes,
+and runtime attachment. Each action binds the same installed holder, Source
+roster and policy. The path shares the original reader and supervisor, converts
+the same completed-Admit preparations, and transfers the original reserved
+runtime slot through the provider into the retained actor.
+
+Construction counts existing owners, new allocations, temporary work, observer
+scratch and actual descriptor views before each phase. A whole-owner requery
+checks growth afterward. Partial results and spent actions remain retained on
+failure; unknown owner accounting refuses. The provider's borrowed activation
+view is included in the static counter window before serialization. Supervisor
+identity checks retain the actual original actor and operational handle without
+extracting or cloning their payloads. Ordinary preparation behavior and finite
+resource limits are unchanged.
+
+Normal six-crate, all-feature/all-target checking passes for this source. All
+twenty component controls pass: six Core, ten provider and four daemon controls,
+with none ignored. They ran from three normal-profile library-test executables
+built with a separate diagnostic overlay; the ordinary control bodies are exact.
+Independent review verifies the source, executables and original test logs.
+The overlay's five temporary probes are excluded from these commits.
+
+Both separate constructor diagnostic cases failed during fixture startup
+reservation, before their assertions. Adding the second Source's publication
+allowance exceeds the installed memory limit; these values describe requested
+layouts, not measured RSS. The SDK queries returned successfully, and the third
+Source was not reached. Successful inactive construction and whole
+fit remain unqualified, and earlier failed results remain recorded.
+
+Arm, readiness, activation, Observe, Capture and restoration remain separate
+qualification gates. The original-execution versus restoration-target launch
+purpose also remains an outstanding prerequisite for the later native route.
+
 ## Work in progress
 
 Packet startup/report, capture and restoration storage accounting is committed

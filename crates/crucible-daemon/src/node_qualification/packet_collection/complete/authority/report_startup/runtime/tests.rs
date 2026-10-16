@@ -1,7 +1,7 @@
 //! Uses actual installed four-owner metadata without native or SDK dispatch.
 //!
-//! The existing fixture measures files and creates local startup descriptors
-//! when run. These authored controls are unrun; no Core member is fabricated.
+//! The fixture measures files and creates local startup descriptors.
+//! Controls quote original metadata and exercise refusal paths before runtime attachment.
 
 use super::*;
 use crucible::node_admission::{ConformanceGraph, FixedFourConformanceGraphConstructionInputs};
