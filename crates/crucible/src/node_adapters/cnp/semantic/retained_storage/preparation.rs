@@ -106,7 +106,7 @@ impl CnpSemanticPreparation {
     /// `OperationFailure` observers are deliberately not called by this path.
     ///
     /// The caller separately quotes the fixed SDK headers through
-    /// `CnpController::original_live_host_metadata_counter_scratch_data()` and
+    /// `CnpController::original_restoration_host_metadata_counter_scratch_data()` and
     /// the actual Source/installed owner scratch before entering this walk.
     ///
     /// The result excludes this scratch bank, installed nested observer scratch,

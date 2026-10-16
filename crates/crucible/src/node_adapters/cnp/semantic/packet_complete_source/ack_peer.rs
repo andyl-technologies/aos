@@ -714,3 +714,8 @@ impl std::io::Write for BirthBankWriter<'_> {
 pub(crate) use birth::{
     PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
 };
+
+pub(crate) use association::{
+    OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
+    OriginalSourceRestoreVerifiedPhaseKind,
+};

@@ -5,8 +5,8 @@
 //! original slots through refusals; typed observations never mint native rights.
 
 mod connection;
-mod scene;
 mod runtime;
+mod scene;
 pub use connection::PacketCompletePreparationConnection;
 
 use super::*;
@@ -24,10 +24,11 @@ use crucible_node_provider::{
 // counts its selected preparation in Core; initial lifecycle retains the live
 // guard/preparation union, and prebirth refuses any such live owner.
 #[derive(Clone, Copy)]
-enum HolderStoragePhase {
+enum HolderStoragePhase<'a> {
     HostQuery,
     NativeStartup,
     InitialLifecycle,
+    Restoration(&'a crucible::node_admission::OriginalRestorationConstructionScope<'a>),
 }
 
 pub(super) struct PreparationOwners {
@@ -580,15 +581,78 @@ impl PacketCompleteReportStartupHolder {
         )
     }
 
+    /// Observes the genuine inactive restoration holder after its preparation move.
+    ///
+    /// The capsule proves the actual same runtime/archive/plan/proposal before
+    /// selecting this closed phase. Core independently observes that runtime's
+    /// real node preparations and Sources. A retained lifecycle ticket remains
+    /// counted even though its original preparation has moved into that runtime;
+    /// an untransferred registry or unknown partial connection still refuses.
+    ///
+    /// # Errors
+    /// Refuses another holder/capsule/runtime, busy or unsupported owners,
+    /// inconsistent moved preparation custody or requested storage excess.
+    pub(super) fn original_restoration_holder_descriptor_data(
+        &self,
+        scope: &crucible::node_admission::OriginalRestorationConstructionScope<'_>,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        self.authenticate_native_origin_data()?;
+        let StartupHolderPurpose::FreshRestoration(capsule) = &self.purpose else {
+            return Err(RuntimeError::ForeignAuthority);
+        };
+        let capsule = capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        let inputs = scope.inputs();
+        let nested = capsule.retained_restoration_holder_descriptor_data(
+            inputs.archive,
+            inputs.runtime,
+            scope.plan(),
+            inputs.activation,
+        )?;
+        self.original_host_descriptor_views_data()?
+            .checked_add(nested)
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
+    pub(super) fn original_restoration_holder_storage_data(
+        original: &Rc<RefCell<Self>>,
+        held: &Self,
+        scope: &crucible::node_admission::OriginalRestorationConstructionScope<'_>,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose else {
+            return Err(RuntimeError::ForeignAuthority);
+        };
+        capsule
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
+            .authenticate_restoration_target_storage_data(
+                scope.inputs().archive,
+                scope.inputs().runtime,
+                scope.plan(),
+                scope.inputs().activation,
+            )?;
+        Self::holder_storage_data(
+            original,
+            held,
+            None,
+            maximum,
+            HolderStoragePhase::Restoration(scope),
+        )
+    }
+
     fn holder_storage_data(
         original: &Rc<RefCell<Self>>,
         held: &Self,
         selected: Option<usize>,
         maximum: usize,
-        phase: HolderStoragePhase,
+        phase: HolderStoragePhase<'_>,
     ) -> Result<usize, RuntimeError> {
         let require_complete_preparations = matches!(phase, HolderStoragePhase::HostQuery);
-        let live_original_scene = matches!(phase, HolderStoragePhase::InitialLifecycle);
+        let live_original_scene = matches!(
+            phase,
+            HolderStoragePhase::InitialLifecycle | HolderStoragePhase::Restoration(_)
+        );
         held.authenticate_origin()
             .map_err(|_| RuntimeError::ForeignAuthority)?;
         let mut counter = Counter::new(maximum);
@@ -617,12 +681,22 @@ impl PacketCompleteReportStartupHolder {
         }
         if let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose {
             let capsule_data = capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
-            counter
-                .add(
-                    capsule_data
-                        .retained_host_holder_precredit_data(capsule, counter.remaining())?,
-                )
-                .map_err(storage_failure)?;
+            let capsule_bytes = match phase {
+                HolderStoragePhase::Restoration(scope) => {
+                    let inputs = scope.inputs();
+                    capsule_data.retained_restoration_holder_storage_data(
+                        capsule,
+                        inputs.archive,
+                        inputs.runtime,
+                        scope.plan(),
+                        inputs.activation,
+                        counter.remaining(),
+                    )?
+                }
+                _ => capsule_data
+                    .retained_host_holder_precredit_data(capsule, counter.remaining())?,
+            };
+            counter.add(capsule_bytes).map_err(storage_failure)?;
         }
         held.charge_original_scene_storage_precredit_data(&mut counter)?;
         if live_original_scene {
@@ -684,7 +758,8 @@ impl PacketCompleteReportStartupHolder {
                 }
             } else if require_complete_preparations
                 || peer.registry.is_some()
-                || peer.ticket.get().is_some()
+                || (peer.ticket.get().is_some()
+                    && !matches!(phase, HolderStoragePhase::Restoration(_)))
             {
                 // A partial row cannot stand in for a complete preparation.
                 return Err(RuntimeError::OwnerUnavailable);

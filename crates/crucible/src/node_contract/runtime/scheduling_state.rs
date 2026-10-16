@@ -40,7 +40,50 @@ struct OriginalLineageSchedulingIdentity {
 /// Retains the runtime's original scheduler storage, including its uninitialized cut.
 pub(in super::super) struct OriginalSchedulingState(Rc<Original>);
 
+/// Keeps a read-only weak view for terminal checks during a mutable node loan.
+///
+/// This private identity grants no restoration, scheduler setup or dispatch.
+/// Only the same runtime can create it; the live bit and actual authority are
+/// checked again after every installed member callback.
+pub(in crate::node_contract) struct OriginalRestorationSchedulingFence(Weak<Original>);
+
+impl OriginalRestorationSchedulingFence {
+    pub(in crate::node_contract) fn authenticate_current(
+        &self,
+        authority: &Rc<()>,
+        world: &HashRef,
+    ) -> Result<(), RuntimeError> {
+        let original = self.0.upgrade().ok_or(RuntimeError::ForeignAuthority)?;
+        OriginalSchedulingState(original).authenticate(authority, world)
+    }
+
+    pub(in crate::node_contract) fn retained_backing_storage_data(
+        &self,
+    ) -> Result<usize, RuntimeError> {
+        let original = self.0.upgrade().ok_or(RuntimeError::ForeignAuthority)?;
+        OriginalSchedulingState(original).current()?;
+        Ok(super::super::NodeRuntime::capture_shared_allocation_storage::<Original>())
+    }
+
+    pub(in crate::node_contract) fn counter_scratch_data() -> usize {
+        std::mem::size_of::<Rc<Original>>()
+            + std::mem::size_of::<OriginalSchedulingState>()
+            + 2 * std::mem::size_of::<Rc<()>>()
+            + std::mem::size_of::<&HashRef>()
+            + std::mem::size_of::<Result<(), RuntimeError>>()
+    }
+}
+
 impl OriginalSchedulingState {
+    pub(in crate::node_contract) fn restoration_member_fence_data(
+        &self,
+        authority: &Rc<()>,
+        world: &HashRef,
+    ) -> Result<OriginalRestorationSchedulingFence, RuntimeError> {
+        self.authenticate(authority, world)?;
+        Ok(OriginalRestorationSchedulingFence(Rc::downgrade(&self.0)))
+    }
+
     /// Names the real scheduler constructor's fixed owned-value and Rc views.
     pub(super) fn construction_counter_scratch_data() -> usize {
         std::mem::size_of::<Original>()
@@ -676,5 +719,35 @@ mod tests {
         assert!(busy.is_none());
         drop(busy);
         assert!(!state.initialized().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod restoration_member_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_member_fence_observes_revocation_without_a_runtime_or_scheduler_loan() {
+        let authority = Rc::new(());
+        let world = HashRef {
+            algorithm: "blake3-256".into(),
+            domain: "cnp.world-binding.v1".into(),
+            digest: "2".repeat(64),
+        };
+        let scheduler = OriginalSchedulingState::new(&authority, world.clone());
+        let fence = scheduler
+            .restoration_member_fence_data(&authority, &world)
+            .unwrap();
+        let outstanding = scheduler.0.scheduler.borrow_mut();
+        fence.authenticate_current(&authority, &world).unwrap();
+
+        scheduler.revoke();
+
+        assert!(matches!(
+            fence.authenticate_current(&authority, &world),
+            Err(RuntimeError::OutstandingObligations)
+        ));
+        assert!(scheduler.authenticate_retained(&authority, &world).is_ok());
+        drop(outstanding);
     }
 }

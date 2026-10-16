@@ -126,10 +126,14 @@ impl PacketCompleteSemanticSource {
             .authenticate_current(controller, emitter)
             .map_err(|_| RuntimeError::InvalidReceipt)?;
         native.read_owner.original_fresh_query_custody_data()?;
-        Ok(OriginalRestorationNodeConstructionData {
+        let mut data = OriginalRestorationNodeConstructionData {
             source: Rc::downgrade(inputs.source),
             read_owner: Rc::as_ptr(&native.read_owner).cast(),
             upload,
+            prepare_binding: controller
+                .quote_original_fresh_restore_prepare_binding_storage_data(emitter, query, maximum)
+                .map_err(|_| RuntimeError::ResourceLimit)?,
+            native_allocation: native_inputs.original_input_allocation_data(),
             native_inputs,
             native_commit,
             host_currentness_bytes,
@@ -138,7 +142,31 @@ impl PacketCompleteSemanticSource {
                 .map_err(|_| RuntimeError::ResourceLimit)?
                 .checked_add(retained.mapping_reference_clone_bytes_data())
                 .ok_or(RuntimeError::ResourceLimit)?,
-        })
+            maximum_mapping_bytes: mapping_maximum,
+            signer: None,
+        };
+        if let Some(signing) = &inputs.signing {
+            let construction = signing.cold.original_signing_construction_inputs_data(
+                signing.inputs,
+                inputs.plan,
+                &data,
+                controller,
+                query,
+                mapping_maximum,
+                signing.maximum_record_bytes,
+                signing.observed_other_retained_bytes,
+            )?;
+            let signer =
+                self.original_restoration_signer_construction_data(&construction, maximum)?;
+            // This is still only prospective DATA. A real installed window
+            // must conjoin this exact row before any phase claim can exist.
+            data.signer = Some(signer);
+        }
+        query
+            .authenticate_current(controller, emitter)
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        native.read_owner.original_fresh_query_custody_data()?;
+        Ok(data)
     }
 }
 
@@ -150,6 +178,7 @@ impl PacketCompleteSemanticSource {
             + std::mem::size_of::<super::super::birth::OriginalAckPeerInputs<'static>>()
             + std::mem::size_of::<&crucible_node_provider::reference_packet::service::fresh_restore_allocation::PacketNativeFreshRestoreAllocationReport>()
             + crucible_node_provider::client::CnpController::original_fresh_restore_query_counter_scratch_data()
+            + crucible_node_provider::client::CnpController::original_fresh_restore_prepare_binding_counter_scratch_data()
             + crucible_node_provider::client::CnpController::original_selected_archived_mapping_counter_scratch_data()
             + crate::node_state::CompleteOriginalNativeRestorationData::reference_counter_scratch_data()
             + crucible_node_provider::connection::original_native_restore_input_construction_counter_scratch_data()

@@ -595,6 +595,7 @@ impl ConformanceRuntime {
             encoded_launch: inputs.encoded_launch,
             prepare_id: inputs.prepare_id,
             maximum_requested_bytes: maximum,
+            signing: None,
         };
         let result = self
             .runtime
@@ -641,6 +642,7 @@ impl ConformanceRuntime {
                 encoded_launch: inputs.encoded_launches[index],
                 prepare_id: &inputs.prepare_ids[index],
                 maximum_requested_bytes: maximum,
+                signing: None,
             };
             *slot = Some(
                 self.runtime
@@ -705,5 +707,124 @@ impl ConformanceRuntime {
         terms.into_iter().try_fold(0usize, |sum, term| {
             sum.checked_add(term).ok_or(RuntimeError::ResourceLimit)
         })
+    }
+}
+
+impl ConformanceRuntime {
+    pub(crate) fn begin_original_restoration_transaction(
+        &mut self,
+        source: &crate::node_state::CompleteOriginalRestorationSource,
+        ticket: &crate::node_state::CompleteOriginalNativeTicket,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &ActivationRecord,
+    ) -> Result<super::OriginalRuntimeStorageIdentity, RuntimeError> {
+        self.authenticate_original_restoration_target_data(source, plan, activation)?;
+        self.runtime
+            .begin_original_restoration_transaction(source, ticket, plan, activation)
+    }
+
+    pub(crate) fn authenticate_original_restoration_transaction_data(
+        &self,
+        source: &crate::node_state::CompleteOriginalRestorationSource,
+        ticket: &crate::node_state::CompleteOriginalNativeTicket,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &ActivationRecord,
+        identity: &super::OriginalRuntimeStorageIdentity,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_original_restoration_target_data(source, plan, activation)?;
+        self.runtime
+            .authenticate_original_restoration_transaction_data(
+                source, ticket, plan, activation, identity,
+            )
+    }
+}
+
+impl ConformanceRuntime {
+    pub(crate) fn original_restoration_live_member_identity_data(
+        &self,
+        archive: &crate::node_state::CompleteOriginalRestorationSource,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &ActivationRecord,
+    ) -> Result<super::OriginalRestorationRuntimeMemberIdentity, RuntimeError> {
+        self.authenticate_original_restoration_target_data(archive, plan, activation)?;
+        self.runtime
+            .original_restoration_live_member_identity_data(archive, plan, activation)
+    }
+}
+
+impl ConformanceRuntime {
+    pub(crate) fn quote_original_restoration_signer_node_data(
+        &self,
+        inputs: &crate::node_admission::OriginalRestorationConstructionInputs<'_>,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        cold: &crate::node_adapters::cnp::OriginalRestorationColdGroup,
+        maximum_record_bytes: usize,
+        observed_other_retained_bytes: usize,
+        maximum: usize,
+    ) -> Result<crate::node_admission::OriginalRestorationNodeConstructionData, RuntimeError> {
+        inputs.authenticate_original_group_data()?;
+        if !std::ptr::eq(self, inputs.runtime) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.authenticate_original_restoration_target_data(
+            inputs.archive,
+            plan,
+            inputs.activation,
+        )?;
+        inputs
+            .source
+            .authenticate_original_restoration_target_data(
+                inputs.ticket,
+                inputs.archive,
+                self,
+                plan,
+                inputs.activation,
+            )?;
+        let node_inputs = crate::node_admission::OriginalRestorationNodeInputs {
+            source: inputs.source,
+            plan,
+            ticket: inputs.ticket,
+            launch: inputs.launch,
+            encoded_launch: inputs.encoded_launch,
+            prepare_id: inputs.prepare_id,
+            maximum_requested_bytes: maximum,
+            signing: Some(crate::node_admission::OriginalRestorationSigningCollector {
+                inputs,
+                cold,
+                maximum_record_bytes,
+                observed_other_retained_bytes,
+            }),
+        };
+        let result = self
+            .runtime
+            .quote_original_restoration_node_data(&node_inputs)?;
+        self.authenticate_original_restoration_target_data(
+            inputs.archive,
+            plan,
+            inputs.activation,
+        )?;
+        Ok(result)
+    }
+}
+
+impl ConformanceRuntime {
+    pub(crate) fn execute_original_restoration_transaction(
+        &mut self,
+        dispatch: crate::node_admission::OriginalRestorationNodeDispatch<'_>,
+    ) -> Result<(), RuntimeError> {
+        dispatch.authenticate_runtime_data(self)?;
+        self.runtime
+            .execute_original_restoration_node_dispatch(dispatch)
+    }
+}
+
+impl ConformanceRuntime {
+    pub(crate) fn inspect_original_restoration_continuation(
+        &self,
+        inspection: crate::node_admission::OriginalRestorationNodeContinuationInspection<'_>,
+    ) -> Result<(), RuntimeError> {
+        inspection.authenticate_runtime_data(self)?;
+        self.runtime
+            .inspect_original_restoration_node_continuation(inspection)
     }
 }

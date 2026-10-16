@@ -428,3 +428,9 @@ impl PacketConnectedProgram {
         )
     }
 }
+
+pub(in crate::reference_packet) fn capture_boundary_counter_scratch_data() -> usize {
+    std::mem::size_of::<ConnectedState>()
+        + std::mem::size_of::<ConnectedInventoryData<'static>>()
+        + std::mem::size_of::<Option<Position>>()
+}

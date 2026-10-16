@@ -729,3 +729,149 @@ impl ClientContent {
         self.observe_owned_metadata(observer)
     }
 }
+
+impl ClientContent {
+    pub(in crate::client) fn authenticate_selected_restore_transfer_absent(
+        &self,
+        id: &Id,
+    ) -> Result<(), ProviderError> {
+        if self.transfers.contains_key(id) {
+            return Err(ProviderError::Conflict(
+                "selected restore content transfer reused",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ClientContent {
+    // Charges both actual retained alias views without assuming deduplication.
+    // Existing roots are counted again in the prospective tree geometry so no
+    // live root split borrows an old tree allocation as future credit.
+    pub(in crate::client) fn selected_restore_held_content_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<(usize, usize), ProviderError> {
+        use crate::retained_metadata::requested_storage::{
+            shared_header_storage_data, tree_storage_data,
+        };
+        use std::mem::{align_of, size_of};
+        let credit = || ProviderError::ResourceExhausted("selected held content layout");
+        let growth = |bytes: usize| {
+            bytes
+                .checked_mul(4)
+                .and_then(|n| n.checked_add(8))
+                .ok_or_else(credit)
+        };
+        let transfer_entries = self.transfers.len().checked_add(1).ok_or_else(credit)?;
+        let object_entries = self.objects.len().checked_add(1).ok_or_else(credit)?;
+        let mut retained = tree_storage_data(
+            1,
+            transfer_entries,
+            size_of::<Id>() + size_of::<Transfer>(),
+            align_of::<Id>().max(align_of::<Transfer>()),
+        )?;
+        retained = retained
+            .checked_add(tree_storage_data(
+                1,
+                object_entries,
+                size_of::<String>() + size_of::<(ContentRef, Rc<Vec<u8>>)>(),
+                align_of::<String>().max(align_of::<(ContentRef, Rc<Vec<u8>>)>()),
+            )?)
+            .ok_or_else(credit)?;
+        for bytes in [
+            growth(128)?,
+            growth(64)?,
+            // Independent Transfer/Object ContentRef string clones.
+            growth("blake3-256".len())?,
+            growth("cnp.blob.v1".len())?,
+            growth(64)?,
+            growth("application/json".len())?,
+            growth("blake3-256".len())?,
+            growth("cnp.blob.v1".len())?,
+            growth(64)?,
+            growth("application/json".len())?,
+            shared_header_storage_data(2, align_of::<Vec<u8>>())?,
+            2 * size_of::<Vec<u8>>(),
+            growth(maximum)?,
+            growth(maximum)?,
+        ] {
+            retained = retained.checked_add(bytes).ok_or_else(credit)?;
+        }
+        // The old bank may coexist with the newly grown Vec during reallocation.
+        let mut transient = growth(maximum)?;
+        for bytes in [
+            growth(64)?,
+            growth("cnp.blob.v1".len())?,
+            growth("blake3-256".len())?,
+            size_of::<crucible_node_contract::HashRef>(),
+            size_of::<blake3::Hasher>(),
+            size_of::<blake3::Hash>(),
+        ] {
+            transient = transient.checked_add(bytes).ok_or_else(credit)?;
+        }
+        Ok((retained, transient))
+    }
+}
+
+#[cfg(test)]
+mod selected_restore_layout_tests {
+    use super::*;
+    use crucible_node_contract::{Bytes, Extensions, canonical};
+
+    #[test]
+    fn actual_completed_content_aliases_fit_selected_prospective_geometry() {
+        let mut content = ClientContent::new(1024, 4, 3).unwrap();
+        let (retained, _) = content
+            .selected_restore_held_content_storage_data(5)
+            .unwrap();
+        let id = Id::new("packet-restore-held-transfer-20").unwrap();
+        let reference = canonical::content_ref(b"abcde", "application/json").unwrap();
+        content
+            .authenticate_selected_restore_transfer_absent(&id)
+            .unwrap();
+        content
+            .begin(&BlobBeginRequest {
+                transfer_id: id.clone(),
+                content: reference.clone(),
+                extensions: Extensions::new(),
+            })
+            .unwrap();
+        assert!(
+            content
+                .authenticate_selected_restore_transfer_absent(&id)
+                .is_err()
+        );
+        for (offset, bytes) in [(0, &b"abc"[..]), (3, &b"de"[..])] {
+            content
+                .chunk(&BlobChunkRequest {
+                    transfer_id: id.clone(),
+                    offset: U64::new(offset),
+                    bytes: Bytes::new(bytes.to_vec()),
+                    extensions: Extensions::new(),
+                })
+                .unwrap();
+        }
+        content
+            .finish(&BlobFinishRequest {
+                transfer_id: id,
+                extensions: Extensions::new(),
+            })
+            .unwrap();
+        assert_eq!(content.get(&reference).unwrap(), b"abcde");
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        content.observe_owned_metadata(&mut observer).unwrap();
+        let actual =
+            crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())
+                .unwrap();
+        assert!(
+            actual <= retained,
+            "actual aliases {actual}, prospective {retained}"
+        );
+        assert!(
+            content
+                .selected_restore_held_content_storage_data(usize::MAX)
+                .is_err()
+        );
+    }
+}

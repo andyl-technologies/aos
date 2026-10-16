@@ -799,6 +799,12 @@ pub(crate) use capture_roots::NativeCaptureMetadataRoots;
 mod capture_data;
 pub use capture_data::RetainedCaptureProtocolData;
 
+mod restore_transfer_data;
+pub use restore_transfer_data::{
+    original_complete_restore_transfer_response_counter_scratch_data,
+    original_complete_restore_transfer_response_metadata_data,
+};
+
 #[path = "retained_metadata/serialization_storage.rs"]
 pub(crate) mod serialization_storage;
 

@@ -508,3 +508,22 @@ impl PacketProgram {
         )
     }
 }
+
+/// Names fixed historical model boundary validation and hash-construction views.
+///
+/// Heap/DOM/canonical/model projection storage must be admitted independently
+/// from the actual Control input. This getter grants no native model or hold.
+pub fn packet_model_capture_boundary_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+    size_of::<ProducerState>()
+        + size_of::<ProducerInventoryData<'static>>()
+        + size_of::<PacketModelCaptureBoundaryData>()
+        + size_of::<Result<PacketModelCaptureBoundaryData, ProviderError>>()
+        + size_of::<serde_json::Value>()
+        + size_of::<Vec<u8>>()
+        + size_of::<HashRef>()
+        + size_of::<blake3::Hasher>()
+        + crate::connection::original_serialized_credit_counter_scratch_data()
+        + super::connected::continuation::capture_boundary_counter_scratch_data()
+        + 20
+}

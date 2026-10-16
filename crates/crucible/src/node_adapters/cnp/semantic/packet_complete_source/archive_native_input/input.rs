@@ -282,6 +282,7 @@ impl NativeInputData<'_> {
             .checked_add(scratch)
             .filter(|n| *n <= self.maximum)
             .ok_or_else(|| refused("cold input reference storage exhausted"))?;
+        self.observe_construction(scratch)?;
         self.scratch.set(scratch);
         let charge = NativeScratch {
             total: &self.scratch,

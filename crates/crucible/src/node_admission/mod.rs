@@ -496,3 +496,20 @@ pub use conformance::{
     OriginalRestorationConstructionInputs, OriginalRestorationNodeConstructionData,
     OriginalRestorationNodeInputs,
 };
+
+pub(crate) use conformance::OriginalRestorationSigningConstructionInputs;
+
+pub(crate) use conformance::{
+    OriginalRestorationSigningInputs, OriginalRestorationTransactionClaim,
+    OriginalRestorationTransactionInspection, OriginalRestorationTransactionPhase,
+};
+
+pub(crate) use conformance::OriginalRestorationSigningCollector;
+pub use conformance::{
+    CompleteOriginalRestorationTransactionTarget, CompleteOriginalRestorationWindow,
+    OriginalRestorationConstructionPhase, OriginalRestorationConstructionPolicy,
+    OriginalRestorationConstructionScope, OriginalRestorationConstructionStorage,
+    OriginalRestorationMemberScope, OriginalRestorationNodeDispatch,
+};
+
+pub use conformance::OriginalRestorationNodeContinuationInspection;

@@ -137,6 +137,15 @@ impl OriginalRetainedSupervisor {
         Ok(())
     }
 
+    /// Checks the concrete retained association without renewing effect authority.
+    pub(crate) fn authenticate_original_connection_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<(), ProviderError> {
+        connection.protocol_owner.ensure_current()?;
+        self.authenticate_original_handle_data(&connection.supervisor)
+    }
+
     pub(crate) fn observe_retained_metadata(
         &self,
         observer: &mut MetadataObserver,

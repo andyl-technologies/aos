@@ -34,7 +34,9 @@ mod pause;
 #[path = "runtime/retained_storage.rs"]
 mod retained_storage;
 
-pub(crate) use retained_storage::OriginalRuntimeStorageIdentity;
+pub(crate) use retained_storage::{
+    OriginalRestorationRuntimeMemberIdentity, OriginalRuntimeStorageIdentity,
+};
 
 #[path = "runtime/construction_storage.rs"]
 mod construction_storage;

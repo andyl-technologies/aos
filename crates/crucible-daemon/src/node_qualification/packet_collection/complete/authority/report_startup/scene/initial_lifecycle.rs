@@ -580,6 +580,12 @@ impl PacketCompleteReportStartupHolder {
     pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn original_initial_retained_descriptors_data(
         &self,
     ) -> Result<usize, RuntimeError> {
+        self.original_host_descriptor_views_data()
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn original_host_descriptor_views_data(
+        &self,
+    ) -> Result<usize, RuntimeError> {
         self.authenticate_native_origin_data()?;
         let scene = self
             .original_scene

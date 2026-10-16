@@ -1716,6 +1716,8 @@ impl CnpController {
     }
 }
 
+mod restoration_retained;
+
 mod complete_installation;
 pub use complete_installation::InstalledArchivedProtocolState;
 

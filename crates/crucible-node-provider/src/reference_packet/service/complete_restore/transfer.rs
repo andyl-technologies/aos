@@ -33,7 +33,9 @@ pub use crypto::*;
 pub use owner_state::{
     PacketCompleteRestoreOwnerProjection, PacketCompleteRestoreOwnerStateData,
     PacketCompleteRestoreOwnerValidationStorage, PacketCompleteRestoreSelectedOwnerInputs,
-    authenticate_complete_restore_owner_state_data, complete_restore_owner_validation_storage_data,
+    authenticate_complete_restore_owner_state_data,
+    complete_restore_invocation_owner_construction_storage_data,
+    complete_restore_owner_validation_storage_data,
     complete_restore_selected_owner_construction_counter_scratch_data,
     complete_restore_selected_owner_construction_storage_data,
 };
@@ -640,3 +642,8 @@ fn same_digest(actual: &Bytes, expected: &Bytes) -> Result<(), ProviderError> {
 mod tests;
 
 pub(crate) use contract::complete_restore_transfer_contract_storage_data;
+
+pub(crate) use owner_state::{
+    authenticate_selected_owner_state_data, selected_owner_counter_scratch_data,
+    selected_owner_validation_storage_data,
+};

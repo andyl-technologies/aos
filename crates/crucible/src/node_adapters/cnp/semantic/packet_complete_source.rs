@@ -1303,3 +1303,8 @@ pub(crate) use ack_peer::{
 
 #[path = "packet_complete_source/invocation_snapshot.rs"]
 mod invocation_snapshot;
+
+pub(crate) use ack_peer::{
+    OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
+    OriginalSourceRestoreVerifiedPhaseKind,
+};

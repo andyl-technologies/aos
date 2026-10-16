@@ -14,6 +14,7 @@ pub use runtime::PacketCompleteOriginalSceneSupervisor;
 mod scene;
 pub use scene::PacketCompleteOriginalSceneInputs;
 mod preparation;
+mod restoration;
 pub use preparation::PacketCompletePreparationConnection;
 
 use super::super::retained::Counter;
@@ -72,6 +73,12 @@ pub struct PacketCompleteReportStartupHolder {
     original_scene: OnceCell<RefCell<scene::OriginalSceneOwners>>,
     installed_host_owner: OnceCell<crucible::node_contract::HostSchedulingOwner>,
     original_scene_retired: Cell<bool>,
+    restoration_attempted: Cell<bool>,
+    restoration_issuing: Cell<bool>,
+    restoration_requests: RefCell<restoration::OriginalRestorationRequestOwners>,
+    restoration_window: OnceCell<Rc<crucible::node_admission::CompleteOriginalRestorationWindow>>,
+    restoration_unplaced_window:
+        RefCell<Option<Rc<crucible::node_admission::CompleteOriginalRestorationWindow>>>,
 }
 
 enum StartupHolderPurpose {
@@ -249,6 +256,11 @@ impl PacketCompleteReportStartupHolder {
             original_scene: OnceCell::new(),
             installed_host_owner: OnceCell::new(),
             original_scene_retired: Cell::new(false),
+            restoration_attempted: Cell::new(false),
+            restoration_issuing: Cell::new(false),
+            restoration_requests: RefCell::new(restoration::OriginalRestorationRequestOwners::new()),
+            restoration_window: OnceCell::new(),
+            restoration_unplaced_window: RefCell::new(None),
         }));
         authority
             .report_startup_holder

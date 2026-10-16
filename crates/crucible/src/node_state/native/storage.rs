@@ -966,3 +966,17 @@ fn index_owned_storage(index: &Index) -> Result<usize, crate::node_contract::Run
 
 #[path = "original_evidence.rs"]
 mod original_evidence;
+
+impl NativeArchiveRecord {
+    pub(crate) fn retained_descriptor_views_precredit_data(&self) -> usize {
+        let Self {
+            complete_load: _,
+            index: _,
+            manifest: _,
+            directory,
+            limits: _,
+        } = self;
+        let _: &File = directory.as_ref();
+        1
+    }
+}

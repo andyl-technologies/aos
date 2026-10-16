@@ -13,8 +13,11 @@ use crucible_node_provider::reference_packet::service::complete_restore::transfe
 };
 
 pub(super) struct OriginalRestoreTransferBanks {
-    prepare: [Vec<u8>; 5],
-    commit: [Vec<u8>; 5],
+    pub(super) prepare: [Vec<u8>; 5],
+    pub(super) commit: [Vec<u8>; 5],
+    pub(super) signer: Option<super::restoration_transfer::OriginalSourceRestoreTransferAttempt>,
+    pub(super) mapping_attempted: bool,
+    pub(super) mapping_complete: bool,
 }
 
 fn limits(frame_bytes: usize) -> [usize; 5] {
@@ -75,6 +78,9 @@ impl OriginalAckPeerAssociation {
         self.restore_transfer_banks = Some(OriginalRestoreTransferBanks {
             prepare: std::array::from_fn(|_| Vec::new()),
             commit: std::array::from_fn(|_| Vec::new()),
+            signer: None,
+            mapping_attempted: false,
+            mapping_complete: false,
         });
         let banks = self
             .restore_transfer_banks
@@ -127,8 +133,18 @@ impl OriginalRestoreTransferBanks {
     >(
         &self,
     ) -> Result<(), E> {
-        let Self { prepare, commit } = self;
-        if prepare.iter().chain(commit).any(|bank| !bank.is_empty()) {
+        let Self {
+            prepare,
+            commit,
+            signer,
+            mapping_attempted,
+            mapping_complete,
+        } = self;
+        if signer.is_some()
+            || *mapping_attempted
+            || *mapping_complete
+            || prepare.iter().chain(commit).any(|bank| !bank.is_empty())
+        {
             return Err(E::refused(
                 "reserved prebirth transfer banks are already used",
             ));

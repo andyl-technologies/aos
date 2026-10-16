@@ -37,6 +37,8 @@ mod prepare_target;
 pub(super) use prepare_target::authenticate_target;
 #[path = "prepare_receipt.rs"]
 mod prepare_receipt;
+#[path = "selected_native.rs"]
+mod selected_native;
 use crate::reference_packet::service::NativeRestoreServiceAllocationQuote;
 use crate::reference_packet::service::fresh_restore_allocation::{
     PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING, PacketNative5FreshRestoreAllocationSelection,

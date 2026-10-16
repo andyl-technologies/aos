@@ -8,11 +8,16 @@ mod limits;
 
 use super::*;
 use crucible::{
-    node_adapters::cnp::{PacketCompleteArchivedOwnerData, PacketCompleteArchivedSemantics},
+    node_adapters::cnp::{
+        PacketCompleteArchivedOwnerData, PacketCompleteArchivedSemantics,
+        PacketCompleteSemanticSource,
+    },
     node_contract::{
         OriginalCaptureAttemptRecord, OriginalCaptureOwnerRecord, OriginalCaptureOwnerState,
     },
-    node_state::{CompleteOriginalArchiveValidation, NativeOwnerState},
+    node_state::{
+        CompleteOriginalArchiveValidation, NativeOwnerState, ValidatedCompleteNativeRestorationData,
+    },
 };
 use limits::{
     authenticate_host_record_extents, effective_archive_limits, requested_archive_maximum,
@@ -160,6 +165,9 @@ impl PacketCompleteCaptureFactory {
                 size_of::<[Option<PacketCompleteArchivedOwnerData<'_>>; 3]>(),
                 size_of::<[Option<PacketCompleteArchivedSemantics>; 3]>(),
                 size_of::<[usize; 3]>(),
+                size_of::<[Option<ValidatedCompleteNativeRestorationData<'_>>; 3]>(),
+                PacketCompleteSemanticSource::original_archived_restoration_validation_counter_scratch_data()
+                    .map_err(operation_failure)?,
                 size_of::<super::super::retained::Counter>(),
                 // Both live and code-only validation can remeasure originals
                 // while these local observers and retained owners coexist.
@@ -280,6 +288,8 @@ impl PacketCompleteCaptureFactory {
                 .map_err(operation_failure)?,
             );
         }
+        let mut restoration_data: [Option<ValidatedCompleteNativeRestorationData<'_>>; 3] =
+            std::array::from_fn(|_| None);
         for (index, source) in self.authority.roster().sources.iter().enumerate() {
             let owner = cold[index]
                 .as_ref()
@@ -290,29 +300,22 @@ impl PacketCompleteCaptureFactory {
             let other = complete
                 .checked_sub(demands[index])
                 .ok_or_else(|| refused("complete common demand accounting differs"))?;
-            common
-                .authenticate_runtime_data(
-                    &source.installation().descriptor.id,
-                    scope.runtime,
-                    scope.content,
-                    limits.state.maximum_record_bytes,
-                    other,
-                    maximum,
-                )
-                .map_err(operation_failure)?;
-            common
-                .authenticate_protocol_data(
-                    owner.host().map_err(operation_failure)?,
-                    other,
-                    maximum,
-                )
-                .map_err(operation_failure)?;
-            let other = complete
+            let native_other = complete
                 .checked_sub(owner.known_requested_bytes().map_err(operation_failure)?)
                 .ok_or_else(|| refused("complete native demand accounting differs"))?;
-            source
-                .authenticate_archived_native_semantics_data(owner, common, other, maximum)
-                .map_err(operation_failure)?;
+            restoration_data[index] = Some(
+                source
+                    .authenticate_archived_restoration_validation_data(
+                        owner,
+                        common,
+                        scope.runtime,
+                        limits.state.maximum_record_bytes,
+                        other,
+                        native_other,
+                        maximum,
+                    )
+                    .map_err(operation_failure)?,
+            );
             let installed = source.installation();
             let native = native_owner(&scope, &installed.owner.owner.id)?;
             let (settled, _) = settled_owner(attempt, native)?;
@@ -343,16 +346,19 @@ impl PacketCompleteCaptureFactory {
         self.authenticate_archive_graph_data(scope.graph)?;
         // Preserve the actual detailed native-after DATA before the temporary
         // cold owners disappear. Equal labels cannot choose another owner slot.
-        for (source, bank) in self.authority.roster().sources.iter().zip(&cold) {
-            let bank = bank
-                .as_ref()
-                .ok_or_else(|| refused("complete cold owner absent"))?;
+        for (source, data) in self
+            .authority
+            .roster()
+            .sources
+            .iter()
+            .zip(&mut restoration_data)
+        {
             let owner = native_owner(&scope, &source.installation().owner.owner.id)?;
             scope
                 .retain_original_native_restoration_data(
                     owner,
-                    bank.original_native_restoration_data()
-                        .map_err(operation_failure)?,
+                    data.take()
+                        .ok_or_else(|| refused("complete validated restoration DATA absent"))?,
                 )
                 .map_err(error)?;
         }

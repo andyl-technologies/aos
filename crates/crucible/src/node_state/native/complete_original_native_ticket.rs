@@ -96,7 +96,8 @@ impl CompleteOriginalNativeTicket {
         &self,
         context: &OriginalLineageRestoration<'_>,
     ) -> Result<(), RuntimeError> {
-        self.source.authenticate_birth()?;
+        self.source
+            .authenticate_legacy_restoration_context_phase_data()?;
         self.source
             .authenticate_target(context.original_runtime_authority())?;
         if context.source_record() != self.source.runtime_object() {
@@ -153,5 +154,79 @@ impl CompleteOriginalNativeTicket {
             return Err(RuntimeError::ResourceLimit);
         }
         Ok(bytes)
+    }
+}
+
+impl CompleteOriginalNativeTicket {
+    pub(crate) fn begin_original_restoration_transaction_data(
+        &self,
+        authority: &Rc<()>,
+    ) -> Result<(), RuntimeError> {
+        self.source
+            .begin_original_restoration_transaction(authority, self.owner_index)
+    }
+
+    pub(crate) fn authenticate_original_restoration_transaction_data(
+        &self,
+        authority: &Rc<()>,
+    ) -> Result<(), RuntimeError> {
+        self.source
+            .authenticate_original_restoration_transaction(authority, self.owner_index)
+    }
+}
+
+impl CompleteOriginalNativeTicket {
+    /// Borrows this actual owner's verified administrative settlement reference.
+    ///
+    /// The final original capture attempt is already retained and validated by
+    /// the same source. This origin/data loan allocates no parser, hash or bank
+    /// and grants no target, transaction or final-restoration authority.
+    ///
+    /// # Errors
+    /// Refuses a missing, ambiguous or unsettled actual owner, another Runtime7
+    /// attempt, or disagreement with its signed native snapshot/participants.
+    pub fn original_restoration_journal_reference_data(&self) -> Result<&ContentRef, RuntimeError> {
+        let owner = self.owner()?;
+        let attempt = self
+            .source
+            .administrative()
+            .attempts
+            .last()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if &attempt.source_runtime != self.source.runtime_object() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let mut matched = None;
+        for record in &attempt.owners {
+            if record.owner.owner != owner.owner {
+                continue;
+            }
+            if matched.is_some() || record.participants != owner.participants {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            let crate::node_contract::OriginalCaptureOwnerState::Settled { snapshot, journal } =
+                &record.state
+            else {
+                return Err(RuntimeError::OutstandingObligations);
+            };
+            if snapshot != &owner.state || !owner.evidence.contains(journal.as_ref()) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            matched = Some(journal.as_ref());
+        }
+        matched.ok_or(RuntimeError::OwnerUnavailable)
+    }
+
+    /// Names the direct administrative settlement loan and cursor layouts.
+    pub fn original_restoration_journal_counter_scratch_data() -> usize {
+        std::mem::size_of::<&super::NativeOwnerState>()
+            + std::mem::size_of::<&crate::node_contract::OriginalCaptureAttemptRecord>()
+            + std::mem::size_of::<Option<&crate::node_contract::OriginalCaptureAttemptRecord>>()
+            + std::mem::size_of::<
+                std::slice::Iter<'static, crate::node_contract::OriginalCaptureOwnerRecord>,
+            >()
+            + std::mem::size_of::<std::slice::Iter<'static, ContentRef>>()
+            + std::mem::size_of::<Option<&ContentRef>>()
+            + std::mem::size_of::<Result<&ContentRef, RuntimeError>>()
     }
 }

@@ -17,9 +17,11 @@ use crate::{
 };
 use std::rc::{Rc, Weak};
 
+mod committed;
 mod inputs;
 mod prospective;
-mod storage;
+mod source_construction;
+pub(super) mod storage;
 use inputs::PrepareInputs;
 pub use prospective::{
     OriginalCompleteRestoreInputUploadProspectiveStorageData,
@@ -173,6 +175,14 @@ impl OriginalCompleteRestoreInputUpload {
         emitter: &OriginalCanonicalRestoreInputEmitter,
     ) -> Result<(), ProviderError> {
         let inputs = PrepareInputs::borrow(controller, emitter)?;
+        self.authenticate_completed_inputs(controller, &inputs)
+    }
+
+    fn authenticate_completed_inputs(
+        &self,
+        controller: &CnpController,
+        inputs: &PrepareInputs<'_>,
+    ) -> Result<(), ProviderError> {
         let owner = self.controller.upgrade().ok_or_else(refused)?;
         if self.phase != UploadPhase::Complete
             || !Rc::ptr_eq(&owner, &controller.protocol_owner)

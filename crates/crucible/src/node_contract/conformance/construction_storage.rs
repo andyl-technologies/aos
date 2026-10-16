@@ -141,9 +141,27 @@ impl ConformanceRuntime {
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
         self.authenticate_original_restoration_target_data(archive, plan, activation)?;
-        let bytes = self.retained_inactive_wrapper_storage_data(maximum)?;
+        let runtime = self
+            .runtime
+            .original_retained_requested_storage_precredit_data(maximum)?;
+        let mut counter = RetainedRuntimeCounter::new(maximum);
+        counter.add(size_of::<Self>())?;
+        counter.add(runtime)?;
+        if counter.rc(&self.graph)? {
+            self.graph
+                .charge_original_retained_storage_precredit_data(&mut counter)?;
+        }
+        if let Some(source) = &self.exact_inputs
+            && counter.rc(source)?
+        {
+            counter.add(
+                source.retained_restoration_metadata_bytes_excluding_runtime_precredit_data(
+                    archive, maximum,
+                )?,
+            )?;
+        }
         self.authenticate_original_restoration_target_data(archive, plan, activation)?;
-        Ok(bytes)
+        Ok(counter.bytes())
     }
 
     pub(crate) fn original_restoration_descriptor_views_precredit_data(

@@ -272,7 +272,7 @@ impl InstalledConformancePlan {
             CnpPreparationStorageScratch::requested_bytes(),
             PacketCompleteSemanticSource::retained_requested_storage_precredit_scratch_data(),
             PacketCompleteSemanticSource::original_fresh_query_invocation_counter_scratch_data()?,
-            CnpController::original_live_host_metadata_counter_scratch_data(),
+            CnpController::original_restoration_host_metadata_counter_scratch_data(),
             CnpController::original_fresh_restore_query_counter_scratch_data(),
             crate::node_adapters::cnp::CnpSemanticSourceRead::original_fresh_query_call_scratch_data(),
             size_of::<OriginalFreshRestoreHostScope<'_>>(),

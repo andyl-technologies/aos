@@ -74,6 +74,40 @@ pub trait SimulationNode {
         Ok(None)
     }
 
+    /// Consumes one installed restoration phase on this same actual node.
+    ///
+    /// This internal adapter path receives an opaque once-started claim, not a
+    /// generic capability label. The owning adapter retains its preparation,
+    /// controller and all partial transport owners; it must authenticate real
+    /// Source evidence before the Core window advances. Unknown adapters refuse.
+    ///
+    /// # Errors
+    /// Refuses unsupported adapters, changed actual custody, receipt/currentness
+    /// failure or a phase outside its original installed whole-window bounds.
+    #[doc(hidden)]
+    fn execute_original_restoration_transaction(
+        &mut self,
+        _dispatch: crate::node_admission::OriginalRestorationNodeDispatch<'_>,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
+    /// Rechecks completed original custody against retained archive journals.
+    ///
+    /// This separate read-only adapter hook accepts only a genuine installed
+    /// window inspection. Unknown implementations refuse; a copied receipt or
+    /// completed transport flag cannot replace actual Source/native checks.
+    ///
+    /// # Errors
+    /// Refuses unsupported ownership, changed currency or native journal data.
+    #[doc(hidden)]
+    fn inspect_original_restoration_continuation(
+        &self,
+        _inspection: crate::node_admission::OriginalRestorationNodeContinuationInspection<'_>,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
     /// Observes actual descriptor owners in this concrete inactive node.
     ///
     /// # Errors

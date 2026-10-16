@@ -28,12 +28,34 @@ impl PacketCompleteArchivedSemantics {
         additional_retained_bytes: usize,
         maximum_total_bytes: usize,
     ) -> Result<(), OperationFailure> {
+        self.authenticate_runtime_with_construction_data(
+            node,
+            runtime,
+            content,
+            maximum_record_bytes,
+            additional_retained_bytes,
+            maximum_total_bytes,
+            None,
+        )
+    }
+
+    pub(super) fn authenticate_runtime_with_construction_data(
+        &self,
+        node: &Id,
+        runtime: &OriginalLineageRuntimeRecord,
+        content: &VerifiedStateContent,
+        maximum_record_bytes: usize,
+        additional_retained_bytes: usize,
+        maximum_total_bytes: usize,
+        construction: Option<&super::construction_storage::ValidationConstructionCounter>,
+    ) -> Result<(), OperationFailure> {
         let semantic = &self.semantic;
         let retained = additional_retained_bytes
             .checked_add(self.reserved_decoder_bytes)
             .and_then(|n| n.checked_add(20 + 256))
             .filter(|n| *n <= maximum_total_bytes)
             .ok_or_else(|| refused("archived common runtime storage exhausted"))?;
+        super::construction_storage::observe(construction, retained, 0)?;
         if semantic.schema != "source-owned.packet-semantic-custody/5"
             || !matches!(
                 self.ancestry.schema(),
@@ -73,6 +95,7 @@ impl PacketCompleteArchivedSemantics {
             )
             .map_err(super::unknown)?,
             maximum_total_bytes,
+            construction,
         )?;
         prepared.validate().map_err(super::unknown)?;
 
@@ -102,7 +125,12 @@ impl PacketCompleteArchivedSemantics {
                     >(),
                 )
                 .ok_or_else(|| refused("archived common input validation extent overflow"))?;
-            admit_scratch(retained, input_validation, maximum_total_bytes)?;
+            admit_scratch(
+                retained,
+                input_validation,
+                maximum_total_bytes,
+                construction,
+            )?;
             input.request.validate().map_err(super::unknown)?;
             if let Some(response) = &input.response {
                 authenticate_input_result(&input.request, response)?;
@@ -198,7 +226,12 @@ impl PacketCompleteArchivedSemantics {
             if !result_matches {
                 return Err(refused("archived common operation completion differs"));
             }
-            admit_begin_validation(&operation.begin, retained, maximum_total_bytes)?;
+            admit_begin_validation(
+                &operation.begin,
+                retained,
+                maximum_total_bytes,
+                construction,
+            )?;
             operation.begin.validate().map_err(super::unknown)?;
             if let Some(payload) = &operation.retirement {
                 authenticate_payload(payload, content)?;
@@ -222,6 +255,7 @@ impl PacketCompleteArchivedSemantics {
             maximum_record_bytes,
             additional_retained_bytes,
             maximum_total_bytes,
+            construction,
         )
     }
 
@@ -233,6 +267,7 @@ impl PacketCompleteArchivedSemantics {
         maximum_record_bytes: usize,
         additional_retained_bytes: usize,
         maximum_total_bytes: usize,
+        construction: Option<&super::construction_storage::ValidationConstructionCounter>,
     ) -> Result<(), OperationFailure> {
         let validation = AncestryValidation {
             node,
@@ -242,6 +277,7 @@ impl PacketCompleteArchivedSemantics {
             retained_decoder_bytes: self.reserved_decoder_bytes,
             additional_retained_bytes,
             maximum_total_bytes,
+            construction,
         };
         match &self.ancestry {
             ArchivedAncestry::Inline(record) => validation.authenticate(record),
@@ -258,6 +294,7 @@ struct AncestryValidation<'a> {
     retained_decoder_bytes: usize,
     additional_retained_bytes: usize,
     maximum_total_bytes: usize,
+    construction: Option<&'a super::construction_storage::ValidationConstructionCounter>,
 }
 
 trait ArchivedObjectData {
@@ -394,6 +431,13 @@ impl AncestryValidation<'_> {
                     .and_then(|n| n.checked_add(scratch))
                     .filter(|n| *n <= maximum_total_bytes)
                     .ok_or_else(|| refused("archived publication comparison storage exhausted"))?;
+                super::construction_storage::observe(
+                    self.construction,
+                    additional_retained_bytes
+                        .checked_add(self.retained_decoder_bytes)
+                        .ok_or_else(|| refused("archived publication construction overflow"))?,
+                    scratch,
+                )?;
                 publication
                     .published
                     .verify(bytes)
@@ -413,11 +457,17 @@ impl AncestryValidation<'_> {
     }
 }
 
-fn admit_scratch(retained: usize, scratch: usize, maximum: usize) -> Result<(), OperationFailure> {
+fn admit_scratch(
+    retained: usize,
+    scratch: usize,
+    maximum: usize,
+    construction: Option<&super::construction_storage::ValidationConstructionCounter>,
+) -> Result<(), OperationFailure> {
     retained
         .checked_add(scratch)
         .filter(|n| *n <= maximum)
         .ok_or_else(|| refused("archived common validation scratch exhausted"))?;
+    super::construction_storage::observe(construction, retained, scratch)?;
     Ok(())
 }
 
@@ -425,6 +475,7 @@ fn admit_begin_validation(
     begin: &crucible_node_provider::bodies::BeginRequest,
     retained: usize,
     maximum: usize,
+    construction: Option<&super::construction_storage::ValidationConstructionCounter>,
 ) -> Result<(), OperationFailure> {
     use crate::node_contract::NodeRuntime;
 
@@ -447,7 +498,7 @@ fn admit_begin_validation(
         .checked_add(encoded)
         .and_then(|n| n.checked_add(decoded))
         .ok_or_else(|| refused("archived Begin validation extent overflow"))?;
-    admit_scratch(retained, scratch, maximum)
+    admit_scratch(retained, scratch, maximum, construction)
 }
 
 fn authenticate_input_result(
@@ -510,4 +561,12 @@ pub(super) fn authenticate_payload(
         return Err(refused("archived common referenced bytes differ"));
     }
     Ok(())
+}
+
+pub(super) fn counter_scratch_data() -> usize {
+    use std::mem::size_of;
+    size_of::<AncestryValidation<'_>>()
+        + size_of::<crucible_node_contract::Event>()
+        + size_of::<Result<crucible_node_contract::Event, crucible_node_contract::ContractError>>()
+        + size_of::<[usize; 4]>()
 }

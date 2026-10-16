@@ -101,6 +101,37 @@ impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthorit
         self.authenticate_original_runtime_construction_member_data(scope)
     }
 
+    fn original_restoration_construction_policy(
+        &self,
+        _evidence: &crucible::node_admission::ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalRestorationConstructionScope<'_>,
+    ) -> Result<
+        crucible::node_admission::OriginalRestorationConstructionPolicy,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.original_restoration_construction_policy_data(scope)
+    }
+
+    fn authenticate_original_restoration_construction(
+        &self,
+        _evidence: &crucible::node_admission::ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalRestorationConstructionScope<'_>,
+        policy: &crucible::node_admission::OriginalRestorationConstructionPolicy,
+    ) -> Result<
+        crucible::node_admission::OriginalRestorationConstructionStorage,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.authenticate_original_restoration_construction_data(scope, policy)
+    }
+
+    fn authenticate_original_restoration_construction_member(
+        &self,
+        _evidence: &crucible::node_admission::ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalRestorationMemberScope<'_>,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.authenticate_original_restoration_construction_member_data(scope)
+    }
+
     fn original_host_initial_lifecycle_policy(
         &self,
         _evidence: &ConformancePlanEvidence<'_>,

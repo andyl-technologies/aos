@@ -11,12 +11,13 @@ use crucible_node_provider::{
 use serde::Serialize;
 use serde_json::Value;
 
-struct ComparisonBudget {
+struct ComparisonBudget<'a> {
     retained: usize,
     maximum: usize,
+    construction: Option<&'a super::construction_storage::ValidationConstructionCounter>,
 }
 
-impl ComparisonBudget {
+impl ComparisonBudget<'_> {
     fn compare(&self, expected: &impl Serialize, actual: &Value) -> Result<(), OperationFailure> {
         let scratch =
             NodeRuntime::capture_serialization_storage(expected, self.maximum).map_err(unknown)?;
@@ -24,6 +25,7 @@ impl ComparisonBudget {
             .checked_add(scratch)
             .filter(|n| *n <= self.maximum)
             .ok_or_else(|| refused("archived common comparison storage exhausted"))?;
+        super::construction_storage::observe(self.construction, self.retained, scratch)?;
         if serde_json::to_value(expected).map_err(unknown)? != *actual {
             return Err(refused(
                 "archived common field differs from original CNP body",
@@ -43,6 +45,7 @@ impl ComparisonBudget {
             .checked_add(scratch)
             .filter(|n| *n <= self.maximum)
             .ok_or_else(|| refused("archived common request comparison storage exhausted"))?;
+        super::construction_storage::observe(self.construction, self.retained, scratch)?;
         let expected = serde_json::to_value(expected).map_err(unknown)?;
         if expected.as_object() != Some(&original.request.body) {
             return Err(refused(
@@ -69,6 +72,21 @@ impl PacketCompleteArchivedSemantics {
         additional_retained_bytes: usize,
         maximum_total_bytes: usize,
     ) -> Result<(), OperationFailure> {
+        self.authenticate_protocol_with_construction_data(
+            host,
+            additional_retained_bytes,
+            maximum_total_bytes,
+            None,
+        )
+    }
+
+    pub(super) fn authenticate_protocol_with_construction_data(
+        &self,
+        host: &HistoricalControllerState,
+        additional_retained_bytes: usize,
+        maximum_total_bytes: usize,
+        construction: Option<&super::construction_storage::ValidationConstructionCounter>,
+    ) -> Result<(), OperationFailure> {
         // Counts invoked by comparisons can format U64 values; request_id also
         // owns one finite ASCII identifier. Reserve both before either helper.
         let retained = additional_retained_bytes
@@ -76,9 +94,11 @@ impl PacketCompleteArchivedSemantics {
             .and_then(|n| n.checked_add(20 + 256))
             .filter(|n| *n <= maximum_total_bytes)
             .ok_or_else(|| refused("archived common protocol comparison credit exhausted"))?;
+        super::construction_storage::observe(construction, retained, 0)?;
         let budget = ComparisonBudget {
             retained,
             maximum: maximum_total_bytes,
+            construction,
         };
         host.require_complete_reader_state().map_err(unknown)?;
         let state = &self.semantic;
@@ -325,6 +345,13 @@ fn authenticate_activation_manifest(
         .and_then(|n| n.checked_add(std::mem::size_of::<ContentRef>()))
         .filter(|n| *n <= budget.maximum)
         .ok_or_else(|| refused("archived activation reference storage exhausted"))?;
+    super::construction_storage::observe(
+        budget.construction,
+        budget.retained,
+        reference_storage
+            .checked_add(std::mem::size_of::<ContentRef>())
+            .ok_or_else(|| refused("archived manifest reference construction overflow"))?,
+    )?;
     let reference = ContentRef::deserialize(manifest_value).map_err(unknown)?;
     let bytes = host.custody.content.get(&reference).map_err(unknown)?;
     let decoded = super::decode_storage(bytes, budget.maximum).map_err(unknown)?;
@@ -334,6 +361,13 @@ fn authenticate_activation_manifest(
         .and_then(|n| n.checked_add(decoded))
         .filter(|n| *n <= budget.maximum)
         .ok_or_else(|| refused("archived activation manifest storage exhausted"))?;
+    super::construction_storage::observe(
+        budget.construction,
+        budget.retained,
+        reference_storage
+            .checked_add(decoded)
+            .ok_or_else(|| refused("archived manifest construction overflow"))?,
+    )?;
     reference.verify(bytes).map_err(unknown)?;
     let manifest: ActivationManifest = canonical::decode(bytes, bytes.len()).map_err(unknown)?;
     if manifest.activation_id != activation.activation_id
@@ -358,6 +392,7 @@ fn authenticate_activation_manifest(
             .and_then(|n| n.checked_add(decoded))
             .ok_or_else(|| refused("archived activation comparison extent overflow"))?,
         maximum: budget.maximum,
+        construction: budget.construction,
     };
     manifest_budget.compare(&manifest.transaction_id, field(activate, "transaction_id")?)?;
     manifest_budget.compare(&manifest.gate_id, field(activate, "gate_id")?)?;
@@ -464,4 +499,17 @@ fn counter_population(
         return Err(refused("archived common counter population incomplete"));
     }
     Ok(())
+}
+
+pub(super) fn counter_scratch_data() -> usize {
+    use crucible_node_contract::{ActivationManifest, ContentRef, ContractError};
+    use std::mem::size_of;
+    size_of::<[ComparisonBudget<'_>; 2]>()
+        + size_of::<crucible_node_contract::ContentRef>()
+        + size_of::<crucible_node_contract::ActivationManifest>()
+        + size_of::<[Value; 2]>()
+        + size_of::<Result<Value, serde_json::Error>>()
+        + size_of::<Result<ContentRef, serde_json::Error>>()
+        + size_of::<Result<ActivationManifest, ContractError>>()
+        + size_of::<[usize; 4]>()
 }

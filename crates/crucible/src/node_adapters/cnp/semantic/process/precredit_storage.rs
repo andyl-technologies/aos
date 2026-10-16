@@ -149,7 +149,9 @@ impl CnpSemanticProcessCustody {
             match (controller, supervisor.as_ref(), retained_supervisor) {
                 (Some(controller), witness, Some(owner)) => counter.metadata(
                     &controller
-                        .original_live_host_metadata_facts_with_retained_supervisor(owner, witness)
+                        .original_restoration_host_metadata_facts_with_retained_supervisor(
+                            owner, witness,
+                        )
                         .map_err(metadata_failure)?,
                 )?,
                 (Some(controller), _, None) => {

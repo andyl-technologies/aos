@@ -161,3 +161,8 @@ pub(crate) use initial_lifecycle_diagnostics::{
 };
 
 pub(crate) use packet_complete_source::OriginalRestorationColdGroup;
+
+pub(crate) use packet_complete_source::{
+    OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
+    OriginalSourceRestoreVerifiedPhaseKind,
+};

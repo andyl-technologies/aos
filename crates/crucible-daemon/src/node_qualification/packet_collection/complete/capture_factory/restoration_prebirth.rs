@@ -6,6 +6,7 @@
 //! whole-preparation context, readiness or restoration installation permission.
 
 mod precredit;
+mod restoration_storage;
 
 use super::*;
 use crucible::node_admission::{CompleteArchiveCodeGraph, ConformanceGraph};
@@ -582,3 +583,5 @@ impl PacketCompleteRestorationPrebirth {
 }
 
 mod invocation;
+
+mod restoration_transaction;

@@ -111,3 +111,8 @@ pub(crate) use semantic::{
 };
 
 pub(crate) use semantic::OriginalRestorationColdGroup;
+
+pub(crate) use semantic::{
+    OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
+    OriginalSourceRestoreVerifiedPhaseKind,
+};

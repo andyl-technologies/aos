@@ -105,3 +105,92 @@ impl CnpSemanticNode {
         })
     }
 }
+
+impl CnpSemanticNode {
+    pub(crate) fn execute_original_restoration_transaction_data(
+        &mut self,
+        dispatch: crate::node_admission::OriginalRestorationNodeDispatch<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.preparation
+            .guard
+            .preparation_storage_origin_precredit_data()?;
+        let native = self
+            .preparation
+            .guard
+            .custody
+            .as_mut()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let installed = native
+            .source
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if !std::ptr::eq(
+            Rc::as_ptr(installed).cast::<()>(),
+            Rc::as_ptr(dispatch.source_data()).cast::<()>(),
+        ) || !native.completed_ack_protocol_started
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        native.read_owner.original_fresh_query_custody_data()?;
+        let read_owner = Rc::as_ptr(&native.read_owner).cast();
+        if dispatch.needs_original_query_data() {
+            let admission = native
+                .completed_ack_admission
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let admission = admission.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+            let query = admission.original_restoration_query_data(dispatch.source_data())?;
+            let controller = native
+                .controller
+                .as_mut()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            dispatch.execute_original_controller_data(controller, Some(query), read_owner)
+        } else {
+            // Inputs/Commit authenticate actual retained Prepare/receipt/ACK
+            // originals. Rechecking the sole Query frontier here would reject
+            // the real transaction after its first assigned request.
+            let controller = native
+                .controller
+                .as_mut()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            dispatch.execute_original_controller_data(controller, None, read_owner)
+        }
+    }
+}
+
+impl CnpSemanticNode {
+    pub(crate) fn inspect_original_restoration_continuation_data(
+        &self,
+        inspection: crate::node_admission::OriginalRestorationNodeContinuationInspection<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.preparation
+            .guard
+            .preparation_storage_origin_precredit_data()?;
+        let native = self
+            .preparation
+            .guard
+            .custody
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let installed = native
+            .source
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if !std::ptr::eq(
+            Rc::as_ptr(installed).cast::<()>(),
+            Rc::as_ptr(inspection.source_data()?).cast::<()>(),
+        ) || !native.completed_ack_protocol_started
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        native.read_owner.original_fresh_query_custody_data()?;
+        let controller = native
+            .controller
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        // Query's sole frontier is not renewed after assigned Prepare. Source
+        // authenticates the retained actual pairs, MACs and uploader instead.
+        inspection
+            .inspect_original_controller_data(controller, Rc::as_ptr(&native.read_owner).cast())
+    }
+}

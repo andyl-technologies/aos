@@ -24,23 +24,25 @@ use std::{cell::Cell, mem::size_of, ops::Deref};
 
 #[path = "archive_native_input/input.rs"]
 mod input;
-#[path = "archive_native_input/projection.rs"]
-mod projection;
 #[cfg(test)]
 #[path = "archive_native_input/population_tests.rs"]
 mod population_tests;
+#[path = "archive_native_input/projection.rs"]
+mod projection;
 
 const MAXIMUM_RECORD_BYTES: usize = 65_536;
 
 /// Borrows actual archive owners while charging transient data comparisons.
-struct NativeInputData<'a> {
-    source: &'a PacketCompleteSemanticSource,
-    host: &'a HistoricalControllerState,
-    native: &'a HistoricalNativeState,
-    content: &'a VerifiedStateContent,
-    retained: usize,
-    maximum: usize,
-    scratch: Cell<usize>,
+pub(super) struct NativeInputData<'a> {
+    pub(super) source: &'a PacketCompleteSemanticSource,
+    pub(super) host: &'a HistoricalControllerState,
+    pub(super) native: &'a HistoricalNativeState,
+    pub(super) content: &'a VerifiedStateContent,
+    pub(super) retained: usize,
+    pub(super) maximum: usize,
+    pub(super) scratch: Cell<usize>,
+    pub(super) construction:
+        Option<&'a super::archive_semantics::construction_storage::ValidationConstructionCounter>,
 }
 
 impl PacketCompleteSemanticSource {
@@ -78,8 +80,20 @@ impl PacketCompleteSemanticSource {
             retained,
             maximum: maximum_total_bytes,
             scratch: Cell::new(0),
+            construction: None,
         };
         data.host.require_complete_reader_state().map_err(unknown)?;
+        self.authenticate_original_native_input_history_data(&data, semantics)
+    }
+
+    // The same concrete predicates serve both the original archive validator
+    // and the genuinely retained grouped-cold view. Neither path invents input
+    // ACKs or projects Runtime7 IDs into native knowledge.
+    pub(super) fn authenticate_original_native_input_history_data(
+        &self,
+        data: &NativeInputData<'_>,
+        semantics: &PacketCompleteArchivedSemantics,
+    ) -> Result<(), OperationFailure> {
         let state = semantics.source_common_data();
         data.input_population(state)?;
         if state.inputs.is_empty() && self.complete_reactive_definition_data()?.is_none() {
@@ -106,7 +120,7 @@ impl PacketCompleteSemanticSource {
                 for reference in &publication.objects {
                     reference
                         .verify(
-                            content.get(reference).ok_or_else(|| {
+                            data.content.get(reference).ok_or_else(|| {
                                 refused("reference ancestry full object body absent")
                             })?,
                         )
@@ -119,6 +133,44 @@ impl PacketCompleteSemanticSource {
 }
 
 impl NativeInputData<'_> {
+    fn observe_construction(&self, scratch: usize) -> Result<(), OperationFailure> {
+        if let Some(counter) = self.construction {
+            counter.observe(self.retained, scratch)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn counter_scratch_data() -> usize {
+        // These are actual simultaneous typed/result/lease headers, distinct
+        // from the per-node heap geometry and the immutable input byte banks.
+        use crucible_node_provider::reference_packet::{
+            continuation_models::PacketModelCaptureBoundaryData,
+            control::{
+                PacketDecodedControlSnapshot, PacketNative5Record, PacketNative5UnderlyingRecord,
+            },
+        };
+        size_of::<Self>()
+            + size_of::<[NativeScratch<'_>; 3]>()
+            + size_of::<[NativeObject<'_, PacketStageRecord>; 2]>()
+            + size_of::<NativeObject<'_, PacketCommitRecord>>()
+            + size_of::<NativeObject<'_, InputRequest>>()
+            + size_of::<NativeObject<'_, InputResult>>()
+            + size_of::<NativeObject<'_, WorldActivateRequest>>()
+            + size_of::<NativeObject<'_, ControlReceipt>>()
+            + size_of::<NativeObject<'_, InputCustodyRecord>>()
+            + size_of::<NativeObject<'_, Vec<crate::node_scheduling::event::Delivery>>>()
+            + size_of::<NativeObject<'_, ContentRef>>()
+            + size_of::<NativeObject<'_, PacketDecodedControlSnapshot>>()
+            + size_of::<NativeObject<'_, PacketNative5Record>>()
+            + size_of::<NativeObject<'_, PacketNative5UnderlyingRecord>>()
+            + size_of::<NativeObject<'_, serde_json::Value>>()
+            + size_of::<Result<NativeObject<'_, PacketDecodedControlSnapshot>, OperationFailure>>()
+            + size_of::<Result<NativeObject<'_, PacketNative5UnderlyingRecord>, OperationFailure>>()
+            + size_of::<Result<PacketModelCaptureBoundaryData, OperationFailure>>()
+            + NodeRuntime::capture_selected_json_decode_counter_scratch_data()
+            + NodeRuntime::capture_serialization_counter_scratch_data()
+    }
+
     fn selection(&self) -> &PacketControlSelection {
         &self.native.connection.policy.selection
     }
@@ -189,6 +241,7 @@ impl NativeInputData<'_> {
             .checked_add(scratch)
             .filter(|n| *n <= self.maximum)
             .ok_or_else(|| refused("cold native input transient storage exhausted"))?;
+        self.observe_construction(scratch)?;
         self.scratch.set(scratch);
         let charge = NativeScratch {
             total: &self.scratch,
@@ -241,6 +294,7 @@ impl NativeInputData<'_> {
             .checked_add(scratch)
             .filter(|n| *n <= self.maximum)
             .ok_or_else(|| refused("cold original decoder storage exhausted"))?;
+        self.observe_construction(scratch)?;
         self.scratch.set(scratch);
         Ok(NativeScratch {
             total: &self.scratch,

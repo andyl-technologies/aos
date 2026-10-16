@@ -16,7 +16,9 @@ use crate::reference_packet::service::complete_restore::transfer::*;
 use serde::Deserialize;
 use serde_json::Map;
 
+mod construction_storage;
 mod fresh_prepare;
+mod held_prefix_storage;
 pub use fresh_prepare::OriginalFreshRestorePrepareBindingStorageData;
 
 /// Borrows one actual phase-assigned restore original without moving its owners.
@@ -529,7 +531,51 @@ impl PreparedOriginalCompleteRestoreTransfer<'_> {
         emitter: &OriginalCanonicalBlobAckEmitter,
         completed: &mut Option<ResponseBody>,
     ) -> Result<(), ProviderError> {
+        self.publish_into_with_prefix(emitter, completed, false)
+    }
+
+    /// Publishes the selected Fresh transfer with its closed held-proof prefix.
+    ///
+    /// Prepare receives no provider requests. Commit accepts one canonical held
+    /// object in the native producer's exact Begin/chunk/Finish order. Its full
+    /// terminal reference must match that object. This validates protocol shape;
+    /// the Source still supplies the real claim, proof and keyed receipt checks.
+    ///
+    /// # Errors
+    /// Refuses an unselected codec, reused publication, stale emitter/cut or a
+    /// changed prefix. Partial raw frames, cache/content and phase remain held.
+    pub fn publish_selected_into(
+        &mut self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        completed: &mut Option<ResponseBody>,
+    ) -> Result<(), ProviderError> {
+        self.publish_into_with_prefix(emitter, completed, true)
+    }
+
+    fn publish_into_with_prefix(
+        &mut self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        completed: &mut Option<ResponseBody>,
+        selected: bool,
+    ) -> Result<(), ProviderError> {
         self.authenticate_original_emitter(emitter)?;
+        let mut prefix = if selected {
+            if self.controller.original_native5_complete_restore_selection()?
+                != Some(crate::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+                || self.controller.original_native5_fresh_restore_allocation_selection()?
+                != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
+            {
+                return Err(refused());
+            }
+            Some(
+                super::super::session::restore_transfer_prefix::HeldPrefix::new(
+                    self.phase,
+                    self.controller.authority(),
+                )?,
+            )
+        } else {
+            None
+        };
         if completed.is_some() {
             return Err(refused());
         }
@@ -546,16 +592,28 @@ impl PreparedOriginalCompleteRestoreTransfer<'_> {
             return Err(refused());
         }
         state.phase = Phase::Publishing;
-        let reply = self
-            .controller
-            .session
-            .publish_original_complete_restore_transfer(
-                &mut self.controller.custody,
-                &state.original,
-                &state.bytes,
-                state.literal_slot,
-                state.cut,
-            )?;
+        let reply = if let Some(prefix) = prefix.as_mut() {
+            self.controller
+                .session
+                .publish_original_complete_restore_transfer_with_prefix(
+                    &mut self.controller.custody,
+                    &state.original,
+                    &state.bytes,
+                    state.literal_slot,
+                    state.cut,
+                    prefix,
+                )?
+        } else {
+            self.controller
+                .session
+                .publish_original_complete_restore_transfer(
+                    &mut self.controller.custody,
+                    &state.original,
+                    &state.bytes,
+                    state.literal_slot,
+                    state.cut,
+                )?
+        };
         state.response = Some(reply);
         let response = state.response.as_ref().ok_or_else(refused)?;
         let projection =

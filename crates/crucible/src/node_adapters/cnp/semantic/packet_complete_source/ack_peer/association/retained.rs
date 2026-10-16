@@ -26,6 +26,15 @@ impl OriginalAckPeerAssociation {
         }
         let mut bytes =
             sum_with_error::<E, _>([self.allocated_bank_bytes_with_error::<E>()?], maximum)?;
+        if let Some(transfer) = &self.restore_transfer_banks {
+            bytes = sum_with_error::<E, _>(
+                [
+                    bytes,
+                    transfer.retained_signer_storage_with_error::<E>(maximum)?,
+                ],
+                maximum,
+            )?;
+        }
         for value in self
             .normalized
             .iter()

@@ -6,7 +6,9 @@
 
 use super::*;
 use crate::reference_packet::service::native_snapshot::{
-    PacketNativeOwned13SnapshotPlan, packet_native_owned13_snapshot_validation_layouts,
+    PacketNativeOwned13SnapshotPlan, PacketNativeOwned14SnapshotPlan,
+    packet_native_owned13_snapshot_validation_layouts,
+    packet_native_owned14_snapshot_validation_layouts,
 };
 
 /// Borrows actual signed selected owner bodies for prospective DATA counting.
@@ -35,12 +37,40 @@ pub struct PacketCompleteRestoreSelectedOwnerInputs<'a> {
 ///
 /// Recursive/compiler frames and allocator physical overhead remain separate.
 pub fn complete_restore_selected_owner_construction_counter_scratch_data() -> usize {
-    let framing = packet_native_owned13_snapshot_validation_layouts();
-    size_of::<PacketCompleteRestoreSelectedOwnerInputs<'static>>()
+    let old = packet_native_owned13_snapshot_validation_layouts();
+    let selected = packet_native_owned14_snapshot_validation_layouts();
+    // Both real parsers use the same closed Fields/compact families. Their
+    // separately declared arrays may differ; select each larger real term.
+    let mut framing = old;
+    framing.plan_header_bytes = old.plan_header_bytes.max(selected.plan_header_bytes);
+    framing.field_cursor_bytes = old.field_cursor_bytes.max(selected.field_cursor_bytes);
+    framing.maximum_simultaneous_field_cursors = old
+        .maximum_simultaneous_field_cursors
+        .max(selected.maximum_simultaneous_field_cursors);
+    framing.field_scan_declared_array_bytes = old
+        .field_scan_declared_array_bytes
+        .max(selected.field_scan_declared_array_bytes);
+    framing.raw_chunk_array_bytes = old
+        .raw_chunk_array_bytes
+        .max(selected.raw_chunk_array_bytes);
+    framing.streaming_hash_header_bytes = old
+        .streaming_hash_header_bytes
+        .max(selected.streaming_hash_header_bytes);
+    framing.streaming_hash_output_bytes = old
+        .streaming_hash_output_bytes
+        .max(selected.streaming_hash_output_bytes);
+    framing.compact_plan_header_bytes = old
+        .compact_plan_header_bytes
+        .max(selected.compact_plan_header_bytes);
+    super::super::selected_owner_counter_scratch_data()
+        + size_of::<PacketCompleteRestoreSelectedOwnerInputs<'static>>()
         + size_of::<&[u8]>()
         + size_of::<&Phases>()
         + size_of::<[usize; 3]>()
         + size_of::<PacketNativeOwned13SnapshotPlan<'static>>()
+        + size_of::<PacketNativeOwned14SnapshotPlan<'static>>()
+        + size_of::<[&[u8]; 3]>()
+        + 3 * size_of::<crate::reference_packet::service::native_snapshot::PacketNativeOwned11SnapshotValidationLayouts>()
         + size_of::<PacketCompleteRestoreOwnerValidationStorage>()
         + 2 * size_of::<Credit>()
         + 2 * size_of::<Phases>()
@@ -84,7 +114,58 @@ pub fn complete_restore_selected_owner_construction_storage_data(
         inputs.maximum_input_bytes,
         inputs.maximum_before_bytes,
     )?;
-    if plan.control_bytes() != inputs.control {
+    selected_owner_storage(
+        inputs,
+        plan.control_bytes(),
+        [
+            plan.capture_arguments_bytes(),
+            plan.capture_request_bytes(),
+            plan.control_reference_bytes(),
+        ],
+    )
+}
+
+/// Counts the explicit outer14/full inner15 original-invocation owner as DATA.
+///
+/// The complete borrowed outer14 plan validates the actual class framing and
+/// original Report dependency. Raw native-before/report/endpoint bytes are not
+/// parsed as a generic snapshot DTO. Their genuine inner15 cold reconstruction
+/// remains a separately admitted row. No target or restoration right is issued.
+///
+/// # Errors
+/// Refuses invalid outer14 framing, a changed embedded Control, unavailable
+/// finite bounds, unsupported model capacities, overflow or excess demand.
+pub fn complete_restore_invocation_owner_construction_storage_data(
+    inputs: &PacketCompleteRestoreSelectedOwnerInputs<'_>,
+) -> Result<PacketCompleteRestoreOwnerValidationStorage, ProviderError> {
+    if inputs.maximum_input_bytes == 0
+        || inputs.maximum_before_bytes == 0
+        || inputs.maximum_requested_bytes == 0
+    {
+        return Err(exhausted());
+    }
+    let plan = PacketNativeOwned14SnapshotPlan::validate(
+        inputs.owner_state,
+        inputs.maximum_input_bytes,
+        inputs.maximum_before_bytes,
+    )?;
+    selected_owner_storage(
+        inputs,
+        plan.control_bytes(),
+        [
+            plan.capture_arguments_bytes(),
+            plan.capture_request_bytes(),
+            plan.control_reference_bytes(),
+        ],
+    )
+}
+
+fn selected_owner_storage(
+    inputs: &PacketCompleteRestoreSelectedOwnerInputs<'_>,
+    control: &[u8],
+    capture_parts: [&[u8]; 3],
+) -> Result<PacketCompleteRestoreOwnerValidationStorage, ProviderError> {
+    if control != inputs.control {
         return Err(exhausted());
     }
     let layouts = crate::reference_packet::control::packet_control_snapshot_validation_layouts();
@@ -92,6 +173,8 @@ pub fn complete_restore_selected_owner_construction_storage_data(
         .maximum_typed_slot_bytes
         .max(size_of::<Envelope>())
         .max(size_of::<CaptureArguments>())
+        .max(size_of::<crate::bodies::BeginRequest>())
+        .max(size_of::<crate::bodies::BeginArguments>())
         .max(size_of::<ContentRef>())
         .max(size_of::<SettledJournalData>())
         .max(size_of::<PacketCompleteRestoreOwnerProjection>());
@@ -105,11 +188,7 @@ pub fn complete_restore_selected_owner_construction_storage_data(
         canonical: 2,
     };
     let mut snapshot_bytes = 0usize;
-    for bytes in [
-        plan.capture_arguments_bytes(),
-        plan.capture_request_bytes(),
-        plan.control_reference_bytes(),
-    ] {
+    for bytes in capture_parts {
         snapshot_bytes = sum(&[
             snapshot_bytes,
             phase_storage(
@@ -121,6 +200,20 @@ pub fn complete_restore_selected_owner_construction_storage_data(
             )?,
         ])?;
     }
+    // The selected owning decoder additionally calls decode_request(Begin)
+    // and BeginRequest::decoded_arguments. These are independent from the
+    // roundtrip decoders above: object() clones its map twice, retains canonical
+    // bytes, and owns a typed DTO; Begin validation also decodes Capture. The
+    // additional typed copies name the sorted-ID validator's real clone keys.
+    snapshot_bytes = sum(&[
+        snapshot_bytes,
+        selected_begin_decoder_storage(
+            capture_parts,
+            inputs.maximum_input_bytes,
+            typed_slot,
+            typed_node,
+        )?,
+    ])?;
     let journal_bytes = phase_storage(
         inputs.journal,
         inputs.maximum_input_bytes,
@@ -174,6 +267,46 @@ pub fn complete_restore_selected_owner_construction_storage_data(
         declared_scanner_bytes,
         total_bytes,
     })
+}
+
+// Counts the two actual public body decoder families before their first clone.
+// The full request is a conservative superset of the actual Begin body map;
+// raw protocol/endpoint bytes are never included in this JSON decoder phase.
+fn selected_begin_decoder_storage(
+    parts: [&[u8]; 3],
+    maximum: usize,
+    typed_slot: usize,
+    typed_node: usize,
+) -> Result<usize, ProviderError> {
+    sum(&[
+        phase_storage(
+            parts[1],
+            maximum,
+            typed_slot,
+            typed_node,
+            &Phases {
+                dom: 2,
+                typed: 1,
+                canonical: 1,
+            },
+        )?,
+        phase_storage(
+            parts[0],
+            maximum,
+            typed_slot,
+            typed_node,
+            &Phases {
+                dom: 4,
+                typed: 4,
+                canonical: 2,
+            },
+        )?,
+        size_of::<crate::bodies::RequestBody>(),
+        size_of::<crate::bodies::BeginRequest>(),
+        size_of::<crate::bodies::BeginArguments>(),
+        size_of::<Result<crate::bodies::RequestBody, ProviderError>>(),
+        size_of::<Result<crate::bodies::BeginArguments, crucible_node_contract::ContractError>>(),
+    ])
 }
 
 // The anchor follows the same independent decode/typed/roundtrip phases as

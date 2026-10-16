@@ -35,7 +35,7 @@ pub(super) use snapshot::{CompleteNativeSnapshotClass, CompleteSnapshotPlan};
 
 #[path = "archive_owner/retained.rs"]
 mod retained;
-pub(crate) use retained::OriginalRestorationColdGroup;
+pub(crate) use retained::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
 
 /// Retains one bounded owner linked to the actual immutable archive closure.
 ///
@@ -693,10 +693,14 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 .ok_or_else(|| refused("cold restoration body absent"))?
                 .len();
         }
-        let selected_owner = if self.snapshot_class == CompleteNativeSnapshotClass::StartupCapture14
-        {
+        let selected_owner = if matches!(
+            self.snapshot_class,
+            CompleteNativeSnapshotClass::StartupCapture14
+                | CompleteNativeSnapshotClass::InvocationCapture15
+        ) {
             use crucible_node_provider::reference_packet::service::complete_restore::transfer::{
                 PacketCompleteRestoreSelectedOwnerInputs,
+                complete_restore_invocation_owner_construction_storage_data,
                 complete_restore_selected_owner_construction_storage_data,
             };
             let body = |reference| {
@@ -713,7 +717,16 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 maximum_before_bytes: self.before_limits.json.maximum_input_bytes,
                 maximum_requested_bytes: self.maximum,
             };
-            match complete_restore_selected_owner_construction_storage_data(&inputs) {
+            let result = match self.snapshot_class {
+                CompleteNativeSnapshotClass::StartupCapture14 => {
+                    complete_restore_selected_owner_construction_storage_data(&inputs)
+                }
+                CompleteNativeSnapshotClass::InvocationCapture15 => {
+                    complete_restore_invocation_owner_construction_storage_data(&inputs)
+                }
+                _ => return Err(refused("cold selected restoration class differs")),
+            };
+            match result {
                 Ok(data) => Some(data),
                 // Valid archive data is not promoted into future restoration
                 // permission. Preserve an unavailable future row explicitly.
@@ -1187,3 +1200,5 @@ mod tests {
         assert!(checked_sum([20usize, 20, 20], 59).is_err());
     }
 }
+
+pub(crate) use retained::OriginalRestorationColdOwnerView;

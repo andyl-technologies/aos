@@ -24,7 +24,7 @@ pub struct CompleteOriginalNativeRestorationData {
     source_cold_requested_bytes: usize,
     mapping_reference_clone_bytes: usize,
     selected_owner: Option<crucible_node_provider::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreOwnerValidationStorage>,
-
+    archived_validation: Option<CompleteOriginalArchivedValidationConstructionData>,
 }
 
 impl CompleteOriginalNativeRestorationData {
@@ -95,6 +95,17 @@ impl CompleteOriginalNativeRestorationData {
         self.selected_owner.as_ref()
     }
 
+    /// Borrows the original complete historical validation workspace row.
+    ///
+    /// Missing data remains unavailable; callers must refuse instead of using a
+    /// zero row or another owner's construction allowance. This is requested
+    /// construction DATA, never a restored context or fresh input-custody proof.
+    pub fn original_archived_validation_construction_data(
+        &self,
+    ) -> Option<&CompleteOriginalArchivedValidationConstructionData> {
+        self.archived_validation.as_ref()
+    }
+
     /// Returns the five original body extents before fresh mapping normalization.
     ///
     /// Order is native-after, Control, anchor, owner snapshot and signed journal.
@@ -136,10 +147,19 @@ impl<'a> ValidatedCompleteNativeRestorationData<'a> {
                 source_cold_requested_bytes,
                 mapping_reference_clone_bytes,
                 selected_owner,
+                archived_validation: None,
             },
             owner,
             content,
         }
+    }
+
+    pub(crate) fn with_archived_validation_data(
+        mut self,
+        data: CompleteOriginalArchivedValidationConstructionData,
+    ) -> Self {
+        self.data.archived_validation = Some(data);
+        self
     }
 
     pub(super) fn into_original_data(
@@ -272,5 +292,63 @@ impl super::NativeArchiveRecord {
             fixed_scratch_bytes,
             requested_bytes,
         })
+    }
+}
+
+/// Retains actual checked workspace maxima from the original archive predicates.
+///
+/// The three predicates run sequentially, with their complete historical owners
+/// separately retained. Each row includes its original decoder allowance and
+/// concrete comparison leases. This fixed DATA cannot authenticate a fresh Hold,
+/// grant Source effects, or stand in for current runtime and input-custody proof.
+#[derive(Clone, Copy, Debug)]
+pub struct CompleteOriginalArchivedValidationConstructionData {
+    phases: [usize; 3],
+    semantic_decode: usize,
+    fixed_scratch: usize,
+    requested: usize,
+}
+
+impl CompleteOriginalArchivedValidationConstructionData {
+    pub(crate) fn from_validated_phases(
+        phases: [usize; 3],
+        semantic_decode: usize,
+        fixed_scratch: usize,
+    ) -> Result<Self, crate::node_contract::RuntimeError> {
+        let requested = phases[0]
+            .max(phases[1])
+            .max(phases[2])
+            .checked_add(semantic_decode)
+            .and_then(|bytes| bytes.checked_add(fixed_scratch))
+            .ok_or(crate::node_contract::RuntimeError::ResourceLimit)?;
+        Ok(Self {
+            phases,
+            semantic_decode,
+            fixed_scratch,
+            requested,
+        })
+    }
+
+    /// Returns sequential runtime, protocol and native workspace maxima.
+    pub fn phase_requested_bytes_data(&self) -> [usize; 3] {
+        self.phases
+    }
+
+    /// Returns the actual original semantic and ancestry decoder request.
+    ///
+    /// The selected validator decodes those same verified bodies temporarily;
+    /// this term is independent from the already retained cold protocol owners.
+    pub fn semantic_decode_requested_bytes_data(&self) -> usize {
+        self.semantic_decode
+    }
+
+    /// Returns the independently named fixed counter and typed view headers.
+    pub fn fixed_counter_scratch_bytes_data(&self) -> usize {
+        self.fixed_scratch
+    }
+
+    /// Returns semantic decoding plus maximum validator workspace and fixed views.
+    pub fn requested_bytes_data(&self) -> usize {
+        self.requested
     }
 }

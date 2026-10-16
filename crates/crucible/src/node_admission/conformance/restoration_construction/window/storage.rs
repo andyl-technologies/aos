@@ -1,0 +1,218 @@
+//! Conjoins current owning storage with independently named future phases.
+//!
+//! Current backing is observed from actual retained owners. Prospective rows
+//! remain separate commitments and never substitute for a current allocation.
+//! Both admissions use the same original installed memory/descriptor policy.
+
+use super::*;
+
+pub(super) fn observe(
+    scope: &OriginalRestorationConstructionScope<'_>,
+    policy: OriginalRestorationConstructionPolicy,
+    storage: OriginalRestorationConstructionStorage,
+) -> Result<usize, RuntimeError> {
+    let mut requested = observed_current(scope, policy, storage)?;
+    match scope.phase {
+        OriginalRestorationConstructionPhase::ColdOwners => {
+            for ticket in scope.inputs.tickets {
+                requested = checked_sum(
+                    &[
+                        requested,
+                        ticket
+                            .native_restoration_construction_data()?
+                            .source_cold_construction_requested_bytes_data(),
+                    ],
+                    policy.maximum_requested_bytes,
+                )?;
+            }
+        }
+        OriginalRestorationConstructionPhase::Transaction => {
+            let window = scope.window.ok_or(RuntimeError::OwnerUnavailable)?;
+            let rows = window
+                .node_rows
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            for (index, row) in rows.iter().enumerate() {
+                let validation = scope.inputs.tickets[index]
+                    .native_restoration_construction_data()?
+                    .original_archived_validation_construction_data()
+                    .ok_or(RuntimeError::OwnerUnavailable)?;
+                requested = checked_sum(
+                    &[
+                        requested,
+                        validation.requested_bytes_data(),
+                        validation.fixed_counter_scratch_bytes_data(),
+                    ],
+                    policy.maximum_requested_bytes,
+                )?;
+                let signer = row.signer.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+                requested = checked_sum(
+                    &[
+                        requested,
+                        signer.requested_peak_bytes_data(),
+                        signer.counter_scratch_bytes_data(),
+                        // The target retains a distinct actual Value/canonical bank;
+                        // Source's independent normalization has its own row above.
+                        signer.mapping_normalization_requested_bytes_data(),
+                        row.upload.retained_growth_bytes(),
+                        row.upload.maximum_simultaneous_transient_bytes(),
+                        row.upload.declared_counter_scratch_bytes(),
+                        row.prepare_binding.retained_growth_bytes(),
+                        row.prepare_binding.maximum_simultaneous_transient_bytes(),
+                        row.prepare_binding.declared_counter_scratch_bytes(),
+                        row.native_inputs.requested_input_suffix_bytes(),
+                        row.native_commit.requested_bytes(),
+                        row.host_currentness_bytes,
+                        row.mapping_construction_bytes,
+                    ],
+                    policy.maximum_requested_bytes,
+                )?;
+            }
+        }
+    }
+    Ok(requested)
+}
+
+pub(super) fn observed_current(
+    scope: &OriginalRestorationConstructionScope<'_>,
+    policy: OriginalRestorationConstructionPolicy,
+    storage: OriginalRestorationConstructionStorage,
+) -> Result<usize, RuntimeError> {
+    let maximum = policy.maximum_requested_bytes;
+    let mut requested = checked_sum(
+        &[
+            policy.declared_observer_scratch_bytes,
+            storage.retained_holder_bytes,
+            crate::node_adapters::cnp::OriginalInitialLifecycleDiagnostics::requested_bytes(),
+            storage.maximum_simultaneous_transient_bytes,
+            scope
+                .inputs
+                .runtime
+                .original_restoration_retained_storage_precredit_data(
+                    scope.inputs.archive,
+                    scope.plan,
+                    scope.inputs.activation,
+                    maximum,
+                )?,
+            scope.inputs.archive.inner.capture_owned_storage()?,
+            NodeRuntime::capture_shared_allocation_storage::<CompleteOriginalRestorationWindow>(),
+            NodeRuntime::capture_shared_allocation_storage::<
+                super::transaction_group::OriginalRestorationTransactionGroup,
+            >(),
+        ],
+        maximum,
+    )?;
+    let mut descriptors = checked_sum(
+        &[
+            storage.retained_descriptors,
+            storage.maximum_simultaneous_transient_descriptors,
+            scope
+                .inputs
+                .runtime
+                .original_restoration_descriptor_views_precredit_data(
+                    scope.inputs.archive,
+                    scope.plan,
+                    scope.inputs.activation,
+                )?,
+            scope
+                .inputs
+                .archive
+                .retained_descriptor_views_precredit_data()?,
+            CnpSemanticLaunchGuard::original_initial_lifecycle_transient_descriptor_data(),
+        ],
+        policy.maximum_owned_descriptors,
+    )?;
+    for (index, source) in scope.inputs.sources.iter().enumerate() {
+        requested = checked_sum(
+            &[
+                requested,
+                source.original_initial_lifecycle_source_storage_data(maximum)?,
+                scope.inputs.sdks[index].original_completed_initial_commitments_storage_data(
+                    source,
+                    &scope.inputs.launches[index],
+                    scope.plan,
+                )?,
+            ],
+            maximum,
+        )?;
+        descriptors = checked_sum(
+            &[
+                descriptors,
+                source.original_initial_lifecycle_descriptor_views_precredit_data()?,
+            ],
+            policy.maximum_owned_descriptors,
+        )?;
+    }
+    if let Some(window) = scope.window {
+        let group = window
+            .group_partial
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if let Some(group) = group.as_ref() {
+            requested = checked_sum(&[requested, group.retained_storage_data(maximum)?], maximum)?;
+        }
+        if let Some(group) = window.group.get() {
+            requested = checked_sum(&[requested, group.retained_storage_data(maximum)?], maximum)?;
+        }
+        drop(group);
+        for (partial, complete) in window.targets_partial.iter().zip(&window.targets) {
+            let target = partial.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+            if let Some(target) = target.as_ref() {
+                requested = checked_sum(
+                    &[
+                        requested,
+                        target.retained_requested_storage_precredit_data(maximum)?,
+                    ],
+                    maximum,
+                )?;
+            }
+            if let Some(target) = complete.get() {
+                requested = checked_sum(
+                    &[
+                        requested,
+                        target.retained_requested_storage_precredit_data(maximum)?,
+                    ],
+                    maximum,
+                )?;
+            }
+        }
+        let partial = window
+            .cold_partial
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if let Some(partial) = partial.as_ref() {
+            requested = checked_sum(
+                &[requested, partial.retained_storage_data(maximum)?],
+                maximum,
+            )?;
+        }
+        if let Some(cold) = window.cold.get() {
+            requested = checked_sum(&[requested, cold.retained_storage_data(maximum)?], maximum)?;
+        }
+        let partial_rows = window
+            .node_rows_partial
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        for row in partial_rows
+            .iter()
+            .flatten()
+            .chain(window.node_rows.get().into_iter().flatten())
+        {
+            requested = checked_sum(
+                &[requested, row.retained_association_storage_data(maximum)?],
+                maximum,
+            )?;
+        }
+    }
+    // Descriptor authority is independent; checked_sum above refuses excess.
+    let _ = descriptors;
+    Ok(requested)
+}
+
+pub(super) fn checked_sum(terms: &[usize], maximum: usize) -> Result<usize, RuntimeError> {
+    terms.iter().try_fold(0usize, |sum, term| {
+        sum.checked_add(*term)
+            .filter(|sum| *sum <= maximum)
+            .ok_or(RuntimeError::ResourceLimit)
+    })
+}

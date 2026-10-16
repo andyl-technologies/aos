@@ -133,7 +133,7 @@ impl CnpSemanticPreparation {
             + size_of::<std::cell::Ref<'static, Option<super::super::packet_complete_source::OriginalCompletedCanonicalAckWorldAdmission>>>()
             + super::super::initial_lifecycle_diagnostics::OriginalInitialLifecycleDiagnostics::counter_scratch_bytes()
             + size_of::<[u8; 20]>()
-            + crucible_node_provider::client::CnpController::original_live_host_metadata_counter_scratch_data()
+            + crucible_node_provider::client::CnpController::original_restoration_host_metadata_counter_scratch_data()
             + size_of::<std::cell::Ref<'static, Option<Rc<dyn crucible_node_provider::connection::ConnectionSupervisor>>>>()
             + size_of::<Option<&crucible_node_provider::connection::OriginalRetainedSupervisor>>()
     }
@@ -317,7 +317,7 @@ impl CnpSemanticPreparation {
     pub fn original_conformance_node_retained_counter_scratch_data() -> Result<usize, RuntimeError>
     {
         super::super::CnpPreparationStorageScratch::requested_bytes()
-            .checked_add(crucible_node_provider::client::CnpController::original_live_host_metadata_counter_scratch_data())
+            .checked_add(crucible_node_provider::client::CnpController::original_restoration_host_metadata_counter_scratch_data())
             .and_then(|bytes| bytes.checked_add(PacketCompleteSemanticSource::retained_requested_storage_precredit_scratch_data()))
             .ok_or(RuntimeError::ResourceLimit)
     }

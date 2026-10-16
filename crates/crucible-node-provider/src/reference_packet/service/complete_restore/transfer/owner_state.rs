@@ -325,3 +325,9 @@ fn refused() -> ProviderError {
 #[cfg(test)]
 #[path = "owner_journal_tests.rs"]
 mod journal_tests;
+
+mod selected;
+pub(crate) use selected::{
+    authenticate_selected_owner_state_data, selected_owner_counter_scratch_data,
+    selected_owner_validation_storage_data,
+};

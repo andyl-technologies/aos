@@ -31,6 +31,8 @@ use crucible_node_provider::{
 mod complete_restore;
 #[path = "association/fresh_restore_host.rs"]
 mod fresh_restore_host;
+#[path = "association/restoration_transfer.rs"]
+mod restoration_transfer;
 #[path = "association/restore_transfer_banks.rs"]
 mod restore_transfer_banks;
 pub use complete_restore::PacketCompleteRestorePreparation;
@@ -1224,3 +1226,8 @@ impl PacketCompleteSemanticSource {
 
 #[path = "association/restoration_construction.rs"]
 mod restoration_construction;
+
+pub(crate) use restoration_transfer::{
+    OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
+    SourceVerifiedPhase as OriginalSourceRestoreVerifiedPhaseKind,
+};

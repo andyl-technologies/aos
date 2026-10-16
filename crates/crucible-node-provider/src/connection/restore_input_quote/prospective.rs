@@ -32,9 +32,35 @@ pub struct OriginalNativeRestoreInputConstructionData {
     held_proof_bytes: usize,
     native_reconstruction_bytes: usize,
     requested_input_suffix_bytes: usize,
+    input_allocation_fields: [U64; 14],
 }
 
 impl OriginalNativeRestoreInputConstructionData {
+    /// Reproduces the exact finite allocation fields used by this native quote.
+    ///
+    /// This fixed owning DTO allocates no bank and grants no permission. The
+    /// installed window retains it for Source-derived request construction;
+    /// its Source claim, full reference association and keyed proof remain
+    /// independent requirements before any Prepare or reconstruction effect.
+    pub fn original_input_allocation_data(&self) -> PacketCompleteRestoreInputAllocation {
+        PacketCompleteRestoreInputAllocation {
+            maximum_known_requested_bytes: self.input_allocation_fields[0],
+            maximum_input_bytes: self.input_allocation_fields[1],
+            maximum_nodes: self.input_allocation_fields[2],
+            maximum_depth: self.input_allocation_fields[3],
+            maximum_owned_backing_bytes: self.input_allocation_fields[4],
+            maximum_tree_entries: self.input_allocation_fields[5],
+            maximum_metadata_rows: self.input_allocation_fields[6],
+            maximum_literal_backing_bytes: self.input_allocation_fields[7],
+            maximum_content_transfers: self.input_allocation_fields[8],
+            maximum_content_objects: self.input_allocation_fields[9],
+            maximum_content_groups: self.input_allocation_fields[10],
+            maximum_content_bytes: self.input_allocation_fields[11],
+            maximum_content_metadata_bytes: self.input_allocation_fields[12],
+            maximum_model_bytes: self.input_allocation_fields[13],
+        }
+    }
+
     /// Returns all six independent raw Vec requests in their original role order.
     pub fn raw_input_bytes(&self) -> usize {
         self.raw_input_bytes
@@ -66,9 +92,11 @@ impl OriginalNativeRestoreInputConstructionData {
 ///
 /// Recursive/compiler frames and allocator physical overhead remain separate.
 pub fn original_native_restore_input_construction_counter_scratch_data() -> usize {
-    crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping::original_selected_construction_counter_scratch_data()
+    crate::reference_packet::service::ack_emitter::VerifiedCompleteRestorePrepare::original_selected_native_counter_scratch_data()
+        + crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping::original_selected_construction_counter_scratch_data()
         + size_of::<OriginalNativeRestoreInputConstructionData>()
         + size_of::<PacketCompleteRestoreInputAllocation>()
+        + size_of::<[U64; 14]>()
         + size_of::<InputGeometry>() + size_of::<MetadataObserver>()
         + size_of::<RetainedProtocolMetadataFacts>()
         + size_of::<[usize; 6]>()
@@ -223,5 +251,21 @@ pub fn original_native_restore_input_construction_storage_data(
         held_proof_bytes,
         native_reconstruction_bytes,
         requested_input_suffix_bytes: total,
+        input_allocation_fields: [
+            allocation.maximum_known_requested_bytes,
+            allocation.maximum_input_bytes,
+            allocation.maximum_nodes,
+            allocation.maximum_depth,
+            allocation.maximum_owned_backing_bytes,
+            allocation.maximum_tree_entries,
+            allocation.maximum_metadata_rows,
+            allocation.maximum_literal_backing_bytes,
+            allocation.maximum_content_transfers,
+            allocation.maximum_content_objects,
+            allocation.maximum_content_groups,
+            allocation.maximum_content_bytes,
+            allocation.maximum_content_metadata_bytes,
+            allocation.maximum_model_bytes,
+        ],
     })
 }

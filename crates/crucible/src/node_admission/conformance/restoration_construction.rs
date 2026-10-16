@@ -1,9 +1,11 @@
-//! Borrows actual same-runtime inputs for prospective restoration DATA.
+//! Admits one same-runtime restoration transaction and retains its partial owners.
 //!
-//! These loans let Core inspect the same runtime-owned node and preserve actual
-//! archive construction facts. They create no installed window, target binding,
-//! signer, upload, Commit or final context. Those mechanisms remain separate
-//! prerequisites before any live restoration effect.
+//! The installed window conjoins actual Source3, archive tickets, target runtime,
+//! cold owners and separately named future transfer phases. Opaque once claims
+//! gate the same CNP node's Prepare, input publication and Commit. Post-Commit
+//! inspection repeats actual Source-fenced journal/model predicates; it creates
+//! no final lineage context or readiness permission. Final four-owner scope and
+//! common-runtime installation remain distinct required mechanisms.
 
 use super::InstalledConformancePlan;
 use crate::{
@@ -22,6 +24,9 @@ use std::rc::{Rc, Weak};
 pub struct OriginalRestorationConstructionInputs<'a> {
     /// Borrows the complete actual registered three-Source reconstruction roster.
     pub sources: &'a [Rc<PacketCompleteSemanticSource>; 3],
+    /// Borrows the actual completed same-holder SDK roots, including remaining
+    /// native/report/launch/wire commitments that current capacities do not erase.
+    pub sdks: [&'a crate::node_adapters::cnp::PacketCompleteOriginalHostSdk; 3],
     /// Borrows its same immutable typed launches in original roster order.
     pub launches:
         &'a [crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch; 3],
@@ -62,6 +67,56 @@ pub struct OriginalRestorationConstructionInputs<'a> {
 }
 
 impl OriginalRestorationConstructionInputs<'_> {
+    pub(crate) fn selected_inputs_data(
+        &self,
+        selected: usize,
+    ) -> Result<OriginalRestorationConstructionInputs<'_>, RuntimeError> {
+        let inputs = OriginalRestorationConstructionInputs {
+            sources: self.sources,
+            sdks: self.sdks,
+            launches: self.launches,
+            encoded_launches: self.encoded_launches,
+            tickets: self.tickets,
+            selected,
+            prepare_ids: self.prepare_ids,
+            commit_ids: self.commit_ids,
+            source: self
+                .sources
+                .get(selected)
+                .ok_or(RuntimeError::ForeignAuthority)?,
+            launch: self
+                .launches
+                .get(selected)
+                .ok_or(RuntimeError::ForeignAuthority)?,
+            encoded_launch: *self
+                .encoded_launches
+                .get(selected)
+                .ok_or(RuntimeError::ForeignAuthority)?,
+            archive: self.archive,
+            ticket: *self
+                .tickets
+                .get(selected)
+                .ok_or(RuntimeError::ForeignAuthority)?,
+            runtime: self.runtime,
+            activation: self.activation,
+            journals: self.journals,
+            journal: *self
+                .journals
+                .get(selected)
+                .ok_or(RuntimeError::ForeignAuthority)?,
+            prepare_id: self
+                .prepare_ids
+                .get(selected)
+                .ok_or(RuntimeError::ForeignAuthority)?,
+            commit_id: self
+                .commit_ids
+                .get(selected)
+                .ok_or(RuntimeError::ForeignAuthority)?,
+        };
+        inputs.authenticate_original_group_data()?;
+        Ok(inputs)
+    }
+
     pub(crate) fn authenticate_original_group_data(&self) -> Result<(), RuntimeError> {
         let source = self
             .sources
@@ -115,4 +170,36 @@ impl OriginalRestorationConstructionInputs<'_> {
 
 #[path = "restoration_construction/node.rs"]
 mod node;
+pub(crate) use node::OriginalRestorationSigningCollector;
 pub use node::{OriginalRestorationNodeConstructionData, OriginalRestorationNodeInputs};
+
+#[path = "restoration_construction/construction_inputs.rs"]
+mod construction_inputs;
+pub(crate) use construction_inputs::OriginalRestorationSigningConstructionInputs;
+
+#[path = "restoration_construction/claim.rs"]
+mod claim;
+pub(crate) use claim::{
+    OriginalRestorationSigningInputs, OriginalRestorationTransactionClaim,
+    OriginalRestorationTransactionPhase,
+};
+#[path = "restoration_construction/inspection.rs"]
+mod inspection;
+pub(crate) use inspection::OriginalRestorationTransactionInspection;
+
+#[path = "restoration_construction/window.rs"]
+mod window;
+pub use window::{
+    CompleteOriginalRestorationWindow, OriginalRestorationConstructionPhase,
+    OriginalRestorationConstructionPolicy, OriginalRestorationConstructionScope,
+    OriginalRestorationConstructionStorage, OriginalRestorationMemberScope,
+};
+#[path = "restoration_construction/target.rs"]
+mod target;
+#[path = "restoration_construction/transaction_group.rs"]
+mod transaction_group;
+pub use target::CompleteOriginalRestorationTransactionTarget;
+
+pub use window::OriginalRestorationNodeDispatch;
+
+pub use window::OriginalRestorationNodeContinuationInspection;

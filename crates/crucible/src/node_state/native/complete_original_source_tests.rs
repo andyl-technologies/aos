@@ -122,6 +122,7 @@ fn source(archive: NativeArchiveRecord) -> CompleteOriginalRestorationSource {
             native_issued: Cell::new([false; 4]),
             target_started: Cell::new(false),
             target: RefCell::new(None),
+            restoration_transactions: Cell::new(None),
         }),
     }
 }
@@ -281,4 +282,84 @@ fn native_ticket_does_not_infer_missing_restoration_data_from_signed_archive() {
     assert_eq!(ticket.owner().unwrap().owner, owners[0]);
     assert!(source.take_native_ticket(&owners[0]).is_err());
     assert!(source.take_native_ticket(&owners[1]).is_ok());
+}
+
+#[test]
+fn selected_transaction_spends_each_original_owner_and_cannot_enter_legacy_context() {
+    let (_directory, source) = fixture();
+    let ids = native_ids(&source);
+    let _host = source.take_host_ticket().unwrap();
+    let tickets: Vec<_> = ids
+        .iter()
+        .map(|owner| source.take_native_ticket(owner).unwrap())
+        .collect();
+    let target = Rc::new(());
+
+    tickets[0]
+        .begin_original_restoration_transaction_data(&target)
+        .unwrap();
+
+    assert!(
+        tickets[0]
+            .begin_original_restoration_transaction_data(&target)
+            .is_err()
+    );
+    assert!(
+        tickets[0]
+            .authenticate_original_restoration_transaction_data(&Rc::new(()))
+            .is_err()
+    );
+    assert!(
+        tickets[1]
+            .authenticate_original_restoration_transaction_data(&target)
+            .is_err()
+    );
+    assert!(
+        source
+            .inner
+            .authenticate_legacy_restoration_context_phase_data()
+            .is_err()
+    );
+    assert!(source.inner.bind_target(&target).is_err());
+    tickets[1]
+        .begin_original_restoration_transaction_data(&target)
+        .unwrap();
+    tickets[1]
+        .authenticate_original_restoration_transaction_data(&target)
+        .unwrap();
+    tickets[0]
+        .authenticate_original_restoration_transaction_data(&target)
+        .unwrap();
+    assert!(source.take_native_ticket(&ids[0]).is_err());
+    assert_eq!(tickets[0].owner().unwrap().owner, ids[0]);
+    assert_eq!(tickets[1].owner().unwrap().owner, ids[1]);
+}
+
+#[test]
+fn legacy_target_cannot_be_reinterpreted_as_a_selected_transaction() {
+    let (_directory, source) = fixture();
+    let _host = source.take_host_ticket().unwrap();
+    let tickets: Vec<_> = native_ids(&source)
+        .iter()
+        .map(|owner| source.take_native_ticket(owner).unwrap())
+        .collect();
+    let target = Rc::new(());
+    source.inner.bind_target(&target).unwrap();
+
+    assert!(
+        tickets[0]
+            .begin_original_restoration_transaction_data(&target)
+            .is_err()
+    );
+    assert!(
+        tickets[0]
+            .authenticate_original_restoration_transaction_data(&target)
+            .is_err()
+    );
+    assert!(source.inner.restoration_transactions.get().is_none());
+    source
+        .inner
+        .authenticate_legacy_restoration_context_phase_data()
+        .unwrap();
+    source.inner.authenticate_target(&target).unwrap();
 }

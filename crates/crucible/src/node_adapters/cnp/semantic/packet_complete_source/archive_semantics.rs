@@ -8,6 +8,8 @@ use super::*;
 use crate::node_contract::NodeRuntime;
 use serde::Deserialize;
 
+#[path = "archive_semantics/construction_storage.rs"]
+pub(super) mod construction_storage;
 #[path = "archive_semantics/data.rs"]
 pub(super) mod data;
 #[path = "archive_semantics/protocol.rs"]

@@ -39,6 +39,20 @@ impl SimulationNode for CnpSemanticNode {
         CnpSemanticNode::original_restoration_construction_data(self, inputs).map(Some)
     }
 
+    fn execute_original_restoration_transaction(
+        &mut self,
+        dispatch: crate::node_admission::OriginalRestorationNodeDispatch<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.execute_original_restoration_transaction_data(dispatch)
+    }
+
+    fn inspect_original_restoration_continuation(
+        &self,
+        inspection: crate::node_admission::OriginalRestorationNodeContinuationInspection<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.inspect_original_restoration_continuation_data(inspection)
+    }
+
     fn retained_descriptor_views_precredit_data(&self) -> Result<Option<usize>, RuntimeError> {
         self.preparation
             .retained_descriptor_views_precredit_data()

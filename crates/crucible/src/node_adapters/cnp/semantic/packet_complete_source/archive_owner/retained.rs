@@ -280,6 +280,163 @@ impl OriginalRestorationColdGroup {
         Ok(view)
     }
 
+    /// Borrows the same completed cold originals for a Source construction quote.
+    ///
+    /// This DATA loan issues no transaction claim. The caller separately funds
+    /// cold reconstruction before this call and the complete installed window
+    /// before a Source effect. The actual index constructor retains its own
+    /// archive cap; its all-other-retained term cannot be replaced by zero.
+    pub(crate) fn original_signing_construction_inputs_data<'a>(
+        &'a self,
+        inputs: &'a crate::node_admission::OriginalRestorationConstructionInputs<'a>,
+        plan: &'a crate::node_admission::InstalledConformancePlan,
+        native: &'a crate::node_admission::OriginalRestorationNodeConstructionData,
+        controller: &'a crucible_node_provider::client::CnpController,
+        query: &'a crucible_node_provider::client::OriginalFreshRestoreQuery,
+        maximum_mapping_bytes: usize,
+        maximum_record_bytes: usize,
+        observed_other_retained_bytes: usize,
+    ) -> Result<crate::node_admission::OriginalRestorationSigningConstructionInputs<'a>, RuntimeError>
+    {
+        inputs.authenticate_original_group_data()?;
+        if !Rc::ptr_eq(&self.archive.inner, &inputs.archive.inner)
+            || maximum_mapping_bytes == 0
+            || maximum_record_bytes == 0
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        native.authenticate_original_source_data(inputs.source)?;
+        let cold = self.original_owner_data(inputs.selected, inputs.source, inputs.ticket)?;
+        let host = cold
+            .host
+            .historical()
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        // The completed grouped constructor already authenticated this exact
+        // immutable journal/Host/native transcript. This raw loan neither
+        // reparses frames nor repeats its allocating validation phases.
+        let terminal = host
+            .custody
+            .controller
+            .get(&cold.journal.confirmation.capture.capture_request_id)
+            .and_then(|pair| pair.response.as_ref())
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let retained = self.owners[inputs.selected]
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let journal_reference = cold
+            .owner
+            .evidence
+            .get(
+                retained
+                    .journal_index
+                    .ok_or(RuntimeError::ForeignAuthority)?,
+            )
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if journal_reference != inputs.journal {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.origin()?;
+        Ok(
+            crate::node_admission::OriginalRestorationSigningConstructionInputs {
+                source: inputs.source,
+                archive: inputs.archive,
+                ticket: inputs.ticket,
+                controller,
+                query,
+                binding_quote: &native.prepare_binding,
+                plan,
+                activation: inputs.activation,
+                launch: inputs.launch,
+                journal: cold.journal,
+                journal_reference,
+                capture_terminal: terminal,
+                native_allocation: &native.native_allocation,
+                prepare_id: inputs.prepare_id,
+                commit_id: inputs.commit_id,
+                maximum_mapping_bytes,
+                maximum_record_bytes,
+                observed_other_retained_bytes,
+            },
+        )
+    }
+
+    pub(crate) fn original_restoration_references_data<'a>(
+        &'a self,
+        index: usize,
+        source: &Rc<PacketCompleteSemanticSource>,
+        ticket: &crate::node_state::CompleteOriginalNativeTicket,
+    ) -> Result<[&'a ContentRef; 5], RuntimeError> {
+        let cold = self.original_owner_data(index, source, ticket)?;
+        let retained = self.owners[index]
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let journal_reference = cold
+            .owner
+            .evidence
+            .get(
+                retained
+                    .journal_index
+                    .ok_or(RuntimeError::ForeignAuthority)?,
+            )
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let references = [
+            &cold.journal.native_after_protocol,
+            &cold.journal.native_control,
+            &cold.journal.native_anchor,
+            &cold.owner.state,
+            journal_reference,
+        ];
+        ticket
+            .native_restoration_construction_data()?
+            .authenticate_original_references_data(references)?;
+        Ok(references)
+    }
+
+    pub(crate) fn original_signing_inputs_data<'a>(
+        &'a self,
+        index: usize,
+        source: &'a Rc<PacketCompleteSemanticSource>,
+        ticket: &'a crate::node_state::CompleteOriginalNativeTicket,
+        plan: &'a crate::node_admission::InstalledConformancePlan,
+        activation: &'a crate::node_contract::ActivationRecord,
+        mapping: &'a crucible_node_provider::protocol_snapshot::PreparedArchivedProtocolMapping,
+        native: &'a crate::node_admission::OriginalRestorationNodeConstructionData,
+        prepare_id: &'a Id,
+        commit_id: &'a Id,
+        maximum_record_bytes: usize,
+        observed_other_retained_bytes: usize,
+    ) -> Result<crate::node_admission::OriginalRestorationSigningInputs<'a>, RuntimeError> {
+        native.authenticate_original_source_data(source)?;
+        let cold = self.original_owner_data(index, source, ticket)?;
+        let references = self.original_restoration_references_data(index, source, ticket)?;
+        let host = cold
+            .host
+            .historical()
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        let capture_terminal = host
+            .custody
+            .controller
+            .get(&cold.journal.confirmation.capture.capture_request_id)
+            .and_then(|pair| pair.response.as_ref())
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        Ok(crate::node_admission::OriginalRestorationSigningInputs {
+            source,
+            archive: &self.archive,
+            ticket,
+            plan,
+            activation,
+            journal: cold.journal,
+            journal_reference: references[4],
+            capture_terminal,
+            mapping,
+            native_allocation: &native.native_allocation,
+            prepare_id,
+            commit_id,
+            maximum_record_bytes,
+            observed_other_retained_bytes,
+        })
+    }
+
     /// Counts actual nested backing, including failed/partially decoded owners.
     ///
     /// The containing Option/root is a separate term. Source3 backing must be
@@ -307,6 +464,14 @@ impl OriginalRestorationColdGroup {
     pub(crate) fn counter_scratch_data() -> usize {
         size_of::<[usize; 8]>()
             .saturating_add(size_of::<OriginalRestorationColdOwnerView<'static>>())
+            .saturating_add(size_of::<crate::node_admission::OriginalRestorationSigningInputs<'static>>())
+            .saturating_add(size_of::<Result<crate::node_admission::OriginalRestorationSigningInputs<'static>, RuntimeError>>())
+            .saturating_add(size_of::<[&ContentRef; 5]>())
+            .saturating_add(size_of::<Result<[&ContentRef; 5], RuntimeError>>())
+            .saturating_add(size_of::<crate::node_admission::OriginalRestorationSigningConstructionInputs<'static>>())
+            .saturating_add(size_of::<Result<crate::node_admission::OriginalRestorationSigningConstructionInputs<'static>, RuntimeError>>())
+            .saturating_add(size_of::<&HistoricalControllerState>())
+            .saturating_add(size_of::<&crucible_node_provider::envelope::Envelope>())
             .saturating_add(size_of::<ColdGroupStaging<'static, 'static>>())
             .saturating_add(size_of::<[&Id; 4]>())
             .saturating_add(size_of::<[&crucible_node_contract::HashRef; 2]>())

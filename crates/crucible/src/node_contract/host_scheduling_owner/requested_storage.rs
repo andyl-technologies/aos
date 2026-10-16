@@ -121,3 +121,101 @@ impl HostSchedulingSource {
             + std::mem::size_of::<[usize; 8]>()
     }
 }
+
+impl HostSchedulingSource {
+    /// Counts the same archive-ticket-backed Host source before restoration effects.
+    ///
+    /// The actual ticket must retain the supplied source allocation. This raw
+    /// observation includes its archive backing and follows no live callback;
+    /// revocation never erases retained ownership or renews effect authority.
+    /// The enclosing Host source Rc and shared runtime remain caller terms.
+    ///
+    /// # Errors
+    /// Refuses foreign creators, a different archive, unsupported phases, busy
+    /// ownership loans and arithmetic or storage exhaustion.
+    pub fn retained_restoration_metadata_bytes_excluding_runtime_precredit_data(
+        &self,
+        archive: &crate::node_state::CompleteOriginalRestorationSource,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let ticket = self
+            .archive_ticket
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        if !Rc::ptr_eq(&ticket.source, &archive.inner) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.retained_ticket_metadata_bytes_excluding_runtime_precredit_data(maximum)
+    }
+
+    pub(super) fn retained_ticket_metadata_bytes_excluding_runtime_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        if self.process != std::process::id()
+            || self.owner_thread != thread::current().id()
+            || self.edition != preservation::Edition::CompleteOriginalLineage
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.original_ticket.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let ticket = self
+            .archive_ticket
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        ticket.authenticate_birth()?;
+        let bytes = (|| -> Result<usize, RuntimeError> {
+            let selection = NodeRuntime::capture_host_selection_storage(&self.selection)?
+                .checked_sub(std::mem::size_of::<HostSchedulingSelection>())
+                .ok_or(RuntimeError::ResourceLimit)?;
+            let mut total = selection
+                .checked_add(NodeRuntime::capture_hash_storage(&self.world)?)
+                .and_then(|bytes| bytes.checked_add(self.prepared_token.allocated_capacity()))
+                .ok_or(RuntimeError::ResourceLimit)?;
+            if self.node_created.get() {
+                // The original Weak retains this allocation after node drop.
+                total = total
+                    .checked_add(NodeRuntime::capture_shared_allocation_storage::<()>())
+                    .ok_or(RuntimeError::ResourceLimit)?;
+            }
+            if let Some(facet) = &self.preservation_facet {
+                total = total
+                    .checked_add(facet.retained_requested_storage())
+                    .ok_or(RuntimeError::ResourceLimit)?;
+            }
+            let attached = self
+                .attached
+                .try_borrow()
+                .map_err(|_| RuntimeError::OutstandingObligations)?;
+            if let Some(attached) = attached.as_ref() {
+                total = total
+                    .checked_add(attached.retained_metadata_bytes_excluding_runtime()?)
+                    .ok_or(RuntimeError::ResourceLimit)?;
+            }
+            total = total
+                .checked_add(self.retained_dependency_storage()?)
+                .ok_or(RuntimeError::ResourceLimit)?;
+            total = total
+                .checked_add(ticket.source.capture_owned_storage()?)
+                .ok_or(RuntimeError::ResourceLimit)?;
+            if total > maximum {
+                return Err(RuntimeError::ResourceLimit);
+            }
+            Ok(total)
+        })()?;
+        Ok(bytes)
+    }
+
+    /// Names the fixed views of the archive-ticket-backed raw Host census.
+    pub fn retained_restoration_metadata_counter_scratch_data() -> usize {
+        Self::retained_original_metadata_counter_scratch_data()
+            + std::mem::size_of::<Option<&crate::node_state::CompleteOriginalHostTicket>>()
+            + std::mem::size_of::<
+                Result<&crate::node_state::CompleteOriginalHostTicket, RuntimeError>,
+            >()
+            + std::mem::size_of::<Result<usize, RuntimeError>>()
+            + std::mem::size_of::<Result<(), RuntimeError>>()
+    }
+}

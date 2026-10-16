@@ -3,7 +3,7 @@
 use super::*;
 use crate::node_contract::StopReason as CommonStopReason;
 use crucible_node_provider::reference_packet::{
-    continuation_models::PacketModelRecordExpectation,
+    continuation_models::{PacketModelCaptureBoundaryData, PacketModelRecordExpectation},
     control::{
         PacketDecodedControlSnapshot, PacketNative5Record, PacketNative5UnderlyingRecord,
         decode_packet_control_snapshot, packet_control_snapshot_validation_layouts,
@@ -53,7 +53,17 @@ impl PacketCompleteSemanticSource {
             retained,
             maximum: maximum_total_bytes,
             scratch: Cell::new(0),
+            construction: None,
         };
+        self.authenticate_original_native_semantic_history_data(&data, cold.journal()?, semantics)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_original_native_semantic_history_data(
+        &self,
+        data: &NativeInputData<'_>,
+        journal: &PacketCompleteSettledJournal,
+        semantics: &PacketCompleteArchivedSemantics,
+    ) -> Result<(), OperationFailure> {
         let state = semantics.source_common_data();
         // A complete live cut requires the original current native owner. A
         // reclaimed or quarantined common node cannot acquire Ready through a
@@ -64,7 +74,6 @@ impl PacketCompleteSemanticSource {
             ));
         }
         data.observation_population(state)?;
-        let journal = cold.journal()?;
         let control = data.control(&journal.native_control)?;
         if control.administrative_cut() != journal.cut {
             return Err(refused("cold native model uses another administrative cut"));
@@ -110,6 +119,50 @@ impl PacketCompleteSemanticSource {
 }
 
 impl NativeInputData<'_> {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn capture_boundary_data(
+        &self,
+        journal: &PacketCompleteSettledJournal,
+    ) -> Result<PacketModelCaptureBoundaryData, OperationFailure> {
+        // The same full-Control lease covers its bounded model projection,
+        // inventory DOM and canonical banks while the returned hash is built.
+        // The three returned hash strings are independent of the Control's
+        // parsed fields, even though their logical identity is derived there.
+        let hash_bytes = "blake3-256".len()
+            + 64
+            + "source-owned.packet-connected-inventory/4"
+                .len()
+                .max("source-owned.packet-inventory.v1".len());
+        let scratch = self
+            .scratch
+            .get()
+            .checked_add(hash_bytes)
+            .ok_or_else(|| refused("cold model boundary hash storage overflow"))?;
+        self.retained
+            .checked_add(scratch)
+            .filter(|bytes| *bytes <= self.maximum)
+            .ok_or_else(|| refused("cold model boundary hash storage exhausted"))?;
+        self.observe_construction(scratch)?;
+        self.scratch.set(scratch);
+        let _hash_charge = NativeScratch {
+            total: &self.scratch,
+            bytes: hash_bytes,
+        };
+        let control = self.control(&journal.native_control)?;
+        let maximum = usize::try_from(
+            self.source
+                .selected_storage_selection()?
+                .storage
+                .control_snapshot_bytes
+                .get(),
+        )
+        .map_err(|_| refused("cold model selected bound is not representable"))?
+        .min(packet_control_snapshot_validation_layouts().maximum_model_bytes);
+        control
+            .model()
+            .capture_boundary_data(maximum)
+            .map_err(unknown)
+    }
+
     fn control(
         &self,
         reference: &ContentRef,
@@ -179,6 +232,7 @@ impl NativeInputData<'_> {
             .checked_add(scratch)
             .filter(|n| *n <= self.maximum)
             .ok_or_else(|| refused("cold model decoder storage exhausted"))?;
+        self.observe_construction(scratch)?;
         self.scratch.set(scratch);
         let charge = NativeScratch {
             total: &self.scratch,
@@ -362,6 +416,7 @@ impl NativeInputData<'_> {
             .checked_add(scratch)
             .filter(|n| *n <= self.maximum)
             .ok_or_else(|| refused("cold consumption serialization storage exhausted"))?;
+        self.observe_construction(scratch)?;
         self.scratch.set(scratch);
         let _charge = NativeScratch {
             total: &self.scratch,

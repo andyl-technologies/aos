@@ -248,6 +248,25 @@ impl OriginalProtocolSupervisor {
         Ok(())
     }
 
+    /// Checks the same actor and supervisor after registration has been revoked.
+    ///
+    /// This raw association grants no live connection or callback authority.
+    pub(crate) fn authenticate_original_connection_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<(), ProviderError> {
+        self.actor.ensure_current()?;
+        connection.protocol_owner.ensure_current()?;
+        if !Rc::ptr_eq(&self.actor, &connection.protocol_owner)
+            || !Rc::ptr_eq(&self.supervisor, &connection.supervisor)
+        {
+            return Err(ProviderError::Correlation(
+                "raw original supervisor/controller differs",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn observe_original_header(
         &self,
         observer: &mut crate::retained_metadata::MetadataObserver,

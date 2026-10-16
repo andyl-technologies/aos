@@ -346,6 +346,51 @@ impl OriginalCompleteRestoreInputCustody {
         )
     }
 
+    fn reconstruct_original_selected_native(
+        &mut self,
+        request: &PacketCompleteRestorePrepareRequest,
+        limits: OwnedProtocol11DataLimits,
+        class: crate::protocol_snapshot::RestorationMappingClass,
+    ) -> Result<(), ProviderError> {
+        use crate::protocol_snapshot::RestorationMappingClass;
+        self.authenticate_ready(request)?;
+        if self.phase != CustodyPhase::Complete || self.native_owner.is_some() {
+            return Err(refused());
+        }
+        super::restore_input_quote::authenticate_decoder_limits(request, limits)?;
+        let mut plan = ValidatedNativeOwnedProtocol11::validate(
+            &self.banks[0].bytes,
+            limits,
+            &mut self.summaries,
+        )?;
+        match class {
+            RestorationMappingClass::StartupCapture14 => {
+                plan.complete_native_startup_capture_allocation_schema_identity()?;
+            }
+            RestorationMappingClass::InvocationCapture15 => {
+                plan.complete_native_invocation_capture_schema_identity()?;
+            }
+            RestorationMappingClass::Legacy11 => return Err(refused()),
+        }
+        self.quote
+            .authenticate_native_plan(request, plan.allocation_demand())?;
+        match class {
+            RestorationMappingClass::StartupCapture14 => plan
+                .reconstruct_native_startup_capture_allocation_sealed_into(
+                    &request.native_protocol,
+                    &mut self.native_encoded,
+                    &mut self.native_owner,
+                ),
+            RestorationMappingClass::InvocationCapture15 => plan
+                .reconstruct_native_invocation_capture_sealed_into(
+                    &request.native_protocol,
+                    &mut self.native_encoded,
+                    &mut self.native_owner,
+                ),
+            RestorationMappingClass::Legacy11 => Err(refused()),
+        }
+    }
+
     fn prepare_mapping_into(
         &mut self,
         request: &PacketCompleteRestorePrepareRequest,
@@ -391,6 +436,51 @@ impl OriginalCompleteRestoreInputCustody {
         Ok(())
     }
 
+    fn prepare_original_selected_mapping_into(
+        &mut self,
+        request: &PacketCompleteRestorePrepareRequest,
+        authority: &ConnectionAuthority,
+        actor: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+        codec: &Rc<Native5CodecOwner>,
+        completed: &mut Option<
+            Rc<RefCell<crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping>>,
+        >,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_ready(request)?;
+        if self.phase != CustodyPhase::Complete
+            || completed.is_some()
+            || self.mapping_attempt.is_some()
+            || self.native_owner.is_none()
+        {
+            return Err(refused());
+        }
+        let nonce: [u8; 32] = request
+            .restoration
+            .nonce
+            .as_slice()
+            .try_into()
+            .map_err(|_| refused())?;
+        crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping::prepare_original_selected_into(
+            &mut self.mapping_attempt,
+            crate::protocol_snapshot::NativeArchivedMappingInput {
+                historical: &mut self.native_owner,
+                reference: &request.restoration.mapping,
+                normalization: &self.banks[5].bytes,
+                nonce,
+            },
+            authority,
+            actor,
+            codec,
+        )?;
+        // A failed preparation leaves the partial mapping and its original
+        // decoded/encoded owners in this persistent custody. Only a complete
+        // attempt transfers to the endpoint's persistent slot.
+        *completed = Some(Rc::new(RefCell::new(
+            self.mapping_attempt.take().ok_or_else(refused)?,
+        )));
+        Ok(())
+    }
+
     pub(crate) fn native_historical(&self) -> Result<&SealedHistoricalNativeState, ProviderError> {
         self.ensure_origin()?;
         let owner = self.native_owner.as_ref().ok_or_else(refused)?;
@@ -410,9 +500,27 @@ impl<S: ProviderStream> Connection<S> {
         self.authenticate_native5_source_codec()?;
         let installed = self.original_restore_inputs.as_ref().ok_or_else(refused)?;
         installed.token.authenticate_current(self)?;
+        let selected_class = installed.token.original_selected_native_class_data(self)?;
+        let selected_limits = match selected_class {
+            Some(_) => Some(selected_decoder_limits(&installed.token.request(self)?)?),
+            None => None,
+        };
         let request = installed.token.request(self)?;
         let mut custody = installed.custody.try_borrow_mut().map_err(|_| borrowed())?;
         custody.quote.authenticate_connection(self)?;
+        if let (Some(class), Some(limits)) = (selected_class, selected_limits) {
+            custody.reconstruct_original_selected_native(&request, limits, class)?;
+            custody.prepare_original_selected_mapping_into(
+                &request,
+                &self.authority,
+                &self.protocol_owner,
+                self.native5_codec.as_ref().ok_or_else(refused)?,
+                completed,
+            )?;
+            custody.quote.authenticate_connection(self)?;
+            installed.token.authenticate_current(self)?;
+            return Ok(());
+        }
         custody.prepare_mapping_into(
             &request,
             &self.authority,
@@ -702,5 +810,57 @@ impl<S: ProviderStream> Connection<S> {
         let quote = custody.quote.retain_held_proof_quote(self)?;
         custody.held_proof_quote_taken = true;
         Ok(quote)
+    }
+}
+
+// Both bounds come from the exact verified Prepare. The shared decoder's own
+// compiled combined-row ceiling is an additional restriction, never an increase
+// in signed transfer/object counts or Source memory authority.
+fn selected_decoder_limits(
+    request: &PacketCompleteRestorePrepareRequest,
+) -> Result<OwnedProtocol11DataLimits, ProviderError> {
+    let a = &request.allocation;
+    a.validate_data()?;
+    let extent = |value: u64| usize::try_from(value).map_err(|_| refused());
+    let limits = OwnedProtocol11DataLimits {
+        json: crate::protocol_snapshot::owned11::json_value::HistoricalJsonLimits {
+            maximum_input_bytes: extent(a.maximum_input_bytes.get())?,
+            maximum_nodes: extent(a.maximum_nodes.get())?,
+            maximum_depth: extent(a.maximum_depth.get())?,
+            maximum_owned_backing_bytes: extent(a.maximum_owned_backing_bytes.get())?,
+            maximum_tree_entries: extent(a.maximum_tree_entries.get())?,
+        },
+        content: crate::client::compact_metadata8::CompactMetadata8Limits {
+            content: crate::client::CompactContentLimits {
+                max_input_bytes: extent(a.maximum_input_bytes.get())?,
+                max_rows: extent(a.maximum_content_transfers.get())?
+                    .checked_add(extent(a.maximum_content_objects.get())?)
+                    .ok_or_else(refused)?
+                    .min(
+                        crate::client::CompactContentLimits::maximum_supported_combined_rows_data(),
+                    ),
+                max_groups: extent(a.maximum_content_groups.get())?,
+                max_first_group_capacity_bytes: extent(a.maximum_content_bytes.get())?,
+            },
+            maximum_metadata_capacity_bytes: extent(a.maximum_content_metadata_bytes.get())?,
+        },
+        maximum_metadata_rows: extent(a.maximum_metadata_rows.get())?,
+        maximum_literal_backing_bytes: extent(a.maximum_literal_backing_bytes.get())?,
+    };
+    super::restore_input_quote::authenticate_decoder_limits(request, limits)?;
+    Ok(limits)
+}
+
+impl<S: ProviderStream> Connection<S> {
+    pub(crate) fn original_complete_restore_selected_native_class_data(
+        &self,
+    ) -> Result<Option<crate::protocol_snapshot::RestorationMappingClass>, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        self.original_restore_inputs
+            .as_ref()
+            .ok_or_else(refused)?
+            .token
+            .original_selected_native_class_data(self)
     }
 }

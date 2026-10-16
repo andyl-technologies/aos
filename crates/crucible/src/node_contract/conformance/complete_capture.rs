@@ -238,6 +238,40 @@ impl CollectingCompleteRestorationSource {
         Ok(&self.original)
     }
 
+    /// Borrows the same collecting archive for an inactive restoration quote.
+    ///
+    /// This uses the actual live runtime, scheduler, plan and activation identity
+    /// without graph/world callbacks, formatting or reconstruction. An unbound
+    /// runtime remains unbound DATA; this loan issues no transaction or context.
+    ///
+    /// # Errors
+    /// Refuses another original plan/source/runtime/activation or revoked custody.
+    pub fn original_restoration_source_data(
+        &self,
+        runtime: &ConformanceRuntime,
+        plan: &InstalledConformancePlan,
+        activation: &ActivationRecord,
+    ) -> Result<&crate::node_state::CompleteOriginalRestorationSource, RuntimeError> {
+        runtime.authenticate_original_restoration_target_data(&self.original, plan, activation)?;
+        Ok(&self.original)
+    }
+
+    /// Compares actual collecting archive allocations without constructing a right.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator or another source allocation, even with equal bytes.
+    pub fn authenticate_same_original_source_data(
+        &self,
+        source: &crate::node_state::CompleteOriginalRestorationSource,
+    ) -> Result<(), RuntimeError> {
+        self.original.inner.authenticate_birth()?;
+        source.inner.authenticate_birth()?;
+        if !Rc::ptr_eq(&self.original.inner, &source.inner) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+
     /// Prepares the actual archive-ticketed Host2 node under this same plan.
     ///
     /// The selected host source must already retain this source's one-shot

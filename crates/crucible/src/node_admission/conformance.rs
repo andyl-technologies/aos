@@ -86,6 +86,47 @@ pub struct ConformancePlanEvidence<'a> {
 /// [`AdmissionEvidence`]. Collection authorization must never issue an accepted
 /// class or use vendor-selected omissions as a normative witness population.
 pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
+    /// Selects the exact registered inactive restoration construction phase.
+    ///
+    /// This origin-only callback must consume the actual holder's phase before
+    /// returning its installed policy; no DATA total or decoded class supplies it.
+    ///
+    /// # Errors
+    /// Defaults to refusal for unsupported or already-spent installed ownership.
+    fn original_restoration_construction_policy(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        _scope: &OriginalRestorationConstructionScope<'_>,
+    ) -> Result<OriginalRestorationConstructionPolicy, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Observes the genuine restored-phase external holder and callback owners.
+    ///
+    /// # Errors
+    /// Defaults to refusal; initial/prebirth observers cannot stand in for this row.
+    fn authenticate_original_restoration_construction(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        _scope: &OriginalRestorationConstructionScope<'_>,
+        _policy: &OriginalRestorationConstructionPolicy,
+    ) -> Result<OriginalRestorationConstructionStorage, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Rechecks actual registered spent member identities without mutable banks.
+    ///
+    /// # Errors
+    /// Defaults to refusal; no Source association, runtime, preparation or SDK loan
+    /// may be opened here. The Core terminal live fence runs after this callback.
+    fn authenticate_original_restoration_construction_member(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        _scope: &OriginalRestorationMemberScope<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
     /// Selects the same installed inactive-runtime construction resource action.
     ///
     /// # Errors
@@ -1323,3 +1364,20 @@ pub use restoration_construction::{
     OriginalRestorationConstructionInputs, OriginalRestorationNodeConstructionData,
     OriginalRestorationNodeInputs,
 };
+
+pub(crate) use restoration_construction::OriginalRestorationSigningConstructionInputs;
+
+pub(crate) use restoration_construction::{
+    OriginalRestorationSigningInputs, OriginalRestorationTransactionClaim,
+    OriginalRestorationTransactionInspection, OriginalRestorationTransactionPhase,
+};
+
+pub(crate) use restoration_construction::OriginalRestorationSigningCollector;
+pub use restoration_construction::{
+    CompleteOriginalRestorationTransactionTarget, CompleteOriginalRestorationWindow,
+    OriginalRestorationConstructionPhase, OriginalRestorationConstructionPolicy,
+    OriginalRestorationConstructionScope, OriginalRestorationConstructionStorage,
+    OriginalRestorationMemberScope, OriginalRestorationNodeDispatch,
+};
+
+pub use restoration_construction::OriginalRestorationNodeContinuationInspection;

@@ -37,6 +37,16 @@ pub struct CompactContentLimits {
     pub max_first_group_capacity_bytes: usize,
 }
 
+impl CompactContentLimits {
+    /// Returns the existing decoder's compiled combined transfer/object ceiling.
+    ///
+    /// This constant DATA neither admits those rows nor alters their signed
+    /// limits. The actual decoder retains its independent checks on both rosters.
+    pub(crate) const fn maximum_supported_combined_rows_data() -> usize {
+        TOTAL_ROW_LIMIT
+    }
+}
+
 /// Retains the original logical limits without normalizing historical credit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoredContentLimits {

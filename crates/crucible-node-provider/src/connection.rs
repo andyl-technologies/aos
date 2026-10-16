@@ -1049,3 +1049,5 @@ pub(crate) use native_startup_protocol::invocation_history::counter_scratch_data
 
 #[path = "connection/native_owned15.rs"]
 mod native_owned15;
+
+mod restoration_retained;

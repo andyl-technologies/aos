@@ -348,8 +348,11 @@ impl NativeAckBoot {
                 control_bytes: inputs.original_input(1)?,
                 anchor_bytes: inputs.original_input(2)?,
             };
-            let owner_requested =
-                complete_restore_owner_validation_storage_data(&input)?.total_bytes;
+            let selected = connection.original_complete_restore_selected_native_class_data()?;
+            let owner_requested = match selected {
+                Some(class) => crate::reference_packet::service::complete_restore::transfer::selected_owner_validation_storage_data(&input, class)?.total_bytes,
+                None => complete_restore_owner_validation_storage_data(&input)?.total_bytes,
+            };
             let maximum = usize::try_from(request.prepare.allocation.maximum_model_bytes.get())
                 .map_err(|_| refused())?;
             let requested = flight
@@ -357,7 +360,10 @@ impl NativeAckBoot {
                 .checked_add(owner_requested)
                 .filter(|requested| *requested <= maximum)
                 .ok_or_else(refused)?;
-            let projection = authenticate_complete_restore_owner_state_data(input)?;
+            let projection = match selected {
+                Some(class) => crate::reference_packet::service::complete_restore::transfer::authenticate_selected_owner_state_data(input, class)?,
+                None => authenticate_complete_restore_owner_state_data(input)?,
+            };
             flight.requested_model_bytes = requested;
             let (capture_request, pending_control) = projection.into_data_parts();
             flight.capture_request = Some(capture_request);

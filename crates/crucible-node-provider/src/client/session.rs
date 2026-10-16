@@ -24,6 +24,8 @@ mod fresh_restore_query;
 pub(super) mod original_conflict;
 #[path = "session/resend.rs"]
 mod resend;
+#[path = "session/restore_transfer_prefix.rs"]
+pub(in crate::client) mod restore_transfer_prefix;
 mod restore_upload;
 
 #[path = "session/lifecycle_resend.rs"]
@@ -1751,6 +1753,84 @@ impl ClientSession {
         }
     }
 
+    pub(in crate::client) fn publish_original_complete_restore_transfer_with_prefix(
+        &mut self,
+        custody: &mut ClientCustody,
+        original: &Envelope,
+        bytes: &[u8],
+        slot: Option<usize>,
+        cut: crate::operational_time::OperationalDeadline,
+        prefix: &mut restore_transfer_prefix::HeldPrefix,
+    ) -> Result<Envelope, ProviderError> {
+        self.authenticate_original_ack_admit_cut(original.sequence, cut)?;
+        if prefix.requires_content() {
+            custody.content.preflight_capacity(
+                1,
+                crate::reference_packet::service::complete_restore::maximum_complete_restore_held_evidence_bytes()?,
+            )?;
+        }
+        self.connection
+            .publish_original_assigned_complete_restore_transfer(original, bytes, slot)?;
+        self.sequence = self.sequence.checked_add(U64::new(1))?;
+        loop {
+            let frame = self
+                .connection
+                .receive_original_restore_transfer_prefix(original, prefix.phase_data())?
+                .ok_or(ProviderError::Correlation(
+                    "assigned complete restore response unknown",
+                ))?;
+            match frame.body {
+                ReceivedBody::Response(body) => {
+                    original.matches_response(&frame.envelope)?;
+                    custody.retain_journal_bytes(envelope_bytes(&frame.envelope)?)?;
+                    let id = original
+                        .request_id
+                        .0
+                        .as_ref()
+                        .ok_or(ProviderError::Correlation(
+                            "assigned complete restore ID absent",
+                        ))?;
+                    let retained =
+                        custody
+                            .controller
+                            .get_mut(id)
+                            .ok_or(ProviderError::Correlation(
+                                "assigned complete restore custody absent",
+                            ))?;
+                    retained.response = Some(frame.envelope.clone());
+                    prefix.authenticate_terminal(&body)?;
+                    return Ok(frame.envelope);
+                }
+                ReceivedBody::Request(body) => {
+                    {
+                        prefix.authenticate_request(original, &frame.envelope, &body)?;
+                        let id = frame.envelope.request_id.0.as_ref().ok_or_else(|| {
+                            ProviderError::Correlation("selected restore prefix ID absent")
+                        })?;
+                        if custody.provider.contains_key(id) {
+                            return Err(ProviderError::Conflict(
+                                "selected restore prefix ID reused",
+                            ));
+                        }
+                        if let RequestBody::BlobBegin(begin) = body.as_ref() {
+                            custody
+                                .content
+                                .authenticate_selected_restore_transfer_absent(
+                                    &begin.transfer_id,
+                                )?;
+                        }
+                    }
+                    self.receive_transfer(custody, frame.envelope, *body)?
+                }
+                ReceivedBody::Notification(_) => {
+                    return Err(ProviderError::Correlation(
+                        "assigned complete restore notification unsupported",
+                    ));
+                }
+            }
+        }
+    }
+
     pub(super) fn reserve_original_complete_restore_transfer(
         &mut self,
         original: &Envelope,
@@ -1897,3 +1977,6 @@ impl ClientSession {
         )
     }
 }
+
+#[path = "session/restoration_retained.rs"]
+mod restoration_retained;

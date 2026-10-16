@@ -22,6 +22,16 @@ pub(crate) struct OriginalRuntimeStorageIdentity {
 }
 
 impl OriginalRuntimeStorageIdentity {
+    pub(crate) fn retained_shared_storage_data(&self) -> Result<usize, RuntimeError> {
+        if self.process != std::process::id()
+            || self.thread != std::thread::current().id()
+            || self.authority.upgrade().is_none()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(NodeRuntime::capture_shared_allocation_storage::<()>())
+    }
+
     /// Checks the original creator and exact retained runtime allocation.
     ///
     /// # Errors
@@ -545,5 +555,105 @@ impl NodeRuntime {
             .ok_or(RuntimeError::UnknownNode)?
             .original_restoration_construction_scratch_data()?
             .ok_or(RuntimeError::UnsupportedFacet)
+    }
+}
+
+impl NodeRuntime {
+    pub(crate) fn begin_original_restoration_transaction(
+        &mut self,
+        source: &crate::node_state::CompleteOriginalRestorationSource,
+        ticket: &crate::node_state::CompleteOriginalNativeTicket,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &ActivationRecord,
+    ) -> Result<OriginalRuntimeStorageIdentity, RuntimeError> {
+        self.authenticate_original_restoration_target_data(source, plan, activation)?;
+        ticket.authenticate_source(source)?;
+        // Spend before the first legacy currentness/owning-node callback. The
+        // fully admitted caller retains this runtime, source and ticket on error.
+        ticket.begin_original_restoration_transaction_data(&self.authority)?;
+        if self.original_capture_history.is_none() {
+            self.original_capture_history = Some(Rc::clone(&source.inner));
+        }
+
+        let checked = (|| {
+            self.authenticate_complete_restoration_purpose(Some(plan))?;
+            let mut host_seen = false;
+            for node in self.nodes.values() {
+                if let Some(host) = node.original_host_scheduling_owner() {
+                    if host_seen {
+                        return Err(RuntimeError::ForeignAuthority);
+                    }
+                    host.authenticate_archive_target(&source.inner, &self.authority)?;
+                    host_seen = true;
+                }
+            }
+            if !host_seen {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            self.authenticate_original_restoration_target_data(source, plan, activation)?;
+            self.original_retained_storage_identity()
+        })();
+        if checked.is_err() {
+            self.contain_roster(&NodeRoute {
+                node: activation.activation_id.clone(),
+                owners: activation.owners.clone(),
+            });
+        }
+        checked
+    }
+
+    pub(crate) fn authenticate_original_restoration_transaction_data(
+        &self,
+        source: &crate::node_state::CompleteOriginalRestorationSource,
+        ticket: &crate::node_state::CompleteOriginalNativeTicket,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &ActivationRecord,
+        identity: &OriginalRuntimeStorageIdentity,
+    ) -> Result<(), RuntimeError> {
+        identity.authenticate(self)?;
+        self.authenticate_original_restoration_target_data(source, plan, activation)?;
+        ticket.authenticate_source(source)?;
+        if !self
+            .original_capture_history
+            .as_ref()
+            .is_some_and(|original| Rc::ptr_eq(original, &source.inner))
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        ticket.authenticate_original_restoration_transaction_data(&self.authority)
+    }
+}
+
+#[path = "retained_storage/restoration_identity.rs"]
+mod restoration_identity;
+pub(crate) use restoration_identity::OriginalRestorationRuntimeMemberIdentity;
+
+impl NodeRuntime {
+    pub(crate) fn execute_original_restoration_node_dispatch(
+        &mut self,
+        dispatch: crate::node_admission::OriginalRestorationNodeDispatch<'_>,
+    ) -> Result<(), RuntimeError> {
+        let [node] = dispatch.ticket_data()?.owner()?.participants.as_slice() else {
+            return Err(RuntimeError::UnsupportedFacet);
+        };
+        self.nodes
+            .get_mut(node)
+            .ok_or(RuntimeError::UnknownNode)?
+            .execute_original_restoration_transaction(dispatch)
+    }
+}
+
+impl NodeRuntime {
+    pub(crate) fn inspect_original_restoration_node_continuation(
+        &self,
+        inspection: crate::node_admission::OriginalRestorationNodeContinuationInspection<'_>,
+    ) -> Result<(), RuntimeError> {
+        let [node] = inspection.ticket_data()?.owner()?.participants.as_slice() else {
+            return Err(RuntimeError::UnsupportedFacet);
+        };
+        self.nodes
+            .get(node)
+            .ok_or(RuntimeError::UnknownNode)?
+            .inspect_original_restoration_continuation(inspection)
     }
 }

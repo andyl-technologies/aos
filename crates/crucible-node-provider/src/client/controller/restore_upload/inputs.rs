@@ -45,6 +45,15 @@ impl<'a> PrepareInputs<'a> {
         {
             return Err(refused());
         }
+        Self::borrow_original_prepare(controller)
+    }
+
+    // The original publication and pre-Commit entry checks remain above.
+    // The separate completed-Commit inspector validates that actual paired
+    // owner before borrowing this exact unchanged Prepare/reference grammar.
+    pub(super) fn borrow_original_prepare(
+        controller: &'a CnpController,
+    ) -> Result<Self, ProviderError> {
         let state = controller
             .original_complete_restore_prepare
             .as_ref()
@@ -310,7 +319,7 @@ impl<'a> Reference<'a> {
     }
 }
 
-fn decimal(value: &Value) -> Result<u64, ProviderError> {
+pub(super) fn decimal(value: &Value) -> Result<u64, ProviderError> {
     let text = value.as_str().ok_or_else(refused)?;
     if text.is_empty()
         || (text.len() > 1 && text.starts_with('0'))

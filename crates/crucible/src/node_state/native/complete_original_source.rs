@@ -45,6 +45,8 @@ pub(crate) struct CompleteOriginalSource {
     native_issued: Cell<[bool; 4]>,
     target_started: Cell<bool>,
     target: RefCell<Option<Rc<()>>>,
+    // A selected transaction cannot renew an old final-context attempt.
+    restoration_transactions: Cell<Option<[bool; 4]>>,
 }
 
 /// Carries the single source-issued host snapshot into its fresh factory.
@@ -70,7 +72,8 @@ impl CompleteOriginalHostTicket {
         &self,
         context: &crate::node_contract::OriginalLineageRestoration<'_>,
     ) -> Result<(), RuntimeError> {
-        self.source.authenticate_birth()?;
+        self.source
+            .authenticate_legacy_restoration_context_phase_data()?;
         let target = self
             .source
             .target
@@ -439,6 +442,7 @@ impl NativeArchiveRecord {
                 native_issued: Cell::new([false; 4]),
                 target_started: Cell::new(false),
                 target: RefCell::new(None),
+                restoration_transactions: Cell::new(None),
             }),
         })
     }
@@ -495,3 +499,85 @@ impl CompleteOriginalSource {
 #[cfg(test)]
 #[path = "complete_original_source_tests.rs"]
 mod tests;
+
+impl CompleteOriginalSource {
+    pub(crate) fn begin_original_restoration_transaction(
+        &self,
+        authority: &Rc<()>,
+        owner_index: usize,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_birth()?;
+        let owner = self
+            .archive
+            .owners()
+            .get(owner_index)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if owner.owner == self.host.source.owner.owner.id {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+
+        // Only this selected boundary initializes the ledger. An old final-context
+        // attempt, including a failed one, cannot be relabelled as this action.
+        match self.restoration_transactions.get() {
+            None => {
+                self.bind_target(authority)?;
+                self.restoration_transactions.set(Some([false; 4]));
+            }
+            Some(_) => self.authenticate_target(authority)?,
+        }
+        let mut transactions = self
+            .restoration_transactions
+            .get()
+            .ok_or(RuntimeError::OutstandingObligations)?;
+        let slot = transactions
+            .get_mut(owner_index)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if *slot {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        // A refused or unwound callback leaves this same owner permanently spent.
+        *slot = true;
+        self.restoration_transactions.set(Some(transactions));
+        Ok(())
+    }
+
+    pub(crate) fn authenticate_original_restoration_transaction(
+        &self,
+        authority: &Rc<()>,
+        owner_index: usize,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_target(authority)?;
+        if !self
+            .restoration_transactions
+            .get()
+            .and_then(|slots| slots.get(owner_index).copied())
+            .unwrap_or(false)
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authenticate_legacy_restoration_context_phase_data(
+        &self,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_birth()?;
+        if self.restoration_transactions.get().is_some() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+}
+
+impl CompleteOriginalRestorationSource {
+    pub(crate) fn retained_descriptor_views_precredit_data(&self) -> Result<usize, RuntimeError> {
+        self.inner.retained_descriptor_views_precredit_data()
+    }
+}
+
+impl CompleteOriginalSource {
+    pub(crate) fn retained_descriptor_views_precredit_data(&self) -> Result<usize, RuntimeError> {
+        self.authenticate_birth()?;
+        Ok(self.archive.retained_descriptor_views_precredit_data())
+    }
+}
