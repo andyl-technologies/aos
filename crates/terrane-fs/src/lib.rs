@@ -1,9 +1,9 @@
 //! Owns Linux kernel surfaces and host-tier kernel mechanisms.
 //!
-//! This foundation establishes the Linux-only boundary in CRATE-10 and
-//! CRATE-11. FUSE, EROFS, block, virtiofs, sealing, quotas, and mount inspection
-//! from specification 14 and 27-29 are implemented by later tasks. No kernel
-//! surface is available in this foundation, and no unsafe bindings exist yet.
+//! The host-cache, publisher I/O, local publisher transport and verity modules
+//! provide the native boundaries for host-tier policy. Kernel surfaces are
+//! added by their implementation tasks; declaring a module does not register
+//! a surface or establish its conformance.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -12,4 +12,5 @@ compile_error!("terrane-fs requires Linux (CRATE-11)");
 
 pub mod host_cache;
 pub mod publisher_io;
+pub mod publisher_local;
 pub mod verity;

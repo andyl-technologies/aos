@@ -12,7 +12,7 @@
     inherit src;
     name = "terrane-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-OKzgLxGJUYgd7bDsQQ7On8/V62VbkGEGEgetE8+X//s=";
+    hash = "sha256-yMfLg1pQoLCBRx55bPcRy4mz7fXt2vFlGuzd84CB1f0=";
   };
   # Linux realizers are target-specific; the portable SDK and CLI are tested
   # on every supported native target (PKG-3).

@@ -6331,6 +6331,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "libc",
+ "prost",
  "rustix 1.1.4",
  "terrane",
  "terrane-core",

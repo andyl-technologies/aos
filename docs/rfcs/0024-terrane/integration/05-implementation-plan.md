@@ -8712,8 +8712,10 @@ filesystem trait; D-120 distinguishes controllable access/modification times
 from native inode-change and birth times. The shared metadata executor uses
 the existing retained-effect method and requires an actual durability receipt.
 Its native library build passes; focused execution and task gates remain
-pending. The separate module branch has 33 passing declarative checks, but
-actual parser integration, full trunk qualification and task acceptance remain
+pending. The separate module branch has 33 passing declarative checks and 16
+checks of actual rendered TOML through the built CLI across four roles and
+four configuration shapes. These establish syntax parsing, not backend or
+credential validation. Full trunk qualification and task acceptance remain
 pending. No worker branch is accepted by these preparation checks.
 Other T2 implementation continues. T3 and branch worklines remain unopened.
 

@@ -5,6 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+prost.workspace = true
 terrane = { workspace = true, features = ["std", "send"] }
 terrane-core.workspace = true
 async-trait.workspace = true
