@@ -380,7 +380,6 @@ fn native_element_slot() -> usize {
         .max(size_of::<u8>())
 }
 
-
 /// Prices the actual launch validator shared by private bootstrap and Admit.
 /// The generic syntax/DTO decode scalar does not cover these calls: validate
 /// creates ingress schemas, decodes coordinator, projects model configuration,
@@ -401,24 +400,37 @@ fn launch_validation_work(
     // Native5Policy can retain its own decoded coordinator during subsequent
     // returning validation. Its selection/raw coordinator copy are separate
     // children beside the temporary decoder/validator work.
-    sum(&[
-        decode(input.encoded_launch, size_of::<PacketNative5SourceLaunch>(), maximum)?,
-        original_native_coordinator_decode_storage_data(launch.initial_coordinator.bytes.as_slice(), maximum)?,
-        coordinator_decode::backing(launch.initial_coordinator.bytes.as_slice(), maximum)?,
-        metadata_backing(&launch.selection)?,
-        launch.initial_coordinator.bytes.as_slice().len(),
-        size_of::<crate::reference_packet::service::Native5Policy>(),
-        configuration.requested_total()?,
-        definitions.transient,
-        definitions.retained_reference_children,
-    ], maximum)
+    sum(
+        &[
+            decode(
+                input.encoded_launch,
+                size_of::<PacketNative5SourceLaunch>(),
+                maximum,
+            )?,
+            original_native_coordinator_decode_storage_data(
+                launch.initial_coordinator.bytes.as_slice(),
+                maximum,
+            )?,
+            coordinator_decode::backing(launch.initial_coordinator.bytes.as_slice(), maximum)?,
+            metadata_backing(&launch.selection)?,
+            launch.initial_coordinator.bytes.as_slice().len(),
+            size_of::<crate::reference_packet::service::Native5Policy>(),
+            configuration.requested_total()?,
+            definitions.transient,
+            definitions.retained_reference_children,
+        ],
+        maximum,
+    )
 }
 
 fn launch_validation_counter_scratch_data() -> usize {
     size_of::<MetadataObserver<'static>>()
         + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
-        + size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageProjection>()
-        + size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageData>()
+        + size_of::<
+            crate::retained_metadata::serialization_storage::OriginalSerializationStorageProjection,
+        >()
+        + size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageData>(
+        )
         + size_of::<schemas::InitialSchemaStorage>()
         + size_of::<[usize; 10]>()
         + size_of::<&[usize]>()

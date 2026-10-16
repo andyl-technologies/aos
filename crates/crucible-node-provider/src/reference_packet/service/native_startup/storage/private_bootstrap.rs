@@ -222,20 +222,33 @@ pub(super) fn project(
     // launch. Its actual maximum_boot_bytes is enforced before reading. Keep
     // the original max(launch,boot) raw extent term unchanged as well.
     let second_raw = original_json_value_storage_extent_data(maximum_boot_bytes)?;
-    let second_raw_phase = sum(&[second_raw.canonical_pass_requested_bytes()?,
-        launch_data.typed_backing], maximum)?;
+    let second_raw_phase = sum(
+        &[
+            second_raw.canonical_pass_requested_bytes()?,
+            launch_data.typed_backing,
+        ],
+        maximum,
+    )?;
     // After the quote/boot preparation, Bootstrap::prepare still invokes the
     // complete launch validator before moving launch into service. Retained
     // private Value banks persist; its temporary policy/coordinator/model work
     // is not the later permanent service coordinator.
-    let decode_phase = sum(&[
-        launch_validation_work(input, maximum)?, source, registration,
-        additions.requested_total()?, fields.requested_total()?,
-        super::super::super::ack_emitter::original_native_private_bootstrap_layout(),
-        2 * 32,
-    ], maximum)?;
-    let transient = incoming.canonical_pass_requested_bytes()?
-        .max(second_raw_phase).max(decode_phase);
+    let decode_phase = sum(
+        &[
+            launch_validation_work(input, maximum)?,
+            source,
+            registration,
+            additions.requested_total()?,
+            fields.requested_total()?,
+            super::super::super::ack_emitter::original_native_private_bootstrap_layout(),
+            2 * 32,
+        ],
+        maximum,
+    )?;
+    let transient = incoming
+        .canonical_pass_requested_bytes()?
+        .max(second_raw_phase)
+        .max(decode_phase);
     // Original launch/source/registration/boot DOM children survive successful
     // service birth in the original private bootstrap holder. These independent
     // owners are not released merely because policy retains equivalent values.
