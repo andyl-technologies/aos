@@ -217,15 +217,25 @@ fn drain_failure_keeps_retained_prefix_and_original_admission_cause() -> TestRes
     consumer.drain_available()?;
 
     // Closing a Unix stream peer that holds unread bytes resets the
-    // connection, so the next drain fails with a real read error.
+    // connection, so a drain fails with a real read error. A test process
+    // forked concurrently may briefly hold a duplicate of the peer and delay
+    // the reset until it execs, so capture until the reset is observed.
     reader_peer.write_all(b"unread by the modeled child")?;
     drop(writer);
-    let report = capture(&mut consumer, modeled_basis(), &modeled_identity(), || {
-        Err(QemuVmRealizationError::ExecutorUnavailable {
-            operation: "modeled interrupted pidfd observation",
-            message: "interrupted".into(),
-        })
-    });
+    let mut report = None;
+    for _attempt in 0..10_000_000 {
+        let attempt = capture(&mut consumer, modeled_basis(), &modeled_identity(), || {
+            Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "modeled interrupted pidfd observation",
+                message: "interrupted".into(),
+            })
+        });
+        if attempt.drain.is_err() {
+            report = Some(attempt);
+            break;
+        }
+    }
+    let report = report.ok_or("closing the unread peer never reset the private stream")?;
     assert!(report.drain.is_err());
     assert!(report.terminal_readiness.is_err());
     assert_eq!(report.stderr_bytes, 32);

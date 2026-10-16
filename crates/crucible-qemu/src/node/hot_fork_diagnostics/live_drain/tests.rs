@@ -111,10 +111,9 @@ fn live_read_failure_stays_sticky_and_refuses_eof_capture() -> Result<(), Box<dy
     pair.child.write_all(b"before loss\n")?;
     consumer.drain_available_bounded()?;
 
-    // Closing a Unix stream peer that holds unread bytes resets the connection,
-    // so the consumer's next read fails instead of observing EOF.
-    consumer.host.write_all(b"unread by the child")?;
-    drop(pair.child);
+    // A socket read from a directory descriptor fails with ENOTSOCK, a
+    // deterministic error that no concurrently forked test process can mask.
+    consumer.host = UnixStream::from(std::os::fd::OwnedFd::from(std::fs::File::open("/")?));
 
     assert!(consumer.drain_available_bounded().is_err());
     let failure = consumer
