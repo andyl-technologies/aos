@@ -230,7 +230,7 @@ pub fn run(confinement: Arc<terrane_fs::quota_confinement::Installed>) -> io::Re
         drop(publisher);
 
         let other_paths = directories(&root, "private");
-        let other_claim = crate::claim("private:other", b"immutable content");
+        let other_claim = self::claim("private:other", b"immutable content");
         let mut other = Publisher::new(
             adapter(&confinement, "private:other", &other_paths),
             State::default(),
