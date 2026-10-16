@@ -1,38 +1,10 @@
 //! Exact original-operation custody for physical native retirement waits.
 
+use super::super::operational_target_cleanup;
 use super::{Companion, Contract};
 
-// The target helper must retain its one actual cleanup before physical finish.
-const TARGET_RETIREMENT_OBLIGATIONS: &[&str] = &[
-    "pub(super) fn retry_unsettled_target(slot: &mut NativeSlot) -> Result<(), QemuVmRealizationError>",
-    "let target = &mut slot.fork_target; if target.unsettled.is_none() { return Ok(()); }",
-    r#"if target.cleanup.is_none() {
-        target.cleanup = Some(Arc::new(
-            target.preparation.as_ref()
-                .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
-                .begin_original_cleanup_control()
-                .map_err(|source| original_error(source.into()))?,
-        ));
-    }"#,
-    r#"let cleanup = target.cleanup.as_ref()
-        .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
-    target.unsettled.as_mut()
-        .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
-        .finish(cleanup)?;
-    target.unsettled = None;
-    target.envelope = None;
-    target.physical_closed = true;"#,
-    r#"if let Some(pin) = target.control.as_mut() {
-        pin.close().map_err(|source| {
-            original_error(OriginalActorAccountError::NativeControlBoundary {
-                source,
-                original: cleanup.wait_slice().err(),
-            })
-        })?;
-    }
-    target.control = None;
-    close_target_slot(slot).map_err(original_error)"#,
-];
+const TARGET_RETIREMENT_OBLIGATIONS: &[&str] = &operational_target_cleanup::OBLIGATIONS;
+const TARGET_RETIREMENT_COUNTS: &[(&str, usize)] = &operational_target_cleanup::COUNTS;
 
 pub(super) const CONTRACTS: &[Contract] = &[
     Contract {
@@ -63,14 +35,14 @@ pub(super) const CONTRACTS: &[Contract] = &[
         companions: &[Companion {
             path: "crates/crucible-qemu/src/linux_attempt_host/original_roster/fork_target.rs",
             required: TARGET_RETIREMENT_OBLIGATIONS,
-            counts: &[("fn retry_unsettled_target(", 1)],
+            counts: TARGET_RETIREMENT_COUNTS,
         }],
     },
     Contract {
         package: "crucible-qemu",
         target: "src/linux_attempt_host/original_roster/fork_target",
         required: TARGET_RETIREMENT_OBLIGATIONS,
-        expressions: &[("retry_unsettled_target", 1)],
+        expressions: TARGET_RETIREMENT_COUNTS,
         companions: &[Companion {
             path: "crates/crucible-qemu/src/linux_attempt_host/original_roster.rs",
             required: &[
@@ -190,6 +162,11 @@ mod tests {
                     let expression = pattern(expression);
                     let occurrences = expression_offsets(&helper, &expression);
                     assert_eq!(occurrences.len(), *count, "{expression}");
+                    for occurrence in occurrences {
+                        let mut changed = companions.clone();
+                        changed[index] = replace_occurrence(&helper, &expression, occurrence);
+                        assert_eq!(mask_with_companions(contract, &code, &changed), code);
+                    }
                     let mut changed = companions.clone();
                     changed[index] = format!("{}\n{expression}", companions[index]);
                     assert_eq!(mask_with_companions(contract, &code, &changed), code);
