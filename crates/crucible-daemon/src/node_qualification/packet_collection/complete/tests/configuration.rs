@@ -112,6 +112,30 @@ impl World {
         ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
         report_startup: bool,
     ) -> Self {
+        Self::with_native_fixture(
+            peer,
+            host_executable,
+            proof_bytes,
+            effect_phases,
+            confirmation,
+            ack,
+            report_startup,
+            false,
+        )
+    }
+
+    pub(super) fn with_native_fixture(
+        peer: ContentRef,
+        host_executable: ContentRef,
+        proof_bytes: Vec<u8>,
+        effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        report_startup: bool,
+        full_restore: bool,
+    ) -> Self {
         let mut content = BTreeMap::new();
         let proof = canonical::content_ref(&proof_bytes, "application/json").unwrap();
         content.insert(proof.clone(), proof_bytes.clone());
@@ -178,7 +202,7 @@ impl World {
             },
         ];
         let mut members = [
-            Definition::with_report_startup(
+            Definition::with_native_fixture(
                 peer.clone(),
                 &producer,
                 0,
@@ -187,8 +211,9 @@ impl World {
                 confirmation,
                 ack,
                 report_startup,
+                full_restore,
             ),
-            Definition::with_report_startup(
+            Definition::with_native_fixture(
                 peer.clone(),
                 &relay,
                 1,
@@ -197,8 +222,9 @@ impl World {
                 confirmation,
                 ack,
                 report_startup,
+                full_restore,
             ),
-            Definition::with_report_startup(
+            Definition::with_native_fixture(
                 peer,
                 &sink,
                 2,
@@ -207,6 +233,7 @@ impl World {
                 confirmation,
                 ack,
                 report_startup,
+                full_restore,
             ),
         ];
         for member in &members {

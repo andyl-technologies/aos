@@ -119,3 +119,35 @@ fn add(a: usize, b: usize, max: usize) -> Result<usize, RuntimeError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl PacketCompleteReportStartupHolder {
+    /// Checks that the real initial constructor retained an attached inactive actor.
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_inactive_actor_for_test(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<(), RuntimeError> {
+        let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        held.authenticate_native_origin_data()?;
+        if !held.runtime_attempted.iter().all(Cell::get)
+            || held
+                .runtime_members
+                .iter()
+                .any(|member| member.get().is_none())
+        {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        let mut owners = held
+            .runtime_owners
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if !owners.complete {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        owners
+            .actor
+            .as_mut()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .authenticate_original_inactive_for_test()
+            .map_err(|_| RuntimeError::OutstandingObligations)
+    }
+}

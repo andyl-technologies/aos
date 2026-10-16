@@ -1,7 +1,9 @@
 //! Exercises the production installer with real files and unqualified declarations.
 //!
 //! Controls measure the actual test ELF and source fixtures, read entropy and
-//! reserve local socket/eventfd inputs. They start no Child, worker or protocol.
+//! reserve local socket/eventfd inputs. Ordinary controls start no Child, worker
+//! or protocol. The explicitly ignored source-built provider control exercises
+//! the real installed lifecycle and reclaims its original native children.
 
 use super::*;
 use crucible_node_contract::canonical;
@@ -211,3 +213,48 @@ fn actual_installer_rejects_public_parent_and_accepts_private_parent() {
     assert!(!installed.retired);
     installed.retire().unwrap();
 }
+
+#[test]
+#[ignore = "requires CRUCIBLE_REFERENCE_PACKET_PROVIDER pointing to the source-built packet provider"]
+fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
+    use crate::supervision::ProcessDeadline;
+    use std::time::Duration;
+    let executable = PathBuf::from(
+        std::env::var_os("CRUCIBLE_REFERENCE_PACKET_PROVIDER")
+            .expect("set CRUCIBLE_REFERENCE_PACKET_PROVIDER to the source-built provider binary"),
+    );
+    let (_source, value) = super::super::tests::native_roundtrip::declaration(&executable);
+    let directory = private_directory();
+    let manifest = pinned(directory.path(), &value);
+    let mut installed =
+        InstalledCompleteScene::install(manifest, directory.path().join("scene")).unwrap();
+
+    // Keep the installed capsule and its real supervisor outside the unwind
+    // boundary. Even a startup assertion must reclaim the same native children.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        installed.prepare().unwrap();
+        assert!(installed.attempted);
+        assert!(installed.incoming.is_none());
+        assert!(!installed.retired);
+        PacketCompleteReportStartupHolder::authenticate_original_inactive_actor_for_test(
+            &installed.original,
+        )
+        .unwrap();
+    }));
+    installed.retire().unwrap();
+    let deadline = ProcessDeadline::after(Duration::from_secs(30)).unwrap();
+    while !installed.poll_reclamation().unwrap() {
+        assert!(
+            !deadline.expired(),
+            "original packet children were not reclaimed"
+        );
+        deadline.pause(Duration::from_millis(1));
+    }
+    assert!(installed.is_reclaimed());
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[path = "tests/native_capture.rs"]
+mod native_capture;

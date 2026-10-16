@@ -695,3 +695,18 @@ impl PacketCompleteExecutionActor {
             .map_err(|_| RuntimeError::OwnerUnavailable)
     }
 }
+
+#[cfg(test)]
+impl PacketCompleteExecutionActor {
+    /// Checks the actual attached actor and its same inactive Core runtime.
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_inactive_for_test(
+        &mut self,
+    ) -> Result<(), PacketCompleteExecutionError> {
+        self.require(Phase::Attached)?;
+        self.runtime
+            .as_mut()
+            .ok_or(PacketCompleteExecutionError::Phase)?
+            .validate_inactive_collection_plan(&self.scene.plan)
+            .map_err(failure)
+    }
+}

@@ -98,6 +98,28 @@ impl Scene {
         native_extent: bool,
         report_frame_bytes: Option<u64>,
     ) -> Self {
+        Self::with_selected_report_startup_executable(
+            distinct,
+            effect_phases,
+            confirmation,
+            ack,
+            native_extent,
+            report_frame_bytes,
+            None,
+        )
+    }
+
+    fn with_selected_report_startup_executable(
+        distinct: bool,
+        effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        native_extent: bool,
+        report_frame_bytes: Option<u64>,
+        native_executable: Option<&std::path::Path>,
+    ) -> Self {
         let report_startup = report_frame_bytes.is_some();
         let mut selected_storage = storage_selection();
         if let Some(frame_bytes) = report_frame_bytes {
@@ -120,7 +142,19 @@ impl Scene {
             "application/octet-stream",
         )
         .unwrap();
-        let (peer_path, peer_reference) = if distinct {
+        let (peer_path, peer_reference) = if let Some(path) = native_executable {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let original = std::fs::canonicalize(path).unwrap();
+            assert!(std::fs::metadata(&original).unwrap().is_file());
+            let bytes = std::fs::read(&original).unwrap();
+            let path = directory.path().join("packet-provider");
+            std::fs::copy(&original, &path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o555)).unwrap();
+            assert_eq!(std::fs::metadata(&path).unwrap().nlink(), 1);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            let reference = canonical::content_ref(&bytes, "application/octet-stream").unwrap();
+            (path, reference)
+        } else if distinct {
             // A copied ELF with inert trailing bytes distinguishes the complete
             // peer measurement from the original host ELF. It is never launched.
             let mut bytes = std::fs::read(&executable).unwrap();
@@ -173,7 +207,7 @@ impl Scene {
         ])
         .unwrap();
         let mut world = if report_startup {
-            configuration::World::with_report_startup(
+            configuration::World::with_native_fixture(
                 peer_reference,
                 host,
                 proof,
@@ -181,6 +215,7 @@ impl Scene {
                 confirmation,
                 ack,
                 true,
+                native_executable.is_some(),
             )
         } else if confirmation.is_some() || ack.is_some() {
             configuration::World::with_native_selection(
@@ -268,6 +303,33 @@ impl Scene {
                         PacketNative5CaptureAllocationSelection::OriginalObserve12,
                     ))
                     .unwrap();
+                if native_executable.is_some() {
+                    use crucible_node_provider::reference_packet::service::{
+                        complete_restore::{
+                            PacketNative5CompleteRestoreSelection,
+                            PacketNative5RestoreInputEmitterSelection,
+                        },
+                        fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection,
+                    };
+                    source
+                        .bind_original_complete_restore_selection(Some(
+                            PacketNative5CompleteRestoreSelection::SourceSignedTransfer12,
+                        ))
+                        .unwrap();
+                    source
+                        .bind_original_restore_input_emitter_selection(Some(
+                            PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12,
+                        ))
+                        .unwrap();
+                    source
+                        .bind_original_fresh_restore_allocation_selection(Some(
+                            PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13,
+                        ))
+                        .unwrap();
+                    source
+                        .bind_original_restoration_observation_declaration()
+                        .unwrap();
+                }
                 source
                     .reserve_complete_capture_banks_owned11(
                         crucible::node_adapters::cnp::PacketCompleteCaptureBankLimits {
@@ -519,8 +581,13 @@ mod report_frame_fit;
 /// Supplies only source declarations to the production installer controls.
 /// No report verdict, native owner, readiness or permission is serialized.
 pub(super) fn installed_scene_declaration() -> (Scene, serde_json::Value) {
-    use crucible_node_contract::{Extensions, ResourceLimits, U64};
     let scene = Scene::report_startup(16 * 1024);
+    let declaration = scene_declaration(&scene);
+    (scene, declaration)
+}
+
+fn scene_declaration(scene: &Scene) -> serde_json::Value {
+    use crucible_node_contract::{Extensions, ResourceLimits, U64};
     let participant = |member: usize| {
         let source = &scene.roster.sources[member];
         let one = source.installation();
@@ -560,5 +627,8 @@ pub(super) fn installed_scene_declaration() -> (Scene, serde_json::Value) {
         "maximum_initial_bytes":64*1024*1024,"maximum_native_rows":8192,
         "maximum_operations":64,"maximum_retained_outputs":64,"write_watchdog_ms":1000,
     });
-    (scene, declaration)
+    declaration
 }
+
+#[path = "tests/native_roundtrip.rs"]
+pub(super) mod native_roundtrip;

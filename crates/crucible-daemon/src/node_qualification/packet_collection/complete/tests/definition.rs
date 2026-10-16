@@ -35,7 +35,7 @@ fn put(content: &mut BTreeMap<ContentRef, Vec<u8>>, value: &impl Serialize) -> C
 }
 
 impl Definition {
-    pub(super) fn with_report_startup(
+    pub(super) fn with_native_fixture(
         executable: ContentRef,
         model: &impl Serialize,
         member: usize,
@@ -46,6 +46,7 @@ impl Definition {
         >,
         ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
         report_startup: bool,
+        full_restore: bool,
     ) -> Self {
         let id = |value: &str| match value {
             "packet"
@@ -286,15 +287,23 @@ impl Definition {
                 service::capture_allocation::PacketNative5CaptureAllocationSelection,
             };
             let selected = PacketNative5CaptureAllocationSelection::OriginalObserve12;
-            let declaration = complete_packet_capture_allocation_declaration(
-                &provider,
-                confirmation.as_ref(),
-                ack.as_ref(),
-                None,
-                None,
-                Some(&selected),
-            )
-            .unwrap();
+            let declaration = if full_restore {
+                super::native_roundtrip::restore_declaration(
+                    &provider,
+                    confirmation.as_ref(),
+                    ack.as_ref(),
+                )
+            } else {
+                complete_packet_capture_allocation_declaration(
+                    &provider,
+                    confirmation.as_ref(),
+                    ack.as_ref(),
+                    None,
+                    None,
+                    Some(&selected),
+                )
+                .unwrap()
+            };
             (declaration.peer, declaration.restoration)
         } else {
             (crucible_node_provider::reference_packet::continuation_contracts::complete_packet_ack_emitter_declaration(
