@@ -5,6 +5,7 @@
 //! chunks retain only bounded frame-declared sizes until independent HOST-14
 //! verification. Pages retain one owner-issued snapshot, never caller offsets.
 //! Unhandled private staging or publication-state remnants fail the whole scan.
+//! Existing inline bindings require exhaustive independent native reconciliation.
 //! Private descendants must retain the actual layout-root project assignment,
 //! with inheritance enabled on directories. These read-only comparisons grant
 //! no quota or recovery-completion receipt: configured runtime separately binds
@@ -27,6 +28,9 @@ use terrane_core::pack_format::{HEADER_SIZE, Header};
 
 use super::{NativeBodyKey, NativeCommandResult, NativePublisherConfig};
 use crate::host_cache::{NativeHostLayout, NativeHostMetadataReader};
+
+#[path = "inventory_state.rs"]
+mod state;
 
 const MAX_CANDIDATES: usize = 4096;
 const PAGE_SIZE: usize = 64;
@@ -340,7 +344,7 @@ impl NativeInventory {
         Ok(NativeBodyKey::Chunk { descriptor, codec })
     }
 
-    fn scan_private_remnants(&self, budget: &mut usize) -> io::Result<()> {
+    fn scan_private_remnants(&self, budget: &mut usize) -> io::Result<File> {
         charge(budget)?;
         let staging = open(&self.root, "staging", true)?;
         self.check(&staging, Custody::Publisher, InodeKind::Directory)?;
@@ -387,23 +391,15 @@ impl NativeInventory {
         if publication.metadata()?.mode() & 0o7777 != 0o700 {
             return Err(invalid("publisher publication state is not private"));
         }
-        // No control files are created for fresh state: exclusion is held on
-        // directory descriptors. Every remaining file requires reconciliation.
-        // Binding and retirement records are physical recovery state, not body
-        // keys. Until they are genuinely reconciled, an empty wire inventory
-        // must not silently certify them (or unknown temporary remnants) absent.
-        require_empty(
-            &publication,
-            *budget,
-            "unreconciled publisher publication-state contents",
-        )
+        Ok(publication)
     }
 
     async fn scan(&self) -> io::Result<Vec<NativeBodyKey>> {
         let mut keys = Vec::new();
         let mut budget = MAX_CANDIDATES;
         self.check_project(&self.root, InodeKind::Directory)?;
-        self.scan_private_remnants(&mut budget)?;
+        let publication = self.scan_private_remnants(&mut budget)?;
+        let mut state = state::StateInventory::open(self, publication, &mut budget)?;
         for (class, encoded) in [("sealed", false), ("chunks", true)] {
             charge(&mut budget)?;
             let directory = open(&self.root, class, true)?;
@@ -447,6 +443,11 @@ impl NativeInventory {
                         }
                         self.sealed(&name, &mut file).await?
                     };
+                    if !encoded {
+                        state
+                            .reconcile_inline(self, &shard_directory, &name, &mut file, &key)
+                            .await?;
+                    }
                     if !keys.contains(&key) {
                         keys.push(key);
                     }
@@ -470,6 +471,7 @@ impl NativeInventory {
                 keys.push(key);
             }
         }
+        state.finish(self)?;
         Ok(keys)
     }
 

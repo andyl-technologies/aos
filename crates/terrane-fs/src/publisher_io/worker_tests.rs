@@ -814,7 +814,7 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion(
         .build()
         .unwrap();
     runtime.block_on(async {
-        use super::{NativeCommandContext, NativeOperation};
+        use super::{NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeOperation};
         let expected = claim();
         worker
             .publish(expected.clone(), source(root))
@@ -828,19 +828,70 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion(
             .execute(context.clone(), NativeOperation::Drain)
             .await
             .unwrap();
-        // This is cold nonempty publication state, not an empty recovery
-        // proof. Until genuine binding-record reconciliation exists, inventory
-        // must refuse the whole scan rather than omit its physical state.
-        let error = worker
+        let result = worker
             .execute(context.clone(), NativeOperation::Inventory { cursor: None })
             .await
-            .err()
             .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let NativeCommandResult::Inventory { keys, next_cursor } = result else {
+            panic!("inventory grants no native body authority")
+        };
         assert_eq!(
-            error.to_string(),
-            "unreconciled publisher publication-state contents"
+            keys,
+            vec![NativeBodyKey::Sealed {
+                descriptor: expected.descriptor().clone()
+            }]
         );
+        assert!(next_cursor.is_none());
+
+        // An independently matched native binding is supported; unknown fields
+        // and physical orphans remain nonReady rather than becoming ignored
+        // state. These controlled writes are ordinary publisher-owned state,
+        // not writable handles to a sealed content inode.
+        let state = FsPublicationState::new(TokioLocalFs, paths[3].clone());
+        let record = state.binding_record_path(&expected);
+        let original = fs::read(&record).unwrap();
+        let mut malformed = original.clone();
+        malformed.extend_from_slice(b"\nunknown_fixture_field = 1\n");
+        fs::write(&record, malformed).unwrap();
+        File::open(&record).unwrap().sync_all().unwrap();
+        assert!(
+            worker
+                .execute(context.clone(), NativeOperation::Inventory { cursor: None })
+                .await
+                .is_err()
+        );
+        let conflicting = format!(
+            "version = 1\ndomain = \"public\"\ndescriptor = {:?}\nverity_algorithm = 1\nverity_digest = {:?}\n",
+            expected.descriptor().encode(),
+            vec![0u8; 32],
+        );
+        fs::write(&record, conflicting.as_bytes()).unwrap();
+        File::open(&record).unwrap().sync_all().unwrap();
+        assert!(
+            worker
+                .execute(context.clone(), NativeOperation::Inventory { cursor: None })
+                .await
+                .is_err()
+        );
+        assert_eq!(fs::read(&record).unwrap(), conflicting.as_bytes());
+        fs::write(&record, &original).unwrap();
+        File::open(&record).unwrap().sync_all().unwrap();
+        for name in [
+            "retirement-unknown.toml".to_owned(),
+            ".binding-incomplete".to_owned(),
+            format!("{}-{}.toml", "00".repeat(32), "11".repeat(32)),
+        ] {
+            let orphan = paths[3].join(name);
+            fs::write(&orphan, b"unreconciled").unwrap();
+            assert!(
+                worker
+                    .execute(context.clone(), NativeOperation::Inventory { cursor: None })
+                    .await
+                    .is_err()
+            );
+            fs::remove_file(orphan).unwrap();
+        }
+        File::open(&paths[3]).unwrap().sync_all().unwrap();
         assert!(
             worker
                 .execute(
