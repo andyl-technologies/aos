@@ -95,7 +95,7 @@ where
             .filter(|occurrence| {
                 path == occurrence.path
                     || path
-                        .strip_prefix(&occurrence.path)
+                        .strip_prefix(occurrence.path.as_slice())
                         .is_some_and(|suffix| occurrence.path == b"/" || suffix.starts_with(b"/"))
             })
             .max_by_key(|occurrence| occurrence.path.len())
