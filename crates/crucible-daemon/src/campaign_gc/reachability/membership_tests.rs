@@ -65,6 +65,7 @@ fn has_original_cancellation(error: &(dyn Error + 'static)) -> bool {
 /// Observes the real delegated read result, independently of progress callbacks.
 #[derive(Default)]
 struct CheckedReadCompletion {
+    entered: AtomicBool,
     returned: AtomicBool,
     authenticated: AtomicBool,
     corrupt: AtomicBool,
@@ -166,6 +167,9 @@ impl ImmutableBlobBackend for CheckedOnly {
             && let Some(supervisor) = &self.cancel_child
         {
             supervisor.cancel().unwrap();
+        }
+        if let Some(completion) = &self.read_completion {
+            completion.entered.store(true, Ordering::Release);
         }
         let result = self
             .inner
@@ -330,45 +334,102 @@ fn checked_membership_observes_new_root_and_missing_rows_after_accepted_lookup()
 }
 
 #[test]
-fn checked_membership_refuses_actual_original_cancellation_at_every_success_cut() {
-    // First measure the actual immutable one-node route, then exercise each
-    // callback cut with a fresh genuine original supervisor and account.
-    let mut probe = ComponentGcOperation::new();
-    let marks = seeded(&mut probe, 1);
-    let mut cuts = 0;
-    {
-        let operation = probe.context();
-        assert!(
-            marks
-                .contains_with_boundary(&page(0), &mut || {
-                    cuts += 1;
-                    operation.check()
-                })
-                .unwrap()
-        );
+fn checked_membership_refuses_actual_original_cancellation_at_semantic_success_boundaries() {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SuccessCut {
+        TraversalEntry,
+        SelectedNodeEntry,
+        CheckedReadEntry,
+        DecodedNodeReturn,
+        TraversalReturn,
     }
-    assert!(cuts > 4);
-    drop(marks);
-    drop(probe);
 
-    for cut in 1..=cuts {
+    const CUTS: [SuccessCut; 5] = [
+        SuccessCut::TraversalEntry,
+        SuccessCut::SelectedNodeEntry,
+        SuccessCut::CheckedReadEntry,
+        SuccessCut::DecodedNodeReturn,
+        SuccessCut::TraversalReturn,
+    ];
+
+    // A one-node path has fixed traversal cuts around the actual checked read.
+    // SQLite may add progress/lock callbacks inside it; every such callback
+    // still checks this operation, without calibrating another read's total.
+    for cancel_at in std::iter::once(None).chain(CUTS.into_iter().map(Some)) {
         let mut fixture = ComponentGcOperation::new();
-        let marks = seeded(&mut fixture, 1);
+        let mut marks = seeded(&mut fixture, 1);
+        let completion = Arc::new(CheckedReadCompletion::default());
+        marks.map = MerkleMap::new(Arc::new(CheckedOnly {
+            inner: fixture.context().marks(),
+            reads: AtomicUsize::new(0),
+            cancel_child: None,
+            truncate_after_metadata: None,
+            read_completion: Some(Arc::clone(&completion)),
+        }));
         let root = marks.root;
         let supervisor = fixture.supervision();
         let operation = fixture.context();
-        let mut seen = 0;
-        let error = marks
-            .contains_with_boundary(&page(0), &mut || {
-                seen += 1;
-                if seen == cut {
+        let mut before_read = 0;
+        let mut during_read = 0;
+        let mut after_read = 0;
+        let mut observed = [0; CUTS.len()];
+        let mut selected = 0;
+        let mut refused = false;
+        let mut after_refusal = 0;
+
+        let result = marks.contains_with_boundary(&page(0), &mut || {
+            if refused {
+                after_refusal += 1;
+                return operation.check();
+            }
+            let cut = if !completion.entered.load(Ordering::Acquire) {
+                before_read += 1;
+                Some(match before_read {
+                    1 => SuccessCut::TraversalEntry,
+                    2 => SuccessCut::SelectedNodeEntry,
+                    _ => panic!("unreviewed callback before the selected read"),
+                })
+            } else if !completion.returned.load(Ordering::Acquire) {
+                during_read += 1;
+                (during_read == 1).then_some(SuccessCut::CheckedReadEntry)
+            } else {
+                assert!(completion.authenticated.load(Ordering::Acquire));
+                after_read += 1;
+                Some(match after_read {
+                    1 => SuccessCut::DecodedNodeReturn,
+                    2 => SuccessCut::TraversalReturn,
+                    _ => panic!("unreviewed callback after the selected read"),
+                })
+            };
+            if let Some(cut) = cut {
+                observed[cut as usize] += 1;
+                if Some(cut) == cancel_at {
+                    selected += 1;
                     supervisor.cancel().unwrap();
                 }
-                operation.check()
-            })
-            .unwrap_err();
-        assert!(has_original_cancellation(&error), "cut {cut}: {error}");
-        assert_eq!(seen, cut, "no success callback replaces the first refusal");
+            }
+            let result = operation.check();
+            refused = result.is_err();
+            result
+        });
+
+        match cancel_at {
+            None => {
+                assert!(result.unwrap());
+                assert_eq!(observed, [1; CUTS.len()]);
+                assert!(during_read > 0);
+                assert!(!refused);
+                assert_eq!(selected, 0);
+            }
+            Some(cut) => {
+                let error = result.unwrap_err();
+                assert!(has_original_cancellation(&error), "{cut:?}: {error}");
+                assert_eq!(selected, 1, "the selected semantic boundary must run");
+                assert_eq!(observed[cut as usize], 1);
+                assert!(refused);
+            }
+        }
+        assert_eq!(after_refusal, 0, "no callback replaces the first refusal");
         assert_eq!(marks.root, root);
     }
 }
