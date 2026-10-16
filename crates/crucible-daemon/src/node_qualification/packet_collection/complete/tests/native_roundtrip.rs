@@ -174,3 +174,7 @@ pub(in super::super) fn capture_declaration(
     limits.state.maximum_total_content_bytes = usize::try_from(content.get()).unwrap();
     (scene, declaration, limits)
 }
+
+#[path = "native_roundtrip/target_declaration.rs"]
+mod target_declaration;
+pub(in super::super) use target_declaration::target_declaration;
