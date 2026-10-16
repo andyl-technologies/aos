@@ -3,8 +3,8 @@
 //! Arguments and file loading live here; configuration semantics and role
 //! behavior live in library crates (CRATE-16). [`local`] calls the T1
 //! repository SDK and registered checkout surface (CRATE-22 to CRATE-24).
-//! Linux configured SDK snapshots run through `terrane-fs`; other configured
-//! runtimes remain unavailable. Syntax checking starts no runtime.
+//! Linux configured SDK snapshots and publisher startup run through `terrane-fs`;
+//! other configured runtimes remain unavailable. Syntax checking starts no runtime.
 //! Roles follow specifications 03 and 37, and TOML follows 11 and 26.
 
 #![forbid(unsafe_code)]
@@ -70,6 +70,14 @@ fn run(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
             "configuration syntax valid for role {}; backend, token, and schema checks are pending",
             role
         );
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    if let (Role::Publish, Some(host)) = (role, config.host_tier()) {
+        // Pass only host-tier inputs: this role must not open repository
+        // authority or resolve exposure credentials before native startup.
+        terrane_fs::configured::run_configured_publisher(host)?;
         return Ok(());
     }
 
