@@ -31,7 +31,8 @@
   ];
   sourceGate = sourceGateWithInputs {
     runtimeDeps = [pkgs.rust pkgs.rust.dev] ++ (pkgs.rust.runtimeDeps or []);
-    extraBuildDeps = [pkgs.coreutils];
+    extraBuildDeps = [pkgs.coreutils pkgs.binutils];
+    nukeRefsKeep = [pkgs.terrane.src];
   };
   portable = sourceGate "host-publication-ordering" ''
     cd crates
@@ -50,33 +51,8 @@
     cargo build --frozen --offline -p terrane-fs --features native-test-fixtures \
       --example publication_fixture --message-format=json > "$TMPDIR/publication-build.jsonl"
     rustc --print target-libdir > "$TMPDIR/publication-rust-libdir"
-    python3 - "$TMPDIR/publication-build.jsonl" "$TMPDIR/publication-rust-libdir" "$out" <<'PYBUILD'
-    import json
-    import pathlib
-    import shutil
-    import sys
-
-    artifacts = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
-    output = pathlib.Path(sys.argv[3])
-    (output / "bin").mkdir()
-    (output / "lib").mkdir()
-    binaries = {item["executable"] for item in artifacts
-                if item.get("reason") == "compiler-artifact"
-                and item.get("target", {}).get("name") == "publication_fixture"
-                and "example" in item.get("target", {}).get("kind", [])
-                and item.get("executable")}
-    if len(binaries) != 1:
-        raise SystemExit("expected exactly one fresh-process publication example")
-    binary = pathlib.Path(next(iter(binaries)))
-    shutil.copy2(binary, output / "bin" / "terrane-publication-fixture")
-    directories = {binary.parent, binary.parent.parent / "deps",
-                   pathlib.Path(pathlib.Path(sys.argv[2]).read_text().strip())}
-    for directory in directories:
-        for library in directory.glob("*.so*"):
-            if library.is_file():
-                shutil.copy2(library, output / "lib" / library.name)
-    PYBUILD
-    export LD_LIBRARY_PATH="$out/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    cargo metadata --frozen --offline --no-deps --format-version=1 > "$TMPDIR/publication-packages.json"
+    python3 ${../host_publish_image.py} ${../.}
     "$out/bin/terrane-publication-fixture" --list > "$out/all-selectors.txt"
     "$out/bin/terrane-publication-fixture" --fixture-inputs > "$TMPDIR/publication-inputs.txt"
     python3 - "$out" "$TMPDIR/publication-inputs.txt" '${builtins.toJSON nativeNames}' <<'PYASSETS'
@@ -163,7 +139,7 @@
         if ! setpriv --reuid=841 --regid=845 --clear-groups \
           --inh-caps=-all --ambient-caps=-all --bounding-set=-all \
           ${pkgs.coreutils}/bin/env TERRANE_PUBLISH_VM_ROOT=/mnt/terrane-publication \
-          LD_LIBRARY_PATH="${image}/lib" ${image}/bin/terrane-publication-fixture "$selector" \
+          ${image}/bin/terrane-publication-fixture "$selector" \
           > /var/lib/terrane-publication/result.log 2>&1; then
           cat /var/lib/terrane-publication/result.log
           exit 1
