@@ -22,9 +22,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
+/// Peak resident canonical bytes of one selected continuation's base and origins.
 const MAX_SELECTED_ORIGIN_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CONFIGURATION_ARTIFACT_LOAD_BYTES: u64 = 32 * 1024 * 1024 + 1024;
-const SELECTED_ORIGIN_STRUCTURAL_BYTES: u64 = 4096;
 
 use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::ExecutionCheckpointHandoff;
@@ -45,8 +45,11 @@ use crate::{
     TerminalFailureOutcome,
 };
 
+mod origin_chain;
 mod result;
 
+pub use origin_chain::AttemptOriginChain;
+use origin_chain::resolve_after_attempt_start;
 pub use result::*;
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
@@ -69,7 +72,7 @@ pub enum ResolvedAttemptStart {
         /// Oldest discovery or branch start from which replay begins.
         base: Box<ResolvedAttemptStart>,
         /// Origin attempts and their claimed reached boundaries, oldest first.
-        origins: Box<ResolvedAttemptOrigins>,
+        origins: Box<AttemptOriginChain>,
     },
 }
 
@@ -82,44 +85,6 @@ impl ResolvedAttemptStart {
             Self::Branch { parent, .. } => parent,
             Self::AfterAttempt { origins, .. } => origins.last().reached(),
         }
-    }
-}
-
-/// Nonempty oldest-first selected continuation ancestry.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedAttemptOrigins {
-    first: ResolvedAttemptOrigin,
-    rest: Vec<ResolvedAttemptOrigin>,
-}
-
-impl ResolvedAttemptOrigins {
-    /// Binds one required origin and any later descendants.
-    #[must_use]
-    pub fn new(first: ResolvedAttemptOrigin, rest: Vec<ResolvedAttemptOrigin>) -> Self {
-        Self { first, rest }
-    }
-
-    /// Returns the final origin that establishes the semantic start boundary.
-    #[must_use]
-    pub fn last(&self) -> &ResolvedAttemptOrigin {
-        self.rest.last().unwrap_or(&self.first)
-    }
-
-    /// Iterates through origins from the authenticated base toward the boundary.
-    pub fn iter(&self) -> impl Iterator<Item = &ResolvedAttemptOrigin> {
-        std::iter::once(&self.first).chain(self.rest.iter())
-    }
-
-    /// Returns the number of retained origin attempts.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        1 + self.rest.len()
-    }
-
-    /// Returns false because a selected continuation always has an origin.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        false
     }
 }
 
@@ -256,11 +221,15 @@ pub fn resolve_attempt_execution_input(
 
 /// Resolves one attempt while charging retained origin artifacts to its memory ceiling.
 ///
+/// A continuation keeps its base and terminal origin resident and reloads
+/// earlier origins one at a time (see [`AttemptOriginChain`]), so the charge is
+/// that peak rather than the sum over the whole ancestry.
+///
 /// # Errors
 ///
 /// Returns the same errors as [`resolve_attempt_execution_input`] and rejects
-/// continuation ancestry whose aggregate payload exceeds the admitted resident
-/// byte limit.
+/// continuation ancestry whose peak resident payload exceeds the admitted
+/// resident byte limit.
 pub fn resolve_attempt_execution_input_with_resources(
     store: &CampaignExecutorStore,
     key: crate::AttemptExecutionKey,
@@ -280,7 +249,7 @@ fn resolve_attempt_execution_input_with_origin_limit(
 ) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
     let lineage = store.load_lineage(key.lineage())?;
     let scenario = store.load_scenario_artifact(lineage.scenario_content())?;
-    let mut attempt_chain = store.load_attempt_origin_chain(key.attempt())?;
+    let attempt_chain = store.load_attempt_origin_chain(key.attempt())?;
     let attempt = attempt_chain
         .first()
         .cloned()
@@ -288,7 +257,6 @@ fn resolve_attempt_execution_input_with_origin_limit(
             reason: "attempt-origin-chain-is-empty",
         })?;
     let path = store.load_branch_path(attempt.path())?;
-    let mut origin_bytes = 0_u64;
     let start = match attempt.start() {
         AttemptStart::Discover { configuration } => {
             let configuration = store.load_configuration_artifact(configuration)?;
@@ -303,94 +271,13 @@ fn resolve_attempt_execution_input_with_origin_limit(
                 selection: Box::new(store.resolve_selection(selection)?),
             }
         }
-        AttemptStart::AfterAttempt { .. } => {
-            let maximum_origin_bytes = maximum_resident_bytes
-                .min(MAX_SELECTED_ORIGIN_ARTIFACT_BYTES)
-                .checked_sub(MAX_CONFIGURATION_ARTIFACT_LOAD_BYTES)
-                .ok_or(CampaignRepositoryError::InvalidRequest {
-                    reason: "selected-origin-resident-limit-cannot-load-one-artifact",
-                })?;
-            let base_attempt = attempt_chain
-                .pop()
-                .ok_or(CampaignRepositoryError::Integrity {
-                    reason: "attempt-origin-chain-is-empty",
-                })?;
-            let base = match base_attempt.start() {
-                AttemptStart::Discover { configuration } => {
-                    let configuration = store.load_configuration_artifact(configuration)?;
-                    account_origin_artifact(
-                        &configuration,
-                        &mut origin_bytes,
-                        maximum_origin_bytes,
-                    )?;
-                    ResolvedAttemptStart::Discover { configuration }
-                }
-                AttemptStart::Branch {
-                    parent, selection, ..
-                } => {
-                    let parent = store.load_configuration_artifact(parent)?;
-                    account_origin_artifact(&parent, &mut origin_bytes, maximum_origin_bytes)?;
-                    ResolvedAttemptStart::Branch {
-                        parent,
-                        selection: Box::new(store.resolve_selection(selection)?),
-                    }
-                }
-                AttemptStart::AfterAttempt { .. } => {
-                    return Err(CampaignRepositoryError::Integrity {
-                        reason: "attempt-origin-chain-has-no-base",
-                    });
-                }
-            };
-            let mut origins = Vec::with_capacity(attempt_chain.len());
-            let mut origin_attempt = base_attempt;
-            for descendant in attempt_chain.into_iter().rev() {
-                let AttemptStart::AfterAttempt { origin, reached } = descendant.start() else {
-                    return Err(CampaignRepositoryError::Integrity {
-                        reason: "attempt-origin-chain-has-interior-base",
-                    });
-                };
-                if origin_attempt.id()? != origin {
-                    return Err(CampaignRepositoryError::Integrity {
-                        reason: "attempt-origin-chain-link-mismatch",
-                    });
-                }
-                let reached = store.load_configuration_artifact(reached)?;
-                account_origin_artifact(&reached, &mut origin_bytes, maximum_origin_bytes)?;
-                let (source_stop, source_stop_bytes) = match descendant.continuation_input() {
-                    Some(continuation_input) => {
-                        let (stop, bytes) = resolve_continuation_source_stop(
-                            store,
-                            continuation_input,
-                            &origin_attempt,
-                            &reached,
-                        )?;
-                        account_origin_bytes(bytes, &mut origin_bytes, maximum_origin_bytes)?;
-                        let bytes = u64::try_from(bytes).map_err(|_| {
-                            CampaignRepositoryError::Integrity {
-                                reason: "attempt-origin-artifact-byte-count-overflow",
-                            }
-                        })?;
-                        (Some(stop), bytes)
-                    }
-                    None => (None, 0),
-                };
-                origins.push(ResolvedAttemptOrigin {
-                    attempt: origin_attempt,
-                    reached,
-                    source_stop,
-                    source_stop_bytes,
-                });
-                origin_attempt = descendant;
-            }
-            let mut origins = origins.into_iter();
-            let first = origins.next().ok_or(CampaignRepositoryError::Integrity {
-                reason: "attempt-origin-chain-has-no-boundary",
-            })?;
-            ResolvedAttemptStart::AfterAttempt {
-                base: Box::new(base),
-                origins: Box::new(ResolvedAttemptOrigins::new(first, origins.collect())),
-            }
-        }
+        AttemptStart::AfterAttempt { .. } => resolve_after_attempt_start(
+            store,
+            &lineage,
+            attempt.path(),
+            attempt_chain,
+            maximum_resident_bytes,
+        )?,
     };
 
     let starting_configuration = match &start {
@@ -412,7 +299,8 @@ fn resolve_attempt_execution_input_with_origin_limit(
             reason: "attempt-opportunity-lineage-mismatch",
         });
     }
-    if let ResolvedAttemptStart::AfterAttempt { base, origins } = &start {
+    // Every origin's lineage and path were authenticated as it was resolved.
+    if let ResolvedAttemptStart::AfterAttempt { base, .. } = &start {
         let base_selection = match base.as_ref() {
             ResolvedAttemptStart::Branch { selection, .. } => Some(selection),
             ResolvedAttemptStart::Discover { .. } => None,
@@ -424,11 +312,6 @@ fn resolve_attempt_execution_input_with_origin_limit(
         };
         if base_selection
             .is_some_and(|selection| selection.opportunity().scenario() != lineage.scenario())
-            || origins.iter().any(|origin| {
-                origin.reached().scenario() != lineage.scenario()
-                    || origin.reached().scenario_artifact() != lineage.scenario_content()
-                    || origin.attempt().path() != attempt.path()
-            })
         {
             return Err(CampaignRepositoryError::Integrity {
                 reason: "attempt-origin-chain-lineage-mismatch",
@@ -443,90 +326,6 @@ fn resolve_attempt_execution_input_with_origin_limit(
         path,
         start,
     })
-}
-
-fn account_origin_artifact(
-    artifact: &ConfigurationArtifact,
-    total: &mut u64,
-    limit: u64,
-) -> Result<(), CampaignRepositoryError> {
-    let payload_bytes = u64::try_from(artifact.payload().len()).map_err(|_| {
-        CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        }
-    })?;
-    // Decoded schedules and replay-plan prefixes are charged by the typed
-    // Crucible adapter. This phase retains only canonical envelopes and keeps
-    // headroom for one subsequent bounded artifact load.
-    let bytes = payload_bytes
-        .checked_add(SELECTED_ORIGIN_STRUCTURAL_BYTES)
-        .ok_or(CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        })?;
-    *total = total
-        .checked_add(bytes)
-        .ok_or(CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        })?;
-    if *total > limit {
-        return Err(CampaignRepositoryError::InvalidRequest {
-            reason: "attempt-origin-artifacts-exceed-resource-limit",
-        });
-    }
-    Ok(())
-}
-
-fn resolve_continuation_source_stop(
-    store: &CampaignExecutorStore,
-    continuation_input: &AttemptContinuationInput,
-    source_attempt: &Attempt,
-    reached: &ConfigurationArtifact,
-) -> Result<(StopOutcome, usize), CampaignRepositoryError> {
-    let observation = store.load_observation(continuation_input.source_observation())?;
-    if observation.attempt() != source_attempt.id()? {
-        return Err(CampaignRepositoryError::Integrity {
-            reason: "attempt-continuation-source-observation-origin-mismatch",
-        });
-    }
-    if observation.child_content() != reached.id()?
-        || observation.child() != reached.configuration()
-    {
-        return Err(CampaignRepositoryError::Integrity {
-            reason: "attempt-continuation-source-observation-reached-mismatch",
-        });
-    }
-    if !observation.stop().reaches(source_attempt.stop()) {
-        return Err(CampaignRepositoryError::Integrity {
-            reason: "attempt-continuation-source-observation-stop-mismatch",
-        });
-    }
-
-    let bytes = observation.canonical_bytes().len();
-    Ok((observation.stop().clone(), bytes))
-}
-
-fn account_origin_bytes(
-    encoded_bytes: usize,
-    total: &mut u64,
-    limit: u64,
-) -> Result<(), CampaignRepositoryError> {
-    let bytes = u64::try_from(encoded_bytes)
-        .ok()
-        .and_then(|bytes| bytes.checked_add(SELECTED_ORIGIN_STRUCTURAL_BYTES))
-        .ok_or(CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        })?;
-    *total = total
-        .checked_add(bytes)
-        .ok_or(CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        })?;
-    if *total > limit {
-        return Err(CampaignRepositoryError::InvalidRequest {
-            reason: "attempt-origin-artifacts-exceed-resource-limit",
-        });
-    }
-    Ok(())
 }
 
 /// Operational limits, control state, and restore root for one guest execution.

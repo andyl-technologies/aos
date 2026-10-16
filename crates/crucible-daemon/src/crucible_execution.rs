@@ -19,7 +19,7 @@ use std::io::Write as _;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::executor_worker::ResolvedAttemptOrigins;
+use crate::executor_worker::AttemptOriginChain;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionInput,
     AttemptExecutionModel, AttemptExecutionProduct, AttemptExecutionReconciliationStep,
@@ -593,33 +593,30 @@ fn decode_crucible_attempt_execution_with_origin_limit(
                 base,
                 origin_budget.as_mut(),
             )?;
+            let budget = origin_budget
+                .as_mut()
+                .ok_or(CrucibleArtifactError::ResourceLimit {
+                    resource: "selected-origin-decoded-resident-bytes",
+                })?;
+            // Each intermediate origin's encoded artifact is reloaded, decoded,
+            // and dropped before the next; only decoded origins accumulate.
             let mut decoded_origins = Vec::with_capacity(origins.len());
-            let mut terminal_replay = None;
-            for origin in origins.iter() {
+            origins.try_for_each(store, |origin| {
                 let (reached, replay) = decode_selected_origin_configuration(
                     store,
                     &scenario,
                     input.scenario(),
                     origin.reached(),
-                    origin_budget
-                        .as_mut()
-                        .ok_or(CrucibleArtifactError::ResourceLimit {
-                            resource: "selected-origin-decoded-resident-bytes",
-                        })?,
+                    budget,
                 )?;
-                terminal_replay = Some(replay.clone());
                 decoded_origins.push(CrucibleAttemptOrigin {
                     attempt: origin.attempt().clone(),
                     reached,
                     signal_fault_replay: replay,
                     source_stop: origin.source_stop().cloned(),
                 });
-            }
-            let replay = terminal_replay.ok_or(CrucibleArtifactError::Campaign(
-                crucible_campaign::CampaignCodecError::InvalidValue {
-                    reason: "attempt continuation has no origin boundary",
-                },
-            ))?;
+                Ok::<(), CrucibleArtifactError>(())
+            })?;
             let mut decoded_origins = decoded_origins.into_iter();
             let first = decoded_origins
                 .next()
@@ -628,14 +625,13 @@ fn decode_crucible_attempt_execution_with_origin_limit(
                         reason: "attempt continuation has no origin boundary",
                     },
                 ))?;
+            let rest = decoded_origins.collect::<Vec<_>>();
+            let replay = rest.last().unwrap_or(&first).signal_fault_replay().clone();
             (
                 CrucibleResolvedAttemptStart::AfterAttempt {
                     base: Box::new(base),
                     base_signal_fault_replay,
-                    origins: Box::new(CrucibleAttemptOrigins::new(
-                        first,
-                        decoded_origins.collect(),
-                    )),
+                    origins: Box::new(CrucibleAttemptOrigins::new(first, rest)),
                 },
                 replay,
             )

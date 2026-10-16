@@ -17,7 +17,7 @@ impl SelectedOriginDecodeBudget {
     pub(super) fn new(
         input: &AttemptExecutionInput,
         base: &ResolvedAttemptStart,
-        origins: &ResolvedAttemptOrigins,
+        origins: &AttemptOriginChain,
         maximum: u64,
     ) -> Result<Self, CrucibleArtifactError> {
         let mut budget = Self {
@@ -36,11 +36,13 @@ impl SelectedOriginDecodeBudget {
                 .ok_or_else(selected_origin_memory_error)?,
         )?;
 
+        // The base and terminal origin stay resident. Intermediate origins are
+        // reloaded and dropped one at a time, so only the largest is charged.
         budget.charge_encoded_configuration(base_configuration_artifact(base)?)?;
-        for origin in origins.iter() {
-            budget.charge_encoded_configuration(origin.reached())?;
-            budget.charge(origin.source_stop_bytes())?;
-        }
+        let terminal = origins.last();
+        budget.charge_encoded_configuration(terminal.reached())?;
+        budget.charge(terminal.source_stop_bytes())?;
+        budget.charge(origins.peak_intermediate_encoded_bytes())?;
         let origin_slots = u64::try_from(origins.len())
             .ok()
             .and_then(|count| {
