@@ -603,3 +603,101 @@ async fn host_cache_residence_inventory_budget_also_bounds_ordinary_identities()
 
     assert!(matches!(failure.kind(), StoreErrorKind::Capacity));
 }
+
+#[tokio::test]
+async fn host_cache_host_local_metadata_needs_no_repository_binding() {
+    use super::{HostDomainLocation, HostMetadataReader, HostReadLimits};
+    use terrane_core::manifest::{ChunkRef, Manifest};
+
+    let scratch = Scratch::new();
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let plaintext = b"recovered metadata witness";
+    let chunk = TERRANE_V1
+        .calculate(IdentityKind::Chunk, plaintext)
+        .unwrap();
+    let manifest = Manifest {
+        size: plaintext.len() as u64,
+        chunks: vec![ChunkRef {
+            digest: chunk.terrane_v1_digest().unwrap(),
+            length: plaintext.len() as u64,
+        }],
+        hashes: [("blake3".into(), blake3::hash(plaintext).as_bytes().to_vec())].into(),
+        media_type: None,
+    };
+    let canonical = manifest.encode(&profile).unwrap();
+    let identity = manifest.identity(&profile).unwrap();
+    let pack_id = PackId::from_random_bytes([19; 16]);
+    let mut writer = PackWriter::new(pack_id, PackClass::Meta, false);
+    assert_eq!(
+        writer
+            .append_raw(EntryKind::Manifest, &canonical)
+            .unwrap()
+            .as_slice(),
+        identity.digest()
+    );
+    let pack = writer.seal().unwrap();
+    let pack_path = scratch.0.join(pack_id.pack_key());
+    std::fs::create_dir_all(pack_path.parent().unwrap()).unwrap();
+    std::fs::write(&pack_path, pack.bytes()).unwrap();
+    std::fs::write(scratch.0.join(pack_id.index_key()), pack.index_object()).unwrap();
+
+    let location =
+        HostDomainLocation::new(scratch.0.clone(), "private:fixture".into(), profile.clone())
+            .unwrap();
+    let metadata = HostMetadataReader::open_existing(
+        location.clone(),
+        TokioLocalFs,
+        MetadataValidator::new(profile.clone()),
+        HostReadLimits::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(metadata.get(&identity).await.unwrap(), canonical);
+    assert!(matches!(
+        metadata.get(&chunk).await.unwrap_err().kind(),
+        StoreErrorKind::Unsupported
+    ));
+    let missing = TERRANE_V1
+        .calculate(IdentityKind::Manifest, b"missing metadata")
+        .unwrap();
+    assert!(matches!(
+        metadata.get(&missing).await.unwrap_err().kind(),
+        StoreErrorKind::Absent(_)
+    ));
+
+    // Host-local private metadata does not turn into a shared guest view.
+    let mut guest_binding = scratch.layout().domain_binding().clone();
+    guest_binding.domain = "private:fixture".into();
+    let guest_layout =
+        DomainHostLayout::new(scratch.0.clone(), guest_binding, profile.clone()).unwrap();
+    let guest = HostReadOnlyContent::open_existing(
+        guest_layout,
+        TokioLocalFs,
+        MetadataValidator::new(profile.clone()),
+    )
+    .await;
+    assert!(matches!(
+        guest.err().unwrap().kind(),
+        StoreErrorKind::Denied { .. }
+    ));
+
+    let limited = HostMetadataReader::open_existing(
+        location,
+        TokioLocalFs,
+        MetadataValidator::new(profile),
+        HostReadLimits {
+            max_allocation_bytes: 8,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        limited.get(&identity).await.unwrap_err().kind(),
+        StoreErrorKind::Capacity
+    ));
+    let mut damaged = pack.bytes().to_vec();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    std::fs::write(pack_path, damaged).unwrap();
+    assert!(metadata.get(&identity).await.is_err());
+}

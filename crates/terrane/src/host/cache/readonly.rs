@@ -3,7 +3,7 @@
 //! Every result is freshly verified. Sealed plaintext is deliberately excluded:
 //! manifest identities continue to address canonical manifest bytes.
 
-use super::DomainHostLayout;
+use super::{DomainHostLayout, HostReadLocation};
 use crate::{
     bucket::BucketBinding,
     pack::{PackId, PackReader},
@@ -44,8 +44,8 @@ impl Default for HostReadLimits {
 ///
 /// Opening and reading never create, repair, probe, or publish filesystem data.
 /// Authorization remains with the caller's trusted domain routing boundary.
-pub struct HostReadOnlyContent<F, V> {
-    layout: DomainHostLayout,
+pub struct HostReadOnlyContent<F, V, L = DomainHostLayout> {
+    layout: L,
     fs: F,
     validator: V,
     capabilities: Capabilities,
@@ -92,6 +92,25 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
                 pattern: layout.domain_binding().domain.clone(),
             }));
         }
+        Self::open_location(layout, fs, validator, limits).await
+    }
+}
+
+impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding, L: HostReadLocation>
+    HostReadOnlyContent<F, V, L>
+{
+    // Guest routing policy belongs to the repository-bound constructors above.
+    // Only the metadata-only sibling view can open host-local private locations;
+    // it never exposes this inner ContentStore to its caller.
+    pub(super) async fn open_location(
+        layout: L,
+        fs: F,
+        validator: V,
+        limits: HostReadLimits,
+    ) -> Result<Self, StoreFailure> {
+        if limits.max_allocation_bytes == 0 {
+            return Err(resource());
+        }
         let mut ancestor = PathBuf::from("/");
         for component in layout.root().components() {
             ancestor.push(component.as_os_str());
@@ -128,7 +147,7 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
     }
 
     /// Returns the immutable domain routing configuration.
-    pub fn layout(&self) -> &DomainHostLayout {
+    pub fn layout(&self) -> &L {
         &self.layout
     }
 
@@ -766,7 +785,7 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
     }
 }
 
-impl<F, V> CapabilityReport for HostReadOnlyContent<F, V> {
+impl<F, V, L> CapabilityReport for HostReadOnlyContent<F, V, L> {
     fn capabilities(&self) -> &Capabilities {
         &self.capabilities
     }
@@ -774,8 +793,8 @@ impl<F, V> CapabilityReport for HostReadOnlyContent<F, V> {
 
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
-impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> ContentStore
-    for HostReadOnlyContent<F, V>
+impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding, L: HostReadLocation>
+    ContentStore for HostReadOnlyContent<F, V, L>
 {
     async fn put(&self, _upload: ContentUpload<'_>) -> Result<Identity, StoreFailure> {
         Err(StoreFailure::new(StoreErrorKind::ReadOnly))

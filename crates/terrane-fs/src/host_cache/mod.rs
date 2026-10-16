@@ -5,11 +5,15 @@
 //! the publisher's responsibility; filesystem names alone do not prove a seal.
 
 use rustix::fs::{Mode, OFlags, fstat, fstatfs, open, openat};
+#[cfg(feature = "tokio")]
+mod metadata;
 mod quota;
 mod reassembly;
 mod residency;
 mod source;
 
+#[cfg(feature = "tokio")]
+pub use metadata::NativeHostMetadataReader;
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
 pub use residency::{NativeChunkSpan, NativeResidencePlan};
@@ -22,18 +26,18 @@ use std::{
     os::fd::OwnedFd,
     path::{Component, Path, PathBuf},
 };
-use terrane::host::cache::DomainHostLayout;
+use terrane::host::cache::{DomainHostLayout, HostReadLocation};
 
 /// Holds inspected directory descriptors for one host layout.
-pub struct NativeHostLayout {
-    layout: DomainHostLayout,
+pub struct NativeHostLayout<L: HostReadLocation = DomainHostLayout> {
+    layout: L,
     root: OwnedFd,
     provisioning: crate::host_quota::DomainProvisioningGuard,
     directories: BTreeMap<&'static str, OwnedFd>,
     administrative_root: Option<(PathBuf, OwnedFd)>,
 }
 
-impl NativeHostLayout {
+impl<L: HostReadLocation> NativeHostLayout<L> {
     /// Opens existing, non-stacked host directories on one local filesystem.
     ///
     /// This establishes mount/layout facts, not successful seal enablement.
@@ -43,7 +47,7 @@ impl NativeHostLayout {
     /// # Errors
     /// Refuses symlink roots, unsupported filesystems, missing directories,
     /// cross-filesystem directories, or kernel inspection errors.
-    pub fn inspect(layout: DomainHostLayout) -> io::Result<Self> {
+    pub fn inspect(layout: L) -> io::Result<Self> {
         Self::inspect_with_administrative_root(layout, None)
     }
 
@@ -58,7 +62,7 @@ impl NativeHostLayout {
     /// Refuses unsafe/missing roots, another filesystem, a redundant domain-root
     /// alias and failed native directory inspection.
     pub fn inspect_with_administrative_root(
-        layout: DomainHostLayout,
+        layout: L,
         administrative_root: Option<&Path>,
     ) -> io::Result<Self> {
         let root = open_directory_chain(layout.root())?;
@@ -128,7 +132,7 @@ impl NativeHostLayout {
     }
 
     /// Returns the inspected domain layout.
-    pub fn layout(&self) -> &DomainHostLayout {
+    pub fn layout(&self) -> &L {
         &self.layout
     }
 
