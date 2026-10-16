@@ -33,6 +33,8 @@ pub struct PacketCompleteRestoreOwnerValidationStorage {
 struct Credit {
     strings: usize,
     values: usize,
+    // New Value/DTO phases charge these separately; legacy requested() stays exact.
+    object_roots: usize,
     typed: usize,
     canonical: usize,
 }
@@ -197,6 +199,11 @@ fn scan(
                 let slot = stack.get_mut(depth).ok_or_else(exhausted)?;
                 *slot = delimiter;
                 depth += 1;
+                if delimiter == b'{' {
+                    // Count occurrences without introducing a new node-width
+                    // overflow into the unchanged legacy quote paths.
+                    add(&mut credit.object_roots, 1)?;
+                }
                 add(&mut credit.typed, mul(4, typed_slot)?)?;
                 if delimiter == b'[' {
                     add(&mut credit.values, mul(4, size_of::<Value>())?)?;
@@ -367,7 +374,8 @@ pub(crate) const fn selected_issuer_decode_counter_scratch_data() -> usize {
         + size_of::<Credit>()
         + size_of::<Phases>()
         + size_of::<crate::reference_packet::control::PacketControlSnapshotValidationLayouts>()
-        + 12 * size_of::<usize>()
+        // Includes the new helpers' named DOM root-node width.
+        + 13 * size_of::<usize>()
         + 3 * size_of::<std::alloc::Layout>()
         + size_of::<[usize; 6]>()
         + size_of::<[usize; 4]>()
@@ -412,14 +420,15 @@ pub(crate) fn selected_native_dto_decode_storage_data(
     typed_slot: usize,
     maximum: usize,
 ) -> Result<usize, ProviderError> {
+    let value_node = map_node(
+        size_of::<String>() + size_of::<Value>(),
+        align_of::<Value>(),
+    )?;
     let credit = scan(
         bytes,
         maximum,
         typed_slot,
-        map_node(
-            size_of::<String>() + size_of::<Value>(),
-            align_of::<Value>(),
-        )?,
+        value_node,
     )?;
     let requested = sum(&[
         credit.requested(&Phases {
@@ -427,6 +436,9 @@ pub(crate) fn selected_native_dto_decode_storage_data(
             typed: 1,
             canonical: 1,
         })?,
+        // Metadata facts include one possible tree root for every object,
+        // independently of its entries, including empty nested objects.
+        mul(2, mul(credit.object_roots, value_node)?)?,
         mul(2, size_of::<Value>())?,
     ])?;
     if requested > maximum {
@@ -446,14 +458,15 @@ pub(crate) fn selected_value_decode_storage_data(
     bytes: &[u8],
     maximum: usize,
 ) -> Result<usize, ProviderError> {
+    let value_node = map_node(
+        size_of::<String>() + size_of::<Value>(),
+        align_of::<Value>(),
+    )?;
     let credit = scan(
         bytes,
         maximum,
         size_of::<Value>(),
-        map_node(
-            size_of::<String>() + size_of::<Value>(),
-            align_of::<Value>(),
-        )?,
+        value_node,
     )?;
     // scan stores the root inline header in its typed term. This Value-only
     // phase must name both independent root headers explicitly, including {}.
@@ -463,6 +476,9 @@ pub(crate) fn selected_value_decode_storage_data(
             typed: 0,
             canonical: 1,
         })?,
+        // Metadata facts include one possible tree root for every object,
+        // independently of its entries, including empty nested objects.
+        mul(2, mul(credit.object_roots, value_node)?)?,
         mul(2, size_of::<Value>())?,
     ])?;
     if requested > maximum {
@@ -538,4 +554,62 @@ mod tests {
         assert!(selected_value_decode_storage_data(deep.as_bytes(), usize::MAX).is_err());
         Ok(())
     }
+
+    #[test]
+    fn value_and_native_dto_quotes_cover_independent_nested_empty_maps()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::retained_metadata::{MetadataObserver, requested_metadata_backing_storage_data};
+        let value_node = map_node(
+            size_of::<String>() + size_of::<Value>(),
+            align_of::<Value>(),
+        )?;
+        for raw in [
+            b"{}".as_slice(),
+            b"[]",
+            br#"{"a":{}}"#,
+            br#"{"a":[{},{}],"b":{}}"#,
+            br#"[{}, {"a":{}}, []]"#,
+        ] {
+            let original = canonical::parse_json(raw, raw.len())?;
+            let independent = original.clone();
+            let mut original_walk = MetadataObserver::new();
+            original_walk.observe(&original)?;
+            let original_facts = original_walk.finish();
+            let mut independent_walk = MetadataObserver::new();
+            independent_walk.observe(&independent)?;
+            let independent_facts = independent_walk.finish();
+            let bank = canonical::canonical_json(&independent)?;
+            let actual = sum(&[
+                requested_metadata_backing_storage_data(&original_facts)?,
+                requested_metadata_backing_storage_data(&independent_facts)?,
+                bank.capacity(),
+                2 * size_of::<Value>(),
+            ])?;
+            let credit = scan(raw, usize::MAX, size_of::<Value>(), value_node)?;
+            assert_eq!(credit.object_roots, original_facts.tree_containers);
+            assert_eq!(credit.object_roots, independent_facts.tree_containers);
+            assert!(selected_value_decode_storage_data(raw, usize::MAX)? >= actual);
+            assert!(
+                selected_native_dto_decode_storage_data(raw, size_of::<Value>(), usize::MAX)?
+                    >= actual
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_dto_object_root_quote_preserves_exact_and_one_short_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = br#"{"a":[{},{}],"b":{"c":{}}}"#;
+        let quoted = selected_native_dto_decode_storage_data(raw, size_of::<Value>(), usize::MAX)?;
+        assert_eq!(
+            selected_native_dto_decode_storage_data(raw, size_of::<Value>(), quoted)?,
+            quoted
+        );
+        assert!(
+            selected_native_dto_decode_storage_data(raw, size_of::<Value>(), quoted - 1).is_err()
+        );
+        Ok(())
+    }
+
 }
