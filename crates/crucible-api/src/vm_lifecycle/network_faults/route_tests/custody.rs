@@ -737,5 +737,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
     );
 }
 
+#[path = "custody/contact_expiry.rs"]
+mod contact_expiry;
 #[path = "custody/edge_cases.rs"]
 mod edge_cases;

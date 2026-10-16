@@ -392,7 +392,13 @@ form. The adapter stores at most 262,144 keyed contact-service states and
 and custody records whose owning frame is no longer live fold into an exact
 settled service cursor and cumulative
 counters; path admission fails atomically if its complete hop set would exceed
-the live-record bound.
+the live-record bound. A contact-service state is keyed by its window, and no
+reservation can start at or after the window's traffic end, which never exceeds
+its `end`. Once the current coordinate reaches `end` and the state holds no
+live reservation, the adapter drops it, so the keyed-state count tracks open
+windows and live reservations rather than every window used during the run.
+Checkpoints apply the same rule at their coordinate, and restore rejects a
+closed, empty contact-service state.
 
 An `overflow` policy artifact has `disposition`, optional `timeout_nanos`, and
 optional `typed_error`. `timeout_nanos` is required only for `timeout`, and
@@ -546,7 +552,7 @@ in schema order and arrays in canonical or semantic order as appropriate.
 
 ## 9.10 Network adapter checkpoint encoding
 
-Network adapter checkpoint semantic version 8 encodes the evaluation
+Network adapter checkpoint semantic version 12 encodes the evaluation
 coordinate, per-coordinate and journal sequences, observation journal, token
 buckets, queues, burst state, state machines, connection tables, shared-medium
 ledgers, backpressure, custody queues, contact-service reservations, and all

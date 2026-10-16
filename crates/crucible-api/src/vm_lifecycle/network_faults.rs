@@ -35,7 +35,10 @@ use resource_limits::{
     reserve_network_resource, reserve_network_resource_u64, stage_pending_network_output,
     validate_pending_network_outputs,
 };
-use route::{availability_allows, earliest_wakeup, network_effect_application_error};
+use route::{
+    availability_allows, contact_service_is_expired, earliest_wakeup,
+    network_effect_application_error, retain_open_contact_services,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -56,7 +59,7 @@ const HARD_PENDING_NETWORK_BYTES: usize =
     FaultResourceLimits::compiled_maximum().network_queue_bytes as usize;
 const HARD_CONTACT_SERVICE_ENTRIES: usize =
     FaultResourceLimits::compiled_maximum().network_contact_entries as usize;
-const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 11;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 12;
 const NETWORK_TICK_RATE_SCALE: u128 = 1_000_000_000 * crucible::model::SIM_TICKS_PER_NS as u128;
 
 fn network_duration_ticks(nanos: u64) -> Result<u64, SchedulerError> {
@@ -572,6 +575,9 @@ fn validate_network_adapter_checkpoint(
             .any(|(key, service)| {
                 key.source == key.destination
                     || key.start_ticks >= key.end_ticks
+                    || checkpoint
+                        .coordinate
+                        .is_some_and(|now| contact_service_is_expired(key, service, now))
                     || service.settled_cursor_ticks < key.start_ticks
                     || service.settled_cursor_ticks > service.service_cursor_ticks
                     || service.service_cursor_ticks < key.start_ticks
@@ -1325,6 +1331,7 @@ fn checkpoint_network_effect_state(
                 .unwrap_or(key.start_ticks),
         );
     }
+    retain_open_contact_services(&mut checkpoint.contact_services, now);
     checkpoint
 }
 
