@@ -9,7 +9,7 @@ use super::*;
 use crate::node_contract::runtime_owned_counter::OwnedStorage;
 
 impl CompleteOriginalRestorationTransactionTarget {
-    pub(super) fn construct_original_normalization_data(
+    pub(in crate::node_admission::conformance::restoration_construction) fn construct_original_normalization_data(
         &self,
         admitted: &OriginalRestorationNodeConstructionData,
     ) -> Result<(), RuntimeError> {

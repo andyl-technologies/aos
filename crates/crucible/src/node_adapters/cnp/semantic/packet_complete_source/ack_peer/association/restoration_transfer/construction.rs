@@ -145,6 +145,12 @@ impl PacketCompleteSemanticSource {
             + size_of::<[u8; 32]>() + size_of::<[u8; 8]>()
             + size_of::<Result<(), RuntimeError>>() + size_of::<Result<usize, RuntimeError>>()
             + size_of::<[usize; 32]>()
+            // Both fixed term lists are copied into the checked array helper.
+            // Retain their complete array and consumed iterator views explicitly.
+            + size_of::<[usize; 3]>()
+            + size_of::<std::array::IntoIter<usize, 3>>()
+            + size_of::<[usize; 22]>()
+            + size_of::<std::array::IntoIter<usize, 22>>()
             // Real custom scalar formatting is bounded before any visitor.
             // Base64's32 input bytes reserve44 encoded bytes, not initialized43.
             + 20 + 44;
@@ -265,7 +271,7 @@ impl PacketCompleteSemanticSource {
             source_runtime: (&inputs.journal.runtime).into(),
             backend_implementation: (&inputs.journal.backend_implementation).into(),
             backend_schema: (&owner.key.schema).into(),
-            archived_cut: Position::ceiling(),
+            archived_cut: projection::Position::ceiling(),
             archived_ordinal: NUMBER,
             target_world: (&inputs.activation.world_binding_hash).into(),
             target_owner: &target.owner,
@@ -454,8 +460,8 @@ impl PacketCompleteSemanticSource {
     }
 }
 
-fn add(terms: &[usize], maximum: usize) -> Result<usize, RuntimeError> {
-    sum_with_error::<RuntimeError, _>(terms.iter().copied(), maximum)
+fn add<const N: usize>(terms: &[usize; N], maximum: usize) -> Result<usize, RuntimeError> {
+    sum_with_error::<RuntimeError, N>(*terms, maximum)
 }
 
 struct HashWriter(blake3::Hasher);

@@ -5,7 +5,6 @@
 //! a completed Commit can create a final four-owner restoration context.
 
 use super::*;
-use crate::node_state::{CompleteOriginalNativeTicket, CompleteOriginalRestorationSource};
 
 impl PacketCompleteSemanticSource {
     pub(super) fn authenticate_transfer_selection_data(&self) -> Result<(), RuntimeError> {

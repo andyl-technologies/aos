@@ -127,7 +127,7 @@ impl CompleteOriginalRestorationTransactionTarget {
         Ok(total)
     }
 
-    pub(super) fn counter_scratch_data() -> usize {
+    pub(in crate::node_admission::conformance::restoration_construction) fn counter_scratch_data() -> usize {
         use crucible_node_provider::{
             bodies::ResponseBody,
             client::{

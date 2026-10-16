@@ -6,6 +6,7 @@
 //! scalar, decoder, context, Clone or caller-selected permission can create it.
 
 use super::*;
+use crate::node_admission::WeakInstalledConformancePlan;
 use crate::node_contract::OriginalRuntimeStorageIdentity;
 use crucible_node_provider::client::{
     CnpController, OriginalCanonicalBlobAckEmitter,

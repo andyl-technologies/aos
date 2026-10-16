@@ -500,7 +500,7 @@ pub use conformance::{
 pub(crate) use conformance::OriginalRestorationSigningConstructionInputs;
 
 pub(crate) use conformance::{
-    OriginalRestorationSigningInputs, OriginalRestorationTransactionClaim,
+    OriginalRestorationMappingInputs, OriginalRestorationSigningInputs, OriginalRestorationTransactionClaim,
     OriginalRestorationTransactionInspection, OriginalRestorationTransactionPhase,
 };
 

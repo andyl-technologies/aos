@@ -5,6 +5,7 @@
 //! are independent requirements; every unsupported implementation refuses.
 
 use super::*;
+use crate::node_admission::InstalledConformancePlan;
 use crate::node_state::{
     CaptureEvidence, NativeArchive, NativeArchiveRecord, NativeWorldFactory, StateError,
     StateRequirements,
