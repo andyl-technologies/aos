@@ -42,6 +42,30 @@ const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_REC
 const WORLD_FORK_PREFLIGHT_FAILURE_TRIGGER: &str =
     "crucible.destructive-recovery.world-fork-preflight-failure";
 
+/// Distinguishes a member's actual return from retained terminal ownership.
+///
+/// This local receipt never attests aggregate resource closure. Quarantine and
+/// unreaped-child transfer leave the aggregate's original cause untouched.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorldMemberRetirement {
+    Active,
+    Returned,
+    Quarantined,
+}
+
+impl WorldMemberRetirement {
+    fn already_returned(self) -> Result<bool, QemuVmRealizationError> {
+        match self {
+            Self::Active => Ok(false),
+            Self::Returned => Ok(true),
+            Self::Quarantined => Err(QemuVmRealizationError::CleanupRetained {
+                operation: "finish hot-fork World member",
+            }),
+        }
+    }
+}
+
 struct QemuHotForkWorldResourceState<G>
 where
     G: QemuAttemptResourceGuard,
@@ -268,7 +292,7 @@ where
             identity,
             resources: self.resources,
             cancellation: self.cancellation.clone(),
-            released: false,
+            retirement: WorldMemberRetirement::Active,
             process_contract: None,
         })
     }
@@ -352,7 +376,7 @@ where
             resources: self.resources,
             cancellation: self.cancellation.clone(),
             process_contract,
-            finished: false,
+            retirement: WorldMemberRetirement::Active,
         })
     }
 
@@ -470,7 +494,7 @@ where
     resources: AttemptResourceLimits,
     cancellation: ExecutionCancellation,
     process_contract: QemuChildProcessContract,
-    finished: bool,
+    retirement: WorldMemberRetirement,
 }
 
 impl<G> QemuAttemptOperationalBoundary for QemuHotForkWorldLifecycleGuard<G>
@@ -490,7 +514,7 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal {
+        if self.retirement != WorldMemberRetirement::Active || state.terminal {
             return Err(world_resource_error(
                 "hot-fork world lifecycle launcher is not operational",
             ));
@@ -503,7 +527,7 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal {
+        if self.retirement != WorldMemberRetirement::Active || state.terminal {
             return Err(world_resource_error(
                 "hot-fork world lifecycle launcher is not operational",
             ));
@@ -517,7 +541,7 @@ where
     G: QemuAttemptProcessResourceGuard,
 {
     fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.finished {
+        if self.retirement.already_returned()? {
             return Ok(());
         }
         let mut state = self
@@ -533,14 +557,14 @@ where
             ));
         }
         state.lifecycle_launcher_finished = true;
-        self.finished = true;
+        self.retirement = WorldMemberRetirement::Returned;
         Ok(())
     }
 
     fn quarantine(&mut self) {
-        if !self.finished {
+        if self.retirement == WorldMemberRetirement::Active {
             quarantine_world_state(&self.state);
-            self.finished = true;
+            self.retirement = WorldMemberRetirement::Quarantined;
         }
     }
 }
@@ -562,7 +586,7 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal {
+        if self.retirement != WorldMemberRetirement::Active || state.terminal {
             return Err(world_resource_error(
                 "target RAM keeper launcher is terminal",
             ));
@@ -591,7 +615,7 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal {
+        if self.retirement != WorldMemberRetirement::Active || state.terminal {
             return Err(world_resource_error("target source launcher is terminal"));
         }
         state.guard.lend_fork_target_permit()
@@ -607,7 +631,7 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal {
+        if self.retirement != WorldMemberRetirement::Active || state.terminal {
             return Err(world_resource_error("target source launcher is terminal"));
         }
         state
@@ -624,7 +648,7 @@ where
                 source: crucible_qemu::OriginalActorAccountError::Unavailable,
             }
         })?;
-        if self.finished || state.terminal {
+        if self.retirement != WorldMemberRetirement::Active || state.terminal {
             return Err(
                 crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
                     source: crucible_qemu::OriginalActorAccountError::Unavailable,
@@ -661,7 +685,7 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal {
+        if self.retirement != WorldMemberRetirement::Active || state.terminal {
             return Err(world_resource_error(
                 "native resource controller owner is not operational",
             ));
@@ -674,7 +698,7 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal {
+        if self.retirement != WorldMemberRetirement::Active || state.terminal {
             return Err(world_resource_error(
                 "hot-fork world lifecycle launcher cannot lend its process contract",
             ));
@@ -691,7 +715,7 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal {
+        if self.retirement != WorldMemberRetirement::Active || state.terminal {
             return Err(world_resource_error(
                 "hot-fork world lifecycle launcher cannot prepare a generation directory",
             ));
@@ -705,21 +729,21 @@ where
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
                 state.terminal = true;
-                state.terminal_failure = Some(String::from(
-                    "hot-fork world lifecycle retained an unreaped launch child",
-                ));
+                state.terminal_failure.get_or_insert_with(|| {
+                    String::from("hot-fork world lifecycle retained an unreaped launch child")
+                });
             }
             Err(poisoned) => {
                 let mut state = poisoned.into_inner();
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
                 state.terminal = true;
-                state.terminal_failure = Some(String::from(
-                    "hot-fork world lifecycle resource registry was poisoned",
-                ));
+                state.terminal_failure.get_or_insert_with(|| {
+                    String::from("hot-fork world lifecycle resource registry was poisoned")
+                });
             }
         }
-        self.finished = true;
+        self.retirement = WorldMemberRetirement::Quarantined;
     }
 }
 

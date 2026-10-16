@@ -302,7 +302,7 @@ where
         resources,
         cancellation,
         process_contract,
-        finished: false,
+        retirement: WorldMemberRetirement::Active,
     })
 }
 
@@ -323,7 +323,7 @@ where
     resources: AttemptResourceLimits,
     cancellation: ExecutionCancellation,
     process_contract: QemuChildProcessContract,
-    finished: bool,
+    retirement: WorldMemberRetirement,
 }
 
 impl<G> fmt::Debug for QemuHotForkWorldAuxiliaryGuard<G>
@@ -334,7 +334,7 @@ where
         formatter
             .debug_struct("QemuHotForkWorldAuxiliaryGuard")
             .field("resources", &self.resources)
-            .field("finished", &self.finished)
+            .field("retirement", &self.retirement)
             .finish_non_exhaustive()
     }
 }
@@ -356,7 +356,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "hot-fork world auxiliary lifecycle is not operational",
             ));
@@ -369,7 +372,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "hot-fork world auxiliary lifecycle is not operational",
             ));
@@ -383,7 +389,7 @@ where
     G: QemuAttemptProcessResourceGuard,
 {
     fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.finished {
+        if self.retirement.already_returned()? {
             return Ok(());
         }
         let mut state = self
@@ -399,14 +405,14 @@ where
             ));
         }
         state.auxiliary_lifecycle_active = false;
-        self.finished = true;
+        self.retirement = WorldMemberRetirement::Returned;
         Ok(())
     }
 
     fn quarantine(&mut self) {
-        if !self.finished {
+        if self.retirement == WorldMemberRetirement::Active {
             quarantine_world_state(&self.state);
-            self.finished = true;
+            self.retirement = WorldMemberRetirement::Quarantined;
         }
     }
 }
@@ -428,7 +434,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "target RAM keeper launcher is terminal",
             ));
@@ -457,7 +466,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "auxiliary source launcher is terminal",
             ));
@@ -475,7 +487,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "auxiliary source launcher is terminal",
             ));
@@ -494,7 +509,10 @@ where
                 source: crucible_qemu::OriginalActorAccountError::Unavailable,
             }
         })?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(
                 crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
                     source: crucible_qemu::OriginalActorAccountError::Unavailable,
@@ -531,7 +549,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "native resource controller owner is not operational",
             ));
@@ -544,7 +565,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "hot-fork world auxiliary lifecycle cannot lend its process contract",
             ));
@@ -561,7 +585,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "hot-fork world auxiliary lifecycle cannot prepare a generation directory",
             ));
@@ -575,21 +602,23 @@ where
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
                 state.terminal = true;
-                state.terminal_failure = Some(String::from(
-                    "hot-fork world auxiliary lifecycle retained an unreaped launch child",
-                ));
+                state.terminal_failure.get_or_insert_with(|| {
+                    String::from(
+                        "hot-fork world auxiliary lifecycle retained an unreaped launch child",
+                    )
+                });
             }
             Err(poisoned) => {
                 let mut state = poisoned.into_inner();
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
                 state.terminal = true;
-                state.terminal_failure = Some(String::from(
-                    "hot-fork world auxiliary resource registry was poisoned",
-                ));
+                state.terminal_failure.get_or_insert_with(|| {
+                    String::from("hot-fork world auxiliary resource registry was poisoned")
+                });
             }
         }
-        self.finished = true;
+        self.retirement = WorldMemberRetirement::Quarantined;
     }
 }
 

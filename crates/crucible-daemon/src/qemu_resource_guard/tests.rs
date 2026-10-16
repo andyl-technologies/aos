@@ -1463,3 +1463,20 @@ fn absent_selected_claim_alone_does_not_invent_quarantine_history() {
         }
     ));
 }
+
+#[test]
+fn retained_cleanup_marker_is_an_operational_terminal_refusal() {
+    let error = attempt_operational_error(
+        "component member cleanup",
+        QemuVmRealizationError::CleanupRetained {
+            operation: "finish hot-fork World member",
+        },
+    );
+    assert!(matches!(
+        error,
+        LifecycleApiError::AttemptOperational {
+            class: SchedulerOperationalFailureClass::Terminal,
+            ..
+        }
+    ));
+}

@@ -24,6 +24,7 @@ struct FakeGuard {
     target_ram_binding_calls: u64,
     target_ram_binding_guest_bytes: Option<u64>,
     terminal: bool,
+    retained_child: Option<QemuNodeChild>,
 }
 
 impl QemuAttemptOperationalBoundary for FakeGuard {
@@ -121,7 +122,10 @@ impl QemuAttemptProcessResourceGuard for FakeGuard {
         .map_err(|error| world_resource_error(error.to_string()))
     }
 
-    fn retain_failed_launch_child(&mut self, _child: QemuNodeChild) {}
+    fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
+        assert!(self.retained_child.is_none());
+        self.retained_child = Some(child);
+    }
 }
 
 fn resources() -> Result<AttemptResourceLimits, QemuVmRealizationError> {
@@ -170,6 +174,7 @@ fn guard(
         target_ram_binding_calls: 0,
         target_ram_binding_guest_bytes: None,
         terminal: false,
+        retained_child: None,
     })
 }
 
@@ -875,3 +880,6 @@ fn stale_target_ram_generation_refuses_before_target_binding()
     owner.finish()?;
     Ok(())
 }
+
+#[path = "tests/member_retirement.rs"]
+mod member_retirement;

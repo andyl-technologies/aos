@@ -648,6 +648,15 @@ impl std::error::Error for QemuTargetDispatcherRetirementError {
 /// Errors returned by QEMU VM realization coordination.
 #[derive(Debug, Error)]
 pub enum QemuVmRealizationError {
+    /// Cleanup transferred ownership to quarantine without proving its return.
+    ///
+    /// The actual owner and initiating cause remain retained separately. This
+    /// allocation-free observation supplies no cancellation or retry authority.
+    #[error("{operation} retains unresolved cleanup ownership")]
+    CleanupRetained {
+        /// Cleanup operation whose retained ownership prevents completion.
+        operation: &'static str,
+    },
     /// Preserves actual native return work and the same saved Cleanup's postcut.
     #[cfg(target_os = "linux")]
     #[error(transparent)]
