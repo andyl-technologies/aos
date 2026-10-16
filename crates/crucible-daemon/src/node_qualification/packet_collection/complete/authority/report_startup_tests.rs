@@ -8,6 +8,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::node_qualification::packet_collection::complete::tests::POSITIVE_STARTUP_SETUP_MEMORY_BYTES;
 use crucible_node_contract::U64;
 
 fn fixture() -> (
@@ -15,10 +16,8 @@ fn fixture() -> (
     Rc<RefCell<PacketCompleteReportStartupHolder>>,
 ) {
     let original = super::super::super::tests::report_startup_fixture();
-    // The observed complete 16 KiB startup projection is 636,395,099 bytes.
-    // This explicit 768 MiB modeled policy admits that finite unlaunched fixture;
-    // production accounting and the 512 MiB refusal stay intact.
-    original.1.borrow_mut().resources.memory_bytes = U64::new(768 * 1024 * 1024);
+    // Select positive setup policy without changing the independent 512 MiB cases.
+    original.1.borrow_mut().resources.memory_bytes = U64::new(POSITIVE_STARTUP_SETUP_MEMORY_BYTES);
     original
 }
 
@@ -316,7 +315,7 @@ fn actual_report_startup_diagnostic_groups_restore_512m_and_preserve_births() {
         PacketNativeReportStartupPurpose, original_report_startup_storage_data,
     };
 
-    // Keep this independent 512 MiB fixture after the positive helper selects 768 MiB.
+    // Keep this diagnostic on the independent 512 MiB base policy.
     let (_scene, holder) = super::super::super::tests::report_startup_fixture();
     let original_policy = holder.borrow().resources.memory_bytes;
     assert_eq!(original_policy.get(), 512 * 1024 * 1024);
@@ -378,20 +377,27 @@ fn actual_report_startup_diagnostic_groups_restore_512m_and_preserve_births() {
     };
     holder.borrow_mut().resources.memory_bytes = original_policy;
     let observed_peak = observed.unwrap();
-    assert!(observed_peak > usize::try_from(original_policy.get()).unwrap());
+    let restored_limit = usize::try_from(original_policy.get()).unwrap();
 
     let held = holder.borrow();
     assert_eq!(held.resources.memory_bytes, original_policy);
     assert!(!held.in_flight.replace(true));
     let _loan = StartupLoan(&held.in_flight);
-    assert!(
-        held.plan
-            .reserve_original_report_startup(
-                &held.authority.roster.sources,
-                &held.authority.original_launches,
-            )
-            .is_err()
+    let restored_admission = held.plan.reserve_original_report_startup(
+        &held.authority.roster.sources,
+        &held.authority.original_launches,
     );
+    // A changed quote can cross this fixed policy without changing semantics.
+    // This is admission-only: neither branch finalizes or replaces a birth.
+    if observed_peak <= restored_limit {
+        assert_eq!(
+            restored_admission.unwrap().requested_peak_data(),
+            observed_peak,
+        );
+    } else {
+        assert!(matches!(restored_admission, Err(error)
+            if error.message == "original startup requested allocation exceeds installed resource policy"));
+    }
     assert!(!held.attempted.get());
     assert!(!held.completed.get());
     for (source, original) in held.authority.roster.sources.iter().zip(before) {

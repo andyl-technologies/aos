@@ -488,6 +488,9 @@ mod constructor_controls {
     // crucible-lint: allow panic-shortcut -- Control assertions are verdicts.
 
     use super::*;
+    use crate::node_qualification::packet_collection::complete::tests::{
+        POSITIVE_HOST_SDK_SETUP_MEMORY_BYTES, POSITIVE_STARTUP_SETUP_MEMORY_BYTES,
+    };
     use crucible::node_adapters::cnp::{CnpSemanticProcessCustody, CnpSemanticProcessSlot};
     use crucible_node_contract::U64;
     use std::{os::unix::net::UnixStream, time::Duration};
@@ -529,9 +532,9 @@ mod constructor_controls {
     ) {
         let (scene, original) =
             crate::node_qualification::packet_collection::complete::tests::report_startup_fixture();
-        // Reuse the already measured no-Child 768 MiB scene declaration from
-        // the existing report control; do not change production ResourceLimits.
-        original.borrow_mut().resources.memory_bytes = U64::new(768 * 1024 * 1024);
+        // Use the shared positive setup policy; exact controls later select their peak.
+        original.borrow_mut().resources.memory_bytes =
+            U64::new(POSITIVE_STARTUP_SETUP_MEMORY_BYTES);
         PacketCompleteReportStartupHolder::reserve_original_preparation_supervisors(&original)
             .unwrap();
         PacketCompleteReportStartupHolder::finalize_original_report_startup(&original).unwrap();
@@ -595,6 +598,8 @@ mod constructor_controls {
     #[test]
     fn actual_host_sdk_constructor_exact_policy_retains_all_three_unused_sdk_owners() {
         let (_scene, original) = fixture();
+        original.borrow_mut().resources.memory_bytes =
+            U64::new(POSITIVE_HOST_SDK_SETUP_MEMORY_BYTES);
         let peak = actual_peak(&original);
         original.borrow_mut().resources.memory_bytes = U64::new(peak as u64);
 
@@ -620,6 +625,8 @@ mod constructor_controls {
     #[test]
     fn actual_host_sdk_one_short_keeps_all_births_and_constructor_slots_unchanged() {
         let (_scene, original) = fixture();
+        original.borrow_mut().resources.memory_bytes =
+            U64::new(POSITIVE_HOST_SDK_SETUP_MEMORY_BYTES);
         let peak = actual_peak(&original);
         let before = {
             let held = original.borrow();

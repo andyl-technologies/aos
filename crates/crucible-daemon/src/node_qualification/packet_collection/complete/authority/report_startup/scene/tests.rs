@@ -5,6 +5,7 @@
 //! connection, SDK constructor, Ready receipt or runtime activation is started.
 
 use super::*;
+use crate::node_qualification::packet_collection::complete::tests::POSITIVE_STARTUP_SETUP_MEMORY_BYTES;
 use crucible::node_contract::SavedRuntimeActivation;
 use crucible_node_contract::U64;
 use std::{os::unix::net::UnixStream, time::Duration};
@@ -18,8 +19,8 @@ type Fixture = (
 fn fixture() -> Fixture {
     let (scene, original) =
         crate::node_qualification::packet_collection::complete::tests::report_startup_fixture();
-    // This is the existing no-Child model declaration, never a production raise.
-    original.borrow_mut().resources.memory_bytes = U64::new(768 * 1024 * 1024);
+    // Use the shared positive setup policy without changing production limits.
+    original.borrow_mut().resources.memory_bytes = U64::new(POSITIVE_STARTUP_SETUP_MEMORY_BYTES);
     let content = Rc::new(
         crate::node_qualification::packet_collection::complete::tests::report_startup_content_data(
             &scene,

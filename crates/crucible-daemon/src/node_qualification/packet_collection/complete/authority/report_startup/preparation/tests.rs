@@ -8,6 +8,7 @@
 // crucible-lint: allow panic-shortcut -- Control assertions are intended verdicts.
 
 use super::*;
+use crate::node_qualification::packet_collection::complete::tests::POSITIVE_STARTUP_SETUP_MEMORY_BYTES;
 
 fn fixture() -> (
     crate::node_qualification::packet_collection::complete::tests::Scene,
@@ -144,10 +145,9 @@ fn actual_preparation_supervisor_short_policy_refuses_before_any_owner_construct
 #[test]
 fn original_host_query_keeps_missing_real_preparation_refused_without_native_dispatch() {
     let (_scene, original) = fixture();
-    // The complete startup projection needs the same finite policy as the
-    // report-startup positive controls; independent tests retain 512 MiB refusals.
+    // Use positive setup policy while retaining the missing-preparation refusal.
     original.borrow_mut().resources.memory_bytes =
-        crucible_node_contract::U64::new(768 * 1024 * 1024);
+        crucible_node_contract::U64::new(POSITIVE_STARTUP_SETUP_MEMORY_BYTES);
     PacketCompleteReportStartupHolder::reserve_original_preparation_supervisors(&original).unwrap();
     PacketCompleteReportStartupHolder::finalize_original_report_startup(&original).unwrap();
     let before =
