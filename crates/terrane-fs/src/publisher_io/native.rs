@@ -17,6 +17,10 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 pub(super) fn open_directory(path: &Path) -> io::Result<File> {
+    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "publisher directory must be an absolute path without parent traversal"));
+    }
     let descriptor = fs::openat2(fs::CWD, path,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(), ResolveFlags::NO_SYMLINKS)?;

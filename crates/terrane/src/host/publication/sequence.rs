@@ -142,9 +142,11 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
         -> io::Result<PublishedObject<K::Handle>> {
         let mut staged = self.kernel.stage(claim, source)?;
         claim.verify_reader(&mut staged)?;
+
         self.kernel.close_writers(&mut staged)?;
         let binding = self.kernel.seal(&staged)?;
         self.kernel.sync_staged(&staged)?;
+
         if !self.kernel.insert(claim, &staged)? {
             return self.adopt(claim).await;
         }
@@ -177,13 +179,16 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
         let mut handle = self.kernel.open(claim)?;
         let binding = self.kernel.measure(&handle)?;
         claim.verify_reader(&mut handle)?;
+
         if self.state.binding(claim).await?.is_some_and(|existing| existing != binding) {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "recorded verity binding mismatch"));
         }
+
         handle.seek(SeekFrom::Start(0))?;
         self.kernel.sync_handle(&handle)?;
         self.kernel.sync_parent(claim)?;
         self.state.record(claim, &binding).await?;
+
         Ok(PublishedObject { handle, binding })
     }
 

@@ -46,6 +46,7 @@ impl PublicationClaim {
     /// representation choices. Unsupported whole-file hashes fail closed.
     pub fn new(domain: String, recipe: PublicationRecipe, profile: &ChunkProfile) -> io::Result<Self> {
         Domain::parse(&domain).map_err(invalid)?;
+
         let (descriptor, manifest, canonical_manifest) = match recipe {
             PublicationRecipe::Inline { chunk } => {
                 Descriptor::decode(&TERRANE_V1, &chunk.encode()).map_err(invalid)?;
@@ -66,6 +67,7 @@ impl PublicationClaim {
                 (object, Some(manifest), Some(canonical_manifest))
             }
         };
+
         Ok(Self { domain, descriptor, manifest, canonical_manifest })
     }
 
