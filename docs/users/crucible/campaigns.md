@@ -1112,14 +1112,20 @@ deployment file for inspection. These `store` commands operate on the supplied
 graph; they do not infer the built-in SQLite store from `--campaign-state`.
 `status` authenticates and describes the admitted graph
 without reading object bodies. `ensure` streams one exact content ID through
-authenticated EOF, and `verify` authenticates every bounded physical placement
-under a stable generation:
+authenticated EOF, and `verify` authenticates every physical placement under a
+stable generation:
 
 ```sh
 crucible --format json store status "$STORE"
 crucible --format json store ensure "$CONTENT_ID" --in "$STORE"
 crucible --format json store verify "$STORE"
 ```
+
+`verify` stops once the summed logical bytes exceed `--max-logical-bytes`
+(128 GiB by default). It spools the placement inventory, 45 bytes per
+placement, to a private directory under `--spool-dir` or `$TMPDIR`; for a
+large store, point `--spool-dir` at persistent storage rather than a
+RAM-backed temporary directory.
 
 These commands do not grant campaign-ref or deletion authority. An ID appearing
 in a campaign report is still subject to the operation's ordinary campaign

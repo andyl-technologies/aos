@@ -626,7 +626,7 @@ crucible campaign archive inspect --state STATE --policy POLICY --store STORE --
 
 crucible store status STORE
 crucible store ensure CONTENT_ID --in STORE
-crucible store verify STORE
+crucible store verify STORE [--max-logical-bytes BYTES] [--spool-dir DIR]
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL plan
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL cancel
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL apply
@@ -654,12 +654,18 @@ profile without reading object bytes. `store ensure` parses one canonical
 content ID before deployment I/O, streams the complete logical object through
 the admitted root, and reports success only after deferred whole-object
 authentication reaches EOF. `store verify` visits physical leaves in canonical
-node-ID order, accepts at most 65,536 placements and 128 GiB of summed logical
-bytes, streams every placement through the exact physical backend to
-authenticated EOF, and reports success only when a closing inventory fence
-reproduces the opening generation, count, logical-byte total, and backend
-identity. Its report discloses aggregate per-backend evidence, not object IDs
-or delete authority. Store deployment selection is deliberately explicit;
+node-ID order and fails once the summed logical bytes exceed its
+`--max-logical-bytes` work budget (128 GiB by default). It places no limit on
+the placement count: each leaf's fenced inventory is spooled as fixed-width
+records to an anonymous owner-only file in a fresh `0700` directory under
+`--spool-dir` (the process temporary directory by default), so memory stays
+constant while disk use grows with the placement count. After the fence is
+released, it streams every spooled placement through the exact physical
+backend to authenticated EOF, and reports success only when a closing
+inventory fence reproduces the opening generation, count, logical-byte total,
+and backend identity. Its report (`crucible.cli.store-verify.v2`) discloses
+the logical-byte budget and aggregate per-backend evidence, not object IDs or
+delete authority. Store deployment selection is deliberately explicit;
 commands name the strict composed-store file instead of guessing a deployment
 registry.
 The current single-host command is an offline deployment-owner operation:

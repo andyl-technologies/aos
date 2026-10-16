@@ -696,7 +696,7 @@ enum StoreCommand {
     Status(StoreStatusArgs),
     /// Read and authenticate one complete object without repair or promotion.
     Ensure(StoreEnsureArgs),
-    /// Authenticate every bounded physical placement in one stable generation.
+    /// Authenticate every physical placement in one stable generation.
     Verify(StoreVerifyArgs),
     /// Plan, cancel, or apply stopped-owner campaign-store garbage collection.
     Gc(CampaignStoreGcArgs),
@@ -762,6 +762,16 @@ struct StoreVerifyArgs {
     /// Strict composed repository-store deployment file.
     #[arg(value_name = "STORE")]
     deployment: PathBuf,
+    /// Fail before reading more than this many summed logical bytes.
+    #[arg(
+        long,
+        value_name = "bytes",
+        default_value_t = crucible_daemon::campaign_store_composition::DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES
+    )]
+    max_logical_bytes: u64,
+    /// Parent directory for the private inventory spool [default: TMPDIR].
+    #[arg(long, value_name = "path")]
+    spool_dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

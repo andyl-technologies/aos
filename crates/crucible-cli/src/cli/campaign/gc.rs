@@ -8,7 +8,8 @@ use crate::cli_store_transform::run_campaign_store_transform;
 use std::path::{Component, Path};
 
 use crucible_daemon::campaign_store_composition::{
-    BackendCapabilities, ContentId, ImmutableBlobBackend, StoreGraph, StoreNodeKind,
+    BackendCapabilities, ContentId, ImmutableBlobBackend, StoreGraph, StoreGraphVerificationLimits,
+    StoreNodeKind,
 };
 use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcCandidateManifest, CampaignGcCandidateReason,
@@ -21,15 +22,14 @@ use crucible_daemon::{
 use serde::Serialize;
 
 use crate::cli_campaign_store::{
-    MAX_STORE_VERIFY_LOGICAL_BYTES, MAX_STORE_VERIFY_PLACEMENTS, load_campaign_repository_store,
-    load_campaign_store_graph, verify_campaign_store_inventory,
+    load_campaign_repository_store, load_campaign_store_graph, verify_campaign_store_inventory,
 };
 
 const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v2";
 const CAMPAIGN_GC_PLAN_VERSION: &str = "v1";
 const STORE_STATUS_REPORT_SCHEMA: &str = "crucible.cli.store-status.v1";
 const STORE_ENSURE_REPORT_SCHEMA: &str = "crucible.cli.store-ensure.v1";
-const STORE_VERIFY_REPORT_SCHEMA: &str = "crucible.cli.store-verify.v1";
+const STORE_VERIFY_REPORT_SCHEMA: &str = "crucible.cli.store-verify.v2";
 const MAXIMUM_OWNER_PATH_BYTES: usize = 4_095;
 const UNUSED_GC_ENDPOINT: &str = "/tmp/crucible-campaign-gc-owner.sock";
 
@@ -131,7 +131,6 @@ struct StoreEnsureReport {
 struct StoreVerifyReport {
     schema: &'static str,
     configuration: String,
-    maximum_placements: u64,
     maximum_logical_bytes: u64,
     placements: u64,
     logical_bytes: u64,
@@ -185,12 +184,13 @@ fn run_store_ensure(args: &StoreEnsureArgs, format: OutputFormat) -> Result<Stri
 }
 
 fn run_store_verify(args: &StoreVerifyArgs, format: OutputFormat) -> Result<String, CliError> {
-    let verified = verify_campaign_store_inventory(&args.deployment)?;
+    let limits = StoreGraphVerificationLimits::new(args.max_logical_bytes);
+    let verified =
+        verify_campaign_store_inventory(&args.deployment, limits, args.spool_dir.as_deref())?;
     let report = StoreVerifyReport {
         schema: STORE_VERIFY_REPORT_SCHEMA,
         configuration: encode_bytes(&verified.configuration),
-        maximum_placements: MAX_STORE_VERIFY_PLACEMENTS,
-        maximum_logical_bytes: MAX_STORE_VERIFY_LOGICAL_BYTES,
+        maximum_logical_bytes: limits.maximum_logical_bytes(),
         placements: verified.placements,
         logical_bytes: verified.logical_bytes,
         physical: verified
@@ -590,7 +590,6 @@ fn render_store_verify(
         OutputFormat::Table => {
             let mut lines = vec![
                 format!("{:<24} {}", "configuration", report.configuration),
-                format!("{:<24} {}", "maximum-placements", report.maximum_placements),
                 format!(
                     "{:<24} {}",
                     "maximum-logical-bytes", report.maximum_logical_bytes
@@ -616,7 +615,6 @@ fn render_store_verify(
                 String::from("| field | value |"),
                 String::from("|---|---|"),
                 format!("| configuration | `{}` |", report.configuration),
-                format!("| maximum placements | {} |", report.maximum_placements),
                 format!(
                     "| maximum logical bytes | {} |",
                     report.maximum_logical_bytes
@@ -819,7 +817,9 @@ mod tests {
     use std::fs::{self, Permissions};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    use crucible_cas::content_store::{BlobHandle, ObjectKind};
+    use crucible_cas::content_store::{
+        BlobHandle, DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES, ObjectKind,
+    };
     use tempfile::TempDir;
 
     use super::*;
@@ -866,6 +866,8 @@ mod tests {
         let verified = run_store_verify(
             &StoreVerifyArgs {
                 deployment: fixture.store.clone(),
+                max_logical_bytes: 4_096,
+                spool_dir: Some(fixture.root.clone()),
             },
             OutputFormat::Jsonl,
         )
@@ -873,11 +875,8 @@ mod tests {
         let verified: serde_json::Value =
             serde_json::from_str(&verified).expect("decode verify report");
         assert_eq!(verified["schema"], STORE_VERIFY_REPORT_SCHEMA);
-        assert_eq!(verified["maximum_placements"], MAX_STORE_VERIFY_PLACEMENTS);
-        assert_eq!(
-            verified["maximum_logical_bytes"],
-            MAX_STORE_VERIFY_LOGICAL_BYTES
-        );
+        assert!(verified.get("maximum_placements").is_none());
+        assert_eq!(verified["maximum_logical_bytes"], 4_096);
         assert_eq!(verified["placements"], 1);
         assert_eq!(verified["logical_bytes"], bytes.len());
         assert_eq!(verified["physical"][0]["backend"], "primary");
@@ -911,6 +910,8 @@ mod tests {
         let error = run_store_verify(
             &StoreVerifyArgs {
                 deployment: fixture.store.clone(),
+                max_logical_bytes: DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES,
+                spool_dir: None,
             },
             OutputFormat::Jsonl,
         )

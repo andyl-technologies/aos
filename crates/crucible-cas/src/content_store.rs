@@ -54,13 +54,13 @@ pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
 };
 pub use graph::{
-    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
-    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPackedRepackAdmin,
-    StoreGraphPhysicalAdmin, StoreGraphPhysicalRepairDisposition, StoreGraphPhysicalRetention,
+    DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES, StoreGraph, StoreGraphAdmin, StoreGraphConfig,
+    StoreGraphConfigurationId, StoreGraphPackedRepackAdmin, StoreGraphPhysicalAdmin,
+    StoreGraphPhysicalRepairDisposition, StoreGraphPhysicalRetention,
     StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError,
-    StoreGraphVerificationLimit, StoreGraphVerificationLimits, StoreGraphVerificationLimitsError,
-    StoreGraphVerificationReport, StoreNodeDescription, StoreNodeId, StoreNodeKind,
-    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StorePhysicalRepairDisposition,
+    StoreGraphVerificationLimit, StoreGraphVerificationLimits, StoreGraphVerificationReport,
+    StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeMetrics,
+    StoreNodeMetricsDescription, StoreNodeSpec, StorePhysicalRepairDisposition,
     StorePhysicalRepairReceipt, StoreTierPolicy, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};

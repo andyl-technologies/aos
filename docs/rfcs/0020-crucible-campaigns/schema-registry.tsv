@@ -300,7 +300,7 @@ crucible.cli.store-ensure	1	crucible-cli::cli::campaign::gc	cli-output	gate:camp
 crucible.cli.store-incomplete-pack-cleanup	1	crucible-cli::cli::campaign::maintenance	cli-output	gate:campaign-store-composition
 crucible.cli.store-repair	1	crucible-cli::cli::store_repair	cli-output	gate:campaign-store-composition
 crucible.cli.store-status	1	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
-crucible.cli.store-verify	1	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
+crucible.cli.store-verify	2	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
 
 # Current QEMU fuzz durable corpus records
 crucible.cli.live-fuzz-corpus-index	1	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	administrative-record	gate:campaign-replay
