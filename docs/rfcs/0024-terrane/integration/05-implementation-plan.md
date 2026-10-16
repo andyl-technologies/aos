@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; twenty of twenty-two T1 tasks are complete.
+**Status:** In progress; twenty-one of twenty-two T1 tasks are complete.
 
 The qualified source checkpoint `1d7451dd75` has independently reviewed passing
 outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
@@ -7635,7 +7635,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   capture-only log-path error from successful test execution. The exact
   fixture correction is preserved at `3c3d51b5b5` and locally composed for
   future trunk qualification. No task or full-floor result is inferred.
-- [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
+- [x] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection.
   Current release checkpoint: the private ordered history and recipe lookups
