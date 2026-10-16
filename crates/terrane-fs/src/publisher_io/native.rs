@@ -340,9 +340,12 @@ impl NativePublisher {
                 Mode::empty(),
             )?);
             check_directory(&directory)?;
-            if directory.metadata()?.mode() & 0o777 != 0o700 {
+            let directory_metadata = directory.metadata()?;
+            if directory_metadata.mode() & 0o777 != 0o700
+                || directory_metadata.dev() != self.staging_root.metadata()?.dev()
+            {
                 return Err(invalid(
-                    "stale publisher staging must remain private mode0700",
+                    "stale publisher staging must remain private on the retained filesystem",
                 ));
             }
             for child in fs::Dir::read_from(&directory)? {
@@ -353,6 +356,7 @@ impl NativePublisher {
                 }
                 let metadata = fs::statat(&directory, child_name, AtFlags::SYMLINK_NOFOLLOW)?;
                 if metadata.st_uid != rustix::process::geteuid().as_raw()
+                    || metadata.st_dev != directory_metadata.dev()
                     || metadata.st_mode & libc::S_IFMT != libc::S_IFREG
                 {
                     return Err(invalid("unexpected inode in publisher-private staging"));
