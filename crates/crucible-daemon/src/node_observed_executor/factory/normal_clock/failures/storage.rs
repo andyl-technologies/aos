@@ -59,7 +59,11 @@ impl Owned for publication::PublicationFailure {
             size_of::<crucible_cas::content_store::DirectoryBlobBackend>(),
             std::mem::align_of_val(blobs.as_ref()),
         )? {
-            counter.add(blobs.retained_configuration_requested_storage_data().ok_or_else(unknown)?)?;
+            counter.add(
+                blobs
+                    .retained_configuration_requested_storage_data()
+                    .ok_or_else(unknown)?,
+            )?;
         }
         if counter.shared_header(
             Arc::as_ptr(refs).cast(),
