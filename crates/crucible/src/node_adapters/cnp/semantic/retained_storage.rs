@@ -442,10 +442,16 @@ impl CnpSemanticNode {
         if self.retained_registry.is_some() || self.retained_supervisor.is_some() {
             let scratch = preparation::CnpPreparationStorageScratch::new(
                 preparation::CnpPreparationStorageScratch::requested_bytes(),
-            ).map_err(unknown)?;
-            return self.original_retained_node_precredit_data(
-                &scratch, registry, self.retained_supervisor.as_ref(), maximum,
-            ).map_err(unknown);
+            )
+            .map_err(unknown)?;
+            return self
+                .original_retained_node_precredit_data(
+                    &scratch,
+                    registry,
+                    self.retained_supervisor.as_ref(),
+                    maximum,
+                )
+                .map_err(unknown);
         }
         self.preparation.guard.storage_origin_data()?;
         if !self.affinity.permits_current_thread() {

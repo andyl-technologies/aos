@@ -96,15 +96,21 @@ impl ConformanceRuntime {
     ///
     /// # Errors
     /// Refuses checked layout overflow before any owning observation.
-    pub fn original_fixed_four_inactive_observer_counter_scratch_data() -> Result<usize, RuntimeError> {
+    pub fn original_fixed_four_inactive_observer_counter_scratch_data()
+    -> Result<usize, RuntimeError> {
         use crate::node_adapters::cnp::CnpSemanticPreparation;
         use crate::node_contract::{PreparedHostSchedulingNode, RuntimeCustodyQueue};
-        let cnp=CnpSemanticPreparation::original_conformance_node_retained_counter_scratch_data()?;
-        let host=PreparedHostSchedulingNode::original_inactive_node_counter_scratch_data();
-        let slot=RuntimeCustodyQueue::retained_requested_storage_counter_scratch_data()?;
-        let opaque=crate::node_contract::runtime::opaque_owner_counter_scratch_data();
-        let child=cnp.max(host).max(slot).max(opaque);
-        let runtime=size_of::<RetainedRuntimeCounter>().checked_add(child).ok_or(RuntimeError::ResourceLimit)?;
-        runtime.checked_add(size_of::<RetainedRuntimeCounter>()).ok_or(RuntimeError::ResourceLimit)
+        let cnp =
+            CnpSemanticPreparation::original_conformance_node_retained_counter_scratch_data()?;
+        let host = PreparedHostSchedulingNode::original_inactive_node_counter_scratch_data();
+        let slot = RuntimeCustodyQueue::retained_requested_storage_counter_scratch_data()?;
+        let opaque = crate::node_contract::runtime::opaque_owner_counter_scratch_data();
+        let child = cnp.max(host).max(slot).max(opaque);
+        let runtime = size_of::<RetainedRuntimeCounter>()
+            .checked_add(child)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        runtime
+            .checked_add(size_of::<RetainedRuntimeCounter>())
+            .ok_or(RuntimeError::ResourceLimit)
     }
 }

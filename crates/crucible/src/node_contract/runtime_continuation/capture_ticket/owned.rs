@@ -676,7 +676,10 @@ impl OwnedStorage for crate::node_contract::RuntimeSnapshot {
 }
 
 impl NodeRuntime {
-    pub(crate) fn original_runtime_constructor_serialization_storage_data(value:&impl serde::Serialize,maximum:usize)->Result<usize,RuntimeError> {
-        super::serialization::original_constructor_value_allocations(value,maximum)
+    pub(crate) fn original_runtime_constructor_serialization_storage_data(
+        value: &impl serde::Serialize,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        super::serialization::original_constructor_value_allocations(value, maximum)
     }
 }

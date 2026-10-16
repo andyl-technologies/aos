@@ -4,22 +4,40 @@
 //! Its fields are already inline in the process capsule. Every populated result,
 //! readiness, activation, input or operation owner requires its own complete walk.
 
-use crate::node_contract::RuntimeError;
 use super::SemanticRuntimeCustody;
+use crate::node_contract::RuntimeError;
 
 impl SemanticRuntimeCustody {
     pub(in crate::node_adapters::cnp::semantic) fn dormant_storage_data(
         &self,
     ) -> Result<(), RuntimeError> {
         let Self {
-            arm_attempt, ready, prepared_owner, activate_response, observe_sequence,
-            activation_attempt, active, inputs, operations, watermark, observation,
-            reclaimed, credit, quarantined: _,
+            arm_attempt,
+            ready,
+            prepared_owner,
+            activate_response,
+            observe_sequence,
+            activation_attempt,
+            active,
+            inputs,
+            operations,
+            watermark,
+            observation,
+            reclaimed,
+            credit,
+            quarantined: _,
         } = self;
-        if arm_attempt.is_some() || ready.is_some() || prepared_owner.is_some()
-            || activate_response.is_some() || observe_sequence.get() != 0
-            || activation_attempt.is_some() || active.is_some() || !inputs.is_empty()
-            || !operations.is_empty() || watermark.get() != 0 || observation.is_some()
+        if arm_attempt.is_some()
+            || ready.is_some()
+            || prepared_owner.is_some()
+            || activate_response.is_some()
+            || observe_sequence.get() != 0
+            || activation_attempt.is_some()
+            || active.is_some()
+            || !inputs.is_empty()
+            || !operations.is_empty()
+            || watermark.get() != 0
+            || observation.is_some()
             || reclaimed.is_some()
         {
             return Err(RuntimeError::UnsupportedFacet);
@@ -53,9 +71,15 @@ mod tests {
     fn started_native_sequence_is_not_empty_dormant_custody() {
         let mut state = SemanticRuntimeCustody::default();
         state.observe_sequence = U64::new(1);
-        assert_eq!(state.dormant_storage_data(), Err(RuntimeError::UnsupportedFacet));
+        assert_eq!(
+            state.dormant_storage_data(),
+            Err(RuntimeError::UnsupportedFacet)
+        );
         state.observe_sequence = U64::new(0);
         state.watermark = U64::new(1);
-        assert_eq!(state.dormant_storage_data(), Err(RuntimeError::UnsupportedFacet));
+        assert_eq!(
+            state.dormant_storage_data(),
+            Err(RuntimeError::UnsupportedFacet)
+        );
     }
 }

@@ -14,7 +14,9 @@ thread_local! {
     static SELECTED: Cell<bool> = const { Cell::new(false) };
 }
 
-pub(super) fn is_selected() -> bool { SELECTED.get() }
+pub(super) fn is_selected() -> bool {
+    SELECTED.get()
+}
 
 pub(crate) struct OriginalConstructionDiagnosticScope {
     previous: bool,
@@ -23,16 +25,25 @@ pub(crate) struct OriginalConstructionDiagnosticScope {
 
 impl OriginalConstructionDiagnosticScope {
     pub(crate) fn enter() -> Self {
-        Self { previous: SELECTED.replace(true), _same_thread: PhantomData }
+        Self {
+            previous: SELECTED.replace(true),
+            _same_thread: PhantomData,
+        }
     }
 }
 
 impl Drop for OriginalConstructionDiagnosticScope {
-    fn drop(&mut self) { SELECTED.set(self.previous); }
+    fn drop(&mut self) {
+        SELECTED.set(self.previous);
+    }
 }
 
 pub(in crate::node_admission) fn construction_diagnostic(value: &impl std::fmt::Display) -> String {
-    if is_selected() { OBSERVED.to_owned() } else { value.to_string() }
+    if is_selected() {
+        OBSERVED.to_owned()
+    } else {
+        value.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -50,11 +61,12 @@ mod tests {
     fn selected_constructor_diagnostic_does_not_evaluate_display() {
         let _scope = OriginalConstructionDiagnosticScope::enter();
         assert_eq!(construction_diagnostic(&RefuseDisplay), OBSERVED);
-        let refusal=super::super::refuse(
+        let refusal = super::super::refuse(
             super::super::AdmissionStage::Graph,
             super::super::AdmissionSubject::World,
             super::super::AdmissionCode::OwnerConflict,
-            "ordinary required text", "ordinary observed text",
+            "ordinary required text",
+            "ordinary observed text",
         );
         assert_eq!(refusal.stage, super::super::AdmissionStage::Graph);
         assert_eq!(refusal.code, super::super::AdmissionCode::OwnerConflict);
@@ -67,20 +79,23 @@ mod tests {
     fn selected_constructor_diagnostic_restores_nested_and_unwound_state() {
         assert!(!is_selected());
         {
-            let _outer=OriginalConstructionDiagnosticScope::enter();
+            let _outer = OriginalConstructionDiagnosticScope::enter();
             {
-                let _inner=OriginalConstructionDiagnosticScope::enter();
+                let _inner = OriginalConstructionDiagnosticScope::enter();
                 assert!(is_selected());
             }
             assert!(is_selected());
-            let result=std::panic::catch_unwind(|| {
-                let _inner=OriginalConstructionDiagnosticScope::enter();
+            let result = std::panic::catch_unwind(|| {
+                let _inner = OriginalConstructionDiagnosticScope::enter();
                 panic!("original construction failure");
             });
             assert!(result.is_err());
             assert!(is_selected());
         }
         assert!(!is_selected());
-        assert_eq!(construction_diagnostic(&"ordinary diagnostic"), "ordinary diagnostic");
+        assert_eq!(
+            construction_diagnostic(&"ordinary diagnostic"),
+            "ordinary diagnostic"
+        );
     }
 }

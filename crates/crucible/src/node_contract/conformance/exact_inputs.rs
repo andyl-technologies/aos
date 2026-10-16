@@ -72,7 +72,9 @@ impl ConformanceRuntime {
             Some(Rc::clone(&graph)),
         )
         .map_err(|failure| ConformanceRuntimeFailure {
-            reason: crate::node_admission::original_runtime_construction_failure_reason(&failure.error),
+            reason: crate::node_admission::original_runtime_construction_failure_reason(
+                &failure.error,
+            ),
             _retained: None,
             _preparation: Some(failure),
             _runtime: None,

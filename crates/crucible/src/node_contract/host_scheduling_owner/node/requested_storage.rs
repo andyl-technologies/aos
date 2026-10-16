@@ -92,8 +92,16 @@ impl PreparedHostSchedulingNode {
     ) -> Result<usize, RuntimeError> {
         use crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter;
         let Self {
-            source: _, anchor: _, plan: _, activation: _, route: _, ready: _,
-            retired: _, reclamation: _, restoration: _, restoration_installed: _,
+            source: _,
+            anchor: _,
+            plan: _,
+            activation: _,
+            route: _,
+            ready: _,
+            retired: _,
+            reclamation: _,
+            restoration: _,
+            restoration_installed: _,
             capture_preparation: _,
         } = self;
         if self.source.process != std::process::id()
@@ -101,21 +109,30 @@ impl PreparedHostSchedulingNode {
         {
             return Err(RuntimeError::ForeignAuthority);
         }
-        if self.ready.is_some() || self.reclamation.is_some() || self.restoration.is_some()
-            || self.restoration_installed || self.capture_preparation.is_some()
-            || self.source.original_ticket.is_some() || self.source.archive_ticket.is_some()
+        if self.ready.is_some()
+            || self.reclamation.is_some()
+            || self.restoration.is_some()
+            || self.restoration_installed
+            || self.capture_preparation.is_some()
+            || self.source.original_ticket.is_some()
+            || self.source.archive_ticket.is_some()
             || !self.source.node_created.get()
         {
             return Err(RuntimeError::UnsupportedFacet);
         }
-        let original_anchor = self.source.node.try_borrow()
+        let original_anchor = self
+            .source
+            .node
+            .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?;
         if !std::rc::Weak::ptr_eq(&*original_anchor, &Rc::downgrade(&self.anchor)) {
             return Err(RuntimeError::ForeignAuthority);
         }
         let mut counter = RetainedRuntimeCounter::new(maximum);
         counter.add(NodeRuntime::capture_host_node_metadata_storage(
-            &self.activation, &self.route, None,
+            &self.activation,
+            &self.route,
+            None,
         )?)?;
         if let Some(plan) = &self.plan {
             plan.charge_original_retained_storage_precredit_data(&mut counter)?;
@@ -123,7 +140,10 @@ impl PreparedHostSchedulingNode {
             return Err(RuntimeError::UnsupportedFacet);
         }
         if counter.rc(&self.source)? {
-            counter.add(self.source.retained_original_metadata_bytes_excluding_runtime_precredit_data(maximum)?)?;
+            counter.add(
+                self.source
+                    .retained_original_metadata_bytes_excluding_runtime_precredit_data(maximum)?,
+            )?;
         }
         Ok(counter.bytes())
     }

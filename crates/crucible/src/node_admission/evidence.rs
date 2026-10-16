@@ -297,9 +297,11 @@ impl<'a> VerifiedContent<'a> {
     /// # Errors
     /// Refuses invalid references, unavailable or mismatched content, unrepresentable lengths, or exhausted object and cumulative byte ceilings.
     pub fn read(&mut self, reference: &ContentRef) -> Result<Vec<u8>, AdmissionError> {
-        reference
-            .validate()
-            .map_err(|error| invalid_content(crate::node_admission::error::construction_diagnostic(&error)))?;
+        reference.validate().map_err(|error| {
+            invalid_content(crate::node_admission::error::construction_diagnostic(
+                &error,
+            ))
+        })?;
         let length = usize::try_from(reference.length.get())
             .map_err(|_| invalid_content("unrepresentable content length"))?;
         let remaining = self
@@ -318,17 +320,21 @@ impl<'a> VerifiedContent<'a> {
             ));
         }
 
-        let bytes = self
-            .source
-            .content(reference, maximum)
-            .map_err(|error| invalid_content(crate::node_admission::error::construction_diagnostic(&error)))?;
+        let bytes = self.source.content(reference, maximum).map_err(|error| {
+            invalid_content(crate::node_admission::error::construction_diagnostic(
+                &error,
+            ))
+        })?;
         if bytes.len() != length || bytes.len() > maximum {
             return Err(invalid_content(
                 "fetched content length differs from bound reference",
             ));
         }
-        let actual = canonical::hash("cnp.blob.v1", &bytes)
-            .map_err(|error| invalid_content(crate::node_admission::error::construction_diagnostic(&error)))?;
+        let actual = canonical::hash("cnp.blob.v1", &bytes).map_err(|error| {
+            invalid_content(crate::node_admission::error::construction_diagnostic(
+                &error,
+            ))
+        })?;
         if actual != reference.hash {
             return Err(invalid_content(
                 "fetched bytes do not match the content digest",
@@ -350,8 +356,12 @@ impl<'a> VerifiedContent<'a> {
         reference: &ContentRef,
     ) -> Result<T, AdmissionError> {
         let bytes = self.read(reference)?;
-        let value = canonical::parse_json(&bytes, self.limits.maximum_content_bytes)
-            .map_err(|error| invalid_content(crate::node_admission::error::construction_diagnostic(&error)))?;
+        let value =
+            canonical::parse_json(&bytes, self.limits.maximum_content_bytes).map_err(|error| {
+                invalid_content(crate::node_admission::error::construction_diagnostic(
+                    &error,
+                ))
+            })?;
         serde_json::from_value(value).map_err(|error| {
             refuse(
                 AdmissionStage::Parse,

@@ -14,7 +14,9 @@ pub(super) fn position(time: u64, microstep: u64, phase: Phase) -> Position {
     Position::new(U64::new(time), U64::new(microstep), phase)
 }
 
-pub(in crate::node_qualification::packet_collection::complete) fn row(index: usize) -> Option<(usize, &'static str, OperationRequest)> {
+pub(in crate::node_qualification::packet_collection::complete) fn row(
+    index: usize,
+) -> Option<(usize, &'static str, OperationRequest)> {
     use Phase::{BoundaryControl as B, Delivery as D, Publication as P, Reaction as R};
     let rows = [
         (

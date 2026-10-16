@@ -49,9 +49,12 @@ pub struct CnpSemanticNode {
     pub(super) affinity: ThreadAffinity,
     // Selected same-holder conversion moves these genuine non-cloneable
     // witnesses with the controller before common runtime erases its node type.
-    pub(super) retained_registry: Option<crucible_node_provider::handshake::OriginalExtensionRegistryOwner>,
-    pub(super) retained_supervisor: Option<crucible_node_provider::connection::OriginalRetainedSupervisor>,
-    pub(super) retained_operational: Option<std::rc::Rc<dyn crucible_node_provider::connection::ConnectionSupervisor>>,
+    pub(super) retained_registry:
+        Option<crucible_node_provider::handshake::OriginalExtensionRegistryOwner>,
+    pub(super) retained_supervisor:
+        Option<crucible_node_provider::connection::OriginalRetainedSupervisor>,
+    pub(super) retained_operational:
+        Option<std::rc::Rc<dyn crucible_node_provider::connection::ConnectionSupervisor>>,
 }
 
 impl CnpSemanticPreparation {

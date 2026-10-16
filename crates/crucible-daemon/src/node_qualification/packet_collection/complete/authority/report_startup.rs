@@ -45,8 +45,9 @@ pub struct PacketCompleteReportStartupHolder {
     receiver_group: Rc<PacketCompleteEffectReceiverGroup>,
     receiver_reader: runtime::OriginalSharedOwner<PacketCompleteEffectReceiverReader>,
     runtime_owners: RefCell<runtime::OriginalRuntimeOwners>,
-    runtime_members: [OnceCell<crucible::node_admission::CompleteOriginalRuntimeConstructionMember>; 3],
-    runtime_attempted: [Cell<bool>;3],
+    runtime_members:
+        [OnceCell<crucible::node_admission::CompleteOriginalRuntimeConstructionMember>; 3],
+    runtime_attempted: [Cell<bool>; 3],
     runtime_issuing: Cell<Option<crucible::node_admission::OriginalRuntimeConstructionPhase>>,
     runtime_in_flight: Cell<Option<crucible::node_admission::OriginalRuntimeConstructionPhase>>,
     process: u32,
@@ -360,7 +361,9 @@ impl PacketCompleteReportStartupHolder {
         }
         self.graph_owner
             .authenticate_original_report_policy_data(&authority.graph_policy)?;
-        self.receiver_reader.original_data().map_err(|_| refused())?
+        self.receiver_reader
+            .original_data()
+            .map_err(|_| refused())?
             .authenticate_original_group(&self.receiver_group)
             .map_err(|_| refused())?;
         for (member, source) in authority.roster.sources.iter().enumerate() {

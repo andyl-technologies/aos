@@ -155,16 +155,28 @@ impl CnpSemanticConformanceNode {
         &self,
         source: &'a std::rc::Rc<super::PacketCompleteSemanticSource>,
     ) -> Result<&'a [crate::node_contract::FacetKind], crate::node_contract::RuntimeError> {
-        self.0.preparation.guard.preparation_storage_origin_precredit_data()?;
-        let native = self.0.preparation.guard.custody.as_ref()
+        self.0
+            .preparation
+            .guard
+            .preparation_storage_origin_precredit_data()?;
+        let native = self
+            .0
+            .preparation
+            .guard
+            .custody
+            .as_ref()
             .ok_or(crate::node_contract::RuntimeError::OwnerUnavailable)?;
-        let actual = native.source.as_ref()
+        let actual = native
+            .source
+            .as_ref()
             .ok_or(crate::node_contract::RuntimeError::OwnerUnavailable)?;
         let expected: &dyn super::CnpSemanticSource = source.as_ref();
         if !std::ptr::eq(actual.as_ref(), expected) {
             return Err(crate::node_contract::RuntimeError::ForeignAuthority);
         }
-        Ok(super::CnpSemanticSource::installation(source.as_ref()).facets.as_slice())
+        Ok(super::CnpSemanticSource::installation(source.as_ref())
+            .facets
+            .as_slice())
     }
 
     /// Transfers original native custody while retaining this collecting node's metadata.

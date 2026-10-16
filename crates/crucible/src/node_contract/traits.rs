@@ -45,7 +45,9 @@ pub trait SimulationNode {
     ///
     /// # Errors
     /// Defaults to unknown; no erased node receives a zero descriptor row.
-    fn retained_descriptor_views_precredit_data(&self)->Result<Option<usize>,RuntimeError> {Ok(None)}
+    fn retained_descriptor_views_precredit_data(&self) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
 
     /// Observes this original node's independently retained requested backing.
     ///

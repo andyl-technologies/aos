@@ -218,7 +218,6 @@ impl crate::node_contract::NodeRuntime {
     }
 }
 
-
 impl crate::node_contract::NodeRuntime {
     /// Separates the existing selected raw decoder's actual typed and temporary pools.
     pub(crate) fn capture_selected_json_decode_axes_data(
@@ -227,13 +226,22 @@ impl crate::node_contract::NodeRuntime {
         typed_map_node: usize,
         maximum: usize,
     ) -> Result<(usize, usize, usize), crate::node_contract::RuntimeError> {
-        let data = super::core_decode_credit::preflight_selected(bytes, typed_slot, typed_map_node, maximum)?;
+        let data = super::core_decode_credit::preflight_selected(
+            bytes,
+            typed_slot,
+            typed_map_node,
+            maximum,
+        )?;
         // A Value-to-typed move can retain the parser's original String capacity.
         // Include that complete pool with the typed upper bound. The temporary
         // row repeats strings conservatively rather than granting a move refund.
         Ok((
-            data.typed_containers.checked_add(data.parser_strings).ok_or(crate::node_contract::RuntimeError::ResourceLimit)?,
-            data.parser_strings.checked_add(data.value_containers).ok_or(crate::node_contract::RuntimeError::ResourceLimit)?,
+            data.typed_containers
+                .checked_add(data.parser_strings)
+                .ok_or(crate::node_contract::RuntimeError::ResourceLimit)?,
+            data.parser_strings
+                .checked_add(data.value_containers)
+                .ok_or(crate::node_contract::RuntimeError::ResourceLimit)?,
             data.canonical_temporaries,
         ))
     }

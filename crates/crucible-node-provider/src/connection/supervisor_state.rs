@@ -345,8 +345,16 @@ mod operational_handle_tests {
         let count = Rc::strong_count(&operational);
         let actor_count = Rc::strong_count(&witness.actor);
 
-        assert!(witness.authenticate_original_operational_handle_data(&operational).is_ok());
-        assert!(witness.authenticate_original_operational_handle_data(&foreign).is_err());
+        assert!(
+            witness
+                .authenticate_original_operational_handle_data(&operational)
+                .is_ok()
+        );
+        assert!(
+            witness
+                .authenticate_original_operational_handle_data(&foreign)
+                .is_err()
+        );
         assert_eq!(Rc::strong_count(&operational), count);
         assert_eq!(Rc::strong_count(&witness.actor), actor_count);
         assert!(Rc::ptr_eq(&witness.supervisor, &operational));
@@ -358,7 +366,11 @@ mod operational_handle_tests {
             actor: Rc::new(foreign_actor),
             supervisor: Rc::clone(&operational),
         };
-        assert!(foreign_witness.authenticate_original_operational_handle_data(&operational).is_err());
+        assert!(
+            foreign_witness
+                .authenticate_original_operational_handle_data(&operational)
+                .is_err()
+        );
         assert!(Rc::ptr_eq(&foreign_witness.supervisor, &operational));
         assert_eq!(Rc::strong_count(&operational), count + 1);
     }

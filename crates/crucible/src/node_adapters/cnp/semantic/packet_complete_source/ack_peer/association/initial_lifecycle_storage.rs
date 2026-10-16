@@ -446,20 +446,28 @@ impl PacketCompleteSemanticSource {
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
-        let association_loan = self.ack_peer_association.try_borrow()
+        let association_loan = self
+            .ack_peer_association
+            .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?;
-        let association = association_loan.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        let association = association_loan
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         if !association.completed_mechanism.get() || association.failed || !association.ready {
             return Err(RuntimeError::OutstandingObligations);
         }
         drop(association_loan);
         // No new receive occurs here. The largest independently retained
         // assigned request is the already selected original message bound.
-        let frame_bytes = self.selected_storage_selection()
-            .map_err(|_| RuntimeError::ForeignAuthority)?.limits.frame_bytes;
-        let frame_bytes = usize::try_from(frame_bytes.get())
-            .map_err(|_| RuntimeError::ResourceLimit)?;
-        self.original_initial_source_storage_data(frame_bytes, maximum)?.requested_peak_data()
+        let frame_bytes = self
+            .selected_storage_selection()
+            .map_err(|_| RuntimeError::ForeignAuthority)?
+            .limits
+            .frame_bytes;
+        let frame_bytes =
+            usize::try_from(frame_bytes.get()).map_err(|_| RuntimeError::ResourceLimit)?;
+        self.original_initial_source_storage_data(frame_bytes, maximum)?
+            .requested_peak_data()
     }
 
     /// Names this exact Source validation quote's fixed counter views.

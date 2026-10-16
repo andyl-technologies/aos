@@ -11,8 +11,8 @@ use crate::node_admission::InstalledConformancePlan;
 use crate::node_contract::{
     ActivationRecord, CancelStatus, FacetKind, Lifecycle, NativeReclamationReceipt, NodeFacet,
     NodeRoute, NodeStatus, OperationAdmission, OperationFailure, OperationOutcome, OperationToken,
-    OwnerIdentity, PhysicalState, ReadyAttestation, Refusal, SimulationNode, Submission,
-    RuntimeError, ThreadAffinity,
+    OwnerIdentity, PhysicalState, ReadyAttestation, Refusal, RuntimeError, SimulationNode,
+    Submission, ThreadAffinity,
 };
 
 use super::{HostSchedulingSource, canonical, failure, json};

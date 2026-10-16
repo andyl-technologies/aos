@@ -43,10 +43,11 @@ pub use process::{
 };
 
 pub use semantic::{
-    CnpNativeAfterConfirmationCall, CnpOriginalSemanticSnapshot, CnpPreparationStorageScratch,
-    CnpRetainedStorageReport, CnpRetainedStorageUnknowns, CnpSemanticAcceptance,
-    CnpConformanceNodeConstructionStorageData, CnpSemanticAdmissionFailure, CnpSemanticAttachmentFailure, CnpSemanticCaptureScope,
-    CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
+    CnpConformanceNodeConstructionStorageData, CnpNativeAfterConfirmationCall,
+    CnpOriginalSemanticSnapshot, CnpPreparationStorageScratch, CnpRetainedStorageReport,
+    CnpRetainedStorageUnknowns, CnpSemanticAcceptance, CnpSemanticAdmissionFailure,
+    CnpSemanticAttachmentFailure, CnpSemanticCaptureScope, CnpSemanticConformanceAuthority,
+    CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
     CnpSemanticConformanceWorldProvider, CnpSemanticExactConformanceWorldProvider,
     CnpSemanticExactWorldReservation, CnpSemanticExactWorldReservationFailure,
     CnpSemanticInstallation, CnpSemanticLaunchFailure, CnpSemanticLaunchGuard,
@@ -105,4 +106,6 @@ pub(crate) use semantic::{
     PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
 };
 
-pub(crate) use semantic::{OriginalInitialLifecycleDiagnostics,original_construction_failure_reason};
+pub(crate) use semantic::{
+    OriginalInitialLifecycleDiagnostics, original_construction_failure_reason,
+};

@@ -569,49 +569,92 @@ fn authenticate_proposed_owner(
 mod supervision_tests;
 
 impl PacketCompleteExecutionActor {
-    pub(in crate::node_qualification::packet_collection::complete) fn original_inactive_retained_storage_precredit_data(&self,maximum:usize)->Result<usize,crucible::node_contract::RuntimeError> {
+    pub(in crate::node_qualification::packet_collection::complete) fn original_inactive_retained_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
         use crucible::node_contract::RuntimeError;
-        self.original_creator().map_err(|_|RuntimeError::ForeignAuthority)?;
-        if self.phase!=Phase::Attached||!self.attachment_attempted||self.next!=0
-            ||self.grants.iter().any(|grant|grant.token.is_some()) {
+        self.original_creator()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if self.phase != Phase::Attached
+            || !self.attachment_attempted
+            || self.next != 0
+            || self.grants.iter().any(|grant| grant.token.is_some())
+        {
             return Err(RuntimeError::UnsupportedFacet);
         }
-        let mut counter=super::super::retained::Counter::new(maximum);
-        counter.add(std::mem::size_of::<Self>()).map_err(|_|RuntimeError::ResourceLimit)?;
-        counter.add(self.grants.capacity().checked_mul(std::mem::size_of::<Grant>()).ok_or(RuntimeError::ResourceLimit)?).map_err(|_|RuntimeError::ResourceLimit)?;
+        let mut counter = super::super::retained::Counter::new(maximum);
+        counter
+            .add(std::mem::size_of::<Self>())
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
+            .add(
+                self.grants
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Grant>())
+                    .ok_or(RuntimeError::ResourceLimit)?,
+            )
+            .map_err(|_| RuntimeError::ResourceLimit)?;
         for grant in &self.grants {
-            counter.charge(&grant.node).map_err(|_|RuntimeError::ResourceLimit)?;
-            counter.charge(&grant.operation).map_err(|_|RuntimeError::ResourceLimit)?;
-            counter.charge(&grant.input).map_err(|_|RuntimeError::ResourceLimit)?;
+            counter
+                .charge(&grant.node)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+            counter
+                .charge(&grant.operation)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+            counter
+                .charge(&grant.input)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
         }
-        counter.charge(&self.supervision_proposal).map_err(|_|RuntimeError::ResourceLimit)?;
-        counter.add(self.runtime.as_ref().ok_or(RuntimeError::OwnerUnavailable)?
-            .original_inactive_retained_storage_precredit_data(counter.remaining())?).map_err(|_|RuntimeError::ResourceLimit)?;
+        counter
+            .charge(&self.supervision_proposal)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
+            .add(
+                self.runtime
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .original_inactive_retained_storage_precredit_data(counter.remaining())?,
+            )
+            .map_err(|_| RuntimeError::ResourceLimit)?;
         Ok(counter.bytes())
     }
 }
 
 impl PacketCompleteExecutionActor {
-    pub(in crate::node_qualification::packet_collection::complete) fn original_inactive_descriptor_views_precredit_data(&self)->Result<usize,crucible::node_contract::RuntimeError> {
+    pub(in crate::node_qualification::packet_collection::complete) fn original_inactive_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
         use crucible::node_contract::RuntimeError;
-        self.original_creator().map_err(|_|RuntimeError::ForeignAuthority)?;
-        if self.next!=0||self.grants.iter().any(|grant|grant.token.is_some()) {
+        self.original_creator()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if self.next != 0 || self.grants.iter().any(|grant| grant.token.is_some()) {
             return Err(RuntimeError::UnsupportedFacet);
         }
-        match (self.phase,&self.runtime) {
-            (Phase::Reserved,None)=>Ok(0),
-            (Phase::Attached,Some(runtime))=>runtime.original_inactive_descriptor_views_precredit_data(),
-            _=>Err(RuntimeError::UnsupportedFacet),
+        match (self.phase, &self.runtime) {
+            (Phase::Reserved, None) => Ok(0),
+            (Phase::Attached, Some(runtime)) => {
+                runtime.original_inactive_descriptor_views_precredit_data()
+            }
+            _ => Err(RuntimeError::UnsupportedFacet),
         }
     }
 }
 
 impl PacketCompleteExecutionActor {
-    pub(in crate::node_qualification::packet_collection::complete) fn retire_original_inactive_construction(&mut self)->Result<(),crucible::node_contract::RuntimeError> {
+    pub(in crate::node_qualification::packet_collection::complete) fn retire_original_inactive_construction(
+        &mut self,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
         use crucible::node_contract::RuntimeError;
-        self.original_creator().map_err(|_|RuntimeError::ForeignAuthority)?;
-        if self.next!=0||self.grants.iter().any(|grant|grant.token.is_some()) {return Err(RuntimeError::OutstandingObligations);}
-        if self.phase==Phase::Retired||(!self.attachment_attempted&&self.runtime.is_none()) {return Ok(());}
-        self.retire_original().map_err(|_|RuntimeError::OwnerUnavailable)
+        self.original_creator()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if self.next != 0 || self.grants.iter().any(|grant| grant.token.is_some()) {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        if self.phase == Phase::Retired || (!self.attachment_attempted && self.runtime.is_none()) {
+            return Ok(());
+        }
+        self.retire_original()
+            .map_err(|_| RuntimeError::OwnerUnavailable)
     }
 }

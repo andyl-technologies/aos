@@ -1677,14 +1677,24 @@ pub use original_input_lineage::{
 };
 
 impl NodeRuntime {
-    pub(crate) fn original_inactive_descriptor_views_precredit_data(&self)->Result<usize,RuntimeError> {
-        let mut total=0usize;
+    pub(crate) fn original_inactive_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<usize, RuntimeError> {
+        let mut total = 0usize;
         for node in self.nodes.values() {
-            total=total.checked_add(node.retained_descriptor_views_precredit_data()?.ok_or(RuntimeError::UnsupportedFacet)?)
+            total = total
+                .checked_add(
+                    node.retained_descriptor_views_precredit_data()?
+                        .ok_or(RuntimeError::UnsupportedFacet)?,
+                )
                 .ok_or(RuntimeError::ResourceLimit)?;
         }
-        if let Some(slot)=&self.custody_slot {
-            total=total.checked_add(slot.retained_descriptor_views_precredit_data()?.ok_or(RuntimeError::UnsupportedFacet)?)
+        if let Some(slot) = &self.custody_slot {
+            total = total
+                .checked_add(
+                    slot.retained_descriptor_views_precredit_data()?
+                        .ok_or(RuntimeError::UnsupportedFacet)?,
+                )
                 .ok_or(RuntimeError::ResourceLimit)?;
         }
         Ok(total)

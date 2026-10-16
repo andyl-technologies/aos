@@ -885,15 +885,29 @@ impl PacketCompleteOriginalHostSdk {
         plan: &InstalledConformancePlan,
     ) -> Result<usize, RuntimeError> {
         self.authenticate_initial_originals_data(source, launch, plan)?;
-        let state = self.initial_lifecycle.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        let state = self
+            .initial_lifecycle
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         if state.phase != InitialPhase::Completed {
             return Err(RuntimeError::OutstandingObligations);
         }
         {
-            let birth = source.ack_peer_birth.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
-            let marker = birth.as_ref().ok_or(RuntimeError::OwnerUnavailable)?
-                .host_startup.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
-            if !marker.as_ref().ok_or(RuntimeError::OwnerUnavailable)?.initial_lifecycle_completed {
+            let birth = source
+                .ack_peer_birth
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let marker = birth
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .host_startup
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            if !marker
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .initial_lifecycle_completed
+            {
                 return Err(RuntimeError::OutstandingObligations);
             }
         }

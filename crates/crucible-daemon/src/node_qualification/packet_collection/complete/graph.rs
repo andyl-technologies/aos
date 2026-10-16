@@ -581,5 +581,9 @@ impl InstalledPacketCompleteGraphPolicy {
 }
 
 impl InstalledPacketCompleteGraphPolicy {
-    pub(in crate::node_qualification::packet_collection::complete) fn original_runtime_content_data(&self)->&std::collections::BTreeMap<ContentRef,Vec<u8>> {&self.content}
+    pub(in crate::node_qualification::packet_collection::complete) fn original_runtime_content_data(
+        &self,
+    ) -> &std::collections::BTreeMap<ContentRef, Vec<u8>> {
+        &self.content
+    }
 }
