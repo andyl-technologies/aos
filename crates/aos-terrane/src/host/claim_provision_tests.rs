@@ -376,4 +376,52 @@ fn host_global_provision_kill_restart_and_broker_vm() {
     fs::rename(displaced, REGISTRY_PATH).expect("restore original registry");
     multi.query(0).expect("original claim after restoration");
     drop(broker);
+
+    concurrent_full_enrollment(&mount);
+}
+
+fn concurrent_full_enrollment(mount: &Path) {
+    let a = Fixture::create(mount, "concurrent-A", &[49120]);
+    let b = Fixture::create(mount, "concurrent-B", &[49120]);
+    let barrier = std::sync::Barrier::new(3);
+    let (a_result, b_result) = std::thread::scope(|scope| {
+        let a_worker = scope.spawn(|| {
+            barrier.wait();
+            provision(&a.config, &a.ledger)
+        });
+        let b_worker = scope.spawn(|| {
+            barrier.wait();
+            provision(&b.config, &b.ledger)
+        });
+        barrier.wait();
+        (
+            a_worker.join().expect("A enrollment worker"),
+            b_worker.join().expect("B enrollment worker"),
+        )
+    });
+
+    assert_ne!(
+        a_result.is_ok(),
+        b_result.is_ok(),
+        "exactly one common-project enrollment may succeed"
+    );
+    let (winner, refused) = if a_result.is_ok() { (&a, &b) } else { (&b, &a) };
+    assert!(winner.ledger.exists());
+    assert!(!refused.ledger.exists());
+    assert_eq!(
+        NativeProject::inspect(&File::open(&refused.layouts[0]).expect("refused root"))
+            .expect("refused actual project")
+            .project_id,
+        0
+    );
+    assert!(
+        provision(&refused.config, &refused.ledger).is_err(),
+        "a transient lock refusal must become permanent foreign-owner refusal"
+    );
+    provision(&winner.config, &winner.ledger).expect("winning owner Ready verification");
+    let broker = winner.broker();
+    let observation = winner.query(0).expect("actual winning native partition");
+    assert_eq!(observation.observation().project_id, 49120);
+    assert_eq!(observation.observation().hard_limit_bytes, 2097152);
+    drop(broker);
 }
