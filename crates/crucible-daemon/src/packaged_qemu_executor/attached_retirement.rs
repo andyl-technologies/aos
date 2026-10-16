@@ -4,6 +4,9 @@
 //! retirement steps use the cell; failed spawn and panic leave these same
 //! owners reachable through Main's saved Cleanup route.
 
+use super::retirement::{
+    AttachedRetirementFailure, AttachedRetirementReport, DispatcherRetirement, retire_dispatcher,
+};
 use super::*;
 use crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose;
 use crucible_linux_resource::host_supervision::HostOperationGuard;
@@ -51,103 +54,96 @@ impl RetainedAttachedRetirement {
         &mut self,
         main: &Arc<AuthenticatedNativeSlotPurpose>,
         original: &HostOperationGuard,
-    ) -> Result<(), PackagedQemuExecutorJoinError> {
+    ) -> Result<(), AttachedRetirementFailure> {
         if !self.service_returned {
-            // A panic or failed post-service marker cannot hide actual thread
-            // exit. The same completion header is retained, never synthesized.
+            // Actual thread exit can corroborate a failed post-service marker.
             self.service_returned = self.completion.0.try_lock().is_ok_and(|done| *done);
             if !self.service_returned {
-                return Err(PackagedQemuExecutorJoinError::AttachedPending);
+                return Err(AttachedRetirementFailure::Pending);
             }
         }
         if self.dispatcher_closed {
             return Ok(());
         }
-        let mut first = crate::campaign_process::try_retire_executor_controls(main, original).err();
-        if let Some(post) = first.as_ref().and_then(|error| error.original_post()) {
+        let mut controls =
+            crate::campaign_process::try_retire_executor_controls(main, original).err();
+        if let Some(post) = controls.as_ref().and_then(|error| error.original_post()) {
             self.post.get_or_insert(post);
         }
-        if first
+        if controls
             .as_ref()
             .is_some_and(|error| !error.physically_closed())
         {
-            return Err(PackagedQemuExecutorJoinError::MainControls(
-                first
-                    .take()
-                    .ok_or(PackagedQemuExecutorJoinError::AttachedPending)?,
+            let post = original.wait_slice().err();
+            if let Some(post) = post {
+                self.post.get_or_insert(post);
+            }
+            return Err(AttachedRetirementFailure::Report(
+                AttachedRetirementReport::new(
+                    None,
+                    None,
+                    controls,
+                    None,
+                    DispatcherRetirement {
+                        post,
+                        ..DispatcherRetirement::default()
+                    },
+                ),
             ));
         }
-        // All actual W bodies are gone before stopping checkpoint materialization.
-        let materializer = self.materializer.try_retire_original(original);
-        let source = if self.source_closed {
-            Ok(())
+
+        // All actual worker bodies are gone before materialization stops.
+        let materializer = self.materializer.try_retire_original(original).err();
+        let sources = if self.source_closed {
+            None
         } else {
-            self.source
+            let result = self
+                .source
                 .as_ref()
                 .map(|source| source.orderly_shutdown())
-                .unwrap_or(Ok(()))
+                .unwrap_or(Ok(()));
+            if result.is_ok() {
+                self.source_closed = true;
+            }
+            result.err()
         };
-        if source.is_ok() {
-            self.source_closed = true;
+        let after = crate::campaign_process::try_retire_executor_controls(main, original).err();
+        let controls_closed = after.as_ref().is_none_or(|error| error.physically_closed());
+        if let Some(after) = after {
+            controls.get_or_insert(after);
         }
-        let after = crate::campaign_process::try_retire_executor_controls(main, original);
-        let controls_closed = after
-            .as_ref()
-            .err()
-            .is_none_or(|error| error.physically_closed());
-        if let Err(error) = after {
-            first.get_or_insert(error);
-        }
-        let lifecycle = self
-            .queue
-            .as_ref()
-            .map(|queue| {
-                let work = queue.retry_pending();
-                let empty = queue.verify_empty();
-                work.and(empty)
-            })
-            .unwrap_or(Ok(()));
+        let lifecycle = self.queue.as_ref().and_then(|queue| {
+            let work = queue.retry_pending();
+            let empty = queue.verify_empty();
+            work.and(empty).err()
+        });
         if let Err(post) = original.wait_slice() {
             self.post.get_or_insert(post);
         }
         let ready = self.materializer.physically_retired()
             && self.source_closed
             && controls_closed
-            && lifecycle.is_ok();
-        // Preserve initiating component errors while still checking all peers.
+            && lifecycle.is_none();
+        let host = self.host.as_ref();
+        let dispatch = retire_dispatcher(original, ready, &mut self.dispatcher_closed, || {
+            host.ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
+                operation: "retire attached Main Target dispatcher",
+                message: String::from("actual saved Linux host factory is absent"),
+            })
+            .and_then(SharedQemuAttemptHostResourceFactory::finish_target_dispatcher)
+        });
+        if let Some(post) = dispatch.post {
+            self.post.get_or_insert(post);
+        }
         let report =
-            materializer
-                .map_err(PackagedQemuExecutorJoinError::ExactPinMaterializerRetirement)
-                .and(source.map_err(|error| {
-                    PackagedQemuExecutorJoinError::HotForkSources(Box::new(error))
-                }))
-                .and(lifecycle.map_err(PackagedQemuExecutorJoinError::LifecycleCleanup))
-                .and(first.map_or(Ok(()), |error| {
-                    Err(PackagedQemuExecutorJoinError::MainControls(error))
-                }));
-        if !ready {
-            return report.and(Err(PackagedQemuExecutorJoinError::AttachedPending));
+            AttachedRetirementReport::new(materializer, sources, controls, lifecycle, dispatch);
+        if report.has_failure() {
+            Err(AttachedRetirementFailure::Report(report))
+        } else if !self.dispatcher_closed {
+            Err(AttachedRetirementFailure::Pending)
+        } else {
+            Ok(())
         }
-        original
-            .wait_slice()
-            .map_err(|error| PackagedQemuExecutorJoinError::MainOriginal(error))?;
-        let dispatcher = self
-            .host
-            .as_ref()
-            .ok_or(PackagedQemuExecutorJoinError::OwnerUnavailable)?
-            .finish_target_dispatcher()
-            .map_err(PackagedQemuExecutorJoinError::TargetDispatcher);
-        if dispatcher.is_ok() {
-            self.dispatcher_closed = true;
-        }
-        let post = original.wait_slice();
-        if let Err(error) = post {
-            self.post.get_or_insert(error);
-        }
-        report.and(dispatcher).and(
-            post.map(|_| ())
-                .map_err(PackagedQemuExecutorJoinError::MainOriginal),
-        )
     }
 }
 

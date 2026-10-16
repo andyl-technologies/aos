@@ -20,24 +20,9 @@ pub enum OriginalPackagedRetirementError {
     /// The same external original refused before further retirement work.
     #[error("original packaged retirement refused: {0}")]
     Original(#[from] HostSupervisionError),
-    /// A source owner needs a separately implemented physical retirement path.
-    #[error("packaged source owner still requires physical retirement")]
-    SourceOwner,
-    /// The existing worker pool remains occupied or failed.
-    #[error("original worker retirement refused: {0}")]
-    Workers(#[source] OriginalPoolRetirementError),
-    /// The same exact-pin materializer returned its initiating cause.
-    #[error("original exact-pin retirement refused: {0}")]
-    Materializer(#[source] OriginalMaterializerRetirementError),
-    /// The actual Main dispatcher remains physically retained by this owner.
-    #[error("original Main Target dispatcher retirement refused: {0}")]
-    TargetDispatcher(#[source] QemuVmRealizationError),
-    /// The permanent same Main queue retains physical lifecycle custody.
-    #[error("original lifecycle cleanup refused: {0}")]
-    LifecycleCleanup(#[source] crucible_api::LifecycleApiError),
     /// Independent component reports retained before dispatcher retirement.
     #[error(
-        "packaged cleanup: Source retained={source_owner}; Source refusal={source_failure:?}; workers={workers:?}; materializer={materializer:?}; controls={controls:?}; lifecycle={lifecycle:?}; post={post:?}"
+        "packaged cleanup: Source retained={source_owner}; Source refusal={source_failure:?}; workers={workers:?}; materializer={materializer:?}; controls={controls:?}; lifecycle={lifecycle:?}; before dispatcher={before_dispatch:?}; dispatcher={dispatcher:?}; post={post:?}"
     )]
     Components {
         /// The actual Source owner remains present.
@@ -52,7 +37,11 @@ pub enum OriginalPackagedRetirementError {
         controls: Option<crate::campaign_process::ExecutorControlRetirementError>,
         /// The same owner's final lifecycle-queue observation.
         lifecycle: Option<crucible_api::LifecycleApiError>,
-        /// The same external Original postcut.
+        /// The same external Original refused before dispatcher effects.
+        before_dispatch: Option<HostSupervisionError>,
+        /// The actual dispatcher refusal, independently of component history.
+        dispatcher: Option<QemuVmRealizationError>,
+        /// The same external Original postcut, including after failed dispatch.
         post: Option<HostSupervisionError>,
         /// Actual final worker, materializer, queue and dispatcher cuts completed.
         physically_closed: bool,
@@ -141,40 +130,28 @@ impl PackagedQemuExecutor {
             && self.exact_pin_materializer.physically_retired()
             && controls_closed
             && lifecycle.is_none();
-        let dispatcher = if prerequisites_closed {
-            original.wait_slice()?;
-            self.guarded_state
-                .host
-                .as_ref()
-                .ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
+        let host = self.guarded_state.host.as_ref();
+        let dispatch = super::retirement::retire_dispatcher(
+            original,
+            prerequisites_closed,
+            &mut self.original_physically_retired,
+            || {
+                host.ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
                     operation: "retire original Main Target dispatcher",
                     message: String::from("actual saved Linux host factory is absent"),
                 })
                 .and_then(SharedQemuAttemptHostResourceFactory::finish_target_dispatcher)
-        } else {
-            return Err(OriginalPackagedRetirementError::Components {
-                source_owner,
-                source_failure,
-                workers,
-                materializer,
-                controls,
-                lifecycle,
-                post: original.wait_slice().err(),
-                physically_closed: false,
-            });
-        };
-        let post = original.wait_slice().err();
-        let physically_closed = dispatcher.is_ok();
-        self.original_physically_retired |= physically_closed;
-        if let Err(source) = dispatcher {
-            return Err(OriginalPackagedRetirementError::TargetDispatcher(source));
-        }
-        if workers.is_some()
+            },
+        );
+        if !self.original_physically_retired
+            || workers.is_some()
             || materializer.is_some()
             || source_failure.is_some()
             || controls.is_some()
             || lifecycle.is_some()
-            || post.is_some()
+            || dispatch.before.is_some()
+            || dispatch.failure.is_some()
+            || dispatch.post.is_some()
         {
             return Err(OriginalPackagedRetirementError::Components {
                 source_owner,
@@ -183,8 +160,10 @@ impl PackagedQemuExecutor {
                 materializer,
                 controls,
                 lifecycle,
-                post,
-                physically_closed,
+                before_dispatch: dispatch.before,
+                dispatcher: dispatch.failure,
+                post: dispatch.post,
+                physically_closed: self.original_physically_retired,
             });
         }
         Ok(())

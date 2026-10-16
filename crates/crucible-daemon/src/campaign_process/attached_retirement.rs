@@ -5,9 +5,66 @@
 //! weak queue handles, never a strong reference to the permanent actor.
 
 use super::*;
-use crate::packaged_qemu_executor::{PackagedQemuExecutorJoinError, RetainedAttachedRetirement};
+use crate::packaged_qemu_executor::retirement::{
+    AttachedRetirementFailure, AttachedRetirementReport,
+};
+use crate::packaged_qemu_executor::{
+    PackagedQemuExecutorJoinError, PackagedQemuExecutorRetirementError, RetainedAttachedRetirement,
+};
 use crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose;
 use crucible_linux_resource::host_supervision::HostOperationGuard;
+
+/// Keeps service-first and independent cleanup history in the priced actor body.
+///
+/// These cells contain diagnostics, not another executor owner or queue edge.
+/// Later cleanup phases retain their own first causes; an independent post can
+/// arrive without replacing prior cleanup history or the service failure.
+pub(super) struct AttachedRetirementHistory {
+    first: OnceLock<PackagedQemuExecutorJoinError>,
+    cleanup: PackagedQemuExecutorRetirementError,
+    post: OnceLock<crucible_linux_resource::host_supervision::HostSupervisionError>,
+}
+
+impl AttachedRetirementHistory {
+    pub(super) const fn new() -> Self {
+        Self {
+            first: OnceLock::new(),
+            cleanup: PackagedQemuExecutorRetirementError::new(),
+            post: OnceLock::new(),
+        }
+    }
+
+    fn record_first(&self, first: PackagedQemuExecutorJoinError) {
+        self.first.get_or_init(|| first);
+    }
+
+    fn record_cleanup(&self, cleanup: AttachedRetirementReport) {
+        self.cleanup.retain(cleanup);
+    }
+
+    fn record_post(&self, post: crucible_linux_resource::host_supervision::HostSupervisionError) {
+        self.post.get_or_init(|| post);
+        self.cleanup
+            .retain(AttachedRetirementReport::from_post(post));
+    }
+
+    fn report(&'static self) -> Option<PackagedQemuExecutorJoinError> {
+        if let Some(first) = self.first.get() {
+            Some(PackagedQemuExecutorJoinError::RetainedAttached {
+                first,
+                cleanup: self.cleanup.has_failure().then_some(&self.cleanup),
+                post: self.post.get().copied(),
+            })
+        } else {
+            self.cleanup.has_failure().then_some(
+                PackagedQemuExecutorJoinError::RetainedAttachedCleanup {
+                    cleanup: &self.cleanup,
+                    post: self.post.get().copied(),
+                },
+            )
+        }
+    }
+}
 
 fn admitted_actor(
     main: &Arc<AuthenticatedNativeSlotPurpose>,
@@ -56,7 +113,7 @@ pub(crate) fn mark_attached_returned(
 ) -> Result<(), PackagedQemuExecutorJoinError> {
     let actor = admitted_actor(main)?;
     if let Some(first) = first {
-        actor.attached_first.get_or_init(|| first);
+        actor.attached_history.record_first(first);
     }
     let mut slot = actor
         .construction
@@ -76,22 +133,24 @@ pub(crate) fn retained_attached_report(
         return PackagedQemuExecutorJoinError::AttachedPending;
     };
     actor
-        .attached_first
-        .get()
-        .map_or(PackagedQemuExecutorJoinError::AttachedPending, |first| {
-            PackagedQemuExecutorJoinError::RetainedAttached {
-                first,
-                post: actor.attached_post.get().copied(),
-            }
-        })
+        .attached_history
+        .report()
+        .unwrap_or(PackagedQemuExecutorJoinError::AttachedPending)
 }
 
 pub(crate) fn retry_attached_retirement(
     main: &Arc<AuthenticatedNativeSlotPurpose>,
 ) -> Result<(), PackagedQemuExecutorJoinError> {
-    let original = main
-        .retained_cleanup()
-        .map_err(PackagedQemuExecutorJoinError::MainCleanupAdmission)?;
+    let actor = admitted_actor(main)?;
+    let original = match main.retained_cleanup() {
+        Ok(original) => original,
+        Err(source) => {
+            actor
+                .attached_history
+                .record_cleanup(AttachedRetirementReport::from_admission(source));
+            return Err(retained_attached_report(main));
+        }
+    };
     retry_attached_retirement_original(main, &original)
 }
 
@@ -105,19 +164,16 @@ pub(crate) fn retry_attached_retirement_original(
         .try_lock()
         .map_err(|_| PackagedQemuExecutorJoinError::AttachedPending)?;
     let Some(RetainedExecutorConstruction::Attached(body)) = slot.as_mut() else {
-        return actor.attached_first.get().map_or(Ok(()), |first| {
-            Err(PackagedQemuExecutorJoinError::RetainedAttached {
-                first,
-                post: actor.attached_post.get().copied(),
-            })
-        });
+        return actor.attached_history.report().map_or(Ok(()), Err);
     };
-    let work = body.retry(main, original);
-    if let Err(first) = work {
-        actor.attached_first.get_or_init(|| first);
+    match body.retry(main, original) {
+        Ok(()) | Err(AttachedRetirementFailure::Pending) => {}
+        Err(AttachedRetirementFailure::Report(report)) => {
+            actor.attached_history.record_cleanup(report)
+        }
     }
     if let Some(post) = body.post_refusal() {
-        actor.attached_post.get_or_init(|| post);
+        actor.attached_history.record_post(post);
     }
     if !body.physically_retired() {
         return Err(retained_attached_report(main));
@@ -127,12 +183,7 @@ pub(crate) fn retry_attached_retirement_original(
     // Only physical closure permits destruction. No body destructor runs while
     // the actor cell is locked or while listener execution borrows the service.
     drop(returned);
-    actor.attached_first.get().map_or(Ok(()), |first| {
-        Err(PackagedQemuExecutorJoinError::RetainedAttached {
-            first,
-            post: actor.attached_post.get().copied(),
-        })
-    })
+    actor.attached_history.report().map_or(Ok(()), Err)
 }
 
 /// Checks live admission only for the new service thread, never custody handoff.
@@ -143,3 +194,7 @@ pub(crate) fn verify_attached_start(
         .verify()
         .map_err(PackagedQemuExecutorJoinError::MainStartAdmission)
 }
+
+#[cfg(test)]
+#[path = "attached_retirement/tests.rs"]
+mod tests;
