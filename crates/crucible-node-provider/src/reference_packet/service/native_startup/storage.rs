@@ -122,6 +122,11 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + launch_validation_counter_scratch_data()
         + launch_decode::counter_scratch_data()
         + super::pre_dom::counter_scratch_data()
+        // Complete return views coexist with the named payload/observer rows:
+        // edition transpose, actual Hello phase, and exhaustive launch facts.
+        + size_of::<Result<Option<bool>, ProviderError>>()
+        + size_of::<Result<hello::HelloStorage, ProviderError>>()
+        + size_of::<Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError>>()
         // Private second-frame projection retains its independent raw extent
         // beside the original max-raw result and nested helper views.
         + size_of::<crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData>()
