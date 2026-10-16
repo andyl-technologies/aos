@@ -554,6 +554,30 @@ fn two_stage_smc_executes_and_replays_the_same_estimate_after_restart() {
             .expect("round-trip complete SMC evidence"),
         evidence
     );
+
+    // Incremental replay keeps at most one stage of sources plus the stage
+    // being recorded, never every completed transition.
+    let particle_count = 2;
+    let initial = evidence.initial();
+    let mut replay =
+        crate::statistics::SmcEvidenceReplay::new(crate::statistics::EvidenceBasis::new(
+            initial.snapshot(),
+            initial.planning_view(),
+            initial.policy(),
+            initial.lineage(),
+        ))
+        .expect("start incremental SMC replay");
+    for draw in initial.draws() {
+        replay.push_initial_draw(draw).expect("replay initial draw");
+        assert!(replay.retained_source_count() <= particle_count);
+    }
+    for transition in evidence.transitions() {
+        replay
+            .push_transition(transition)
+            .expect("replay SMC transition");
+        assert!(replay.retained_source_count() <= 2 * particle_count);
+    }
+    assert_eq!(replay.finish().expect("finish incremental replay"), report);
     let root_lookups = evidence
         .required_root_lookups()
         .expect("derive SMC evidence root lookups");
@@ -622,7 +646,10 @@ fn two_stage_smc_executes_and_replays_the_same_estimate_after_restart() {
 
     assert_eq!(report.snapshot(), fixture.head);
     assert_eq!(report.generations().len(), 2);
-    assert_eq!(report.generations()[0], generation);
+    assert_eq!(
+        report.generations()[0],
+        crate::StatisticalGenerationSummary::from_generation(&generation)
+    );
     assert_eq!(report.generations()[1].completed_stage(), 1);
     assert_eq!(report.generations()[1].next_stage(), 2);
     assert_eq!(report.final_particles().len(), 2);
@@ -827,24 +854,51 @@ fn forced_resampling_executes_duplicate_ancestry_and_replays_after_restart() {
     };
     assert_eq!(report.normalization_product(), stage_one_weight);
     assert_eq!(report.generations().len(), 2);
-    assert_eq!(report.generations()[0], initial_generation);
+    assert_eq!(
+        report.generations()[0],
+        crate::StatisticalGenerationSummary::from_generation(&initial_generation)
+    );
     assert!(report.generations()[1].resampled());
     assert_eq!(
         report.generations()[1].normalization_factor(),
         stage_one_weight
     );
+
+    // The summary omits slots, so check the resampled duplicate ancestry
+    // through the stage-two requests that consumed the second generation.
+    let evidence = fixture
+        .repository
+        .collect_sequential_monte_carlo_evidence(campaign, fixture.head)
+        .expect("collect forced-resampling evidence");
     assert_eq!(
-        report.generations()[1].slots()[0].observation(),
-        report.generations()[1].slots()[1].observation()
+        crate::verify_sequential_monte_carlo_evidence(&evidence)
+            .expect("verify forced-resampling evidence"),
+        report
     );
-    assert_eq!(
-        report.generations()[1].slots()[0].attempt(),
-        report.generations()[1].slots()[1].attempt()
+    let stage_two = evidence
+        .transitions()
+        .iter()
+        .filter(|transition| transition.stage() == 2)
+        .map(|transition| {
+            let CandidateSource::StatisticalSmc(source) = transition.execution().request().source()
+            else {
+                panic!("stage-two request is not an SMC transition");
+            };
+            (
+                source.generation(),
+                source.input_particle(),
+                transition.execution().parent().id().expect("parent ID"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(stage_two.len(), 2);
+    assert!(
+        stage_two
+            .iter()
+            .all(|(generation, _, _)| *generation == report.generations()[1].id())
     );
-    assert_ne!(
-        report.generations()[1].slots()[0].parent(),
-        report.generations()[1].slots()[1].parent()
-    );
+    assert_eq!(stage_two[0].2, stage_two[1].2);
+    assert_ne!(stage_two[0].1, stage_two[1].1);
     assert_eq!(report.final_particles().len(), 2);
     assert_eq!(
         report

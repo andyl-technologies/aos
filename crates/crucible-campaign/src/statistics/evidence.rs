@@ -27,9 +27,9 @@ use crate::{
 
 mod verify;
 
-pub(crate) use verify::verify_initial_smc_statistical_evidence;
 #[cfg(test)]
 pub(crate) use verify::verify_smc_source_selector;
+pub(crate) use verify::{EvidenceBasis, FiniteEvidenceReplay, SmcEvidenceReplay};
 pub use verify::{verify_finite_statistical_evidence, verify_sequential_monte_carlo_evidence};
 
 /// Maximum draws or transitions accepted in one statistical evidence bundle.

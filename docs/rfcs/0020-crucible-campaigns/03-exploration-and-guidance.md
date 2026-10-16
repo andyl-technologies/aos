@@ -973,7 +973,11 @@ declaration, offered domain, producer instance, probability model, and stop
 condition before the parent observation exists; it does not guess a concrete
 runtime opportunity identity. The initial endpoint count must equal the
 particle count, reused model IDs must name identical distributions, and the
-product of stage and particle counts is capped.
+product of stage and particle counts is capped at 65,536 transitions. That cap
+is an admission limit on replay time, not on memory: owner replay and portable
+verification both stream executions in stage and slot order, retain one
+generation plus compact source summaries for the immediately preceding stage,
+and therefore hold `O(particle_count)` state however many stages complete.
 
 The version-one systematic resampler uses one rejection-sampled exact offset
 derived from the campaign seed, next-stage coordinate, and nonce. Observation
@@ -1011,7 +1015,12 @@ branch-request schema v10 are the sole current encodings for every operation.
 
 A complete SMC report leaves the final population unresampled, preserves slot
 multiplicity, and multiplies every prefinal resampling normalization factor into
-the ordinary fixed-denominator importance estimate. It also exposes the
+the ordinary fixed-denominator importance estimate. Instead of every
+generation's particle slots, it records one compact summary per consumed
+generation: the generation identity, its completed and next stage, whether it
+resampled, and its normalization factor. Internal estimates and planner
+request derivation fold executions read from the snapshot roots and never
+assemble the portable evidence bundle, so they are not limited by its size. It also exposes the
 realized-weight self-normalized estimate with an explicit finite-sample-bias
 label. Exact effective sample size and maximum-weight concentration are
 descriptive diagnostics; shared genealogy precludes an IID uncertainty

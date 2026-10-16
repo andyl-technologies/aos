@@ -290,9 +290,9 @@ pub use statistics::{
     SmcSupportValidation, SmcTransitionEvidence, SmcUncertaintyStatement,
     StatisticalChoiceEvidence, StatisticalDrawEvidence, StatisticalEndpointEstimate,
     StatisticalEstimateReport, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
-    StatisticalGeneration, StatisticalOpportunityEvidence, StatisticalParticleOutcome,
-    StatisticalParticleSlot, StatisticalRational, StatisticalRoot, StatisticalRootLookup,
-    StatisticalWeightDiagnostics, verify_finite_statistical_evidence,
+    StatisticalGeneration, StatisticalGenerationSummary, StatisticalOpportunityEvidence,
+    StatisticalParticleOutcome, StatisticalParticleSlot, StatisticalRational, StatisticalRoot,
+    StatisticalRootLookup, StatisticalWeightDiagnostics, verify_finite_statistical_evidence,
     verify_sequential_monte_carlo_evidence,
 };
 

@@ -19,9 +19,9 @@ use super::{
 mod evidence;
 mod smc;
 
-pub(crate) use evidence::verify_initial_smc_statistical_evidence;
 #[cfg(test)]
 pub(crate) use evidence::verify_smc_source_selector;
+pub(crate) use evidence::{EvidenceBasis, FiniteEvidenceReplay, SmcEvidenceReplay};
 pub use evidence::{
     FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
     SequentialMonteCarloEvidence, SmcTransitionEvidence, StatisticalChoiceEvidence,
@@ -32,8 +32,8 @@ pub use evidence::{
 
 pub use smc::{
     SequentialMonteCarloEstimateReport, SmcEstimateLabel, SmcSupportValidation,
-    SmcUncertaintyStatement, StatisticalGeneration, StatisticalParticleOutcome,
-    StatisticalParticleSlot,
+    SmcUncertaintyStatement, StatisticalGeneration, StatisticalGenerationSummary,
+    StatisticalParticleOutcome, StatisticalParticleSlot,
 };
 
 /// A reduced nonnegative rational represented with bounded exact integers.

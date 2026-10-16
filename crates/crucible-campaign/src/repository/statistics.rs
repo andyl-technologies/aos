@@ -2,13 +2,19 @@
 //!
 //! SMC generation state is derived from authenticated campaign records rather
 //! than persisted as an independent authority. Transition lookup currently
-//! replays the initial flight and every completed prior stage, so its work grows
-//! with the completed transition prefix even though policy bounds cap the total
-//! population. Callers should not treat the current projection path as a
+//! replays the initial flight and every completed prior stage, so its time
+//! grows with the completed transition prefix even though policy bounds cap the
+//! total population. Callers should not treat the current projection path as a
 //! constant-time scheduler operation.
+//!
+//! Internal estimates never assemble a portable evidence bundle. They read one
+//! execution at a time from the pinned roots and feed it to the same
+//! incremental replay that verifies portable evidence, so their live memory is
+//! one execution plus `O(particle_count)` replay state, and the 64 MiB
+//! portable-bundle bound applies only when a caller asks for that bundle.
 
 use super::*;
-use crate::statistics::verify_initial_smc_statistical_evidence;
+use crate::statistics::{EvidenceBasis, FiniteEvidenceReplay, SmcEvidenceReplay};
 use crate::{
     FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
     SequentialMonteCarloEstimateReport, SequentialMonteCarloEvidence, SmcTransitionEvidence,
@@ -18,6 +24,11 @@ use crate::{
     StatisticalRational, verify_finite_statistical_evidence,
     verify_sequential_monte_carlo_evidence,
 };
+
+/// Wrapper bytes around one draw (`u64` coordinate) in portable evidence.
+const DRAW_WRAPPER_BYTES: usize = std::mem::size_of::<u64>();
+/// Wrapper bytes around one transition (`u32` stage and slot) in portable evidence.
+const TRANSITION_WRAPPER_BYTES: usize = std::mem::size_of::<u32>() * 2;
 
 impl CampaignRepository {
     pub(super) fn statistical_request_basis(
@@ -625,31 +636,10 @@ impl CampaignRepository {
         let mut transitions = Vec::with_capacity(transition_count);
         for stage in design.stages().keys().copied() {
             for slot in 0..design.particle_count() {
-                let request_content = self
-                    .merkle
-                    .get(
-                        snapshot.snapshot.roots().exploration,
-                        smc_transition_request_key(stage, slot),
-                    )?
-                    .ok_or_else(|| integrity("SMC evidence transition request is missing"))?;
-                let proposal_content = self
-                    .merkle
-                    .get(
-                        snapshot.snapshot.roots().accounting,
-                        smc_transition_proposal_key(stage, slot),
-                    )?
-                    .ok_or_else(|| integrity("SMC evidence transition proposal is missing"))?;
-                let remaining_bytes = remaining_statistical_evidence_bytes(
-                    charged_bytes,
-                    std::mem::size_of::<u32>() * 2,
-                )?;
-                let execution = self.collect_statistical_execution_evidence(
-                    &snapshot,
-                    request_content,
-                    proposal_content,
-                    remaining_bytes,
-                )?;
-                let transition = SmcTransitionEvidence::new(stage, slot, execution);
+                let remaining_bytes =
+                    remaining_statistical_evidence_bytes(charged_bytes, TRANSITION_WRAPPER_BYTES)?;
+                let transition =
+                    self.collect_smc_transition_evidence(&snapshot, stage, slot, remaining_bytes)?;
                 charge_statistical_evidence(
                     &mut charged_bytes,
                     crate::codec::encode(&transition).len(),
@@ -686,19 +676,7 @@ impl CampaignRepository {
         policy: &CampaignPolicy,
         allow_smc: bool,
     ) -> Result<FiniteStatisticalEvidence, CampaignRepositoryError> {
-        if policy.mode() != CampaignMode::Statistical {
-            return Err(integrity("statistical-report-requires-statistical-policy"));
-        }
-        if policy.sequential_monte_carlo_design().is_some() != allow_smc {
-            return Err(if allow_smc {
-                integrity("SMC generation requires an SMC policy")
-            } else {
-                integrity("statistical report refuses incomplete SMC policy")
-            });
-        }
-        let design = policy
-            .statistical_sampling_design()
-            .ok_or_else(|| integrity("statistical-report-policy-lacks-design"))?;
+        let design = statistical_report_design(policy, allow_smc)?;
         let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
         let mut charged_bytes = crate::codec::encode(&snapshot.snapshot)
             .len()
@@ -711,29 +689,10 @@ impl CampaignRepository {
         let mut draws = Vec::with_capacity(design.draws().len());
 
         for coordinate in design.draws().keys().copied() {
-            let request_content = self
-                .merkle
-                .get(
-                    snapshot.snapshot.roots().exploration,
-                    statistical_draw_request_key(coordinate),
-                )?
-                .ok_or_else(|| integrity("statistical-report-draw-request-is-missing"))?;
-            let proposal_content = self
-                .merkle
-                .get(
-                    snapshot.snapshot.roots().accounting,
-                    statistical_draw_proposal_key(coordinate),
-                )?
-                .ok_or_else(|| integrity("statistical-report-draw-proposal-is-missing"))?;
             let remaining_bytes =
-                remaining_statistical_evidence_bytes(charged_bytes, std::mem::size_of::<u64>())?;
-            let execution = self.collect_statistical_execution_evidence(
-                snapshot,
-                request_content,
-                proposal_content,
-                remaining_bytes,
-            )?;
-            let draw = StatisticalDrawEvidence::new(coordinate, execution);
+                remaining_statistical_evidence_bytes(charged_bytes, DRAW_WRAPPER_BYTES)?;
+            let draw =
+                self.collect_statistical_draw_evidence(snapshot, coordinate, remaining_bytes)?;
             charge_statistical_evidence(&mut charged_bytes, crate::codec::encode(&draw).len())?;
             draws.push(draw);
         }
@@ -745,6 +704,128 @@ impl CampaignRepository {
             lineage,
             draws,
         ))
+    }
+
+    /// Collects one stage-zero draw bounded to `maximum_bytes` of execution.
+    fn collect_statistical_draw_evidence(
+        &self,
+        snapshot: &LoadedSnapshot,
+        coordinate: u64,
+        maximum_bytes: usize,
+    ) -> Result<StatisticalDrawEvidence, CampaignRepositoryError> {
+        let request_content = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().exploration,
+                statistical_draw_request_key(coordinate),
+            )?
+            .ok_or_else(|| integrity("statistical-report-draw-request-is-missing"))?;
+        let proposal_content = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().accounting,
+                statistical_draw_proposal_key(coordinate),
+            )?
+            .ok_or_else(|| integrity("statistical-report-draw-proposal-is-missing"))?;
+        let execution = self.collect_statistical_execution_evidence(
+            snapshot,
+            request_content,
+            proposal_content,
+            maximum_bytes,
+        )?;
+        Ok(StatisticalDrawEvidence::new(coordinate, execution))
+    }
+
+    /// Collects one SMC transition bounded to `maximum_bytes` of execution.
+    fn collect_smc_transition_evidence(
+        &self,
+        snapshot: &LoadedSnapshot,
+        stage: u32,
+        slot: u32,
+        maximum_bytes: usize,
+    ) -> Result<SmcTransitionEvidence, CampaignRepositoryError> {
+        let request_content = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().exploration,
+                smc_transition_request_key(stage, slot),
+            )?
+            .ok_or_else(|| integrity("SMC evidence transition request is missing"))?;
+        let proposal_content = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().accounting,
+                smc_transition_proposal_key(stage, slot),
+            )?
+            .ok_or_else(|| integrity("SMC evidence transition proposal is missing"))?;
+        let execution = self.collect_statistical_execution_evidence(
+            snapshot,
+            request_content,
+            proposal_content,
+            maximum_bytes,
+        )?;
+        Ok(SmcTransitionEvidence::new(stage, slot, execution))
+    }
+
+    /// Replays a finite flight one draw at a time without assembling a bundle.
+    fn replay_finite_statistical_estimate(
+        &self,
+        snapshot: &LoadedSnapshot,
+        policy: &CampaignPolicy,
+        allow_smc: bool,
+    ) -> Result<StatisticalEstimateReport, CampaignRepositoryError> {
+        let design = statistical_report_design(policy, allow_smc)?;
+        let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
+        let planning_view = snapshot.snapshot.planning_view();
+        let basis = EvidenceBasis::new(&snapshot.snapshot, &planning_view, policy, &lineage);
+
+        let mut replay = FiniteEvidenceReplay::new(basis, allow_smc)?;
+        for coordinate in design.draws().keys().copied() {
+            let draw = self.collect_statistical_draw_evidence(
+                snapshot,
+                coordinate,
+                MAX_STATISTICAL_EVIDENCE_BYTES - DRAW_WRAPPER_BYTES,
+            )?;
+            replay.push(&draw)?;
+        }
+        replay.finish().map_err(Into::into)
+    }
+
+    /// Replays a finished SMC run one execution at a time without a bundle.
+    fn replay_sequential_monte_carlo_estimate(
+        &self,
+        snapshot: &LoadedSnapshot,
+        policy: &CampaignPolicy,
+    ) -> Result<SequentialMonteCarloEstimateReport, CampaignRepositoryError> {
+        let initial_design = statistical_report_design(policy, true)?;
+        let design = policy
+            .sequential_monte_carlo_design()
+            .ok_or_else(|| integrity("SMC evidence requires an SMC policy"))?;
+        let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
+        let planning_view = snapshot.snapshot.planning_view();
+        let basis = EvidenceBasis::new(&snapshot.snapshot, &planning_view, policy, &lineage);
+
+        let mut replay = SmcEvidenceReplay::new(basis)?;
+        for coordinate in initial_design.draws().keys().copied() {
+            let draw = self.collect_statistical_draw_evidence(
+                snapshot,
+                coordinate,
+                MAX_STATISTICAL_EVIDENCE_BYTES - DRAW_WRAPPER_BYTES,
+            )?;
+            replay.push_initial_draw(&draw)?;
+        }
+        for stage in design.stages().keys().copied() {
+            for slot in 0..design.particle_count() {
+                let transition = self.collect_smc_transition_evidence(
+                    snapshot,
+                    stage,
+                    slot,
+                    MAX_STATISTICAL_EVIDENCE_BYTES - TRANSITION_WRAPPER_BYTES,
+                )?;
+                replay.push_transition(&transition)?;
+            }
+        }
+        replay.finish().map_err(Into::into)
     }
 
     fn collect_statistical_execution_evidence(
@@ -973,7 +1054,8 @@ impl CampaignRepository {
     /// Every transition request, proposal, admission, observation, and path is
     /// recomputed from the active policy and authenticated roots. Resampling is
     /// replayed from the policy seed at each completed stage; the final stage is
-    /// not redundantly resampled.
+    /// not redundantly resampled. Records are read and verified one execution at
+    /// a time, so the run is not limited by the portable evidence bundle size.
     ///
     /// # Errors
     ///
@@ -985,8 +1067,9 @@ impl CampaignRepository {
         name: &str,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<SequentialMonteCarloEstimateReport, CampaignRepositoryError> {
-        let evidence = self.collect_sequential_monte_carlo_evidence(name, expected_snapshot)?;
-        verify_sequential_monte_carlo_evidence(&evidence).map_err(Into::into)
+        let snapshot = self.load_statistical_snapshot(name, expected_snapshot)?;
+        let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
+        self.replay_sequential_monte_carlo_estimate(&snapshot, &policy)
     }
 
     fn project_finite_statistical_estimate(
@@ -1019,17 +1102,28 @@ impl CampaignRepository {
         policy: &CampaignPolicy,
         allow_smc_initial_stage: bool,
     ) -> Result<StatisticalEstimateReport, CampaignRepositoryError> {
-        let evidence = self.collect_finite_statistical_evidence_from_loaded(
-            snapshot,
-            policy,
-            allow_smc_initial_stage,
-        )?;
-        if allow_smc_initial_stage {
-            verify_initial_smc_statistical_evidence(&evidence).map_err(Into::into)
-        } else {
-            verify_finite_statistical_evidence(&evidence).map_err(Into::into)
-        }
+        self.replay_finite_statistical_estimate(snapshot, policy, allow_smc_initial_stage)
     }
+}
+
+/// Checks that `policy` can produce the requested statistical report.
+fn statistical_report_design(
+    policy: &CampaignPolicy,
+    allow_smc: bool,
+) -> Result<&crate::StatisticalSamplingDesign, CampaignRepositoryError> {
+    if policy.mode() != CampaignMode::Statistical {
+        return Err(integrity("statistical-report-requires-statistical-policy"));
+    }
+    if policy.sequential_monte_carlo_design().is_some() != allow_smc {
+        return Err(if allow_smc {
+            integrity("SMC generation requires an SMC policy")
+        } else {
+            integrity("statistical report refuses incomplete SMC policy")
+        });
+    }
+    policy
+        .statistical_sampling_design()
+        .ok_or_else(|| integrity("statistical-report-policy-lacks-design"))
 }
 
 fn statistical_target_probability(
