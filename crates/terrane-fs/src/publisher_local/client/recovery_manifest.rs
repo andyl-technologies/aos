@@ -420,7 +420,7 @@ mod tests {
             PublicationClaim::new(
                 domain.to_owned(),
                 PublicationRecipe::Inline { chunk: descriptor },
-                ChunkProfile::cdc_1m([0; 32]),
+                &ChunkProfile::cdc_1m([0; 32]),
             )
             .unwrap()
         };
