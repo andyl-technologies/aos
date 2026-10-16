@@ -349,6 +349,7 @@ impl PacketControl {
             program,
             complete_restored_evidence,
             complete_restored_hold,
+            restoration_activation_required,
             capture_creator,
             capture_identity: _,
             originals,
@@ -397,6 +398,7 @@ impl PacketControl {
                 "native live complete Capture owner unresolved",
             ));
         }
+        observer.observe(restoration_activation_required)?;
         observer.observe(selection)?;
         observer.tree::<Id, (HashRef, PacketControlReply)>(originals.len())?;
         for (id, (hash, reply)) in originals {

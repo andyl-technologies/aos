@@ -259,7 +259,7 @@ impl PacketCompleteSemanticSource {
 }
 
 impl OriginalAckPeerAssociation {
-    pub(super) fn authenticate_transfer_ready_data(&self) -> Result<(), RuntimeError> {
+    pub(in super::super) fn authenticate_transfer_ready_data(&self) -> Result<(), RuntimeError> {
         if !self.ready
             || self.failed
             || !self.completed_mechanism.get()

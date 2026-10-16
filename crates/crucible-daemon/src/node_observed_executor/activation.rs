@@ -13,6 +13,9 @@ use crucible_node_contract::canonical;
 
 mod complete;
 mod requested_storage;
+mod publication_storage;
+
+pub(crate) use publication_storage::OriginalDirectoryPublicationConstructionData;
 
 /// Publishes an activation event into durable content and an immutable ref slot.
 ///

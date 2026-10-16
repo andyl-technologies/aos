@@ -7,6 +7,7 @@
 
 mod precredit;
 mod restoration_storage;
+pub(in crate::node_qualification::packet_collection::complete) mod publication;
 
 use super::*;
 use crucible::node_admission::{CompleteArchiveCodeGraph, ConformanceGraph};
@@ -38,6 +39,7 @@ pub struct PacketCompleteRestorationPrebirth {
         Option<std::rc::Weak<RefCell<super::super::PacketCompleteReportStartupHolder>>>,
     runtime: Option<ConformanceRuntime>,
     failed_runtime: Option<crucible::node_contract::ConformanceRuntimeFailure>,
+    publication: Option<publication::OriginalRestorationPublicationOwners>,
     process: u32,
     thread: std::thread::ThreadId,
 }
@@ -82,6 +84,7 @@ impl PacketCompleteArchiveCodeFactory {
             report_startup_holder: None,
             runtime: None,
             failed_runtime: None,
+            publication: None,
             process: std::process::id(),
             thread: std::thread::current().id(),
         });
@@ -585,3 +588,5 @@ impl PacketCompleteRestorationPrebirth {
 mod invocation;
 
 mod restoration_transaction;
+
+mod installed;

@@ -39,6 +39,7 @@ struct Credit {
     future_decode: bool,
     selected_constructor: bool,
     encoded_upper: usize,
+    maximum_decode_slot: usize,
 }
 
 impl Credit {
@@ -80,6 +81,23 @@ impl Credit {
                 .ok_or(Excess)?
         };
         self.add(slots)?;
+        if map && self.maximum_decode_slot != 0 {
+            // Selected future DTOs retain their own typed object/map root
+            // alongside the independently decoded DOM root, including `{}`.
+            // Existing ordinary/constructor modes keep a zero extra slot.
+            self.add(std::mem::size_of::<
+                serde_json::Map<String, serde_json::Value>,
+            >())?;
+            self.add(value_layout::value_slot_bytes())?;
+            self.add(self.maximum_decode_slot)?;
+            // Retained Value accounting names an independent root even for
+            // an empty object. Construction DOM, future decoded DOM and the
+            // future typed object/map each keep their own conservative root;
+            // a map header or per-entry node cannot stand in for these banks.
+            self.add(value_layout::map_node_bytes())?;
+            self.add(value_layout::map_node_bytes())?;
+            self.add(value_layout::map_node_bytes())?;
+        }
         if self.future_decode {
             // Closed future core records use typed vectors/maps; parsing also
             // retains a Value tree. Four requested slots per declared element
@@ -97,6 +115,7 @@ impl Credit {
                         .and_then(|count| {
                             count.checked_mul(
                                 crate::node_contract::NodeRuntime::capture_closed_inline_storage()
+                                    .max(self.maximum_decode_slot)
                                     + value_layout::value_slot_bytes(),
                             )
                         })
@@ -162,6 +181,7 @@ impl Credit {
             // coexist with the independently counted serialization map.
             self.add(
                 4 * (crate::node_contract::NodeRuntime::capture_closed_inline_storage()
+                    .max(self.maximum_decode_slot)
                     + value_layout::value_slot_bytes()),
             )?;
             self.add(value_layout::map_node_bytes())?;
@@ -205,6 +225,7 @@ pub(super) fn value_allocations(
         future_decode: false,
         selected_constructor: false,
         encoded_upper: 0,
+        maximum_decode_slot: 0,
     };
     value
         .serialize(&mut credit)
@@ -227,6 +248,7 @@ pub(super) fn future_decode_allocations(
         future_decode: true,
         selected_constructor: false,
         encoded_upper: 0,
+        maximum_decode_slot: 0,
     };
     value
         .serialize(&mut credit)
@@ -269,6 +291,7 @@ impl Container<'_> {
         if self.credit.future_decode {
             self.credit.add(
                 4 * (crate::node_contract::NodeRuntime::capture_closed_inline_storage()
+                    .max(self.credit.maximum_decode_slot)
                     + value_layout::value_slot_bytes()),
             )?;
             if self.map {
@@ -715,6 +738,7 @@ pub(super) fn original_constructor_value_allocations(
         future_decode: false,
         selected_constructor: true,
         encoded_upper: 0,
+        maximum_decode_slot: 0,
     };
     value
         .serialize(&mut credit)
@@ -801,5 +825,106 @@ mod original_constructor_controls {
         assert!(
             original_constructor_value_allocations(&true, usize::MAX).unwrap() >= output.capacity()
         );
+    }
+}
+
+/// Quotes selected construction and independent future typed decode geometry.
+///
+/// The defining closed caller supplies its actual largest DTO slot. Existing
+/// ordinary and constructor modes keep a zero extra slot and their old rows.
+/// Encoded extent is reported directly from the same serializer events; it is
+/// never derived by treating requested heap as a wire-byte allowance.
+pub(super) fn original_constructor_and_decode_geometry(
+    value: &impl Serialize,
+    maximum_decode_slot: usize,
+    maximum: usize,
+) -> Result<(usize, usize), RuntimeError> {
+    if maximum_decode_slot == 0 {
+        return Err(RuntimeError::ResourceLimit);
+    }
+    let mut credit = Credit {
+        used: 0,
+        maximum,
+        depth: 0,
+        map_key: false,
+        future_decode: true,
+        selected_constructor: true,
+        encoded_upper: 0,
+        maximum_decode_slot,
+    };
+    value
+        .serialize(&mut credit)
+        .map_err(|_| RuntimeError::ResourceLimit)?;
+    let output = credit
+        .encoded_upper
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(256))
+        .ok_or(RuntimeError::ResourceLimit)?;
+    credit
+        .add(output)
+        .map_err(|_| RuntimeError::ResourceLimit)?;
+    Ok((credit.used, credit.encoded_upper))
+}
+
+#[cfg(test)]
+mod selected_decode_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn empty_selected_objects_keep_independent_dom_and_typed_roots() {
+        let value = serde_json::json!({});
+        let ordinary_before = value_allocations(&value, usize::MAX).unwrap();
+        let (small, encoded) =
+            original_constructor_and_decode_geometry(&value, 1, usize::MAX).unwrap();
+        let (larger, same_encoded) =
+            original_constructor_and_decode_geometry(&value, 33, usize::MAX).unwrap();
+        let roots = std::mem::size_of::<serde_json::Map<String, serde_json::Value>>()
+            + value_layout::value_slot_bytes()
+            + 1;
+
+        assert!(small >= ordinary_before + roots);
+        assert_eq!(larger - small, 32);
+        assert_eq!(encoded, same_encoded);
+        assert_eq!(
+            original_constructor_and_decode_geometry(&value, 1, small).unwrap(),
+            (small, encoded)
+        );
+        assert!(original_constructor_and_decode_geometry(&value, 1, small - 1).is_err());
+        assert!(original_constructor_and_decode_geometry(&value, 0, usize::MAX).is_err());
+        assert_eq!(
+            value_allocations(&value, usize::MAX).unwrap(),
+            ordinary_before
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod selected_map_root_controls {
+    use super::*;
+    use crate::node_contract::runtime_owned_counter::OwnedStorage;
+
+    #[test]
+    fn selected_empty_and_nested_objects_cover_actual_retained_value_roots() {
+        let empty = serde_json::json!({});
+        let nested = serde_json::json!({"map": {}, "array": [{}, {"inner": {}}]});
+
+        for value in [empty, nested] {
+            let actual = value.owned_storage().unwrap();
+            let (requested, encoded) = original_constructor_and_decode_geometry(
+                &value, std::mem::size_of::<serde_json::Value>(), usize::MAX,
+            ).unwrap();
+            let bytes = crucible_node_contract::canonical::canonical_json(&value).unwrap();
+
+            assert!(actual >= value_layout::map_node_bytes());
+            assert!(requested >= actual + value_layout::value_slot_bytes());
+            assert!(encoded >= bytes.len());
+            assert_eq!(original_constructor_and_decode_geometry(
+                &value, std::mem::size_of::<serde_json::Value>(), requested,
+            ).unwrap(), (requested, encoded));
+            assert!(original_constructor_and_decode_geometry(
+                &value, std::mem::size_of::<serde_json::Value>(), requested - 1,
+            ).is_err());
+        }
     }
 }

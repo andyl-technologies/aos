@@ -63,12 +63,39 @@ impl CnpSemanticNode {
             .map_err(|_| RuntimeError::OwnerBusy)?;
         let token = token.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
         let query = token.original_restoration_query_data(inputs.source)?;
-        let data = inputs.source.original_restoration_node_construction_data(
+        let mut data = inputs.source.original_restoration_node_construction_data(
             native,
             query,
             &preparation.realization,
             inputs,
         )?;
+        if let Some(signing) = &inputs.signing {
+            let (custody, source_activation) = {
+                let construction = signing.cold.original_signing_construction_inputs_data(
+                    signing.inputs, inputs.plan, &data,
+                    native.controller.as_ref().ok_or(RuntimeError::OwnerUnavailable)?, query,
+                    data.maximum_mapping_bytes, signing.maximum_record_bytes,
+                    signing.observed_other_retained_bytes,
+                )?;
+                let custody = self.original_installed_restoration_custody_construction_data(
+                    signing.inputs.archive.original_runtime_record_data()?,
+                    signing.inputs.activation, &construction, signing.coordinator, inputs.maximum_requested_bytes,
+                )?;
+                let activation_inputs = crate::node_admission::OriginalInstalledRestorationActivationSigningConstructionInputs {
+                    transfer: &construction,
+                    activation_data: custody.activation_construction_data(),
+                    request_ids: [&signing.activation_request_ids[0], &signing.activation_request_ids[1]],
+                    signer: data.signer.as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+                    coordinator: signing.coordinator,
+                };
+                let source_activation = inputs.source.original_restoration_activation_source_construction_data(
+                    &activation_inputs, inputs.maximum_requested_bytes,
+                )?;
+                (custody, source_activation)
+            };
+            data.installed_custody = Some(custody);
+            data.source_activation = Some(source_activation);
+        }
         data.authenticate_original_owner_data(
             inputs.source,
             Rc::as_ptr(&native.read_owner).cast(),

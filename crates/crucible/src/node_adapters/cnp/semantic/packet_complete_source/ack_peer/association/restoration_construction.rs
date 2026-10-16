@@ -144,6 +144,8 @@ impl PacketCompleteSemanticSource {
                 .ok_or(RuntimeError::ResourceLimit)?,
             maximum_mapping_bytes: mapping_maximum,
             signer: None,
+            installed_custody: None,
+            source_activation: None,
         };
         if let Some(signing) = &inputs.signing {
             let construction = signing.cold.original_signing_construction_inputs_data(

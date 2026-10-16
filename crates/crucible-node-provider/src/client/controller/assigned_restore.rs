@@ -286,6 +286,7 @@ impl CnpController {
     }
 
     pub(super) fn ensure_no_pending_original_complete_restore(&self) -> Result<(), ProviderError> {
+        self.ensure_no_pending_original_installed_restoration_activation()?;
         if [
             self.original_complete_restore.as_ref(),
             self.original_complete_restore_prepare.as_ref(),

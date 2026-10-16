@@ -180,8 +180,8 @@ pub(crate) use construction_inputs::OriginalRestorationSigningConstructionInputs
 #[path = "restoration_construction/claim.rs"]
 mod claim;
 pub(crate) use claim::{
-    OriginalRestorationMappingInputs, OriginalRestorationSigningInputs,
-    OriginalRestorationTransactionClaim, OriginalRestorationTransactionPhase,
+    OriginalRestorationMappingInputs, OriginalRestorationSigningInputs, OriginalRestorationTransactionClaim,
+    OriginalRestorationTransactionPhase,
 };
 #[path = "restoration_construction/inspection.rs"]
 mod inspection;
@@ -203,3 +203,19 @@ pub use target::CompleteOriginalRestorationTransactionTarget;
 pub use window::OriginalRestorationNodeDispatch;
 
 pub use window::OriginalRestorationNodeContinuationInspection;
+
+pub use window::OriginalRestorationHostContinuationInspection;
+
+#[path = "restoration_construction/activation.rs"]
+mod activation;
+
+pub use activation::{
+    OriginalInstalledRestorationActivationClaim,
+    OriginalInstalledRestorationActivationPhase,
+};
+pub(crate) use activation::{
+    OriginalInstalledRestorationActivationSigningConstructionInputs,
+    OriginalInstalledRestorationActivationSigningInputs,
+};
+
+pub use window::OriginalRestorationCoordinatorConstructionData;

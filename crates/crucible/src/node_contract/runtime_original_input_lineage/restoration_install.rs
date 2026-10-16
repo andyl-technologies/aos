@@ -8,6 +8,9 @@ use super::*;
 use crate::node_scheduling::{InputCustodyCommit, SchedulingCommit};
 use std::collections::BTreeMap;
 
+#[path = "restoration_install/construction_storage.rs"]
+mod construction_storage;
+
 impl NodeRuntime {
     /// Prepares a paused coordinator from the exact opaque source context before readiness.
     ///
@@ -169,7 +172,7 @@ fn preflight_copies(context: &OriginalLineageRestoration<'_>) -> Result<(), Runt
             context.limits.lineage,
             context.limits.maximum_record_bytes,
         )?,
-        RestorationAncestry::Exact => {
+        RestorationAncestry::Exact | RestorationAncestry::Installed { .. } => {
             context
                 .record
                 .validate_metadata(context.limits.lineage, context.limits.maximum_record_bytes)?;

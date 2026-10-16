@@ -15,7 +15,9 @@ use super::*;
 impl NativeAckBoot {
     pub(crate) fn authenticate_invocation_capture_data(&self) -> Result<(), ProviderError> {
         self.authenticate_invocation_owned_data()?;
-        if !self.permits_original_invocation_without_fresh_query_data()?
+        if self.restoration_activation.iter().any(Option::is_some)
+            || self.restoration_uploads.iter().any(Option::is_some)
+            || !self.permits_original_invocation_without_fresh_query_data()?
             || self
                 .startup
                 .as_ref()
@@ -143,6 +145,8 @@ impl Serialize for InvocationBaseView<'_> {
             attempted,
             verified,
             restoration: _,
+            restoration_activation: _,
+            restoration_uploads: _,
             transfer: _,
             startup: _,
         } = self.0;

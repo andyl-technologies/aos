@@ -11,6 +11,25 @@ use crucible_node_contract::*;
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 
+/// Retains fixed prospective common-restoration allocation facts for one owner.
+///
+/// The row has no allocation, Source, native, publication or activation right.
+/// Its process-local identities are compared only while the Window retains the
+/// same immutable inputs. No raw pointer is dereferenced or serialized.
+pub struct OriginalRuntimeRestorationInstallationConstructionData {
+    requested: usize,
+    paused_scheduler_duplicate: usize,
+    scratch: usize,
+    process: u32,
+    thread: std::thread::ThreadId,
+    authority: std::rc::Weak<()>,
+    record: *const OriginalLineageRuntimeRecord,
+    scheduling: *const crate::node_scheduling::SchedulingSnapshot,
+    target: *const ActivationRecord,
+    content: *const crate::node_state::VerifiedStateContent,
+    coordinator: *const crate::node_admission::OriginalRestorationCoordinatorConstructionData,
+}
+
 /// Bounds a complete selected lineage lookup before consumer-native effects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OriginalInputLineageLimits {
@@ -183,3 +202,5 @@ pub use restoration::{
 
 #[path = "runtime_original_input_lineage/provenance.rs"]
 mod provenance;
+
+pub use restoration::OriginalInstalledRestorationNodeAssociation;

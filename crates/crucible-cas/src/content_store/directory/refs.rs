@@ -185,7 +185,7 @@ impl MutableRefBackend for DirectoryRefBackend {
     }
 }
 
-struct DirectoryRefPublicationGuard {
+pub(super) struct DirectoryRefPublicationGuard {
     _lock: File,
 }
 

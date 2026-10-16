@@ -33,6 +33,9 @@ mod contract;
 mod crypto;
 pub mod transfer;
 
+/// Defines the separately signed restoration activation contract and DATA.
+pub mod activation;
+
 pub use assigned::{
     complete_restore_assigned_request_digest, complete_restore_assigned_response_digest,
 };

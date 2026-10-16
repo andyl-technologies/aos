@@ -219,6 +219,7 @@ pub(super) fn semantic_external_content_dependencies(
 ) -> impl Clone + Iterator<Item = &ContentRef> {
     use crate::node_adapters::cnp::semantic::state::SemanticRuntimeCustody;
     let SemanticRuntimeCustody {
+        installed_restoration,
         arm_attempt: _,
         ready: _,
         prepared_owner: _,
@@ -234,7 +235,9 @@ pub(super) fn semantic_external_content_dependencies(
         credit: _,
         quarantined: _,
     } = runtime;
-    inputs
+    installed_restoration.iter()
+        .flat_map(|selected| selected.input_content_dependencies())
+        .chain(inputs
         .values()
         .flat_map(|input| {
             input
@@ -246,7 +249,7 @@ pub(super) fn semantic_external_content_dependencies(
                     commitment.context.iter().map(|payload| &payload.reference)
                 }))
         })
-        .chain(operations.values().filter_map(|operation| {
+        ).chain(operations.values().filter_map(|operation| {
             operation
                 .retirement
                 .as_ref()

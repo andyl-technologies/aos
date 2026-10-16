@@ -14,8 +14,8 @@ use crucible_node_contract::{ContentRef, HashRef};
 
 pub(super) struct HostRestorationAdmission {
     pub(super) source: ContentRef,
-    scheduling: HashRef,
-    target: ActivationRecord,
+    pub(super) scheduling: HashRef,
+    pub(super) target: ActivationRecord,
 }
 
 impl PreparedHostSchedulingNode {
@@ -24,6 +24,24 @@ impl PreparedHostSchedulingNode {
         source_record: &ContentRef,
         record: &OriginalLineageRuntimeRecord,
         scope: &OriginalLineageNativeScope,
+        content: &crate::node_state::VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        self.validate_original_host_restoration_fields(
+            source_record, record, &scope.source_record, &scope.source_capture, &scope.target,
+            scope.coordinator_schema, &scope.owners, &scope.journals, content,
+        )
+    }
+
+    pub(super) fn validate_original_host_restoration_fields(
+        &self,
+        source_record: &ContentRef,
+        record: &OriginalLineageRuntimeRecord,
+        scope_source_record: &ContentRef,
+        source_capture: &crate::node_contract::SavedRuntimeActivation,
+        target: &ActivationRecord,
+        coordinator_schema: u16,
+        owners: &[crate::node_contract::OriginalLineageOwnerMapping],
+        journals: &[crate::node_contract::OriginalLineageJournal],
         content: &crate::node_state::VerifiedStateContent,
     ) -> Result<(), OperationFailure> {
         self.current()?;
@@ -39,11 +57,11 @@ impl PreparedHostSchedulingNode {
             return Err(failure("original host legacy restoration is unsupported"));
         };
         if captured.as_ref() != record
-            || &scope.source_record != source_record
-            || scope.source_capture != record.source_activation
-            || scope.target != self.activation
+            || scope_source_record != source_record
+            || *source_capture != record.source_activation
+            || *target != self.activation
             || record.source_activation.world_binding_hash != self.source.world
-            || scope.coordinator_schema != 7
+            || coordinator_schema != 7
             || record
                 .operations
                 .iter()
@@ -67,13 +85,11 @@ impl PreparedHostSchedulingNode {
             .owners
             .first()
             .ok_or_else(|| failure("fresh original host owner is absent"))?;
-        let mapping = scope
-            .owners
+        let mapping = owners
             .iter()
             .find(|mapping| mapping.source == source_owner)
             .ok_or_else(|| failure("original host owner mapping is absent"))?;
-        let journal = scope
-            .journals
+        let journal = journals
             .iter()
             .find(|journal| journal.node == self.route.node)
             .ok_or_else(|| failure("original host journal is absent"))?;
@@ -117,7 +133,11 @@ impl PreparedHostSchedulingNode {
         self.source.authenticate_initial_attachment()?;
         let original = self.source.original_restoration_record()?;
         if let Some(ticket) = &self.source.archive_ticket {
-            ticket.authenticate_context(context).map_err(failure)?;
+            if context.is_original_installed_restoration_data() {
+                context.authenticate_original_installed_host_ticket_data(ticket).map_err(failure)?;
+            } else {
+                ticket.authenticate_context(context).map_err(failure)?;
+            }
         }
         let HostSchedulingRuntimeRecord::OriginalLineage(record) = &original.runtime else {
             return Err(failure("original host legacy restoration is unsupported"));

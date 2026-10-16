@@ -26,6 +26,9 @@ pub use complete_capture::{
 #[path = "conformance/exact_inputs.rs"]
 mod exact_inputs;
 
+#[path = "conformance/restoration_installation_storage.rs"]
+mod restoration_installation_storage;
+
 #[path = "conformance/construction_storage.rs"]
 mod construction_storage;
 
@@ -758,6 +761,8 @@ impl ConformanceRuntime {
         inputs: &crate::node_admission::OriginalRestorationConstructionInputs<'_>,
         plan: &crate::node_admission::InstalledConformancePlan,
         cold: &crate::node_adapters::cnp::OriginalRestorationColdGroup,
+        activation_request_ids: &[Id; 2],
+        coordinator: &crate::node_admission::OriginalRestorationCoordinatorConstructionData,
         maximum_record_bytes: usize,
         observed_other_retained_bytes: usize,
         maximum: usize,
@@ -791,6 +796,8 @@ impl ConformanceRuntime {
             signing: Some(crate::node_admission::OriginalRestorationSigningCollector {
                 inputs,
                 cold,
+                activation_request_ids,
+                coordinator,
                 maximum_record_bytes,
                 observed_other_retained_bytes,
             }),
@@ -828,3 +835,38 @@ impl ConformanceRuntime {
             .inspect_original_restoration_node_continuation(inspection)
     }
 }
+
+impl ConformanceRuntime {
+    pub(crate) fn inspect_original_host_restoration_continuation(
+        &self,
+        inspection: crate::node_admission::OriginalRestorationHostContinuationInspection<'_>,
+    ) -> Result<(), RuntimeError> {
+        inspection.authenticate_runtime_data(self)?;
+        self.runtime.inspect_original_host_restoration_continuation(inspection)
+    }
+}
+
+impl ConformanceRuntime {
+    pub(crate) fn prepare_original_installed_restoration_context_data<'a>(
+        &self, window: &'a Rc<crate::node_admission::CompleteOriginalRestorationWindow>,
+        plan: &'a crate::node_admission::InstalledConformancePlan,
+    ) -> Result<OriginalLineageRestoration<'a>, RuntimeError> {
+        self.runtime.prepare_original_installed_restoration_context_data(window, plan)
+    }
+}
+
+impl ConformanceRuntime {
+    pub(crate) fn original_restoration_coordinator_sources_data(
+        &self, plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(&crucible_node_contract::WorldBinding, &super::HostSchedulingSource), RuntimeError> {
+        self.authenticate_complete_original_restoration_origin()?;
+        if !self.graph.plan().is_same_original_plan_data(plan) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let host = self.exact_inputs.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        Ok((self.graph.world(), host.as_ref()))
+    }
+}
+
+#[path = "conformance/installed_restoration.rs"]
+mod installed_restoration;

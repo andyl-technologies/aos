@@ -32,6 +32,8 @@ struct Fields<'a> {
     admit: &'a Option<assigned_admit::AssignedOriginalCanonicalAckAdmit>,
     prepare: &'a Option<assigned_restore::AssignedOriginalCompleteRestore>,
     commit: &'a Option<assigned_restore::AssignedOriginalCompleteRestore>,
+    activation: &'a [Option<installed_activation::AssignedOriginalInstalledRestorationActivation>; 2],
+    uploads: &'a [Option<installed_activation::AssignedUpload>; 2],
 }
 
 impl<'a> Fields<'a> {
@@ -48,6 +50,8 @@ impl<'a> Fields<'a> {
             original_complete_restore_prepare,
             original_complete_restore_commit,
             installed_complete_restore,
+            original_installed_restoration_activation,
+            original_installed_restoration_upload,
         } = controller;
         if original_complete_restore.is_some() || installed_complete_restore.is_some() {
             return Err(ProviderError::Correlation(
@@ -63,6 +67,8 @@ impl<'a> Fields<'a> {
             admit: original_ack_admit,
             prepare: original_complete_restore_prepare,
             commit: original_complete_restore_commit,
+            activation: original_installed_restoration_activation,
+            uploads: original_installed_restoration_upload,
         })
     }
 
@@ -85,6 +91,12 @@ impl<'a> Fields<'a> {
             .flatten()
         {
             observe_assigned(original, observer)?;
+        }
+        for original in self.uploads.iter().flatten() {
+            original.observe_owned_metadata(observer)?;
+        }
+        for original in self.activation.iter().flatten() {
+            original.observe_owned_metadata(observer)?;
         }
         Ok(())
     }
@@ -132,6 +144,8 @@ impl CnpController {
     /// or recursive frames and physical allocator overhead remain separate.
     pub fn original_restoration_host_metadata_counter_scratch_data() -> usize {
         Self::original_live_host_metadata_counter_scratch_data()
+            + Self::original_installed_restoration_activation_counter_scratch_data()
+            + Self::original_installed_restoration_upload_counter_scratch_data()
             + ClientSession::original_restoration_metadata_counter_scratch_data()
             + size_of::<Fields<'static>>()
             + size_of::<Result<Fields<'static>, ProviderError>>()

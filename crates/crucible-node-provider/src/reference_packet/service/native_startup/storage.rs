@@ -180,6 +180,7 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         // reaching the event sink. Its base64 spelling is a substring of this
         // same authenticated canonical launch, bounded by the launch grammar.
         + PRIVATE_LAUNCH_BYTES
+        + super::super::ack_emitter::original_native_restoration_activation_counter_scratch_data()
 }
 
 /// Counts the same immutable selected constructor inputs without making owners.
@@ -233,12 +234,38 @@ pub(crate) fn original_native_invocation_baseline_storage_data(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum_requested_bytes: usize,
 ) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
-    birth_storage_with_source(
+    let mut row = birth_storage_with_source(
         input,
         maximum_requested_bytes,
         private_bootstrap::project_invocation,
         false,
-    )
+    )?;
+    if input.launch.selection.provider.extensions_supported.iter().any(|feature| {
+        feature.as_str() == super::super::complete_restore::activation::PACKET_RESTORATION_ACTIVATION_FEATURE
+    }) {
+        let ingress = super::super::ack_emitter::original_native_restoration_activation_ingress_row_data(
+            extent(input.launch.limits.frame_bytes.get())?,
+        )?;
+        row.retained_requested_bytes = sum(&[
+            row.retained_requested_bytes, extent(ingress.retained_requested_bytes.get())?,
+        ], maximum_requested_bytes)?;
+        // The extra ingress is independent retained storage, not another
+        // common owner. Keep the sealed full-row pair aligned with the row
+        // without changing the proven three-owner intersection.
+        row.retained_overlap = row.retained_overlap
+            .with_additional_retained_requested_bytes_data(
+                0, extent(ingress.retained_requested_bytes.get())?,
+            )?;
+        row.maximum_simultaneous_transient_bytes = row.maximum_simultaneous_transient_bytes
+            .max(extent(ingress.maximum_simultaneous_transient_bytes.get())?);
+        row.declared_counter_scratch_bytes = row.declared_counter_scratch_bytes
+            .max(extent(ingress.declared_counter_scratch_bytes.get())?);
+        sum(&[
+            row.retained_requested_bytes, row.maximum_simultaneous_transient_bytes,
+            row.declared_counter_scratch_bytes,
+        ], maximum_requested_bytes)?;
+    }
+    Ok(row)
 }
 
 fn birth_storage_with_source(

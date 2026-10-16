@@ -10,9 +10,9 @@ use crucible_node_provider::client::CnpController;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct OriginalRestorationNativeContinuationIdentity {
-    held_reference: [u8; 32],
-    inventory: [u8; 32],
-    cursor: crucible_node_contract::Position,
+    pub(super) held_reference: [u8; 32],
+    pub(super) inventory: [u8; 32],
+    pub(super) cursor: crucible_node_contract::Position,
 }
 
 /// Lends a completed target to its same actual native node for inspection.
@@ -25,6 +25,8 @@ pub struct OriginalRestorationNodeContinuationInspection<'a> {
     plan: &'a InstalledConformancePlan,
     activation: &'a ActivationRecord,
     selected: usize,
+    installed_scope: Option<&'a crate::node_contract::OriginalLineageNativeScope>,
+    continuation: Option<super::installed_context::OriginalCompleteNativeFenceStep<'a>>,
 }
 
 impl OriginalRestorationNodeContinuationInspection<'_> {
@@ -62,6 +64,9 @@ impl OriginalRestorationNodeContinuationInspection<'_> {
     }
 
     fn authenticate_current(&self) -> Result<(), RuntimeError> {
+        if let Some(scope) = self.installed_scope {
+            return self.window.authenticate_original_complete_identity_data(self.plan, scope);
+        }
         self.window.authenticate_original_completed_member_data(
             self.target()?,
             self.source_data()?,
@@ -80,6 +85,18 @@ impl OriginalRestorationNodeContinuationInspection<'_> {
         self.authenticate_current()?;
         let target = self.target()?;
         let source = self.source_data()?;
+        if let Some(scope) = self.installed_scope {
+            if let Some(phase) = self.window.activation_phases[self.selected].verified_phase_data()? {
+                return self.window.with_original_activated_node_custody_data(
+                    self.selected, source.as_ref(), controller, read_owner, phase,
+                    |_, _, _| match self.continuation {
+                        Some(next) => next.inspect_next(),
+                        None => Err(RuntimeError::OwnerUnavailable),
+                    },
+                    || self.window.authenticate_original_complete_identity_data(self.plan, scope),
+                );
+            }
+        }
         let node = self
             .window
             .node_rows
@@ -99,6 +116,7 @@ impl OriginalRestorationNodeContinuationInspection<'_> {
             source,
             plan: self.plan,
             activation: self.activation,
+            installed_scope: self.installed_scope,
         };
         let inputs = inspection.original_inputs_data()?;
         let uploaded = target.completed_upload_data()?;
@@ -152,6 +170,9 @@ impl OriginalRestorationNodeContinuationInspection<'_> {
                     inventory: hash_identity(&held.inventory_hash),
                     cursor: held.local_cursor,
                 });
+                if let Some(continuation) = self.continuation {
+                    continuation.inspect_next()?;
+                }
                 Ok(())
             },
             || self.authenticate_current(),
@@ -188,23 +209,34 @@ impl CompleteOriginalRestorationWindow {
         activation: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
         let attempt = super::dispatch::RestorationDispatchAttempt::begin(self)?;
+        self.inspect_original_native_group_data(plan, runtime, activation)?;
+        attempt.complete()?;
+        Ok(())
+    }
+
+    pub(super) fn inspect_original_native_group_data(
+        &self, plan: &InstalledConformancePlan, runtime: &ConformanceRuntime,
+        activation: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
         for selected in 0..3 {
             let inspection = OriginalRestorationNodeContinuationInspection {
                 window: self,
                 plan,
                 activation,
                 selected,
+                installed_scope: None,
+                continuation: None,
             };
             inspection.authenticate_runtime_data(runtime)?;
             runtime.inspect_original_restoration_continuation(inspection)?;
         }
         self.authenticate_original_runtime_member_current_data(&activation.world_binding_hash)?;
-        attempt.complete()?;
         Ok(())
     }
 
     pub(super) fn continuation_counter_scratch_data() -> usize {
         size_of::<OriginalRestorationNodeContinuationInspection<'static>>()
+            + 3 * size_of::<super::installed_context::OriginalCompleteNativeFenceStep<'static>>()
             + size_of::<Result<OriginalRestorationNodeContinuationInspection<'static>, RuntimeError>>(
             )
             + size_of::<OriginalRestorationTransactionInspection<'static>>()
@@ -246,7 +278,7 @@ impl CompleteOriginalRestorationWindow {
     }
 }
 
-fn hash_identity(hash: &crucible_node_contract::HashRef) -> [u8; 32] {
+pub(super) fn hash_identity(hash: &crucible_node_contract::HashRef) -> [u8; 32] {
     let mut state =
         blake3::Hasher::new_derive_key("core.original-restoration-inventory-correspondence/1");
     for text in [&hash.algorithm, &hash.domain, &hash.digest].map(String::as_str) {
@@ -256,7 +288,7 @@ fn hash_identity(hash: &crucible_node_contract::HashRef) -> [u8; 32] {
     *state.finalize().as_bytes()
 }
 
-fn reference_identity(reference: &ContentRef) -> [u8; 32] {
+pub(super) fn reference_identity(reference: &ContentRef) -> [u8; 32] {
     let mut state =
         blake3::Hasher::new_derive_key("core.original-restoration-held-reference-correspondence/1");
     for text in [
@@ -296,5 +328,16 @@ mod tests {
             assert_ne!(reference_identity(&changed), original);
         }
         assert_ne!(hash_identity(&reference.hash), original);
+    }
+}
+
+impl<'a> OriginalRestorationNodeContinuationInspection<'a> {
+    pub(super) fn for_original_installed_window(
+        window: &'a CompleteOriginalRestorationWindow, plan: &'a InstalledConformancePlan,
+        scope: &'a crate::node_contract::OriginalLineageNativeScope, selected: usize,
+        continuation: super::installed_context::OriginalCompleteNativeFenceStep<'a>,
+    ) -> Self {
+        Self { window, plan, activation: &scope.target, selected,
+            installed_scope: Some(scope), continuation: Some(continuation) }
     }
 }

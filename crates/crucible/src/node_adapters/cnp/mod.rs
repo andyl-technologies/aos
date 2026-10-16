@@ -43,7 +43,7 @@ pub use process::{
 };
 
 pub use semantic::{
-    CnpConformanceNodeConstructionStorageData, CnpNativeAfterConfirmationCall,
+    OriginalInstalledRestorationCustodyConstructionData, CnpConformanceNodeConstructionStorageData, CnpNativeAfterConfirmationCall,
     CnpOriginalSemanticSnapshot, CnpPreparationStorageScratch, CnpRetainedStorageReport,
     CnpRetainedStorageUnknowns, CnpSemanticAcceptance, CnpSemanticAdmissionFailure,
     CnpSemanticAttachmentFailure, CnpSemanticCaptureScope, CnpSemanticConformanceAuthority,
@@ -115,4 +115,9 @@ pub(crate) use semantic::OriginalRestorationColdGroup;
 pub(crate) use semantic::{
     OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
     OriginalSourceRestoreVerifiedPhaseKind,
+};
+
+pub use semantic::{
+    OriginalSourceRestorationActivationConstructionData,
+    OriginalSourceRestorationActivationVerifiedPhase,
 };

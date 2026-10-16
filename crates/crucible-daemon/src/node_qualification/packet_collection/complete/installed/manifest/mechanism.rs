@@ -49,6 +49,8 @@ pub(super) fn authenticate_edition_data(
         {
             Ok(())
         }
+        Some("crucible.complete-scene.installation/4")
+            if object.get("mechanism").is_some_and(serde_json::Value::is_object) => Ok(()),
         _ => Err(refused()),
     }
 }
@@ -63,6 +65,7 @@ pub(super) fn authenticate_selection_data(
             "crucible.complete-scene.installation/2" | "crucible.complete-scene.installation/3",
             Some(selected),
         ) => selected.authenticate(),
+        ("crucible.complete-scene.installation/4", Some(selected)) => selected.authenticate(),
         _ => Err(refused()),
     }
 }
@@ -371,4 +374,9 @@ mod invocation_declaration_tests {
         assert!(!target.exists());
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
+}
+
+mod restoration_activation;
+pub(super) fn authenticate_profile_declaration_data(selected: &Manifest) -> Result<(), QualificationError> {
+    restoration_activation::authenticate_profile_declaration_data(selected)
 }

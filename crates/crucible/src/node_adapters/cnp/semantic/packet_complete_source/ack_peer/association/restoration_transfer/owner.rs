@@ -267,7 +267,7 @@ impl super::super::restore_transfer_banks::OriginalRestoreTransferBanks {
         self.signer.as_mut().ok_or(RuntimeError::OwnerUnavailable)
     }
 
-    pub(super) fn bank(
+    pub(in super::super) fn bank(
         &self,
         phase: PacketCompleteRestoreTransferPhase,
         index: usize,

@@ -44,6 +44,7 @@ pub(crate) use fresh_restore::original_fresh_report_owner_layout_data;
 mod prefix;
 mod restore;
 mod restore_commit;
+mod restoration_activation;
 pub(crate) use restore::PacketEndpointRestoreAllocation;
 
 pub(crate) const EXCHANGES: usize = 256;
@@ -508,6 +509,31 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 ))?,
                 scope,
             );
+        }
+
+        let activation_method = matches!(request.method, Method::Activate | Method::WorldActivate);
+        let upload_method = matches!(request.method, Method::BlobBegin | Method::BlobChunk | Method::BlobFinish);
+        let (requires_restoration_activation, completed_restoration) = if activation_method || upload_method {
+            self.canonical_ack_boot.as_ref().map(|boot| {
+                let owner = boot.try_borrow()
+                    .map_err(|_| ProviderError::Conflict("restoration activation boot borrowed"))?;
+                Ok::<_, ProviderError>((owner.requires_restoration_activation_data()?,
+                    owner.has_completed_restoration_for_activation_data()?))
+            }).transpose()?.unwrap_or((false, false))
+        } else { (false, false) };
+        if requires_restoration_activation && (activation_method || (upload_method && completed_restoration)) {
+            if selected_restore.is_none() || service_context.is_none() || selected_deadline.is_none() {
+                return Err(ProviderError::Correlation("restoration activation concrete service absent"));
+            }
+            if upload_method { return self.dispatch_selected_restoration_upload(request, selected_deadline.ok_or(ProviderError::Correlation("restoration upload deadline absent"))?); }
+            return self.dispatch_selected_restoration_activation(request, selected_deadline.ok_or(ProviderError::Correlation("restoration activation deadline absent"))?);
+        }
+        if request.extensions.contains_key(
+            super::service::complete_restore::activation::PACKET_RESTORATION_ACTIVATION_FEATURE,
+        ) || request.extensions.contains_key(
+            super::service::complete_restore::activation::upload::PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,
+        ) {
+            return Err(ProviderError::Correlation("restoration activation private target absent"));
         }
 
         if let Some(restore) = selected_restore {

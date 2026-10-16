@@ -75,3 +75,9 @@ pub use host_startup::{
     original_host_source_json_counter_scratch_data, original_host_source_json_extent_storage_data,
     original_host_source_json_occurrence_storage_data,
 };
+
+/// Names actual assigned activation originals without issuing phase claims.
+pub use controller::{OriginalRestorationActivationTargetBindingData,
+    PreparedOriginalInstalledRestorationActivation, CompletedOriginalInstalledRestorationActivation};
+
+pub use controller::{CompletedOriginalInstalledRestorationUpload, PreparedOriginalInstalledRestorationUpload};

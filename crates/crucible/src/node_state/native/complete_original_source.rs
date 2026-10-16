@@ -39,6 +39,7 @@ pub(crate) struct CompleteOriginalSource {
     runtime: ContentRef,
     purpose: CompleteOriginalSourcePurpose,
     native_restoration_data: [Option<super::CompleteOriginalNativeRestorationData>; 4],
+    validation_limits: HostSchedulingContinuationLimits,
     process: u32,
     thread: ThreadId,
     host_issued: Cell<bool>,
@@ -436,6 +437,7 @@ impl NativeArchiveRecord {
                 runtime,
                 purpose: CompleteOriginalSourcePurpose::new(collecting_plan),
                 native_restoration_data,
+                validation_limits: limits,
                 process: std::process::id(),
                 thread: thread::current().id(),
                 host_issued: Cell::new(false),
@@ -581,3 +583,13 @@ impl CompleteOriginalSource {
         Ok(self.archive.retained_descriptor_views_precredit_data())
     }
 }
+
+impl CompleteOriginalRestorationSource {
+    pub(crate) fn original_host_record_data(&self) -> Result<&HostSchedulingContinuationRecord, RuntimeError> {
+        self.inner.authenticate_birth()?;
+        Ok(&self.inner.host)
+    }
+}
+
+#[path = "complete_original_source/context_validation.rs"]
+mod context_validation;

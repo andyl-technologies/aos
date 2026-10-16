@@ -71,3 +71,5 @@ pub(crate) fn test_custody_slot() -> Box<dyn RuntimeCustodySlot> {
 
 mod host_scheduling_owner;
 pub use host_scheduling_owner::*;
+
+pub use runtime::OriginalInstalledRestorationNodeAssociation;

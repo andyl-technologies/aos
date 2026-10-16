@@ -1980,3 +1980,6 @@ impl ClientSession {
 
 #[path = "session/restoration_retained.rs"]
 mod restoration_retained;
+
+#[path = "session/installed_activation.rs"]
+mod installed_activation;

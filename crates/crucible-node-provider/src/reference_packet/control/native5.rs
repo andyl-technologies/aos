@@ -19,6 +19,11 @@ mod birth;
 mod capture_allocation;
 mod complete_restore;
 mod protocol_metadata;
+mod restoration_coordinator;
+pub(crate) use restoration_coordinator::{
+    authenticate_original_restoration_coordinator_data,
+    original_restoration_coordinator_counter_scratch_data,
+};
 mod record;
 
 pub use birth::PacketCompleteControlBirthFailure;

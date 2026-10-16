@@ -13,7 +13,7 @@ use crucible::node_scheduling::InputPayload;
 
 use super::*;
 
-const MAXIMUM_PREPARATION_RECORD_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAXIMUM_PREPARATION_RECORD_BYTES: usize = 16 * 1024 * 1024;
 
 pub(super) struct PreparedCoordinator {
     activation: ActivationRecord,

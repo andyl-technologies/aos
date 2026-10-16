@@ -13,6 +13,17 @@ pub use boot::{
 mod bootstrap;
 mod owned_read;
 pub(crate) use boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;
+pub(crate) use boot::{
+    OriginalRestorationActivationPermit,
+    NativeRestorationUploadAttempt, OriginalRestorationUploadPermit,
+    OriginalRestorationActivationRequirement,
+    original_native_restoration_upload_attempt_backing_data,
+    original_native_restoration_upload_counter_scratch_data,
+    original_native_restoration_activation_attempt_backing_data,
+    original_native_restoration_activation_counter_scratch_data,
+    original_native_restoration_activation_ingress_storage_data,
+    original_native_restoration_activation_ingress_row_data,
+};
 
 pub(crate) use boot::{
     NativeAckBoot, NativeRestoredControlEvidence, OriginalCanonicalAckControlAdmit,

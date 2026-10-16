@@ -1674,8 +1674,8 @@ pub use original_input_lineage::{
     OriginalLineageJournal, OriginalLineageNativeScope, OriginalLineageOwnerMapping,
     OriginalLineageProvenanceRecord, OriginalLineageRestoration, OriginalLineageRestorationLimits,
     OriginalLineageRow, OriginalLineageRuntimeRecord, OriginalPublicationClaim,
-    OriginalPublicationOrigin, SavedOriginalInputLineage, SavedOriginalInputScope,
-    SavedOriginalPublication,
+    OriginalPublicationOrigin, OriginalRuntimeRestorationInstallationConstructionData,
+    SavedOriginalInputLineage, SavedOriginalInputScope, SavedOriginalPublication,
 };
 
 impl NodeRuntime {
@@ -1702,3 +1702,5 @@ impl NodeRuntime {
         Ok(total)
     }
 }
+
+pub use original_input_lineage::OriginalInstalledRestorationNodeAssociation;

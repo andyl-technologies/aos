@@ -126,6 +126,8 @@ impl NativeAckBoot {
             attempted,
             verified,
             restoration: _,
+            restoration_activation: _,
+            restoration_uploads: _,
             transfer: _,
             startup: _,
         } = self;
@@ -203,7 +205,9 @@ impl NativeAckBoot {
         observer.observe(original)?;
         observer.observe(ready)?;
         observer.observe(attempted)?;
-        observer.observe(verified)
+        observer.observe(verified)?;
+        self.observe_restoration_activation_metadata_data(observer)?;
+        self.observe_restoration_upload_metadata_data(observer)
     }
 }
 
@@ -291,6 +295,8 @@ impl Serialize for BootView<'_> {
             attempted,
             verified,
             restoration: _,
+            restoration_activation: _,
+            restoration_uploads: _,
             transfer: _,
             startup: _,
         } = self.boot;
@@ -526,6 +532,8 @@ impl NativeAckBoot {
             attempted,
             verified,
             restoration: _,
+            restoration_activation: _,
+            restoration_uploads: _,
             transfer: _,
             startup: _,
         } = self;
@@ -605,6 +613,8 @@ impl NativeAckBoot {
         observer.observe(ready)?;
         observer.observe(attempted)?;
         observer.observe(verified)?;
+        self.observe_restoration_activation_metadata_data(observer)?;
+        self.observe_restoration_upload_metadata_data(observer)?;
         if let Some(startup) = &self.startup {
             startup_codec::observe_owner(startup, observer)?;
             if self.requires_invocation_codec_data()? {

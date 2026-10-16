@@ -412,3 +412,8 @@ impl CnpSemanticNode {
 
 #[path = "node/restoration_construction.rs"]
 mod restoration_construction;
+
+/// Counts genuine installed-restoration node and activation custody as DATA.
+pub use installed_restoration::OriginalInstalledRestorationCustodyConstructionData;
+#[path = "node/installed_restoration.rs"]
+pub(super) mod installed_restoration;

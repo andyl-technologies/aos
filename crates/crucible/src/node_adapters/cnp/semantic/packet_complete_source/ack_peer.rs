@@ -719,3 +719,9 @@ pub(crate) use association::{
     OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
     OriginalSourceRestoreVerifiedPhaseKind,
 };
+
+
+pub use association::{
+    OriginalSourceRestorationActivationConstructionData,
+    OriginalSourceRestorationActivationVerifiedPhase,
+};

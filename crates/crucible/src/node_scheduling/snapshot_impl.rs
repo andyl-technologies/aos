@@ -23,6 +23,10 @@ pub struct PreparedSchedulingRestore {
 #[path = "lineage_restore.rs"]
 mod original_lineage;
 
+#[path = "restoration_storage.rs"]
+mod restoration_storage;
+pub(crate) use restoration_storage::OriginalSchedulingRestorationPublicationProjection;
+
 impl PreparedSchedulingRestore {
     /// Validates unresolved original operations under mandatory native continuation proof.
     ///
@@ -122,6 +126,39 @@ impl PreparedSchedulingRestore {
             input_acknowledgements,
             epochs,
         )
+    }
+
+    /// Names the actual borrowed publication return and its nested epoch views.
+    ///
+    /// This DATA getter constructs no tuple, epoch or permission and observes
+    /// no owning field. The same declared layouts apply while an epoch Option
+    /// is absent; unsupported epoch owners still refuse at their owning walk.
+    pub(crate) fn original_publication_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        type Target<'a> = (
+            &'a crucible_node_contract::U64,
+            &'a crucible_node_contract::Id,
+            &'a crucible_node_contract::HashRef,
+            &'a Vec<crate::node_contract::OwnerIdentity>,
+            &'a crucible_node_contract::Position,
+        );
+        type Epoch<'a> = (
+            &'a crate::node_scheduling::InputPayload,
+            &'a Vec<crate::node_scheduling::SavedSchedulingEpoch>,
+            &'a Vec<crate::node_scheduling::InputPayload>,
+        );
+        type Publication<'a> = (
+            Target<'a>,
+            &'a SchedulingSnapshot,
+            &'a Vec<crate::node_scheduling::NativeInputAcknowledgement>,
+            Option<Epoch<'a>>,
+        );
+        size_of::<&Self>()
+            + size_of::<Target<'_>>()
+            + size_of::<Epoch<'_>>()
+            + size_of::<Option<Epoch<'_>>>()
+            + size_of::<Option<&crate::node_scheduling::SchedulingEpochEvidence>>()
+            + size_of::<Publication<'_>>()
     }
 
     /// Binds the checked coordinator to the original complete fresh activation.

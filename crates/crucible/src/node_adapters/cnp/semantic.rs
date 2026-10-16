@@ -54,7 +54,7 @@ pub use world_provider::{
 };
 
 pub use node::{
-    CnpConformanceNodeConstructionStorageData, CnpSemanticAdmissionFailure, CnpSemanticNode,
+    OriginalInstalledRestorationCustodyConstructionData, CnpConformanceNodeConstructionStorageData, CnpSemanticAdmissionFailure, CnpSemanticNode,
 };
 pub use packet_complete_source::{
     OriginalCaptureAllocationData, PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA,
@@ -165,4 +165,9 @@ pub(crate) use packet_complete_source::OriginalRestorationColdGroup;
 pub(crate) use packet_complete_source::{
     OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
     OriginalSourceRestoreVerifiedPhaseKind,
+};
+
+pub use packet_complete_source::{
+    OriginalSourceRestorationActivationConstructionData,
+    OriginalSourceRestorationActivationVerifiedPhase,
 };

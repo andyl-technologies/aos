@@ -23,6 +23,8 @@ pub enum OriginalRestorationConstructionPhase {
     ColdOwners,
     /// Funds all real current and future owners before any Prepare assignment.
     Transaction,
+    /// Reobserves actual selected readiness, publication and restored custody.
+    Installed,
 }
 
 /// Borrows the actual registered originals for one whole-owner observation.
@@ -99,6 +101,7 @@ pub struct OriginalRestorationMemberScope<'a> {
     plan: &'a InstalledConformancePlan,
     window: &'a CompleteOriginalRestorationWindow,
     sources: &'a [Rc<PacketCompleteSemanticSource>; 3],
+    publisher: Option<*const ()>,
 }
 
 impl OriginalRestorationMemberScope<'_> {
@@ -165,6 +168,21 @@ pub struct CompleteOriginalRestorationWindow {
     node_rows: OnceCell<[OriginalRestorationNodeConstructionData; 3]>,
     native_continuations:
         [Cell<Option<continuation::OriginalRestorationNativeContinuationIdentity>>; 3],
+    final_construction: scope_storage::OriginalRestorationFinalConstructionData,
+    activation_phases: [super::activation::OriginalInstalledRestorationActivationLedger; 3],
+    activation_request_ids: OnceCell<[Id; 2]>,
+    context_started: Cell<bool>,
+    context_issued: Cell<bool>,
+    coordinator_construction: OnceCell<OriginalRestorationCoordinatorConstructionData>,
+    coordinator_target: OnceCell<ActivationRecord>,
+    coordinator_owner: RefCell<coordinator_owner::OriginalRestorationCoordinatorOwner>,
+    common_construction: OnceCell<crate::node_contract::OriginalRuntimeRestorationInstallationConstructionData>,
+    paused_scheduler: RefCell<Option<crate::node_scheduling::PreparedSchedulingRestore>>,
+    scheduler_started: Cell<bool>,
+    install_started: Cell<bool>,
+    activation_world: OnceCell<crate::node_contract::WorldActivation>,
+    scope_partial: RefCell<Option<scope_owner::OriginalRestorationScopeOwner>>,
+    complete_scope: OnceCell<scope_owner::OriginalRestorationScopeOwner>,
 }
 
 impl InstalledConformancePlan {
@@ -218,6 +236,21 @@ impl InstalledConformancePlan {
             PacketCompleteSemanticSource::retained_requested_storage_precredit_scratch_data(),
             PacketCompleteSemanticSource::original_restoration_signer_construction_counter_scratch_data(),
             CompleteOriginalRestorationWindow::continuation_counter_scratch_data(),
+            scope_storage::OriginalRestorationFinalConstructionData::counter_scratch_data(),
+            super::activation::OriginalInstalledRestorationActivationClaim::counter_scratch_data(),
+            OriginalRestorationCoordinatorConstructionData::defining_counter_scratch_data(),
+            ConformanceRuntime::original_runtime_restoration_installation_counter_scratch_data()?,
+            crate::node_scheduling::PreparedSchedulingRestore::original_retained_counter_scratch_data(),
+            observation::owner_loan_result_counter_scratch_data::<Option<crate::node_scheduling::PreparedSchedulingRestore>>(),
+            observation::owner_loan_result_counter_scratch_data::<coordinator_owner::OriginalRestorationCoordinatorOwner>(),
+            PacketCompleteSemanticSource::original_restoration_activation_source_construction_counter_scratch_data(),
+            PacketCompleteSemanticSource::original_restoration_activation_declaration_counter_scratch_data(),
+            size_of::<RefCell<Option<scope_owner::OriginalRestorationScopeOwner>>>(),
+            size_of::<std::cell::Ref<'static, Option<scope_owner::OriginalRestorationScopeOwner>>>(),
+            size_of::<std::cell::RefMut<'static, Option<scope_owner::OriginalRestorationScopeOwner>>>(),
+            observation::owner_loan_result_counter_scratch_data::<Option<scope_owner::OriginalRestorationScopeOwner>>(),
+            size_of::<host::OriginalRestorationHostContinuationInspection<'static>>(),
+            size_of::<Result<(), RuntimeError>>(),
             size_of::<dispatch::RestorationDispatchAttempt<'static>>(),
             size_of::<observation::OriginalRestorationWholeObservation>(),
             observation::owner_loan_result_counter_scratch_data::<Option<OriginalRestorationColdGroup>>(),
@@ -303,6 +336,8 @@ impl InstalledConformancePlan {
             return Err(RuntimeError::ForeignAuthority);
         }
         runtime.authenticate_current(&inputs.activation.world_binding_hash)?;
+        let final_construction = scope_storage::OriginalRestorationFinalConstructionData::quote(
+            inputs.archive, inputs.activation, policy.maximum_requested_bytes)?;
         Ok(Rc::new(CompleteOriginalRestorationWindow {
             process: std::process::id(),
             thread: std::thread::current().id(),
@@ -321,6 +356,21 @@ impl InstalledConformancePlan {
             targets: std::array::from_fn(|_| OnceCell::new()),
             runtime,
             policy,
+            final_construction,
+            activation_phases: std::array::from_fn(|_| super::activation::OriginalInstalledRestorationActivationLedger::new()),
+            activation_request_ids: OnceCell::new(),
+            context_started: Cell::new(false),
+            context_issued: Cell::new(false),
+            coordinator_construction: OnceCell::new(),
+            coordinator_target: OnceCell::new(),
+            coordinator_owner: RefCell::new(coordinator_owner::OriginalRestorationCoordinatorOwner::empty()),
+            common_construction: OnceCell::new(),
+            paused_scheduler: RefCell::new(None),
+            scheduler_started: Cell::new(false),
+            install_started: Cell::new(false),
+            activation_world: OnceCell::new(),
+            scope_partial: RefCell::new(None),
+            complete_scope: OnceCell::new(),
             stage: Cell::new(WindowStage::ColdAdmitted),
             phase_in_flight: Cell::new(false),
             whole_observation: observation::OriginalRestorationWholeObservation::new_pending(),
@@ -489,6 +539,17 @@ impl CompleteOriginalRestorationWindow {
             .authority
             .authenticate_original_restoration_construction(&plan.evidence(), &scope, &policy)?;
         let current = observed_current(&scope, policy, storage)?;
+        self.retain_original_activation_request_ids_data(inputs.activation)?;
+        self.coordinator_target.set(inputs.activation.clone()).map_err(|_| RuntimeError::DuplicateOperation)?;
+        let coordinator_target = self.coordinator_target.get().ok_or(RuntimeError::OwnerUnavailable)?;
+        let coordinator = OriginalRestorationCoordinatorConstructionData::quote(plan, inputs, coordinator_target, policy.maximum_requested_bytes)?;
+        self.coordinator_construction.set(coordinator).map_err(|_| RuntimeError::DuplicateOperation)?;
+        let common = inputs.runtime.original_runtime_restoration_installation_construction_data(
+            inputs.archive.original_runtime_record_data()?,
+            &inputs.archive.original_host_record_data()?.scheduling, coordinator_target,
+            inputs.archive.content(), self.coordinator_construction.get().ok_or(RuntimeError::OwnerUnavailable)?,
+            policy.maximum_requested_bytes)?;
+        self.common_construction.set(common).map_err(|_| RuntimeError::DuplicateOperation)?;
         let limits = inputs.archive.original_archive_limits_data()?;
         {
             let cold = self.cold.get().ok_or(RuntimeError::OwnerUnavailable)?;
@@ -498,11 +559,13 @@ impl CompleteOriginalRestorationWindow {
                     &selected,
                     plan,
                     cold,
+                    self.activation_request_ids.get().ok_or(RuntimeError::OwnerUnavailable)?,
+                    self.coordinator_construction.get().ok_or(RuntimeError::OwnerUnavailable)?,
                     limits.state.maximum_record_bytes,
                     current,
                     policy.maximum_requested_bytes,
                 )?;
-                if row.signer.is_none() {
+                if row.signer.is_none() || row.installed_custody.is_none() || row.source_activation.is_none() {
                     return Err(RuntimeError::OwnerUnavailable);
                 }
                 // A later quote/callback failure leaves every earlier actual
@@ -603,6 +666,7 @@ impl CompleteOriginalRestorationWindow {
             plan,
             window: self,
             sources: &self.sources,
+            publisher: None,
         };
         plan.0
             .authority
@@ -797,6 +861,7 @@ impl CompleteOriginalRestorationWindow {
             plan,
             window: self,
             sources: &self.sources,
+            publisher: None,
         };
         plan.0
             .authority
@@ -956,6 +1021,7 @@ impl CompleteOriginalRestorationWindow {
             plan,
             window: self,
             sources: &self.sources,
+            publisher: None,
         };
         plan.0
             .authority
@@ -1031,11 +1097,18 @@ impl CompleteOriginalRestorationWindow {
             journals,
             0,
         )?;
-        self.authenticate_inputs(plan, &inputs)?;
+        let installed = self.context_issued.get();
+        if installed {
+            inputs.authenticate_original_group_data()?;
+            runtime.authenticate_original_installed_runtime_data(self, &self.archive, plan, activation)?;
+        } else {
+            self.authenticate_inputs(plan, &inputs)?;
+        }
         let scope = OriginalRestorationConstructionScope {
             plan,
             inputs: &inputs,
-            phase: OriginalRestorationConstructionPhase::Transaction,
+            phase: if installed { OriginalRestorationConstructionPhase::Installed }
+                else { OriginalRestorationConstructionPhase::Transaction },
             window: Some(self),
         };
         let policy = plan
@@ -1050,22 +1123,23 @@ impl CompleteOriginalRestorationWindow {
             .authority
             .authenticate_original_restoration_construction(&plan.evidence(), &scope, &policy)?;
         let requested = observe(&scope, policy, storage)?;
-        if requested
-            > self
-                .transaction_requested_peak
-                .get()
-                .ok_or(RuntimeError::OwnerUnavailable)?
-        {
-            return Err(RuntimeError::ResourceLimit);
-        }
+        let high_water = phase_budget::observed_transaction_peak_data(self.policy, policy,
+            self.transaction_requested_peak.get(), requested)?;
         let current = observed_current(&scope, policy, storage)?;
-        self.authenticate_registered_member(plan, &inputs)?;
+        if installed {
+            let member = OriginalRestorationMemberScope { plan, window: self, sources: &self.sources, publisher: None };
+            plan.0.authority.authenticate_original_restoration_construction_member(&plan.evidence(), &member)?;
+            runtime.authenticate_original_installed_runtime_data(self, &self.archive, plan, activation)?;
+        } else {
+            self.authenticate_registered_member(plan, &inputs)?;
+        }
         observation::authenticate_started_stage_data(
             &self.stage,
             WindowStage::TransactionChecking,
         )?;
         // No callback, allocation or I/O follows the terminal live fence.
         self.observed_other_retained.set(Some(current));
+        self.transaction_requested_peak.set(Some(high_water));
         self.whole_observation.complete_observation();
         self.stage.set(WindowStage::TransactionAdmitted);
         Ok(requested)
@@ -1078,3 +1152,76 @@ pub use continuation::OriginalRestorationNodeContinuationInspection;
 
 #[path = "window/observation.rs"]
 pub(super) mod observation;
+
+#[path = "window/host.rs"]
+mod host;
+pub use host::OriginalRestorationHostContinuationInspection;
+
+#[path = "window/scope_storage.rs"]
+mod scope_storage;
+#[path = "window/scope_owner.rs"]
+mod scope_owner;
+#[path = "window/complete_scope.rs"]
+mod complete_scope;
+
+#[path = "window/activation.rs"]
+mod activation;
+
+#[path = "window/installed_context.rs"]
+mod installed_context;
+
+#[path = "window/coordinator_projection.rs"]
+mod coordinator_projection;
+#[path = "window/coordinator_storage.rs"]
+mod coordinator_storage;
+pub use coordinator_storage::OriginalRestorationCoordinatorConstructionData;
+
+#[path = "window/coordinator_owner.rs"]
+mod coordinator_owner;
+
+impl OriginalRestorationConstructionScope<'_> {
+    /// Checks the same genuine runtime for this intrinsic construction phase.
+    ///
+    /// # Errors
+    /// Refuses another window/archive/plan/target, an unissued installed context,
+    /// changed actual owner identities or revoked scheduler custody.
+    pub fn authenticate_original_runtime_data(&self) -> Result<(), RuntimeError> {
+        if self.phase == OriginalRestorationConstructionPhase::Installed {
+            self.inputs.runtime.authenticate_original_installed_runtime_data(
+                self.window.ok_or(RuntimeError::OwnerUnavailable)?, self.inputs.archive,
+                self.plan, self.inputs.activation)
+        } else {
+            self.inputs.runtime.authenticate_original_restoration_target_data(
+                self.inputs.archive, self.plan, self.inputs.activation)
+        }
+    }
+}
+
+#[path = "window/common_install.rs"]
+mod common_install;
+
+impl OriginalRestorationConstructionScope<'_> {
+    /// Borrows the same concrete future coordinator row when its quote exists.
+    ///
+    /// Absence during cold/initial current observation authorizes no publication.
+    /// A final transaction observer must retain its own concrete publisher row.
+    pub fn coordinator_construction_data(&self) -> Option<&OriginalRestorationCoordinatorConstructionData> {
+        self.window?.coordinator_construction.get()
+    }
+}
+
+impl OriginalRestorationMemberScope<'_> {
+    /// Distinguishes a publication-member check from other bank-free phases.
+    pub fn is_original_publication_member_data(&self) -> bool { self.publisher.is_some() }
+
+    /// Compares the actual trusted publisher allocation for this single check.
+    ///
+    /// A matching address is only one member predicate. It grants no budget,
+    /// publication outcome, context, activation or right to dispatch a callback.
+    pub fn is_original_publisher_data(&self, actual: *const ()) -> bool {
+        self.publisher.is_some_and(|publisher| publisher == actual)
+    }
+}
+
+#[path = "window/phase_budget.rs"]
+mod phase_budget;

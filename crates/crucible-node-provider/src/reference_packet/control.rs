@@ -49,6 +49,11 @@ pub use capture::{PacketOriginalCaptureComponent, PacketOriginalCaptureReservati
 mod fresh_report;
 mod input;
 mod native5;
+mod restoration_activation;
+pub(crate) use native5::{
+    authenticate_original_restoration_coordinator_data,
+    original_restoration_coordinator_counter_scratch_data,
+};
 
 pub use native5::{
     PacketCompleteControlBirthFailure, PacketNative5Record, PacketNative5StorageSelection,
@@ -167,6 +172,7 @@ pub struct PacketControl {
     program: NativeProgram,
     complete_restored_evidence: Option<super::service::ack_emitter::NativeRestoredControlEvidence>,
     complete_restored_hold: Option<std::rc::Rc<restore_model::PacketCompleteRestorePhysicalHold>>,
+    restoration_activation_required: bool,
     // These private lifetime facts authenticate the same capture owner. Fresh
     // constructors create new anchors; portable snapshot data cannot mint one.
     capture_creator: u32,
@@ -347,6 +353,7 @@ impl PacketControl {
             complete_ack_emitter_selection: None,
             complete_restore_selection: None,
             complete_restored_hold: None,
+            restoration_activation_required: false,
             complete_restored_evidence: None,
             complete_protocol_metadata_limits: None,
             complete_protocol_metadata_birth_facts: None,
@@ -721,6 +728,21 @@ impl PacketControl {
         >,
         selected_observe: Option<&mut OriginalObserveAllocationPreparation<'_>>,
     ) -> Result<&PacketControlReply, ProviderError> {
+        self.dispatch_prepared_with_restoration_activation(
+            request, preparation, canonical_ack_admit, selected_observe, None,
+        )
+    }
+
+    fn dispatch_prepared_with_restoration_activation(
+        &mut self,
+        request: &Envelope,
+        preparation: &mut ReplyPreparation<'_>,
+        canonical_ack_admit: Option<
+            &super::service::ack_emitter::OriginalCanonicalAckControlAdmit<'_>,
+        >,
+        selected_observe: Option<&mut OriginalObserveAllocationPreparation<'_>>,
+        restoration_activation: Option<&super::service::ack_emitter::OriginalRestorationActivationPermit>,
+    ) -> Result<&PacketControlReply, ProviderError> {
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
                 "packet original dispatch foreign creator",
@@ -741,6 +763,16 @@ impl PacketControl {
             return Err(ProviderError::Correlation(
                 "native allocation Observe requires its original producer",
             ));
+        }
+        if let Some(permit) = restoration_activation {
+            permit.authenticate_control_request(request, &self.selection,
+                self.complete_restored_hold.as_ref().ok_or(ProviderError::Correlation(
+                    "restoration activation physical owner absent",
+                ))?)?;
+        } else if self.complete_restored_hold.is_some() && self.restoration_activation_required
+            && matches!(request.method, Method::Activate | Method::WorldActivate)
+        {
+            return Err(ProviderError::Correlation("restoration activation private permit absent"));
         }
         encode(request)?;
         request.validate()?;
@@ -801,7 +833,7 @@ impl PacketControl {
             || request.capture_owner_id.0.is_some()
             || (!request.extensions.is_empty()
                 && !(self.program.is_connected() && request.method == Method::Input)
-                && !authenticated_admit)
+                && !authenticated_admit && restoration_activation.is_none())
         {
             return Err(ProviderError::Correlation("packet original native route"));
         }
@@ -839,7 +871,7 @@ impl PacketControl {
                 &mut produced_receipt,
             )
         });
-        let result = self.execute(request, decoded, preparation, stopped_observe);
+        let result = self.execute(request, decoded, preparation, stopped_observe, restoration_activation);
         match result {
             Ok(mut reply) => {
                 if let Some(selected) = selected_observe {
@@ -963,6 +995,7 @@ impl PacketControl {
             &NativeStoppedObserveRecordStorageData<'_>,
             &mut Option<ProducedOriginalObserveReceipt>,
         )>,
+        restoration_activation: Option<&super::service::ack_emitter::OriginalRestorationActivationPermit>,
     ) -> Result<PacketControlReply, ProviderError> {
         if request.body.get("extensions").is_some_and(|extensions| {
             extensions
@@ -1063,7 +1096,7 @@ impl PacketControl {
                 )
             }
             RequestBody::WorldActivate(activate) => {
-                self.activate_world(request, activate, preparation)
+                self.activate_world(request, activate, preparation, restoration_activation)
             }
             RequestBody::Begin(begin) => self.begin(request, begin, preparation),
             RequestBody::Input(input) => self.input(request, input),
@@ -1084,6 +1117,7 @@ impl PacketControl {
         request: &Envelope,
         activate: WorldActivateRequest,
         preparation: &mut ReplyPreparation<'_>,
+        restoration_activation: Option<&super::service::ack_emitter::OriginalRestorationActivationPermit>,
     ) -> Result<PacketControlReply, ProviderError> {
         let (staged, ready) = self
             .staged
@@ -1128,47 +1162,62 @@ impl PacketControl {
                 "packet complete original all-owner activation",
             ));
         }
-        if let Some(installed) = &self.common_coordinator {
-            let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
-                ProviderError::Correlation("packet common coordinator absent"),
+        if let Some(permit) = restoration_activation {
+            permit.authenticate_control_request(request, &self.selection,
+                self.complete_restored_hold.as_ref().ok_or(ProviderError::Correlation(
+                    "restoration activation physical owner absent",
+                ))?)?;
+            let artifact = permit.artifact_data()?;
+            let coordinator = permit.coordinator_data()?;
+            let raw = self.content.get(&manifest.coordinator_state_ref).ok_or(
+                ProviderError::Correlation("restoration coordinator bytes absent"),
             )?;
-            installed.authenticate_staged(coordinator, &self.selection, staged, ready)?;
-        }
-        if let Some(installed) = &self.world_coordinator {
-            let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
-                ProviderError::Correlation("packet full-world coordinator absent"),
+            authenticate_original_restoration_coordinator_data(
+                &coordinator, raw, &artifact.request.scope, &self.selection, staged, ready, &manifest,
             )?;
-            installed.authenticate_staged(
-                coordinator,
-                &self.selection,
-                staged,
-                ready,
-                &manifest,
-            )?;
-        }
-        if let Some(installed) = &self.connected_coordinator {
-            let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
-                ProviderError::Correlation("packet connected coordinator absent"),
-            )?;
-            installed.authenticate_staged(
-                coordinator,
-                &self.selection,
-                staged,
-                ready,
-                &manifest,
-            )?;
-        }
-        if let Some(installed) = &self.complete_coordinator {
-            let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
-                ProviderError::Correlation("native5 complete coordinator absent"),
-            )?;
-            installed.authenticate_staged(
-                coordinator,
-                &self.selection,
-                staged,
-                ready,
-                &manifest,
-            )?;
+        } else {
+            if let Some(installed) = &self.common_coordinator {
+                let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
+                    ProviderError::Correlation("packet common coordinator absent"),
+                )?;
+                installed.authenticate_staged(coordinator, &self.selection, staged, ready)?;
+            }
+            if let Some(installed) = &self.world_coordinator {
+                let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
+                    ProviderError::Correlation("packet full-world coordinator absent"),
+                )?;
+                installed.authenticate_staged(
+                    coordinator,
+                    &self.selection,
+                    staged,
+                    ready,
+                    &manifest,
+                )?;
+            }
+            if let Some(installed) = &self.connected_coordinator {
+                let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
+                    ProviderError::Correlation("packet connected coordinator absent"),
+                )?;
+                installed.authenticate_staged(
+                    coordinator,
+                    &self.selection,
+                    staged,
+                    ready,
+                    &manifest,
+                )?;
+            }
+            if let Some(installed) = &self.complete_coordinator {
+                let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
+                    ProviderError::Correlation("native5 complete coordinator absent"),
+                )?;
+                installed.authenticate_staged(
+                    coordinator,
+                    &self.selection,
+                    staged,
+                    ready,
+                    &manifest,
+                )?;
+            }
         }
         let mut inventory = self.program.inventory()?;
         inventory.gate_closed = false;

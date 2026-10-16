@@ -12,6 +12,7 @@ use crate::{node_contract::*, node_scheduling::*};
 use crucible_node_contract::*;
 use crucible_node_provider::{
     bodies::*,
+    client::CnpController,
     reference_packet::{
         connected::PacketConnectedDefinition, control::PacketNative5StorageSelection,
         coordinator::PacketNative5CoordinatorInstallation, service::PacketNative5CaptureProfile,
@@ -416,6 +417,22 @@ impl PacketCompleteSemanticSource {
 }
 
 impl CnpSemanticSource for PacketCompleteSemanticSource {
+    fn call_original_installed_restoration_activation_into<'a>(
+        &'a self,
+        controller: &'a mut CnpController,
+        claim: crate::node_admission::OriginalInstalledRestorationActivationClaim,
+        command: crucible_node_provider::reference_packet::service::complete_restore::activation::PacketRestorationActivationCommand,
+        admitted: &OriginalSourceRestorationActivationConstructionData,
+        completed: &mut Option<crucible_node_provider::bodies::ResponseBody>,
+    ) -> Result<
+        OriginalSourceRestorationActivationVerifiedPhase<'a>,
+        crate::node_contract::RuntimeError,
+    > {
+        PacketCompleteSemanticSource::call_original_installed_restoration_activation_into(
+            self, controller, claim, command, admitted, completed,
+        )
+    }
+
     fn retained_requested_storage_precredit_data(
         &self,
         maximum: usize,
@@ -1307,4 +1324,13 @@ mod invocation_snapshot;
 pub(crate) use ack_peer::{
     OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
     OriginalSourceRestoreVerifiedPhaseKind,
+};
+
+// Selected node partial Values use the same defining raw-capacity walk. This
+// grants no Source permission and constructs no substitute serialized owner.
+pub(in crate::node_adapters::cnp::semantic) use retained_values::value_storage_with_error as original_retained_value_storage_with_error;
+
+pub use ack_peer::{
+    OriginalSourceRestorationActivationConstructionData,
+    OriginalSourceRestorationActivationVerifiedPhase,
 };

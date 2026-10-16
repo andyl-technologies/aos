@@ -197,6 +197,45 @@ impl CnpSemanticSourceRead {
 }
 
 impl OriginalFreshQueryReadCall<'_> {
+    /// Rechecks currentness while this exact original call remains armed.
+    ///
+    /// The ordinary idle-current API deliberately refuses busy owners. Only
+    /// this unforgeable in-flight token can use the owner-aware check; neither
+    /// the ReadCall nor its sticky final owner fence is released before send.
+    ///
+    /// # Errors
+    /// Refuses a foreign, finished, revoked or no-longer-busy original token,
+    /// stale registrar, changed descriptor/kernel identity or scratch failure.
+    pub(in crate::node_adapters::cnp::semantic) fn ensure_original_fresh_current_before_effect_data(
+        &self,
+        scratch: &mut super::super::executable_guard::FreshCurrentScratch,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        if self.original.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let call = self.call.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        let fence = self.fence.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        authenticate_armed_original_read(call, &self.original.owner, fence)?;
+        self.original.executable.storage_origin_precredit_data()?;
+        self.original
+            .registration
+            .ensure_current()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        self.original
+            .executable
+            .ensure_fresh_current(&self.original.kernel, scratch)?;
+        self.original
+            .registration
+            .ensure_current()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        authenticate_armed_original_read(call, &self.original.owner, fence)?;
+        self.original
+            .executable
+            .ensure_fresh_current(&self.original.kernel, scratch)?;
+        authenticate_armed_original_read(call, &self.original.owner, fence)
+    }
+
     pub(in crate::node_adapters::cnp::semantic) fn complete(
         mut self,
         scratch: &mut super::super::executable_guard::FreshCurrentScratch,
@@ -315,5 +354,109 @@ mod fresh_currency_tests {
             owner.original_fresh_query_custody_data(),
             Err(RuntimeError::OwnerUnavailable)
         );
+    }
+}
+
+// The capability check is shared by the actual owning-call recheck and its
+// pure causal control. It does not clear busy, replace an owner or finish a call.
+fn authenticate_armed_original_read(
+    call: &ReadCall,
+    owner: &Rc<ReadOwner>,
+    fence: &OriginalFreshQueryOwnerFence,
+) -> Result<(), crate::node_contract::RuntimeError> {
+    use crate::node_contract::RuntimeError;
+    if fence.process != std::process::id()
+        || !Rc::ptr_eq(&call.owner, owner)
+        || !fence
+            .owner
+            .as_ref()
+            .is_some_and(|held| Rc::ptr_eq(held, owner))
+    {
+        return Err(RuntimeError::ForeignAuthority);
+    }
+    if call.finished || fence.finished || !owner.busy.get() || !owner.current.get() {
+        return Err(RuntimeError::OwnerUnavailable);
+    }
+    Ok(())
+}
+
+impl CnpSemanticSourceRead {
+    /// Names additional owning-token recheck loans without changing idle guards.
+    /// Names the actual borrowed original call and mutable scratch captures.
+    pub(crate) fn original_fresh_query_callback_views_data() -> usize {
+        std::mem::size_of::<&OriginalFreshQueryReadCall<'static>>()
+            + std::mem::size_of::<&mut super::super::executable_guard::FreshCurrentScratch>()
+    }
+
+    pub(crate) fn original_fresh_query_armed_recheck_counter_scratch_data() -> usize {
+        std::mem::size_of::<&ReadCall>()
+            + std::mem::size_of::<Option<&ReadCall>>()
+            + std::mem::size_of::<Result<&ReadCall, crate::node_contract::RuntimeError>>()
+            + std::mem::size_of::<&OriginalFreshQueryOwnerFence>()
+            + std::mem::size_of::<Option<&OriginalFreshQueryOwnerFence>>()
+            + std::mem::size_of::<
+                Result<&OriginalFreshQueryOwnerFence, crate::node_contract::RuntimeError>,
+            >()
+            + std::mem::size_of::<&Rc<ReadOwner>>()
+            + std::mem::size_of::<Option<&Rc<ReadOwner>>>()
+            + std::mem::size_of::<Result<(), crate::node_contract::RuntimeError>>()
+    }
+}
+
+#[cfg(test)]
+mod armed_original_read_tests {
+    use super::*;
+    use crate::node_contract::RuntimeError;
+
+    #[test]
+    fn active_same_owner_recheck_preserves_busy_and_refuses_foreign_revoked_and_finished() {
+        let owner = Rc::new(ReadOwner::new(U64::new(71)));
+        let foreign = Rc::new(ReadOwner::new(U64::new(71)));
+        let call = ReadCall::begin(Rc::clone(&owner)).unwrap();
+        let fence = OriginalFreshQueryOwnerFence::new(Rc::clone(&owner));
+
+        authenticate_armed_original_read(&call, &owner, &fence).unwrap();
+        assert!(owner.busy.get());
+        assert!(!call.finished && !fence.finished);
+        assert!(ReadCall::begin(Rc::clone(&owner)).is_err());
+        assert_eq!(
+            owner.original_fresh_query_custody_data(),
+            Err(RuntimeError::OwnerBusy)
+        );
+        authenticate_armed_original_read(&call, &owner, &fence).unwrap();
+        assert!(authenticate_armed_original_read(&call, &foreign, &fence).is_err());
+        let foreign_fence = OriginalFreshQueryOwnerFence::new(Rc::clone(&foreign));
+        assert!(authenticate_armed_original_read(&call, &owner, &foreign_fence).is_err());
+        let expired = OriginalFreshQueryOwnerFence {
+            process: std::process::id(),
+            owner: Some(Rc::clone(&owner)),
+            finished: true,
+        };
+        assert!(authenticate_armed_original_read(&call, &owner, &expired).is_err());
+        assert!(owner.busy.get());
+
+        let finished_owner = Rc::new(ReadOwner::new(U64::new(72)));
+        let mut finished_call = ReadCall::begin(Rc::clone(&finished_owner)).unwrap();
+        let finished_fence = OriginalFreshQueryOwnerFence::new(Rc::clone(&finished_owner));
+        // Private DATA state injection isolates the finished-bit branch while
+        // the real owner is still busy/current; no native read is fabricated.
+        finished_call.finished = true;
+        assert!(
+            authenticate_armed_original_read(&finished_call, &finished_owner, &finished_fence)
+                .is_err()
+        );
+        assert!(finished_owner.busy.get());
+        finished_call.finish(false);
+        assert!(!finished_owner.busy.get());
+
+        owner.revoke();
+        assert!(authenticate_armed_original_read(&call, &owner, &fence).is_err());
+        assert!(owner.busy.get());
+        call.finish(false);
+        assert!(!owner.busy.get());
+        assert!(ReadCall::begin(Rc::clone(&owner)).is_err());
+        // Kernel/descriptor/registrar checks require a genuine native read and
+        // are not manufactured by this DATA fixture. Production invokes those
+        // checks between repeated calls to this same private token predicate.
     }
 }

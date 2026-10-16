@@ -657,3 +657,18 @@ impl NodeRuntime {
             .inspect_original_restoration_continuation(inspection)
     }
 }
+
+impl NodeRuntime {
+    pub(crate) fn inspect_original_host_restoration_continuation(
+        &self,
+        inspection: crate::node_admission::OriginalRestorationHostContinuationInspection<'_>,
+    ) -> Result<(), RuntimeError> {
+        let node = inspection.node_data()?;
+        let actual = self.nodes.get(node).ok_or(RuntimeError::UnknownNode)?;
+        let snapshot = self.snapshots.get(node).ok_or(RuntimeError::UnknownNode)?;
+        snapshot.validate_current(actual.as_ref())?;
+        actual.inspect_original_host_restoration_continuation(&inspection)?;
+        snapshot.validate_current(actual.as_ref())?;
+        inspection.authenticate_current()
+    }
+}

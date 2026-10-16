@@ -258,7 +258,29 @@ impl SimulationNode for CnpSemanticNode {
         self.source()?.status(self.scope()?)
     }
 
+    fn admit_original_lineage_restoration(
+        &mut self, context: &OriginalLineageRestoration<'_>,
+    ) -> Result<(), OperationFailure> {
+        if !context.is_original_installed_restoration_data() {
+            return Err(OperationFailure { effects: EffectKnowledge::None,
+                reason: "original lineage context admission is unsupported".into() });
+        }
+        self.admit_installed_restoration(context)
+    }
+
+    fn install_original_lineage_restored_custody(
+        &mut self, context: &OriginalLineageRestoration<'_>, activation: &WorldActivation,
+        operations: &[OperationAdmission], inputs: &[std::rc::Rc<RuntimeInputBatch>],
+    ) -> Result<(), OperationFailure> {
+        if !context.is_original_installed_restoration_data() {
+            return Err(OperationFailure { effects: EffectKnowledge::None,
+                reason: "complete original-lineage custody installation is unsupported".into() });
+        }
+        self.install_installed_restoration(context, activation, operations, inputs)
+    }
+
     fn arm(&mut self, world: &ActivationRecord) -> Result<ReadyAttestation, OperationFailure> {
+        if self.has_installed_restoration_data() { return self.arm_installed_restoration(world); }
         self.arm_original(world)
     }
 
@@ -275,6 +297,12 @@ impl SimulationNode for CnpSemanticNode {
         world: &ActivationRecord,
         ready: &ReadyAttestation,
     ) -> Result<Option<Vec<PreparedOwner>>, OperationFailure> {
+        if self.has_installed_restoration_data() {
+            self.validate_installed_ready(world, ready)?;
+            let original = self.state()?.prepared_owner.as_ref().ok_or_else(|| refused("selected prepared owner absent"))?;
+            self.check_owner(original, ready)?;
+            return Ok(Some(vec![original.clone()]));
+        }
         self.validate_ready(world, ready)?;
         let original = self
             .state()?
@@ -307,6 +335,11 @@ impl SimulationNode for CnpSemanticNode {
         world: &ActivationRecord,
         ready: &ReadyAttestation,
     ) -> Result<(), OperationFailure> {
+        if self.has_installed_restoration_data() {
+            self.validate_installed_ready(world, ready)?;
+            if self.state()?.activation_attempt.is_some() { return Err(refused("selected initial preparation already activated")); }
+            return Ok(());
+        }
         self.validate_ready(world, ready)?;
         if self.state()?.activation_attempt.is_some()
             || !self.state()?.inputs.is_empty()
@@ -490,6 +523,9 @@ impl SimulationNode for CnpSemanticNode {
         acknowledgement: &NativeInputAcknowledgement,
     ) -> Result<(), OperationFailure> {
         self.current()?;
+        if self.has_installed_restoration_data() {
+            return self.validate_installed_restoration_ack(batch, acknowledgement);
+        }
         self.check_ack(batch, acknowledgement)?;
         let original = self
             .state()?

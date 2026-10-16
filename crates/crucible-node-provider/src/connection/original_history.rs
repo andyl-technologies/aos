@@ -1,7 +1,7 @@
 //! Lends actual original literal history without copying or granting authority.
 
 use super::*;
-use crate::transport::original_frames::{OriginalFrame, OriginalFrameReservation};
+use crate::transport::original_frames::{FrameDirection, OriginalFrame, OriginalFrameReservation};
 use serde_json::Value;
 use std::cell::Ref;
 
@@ -34,30 +34,76 @@ impl OriginalNative5FrameHistory<'_> {
     ) -> Result<(), ProviderError> {
         self.actor.ensure_current()?;
         self.authority.ensure_live()?;
-        let frame = self
-            .original
-            .frame(literal_index)
-            .ok_or(ProviderError::Correlation(
-                "original literal position absent",
-            ))?;
-        if frame.direction != direction
-            || !frame.complete
-            || frame.transferred != frame.bytes.len()
-            || frame.bytes.len() < 4
-        {
-            return Err(ProviderError::Correlation(
-                "original literal direction/progress differs",
-            ));
-        }
-        let header: [u8; 4] = frame.bytes[..4]
-            .try_into()
-            .map_err(|_| ProviderError::Correlation("original literal header absent"))?;
-        if usize::try_from(u32::from_be_bytes(header)).ok() != Some(frame.bytes.len() - 4) {
-            return Err(ProviderError::Correlation(
-                "original literal header differs",
-            ));
-        }
-        crate::protocol_snapshot::owned11::correspondence::envelope(original, &frame.bytes[4..])
+        authenticate_original_frame_data(&self.original, original, direction, literal_index)
+    }
+
+    /// References one unique complete canonical incoming original without copying.
+    ///
+    /// This checks literal correspondence only. A caller that needs a completed
+    /// transaction must separately authenticate its actual pair and receipt.
+    /// It creates the same ordinary ContentRef as the canonical body constructor;
+    /// no response Value, encoded bank or native authorization is produced.
+    ///
+    /// # Errors
+    /// Refuses stale live owners, absent or repeated matching originals, wrong
+    /// direction, incomplete progress, malformed headers or noncanonical bodies.
+    pub fn original_canonical_reference_data(
+        &self,
+        original: &Envelope,
+    ) -> Result<crucible_node_contract::ContentRef, ProviderError> {
+        self.actor.ensure_current()?;
+        self.authority.ensure_live()?;
+        let reference = unique_original_reference_data(&self.original, original)?;
+        self.actor.ensure_current()?;
+        self.authority.ensure_live()?;
+        Ok(reference)
+    }
+
+    /// Names the explicit immutable-history, canonical comparison and hash views.
+    ///
+    /// The resulting ContentRef backing is a separate caller-owned constructor
+    /// obligation. This getter creates no bank, parser, reference or permission.
+    pub fn original_canonical_reference_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        crate::protocol_snapshot::owned11::correspondence::envelope_comparison_scratch_data()
+            + crate::protocol_snapshot::owned11::correspondence::envelope_counter_scratch_data()
+            + size_of::<Self>()
+            + size_of::<&Self>()
+            + size_of::<Result<Self, ProviderError>>()
+            + size_of::<Ref<'static, OriginalFrameReservation>>()
+            + size_of::<Result<Ref<'static, OriginalFrameReservation>, std::cell::BorrowError>>()
+            + size_of::<Result<Ref<'static, OriginalFrameReservation>, ProviderError>>()
+            + size_of::<&OriginalFrameReservation>()
+            + size_of::<&Envelope>()
+            + size_of::<OriginalFrame<'static>>()
+            + size_of::<Option<OriginalFrame<'static>>>()
+            + size_of::<FrameDirection>()
+            + size_of::<Option<&'static [u8]>>()
+            + size_of::<Result<&'static [u8], ProviderError>>()
+            + size_of::<crucible_node_contract::ContentRef>()
+            + size_of::<Result<crucible_node_contract::ContentRef, ProviderError>>()
+            + size_of::<Result<crucible_node_contract::ContentRef, crucible_node_contract::ContractError>>()
+            + size_of::<crucible_node_contract::HashRef>()
+            + size_of::<Result<crucible_node_contract::HashRef, crucible_node_contract::ContractError>>()
+            + size_of::<crucible_node_contract::U64>()
+            + size_of::<blake3::Hasher>()
+            + size_of::<blake3::Hash>()
+            // Pinned ArrayString<64> hex payload/length and domain-length scalar.
+            + size_of::<[u8; 64]>()
+            + 2 * size_of::<u32>()
+            + size_of::<[u8; 8]>()
+            + size_of::<String>()
+            + size_of::<&str>()
+            + size_of::<&[u8]>()
+            + size_of::<Result<u32, std::num::TryFromIntError>>()
+            + size_of::<Result<u64, std::num::TryFromIntError>>()
+            + size_of::<[u8; 4]>()
+            + size_of::<Result<[u8; 4], std::array::TryFromSliceError>>()
+            + size_of::<usize>()
+            + size_of::<Option<usize>>()
+            + size_of::<Result<usize, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+            + crate::transport::original_frames::original_history_guard_counter_scratch_data()
     }
 
     /// Borrows all actual framed originals with their exact progress and identities.
@@ -330,3 +376,174 @@ fn authenticate_restore_prefix_header_data(
 #[cfg(test)]
 #[path = "restore_prefix_header_tests.rs"]
 mod restore_prefix_header_tests;
+
+fn authenticate_original_frame_data(
+    bank: &OriginalFrameReservation,
+    original: &Envelope,
+    direction: FrameDirection,
+    literal_index: usize,
+) -> Result<(), ProviderError> {
+    let frame = bank.frame(literal_index).ok_or(ProviderError::Correlation(
+        "original literal position absent",
+    ))?;
+    if frame.direction != direction
+        || !frame.complete
+        || frame.transferred != frame.bytes.len()
+        || frame.bytes.len() < 4
+    {
+        return Err(ProviderError::Correlation(
+            "original literal direction/progress differs",
+        ));
+    }
+    let header: [u8; 4] = frame.bytes[..4]
+        .try_into()
+        .map_err(|_| ProviderError::Correlation("original literal header absent"))?;
+    if usize::try_from(u32::from_be_bytes(header)).ok() != Some(frame.bytes.len() - 4) {
+        return Err(ProviderError::Correlation(
+            "original literal header differs",
+        ));
+    }
+    crate::protocol_snapshot::owned11::correspondence::envelope(original, &frame.bytes[4..])
+}
+
+fn unique_original_reference_data(
+    bank: &OriginalFrameReservation,
+    original: &Envelope,
+) -> Result<crucible_node_contract::ContentRef, ProviderError> {
+    if !bank.complete() {
+        return Err(ProviderError::Correlation(
+            "canonical original history incomplete",
+        ));
+    }
+    let mut selected = None;
+    let mut index = 0usize;
+    while let Some(frame) = bank.frame(index) {
+        if frame.direction == FrameDirection::Incoming
+            && authenticate_original_frame_data(bank, original, FrameDirection::Incoming, index)
+                .is_ok()
+        {
+            if selected.is_some() {
+                return Err(ProviderError::Correlation(
+                    "canonical original response repeated",
+                ));
+            }
+            selected = Some(frame.bytes.get(4..).ok_or(ProviderError::Correlation(
+                "canonical original response header absent",
+            ))?);
+        }
+        index = index
+            .checked_add(1)
+            .ok_or(ProviderError::ResourceExhausted(
+                "canonical original response cursor",
+            ))?;
+    }
+    let selected = selected.ok_or(ProviderError::Correlation(
+        "canonical original response absent",
+    ))?;
+    crucible_node_contract::canonical::content_ref(selected, "application/json")
+        .map_err(ProviderError::from)
+}
+
+#[cfg(test)]
+mod canonical_reference_tests {
+    use super::*;
+    use crucible_node_contract::canonical;
+
+    // These are literal-bank DATA fixtures. They construct no live actor,
+    // completed transaction, Source receipt, scope or native permission.
+    fn original() -> Envelope {
+        let mut original = crate::envelope::tests::request();
+        original.message = crate::envelope::MessageKind::Response;
+        original.body.insert(
+            "canonical-nested-data".into(),
+            serde_json::json!({"empty": {}, "nested": [[], {"text": "quoted\"value"}]}),
+        );
+        original
+    }
+
+    fn canonical_body(original: &Envelope) -> Vec<u8> {
+        let value = serde_json::to_value(original).unwrap();
+        canonical::canonical_json(&value).unwrap()
+    }
+
+    fn append(
+        bank: &mut OriginalFrameReservation,
+        direction: FrameDirection,
+        body: &[u8],
+        finish: bool,
+        header_adjustment: u32,
+    ) {
+        let length = u32::try_from(body.len()).unwrap() + header_adjustment;
+        let slot = bank.begin(direction, body.len() + 4).unwrap();
+        bank.append(slot, &length.to_be_bytes()).unwrap();
+        bank.append(slot, body).unwrap();
+        if direction == FrameDirection::Outgoing {
+            bank.advance(slot, body.len() + 4).unwrap();
+        }
+        if finish {
+            bank.finish(slot).unwrap();
+        }
+    }
+
+    fn snapshot(bank: &OriginalFrameReservation) -> Vec<u8> {
+        serde_json::to_vec(&bank.protocol_view()).unwrap()
+    }
+
+    #[test]
+    fn unique_canonical_incoming_reference_matches_the_real_content_constructor() {
+        let original = original();
+        let body = canonical_body(&original);
+        let mut bank = OriginalFrameReservation::reserve(65536, 8).unwrap();
+        append(&mut bank, FrameDirection::Outgoing, &body, true, 0);
+        append(&mut bank, FrameDirection::Incoming, &body, true, 0);
+        let before = snapshot(&bank);
+
+        assert_eq!(
+            unique_original_reference_data(&bank, &original).unwrap(),
+            canonical::content_ref(&body, "application/json").unwrap()
+        );
+        assert_eq!(snapshot(&bank), before);
+    }
+
+    #[test]
+    fn missing_direction_progress_header_and_full_body_cannot_supply_a_reference() {
+        let original = original();
+        let body = canonical_body(&original);
+        let mut different = original.clone();
+        different.sequence = crucible_node_contract::U64::new(original.sequence.get() + 1);
+        let different = canonical_body(&different);
+        let noncanonical = String::from_utf8(body.clone()).unwrap().replace(':', ": ");
+
+        let cases = [
+            (FrameDirection::Outgoing, body.as_slice(), true, 0),
+            (FrameDirection::Incoming, body.as_slice(), false, 0),
+            (FrameDirection::Incoming, body.as_slice(), true, 1),
+            (FrameDirection::Incoming, different.as_slice(), true, 0),
+            (FrameDirection::Incoming, noncanonical.as_bytes(), true, 0),
+        ];
+        let empty = OriginalFrameReservation::reserve(65536, 8).unwrap();
+        assert!(unique_original_reference_data(&empty, &original).is_err());
+
+        for (direction, bytes, complete, header_adjustment) in cases {
+            let mut bank = OriginalFrameReservation::reserve(65536, 8).unwrap();
+            append(&mut bank, direction, bytes, complete, header_adjustment);
+            let before = snapshot(&bank);
+
+            assert!(unique_original_reference_data(&bank, &original).is_err());
+            assert_eq!(snapshot(&bank), before);
+        }
+    }
+
+    #[test]
+    fn a_repeated_matching_incoming_original_refuses_without_changing_the_bank() {
+        let original = original();
+        let body = canonical_body(&original);
+        let mut bank = OriginalFrameReservation::reserve(65536, 8).unwrap();
+        append(&mut bank, FrameDirection::Incoming, &body, true, 0);
+        append(&mut bank, FrameDirection::Incoming, &body, true, 0);
+        let before = snapshot(&bank);
+
+        assert!(unique_original_reference_data(&bank, &original).is_err());
+        assert_eq!(snapshot(&bank), before);
+    }
+}

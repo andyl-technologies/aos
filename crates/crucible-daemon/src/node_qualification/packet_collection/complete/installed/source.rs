@@ -91,7 +91,9 @@ pub(super) fn install(
 
     // The manifest validator has authenticated exact full outer14 DATA on both
     // immutable rosters and content before any Source bank or namespace effect.
-    let invocation_snapshot = selected.schema == "crucible.complete-scene.installation/3";
+    let restoration_activation = selected.schema == "crucible.complete-scene.installation/4";
+    let invocation_snapshot = restoration_activation
+        || selected.schema == "crucible.complete-scene.installation/3";
     let (sources, declarations) = prepare_sources(
         selected.participants,
         &selected.coordinator,
@@ -99,6 +101,7 @@ pub(super) fn install(
         selected.maximum_initial_bytes,
         selected.mechanism,
         invocation_snapshot,
+        restoration_activation,
         &content,
     )?;
     let mut namespace = Namespace::create(directory)?;
@@ -239,6 +242,7 @@ fn prepare_sources(
     maximum_initial_bytes: usize,
     mechanism: Option<CompleteMechanism>,
     invocation_snapshot: bool,
+    restoration_activation: bool,
     content: &std::collections::BTreeMap<ContentRef, Vec<u8>>,
 ) -> Result<([PacketCompleteSemanticSource; 3], [LaunchDeclaration; 3]), QualificationError> {
     let mut sources = Vec::with_capacity(3);
@@ -305,9 +309,13 @@ fn prepare_sources(
             // This fixed-stack, allocation-free DATA binder belongs to the
             // ordinary operator-install phase, like the tuple binders above.
             // Later runtime/native grants do not authorize this earlier work.
-            source
-                .bind_original_invocation_snapshot_declaration()
-                .map_err(|_| refused())?;
+            if restoration_activation {
+                source.bind_original_restoration_activation_declaration()
+                    .map_err(|_| refused())?;
+            } else {
+                source.bind_original_invocation_snapshot_declaration()
+                    .map_err(|_| refused())?;
+            }
             super::super::records::validate_original_native_definition_data(
                 &source, content, member,
             )?;
@@ -442,6 +450,16 @@ fn ready_sources(
             envelope_extensions.extend([
                 PACKET_FRESH_RESTORE_ALLOCATION_QUERY.into(),
                 PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING.into(),
+            ]);
+        }
+        if source.is_original_restoration_activation_declaration_data().map_err(|_| refused())? {
+            use crucible_node_provider::reference_packet::service::complete_restore::activation::{
+                PACKET_RESTORATION_ACTIVATION_FEATURE,
+                upload::PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE,
+            };
+            envelope_extensions.extend([
+                PACKET_RESTORATION_ACTIVATION_FEATURE.into(),
+                PACKET_RESTORATION_ACTIVATION_UPLOAD_FEATURE.into(),
             ]);
         }
         envelope_extensions.sort();

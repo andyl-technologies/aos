@@ -29,7 +29,7 @@ impl CnpSemanticLaunchGuard {
             .ok_or(RuntimeError::OwnerUnavailable)?;
         native.storage_origin_precredit_data()?;
         if let Some(runtime) = &native.runtime {
-            runtime.dormant_storage_data()?;
+            runtime.installed_storage_origin_precredit_data()?;
         }
         Ok(())
     }
@@ -112,7 +112,10 @@ impl CnpSemanticProcessCustody {
             executable_guard,
         } = self;
         if let Some(runtime) = runtime {
-            runtime.dormant_storage_data()?;
+            runtime.installed_storage_origin_precredit_data()?;
+            if runtime.installed_restoration.is_some() {
+                counter.add(runtime.installed_retained_storage_precredit_data(counter.remaining())?)?;
+            }
         }
         counter.path(directory)?;
         counter.content_reference(expected_executable)?;

@@ -116,6 +116,10 @@ fn source(archive: NativeArchiveRecord) -> CompleteOriginalRestorationSource {
             runtime,
             purpose: CompleteOriginalSourcePurpose::new(None),
             native_restoration_data: [None; 4],
+            validation_limits: crate::node_contract::HostSchedulingContinuationLimits {
+                maximum_record_bytes: 1024 * 1024,
+                lineage: crate::node_contract::OriginalInputLineageLimits::default(),
+            },
             process: std::process::id(),
             thread: thread::current().id(),
             host_issued: Cell::new(false),

@@ -138,11 +138,34 @@ impl PreparedHostSchedulingNode {
 }
 
 impl SimulationNode for PreparedHostSchedulingNode {
+    fn inspect_original_host_restoration_continuation(
+        &self,
+        inspection: &crate::node_admission::OriginalRestorationHostContinuationInspection<'_>,
+    ) -> Result<(), RuntimeError> {
+        inspection.authenticate_current()?;
+        let ticket = self.source.archive_ticket.as_ref().ok_or(RuntimeError::UnsupportedFacet)?;
+        if self.source.original_ticket.is_some()
+            || !Rc::ptr_eq(&ticket.source, &inspection.archive_data().inner)
+            || &self.route.node != inspection.node_data()?
+            || &self.activation != inspection.target_data()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let record = inspection.record_data()?;
+        self.validate_original_host_restoration_fields(
+            inspection.source_record_data(), record, inspection.source_record_data(),
+            &record.source_activation, inspection.target_data(), 7,
+            inspection.owner_mappings_data(), inspection.journals_data(),
+            inspection.archive_data().content(),
+        ).map_err(|_| RuntimeError::InvalidReceipt)?;
+        inspection.authenticate_current()
+    }
+
     fn retained_descriptor_views_precredit_data(&self) -> Result<Option<usize>, RuntimeError> {
         // The closed original Host owns only metadata/Rc scheduling state;
         // restoration, active readiness and unknown owners refuse below.
         if let Some(ticket) = self.source.archive_ticket.as_ref() {
-            self.original_dormant_restoration_node_precredit_data(usize::MAX)?;
+            self.original_installed_restoration_node_precredit_data(usize::MAX)?;
             return ticket
                 .source
                 .retained_descriptor_views_precredit_data()
@@ -158,7 +181,7 @@ impl SimulationNode for PreparedHostSchedulingNode {
     ) -> Result<Option<usize>, crate::node_contract::RuntimeError> {
         if self.source.archive_ticket.is_some() {
             return self
-                .original_dormant_restoration_node_precredit_data(maximum)
+                .original_installed_restoration_node_precredit_data(maximum)
                 .map(Some);
         }
         self.original_dormant_node_precredit_data(maximum).map(Some)
@@ -578,5 +601,9 @@ impl PreparedHostSchedulingNode {
             >()
             + std::mem::size_of::<std::rc::Weak<()>>()
             + std::mem::size_of::<Result<Option<usize>, RuntimeError>>()
+            + Self::original_installed_restoration_counter_scratch_data()
     }
 }
+
+#[path = "node/installed_storage.rs"]
+mod installed_storage;

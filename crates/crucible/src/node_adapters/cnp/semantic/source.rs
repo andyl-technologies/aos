@@ -185,6 +185,26 @@ pub enum CnpSemanticTransition {
 /// A generic frontend cannot infer a Clock, Compute or other role from labels.
 /// Unsupported facets must remain absent from the exact installation.
 pub trait CnpSemanticSource {
+    /// Publishes one separately admitted restoration phase from its real Source.
+    ///
+    /// Unsupported Sources refuse. A body, phase label or construction row
+    /// cannot replace the once-spent same-Window claim or its real controller.
+    /// Partial owners remain with the actual Source and controller on failure.
+    ///
+    /// # Errors
+    /// Refuses unsupported implementations, foreign/stale origins or claims,
+    /// changed originals, exhausted admission and failed transport or fences.
+    fn call_original_installed_restoration_activation_into<'a>(
+        &'a self,
+        _controller: &'a mut crucible_node_provider::client::CnpController,
+        _claim: crate::node_admission::OriginalInstalledRestorationActivationClaim,
+        _command: crucible_node_provider::reference_packet::service::complete_restore::activation::PacketRestorationActivationCommand,
+        _admitted: &super::OriginalSourceRestorationActivationConstructionData,
+        _completed: &mut Option<crucible_node_provider::bodies::ResponseBody>,
+    ) -> Result<super::OriginalSourceRestorationActivationVerifiedPhase<'a>, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
     /// Observes actual nested backing before allocation credit, using raw failures.
     ///
     /// Implementations walk the same concrete owner without heap allocation,

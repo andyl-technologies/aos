@@ -34,6 +34,8 @@ pub struct OriginalRestorationNodeInputs<'a> {
 /// loans from its own existing custody while its ordinary raw quote runs.
 pub(crate) struct OriginalRestorationSigningCollector<'a> {
     pub(crate) inputs: &'a OriginalRestorationConstructionInputs<'a>,
+    pub(crate) activation_request_ids: &'a [Id; 2],
+    pub(crate) coordinator: &'a OriginalRestorationCoordinatorConstructionData,
     pub(crate) cold: &'a crate::node_adapters::cnp::OriginalRestorationColdGroup,
     pub(crate) maximum_record_bytes: usize,
     pub(crate) observed_other_retained_bytes: usize,
@@ -56,6 +58,8 @@ pub struct OriginalRestorationNodeConstructionData {
     pub(crate) mapping_construction_bytes: usize,
     pub(crate) maximum_mapping_bytes: usize,
     pub(crate) signer: Option<crate::node_adapters::cnp::OriginalSourceRestoreSignerConstructionData>,
+    pub(crate) installed_custody: Option<crate::node_adapters::cnp::OriginalInstalledRestorationCustodyConstructionData>,
+    pub(crate) source_activation: Option<crate::node_adapters::cnp::OriginalSourceRestorationActivationConstructionData>,
 }
 
 impl OriginalRestorationNodeConstructionData {

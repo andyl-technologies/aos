@@ -90,13 +90,17 @@ pub struct OriginalLineageRestoration<'a> {
     scope: OriginalLineageNativeScope,
     content: &'a VerifiedStateContent,
     limits: OriginalLineageRestorationLimits,
-    ancestry: RestorationAncestry,
+    ancestry: RestorationAncestry<'a>,
 }
 
 #[derive(Clone, Copy)]
-enum RestorationAncestry {
+enum RestorationAncestry<'a> {
     Legacy,
     Exact,
+    Installed {
+        window: &'a Rc<crate::node_admission::CompleteOriginalRestorationWindow>,
+        plan: &'a crate::node_admission::InstalledConformancePlan,
+    },
 }
 
 impl OriginalLineageRestoration<'_> {
@@ -147,7 +151,10 @@ impl OriginalLineageRestoration<'_> {
 
     /// Borrows authenticated original bytes only by their complete typed reference.
     pub fn original_body(&self, reference: &ContentRef) -> Option<&[u8]> {
-        self.content.get(reference)
+        self.content.get(reference).or_else(|| match self.ancestry {
+            RestorationAncestry::Installed { window, plan: _ } => window.original_complete_scope_body_data(reference),
+            RestorationAncestry::Legacy | RestorationAncestry::Exact => None,
+        })
     }
 
     /// Checks this same runtime's continued native custody without executing work.
@@ -165,6 +172,10 @@ impl OriginalLineageRestoration<'_> {
             return Err(RuntimeError::ForeignAuthority);
         }
         match self.ancestry {
+            RestorationAncestry::Installed { window, plan } => {
+                window.validate_original_installed_context_current_data(plan, runtime,
+                    &self.source, &self.record, &self.scope, self.content)
+            },
             RestorationAncestry::Legacy => validate_nodes(
                 runtime,
                 &self.source,
@@ -429,3 +440,7 @@ fn validate_exact_nodes(
 
 #[path = "restoration_install.rs"]
 mod install;
+
+#[path = "restoration/installed_node.rs"]
+mod installed_node;
+pub use installed_node::OriginalInstalledRestorationNodeAssociation;

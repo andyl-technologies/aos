@@ -77,6 +77,11 @@ pub(crate) struct Native5Policy {
 }
 
 impl Native5Policy {
+    /// Borrows the same immutable policy selection for selected activation DATA checks.
+    pub(crate) fn original_restoration_activation_selection_data(&self) -> &PacketControlSelection {
+        &self.selection
+    }
+
     pub(crate) fn authenticate_owned11_snapshot_definition(&self) -> Result<(), ProviderError> {
         if self.capture_allocation_selection.is_some()
             || self.fresh_restore_allocation_selection.is_some()
@@ -732,6 +737,11 @@ impl BodySchemaVerifier for Native5Policy {
             return Err(ProviderError::Correlation(
                 "native5 body extensions unsupported",
             ));
+        }
+        if super::complete_restore::activation::verify_selected_wire_header_data(
+            &self.selection, authority, envelope,
+        )? {
+            return authority.ensure_live();
         }
         if self.verify_complete_restore_envelope(authority, envelope, received)? {
             return authority.ensure_live();

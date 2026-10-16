@@ -157,6 +157,7 @@ pub(super) struct OriginalInput {
 /// or retained results. The independently reserved supervisor receives them
 /// with the same actual Child and complete raw CNP/content journals.
 pub(super) struct SemanticRuntimeCustody {
+    pub(super) installed_restoration: Option<super::node::installed_restoration::InstalledRestorationCustody>,
     pub(super) arm_attempt: Option<ActivationRecord>,
     pub(super) ready: Option<ReadyAttestation>,
     pub(super) prepared_owner: Option<PreparedOwner>,
@@ -176,6 +177,7 @@ pub(super) struct SemanticRuntimeCustody {
 impl Default for SemanticRuntimeCustody {
     fn default() -> Self {
         Self {
+            installed_restoration: None,
             arm_attempt: None,
             ready: None,
             prepared_owner: None,

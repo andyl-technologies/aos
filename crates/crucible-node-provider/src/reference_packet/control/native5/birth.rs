@@ -186,6 +186,7 @@ impl PacketControl {
             complete_coordinator: Some(coordinator),
             complete_storage: None,
             complete_restored_hold: None,
+            restoration_activation_required: false,
             complete_restored_evidence: None,
             complete_capture_profile: None,
             complete_confirmation_selection: None,

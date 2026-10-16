@@ -23,4 +23,5 @@ pub use input::*;
 pub use observation::*;
 pub use policy::*;
 pub use scheduler::*;
+pub(crate) use scheduler::OriginalSchedulingRestorationPublicationProjection;
 pub use snapshot::*;

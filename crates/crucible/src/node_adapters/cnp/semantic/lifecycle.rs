@@ -107,6 +107,7 @@ impl CnpSemanticNode {
         ready: &ReadyAttestation,
     ) -> Result<(), OperationFailure> {
         self.current()?;
+        if self.has_installed_restoration_data() { return self.validate_installed_ready(world, ready); }
         if self.state()?.arm_attempt.as_ref() != Some(world)
             || self.state()?.ready.as_ref() != Some(ready)
             || self.state()?.active.is_some()
@@ -146,6 +147,7 @@ impl CnpSemanticNode {
         world: &WorldActivation,
     ) -> Result<(), OperationFailure> {
         self.current()?;
+        if self.has_installed_restoration_data() { return self.activate_installed_restoration(world); }
         if let Some(original) = &self.state()?.activation_attempt {
             if !original.same_authority(world) {
                 return Err(refused(

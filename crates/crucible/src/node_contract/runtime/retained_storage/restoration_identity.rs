@@ -37,6 +37,21 @@ impl NodeRuntime {
 }
 
 impl OriginalRestorationRuntimeMemberIdentity {
+    pub(crate) fn authenticate_world_activation_data(
+        &self, world: &crate::node_contract::WorldActivation,
+        expected: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        if world.record() != expected { return Err(RuntimeError::ForeignAuthority); }
+        let authority = self.runtime.authority.upgrade().ok_or(RuntimeError::ForeignAuthority)?;
+        if !std::rc::Rc::ptr_eq(&authority, &world.authority) { return Err(RuntimeError::ForeignAuthority); }
+        self.authenticate_current(&expected.world_binding_hash)
+    }
+
+    pub(crate) fn authenticate_runtime_data(&self, runtime: &NodeRuntime, world: &HashRef) -> Result<(), RuntimeError> {
+        self.runtime.authenticate(runtime)?;
+        self.authenticate_current(world)
+    }
+
     pub(crate) fn authenticate_current(&self, world: &HashRef) -> Result<(), RuntimeError> {
         if self.runtime.process != std::process::id()
             || self.runtime.thread != std::thread::current().id()
@@ -90,6 +105,9 @@ impl OriginalRestorationRuntimeMemberIdentity {
 
     pub(crate) fn counter_scratch_data() -> usize {
         std::mem::size_of::<Self>()
+            + std::mem::size_of::<std::rc::Rc<()>>()
+            + std::mem::size_of::<Option<std::rc::Rc<()>>>()
+            + std::mem::size_of::<Result<std::rc::Rc<()>, RuntimeError>>()
             + OriginalRestorationSchedulingFence::counter_scratch_data()
             + std::mem::size_of::<Result<Self, RuntimeError>>()
             + std::mem::size_of::<Result<usize, RuntimeError>>()

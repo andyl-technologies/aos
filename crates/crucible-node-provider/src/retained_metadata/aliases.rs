@@ -55,6 +55,10 @@ pub enum MetadataSharedKind {
     NativeFreshReportAttempt,
     /// Names the real verified native Prepare attempt during input admission.
     NativeRestorePrepareAttempt,
+    /// Names one actual separately funded native restoration activation cell.
+    NativeRestorationActivationAttempt,
+    /// Names one actual separately funded native world-content upload cell.
+    NativeRestorationUploadAttempt,
 }
 
 impl MetadataSharedKind {
@@ -90,6 +94,8 @@ impl MetadataSharedKind {
             Self::NativeControlIdentity => "native-control-identity",
             Self::NativeFreshReportAttempt => "native-fresh-report-attempt",
             Self::NativeRestorePrepareAttempt => "native-restore-prepare-attempt",
+            Self::NativeRestorationActivationAttempt => "native-restoration-activation-attempt",
+            Self::NativeRestorationUploadAttempt => "native-restoration-upload-attempt",
         }
     }
 }

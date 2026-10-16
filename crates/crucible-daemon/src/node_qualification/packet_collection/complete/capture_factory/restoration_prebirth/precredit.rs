@@ -55,6 +55,10 @@ impl PacketCompleteRestorationPrebirth {
             .ok_or(RuntimeError::OwnerUnavailable)?
             .source();
         let mut counter = super::super::super::retained::Counter::new(maximum);
+        if let Some(publication) = &self.publication {
+            counter.add(publication.retained_storage_data(counter.remaining())?)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
         counter
             .rc(original)
             .map_err(|_| RuntimeError::ResourceLimit)?;

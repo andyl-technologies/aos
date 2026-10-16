@@ -23,6 +23,17 @@ pub use restore::{
     original_native_restore_commit_construction_counter_scratch_data,
     original_native_restore_commit_construction_storage_data,
 };
+pub(crate) use restore::{
+    NativeRestorationActivationAttempt, OriginalRestorationActivationPermit,
+    NativeRestorationUploadAttempt, OriginalRestorationUploadPermit,
+    OriginalRestorationActivationRequirement,
+    original_native_restoration_upload_attempt_backing_data,
+    original_native_restoration_upload_counter_scratch_data,
+    original_native_restoration_activation_attempt_backing_data,
+    original_native_restoration_activation_counter_scratch_data,
+    original_native_restoration_activation_ingress_storage_data,
+    original_native_restoration_activation_ingress_row_data,
+};
 #[path = "restore_prepare.rs"]
 mod restore_prepare;
 pub(crate) use restore_prepare::{
@@ -78,6 +89,8 @@ pub(crate) struct NativeAckBoot {
     restoration: Option<Rc<RefCell<restore::NativeCompleteRestoreAttempt>>>,
     transfer: Option<Rc<RefCell<restore_prepare::NativeCompleteRestorePrepareAttempt>>>,
     startup: Option<native_startup::OriginalNativeStartupBoot>,
+    restoration_activation: [Option<Rc<RefCell<NativeRestorationActivationAttempt>>>; 2],
+    restoration_uploads: [Option<Rc<RefCell<NativeRestorationUploadAttempt>>>; 2],
 }
 
 /// Returns the actual shared boot payload layout for historical row validation.
@@ -186,6 +199,8 @@ impl NativeAckBoot {
             attempted: false,
             verified: false,
             restoration: None,
+            restoration_activation: std::array::from_fn(|_| None),
+            restoration_uploads: std::array::from_fn(|_| None),
             transfer: None,
             startup,
         }));

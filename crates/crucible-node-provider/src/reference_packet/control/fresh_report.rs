@@ -75,6 +75,7 @@ impl PacketControl {
             program,
             complete_restored_evidence,
             complete_restored_hold,
+            restoration_activation_required,
             capture_creator,
             capture_identity,
             originals,
@@ -105,6 +106,7 @@ impl PacketControl {
             complete_restore_input_emitter_selection,
             complete_capture_allocation_selection,
         } = self;
+        observer.observe(restoration_activation_required)?;
         observer.observe(selection)?;
         roots.observe_shared(
             observer,

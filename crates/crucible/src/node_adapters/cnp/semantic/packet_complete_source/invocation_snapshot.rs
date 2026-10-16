@@ -29,6 +29,7 @@ use std::mem::size_of;
 pub(super) enum Declaration {
     Attempted,
     Invocation14,
+    RestorationActivation14,
 }
 
 impl PacketCompleteSemanticSource {
@@ -92,8 +93,14 @@ impl PacketCompleteSemanticSource {
         match self.invocation_snapshot_declaration {
             None => Ok(false),
             Some(Declaration::Attempted) => Err(RuntimeError::UnsupportedFacet),
-            Some(Declaration::Invocation14) => {
+            Some(Declaration::Invocation14 | Declaration::RestorationActivation14) => {
                 self.authenticate_invocation_snapshot_declaration_tuple_data()?;
+                if matches!(
+                    self.invocation_snapshot_declaration,
+                    Some(Declaration::RestorationActivation14)
+                ) {
+                    self.authenticate_restoration_activation_declaration_tuple_data()?;
+                }
                 Ok(true)
             }
         }
@@ -127,6 +134,7 @@ impl PacketCompleteSemanticSource {
             + size_of::<Result<bool, RuntimeError>>()
             + size_of::<Result<(), RuntimeError>>()
             + native_owned14_snapshot_schema_counter_scratch_data()
+            + restoration_activation::counter_scratch_data()
     }
 
     fn authenticate_invocation_snapshot_declaration_tuple_data(&self) -> Result<(), RuntimeError> {
@@ -270,3 +278,6 @@ mod tests {
         assert!(source.ack_peer_birth.get_mut().is_none());
     }
 }
+
+#[path = "invocation_snapshot/restoration_activation.rs"]
+mod restoration_activation;

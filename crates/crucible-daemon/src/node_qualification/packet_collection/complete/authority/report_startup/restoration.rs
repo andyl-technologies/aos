@@ -132,11 +132,8 @@ impl PacketCompleteReportStartupHolder {
             return Err(RuntimeError::ForeignAuthority);
         };
         let capsule = capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
-        capsule.authenticate_restoration_target_storage_data(
-            inputs.archive,
-            inputs.runtime,
-            scope.plan(),
-            inputs.activation,
+        capsule.authenticate_restoration_storage_scope_data(
+            inputs.archive, inputs.runtime, scope.plan(), inputs.activation, Some(scope),
         )?;
         let requests = self
             .restoration_requests
@@ -163,6 +160,7 @@ impl PacketCompleteReportStartupHolder {
             .map_err(|_| RuntimeError::ResourceLimit)?;
         let scratch = [
             base.declared_observer_scratch_bytes,
+            crate::node_observed_executor::StoredWorldActivationPublisher::original_directory_publication_counter_scratch_data()?,
             InstalledConformancePlan::original_restoration_construction_counter_scratch_data()?,
             PacketCompleteRestorationPrebirth::restoration_holder_counter_scratch_data(),
             size_of::<std::cell::Ref<'static, PacketCompleteReportStartupHolder>>(),
@@ -249,15 +247,21 @@ impl InstalledPacketCompleteCollectionAuthority {
             .filter(|total| *total <= maximum)
             .ok_or(RuntimeError::ResourceLimit)?;
         let retained_descriptors = held.original_restoration_holder_descriptor_data(scope)?;
+        let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose else {
+            return Err(RuntimeError::ForeignAuthority);
+        };
+        let (publication_requested, publication_descriptors) = capsule.try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?.original_publication_future_data(scope, maximum)?;
         held.authenticate_restoration_scope_data(self, scope)?;
         Ok(OriginalRestorationConstructionStorage {
             retained_holder_bytes,
             retained_descriptors,
-            maximum_simultaneous_transient_bytes: self
-                .original_initial_callback_transient_data()?,
+            maximum_simultaneous_transient_bytes: self.original_initial_callback_transient_data()?
+                .checked_add(publication_requested).ok_or(RuntimeError::ResourceLimit)?,
             // The real concrete qualification callback opens one kernel File;
             // Core separately counts the actual Source's three nested opens.
-            maximum_simultaneous_transient_descriptors: 1,
+            maximum_simultaneous_transient_descriptors: 1usize.checked_add(publication_descriptors)
+                .ok_or(RuntimeError::ResourceLimit)?,
         })
     }
 
@@ -279,6 +283,12 @@ impl InstalledPacketCompleteCollectionAuthority {
             || (0..3).any(|index| !Rc::ptr_eq(&scope.sources()[index], &self.roster.sources[index]))
         {
             return Err(RuntimeError::ForeignAuthority);
+        }
+        if scope.is_original_publication_member_data() {
+            let publisher = *held.restoration_publication.get().ok_or(RuntimeError::OwnerUnavailable)?;
+            if !scope.is_original_publisher_data(publisher) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
         }
         // No capsule/SDK/preparation/runtime/Source bank is borrowed here.
         // Core repeats the same actual spent ticket and live scheduler fence
@@ -558,3 +568,6 @@ impl PacketCompleteReportStartupHolder {
             )
     }
 }
+
+#[path = "restoration/installed.rs"]
+mod installed;

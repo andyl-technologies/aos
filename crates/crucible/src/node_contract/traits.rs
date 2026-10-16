@@ -860,6 +860,20 @@ pub trait SimulationNode {
         })
     }
 
+    /// Authenticates the actual fourth Host2 owner before installed scope issuance.
+    ///
+    /// This separate closed adapter hook grants no context or readiness. Unknown
+    /// nodes refuse; the genuine Host validates its original common-state owner.
+    ///
+    /// # Errors
+    /// Refuses another source/runtime/node, unsupported ownership or changed journals.
+    fn inspect_original_host_restoration_continuation(
+        &self,
+        _inspection: &crate::node_admission::OriginalRestorationHostContinuationInspection<'_>,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
     /// Authenticates actual preserved native journals before a Runtime7 context exists.
     ///
     /// This read-only selected hook must check the complete signed source roster,

@@ -77,6 +77,8 @@ pub struct PacketCompleteReportStartupHolder {
     restoration_issuing: Cell<bool>,
     restoration_requests: RefCell<restoration::OriginalRestorationRequestOwners>,
     restoration_window: OnceCell<Rc<crucible::node_admission::CompleteOriginalRestorationWindow>>,
+    // Identity of the immutable inline publisher slot in the retained capsule.
+    restoration_publication: OnceCell<*const ()>,
     restoration_unplaced_window:
         RefCell<Option<Rc<crucible::node_admission::CompleteOriginalRestorationWindow>>>,
 }
@@ -260,6 +262,7 @@ impl PacketCompleteReportStartupHolder {
             restoration_issuing: Cell::new(false),
             restoration_requests: RefCell::new(restoration::OriginalRestorationRequestOwners::new()),
             restoration_window: OnceCell::new(),
+            restoration_publication: OnceCell::new(),
             restoration_unplaced_window: RefCell::new(None),
         }));
         authority

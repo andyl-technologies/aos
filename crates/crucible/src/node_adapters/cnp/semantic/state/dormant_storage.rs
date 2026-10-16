@@ -12,6 +12,7 @@ impl SemanticRuntimeCustody {
         &self,
     ) -> Result<(), RuntimeError> {
         let Self {
+            installed_restoration,
             arm_attempt,
             ready,
             prepared_owner,
@@ -27,7 +28,8 @@ impl SemanticRuntimeCustody {
             credit,
             quarantined: _,
         } = self;
-        if arm_attempt.is_some()
+        if installed_restoration.is_some()
+            || arm_attempt.is_some()
             || ready.is_some()
             || prepared_owner.is_some()
             || activate_response.is_some()
