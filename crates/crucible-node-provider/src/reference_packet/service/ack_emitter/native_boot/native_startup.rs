@@ -68,7 +68,9 @@ impl NativeAckBoot {
         } else {
             self.authenticate_native_startup_data()?
         };
-        original.allocation.restore_prepare
+        original
+            .allocation
+            .restore_prepare
             .ok_or(ProviderError::Correlation(
                 "native Prepare startup not selected",
             ))

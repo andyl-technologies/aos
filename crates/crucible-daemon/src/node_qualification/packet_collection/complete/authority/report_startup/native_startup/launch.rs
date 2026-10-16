@@ -393,8 +393,11 @@ impl PacketCompleteReportStartupHolder {
                     .begin_original_canonical_ack_private_boot()
                     .map_err(|_| RuntimeError::ForeignAuthority)?,
             );
-            let material = materials[member].as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
-            let invocation = material.requires_original_native_invocation_wire_data()
+            let material = materials[member]
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            let invocation = material
+                .requires_original_native_invocation_wire_data()
                 .map_err(|_| RuntimeError::ForeignAuthority)?;
             if invocation {
                 material.prepare_original_native_invocation_wire_into(
@@ -408,7 +411,8 @@ impl PacketCompleteReportStartupHolder {
                     &held.authority.private_launches[member],
                     &mut peer.wire,
                 )
-            }.map_err(|_| RuntimeError::OwnerUnavailable)?;
+            }
+            .map_err(|_| RuntimeError::OwnerUnavailable)?;
             materials[member]
                 .as_ref()
                 .ok_or(RuntimeError::OwnerUnavailable)?
@@ -439,7 +443,11 @@ impl PacketCompleteReportStartupHolder {
             command
                 .env_clear()
                 .arg(&inputs.socket)
-                .arg(if invocation { INVOCATION_ARGUMENT } else { STARTUP_ARGUMENT })
+                .arg(if invocation {
+                    INVOCATION_ARGUMENT
+                } else {
+                    STARTUP_ARGUMENT
+                })
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .process_group(0);

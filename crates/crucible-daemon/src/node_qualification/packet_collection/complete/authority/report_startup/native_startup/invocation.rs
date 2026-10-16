@@ -19,9 +19,12 @@ impl InstalledPacketCompleteCollectionAuthority {
             StartupHolderPurpose::OriginalScene => {
                 self.host.authenticate_original_report_startup_data()?;
                 [
-                    PacketNativeInvocationPurposeData::original_execution_data(&launch[0]).map_err(|_| RuntimeError::ForeignAuthority)?,
-                    PacketNativeInvocationPurposeData::original_execution_data(&launch[1]).map_err(|_| RuntimeError::ForeignAuthority)?,
-                    PacketNativeInvocationPurposeData::original_execution_data(&launch[2]).map_err(|_| RuntimeError::ForeignAuthority)?,
+                    PacketNativeInvocationPurposeData::original_execution_data(&launch[0])
+                        .map_err(|_| RuntimeError::ForeignAuthority)?,
+                    PacketNativeInvocationPurposeData::original_execution_data(&launch[1])
+                        .map_err(|_| RuntimeError::ForeignAuthority)?,
+                    PacketNativeInvocationPurposeData::original_execution_data(&launch[2])
+                        .map_err(|_| RuntimeError::ForeignAuthority)?,
                 ]
             }
             StartupHolderPurpose::FreshRestoration(capsule) => {

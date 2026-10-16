@@ -214,5 +214,11 @@ pub struct HistoricalCompleteRestoreOwner {
 }
 
 // The closed owning walk fails to compile if a historical field is added.
-super::retained_storage::fields!(HistoricalAssignedCompleteRestore, original, bytes, slot, response);
+super::retained_storage::fields!(
+    HistoricalAssignedCompleteRestore,
+    original,
+    bytes,
+    slot,
+    response
+);
 super::retained_storage::fields!(HistoricalCompleteRestoreOwner, assigned, mapping, nonce);

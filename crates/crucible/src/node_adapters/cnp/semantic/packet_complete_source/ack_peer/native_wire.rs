@@ -120,7 +120,11 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
     ) -> Result<&'static str, OperationFailure> {
         self.authenticate_startup_member()?;
         if let Some(state) = &self.original.native_startup {
-            if state.original_invocation_data().map_err(|_| refused("native invocation Source binding"))?.is_some() {
+            if state
+                .original_invocation_data()
+                .map_err(|_| refused("native invocation Source binding"))?
+                .is_some()
+            {
                 return Ok(crucible_node_provider::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA);
             }
         }
@@ -157,7 +161,11 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
             .native_startup
             .as_ref()
             .ok_or_else(|| refused("native startup allocation not finalized"))?;
-        if finalized.original_invocation_data().map_err(|_| refused("native invocation Source binding"))?.is_some() {
+        if finalized
+            .original_invocation_data()
+            .map_err(|_| refused("native invocation Source binding"))?
+            .is_some()
+        {
             return Err(refused("invocation15 requires its original wire entry"));
         }
         if !finalized.complete

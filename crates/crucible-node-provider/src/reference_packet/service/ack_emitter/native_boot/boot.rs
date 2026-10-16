@@ -30,10 +30,10 @@ pub(crate) use report_startup::{
     OriginalNativeReportStartupAllocation, original_native_report_startup_scope_layout_data,
 };
 
-#[path = "native_startup.rs"]
-pub(super) mod native_startup;
 #[path = "boot_invocation.rs"]
 mod invocation;
+#[path = "native_startup.rs"]
+pub(super) mod native_startup;
 pub(crate) use native_startup::OriginalNativeBirthReadScope;
 
 // Keep the prospective baseline producer tied to the exact constructor banks.
@@ -148,7 +148,9 @@ impl NativeAckBoot {
         launch: &PacketNative5SourceLaunch,
         original_launch_body: Vec<u8>,
         startup: Option<native_startup::OriginalNativeStartupBoot>,
-        invocation: Option<crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData>,
+        invocation: Option<
+            crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData,
+        >,
         completed: &mut Option<Rc<RefCell<Self>>>,
     ) -> Result<(), ProviderError> {
         let original = Self::retain_boot_data_into(data, original_launch_body, startup, completed);
@@ -189,7 +191,9 @@ impl NativeAckBoot {
     fn prepare_retained_data(
         original: &Rc<RefCell<Self>>,
         launch: &PacketNative5SourceLaunch,
-        invocation: Option<crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData>,
+        invocation: Option<
+            crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData,
+        >,
     ) -> Result<(), ProviderError> {
         let mut owner = original
             .try_borrow_mut()
@@ -389,7 +393,8 @@ impl NativeAckBoot {
             )? != purpose {
                 return Err(ProviderError::Correlation("native invocation Source purpose differs"));
             }
-            expected_source["invocation"] = serde_json::to_value(purpose).map_err(ContractError::from)?;
+            expected_source["invocation"] =
+                serde_json::to_value(purpose).map_err(ContractError::from)?;
         }
         if *source != expected_source {
             return Err(ProviderError::Correlation(

@@ -49,4 +49,10 @@ impl HistoricalType for HistoricalFrameReaderFacts {
 }
 
 // The closed owning walk fails to compile if a historical field is added.
-super::retained_storage::fields!(HistoricalFrameReaderFacts, maximum_bytes, maximum_nesting, failed, last_original_slot);
+super::retained_storage::fields!(
+    HistoricalFrameReaderFacts,
+    maximum_bytes,
+    maximum_nesting,
+    failed,
+    last_original_slot
+);

@@ -235,7 +235,39 @@ impl HistoricalType for HistoricalNativeExtensionNegotiation {
 }
 
 // The closed owning walk fails to compile if a historical field is added.
-super::super::retained_storage::fields!(HistoricalNativeInstallation, session, incarnation, implementation, launch_receipt, admission_token);
-super::super::retained_storage::fields!(HistoricalNativeNegotiationPolicy, supported_features, required_features, provider_limits, required_schemas, required_guarantees, envelope_extension_features);
-super::super::retained_storage::fields!(HistoricalNativeNegotiation, installation, policy, epoch, current_connection, selected_features, resume_token, contained, hello_request_ids, shared_epoch, registration_gate_poisoned);
-super::super::retained_storage::fields!(HistoricalNativeExtensionNegotiation, negotiation, installed_registry_group, selected);
+super::super::retained_storage::fields!(
+    HistoricalNativeInstallation,
+    session,
+    incarnation,
+    implementation,
+    launch_receipt,
+    admission_token
+);
+super::super::retained_storage::fields!(
+    HistoricalNativeNegotiationPolicy,
+    supported_features,
+    required_features,
+    provider_limits,
+    required_schemas,
+    required_guarantees,
+    envelope_extension_features
+);
+super::super::retained_storage::fields!(
+    HistoricalNativeNegotiation,
+    installation,
+    policy,
+    epoch,
+    current_connection,
+    selected_features,
+    resume_token,
+    contained,
+    hello_request_ids,
+    shared_epoch,
+    registration_gate_poisoned
+);
+super::super::retained_storage::fields!(
+    HistoricalNativeExtensionNegotiation,
+    negotiation,
+    installed_registry_group,
+    selected
+);

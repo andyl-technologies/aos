@@ -562,6 +562,31 @@ pub(super) const PIN_IDENTITY_SCRATCH_BYTES: usize = std::mem::size_of::<[u64; 2
 
 // The closed owning walk fails to compile if a historical field is added.
 super::super::retained_storage::fields!(HistoricalNativeBlobPin, owner, schema, phase, receipt);
-super::super::retained_storage::fields!(HistoricalNativeBlobRecord, content, length, bytes, chunks, verified, quarantined, exposed, retirement, pins, charged);
-super::super::retained_storage::fields!(HistoricalNativeBlobLedger, reserved, next_pin, pins_created, records);
-super::super::retained_storage::fields!(HistoricalNativeBlobReceiver, session, incarnation, limits, state, supervisor_group);
+super::super::retained_storage::fields!(
+    HistoricalNativeBlobRecord,
+    content,
+    length,
+    bytes,
+    chunks,
+    verified,
+    quarantined,
+    exposed,
+    retirement,
+    pins,
+    charged
+);
+super::super::retained_storage::fields!(
+    HistoricalNativeBlobLedger,
+    reserved,
+    next_pin,
+    pins_created,
+    records
+);
+super::super::retained_storage::fields!(
+    HistoricalNativeBlobReceiver,
+    session,
+    incarnation,
+    limits,
+    state,
+    supervisor_group
+);

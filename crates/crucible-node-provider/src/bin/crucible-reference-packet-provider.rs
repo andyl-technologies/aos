@@ -53,9 +53,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err("native startup socket path exceeds fixed original bound".into());
         }
         let mut service = match edition {
-            PrivateBootstrap::Canonical => PacketSourceService::accept_original_private_bootstrap(&socket, std::io::stdin())?,
-            PrivateBootstrap::Startup14 => PacketSourceService::accept_original_native_startup_bootstrap(&socket)?,
-            PrivateBootstrap::Invocation15 => PacketSourceService::accept_original_native_invocation_bootstrap(&socket)?,
+            PrivateBootstrap::Canonical => {
+                PacketSourceService::accept_original_private_bootstrap(&socket, std::io::stdin())?
+            }
+            PrivateBootstrap::Startup14 => {
+                PacketSourceService::accept_original_native_startup_bootstrap(&socket)?
+            }
+            PrivateBootstrap::Invocation15 => {
+                PacketSourceService::accept_original_native_invocation_bootstrap(&socket)?
+            }
         };
         return drive(&mut service);
     }

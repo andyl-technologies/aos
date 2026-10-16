@@ -8,13 +8,14 @@
 //! accepts a restoration target or settled transfer. Snapshot outer14 and its
 //! exact Source definition remain mandatory separate caller/decoder joins.
 
-use super::*;
 use super::native_startup_protocol::{NativeCurrentConnectionView, NativeInvocationConnectionView};
+use super::*;
 use crate::protocol_snapshot::{ProtocolCaptureCut, ProtocolSnapshotReservation};
 use crate::reference_packet::endpoint::OriginalNativeCaptureAllocationOwned12;
-use crate::reference_packet::service::{OriginalNativeCaptureContext,
-    capture_allocation::PacketNative5CaptureAllocationSelection,
-    fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection};
+use crate::reference_packet::service::{
+    OriginalNativeCaptureContext, capture_allocation::PacketNative5CaptureAllocationSelection,
+    fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection,
+};
 
 impl Connection<crate::client::DeadlineStream> {
     /// Captures the actual selected connection, service and completed quote owner.
@@ -42,7 +43,8 @@ impl Connection<crate::client::DeadlineStream> {
                 "selected native Capture codec role differs",
             ));
         };
-        if policy.fresh_restore_allocation_selection() != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
+        if policy.fresh_restore_allocation_selection()
+            != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
             || policy.capture_allocation_selection()
                 != Some(PacketNative5CaptureAllocationSelection::OriginalObserve12)
         {
@@ -160,7 +162,8 @@ impl Connection<crate::client::DeadlineStream> {
         let Native5CodecOwner::NativePacket(policy) = codec.as_ref() else {
             return Err(after_refused());
         };
-        if policy.fresh_restore_allocation_selection() != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
+        if policy.fresh_restore_allocation_selection()
+            != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
             || policy.capture_allocation_selection()
                 != Some(PacketNative5CaptureAllocationSelection::OriginalObserve12)
         {
@@ -258,7 +261,12 @@ impl Connection<crate::client::DeadlineStream> {
         if nodes > 131_072 {
             return Err(after_credit());
         }
-        let facts = super::native_owned14::after_growth_data(quote, literal, descriptors, reservation.maximum_bytes())?;
+        let facts = super::native_owned14::after_growth_data(
+            quote,
+            literal,
+            descriptors,
+            reservation.maximum_bytes(),
+        )?;
         allocation.authenticate_original(self, blobs, context)?;
         Ok(facts)
     }

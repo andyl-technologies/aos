@@ -68,8 +68,12 @@ impl Serialize for CanonicalPurpose<'_> {
         }
         f.serialize_field("schema", SCHEMA)?;
         match &self.0.purpose {
-            Purpose::Original => f.serialize_field("source", &Option::<CanonicalSource<'_>>::None)?,
-            Purpose::Restoration(source) => f.serialize_field("source", &Some(CanonicalSource(source)))?,
+            Purpose::Original => {
+                f.serialize_field("source", &Option::<CanonicalSource<'_>>::None)?
+            }
+            Purpose::Restoration(source) => {
+                f.serialize_field("source", &Some(CanonicalSource(source)))?
+            }
         }
         f.serialize_field("target", &CanonicalTarget(&self.0.target))?;
         f.end()
@@ -94,11 +98,16 @@ struct Identity {
 
 impl Write for Identity {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.bytes = self.bytes.checked_add(bytes.len()).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+        self.bytes = self
+            .bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
         self.hasher.update(bytes);
         Ok(bytes.len())
     }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Streams the exact new wrapper around an independently authenticated original bank.
@@ -130,9 +139,15 @@ pub fn original_native_invocation_launch_identity_data(
     purpose: &PacketNativeInvocationPurposeData,
     canonical_launch5: &[u8],
 ) -> Result<PacketNativeInvocationLaunchIdentityData, ProviderError> {
-    let mut output = Identity { bytes: 0, hasher: blake3::Hasher::new() };
+    let mut output = Identity {
+        bytes: 0,
+        hasher: blake3::Hasher::new(),
+    };
     write_original_native_invocation_launch_data(purpose, canonical_launch5, &mut output)?;
-    Ok(PacketNativeInvocationLaunchIdentityData { encoded_bytes: output.bytes, raw_digest: *output.hasher.finalize().as_bytes() })
+    Ok(PacketNativeInvocationLaunchIdentityData {
+        encoded_bytes: output.bytes,
+        raw_digest: *output.hasher.finalize().as_bytes(),
+    })
 }
 
 pub(super) const fn counter_scratch_data() -> usize {
@@ -152,16 +167,23 @@ mod tests {
     use serde_json::json;
 
     fn purposes() -> [PacketNativeInvocationPurposeData; 2] {
-        let runtime = canonical::content_ref(b"runtime", "application/runtime;note=\"quoted\"").unwrap();
+        let runtime =
+            canonical::content_ref(b"runtime", "application/runtime;note=\"quoted\"").unwrap();
         let native = canonical::content_ref(b"native", "application/native;note=\\path").unwrap();
         let target = super::super::tests::target();
         [
-            PacketNativeInvocationPurposeData { target, purpose: Purpose::Original },
-            PacketNativeInvocationPurposeData { target, purpose: Purpose::Restoration(SourceData {
-                runtime: ReferenceData::original(&runtime).unwrap(),
-                native_state: ReferenceData::original(&native).unwrap(),
-                owner: target.owner,
-            }) },
+            PacketNativeInvocationPurposeData {
+                target,
+                purpose: Purpose::Original,
+            },
+            PacketNativeInvocationPurposeData {
+                target,
+                purpose: Purpose::Restoration(SourceData {
+                    runtime: ReferenceData::original(&runtime).unwrap(),
+                    native_state: ReferenceData::original(&native).unwrap(),
+                    owner: target.owner,
+                }),
+            },
         ]
     }
 
@@ -173,36 +195,53 @@ mod tests {
         let bytes = canonical::canonical_json(&nested).unwrap();
         let mut previous = None;
         for purpose in purposes() {
-            let expected = canonical::canonical_json(&json!({"schema_version":6,"invocation":purpose,"launch":nested})).unwrap();
+            let expected = canonical::canonical_json(
+                &json!({"schema_version":6,"invocation":purpose,"launch":nested}),
+            )
+            .unwrap();
             let mut actual = Vec::new();
             write_original_native_invocation_launch_data(&purpose, &bytes, &mut actual).unwrap();
-            let identity = original_native_invocation_launch_identity_data(&purpose, &bytes).unwrap();
+            let identity =
+                original_native_invocation_launch_identity_data(&purpose, &bytes).unwrap();
             assert_eq!(actual, expected);
             assert_eq!(identity.encoded_bytes, actual.len());
             assert_eq!(identity.raw_digest, *blake3::hash(&actual).as_bytes());
-            if let Some(previous) = previous { assert_ne!(identity, previous); }
+            if let Some(previous) = previous {
+                assert_ne!(identity, previous);
+            }
             previous = Some(identity);
         }
     }
 
     #[test]
     fn refused_writer_retains_the_exact_original_prefix_without_reencoding_or_retry() {
-        struct Prefix { bytes: Vec<u8>, maximum: usize }
+        struct Prefix {
+            bytes: Vec<u8>,
+            maximum: usize,
+        }
         impl Write for Prefix {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
                 let take = bytes.len().min(self.maximum - self.bytes.len());
                 self.bytes.extend_from_slice(&bytes[..take]);
                 Ok(take)
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         let purpose = purposes()[1];
         let nested = b"{\"schema_version\":5}";
         let mut full = Vec::new();
         write_original_native_invocation_launch_data(&purpose, nested, &mut full).unwrap();
         for maximum in [0, 1, 14, full.len() - 1] {
-            let mut output = Prefix { bytes: Vec::new(), maximum };
-            assert!(write_original_native_invocation_launch_data(&purpose, nested, &mut output).is_err());
+            let mut output = Prefix {
+                bytes: Vec::new(),
+                maximum,
+            };
+            assert!(
+                write_original_native_invocation_launch_data(&purpose, nested, &mut output)
+                    .is_err()
+            );
             assert_eq!(output.bytes, full[..maximum]);
         }
     }

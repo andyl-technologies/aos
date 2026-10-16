@@ -45,7 +45,10 @@ impl PacketCompleteReportStartupHolder {
         let _loan = StartupLoan(&held.native_in_flight);
         // Keep the actual issued owner in place before any fallible Source
         // finalization. Its lifetime borrows these exact retained arrays.
-        let invocation_selected = held.authority.original_launches.iter()
+        let invocation_selected = held
+            .authority
+            .original_launches
+            .iter()
             .any(|launch| launch.fresh_restore_allocation_selection.is_some());
         let requested_peak = if invocation_selected {
             let mut admission = held.plan.reserve_original_native_invocation(

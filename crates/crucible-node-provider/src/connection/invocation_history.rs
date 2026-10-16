@@ -53,13 +53,18 @@ pub(crate) fn counter_scratch_data() -> usize {
         + 4 * std::mem::size_of::<&[u8]>()
         + std::mem::size_of::<crate::transport::original_frames::OriginalFrame<'static>>()
         + std::mem::size_of::<bool>()
-        + std::mem::size_of::<std::cell::Ref<'static, crate::transport::original_frames::OriginalFrameReservation>>()
+        + std::mem::size_of::<
+            std::cell::Ref<'static, crate::transport::original_frames::OriginalFrameReservation>,
+        >()
         + std::mem::size_of::<Result<(), ProviderError>>()
         + std::mem::size_of::<super::NativeInvocationConnectionView<'static>>()
         + std::mem::size_of::<super::NativeCurrentConnectionView<'static>>()
         + std::mem::size_of::<
             Result<
-                std::cell::Ref<'static, crate::transport::original_frames::OriginalFrameReservation>,
+                std::cell::Ref<
+                    'static,
+                    crate::transport::original_frames::OriginalFrameReservation,
+                >,
                 std::cell::BorrowError,
             >,
         >()

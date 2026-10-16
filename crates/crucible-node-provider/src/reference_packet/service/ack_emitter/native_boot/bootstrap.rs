@@ -120,7 +120,8 @@ pub(in crate::reference_packet::service) fn accept_invocation(
 ) -> Result<PacketSourceService, ProviderError> {
     // rustix's safe std-enabled handle borrows fd0 without constructing std's
     // global buffered Stdin owner before the private prefix admission.
-    let startup = admitted::OriginalNativeStartupBootstrap::read_invocation(&rustix::stdio::stdin())?;
+    let startup =
+        admitted::OriginalNativeStartupBootstrap::read_invocation(&rustix::stdio::stdin())?;
     let stdin = std::io::stdin();
     let cut = OriginalNative5BirthCut::from_original_preparser_cut(startup.original_cut)?;
     let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
@@ -193,20 +194,33 @@ impl<S: AsFd> Bootstrap<S> {
             }
             // Full policy validation constructs schema owners. It follows the
             // actual native row recount, rather than running in the pre-parser.
-            let value = self.launch_value.as_ref()
+            let value = self
+                .launch_value
+                .as_ref()
                 .ok_or(ProviderError::Frame("native startup launch value absent"))?;
             let value = if startup.has_invocation_prefix()? {
-                let fields = value.as_object().ok_or(ProviderError::Correlation("native invocation launch object"))?;
+                let fields = value.as_object().ok_or(ProviderError::Correlation(
+                    "native invocation launch object",
+                ))?;
                 if fields.len() != 3
-                    || fields.get("schema_version").and_then(serde_json::Value::as_u64) != Some(6)
+                    || fields
+                        .get("schema_version")
+                        .and_then(serde_json::Value::as_u64)
+                        != Some(6)
                     || !fields.contains_key("invocation")
                 {
-                    return Err(ProviderError::Correlation("native invocation launch closed class"));
+                    return Err(ProviderError::Correlation(
+                        "native invocation launch closed class",
+                    ));
                 }
-                fields.get("launch").ok_or(ProviderError::Correlation("native invocation nested launch"))?
-            } else { value };
+                fields.get("launch").ok_or(ProviderError::Correlation(
+                    "native invocation nested launch",
+                ))?
+            } else {
+                value
+            };
             PacketNative5SourceLaunch::deserialize(value)
-            .map_err(crucible_node_contract::ContractError::from)?
+                .map_err(crucible_node_contract::ContractError::from)?
         } else {
             PacketNative5SourceLaunch::decode(&self.launch_bytes, 1024 * 1024)?
         });
@@ -261,11 +275,20 @@ impl<S: AsFd> Bootstrap<S> {
                 )?;
                 purpose.authenticate_target_data(launch)?;
                 super::boot::NativeAckBoot::prepare_original_invocation_into(
-                    boot_value, launch, self.launch_bytes.clone(), purpose, startup, &mut self.boot,
+                    boot_value,
+                    launch,
+                    self.launch_bytes.clone(),
+                    purpose,
+                    startup,
+                    &mut self.boot,
                 )?;
             } else {
                 super::boot::NativeAckBoot::prepare_original_startup_into(
-                    boot_value, launch, self.launch_bytes.clone(), startup, &mut self.boot,
+                    boot_value,
+                    launch,
+                    self.launch_bytes.clone(),
+                    startup,
+                    &mut self.boot,
                 )?;
             }
             launch.validate()?;

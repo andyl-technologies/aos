@@ -282,4 +282,14 @@ pub(super) fn read(
 }
 
 // The closed owning walk fails to compile if a historical field is added.
-super::super::retained_storage::fields!(HistoricalNativeCaptureSdkOwner, data, retained, strong_edges, unique_roots, actor_group, codec_group, policy, frames);
+super::super::retained_storage::fields!(
+    HistoricalNativeCaptureSdkOwner,
+    data,
+    retained,
+    strong_edges,
+    unique_roots,
+    actor_group,
+    codec_group,
+    policy,
+    frames
+);

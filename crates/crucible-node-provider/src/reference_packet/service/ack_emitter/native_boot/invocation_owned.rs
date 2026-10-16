@@ -44,8 +44,13 @@ impl NativeAckBoot {
         self.observe_invocation_phase_metadata(observer)
     }
 
-    pub(super) fn observe_invocation_phase_metadata(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
-        let startup = self.startup.as_ref().ok_or(ProviderError::Correlation("invocation startup owner absent"))?;
+    pub(super) fn observe_invocation_phase_metadata(
+        &self,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let startup = self.startup.as_ref().ok_or(ProviderError::Correlation(
+            "invocation startup owner absent",
+        ))?;
         observer.observe(&startup.birth_id.len())?;
         observer.observe(&startup.prepare_startup_issued)?;
         observer.observe(&self.transfer.is_some())?;

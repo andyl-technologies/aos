@@ -6,8 +6,15 @@
 //! alias refund, old encoded layout, demand scalar or historical group label
 //! substitutes for current capacities and concrete reconstructed payload sizes.
 
-use crate::{ProviderError, retained_metadata::{MetadataObserver, RetainedProtocolMetadataFacts}};
-use std::{collections::{BTreeMap, BTreeSet}, rc::Rc, sync::Arc};
+use crate::{
+    ProviderError,
+    retained_metadata::{MetadataObserver, RetainedProtocolMetadataFacts},
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+    sync::Arc,
+};
 
 pub(super) trait HistoricalStorage {
     const NESTED_OWNERS: bool = true;
@@ -49,17 +56,25 @@ macro_rules! numeric_copy {
     })+};
 }
 
-observed!(String, crucible_node_contract::Id,
-    crucible_node_contract::Bytes, crucible_node_contract::ContentRef,
-    crucible_node_contract::HashRef, crucible_node_contract::SchemaRef,
-    crucible_node_contract::ImplementationIdentity, crucible_node_contract::ExtensionSelection,
-    crucible_node_contract::Position, crate::envelope::Envelope,
-    crate::client::ClientOriginal, crate::handshake::Limits,
+observed!(
+    String,
+    crucible_node_contract::Id,
+    crucible_node_contract::Bytes,
+    crucible_node_contract::ContentRef,
+    crucible_node_contract::HashRef,
+    crucible_node_contract::SchemaRef,
+    crucible_node_contract::ImplementationIdentity,
+    crucible_node_contract::ExtensionSelection,
+    crucible_node_contract::Position,
+    crate::envelope::Envelope,
+    crate::client::ClientOriginal,
+    crate::handshake::Limits,
     crate::reference_packet::control::PacketControlSelection,
     crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation,
     crate::reference_packet::service::PacketNative5CaptureProfile,
     crate::reference_packet::service::capture_allocation::PacketNativeCaptureAllocationReport,
-    serde_json::Value);
+    serde_json::Value
+);
 
 // Each listed type is actual fixed numeric/closed-selector DATA. Copy is a
 // compile-time barrier to adding an owned String, Vec or shared owner silently.
@@ -85,7 +100,9 @@ impl<T: HistoricalStorage> HistoricalStorage for Vec<T> {
     fn observe_historical(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
         observer.vector::<T>(self.capacity())?;
         if T::NESTED_OWNERS {
-            for value in self { value.observe_historical(observer)?; }
+            for value in self {
+                value.observe_historical(observer)?;
+            }
         }
         Ok(())
     }
@@ -93,21 +110,31 @@ impl<T: HistoricalStorage> HistoricalStorage for Vec<T> {
 
 impl<T: HistoricalStorage> HistoricalStorage for Option<T> {
     fn observe_historical(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
-        if let Some(value) = self { value.observe_historical(observer)?; }
+        if let Some(value) = self {
+            value.observe_historical(observer)?;
+        }
         Ok(())
     }
 }
 
 impl<T: HistoricalStorage, const N: usize> HistoricalStorage for [T; N] {
     fn observe_historical(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
-        if T::NESTED_OWNERS { for value in self { value.observe_historical(observer)?; } }
+        if T::NESTED_OWNERS {
+            for value in self {
+                value.observe_historical(observer)?;
+            }
+        }
         Ok(())
     }
 }
 
 impl<T: HistoricalStorage> HistoricalStorage for [T] {
     fn observe_historical(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
-        if T::NESTED_OWNERS { for value in self { value.observe_historical(observer)?; } }
+        if T::NESTED_OWNERS {
+            for value in self {
+                value.observe_historical(observer)?;
+            }
+        }
         Ok(())
     }
 }
@@ -128,16 +155,21 @@ impl<T: HistoricalStorage + ?Sized> HistoricalStorage for Arc<T> {
 
 impl<K: HistoricalStorage, V: HistoricalStorage> HistoricalStorage for BTreeMap<K, V> {
     fn observe_historical(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
-        observer.tree::<K,V>(self.len())?;
-        for (key, value) in self { key.observe_historical(observer)?; value.observe_historical(observer)?; }
+        observer.tree::<K, V>(self.len())?;
+        for (key, value) in self {
+            key.observe_historical(observer)?;
+            value.observe_historical(observer)?;
+        }
         Ok(())
     }
 }
 
 impl<T: HistoricalStorage> HistoricalStorage for BTreeSet<T> {
     fn observe_historical(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
-        observer.tree::<T,()>(self.len())?;
-        for value in self { value.observe_historical(observer)?; }
+        observer.tree::<T, ()>(self.len())?;
+        for value in self {
+            value.observe_historical(observer)?;
+        }
         Ok(())
     }
 }
@@ -149,23 +181,60 @@ impl<A: HistoricalStorage, B: HistoricalStorage> HistoricalStorage for (A, B) {
     }
 }
 
-fields!(crate::blob::TransferKey, origin, session, incarnation, transfer);
-fields!(crate::connection::ConnectionIncident, session, incarnation, connection, failure,
-    transport_fenced, outgoing, incoming);
-fields!(crate::reference_packet::service::native_startup::PacketNativeStartupAllocation,
-    schema, private_bootstrap, native_birth, restore_prepare);
-fields!(crate::reference_packet::service::ack_emitter::PacketCanonicalAckAdmissionContext,
-    schema, algorithm, source_birth, kernel_binding, policy_binding, host_registration,
-    native_registration, hello_request, hello_response, assigned_admit);
-fields!(crate::reference_packet::service::ack_emitter::PacketCanonicalAckAdmissionProof,
-    schema, algorithm, context_digest, mac);
+fields!(
+    crate::blob::TransferKey,
+    origin,
+    session,
+    incarnation,
+    transfer
+);
+fields!(
+    crate::connection::ConnectionIncident,
+    session,
+    incarnation,
+    connection,
+    failure,
+    transport_fenced,
+    outgoing,
+    incoming
+);
+fields!(
+    crate::reference_packet::service::native_startup::PacketNativeStartupAllocation,
+    schema,
+    private_bootstrap,
+    native_birth,
+    restore_prepare
+);
+fields!(
+    crate::reference_packet::service::ack_emitter::PacketCanonicalAckAdmissionContext,
+    schema,
+    algorithm,
+    source_birth,
+    kernel_binding,
+    policy_binding,
+    host_registration,
+    native_registration,
+    hello_request,
+    hello_response,
+    assigned_admit
+);
+fields!(
+    crate::reference_packet::service::ack_emitter::PacketCanonicalAckAdmissionProof,
+    schema,
+    algorithm,
+    context_digest,
+    mac
+);
 
 impl HistoricalStorage for crate::blob::BlobRetirement {
     fn observe_historical(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
         match self {
             Self::AbandonInert => Ok(()),
-            Self::Operation {owner, receipt} => {owner.observe_historical(observer)?; receipt.observe_historical(observer)},
-            Self::DurableStore {receipt} => receipt.observe_historical(observer),
+            Self::Operation { owner, receipt } => {
+                owner.observe_historical(observer)?;
+                receipt.observe_historical(observer)
+            }
+            Self::DurableStore { receipt } => receipt.observe_historical(observer),
         }
     }
 }
@@ -199,7 +268,9 @@ pub(super) fn counter_scratch_data() -> usize {
         + std::mem::size_of::<[&(); 4]>()
 }
 
-pub(super) fn facts<T: HistoricalStorage>(value: &T) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+pub(super) fn facts<T: HistoricalStorage>(
+    value: &T,
+) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
     let mut observer = MetadataObserver::new();
     value.observe_historical(&mut observer)?;
     Ok(observer.finish())
@@ -225,7 +296,10 @@ mod tests {
         let observed = facts(&originals).unwrap();
 
         assert_eq!(observed.shared_backing_views, 2);
-        assert_eq!(observed.vector_capacity_bytes, 2 * capacity * std::mem::size_of::<Id>());
+        assert_eq!(
+            observed.vector_capacity_bytes,
+            2 * capacity * std::mem::size_of::<Id>()
+        );
         assert_eq!(observed.string_capacity_bytes, 2 * id_capacity);
         assert!(Rc::ptr_eq(&originals[0], &originals[1]));
         assert_eq!(Rc::strong_count(&shared), 3);
@@ -239,7 +313,9 @@ mod tests {
 
         assert_eq!(observed.tree_containers, 1);
         assert_eq!(observed.tree_entries, 0);
-        assert_eq!(observed.maximum_tree_key_value_bytes,
-            std::mem::size_of::<String>() + std::mem::size_of::<serde_json::Value>());
+        assert_eq!(
+            observed.maximum_tree_key_value_bytes,
+            std::mem::size_of::<String>() + std::mem::size_of::<serde_json::Value>()
+        );
     }
 }

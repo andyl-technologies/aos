@@ -43,7 +43,9 @@ impl NativeEndpointCaptureStateData<'_> {
         // This actual same-Source quote is entered only after the selected
         // startup query has returned. Keep every source/control/candidate owner;
         // partition only its known prefix's exact original storage components.
-        let observe_lifetime = self.observe_prefix_storage.exchange
+        let observe_lifetime = self
+            .observe_prefix_storage
+            .exchange
             .native_observe_lifetime_storage_data(self.counter_requested_limit)?;
         let observe_publication = sum(&[
             self.control_growth.publication_retained_bytes,

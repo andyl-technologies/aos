@@ -338,4 +338,23 @@ fn capacity() -> ProviderError {
 }
 
 // The closed owning walk fails to compile if a historical field is added.
-super::retained_storage::fields!(HistoricalControllerCodec, metadata_extent, selection, coordinator_reference, coordinator_bytes, definition, connected, wire, capture_profile, confirmation_selection, confirmation_definition, ack_emitter_selection, ack_emitter_definition, complete_restore_selection, complete_restore_definitions, complete_restore_transfer_definitions, restore_input_emitter_selection, restore_input_emitter_definition);
+super::retained_storage::fields!(
+    HistoricalControllerCodec,
+    metadata_extent,
+    selection,
+    coordinator_reference,
+    coordinator_bytes,
+    definition,
+    connected,
+    wire,
+    capture_profile,
+    confirmation_selection,
+    confirmation_definition,
+    ack_emitter_selection,
+    ack_emitter_definition,
+    complete_restore_selection,
+    complete_restore_definitions,
+    complete_restore_transfer_definitions,
+    restore_input_emitter_selection,
+    restore_input_emitter_definition
+);

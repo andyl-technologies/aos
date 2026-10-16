@@ -126,7 +126,11 @@ impl NativeStartupConnectionView<'_> {
         self.observe_at_edition(false, observer)
     }
 
-    fn observe_at_edition(&self, invocation: bool, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
+    fn observe_at_edition(
+        &self,
+        invocation: bool,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
         let connection = self.0;
         observer.shared_original(
             MetadataSharedKind::ProtocolOwner,
@@ -173,8 +177,11 @@ impl NativeStartupConnectionView<'_> {
             connection.supervisor.as_ref(),
         )?;
         let token = connection.original_native_owned11_admission()?;
-        if invocation { token.observe_invocation_metadata(connection, observer) }
-        else { token.observe_startup_metadata(connection, observer) }
+        if invocation {
+            token.observe_invocation_metadata(connection, observer)
+        } else {
+            token.observe_startup_metadata(connection, observer)
+        }
     }
 }
 
@@ -207,11 +214,15 @@ impl Connection<crate::client::DeadlineStream> {
     }
 
     pub(crate) fn observe_original_current_connection_metadata(
-        &mut self, observer: &mut MetadataObserver,
+        &mut self,
+        observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
         let invocation = self.authenticate_original_current_connection_data()?;
-        if invocation { NativeInvocationConnectionView(self).observe(observer) }
-        else { NativeStartupConnectionView(self).observe(observer) }
+        if invocation {
+            NativeInvocationConnectionView(self).observe(observer)
+        } else {
+            NativeStartupConnectionView(self).observe(observer)
+        }
     }
 
     pub(crate) fn observe_original_current_connection_unique_metadata(
@@ -299,14 +310,25 @@ impl<'a> NativeCurrentConnectionView<'a> {
             .try_borrow()
             .map_err(|_| ProviderError::Conflict("native startup boot borrowed"))?
             .requires_startup_codec_data()?;
-        let invocation = token.boot.try_borrow().map_err(|_| ProviderError::Conflict("invocation boot borrowed"))?
+        let invocation = token
+            .boot
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("invocation boot borrowed"))?
             .requires_invocation_codec_data()?;
         if invocation {
-            let bank = connection.original_frames.as_ref().ok_or(ProviderError::Correlation("invocation frame bank absent"))?
-                .try_borrow().map_err(|_| ProviderError::Conflict("invocation frame bank borrowed"))?;
+            let bank = connection
+                .original_frames
+                .as_ref()
+                .ok_or(ProviderError::Correlation("invocation frame bank absent"))?
+                .try_borrow()
+                .map_err(|_| ProviderError::Conflict("invocation frame bank borrowed"))?;
             invocation_history::authenticate_bank(&bank)?;
         }
-        Ok(Self { connection, startup, invocation })
+        Ok(Self {
+            connection,
+            startup,
+            invocation,
+        })
     }
 
     pub(super) fn observe(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {

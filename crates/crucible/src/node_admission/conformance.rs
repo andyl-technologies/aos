@@ -37,9 +37,9 @@ pub use runtime_construction::{
 };
 
 pub use native_startup::{
-    CompleteOriginalNativeInvocationAdmission,
-    CompleteOriginalNativeStartupAdmission, OriginalNativeStartupMemberScope,
-    OriginalNativeStartupPolicy, OriginalNativeStartupScope, OriginalNativeStartupStorage,
+    CompleteOriginalNativeInvocationAdmission, CompleteOriginalNativeStartupAdmission,
+    OriginalNativeStartupMemberScope, OriginalNativeStartupPolicy, OriginalNativeStartupScope,
+    OriginalNativeStartupStorage,
 };
 
 pub use fresh_restore_host::{
@@ -243,7 +243,7 @@ pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
         &self,
         _: &ConformancePlanEvidence<'_>,
         _: &OriginalNativeStartupScope<'_>,
-    ) -> Result<[crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData; 3], crate::node_contract::RuntimeError> {
+    ) -> Result<[crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData; 3], crate::node_contract::RuntimeError>{
         Err(crate::node_contract::RuntimeError::UnsupportedFacet)
     }
 

@@ -475,9 +475,16 @@ pub(crate) struct OriginalNativeStartupMember {
 
 impl OriginalNativeStartupMember {
     pub(crate) fn requires_original_invocation_data(&self) -> Result<bool, RuntimeError> {
-        if self.process != std::process::id() { return Err(RuntimeError::ForeignAuthority); }
-        if self.thread != std::thread::current().id() { return Err(RuntimeError::ThreadAffinity); }
-        Ok(matches!(self.edition, NativeStartupMemberEdition::Invocation15))
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        Ok(matches!(
+            self.edition,
+            NativeStartupMemberEdition::Invocation15
+        ))
     }
 
     pub(crate) fn retained_shared_storage_data(&self) -> Result<usize, RuntimeError> {

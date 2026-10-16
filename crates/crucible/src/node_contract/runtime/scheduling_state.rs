@@ -473,8 +473,10 @@ mod tests {
         state.revoke();
 
         state.authenticate_retained(&authority, &world).unwrap();
-        assert!(matches!(state.authenticate(&authority, &world),
-            Err(RuntimeError::OutstandingObligations)));
+        assert!(matches!(
+            state.authenticate(&authority, &world),
+            Err(RuntimeError::OutstandingObligations)
+        ));
         assert!(state.0.scheduler.borrow().is_none());
         assert!(!state.0.live.get());
         assert!(state.authenticate(&Rc::new(()), &world).is_err());

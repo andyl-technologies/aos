@@ -47,10 +47,18 @@ impl NativeAckBoot {
             // These new temporary tuple values coexist with their borrowed
             // wrapper headers. Encoded/event counts do not pay for Rust views.
             std::mem::size_of::<(
-                &'static str, InvocationBaseView<'static>, InvocationOwnerView<'static>, InvocationPhaseView<'static>,
+                &'static str,
+                InvocationBaseView<'static>,
+                InvocationOwnerView<'static>,
+                InvocationPhaseView<'static>,
             )>(),
             std::mem::size_of::<(
-                &'static str, &'static str, BorrowedCompactBytes<'static>, bool, bool, bool,
+                &'static str,
+                &'static str,
+                BorrowedCompactBytes<'static>,
+                bool,
+                bool,
+                bool,
             )>(),
             std::mem::size_of::<Result<InvocationBootView<'static>, ProviderError>>(),
             std::mem::size_of::<Result<InvocationTokenView<'static>, ProviderError>>(),

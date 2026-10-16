@@ -336,8 +336,11 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
             .startup
             .authenticate_complete_native_baseline(connection)?;
         let scratch = {
-            let boot = canonical_ack_boot.as_ref().ok_or_else(refused)?
-                .try_borrow().map_err(|_| refused())?;
+            let boot = canonical_ack_boot
+                .as_ref()
+                .ok_or_else(refused)?
+                .try_borrow()
+                .map_err(|_| refused())?;
             if boot.requires_invocation_codec_data()? {
                 original_invocation_fresh_current_counter_scratch_data()
             } else {
@@ -400,7 +403,8 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
             .observe_unique_startup_metadata(connection, &mut roots, &mut observer)?;
         attempt.input.observe_retained_metadata(&mut observer)?;
         {
-            let service_owner = context.borrow_current_original_protocol_data(connection, uploads)?;
+            let service_owner =
+                context.borrow_current_original_protocol_data(connection, uploads)?;
             service_owner.observe_unique_capture_metadata(&mut roots, &mut observer)?;
         }
         let (shared_edges, shared_roots) = roots.finish()?;

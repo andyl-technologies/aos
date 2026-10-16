@@ -181,14 +181,14 @@ pub fn original_native_invocation_construction_storage_data(
     let typed_wrapper = std::mem::size_of::<super::super::PacketNative6InvocationLaunch>();
     let native_retained = total(
         &[
-            source_tree,    // bootstrap bootValue.source_birth
-            source_tree,    // NativeAckBoot.data.source_birth
-            source_tree,    // normalized association.source_binding
-            source_tree,    // normalized policy.source_binding
-            wrapper_tree,   // original independent launchValue wrapper
-            encoded_growth, // NativeAckBoot retained original launch_body
+            source_tree,                // bootstrap bootValue.source_birth
+            source_tree,                // NativeAckBoot.data.source_birth
+            source_tree,                // normalized association.source_binding
+            source_tree,                // normalized policy.source_binding
+            wrapper_tree,               // original independent launchValue wrapper
+            encoded_growth,             // NativeAckBoot retained original launch_body
             rows.maximum_encoded_bytes, // independently retained canonical Source body
-            typed_wrapper, // conservative independent first typed launch6 owner
+            typed_wrapper,              // conservative independent first typed launch6 owner
         ],
         maximum,
     )?;
@@ -203,8 +203,8 @@ pub fn original_native_invocation_construction_storage_data(
     )?;
     let native_transient = total(
         &[
-            source_tree, // independently constructed expected Source binding
-            wrapper_tree, // later independent Value launch decode and validation
+            source_tree,   // independently constructed expected Source binding
+            wrapper_tree,  // later independent Value launch decode and validation
             typed_wrapper, // second typed decode while the first may remain retained
             std::mem::size_of::<PacketNativeInvocationPurposeData>(),
         ],
@@ -222,15 +222,15 @@ pub fn original_native_invocation_construction_storage_data(
     )?;
     let source_finalization = total(
         &[
-            purpose_tree,   // new invocation Value moved into the retained full body
-            purpose_tree,   // independent invocation addition/encoding work
-            row_tree,       // enlarged NativeAdditions allocation child
-            row_tree,       // independent finalizer parsed Source allocation child
-            row_tree,       // independent wire boot-frame Source allocation clone
+            purpose_tree,               // new invocation Value moved into the retained full body
+            purpose_tree,               // independent invocation addition/encoding work
+            row_tree,                   // enlarged NativeAdditions allocation child
+            row_tree,                   // independent finalizer parsed Source allocation child
+            row_tree,                   // independent wire boot-frame Source allocation clone
             rows.maximum_encoded_bytes, // finalizer replacement raw encoding work
             rows.maximum_encoded_bytes, // independent wire boot-frame raw encoding work
-            wrapper_tree,   // Source wrapper encoding and closed wire preparation work
-            encoded_growth, // separately retained wrapper bank in Source wire holder
+            wrapper_tree,               // Source wrapper encoding and closed wire preparation work
+            encoded_growth,             // separately retained wrapper bank in Source wire holder
         ],
         maximum,
     )?;
@@ -301,10 +301,10 @@ mod tests {
     #[test]
     fn enlarged_allocation_rows_cover_full_decimal_widths_and_nullable_shape() {
         use crate::reference_packet::service::native_startup::{
-            PacketNativeStartupAllocation, PacketNativeStartupAllocationRow,
-            PACKET_NATIVE_STARTUP_ALLOCATION_SCHEMA,
+            PACKET_NATIVE_STARTUP_ALLOCATION_SCHEMA, PacketNativeStartupAllocation,
+            PacketNativeStartupAllocationRow,
         };
-        use crucible_node_contract::{canonical, U64};
+        use crucible_node_contract::{U64, canonical};
 
         let quoted = allocation_rows(usize::MAX).unwrap();
         for number in [1, 9, 10, u64::MAX] {
@@ -330,5 +330,4 @@ mod tests {
         }
         assert!(allocation_rows(1).is_err());
     }
-
 }

@@ -335,13 +335,24 @@ impl Serialize for OriginalNativeServiceOwned11<'_> {
             .try_borrow()
             .map_err(|_| serde::ser::Error::custom("native endpoint boot borrowed"))?;
         if self.invocation {
-            let boot_view = boot.borrowed_invocation_protocol_view().map_err(serde::ser::Error::custom)?;
-            let policy = boot.policy.as_ref().ok_or_else(|| serde::ser::Error::custom("invocation policy absent"))?;
+            let boot_view = boot
+                .borrowed_invocation_protocol_view()
+                .map_err(serde::ser::Error::custom)?;
+            let policy = boot
+                .policy
+                .as_ref()
+                .ok_or_else(|| serde::ser::Error::custom("invocation policy absent"))?;
             return (
-                "source-private.native-service/15", &self.negotiation, &self.bootstrap,
-                "source-private.native-supervisor-owner/11", &self.supervisor, boot_view,
-                policy.borrowed_owned11_protocol_view(), "opaque-original-service-cut",
-            ).serialize(serializer);
+                "source-private.native-service/15",
+                &self.negotiation,
+                &self.bootstrap,
+                "source-private.native-supervisor-owner/11",
+                &self.supervisor,
+                boot_view,
+                policy.borrowed_owned11_protocol_view(),
+                "opaque-original-service-cut",
+            )
+                .serialize(serializer);
         }
         if self.startup {
             let boot_view = boot

@@ -598,10 +598,21 @@ mod tests {
 
 // The closed owning walk fails to compile if a historical field is added.
 super::retained_storage::fields!(HistoricalHostRegistryCreator, pid, thread, thread_length);
-super::retained_storage::fields!(HistoricalHostExtensionRegistry, negotiation, authority, selected, creator);
+super::retained_storage::fields!(
+    HistoricalHostExtensionRegistry,
+    negotiation,
+    authority,
+    selected,
+    creator
+);
 
-super::retained_storage::fields!(SealedHistoricalHostExtensionRegistry,
-    reference, encoded, historical, complete);
+super::retained_storage::fields!(
+    SealedHistoricalHostExtensionRegistry,
+    reference,
+    encoded,
+    historical,
+    complete
+);
 
 impl SealedHistoricalHostExtensionRegistry {
     /// Observes actual initialized registry graph and encoded-bank capacities.
@@ -612,8 +623,9 @@ impl SealedHistoricalHostExtensionRegistry {
     ///
     /// # Errors
     /// Refuses checked typed traversal or metadata/layout overflow.
-    pub fn original_retained_metadata_facts(&self)
-        -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, crate::ProviderError> {
+    pub fn original_retained_metadata_facts(
+        &self,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, crate::ProviderError> {
         super::retained_storage::facts(self)
     }
 

@@ -68,8 +68,9 @@ impl HistoricalNativeBootstrap {
         }
         match (&self.startup, &self.boot.startup) {
             (None, None) => {}
-            (Some(startup), Some(_)) if self.boot.invocation.is_some() =>
-                super::invocation::authenticate_bootstrap(startup, self)?,
+            (Some(startup), Some(_)) if self.boot.invocation.is_some() => {
+                super::invocation::authenticate_bootstrap(startup, self)?
+            }
             (Some(startup), Some(_)) => startup.authenticate(self)?,
             _ => return Err(invalid()),
         }
@@ -90,8 +91,11 @@ pub(super) fn read(
         let mut wrapper = Fields::array(input)?;
         tag(
             &mut wrapper,
-            if invocation_class { "source-private.native-private-bootstrap-invocation/15" }
-            else { "source-private.native-private-bootstrap-startup/14" },
+            if invocation_class {
+                "source-private.native-private-bootstrap-invocation/15"
+            } else {
+                "source-private.native-private-bootstrap-startup/14"
+            },
         )?;
         let base = next(&mut wrapper)?;
         let startup = next(&mut wrapper)?;
@@ -160,8 +164,11 @@ pub(super) fn read(
     let boot = ledger.boot(next(&mut fields)?, build, boot_layout)?;
     fields.finish()?;
     let startup = if let Some(input) = startup_input {
-        if invocation_class { super::startup::read_invocation_bootstrap(input, ledger.ledger, build)? }
-        else { super::startup::read_bootstrap(input, ledger.ledger, build)? }
+        if invocation_class {
+            super::startup::read_invocation_bootstrap(input, ledger.ledger, build)?
+        } else {
+            super::startup::read_bootstrap(input, ledger.ledger, build)?
+        }
     } else {
         None
     };

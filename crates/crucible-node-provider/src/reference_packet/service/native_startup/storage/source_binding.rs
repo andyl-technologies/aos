@@ -277,7 +277,10 @@ mod invocation_tests {
         let selected = project_invocation(&encoded, usize::MAX).unwrap();
         assert_eq!(selected.base_encoded_bytes, legacy.base_encoded_bytes);
         assert_eq!(selected.base_decoded_bytes, legacy.base_decoded_bytes);
-        assert_eq!(selected.base_value_backing_bytes, legacy.base_value_backing_bytes);
+        assert_eq!(
+            selected.base_value_backing_bytes,
+            legacy.base_value_backing_bytes
+        );
         assert!(project(&encoded, usize::MAX).is_err());
 
         for name in [

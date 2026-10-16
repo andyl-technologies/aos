@@ -168,16 +168,29 @@ pub(super) fn read_boot(
     read_boot_at_edition(input, ledger, build, false)
 }
 
-pub(super) fn read_invocation_boot(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool)
-    -> Result<Option<HistoricalNativeStartupBoot>, ProviderError> {
+pub(super) fn read_invocation_boot(
+    input: &[u8],
+    ledger: &mut Ledger<'_, '_, '_>,
+    build: bool,
+) -> Result<Option<HistoricalNativeStartupBoot>, ProviderError> {
     read_boot_at_edition(input, ledger, build, true)
 }
 
-fn read_boot_at_edition(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool, invocation: bool)
-    -> Result<Option<HistoricalNativeStartupBoot>, ProviderError> {
+fn read_boot_at_edition(
+    input: &[u8],
+    ledger: &mut Ledger<'_, '_, '_>,
+    build: bool,
+    invocation: bool,
+) -> Result<Option<HistoricalNativeStartupBoot>, ProviderError> {
     let mut fields = Fields::array(input)?;
-    tag(&mut fields, if invocation { "source-private.native-startup-owner/15" }
-        else { "source-private.native-startup-owner/14" })?;
+    tag(
+        &mut fields,
+        if invocation {
+            "source-private.native-startup-owner/15"
+        } else {
+            "source-private.native-startup-owner/14"
+        },
+    )?;
     let allocation_input = next(&mut fields)?;
     let allocation = ledger.read::<PacketNativeStartupAllocation>(allocation_input, build)?;
     let source_digest = fixed::<32>(next(&mut fields)?, ledger.limits.maximum_input_bytes, build)?;
@@ -190,7 +203,9 @@ fn read_boot_at_edition(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bo
         .read::<bool>(next(&mut fields)?, true)?
         .ok_or_else(invalid)?;
     fields.finish()?;
-    if invocation && prepare_startup_issued { return Err(invalid()); }
+    if invocation && prepare_startup_issued {
+        return Err(invalid());
+    }
     if prepare_startup_issued {
         let mut allocation_fields = Fields::object(allocation_input)?;
         allocation_fields.named("schema")?;
@@ -227,16 +242,29 @@ pub(super) fn read_bootstrap(
     read_bootstrap_at_edition(input, ledger, build, false)
 }
 
-pub(super) fn read_invocation_bootstrap(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool)
-    -> Result<Option<HistoricalNativeStartupBootstrap>, ProviderError> {
+pub(super) fn read_invocation_bootstrap(
+    input: &[u8],
+    ledger: &mut Ledger<'_, '_, '_>,
+    build: bool,
+) -> Result<Option<HistoricalNativeStartupBootstrap>, ProviderError> {
     read_bootstrap_at_edition(input, ledger, build, true)
 }
 
-fn read_bootstrap_at_edition(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool, invocation: bool)
-    -> Result<Option<HistoricalNativeStartupBootstrap>, ProviderError> {
+fn read_bootstrap_at_edition(
+    input: &[u8],
+    ledger: &mut Ledger<'_, '_, '_>,
+    build: bool,
+    invocation: bool,
+) -> Result<Option<HistoricalNativeStartupBootstrap>, ProviderError> {
     let mut fields = Fields::array(input)?;
-    tag(&mut fields, if invocation { "source-private.native-startup-bootstrap-owner/15" }
-        else { "source-private.native-startup-bootstrap-owner/14" })?;
+    tag(
+        &mut fields,
+        if invocation {
+            "source-private.native-startup-bootstrap-owner/15"
+        } else {
+            "source-private.native-startup-bootstrap-owner/14"
+        },
+    )?;
     let creator = ledger.read::<u32>(next(&mut fields)?, build)?;
     tag(&mut fields, "same-original-thread")?;
     let preamble = fixed::<336>(next(&mut fields)?, ledger.limits.maximum_input_bytes, build)?;

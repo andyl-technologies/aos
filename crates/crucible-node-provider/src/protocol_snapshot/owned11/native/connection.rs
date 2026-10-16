@@ -58,7 +58,9 @@ pub(super) fn codec(
     let mut selected = Fields::array(policy_view)?;
     let policy_tag = plain_string(next(&mut selected)?)?;
     if policy_tag == "source-private.native5-policy-owned-fresh-restore-allocation/18" {
-        if !ledger.requires_invocation_class()? { return Err(invalid()); }
+        if !ledger.requires_invocation_class()? {
+            return Err(invalid());
+        }
     } else if !matches!(
         policy_tag,
         "source-private.native5-policy-owned-selected/13"

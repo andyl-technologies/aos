@@ -158,38 +158,67 @@ pub(super) fn authenticate_source_syntax(input: &[u8]) -> Result<(), ProviderErr
 fn authenticate_original_purpose_syntax(input: &[u8]) -> Result<(), ProviderError> {
     let mut purpose = Fields::object(input)?;
     if plain_string(purpose.named("purpose")?)? != "original_execution"
-        || plain_string(purpose.named("schema")?)? != "source-owned.packet-native-invocation-purpose/1"
+        || plain_string(purpose.named("schema")?)?
+            != "source-owned.packet-native-invocation-purpose/1"
         || purpose.named("source")? != b"null"
     {
         return Err(invalid());
     }
     let mut target = Fields::object(purpose.named("target")?)?;
-    for key in ["admission", "binding", "incarnation", "node", "owner", "owner_generation",
-        "prepared_token", "session", "world"] {
+    for key in [
+        "admission",
+        "binding",
+        "incarnation",
+        "node",
+        "owner",
+        "owner_generation",
+        "prepared_token",
+        "session",
+        "world",
+    ] {
         let value = target.named(key)?;
         match key {
             "binding" | "world" => {
-                let domain = if key == "world" { "cnp.world-binding.v1" } else { "cnp.node-binding.v1" };
+                let domain = if key == "world" {
+                    "cnp.world-binding.v1"
+                } else {
+                    "cnp.node-binding.v1"
+                };
                 let mut hash = Fields::object(value)?;
                 let algorithm = plain_string(hash.named("algorithm")?)?;
                 let digest = plain_string(hash.named("digest")?)?;
                 let actual_domain = plain_string(hash.named("domain")?)?;
-                if algorithm != "blake3-256" || actual_domain != domain || digest.len() != 64
-                    || !digest.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+                if algorithm != "blake3-256"
+                    || actual_domain != domain
+                    || digest.len() != 64
+                    || !digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
                     return Err(invalid());
                 }
                 hash.finish()?;
             }
             "owner_generation" => {
                 let generation = plain_string(value)?;
-                if generation.is_empty() || generation.len() > 20 || generation.starts_with('0')
+                if generation.is_empty()
+                    || generation.len() > 20
+                    || generation.starts_with('0')
                     || !generation.bytes().all(|byte| byte.is_ascii_digit())
-                    || generation.parse::<u64>().is_err() { return Err(invalid()); }
+                    || generation.parse::<u64>().is_err()
+                {
+                    return Err(invalid());
+                }
             }
             _ => {
                 let text = plain_string(value)?;
-                if text.is_empty() || text.len() > 128 || !text.as_bytes()[0].is_ascii_alphanumeric()
-                    || !text.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte)) {
+                if text.is_empty()
+                    || text.len() > 128
+                    || !text.as_bytes()[0].is_ascii_alphanumeric()
+                    || !text
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
+                {
                     return Err(invalid());
                 }
             }
@@ -405,8 +434,8 @@ mod source_syntax_tests {
     -> Result<(), ProviderError> {
         let source = source_shape();
         let canonical = canonical::canonical_json(&source)?;
-        let serde = serde_json::to_vec(&source)
-            .map_err(crucible_node_contract::ContractError::from)?;
+        let serde =
+            serde_json::to_vec(&source).map_err(crucible_node_contract::ContractError::from)?;
 
         authenticate_source_syntax(&canonical)?;
         authenticate_source_syntax(&serde)?;
@@ -418,7 +447,9 @@ mod source_syntax_tests {
         let source_text = std::str::from_utf8(&canonical).unwrap();
         let reordered = source_text.replacen(
             "\"ack_emitter_selection\":null,\"capture_allocation_selection\":null",
-            "\"capture_allocation_selection\":null,\"ack_emitter_selection\":null", 1);
+            "\"capture_allocation_selection\":null,\"ack_emitter_selection\":null",
+            1,
+        );
         assert_ne!(reordered, source_text);
         assert!(authenticate_source_syntax(reordered.as_bytes()).is_err());
         for extra in ["\"ack_emitter_selection\":null,", "\"unknown\":null,"] {

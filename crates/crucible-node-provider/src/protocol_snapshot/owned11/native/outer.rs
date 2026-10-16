@@ -41,7 +41,8 @@ pub const COMPLETE_NATIVE_STARTUP_SERVICE_FORMAT: &str = "source-private.native-
 /// Identifies only the genuine original-purpose boot7/four-owner archive.
 pub const COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT: &str = "source-private.native-state/15";
 /// Identifies the complete purpose-aware connection leaf.
-pub const COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT: &str = "source-private.native-connection-complete-invocation/15";
+pub const COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT: &str =
+    "source-private.native-connection-complete-invocation/15";
 /// Identifies the complete purpose-aware service leaf.
 pub const COMPLETE_NATIVE_INVOCATION_SERVICE_FORMAT: &str = "source-private.native-service/15";
 
@@ -320,8 +321,11 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
         &self,
     ) -> Result<(&'static str, &'static str, &'static str), ProviderError> {
         self.authenticate_class(NativeArchiveClass::InvocationCapture15)?;
-        Ok((COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT,
-            COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT, COMPLETE_NATIVE_INVOCATION_SERVICE_FORMAT))
+        Ok((
+            COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT,
+            COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT,
+            COMPLETE_NATIVE_INVOCATION_SERVICE_FORMAT,
+        ))
     }
 
     fn authenticate_class(&self, expected: NativeArchiveClass) -> Result<(), ProviderError> {
@@ -358,7 +362,9 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
         } else if policy_tag == "source-private.native5-policy-owned-fresh-restore-allocation/18"
             || (policy_tag == "source-private.native5-policy-owned-capture-allocation/17")
                 != expected.capture()
-        { return Err(invalid()); }
+        {
+            return Err(invalid());
+        }
         next(&mut fields)?;
         let mut service = Fields::array(next(&mut fields)?)?;
         tag(
@@ -394,7 +400,8 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
     /// Refuses another class, foreign purpose/phase, incomplete graph or changed
     /// aliases/literals. The owning output remains retained on later refusal.
     pub fn reconstruct_native_invocation_capture_into(
-        &mut self, completed: &mut Option<HistoricalNativeState>,
+        &mut self,
+        completed: &mut Option<HistoricalNativeState>,
     ) -> Result<(), ProviderError> {
         self.complete_native_invocation_capture_schema_identity()?;
         self.reconstruct_after_class_check(completed)
@@ -632,11 +639,18 @@ impl ValidatedNativeOwnedProtocol11<'_, '_> {
     /// overrun or any typed/alias/original correspondence failure. Partial owners
     /// stay in the same output slot; inert data supplies no restoration rights.
     pub fn reconstruct_native_invocation_capture_sealed_into(
-        &mut self, reference: &crucible_node_contract::ContentRef,
-        encoded_bank: &mut Option<Vec<u8>>, completed: &mut Option<SealedHistoricalNativeState>,
+        &mut self,
+        reference: &crucible_node_contract::ContentRef,
+        encoded_bank: &mut Option<Vec<u8>>,
+        completed: &mut Option<SealedHistoricalNativeState>,
     ) -> Result<(), ProviderError> {
         self.complete_native_invocation_capture_schema_identity()?;
-        self.reconstruct_sealed_after_class_check(reference, encoded_bank, completed, NativeArchiveClass::InvocationCapture15)
+        self.reconstruct_sealed_after_class_check(
+            reference,
+            encoded_bank,
+            completed,
+            NativeArchiveClass::InvocationCapture15,
+        )
     }
 
     fn reconstruct_sealed_after_class_check(
@@ -731,9 +745,18 @@ mod startup_class_tests {
         // Incomplete parser banks exercise only the class/leaf boundary. They
         // are neither native owners nor signed, reconstructible captures.
         for (format, leaf) in [
-            (COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT, COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT),
-            (COMPLETE_NATIVE_STARTUP_CAPTURE_FORMAT, COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT),
-            (COMPLETE_NATIVE_STARTUP_FORMAT, COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT),
+            (
+                COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT,
+                COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT,
+            ),
+            (
+                COMPLETE_NATIVE_STARTUP_CAPTURE_FORMAT,
+                COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT,
+            ),
+            (
+                COMPLETE_NATIVE_STARTUP_FORMAT,
+                COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT,
+            ),
         ] {
             let encoded = serde_json::to_vec(&(format, (leaf,), (), ())).unwrap();
             let mut ledger = Ledger::new(records.rows(), limits);
@@ -746,7 +769,10 @@ mod startup_class_tests {
             };
 
             assert!(read(&encoded, &mut native, false).is_err());
-            assert_eq!(native.requires_invocation_class().unwrap(), format == COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT);
+            assert_eq!(
+                native.requires_invocation_class().unwrap(),
+                format == COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT
+            );
             assert_eq!(native.historical_payload_layout_bytes, 0);
             assert!(native.ledger.rows.next().is_none());
         }

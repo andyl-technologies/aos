@@ -722,8 +722,10 @@ mod allocation_report_tests {
 }
 
 impl ClientContent {
-    pub(crate) fn observe_historical_retained_metadata(&self,
-        observer: &mut crate::retained_metadata::MetadataObserver) -> Result<(), ProviderError> {
+    pub(crate) fn observe_historical_retained_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
         self.observe_owned_metadata(observer)
     }
 }

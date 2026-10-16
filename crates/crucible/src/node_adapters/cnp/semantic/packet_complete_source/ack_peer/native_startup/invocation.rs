@@ -20,7 +20,9 @@ impl PacketCompleteSemanticSource {
         // Core derives the choice from the actual registered holder. DATA is
         // compared only after its private member has authenticated this Source.
         member.authenticate(self)?;
-        if !member.requires_original_invocation_data()? { return Err(RuntimeError::ForeignAuthority); }
+        if !member.requires_original_invocation_data()? {
+            return Err(RuntimeError::ForeignAuthority);
+        }
         purpose
             .authenticate_target_data(launch)
             .map_err(|_| RuntimeError::ForeignAuthority)?;
@@ -162,8 +164,12 @@ impl OriginalNativeStartupFinalization {
         &self,
     ) -> Result<Option<PacketNativeInvocationPurposeData>, RuntimeError> {
         let Some(body) = invocation_body_at_edition_data(
-            self.member.requires_original_invocation_data()?, self.body.as_ref(),
-        )? else { return Ok(None); };
+            self.member.requires_original_invocation_data()?,
+            self.body.as_ref(),
+        )?
+        else {
+            return Ok(None);
+        };
         if body.get("schema").and_then(serde_json::Value::as_str)
             != Some(PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA)
             || body.as_object().is_none_or(|fields| fields.len() != 19)
@@ -349,11 +355,19 @@ impl PacketCompleteSemanticSource {
         let Some(state) = birth.native_startup.as_ref() else {
             return Ok(());
         };
-        state.member.authenticate_original_invocation_source_identity_data(self)?;
-        if !state.complete { return Err(RuntimeError::OwnerUnavailable); }
+        state
+            .member
+            .authenticate_original_invocation_source_identity_data(self)?;
+        if !state.complete {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
         let Some(body) = invocation_body_at_edition_data(
-            state.member.requires_original_invocation_data()?, state.body.as_ref(),
-        )? else { return Ok(()); };
+            state.member.requires_original_invocation_data()?,
+            state.body.as_ref(),
+        )?
+        else {
+            return Ok(());
+        };
         if !state.complete
             || body.as_object().is_none_or(|fields| fields.len() != 19)
             || body.get("schema").and_then(serde_json::Value::as_str)
@@ -517,9 +531,13 @@ fn invocation_body_at_edition_data(
 ) -> Result<Option<&serde_json::Value>, RuntimeError> {
     match (invocation, body) {
         (false, None) => Ok(None),
-        (true, Some(body)) if body.as_object().is_some_and(|fields| fields.len() == 19)
-            && body.get("schema").and_then(serde_json::Value::as_str)
-                == Some(PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA) => Ok(Some(body)),
+        (true, Some(body))
+            if body.as_object().is_some_and(|fields| fields.len() == 19)
+                && body.get("schema").and_then(serde_json::Value::as_str)
+                    == Some(PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA) =>
+        {
+            Ok(Some(body))
+        }
         _ => Err(RuntimeError::ForeignAuthority),
     }
 }
@@ -531,11 +549,25 @@ mod member_edition_data_tests {
     #[test]
     fn member_edition_data_refuses_missing_invocation_body_and_legacy_reinterpretation() {
         let mut body = serde_json::Map::new();
-        body.insert("schema".into(), PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA.into());
-        for field in 0..18 { body.insert(format!("field{field}"), serde_json::Value::Null); }
+        body.insert(
+            "schema".into(),
+            PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA.into(),
+        );
+        for field in 0..18 {
+            body.insert(format!("field{field}"), serde_json::Value::Null);
+        }
         let body = serde_json::Value::Object(body);
-        assert!(invocation_body_at_edition_data(false, None).unwrap().is_none());
-        assert!(std::ptr::eq(invocation_body_at_edition_data(true, Some(&body)).unwrap().unwrap(), &body));
+        assert!(
+            invocation_body_at_edition_data(false, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(std::ptr::eq(
+            invocation_body_at_edition_data(true, Some(&body))
+                .unwrap()
+                .unwrap(),
+            &body
+        ));
         assert!(invocation_body_at_edition_data(true, None).is_err());
         assert!(invocation_body_at_edition_data(false, Some(&body)).is_err());
         let mut changed = body.clone();
@@ -544,6 +576,9 @@ mod member_edition_data_tests {
         changed = body.clone();
         changed.as_object_mut().unwrap().remove("field0");
         assert!(invocation_body_at_edition_data(true, Some(&changed)).is_err());
-        assert_eq!(body["schema"], PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA);
+        assert_eq!(
+            body["schema"],
+            PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA
+        );
     }
 }

@@ -39,12 +39,20 @@ impl NativeArchiveClass {
         }
     }
     pub(super) fn startup(self) -> bool {
-        matches!(self, Self::Startup13 | Self::StartupCapture14 | Self::InvocationCapture15)
+        matches!(
+            self,
+            Self::Startup13 | Self::StartupCapture14 | Self::InvocationCapture15
+        )
     }
-    pub(super) fn invocation(self) -> bool { self == Self::InvocationCapture15 }
+    pub(super) fn invocation(self) -> bool {
+        self == Self::InvocationCapture15
+    }
 
     pub(super) fn capture(self) -> bool {
-        matches!(self, Self::Capture12 | Self::StartupCapture14 | Self::InvocationCapture15)
+        matches!(
+            self,
+            Self::Capture12 | Self::StartupCapture14 | Self::InvocationCapture15
+        )
     }
 }
 
@@ -74,7 +82,9 @@ impl NativeLedger<'_, '_, '_, '_, '_> {
     }
 
     pub(super) fn requires_invocation_class(&self) -> Result<bool, ProviderError> {
-        self.class.map(NativeArchiveClass::invocation).ok_or_else(invalid)
+        self.class
+            .map(NativeArchiveClass::invocation)
+            .ok_or_else(invalid)
     }
 
     fn payload<T>(&mut self) -> Result<(), ProviderError> {

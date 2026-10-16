@@ -319,4 +319,11 @@ mod tests {
 }
 
 // The closed owning walk fails to compile if a historical field is added.
-super::retained_storage::fields!(HistoricalAliasSummary, kind, layout, view_digest, in_progress, content_edge);
+super::retained_storage::fields!(
+    HistoricalAliasSummary,
+    kind,
+    layout,
+    view_digest,
+    in_progress,
+    content_edge
+);

@@ -292,16 +292,31 @@ mod tests {
     fn legacy14_and_invocation15_are_not_interchangeable_with_the_same_key_and_rows() {
         let (data, key) = original();
         let old = super::super::preamble::PacketNativeStartupPreambleData {
-            controller_pid: data.controller_pid, controller_uid: data.controller_uid,
-            launch_bytes: data.launch_bytes, maximum_boot_bytes: data.maximum_boot_bytes,
-            birth_id: data.birth_id, launch_digest: data.launch_digest, source_digest: data.source_digest,
-            registration_digest: data.registration_digest, private_launch_digest: data.private_launch_digest,
-            private_bootstrap: data.private_bootstrap, native_birth: data.native_birth, restore_prepare: data.restore_prepare,
+            controller_pid: data.controller_pid,
+            controller_uid: data.controller_uid,
+            launch_bytes: data.launch_bytes,
+            maximum_boot_bytes: data.maximum_boot_bytes,
+            birth_id: data.birth_id,
+            launch_digest: data.launch_digest,
+            source_digest: data.source_digest,
+            registration_digest: data.registration_digest,
+            private_launch_digest: data.private_launch_digest,
+            private_bootstrap: data.private_bootstrap,
+            native_birth: data.native_birth,
+            restore_prepare: data.restore_prepare,
         };
-        let legacy = super::super::preamble::encode_original_native_startup_preamble_data(&old, &key).unwrap();
+        let legacy =
+            super::super::preamble::encode_original_native_startup_preamble_data(&old, &key)
+                .unwrap();
         let invocation = encode_original_native_invocation_preamble_data(&data, &key).unwrap();
         assert!(authenticate_original_native_invocation_preamble_data(&legacy, &key).is_err());
-        assert!(super::super::preamble::authenticate_original_native_startup_preamble_data(&invocation, &key).is_err());
+        assert!(
+            super::super::preamble::authenticate_original_native_startup_preamble_data(
+                &invocation,
+                &key
+            )
+            .is_err()
+        );
         assert_eq!(&legacy[8..304], &invocation[8..304]);
         assert_ne!(&legacy[304..], &invocation[304..]);
     }

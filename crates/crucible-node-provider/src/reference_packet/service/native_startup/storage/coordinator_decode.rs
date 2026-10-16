@@ -70,7 +70,13 @@ pub(super) fn backing(bytes: &[u8], maximum: usize) -> Result<usize, ProviderErr
     match typed_backing::arrays(bytes, maximum) {
         Ok(arrays) => sum(
             &[
-                decoded::quote(bytes, size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing,
+                decoded::quote(
+                    bytes,
+                    size_of::<serde_json::Value>(),
+                    size_of::<serde_json::Value>(),
+                    maximum,
+                )?
+                .value_backing,
                 arrays,
                 size_of::<PacketNative5CoordinatorInstallation>(),
                 size_of::<PacketConnectedHostSelection>(),

@@ -171,14 +171,20 @@ pub(crate) fn original_native_invocation_baseline_storage_data(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum_requested_bytes: usize,
 ) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
-    birth_storage_with_source(input, maximum_requested_bytes, private_bootstrap::project_invocation)
+    birth_storage_with_source(
+        input,
+        maximum_requested_bytes,
+        private_bootstrap::project_invocation,
+    )
 }
 
 fn birth_storage_with_source(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum_requested_bytes: usize,
-    source_project: fn(&PacketNativeBirthStartupInputs<'_>, usize)
-        -> Result<private_bootstrap::PrivateBootstrapStorage, ProviderError>,
+    source_project: fn(
+        &PacketNativeBirthStartupInputs<'_>,
+        usize,
+    ) -> Result<private_bootstrap::PrivateBootstrapStorage, ProviderError>,
 ) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
     if input.encoded_launch.is_empty()
         || input.encoded_launch.len() > PRIVATE_LAUNCH_BYTES

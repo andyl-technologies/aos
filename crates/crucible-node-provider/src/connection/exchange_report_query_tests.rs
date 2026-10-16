@@ -195,7 +195,8 @@ fn returned_observe_box_backing_fits_the_carried_typed_query_row() -> TestResult
         query_receive_storage_from_limits(authority.limits(), Purpose::OriginalObserve12)?;
 
     assert!(children > 0);
-    let carried = OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)?;
+    let carried =
+        OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)?;
     assert!(observed.extensions.is_empty());
     // The live generic observer includes this possible root even for the
     // freshly decoded empty map. The selected carry must dominate that SAME

@@ -109,34 +109,62 @@ impl Serialize for InvocationStartupFields<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let owner = self.0;
         (
-            "source-private.native-startup-bootstrap-owner/15", owner.creator,
-            "same-original-thread", crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(&owner.preamble),
-            &owner.private_bootstrap, &owner.native_birth, &owner.restore_prepare,
-            owner.expected_controller_pid, owner.expected_controller_uid,
-            owner.maximum_launch_bytes, owner.maximum_boot_bytes,
-            "original-startup-cut-transferred", owner.native_issued, owner.failed,
-        ).serialize(serializer)
+            "source-private.native-startup-bootstrap-owner/15",
+            owner.creator,
+            "same-original-thread",
+            crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(&owner.preamble),
+            &owner.private_bootstrap,
+            &owner.native_birth,
+            &owner.restore_prepare,
+            owner.expected_controller_pid,
+            owner.expected_controller_uid,
+            owner.maximum_launch_bytes,
+            owner.maximum_boot_bytes,
+            "original-startup-cut-transferred",
+            owner.native_issued,
+            owner.failed,
+        )
+            .serialize(serializer)
     }
 }
 
 pub(super) fn serialize_original<S: Serializer>(
-    original: &OriginalNativeBootstrapOwned11<'_>, serializer: S,
+    original: &OriginalNativeBootstrapOwned11<'_>,
+    serializer: S,
 ) -> Result<S::Ok, S::Error> {
     authenticate_original(original.original, &original.boot).map_err(serde::ser::Error::custom)?;
     ensure_closed_original(original.original).map_err(serde::ser::Error::custom)?;
     let owner = original.original;
-    let boot = original.boot.borrowed_invocation_protocol_view().map_err(serde::ser::Error::custom)?;
+    let boot = original
+        .boot
+        .borrowed_invocation_protocol_view()
+        .map_err(serde::ser::Error::custom)?;
     let base = (
-        "source-private.native-private-bootstrap/15", "closed-original-private-stream",
-        "original-cut-transferred", &original.reader, original.literals.protocol_view_with_encoding(true),
+        "source-private.native-private-bootstrap/15",
+        "closed-original-private-stream",
+        "original-cut-transferred",
+        &original.reader,
+        original.literals.protocol_view_with_encoding(true),
         &owner.launch_value,
-        (owner.launch_bytes.capacity(), crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(&owner.launch_bytes)),
-        owner.launch.is_none(), &owner.boot_value, boot,
+        (
+            owner.launch_bytes.capacity(),
+            crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(&owner.launch_bytes),
+        ),
+        owner.launch.is_none(),
+        &owner.boot_value,
+        boot,
     );
     (
-        "source-private.native-private-bootstrap-invocation/15", base,
-        InvocationStartupFields(owner.startup.as_ref().ok_or_else(|| serde::ser::Error::custom("invocation startup absent"))?),
-    ).serialize(serializer)
+        "source-private.native-private-bootstrap-invocation/15",
+        base,
+        InvocationStartupFields(
+            owner
+                .startup
+                .as_ref()
+                .ok_or_else(|| serde::ser::Error::custom("invocation startup absent"))?,
+        ),
+    )
+        .serialize(serializer)
 }
 
 pub(super) fn wire_counter_scratch_data() -> usize {
