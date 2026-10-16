@@ -223,6 +223,13 @@ fn classify_preparation_failure(
         PausedCheckpointPromotionPreparationError::Realization(error) => {
             classify_realization_failure(error)
         }
+        PausedCheckpointPromotionPreparationError::ResourceBegin(report) => {
+            if report.was_quarantined() {
+                PromotionFailureClass::Terminal
+            } else {
+                classify_realization_failure(report.first_error())
+            }
+        }
     }
 }
 

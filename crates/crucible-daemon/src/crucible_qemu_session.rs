@@ -15,6 +15,10 @@ use crucible_qemu::{
 use crate::ExecutionCancellation;
 use crate::executor_supervisor::SelectedExactCheckpointRoot;
 
+mod resource_begin;
+pub use resource_begin::QemuAttemptResourceGuardBeginReport;
+pub(crate) use resource_begin::QemuAttemptResourceGuardCleanupFailure;
+
 /// Read-only operational boundary available to a modeled attempt driver.
 ///
 /// This capability cannot release or quarantine resource enforcement.
@@ -738,8 +742,8 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
 /// Failed resource construction and any selection claim not yet spent.
 #[derive(Debug)]
 pub(crate) struct QemuAttemptResourceGuardBeginFailure {
-    // Box only the large diagnostic; this failure still owns the selection claim.
-    error: Box<QemuVmRealizationError>,
+    // Finite inline history creates no failure-time diagnostic owner allocation.
+    error: QemuAttemptResourceGuardBeginReport,
     selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
 }
 
@@ -749,14 +753,14 @@ impl QemuAttemptResourceGuardBeginFailure {
         selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
     ) -> Self {
         Self {
-            error: Box::new(error),
+            error: error.into(),
             selected_checkpoint,
         }
     }
 
     pub(crate) fn after_checkpoint_claim(error: QemuVmRealizationError) -> Self {
         Self {
-            error: Box::new(error),
+            error: error.into(),
             selected_checkpoint: None,
         }
     }
@@ -764,10 +768,30 @@ impl QemuAttemptResourceGuardBeginFailure {
     pub(crate) fn into_parts(
         self,
     ) -> (
-        QemuVmRealizationError,
+        QemuAttemptResourceGuardBeginReport,
         Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
     ) {
-        (*self.error, self.selected_checkpoint)
+        (self.error, self.selected_checkpoint)
+    }
+
+    pub(crate) fn rollback(
+        first: QemuVmRealizationError,
+        cleanup: QemuAttemptResourceGuardCleanupFailure,
+    ) -> Self {
+        Self {
+            error: QemuAttemptResourceGuardBeginReport::after_rollback(first, cleanup),
+            selected_checkpoint: None,
+        }
+    }
+
+    pub(crate) fn from_report(
+        error: QemuAttemptResourceGuardBeginReport,
+        selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+    ) -> Self {
+        Self {
+            error,
+            selected_checkpoint,
+        }
     }
 }
 

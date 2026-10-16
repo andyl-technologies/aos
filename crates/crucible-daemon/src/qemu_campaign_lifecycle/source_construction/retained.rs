@@ -9,12 +9,23 @@ pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall<
 > {
     #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
     NativeObservation(Box<dyn super::native_observation::NativeObservationOwner>),
-    Unborn(crate::qemu_lifecycle_launcher::UnbornSourceConstruction<F>),
+    Unborn(
+        crate::qemu_lifecycle_launcher::UnbornSourceConstruction<
+            F,
+            crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
+        >,
+    ),
     Api {
         owner: crate::ProductionVmConstructionFailure,
         handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
     },
     Handoff(Box<dyn ProductionVmCleanupHandoff>),
+    ResourceBegin {
+        owner: SourceConstructionCustodyFailure<
+            crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
+        >,
+        handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
+    },
     Begin {
         owner: SourceConstructionCustodyFailure,
         handoff: Option<Box<dyn ProductionVmCleanupHandoff>>,
@@ -51,6 +62,7 @@ where
             Self::Unborn(owner) => return owner.retry(),
             Self::Api { owner, handoff } => (handoff, owner.retry_reserved_publication()?),
             Self::Begin { owner, handoff } => (handoff, owner.retry_publication()?),
+            Self::ResourceBegin { owner, handoff } => (handoff, owner.retry_publication()?),
             Self::Storage { owner, handoff } => (handoff, owner.retry_publication()?),
             Self::Post { owner, handoff } => (handoff, owner.retry_publication()?),
             Self::Handoff(_) => return Err("same Source already retains its cleanup receipt"),
@@ -85,6 +97,7 @@ where
             Self::Handoff(receipt) => Some(receipt),
             Self::Api { handoff, .. }
             | Self::Begin { handoff, .. }
+            | Self::ResourceBegin { handoff, .. }
             | Self::Storage { handoff, .. }
             | Self::Post { handoff, .. } => handoff.as_mut(),
             #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
@@ -107,7 +120,7 @@ where
             Self::NativeObservation(owner) => return Err(Self::NativeObservation(owner)),
             Self::Unborn(owner) => match owner.into_causes() {
                 Ok((first, cleanup, cleanup_post)) => SourceCleanupHistory {
-                    first: Some(SourceInstallationFirst::Native(first)),
+                    first: Some(SourceInstallationFirst::ResourceBegin(first)),
                     cleanup,
                     cleanup_post,
                 },
@@ -133,6 +146,24 @@ where
                 },
                 Err(owner) => {
                     return Err(Self::Api {
+                        owner,
+                        handoff: Some(handoff),
+                    });
+                }
+            },
+            Self::ResourceBegin {
+                owner,
+                handoff: Some(mut handoff),
+            } => match owner.into_published_error() {
+                Ok(first) => SourceCleanupHistory {
+                    first: Some(SourceInstallationFirst::ResourceBegin(first)),
+                    cleanup: handoff
+                        .take_first_failure()
+                        .map(SourceCleanupCause::Scheduler),
+                    cleanup_post: None,
+                },
+                Err(owner) => {
+                    return Err(Self::ResourceBegin {
                         owner,
                         handoff: Some(handoff),
                     });
@@ -227,6 +258,7 @@ where
                 String::from("same Source cleanup receipt has not reached Complete")
             }
             Self::Begin { owner: first, .. } => first.to_string(),
+            Self::ResourceBegin { owner: first, .. } => first.to_string(),
             Self::Storage { owner: first, .. } => first.to_string(),
             Self::Post { owner: first, .. } => first.to_string(),
             Self::MissingRetirementCarrier { .. } => {
@@ -567,5 +599,40 @@ mod history_tests {
                 .is_some()
         );
         assert!(!post_only.is_empty());
+    }
+
+    #[test]
+    fn source_history_keeps_begin_rollback_separate_from_later_cleanup() {
+        // Diagnostic transport only; no Source/World closure is issued here.
+        let failure = crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::rollback(
+            native("constructor first"),
+            crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure::quarantined(
+                native("begin rollback"),
+            ),
+        );
+        let (report, _) = failure.into_parts();
+        let history = SourceCleanupHistory {
+            first: Some(SourceInstallationFirst::ResourceBegin(report)),
+            cleanup: Some(SourceCleanupCause::Native(native("later actual cleanup"))),
+            cleanup_post: None,
+        };
+
+        let report = history
+            .resource_begin_error()
+            .expect("same typed begin report");
+        assert!(
+            matches!(report.first_error(), QemuVmRealizationError::ExecutorUnavailable { message, .. } if message == "constructor first")
+        );
+        assert!(
+            matches!(report.cleanup_error(), Some(QemuVmRealizationError::ExecutorUnavailable { message, .. }) if message == "begin rollback")
+        );
+        let later = history
+            .cleanup_error()
+            .expect("independent later cleanup")
+            .downcast_ref::<QemuVmRealizationError>()
+            .expect("same typed native cleanup");
+        assert!(
+            matches!(later, QemuVmRealizationError::ExecutorUnavailable { message, .. } if message == "later actual cleanup")
+        );
     }
 }

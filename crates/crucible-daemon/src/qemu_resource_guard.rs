@@ -1876,20 +1876,49 @@ where
             terminal: false,
         };
         if let Err(error) = guard.check_operational_boundary() {
-            return match guard.finish() {
+            return match guard.finish_raw() {
                 Ok(()) => Err(
                     QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
                         error,
                         selected_checkpoint,
                     ),
                 ),
-                Err(cleanup) => {
-                    Err(QemuAttemptResourceGuardBeginFailure::after_checkpoint_claim(cleanup))
-                }
+                Err(cleanup) => Err(QemuAttemptResourceGuardBeginFailure::rollback(
+                    error, cleanup,
+                )),
             };
         }
         let _spent_selected_checkpoint_claim = selected_checkpoint;
         Ok(guard)
+    }
+
+    /// Performs the one actual close, retaining its raw first cause.
+    ///
+    /// Failed close records actual quarantine. Begin rollback keeps the raw
+    /// cause; the public method maps generic quarantine to its terminal category.
+    /// Neither caller repeats cleanup or quarantine.
+    fn finish_raw(
+        &mut self,
+    ) -> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure> {
+        use crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure;
+
+        if self.terminal {
+            if self.original_native_retirement_failed {
+                return Err(QemuAttemptResourceGuardCleanupFailure::quarantined(
+                    QemuVmRealizationError::Canceled {
+                        operation: "repeat quarantined original native retirement",
+                    },
+                ));
+            }
+            return Ok(());
+        }
+        self.cancellation_registration = None;
+        let result = finish_host_raw(&mut self.host, self.original_native_registry.as_ref());
+        self.terminal = true;
+        if result.is_err() && self.original_native_registry.is_some() {
+            self.original_native_retirement_failed = true;
+        }
+        result
     }
 }
 
@@ -1937,41 +1966,19 @@ where
     H: QemuAttemptHostResourceOwner,
 {
     fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.terminal {
-            if self.original_native_retirement_failed {
-                // An uncertain physical/control close stays contained. A
-                // repeated facade call cannot attest slot release or retry it.
-                return Err(QemuVmRealizationError::Canceled {
-                    operation: "repeat quarantined original native retirement",
-                });
+        let original_registry = self.original_native_registry.is_some();
+        self.finish_raw().map_err(|failure| {
+            let error = failure.into_error();
+            if original_registry {
+                return error;
             }
-            return Ok(());
-        }
-        self.cancellation_registration = None;
-        let result = match self.original_native_registry.as_ref() {
-            Some(registry) => self.host.finish_with_original_registry(registry),
-            None => self.host.finish(),
-        };
-        match result {
-            Ok(()) => {
-                self.terminal = true;
-                Ok(())
+            // Every raw failure records a quarantined host. Generic retirement
+            // reports that terminal state; Original retirement retains its leaf.
+            QemuVmRealizationError::ReapQuarantined {
+                operation: "release QEMU attempt host resources",
+                message: error.to_string(),
             }
-            Err(error) => {
-                self.host.quarantine();
-                self.terminal = true;
-                if self.original_native_registry.is_some() {
-                    self.original_native_retirement_failed = true;
-                    // Move the actual first cause and independent original
-                    // postcheck unchanged; quarantine does not certify reuse.
-                    return Err(error);
-                }
-                Err(QemuVmRealizationError::ReapQuarantined {
-                    operation: "release QEMU attempt host resources",
-                    message: error.to_string(),
-                })
-            }
-        }
+        })
     }
 
     fn quarantine(&mut self) {
@@ -2507,6 +2514,28 @@ fn cancellation_failure(
         })
 }
 
+/// Performs host cleanup once and reports its original cause before adaptation.
+///
+/// Both pre-guard rollback and installed-guard retirement use this same effect
+/// cut. An error transfers the host to quarantine once; it never becomes proof
+/// that the actual host resources physically returned.
+fn finish_host_raw<H>(
+    host: &mut H,
+    registry: Option<&crate::HostOperationalRegistry>,
+) -> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure>
+where
+    H: QemuAttemptHostResourceOwner,
+{
+    let result = match registry {
+        Some(registry) => host.finish_with_original_registry(registry),
+        None => host.finish(),
+    };
+    result.map_err(|error| {
+        host.quarantine();
+        crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure::quarantined(error)
+    })
+}
+
 fn release_failed_begin_with_claim<H>(
     host: &mut H,
     original: QemuVmRealizationError,
@@ -2515,20 +2544,12 @@ fn release_failed_begin_with_claim<H>(
 where
     H: QemuAttemptHostResourceOwner,
 {
-    match host.finish() {
+    match finish_host_raw(host, None) {
         Ok(()) => QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
             original,
             selected_checkpoint,
         ),
-        Err(cleanup) => {
-            host.quarantine();
-            QemuAttemptResourceGuardBeginFailure::after_checkpoint_claim(
-                QemuVmRealizationError::ReapQuarantined {
-                    operation: "roll back QEMU host resource installation",
-                    message: cleanup.to_string(),
-                },
-            )
-        }
+        Err(cleanup) => QemuAttemptResourceGuardBeginFailure::rollback(original, cleanup),
     }
 }
 

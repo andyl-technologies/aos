@@ -743,6 +743,9 @@ pub(crate) enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
     /// The target resource guard could not be installed.
     #[error("install production hot-fork target resources: {0}")]
     Resource(#[source] QemuVmRealizationError),
+    /// Target begin preserves its initiating and independent rollback refusals.
+    #[error("install production hot-fork target resources: {0}")]
+    ResourceBegin(#[source] crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport),
     /// The installed guard differs from the admitted attempt contract.
     #[error("production hot-fork target guard differs from the admitted attempt contract")]
     ResourceContractMismatch,
@@ -1093,7 +1096,7 @@ where
                 let (error, _) = failure.into_parts();
                 drop(source_world);
                 self.sources.restore(source_lease);
-                return Err(AttemptWorkerFailure::Retryable(Self::Error::Resource(
+                return Err(AttemptWorkerFailure::Retryable(Self::Error::ResourceBegin(
                     error,
                 )));
             }

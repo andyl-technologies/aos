@@ -577,7 +577,7 @@ where
         let mut runner = QemuFreshExecutionRunner::new(factory, probe);
         let service = self
             .replay_service(cancellation, resources, None)
-            .map_err(|failure| failure.into_parts().0)?;
+            .map_err(|(error, _selected)| error)?;
         let context = service.context();
         let outcome = match runner.execute(attempt, context) {
             Ok(outcome) => outcome,
@@ -637,7 +637,7 @@ where
         let mut runner = QemuFreshExecutionRunner::new(factory, crate::QemuFreshModeledDriver);
         let service = self
             .replay_service(cancellation, resources, None)
-            .map_err(|failure| failure.into_parts().0)?;
+            .map_err(|(error, _selected)| error)?;
         let result = match runner.replay_checkpoint_boundary(attempt, service.context(), target) {
             Ok(result) => result,
             Err(failure) => {

@@ -174,15 +174,12 @@ where
     ///
     /// Invariant refusal returns that same error, token and preexisting owner
     /// together. The inline mutex adds Sync without a failure-time allocation.
-    pub(crate) fn retain_after_begin_error(
+    pub(crate) fn retain_after_begin_error<C: std::error::Error + Send + Sync + 'static>(
         mut self: Box<Self>,
-        source: QemuVmRealizationError,
+        source: C,
     ) -> Result<
-        (
-            QemuVmRealizationError,
-            Box<dyn crucible_api::ProductionVmCleanupHandoff>,
-        ),
-        SourceConstructionCustodyFailure,
+        (C, Box<dyn crucible_api::ProductionVmCleanupHandoff>),
+        SourceConstructionCustodyFailure<C>,
     > {
         let reservation = self.reservation.take();
         retain_source_owner(reservation, self, source)
@@ -190,10 +187,13 @@ where
 }
 
 /// Retains the no-cell body, then its exact post-destruction World return.
-pub(crate) struct UnbornSourceConstruction<F: QemuAttemptResourceGuardFactory> {
+pub(crate) struct UnbornSourceConstruction<
+    F: QemuAttemptResourceGuardFactory,
+    C = QemuVmRealizationError,
+> {
     pending: Option<Box<PendingSourceConstruction<F>>>,
     returning: Option<UnbornWorldReturn<F>>,
-    first: QemuVmRealizationError,
+    first: C,
     cleanup_failure: Option<SourceCleanupCause>,
     cleanup_post: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
     physically_closed: bool,
@@ -206,15 +206,13 @@ struct UnbornWorldReturn<F> {
     body_destroyed: bool,
 }
 
-impl<F> UnbornSourceConstruction<F>
+impl<F, C> UnbornSourceConstruction<F, C>
 where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: Send + 'static,
+    C: std::error::Error + Send + Sync + 'static,
 {
-    pub(crate) fn new(
-        pending: Box<PendingSourceConstruction<F>>,
-        first: QemuVmRealizationError,
-    ) -> Self {
+    pub(crate) fn new(pending: Box<PendingSourceConstruction<F>>, first: C) -> Self {
         Self {
             pending: Some(pending),
             returning: None,
@@ -231,7 +229,7 @@ where
             .map(SourceCleanupCause::as_error)
     }
 
-    pub(crate) fn first(&self) -> &QemuVmRealizationError {
+    pub(crate) fn first(&self) -> &C {
         &self.first
     }
 
@@ -240,7 +238,7 @@ where
         self,
     ) -> Result<
         (
-            QemuVmRealizationError,
+            C,
             Option<SourceCleanupCause>,
             Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
         ),

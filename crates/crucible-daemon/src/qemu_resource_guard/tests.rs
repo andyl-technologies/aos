@@ -392,9 +392,11 @@ fn clean_selected_resource_failure_returns_the_one_shot_claim_for_retry() {
     };
     let (error, selected) = failure.into_parts();
     assert!(matches!(
-        error,
+        error.first_error(),
         QemuVmRealizationError::ExecutorUnavailable { .. }
     ));
+    assert!(!error.was_quarantined());
+    assert!(error.cleanup_error().is_none());
     let selected = selected.expect("clean failure retains selected-root authority");
     assert!(selected.authorizes(checkpoint));
 
@@ -432,8 +434,19 @@ fn selected_resource_cleanup_failure_spends_the_claim_and_quarantines() {
     let (error, selected) = failure.into_parts();
 
     assert!(matches!(
-        error,
-        QemuVmRealizationError::ReapQuarantined { .. }
+        error.first_error(),
+        QemuVmRealizationError::Executor {
+            operation: "install QEMU host resources",
+            ..
+        }
+    ));
+    assert!(error.was_quarantined());
+    assert!(matches!(
+        error.cleanup_error(),
+        Some(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "finish fake host resources",
+            ..
+        })
     ));
     assert!(
         selected.is_none(),
@@ -538,7 +551,10 @@ fn cancellation_that_wins_before_begin_signals_and_rolls_back() {
         Ok(_) => panic!("pre-canceled guard unexpectedly installed"),
         Err(failure) => failure.into_parts().0,
     };
-    assert!(matches!(error, QemuVmRealizationError::Canceled { .. }));
+    assert!(matches!(
+        error.first_error(),
+        QemuVmRealizationError::Canceled { .. }
+    ));
     assert_eq!(counters.signals.load(Ordering::SeqCst), 1);
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
@@ -1153,4 +1169,104 @@ fn erased_launcher_observes_the_actual_generic_guard_target_loan() {
     assert!(!launcher.fork_target_is_owned());
     launcher.finish().expect("actual generic guard fixture");
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn canceled_begin_with_failed_rollback_keeps_both_actual_causes_and_one_quarantine() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = ComposedQemuAttemptResourceGuardFactory::new(FakeHostFactory {
+        installed: resources,
+        counters: Arc::clone(&counters),
+        signal_error: false,
+        signal_panics: false,
+        finish_error: true,
+    });
+    let cancellation = ExecutionCancellation::default();
+    cancellation.cancel_for_test();
+
+    let failure = match factory.begin(resources, cancellation, None) {
+        Ok(_) => panic!("pre-canceled component guard unexpectedly installed"),
+        Err(failure) => failure,
+    };
+    let (report, selected) = failure.into_parts();
+
+    assert!(matches!(
+        report.first_error(),
+        QemuVmRealizationError::Canceled {
+            operation: "QEMU attempt resource boundary"
+        }
+    ));
+    assert!(matches!(
+        report.cleanup_error(),
+        Some(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "finish fake host resources",
+            ..
+        })
+    ));
+    assert!(report.was_quarantined());
+    assert!(selected.is_none());
+    assert_eq!(counters.signals.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn inline_begin_report_moves_both_original_allocations_without_reboxing() {
+    // Diagnostic transport only; this issues no Main, native owner or closure.
+    let first_message = String::from("original resource installation refusal");
+    let cleanup_message = String::from("independent host rollback refusal");
+    let first_pointer = first_message.as_ptr();
+    let cleanup_pointer = cleanup_message.as_ptr();
+    let failure = QemuAttemptResourceGuardBeginFailure::rollback(
+        QemuVmRealizationError::Executor {
+            operation: "component first",
+            message: first_message,
+        },
+        crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure::quarantined(
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "component cleanup",
+                message: cleanup_message,
+            },
+        ),
+    );
+    let (report, selected) = failure.into_parts();
+    let moved = QemuAttemptResourceGuardBeginFailure::from_report(report, selected);
+    let (report, selected) = moved.into_parts();
+
+    let QemuVmRealizationError::Executor { message: first, .. } = report.first_error() else {
+        panic!("typed first cause changed");
+    };
+    let Some(QemuVmRealizationError::ExecutorUnavailable {
+        message: cleanup, ..
+    }) = report.cleanup_error()
+    else {
+        panic!("typed cleanup cause changed");
+    };
+    assert_eq!(first.as_ptr(), first_pointer);
+    assert_eq!(cleanup.as_ptr(), cleanup_pointer);
+    assert!(report.was_quarantined());
+    assert!(selected.is_none());
+}
+
+#[test]
+fn absent_selected_claim_alone_does_not_invent_quarantine_history() {
+    let failure = QemuAttemptResourceGuardBeginFailure::after_checkpoint_claim(
+        QemuVmRealizationError::ExecutorUnavailable {
+            operation: "component no selected root",
+            message: String::from("unavailable"),
+        },
+    );
+    let (report, selected) = failure.into_parts();
+
+    assert!(selected.is_none());
+    assert!(!report.was_quarantined());
+    assert!(report.cleanup_error().is_none());
+    assert!(matches!(
+        report.first_error(),
+        QemuVmRealizationError::ExecutorUnavailable {
+            operation: "component no selected root",
+            ..
+        }
+    ));
 }
