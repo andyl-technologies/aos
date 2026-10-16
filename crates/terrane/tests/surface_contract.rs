@@ -277,3 +277,100 @@ fn malformed_schema_patterns_fail_independently_of_tree_matches() {
         }
     }
 }
+
+fn native_host_configuration() -> String {
+    format!(
+        r#"store = "bucket(file:///tmp/store)"
+[host_tier]
+path = "/var/lib/terrane"
+size_bytes = 1048576
+reassembly = "never"
+[host_tier.publisher]
+socket_path = "/run/terrane-publish/publisher.sock"
+serve_uid = 1001
+publish_uid = 1002
+content_uid = 1001
+content_gid = 1003
+max_connections = 32
+[host_tier.quota]
+socket_path = "/run/terrane-quota/helper.sock"
+configuration_epoch = "{}"
+[host_tier.domains.public]
+path = "/var/lib/terrane/public"
+wipe = "none"
+quota_owner_id = "public-owner"
+[host_tier.domains.public.publisher]
+retirement_grace_ms = 30000
+chunk_profile = "cdc-1m"
+chunk_seed = "{}"
+"#,
+        "01".repeat(16),
+        "02".repeat(32),
+    )
+}
+
+#[test]
+fn native_host_configuration_preserves_explicit_runtime_inputs() {
+    let config =
+        Config::parse(&native_host_configuration()).expect("explicit native configuration");
+    let host = config.host_tier().expect("host tier");
+    let publisher = host.publisher.as_ref().expect("publisher config");
+    assert_eq!((publisher.serve_uid, publisher.publish_uid), (1001, 1002));
+    assert_eq!(publisher.max_connections, 32);
+    assert_eq!(
+        host.quota
+            .as_ref()
+            .expect("quota config")
+            .configuration_epoch,
+        [1; 16]
+    );
+
+    let domain = &host.domains["public"];
+    assert_eq!(domain.quota_owner_id.as_deref(), Some("public-owner"));
+    let policy = domain.publisher.as_ref().expect("domain policy");
+    assert_eq!(policy.retirement_grace_ms, 30_000);
+    assert_eq!(policy.chunk_seed, [2; 32]);
+    assert_eq!(
+        policy.profile().expect("registered actual profile"),
+        terrane_core::chunking::ChunkProfile::cdc_1m([2; 32])
+    );
+}
+
+#[test]
+fn native_host_configuration_rejects_missing_or_ambiguous_operator_inputs() {
+    let valid = native_host_configuration();
+    for (from, to) in [
+        ("serve_uid = 1001", "serve_uid = 1002"),
+        ("content_gid = 1003", "content_gid = 4294967295"),
+        ("max_connections = 32", "max_connections = 0"),
+        ("max_connections = 32", "max_connections = 1025"),
+        ("retirement_grace_ms = 30000", "retirement_grace_ms = 0"),
+        (
+            "retirement_grace_ms = 30000",
+            "retirement_grace_ms = 300001",
+        ),
+        ("chunk_profile = \"cdc-1m\"", "chunk_profile = \"unknown\""),
+        ("chunk_profile = \"cdc-1m\"", ""),
+        ("quota_owner_id = \"public-owner\"", "quota_owner_id = \"\""),
+        (
+            "socket_path = \"/run/terrane-quota/helper.sock\"",
+            "socket_path = \"relative.sock\"",
+        ),
+    ] {
+        assert!(
+            Config::parse(&valid.replace(from, to)).is_err(),
+            "accepted {to:?}"
+        );
+    }
+    for field in ["chunk_seed", "configuration_epoch"] {
+        let line = valid
+            .lines()
+            .find(|line| line.starts_with(field))
+            .expect("hex field");
+        assert!(Config::parse(&valid.replace(line, &format!("{field} = \"AA\""))).is_err());
+        let width = if field == "chunk_seed" { 32 } else { 16 };
+        let uppercase = format!("{field} = \"{}\"", "AB".repeat(width));
+        assert!(Config::parse(&valid.replace(line, &uppercase)).is_err());
+        assert!(Config::parse(&valid.replace(line, "")).is_err());
+    }
+}

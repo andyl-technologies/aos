@@ -10,6 +10,10 @@
 //! wipe = "none"
 //! ```
 
+mod runtime;
+
+pub use runtime::{DomainPublisher, Publisher, Quota};
+
 use super::ConfigError;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -42,6 +46,10 @@ pub struct HostTier {
     /// Explicit canonical disclosure-domain directories.
     #[serde(default)]
     pub domains: BTreeMap<String, DomainDirectory>,
+    /// Optional explicit local publisher inputs, required by publisher startup.
+    pub publisher: Option<Publisher>,
+    /// Optional native quota helper locator, required by native cache startup.
+    pub quota: Option<Quota>,
 }
 
 /// Selects trunk host-tier reassembly behavior.
@@ -62,6 +70,10 @@ pub struct DomainDirectory {
     pub path: String,
     /// Requested wipe policy; parsing grants no runtime qualification.
     pub wipe: Wipe,
+    /// Optional explicit publication policy for this domain.
+    pub publisher: Option<DomainPublisher>,
+    /// Configured helper owner identifier, required for native quota observation.
+    pub quota_owner_id: Option<String>,
 }
 
 /// Selects a registered trunk wipe policy.
@@ -81,6 +93,12 @@ impl HostTier {
                 "host tier requires an absolute path and positive size_bytes",
             ));
         }
+        if let Some(publisher) = &self.publisher {
+            publisher.validate()?;
+        }
+        if let Some(quota) = &self.quota {
+            quota.validate()?;
+        }
         let mut paths = std::collections::BTreeSet::new();
         for (domain, directory) in &self.domains {
             let canonical = terrane_core::properties::Domain::parse(domain).is_ok();
@@ -90,6 +108,18 @@ impl HostTier {
             {
                 return Err(ConfigError::Invalid(
                     "invalid or duplicate domain directory",
+                ));
+            }
+            if let Some(publisher) = &directory.publisher {
+                publisher.validate()?;
+            }
+            if directory
+                .quota_owner_id
+                .as_ref()
+                .is_some_and(|owner| owner.is_empty() || owner.len() > 256)
+            {
+                return Err(ConfigError::Invalid(
+                    "quota owner ID must be 1..256 UTF-8 bytes",
                 ));
             }
         }

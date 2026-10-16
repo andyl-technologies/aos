@@ -38,7 +38,7 @@
   '';
 in {
   surface-interface = surfaceGate "surface-interface" ''
-    ${runTests "surface_contract" ["shared_role_configuration_requires_explicit_invocation_selection" "registry_cannot_claim_uncompiled_or_runtime_loaded_surfaces" "exposures_preserve_order_and_reject_partial_configuration" "token_references_reject_inline_credentials_and_invalid_locators"]}
+    ${runTests "surface_contract" ["native_host_configuration_preserves_explicit_runtime_inputs" "native_host_configuration_rejects_missing_or_ambiguous_operator_inputs" "shared_host_configuration_preserves_requested_policy_without_runtime_claims" "shared_role_configuration_requires_explicit_invocation_selection" "registry_cannot_claim_uncompiled_or_runtime_loaded_surfaces" "exposures_preserve_order_and_reject_partial_configuration" "token_references_reject_inline_credentials_and_invalid_locators"]}
     ${runTests "surface_runtime" ["preparation_refuses_entire_list_before_any_endpoint_starts" "prepared_snapshots_recheck_current_authority_before_startup"]}
     ${runTests "surface_lifecycle_contract" ["external_surface_owns_real_lifecycle_without_sdk_constructor_or_registration"]}
     printf 'PASS: compiled registry, exposure contract and atomic preparation\n' > "$out/result"
