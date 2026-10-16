@@ -84,6 +84,11 @@ impl NativeOwnerExecutor {
         Ok(())
     }
 
+    /// Borrows the real verified metadata source closure retained by this worker.
+    pub(super) fn manifest_sources(&self) -> &[Arc<crate::host_cache::NativeManifestSource>] {
+        &self.manifest_sources
+    }
+
     /// Reserves bounded registry slots before a downstream recovery effect.
     ///
     /// # Errors

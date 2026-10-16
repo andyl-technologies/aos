@@ -122,6 +122,20 @@ impl NativeOwnerExecutor {
 }
 
 impl<'executor> LiveManifestRecoveryContext<'executor> {
+    /// Returns the same original barrier only after all local effects are settled.
+    ///
+    /// This does not certify complete namespace/state recovery. The owner still
+    /// performs exhaustive final inspection, synchronization and quota checks.
+    ///
+    /// # Errors
+    /// Refuses an in-flight/faulted phase, changed owner/source generation or a
+    /// stale original publisher context. It never captures a new barrier.
+    pub(super) fn finish(self) -> io::Result<(PublisherRecoveryContext<HostDomainLocation>, u64)> {
+        self.check_current()?;
+        let generation = self.generation.get();
+        Ok((self.original, generation))
+    }
+
     /// Borrows the original actual publisher session without a new connection.
     pub(crate) fn publisher_session(&self) -> &Arc<Client<HostDomainLocation>> {
         &self.session

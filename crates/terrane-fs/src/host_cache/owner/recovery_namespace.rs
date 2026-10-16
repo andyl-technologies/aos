@@ -7,10 +7,13 @@
 
 use super::NativeCachePreparation;
 use crate::{
-    host_cache::NativeHostLayout, host_quota::NativeProject, quota_confinement::Installed,
+    host_cache::{NativeHostLayout, NativeManifestSource},
+    host_quota::NativeProject,
+    quota_confinement::Installed,
 };
 use rustix::fs::{Dir, Mode, OFlags, open, openat};
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     fs::{File, Metadata},
     io,
@@ -194,20 +197,86 @@ impl SharedNamespaceObservation {
     ///
     /// This is shared-name absence only, never complete recovery evidence.
     pub(super) fn only_empty_scaffolds(&self) -> bool {
-        self.entries.iter().all(|entry| {
-            if !entry.metadata.is_dir() {
-                return false;
+        self.entries.iter().all(empty_scaffold)
+    }
+
+    /// Requires every ordinary shared file to be in an actual verified source closure.
+    ///
+    /// Canonical names alone grant no exception: both pack and exact derived
+    /// index must match the genuine source's retained kernel inode and metadata.
+    /// Every source must also be represented in the exhaustive original scan.
+    /// This classifies namespace/content custody only; durable pins, original
+    /// publisher context and final source verification remain owner obligations.
+    ///
+    /// # Errors
+    /// Refuses another domain/root/project, changed source, an absent closure
+    /// member or any loose, temporary, unrelated or nonregular shared entry.
+    pub(super) fn require_metadata_sources(
+        &self,
+        sources: &[Arc<NativeManifestSource>],
+    ) -> io::Result<()> {
+        self.check_current()?;
+        let mut expected = BTreeMap::<PathBuf, Metadata>::new();
+        for source in sources {
+            if !Arc::ptr_eq(&self.layout, source.layout()) {
+                return Err(invalid(
+                    "metadata source belongs to another retained domain root",
+                ));
             }
-            let components = entry.relative.iter().collect::<Vec<_>>();
-            match components.as_slice() {
-                [root, shard] if *root == "chunks" => canonical_shard(shard),
-                [root, packs] if *root == "objects" && *packs == "pack" => true,
-                [root, packs, shard] if *root == "objects" && *packs == "pack" => {
-                    canonical_shard(shard)
+            source.recheck()?;
+            let id = source.pack_id();
+            let base = PathBuf::from("objects/pack").join(format!("{:02x}", id.as_bytes()[0]));
+            for (suffix, file) in [("pack", source.files().0), ("idx", source.files().1)] {
+                let metadata = file.metadata()?;
+                let project = NativeProject::inspect(file)?;
+                if !metadata.is_file()
+                    || metadata.uid() != self.uid
+                    || metadata.gid() != self.gid
+                    || metadata.mode() & 0o002 != 0
+                    || project.project_id != self.project_id
+                    || project.device != self.layout.directory_binding("layout-root")?.0
+                    || (project.device, project.inode) != (metadata.dev(), metadata.ino())
+                {
+                    return Err(invalid(
+                        "verified source differs from configured shared charge custody",
+                    ));
                 }
-                _ => false,
+                let path = base.join(format!("{id}.{suffix}"));
+                if expected
+                    .get(&path)
+                    .is_some_and(|previous| !same_inode(previous, &metadata))
+                {
+                    return Err(invalid(
+                        "one metadata key resolves to conflicting retained inodes",
+                    ));
+                }
+                expected.insert(path, metadata);
             }
-        })
+        }
+        for entry in &self.entries {
+            if empty_scaffold(entry) {
+                continue;
+            }
+            let Some(source) = expected.remove(&entry.relative) else {
+                return Err(invalid(
+                    "unsupported shared namespace entry outside verified metadata closure",
+                ));
+            };
+            if !entry.metadata.is_file()
+                || !same_inode(&source, &entry.metadata)
+                || !same_inode(&source, &entry.inode.metadata()?)
+            {
+                return Err(invalid(
+                    "observed metadata member differs from verified source inode",
+                ));
+            }
+        }
+        if !expected.is_empty() {
+            return Err(invalid(
+                "verified metadata closure was absent from exhaustive shared scan",
+            ));
+        }
+        Ok(())
     }
 
     fn check_root(&self, file: &File) -> io::Result<()> {
@@ -226,6 +295,19 @@ impl SharedNamespaceObservation {
             ));
         }
         Ok(())
+    }
+}
+
+fn empty_scaffold(entry: &EntryObservation) -> bool {
+    if !entry.metadata.is_dir() {
+        return false;
+    }
+    let components = entry.relative.iter().collect::<Vec<_>>();
+    match components.as_slice() {
+        [root, shard] if *root == "chunks" => canonical_shard(shard),
+        [root, packs] if *root == "objects" && *packs == "pack" => true,
+        [root, packs, shard] if *root == "objects" && *packs == "pack" => canonical_shard(shard),
+        _ => false,
     }
 }
 
