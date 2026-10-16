@@ -7,6 +7,8 @@
 use rustix::fs::{Mode, OFlags, fstat, fstatfs, open, openat};
 #[cfg(feature = "tokio")]
 mod metadata;
+#[cfg(feature = "tokio")]
+mod owner;
 mod quota;
 mod reassembly;
 mod residency;
@@ -15,6 +17,8 @@ mod source;
 
 #[cfg(feature = "tokio")]
 pub use metadata::NativeHostMetadataReader;
+#[cfg(feature = "tokio")]
+pub use owner::{NativeCacheOwnerConfig, NativeCachePreparation};
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
 pub use residency::{NativeChunkSpan, NativeResidencePlan};
