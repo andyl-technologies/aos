@@ -1,6 +1,6 @@
 //! Prepares every configured exposure before ordered, repository-only startup.
 
-use super::{RealizationHints, Serving};
+use super::{RealizationHints, ServingHandle};
 use crate::{
     config::exposure::ConfiguredExposure,
     repository::{Error, Repository},
@@ -102,13 +102,13 @@ impl PreparedExposures {
     pub async fn start<S, C, F>(
         self,
         repository: &Repository<S, C, F>,
-    ) -> Result<Vec<Serving>, Error>
+    ) -> Result<Vec<ServingHandle>, Error>
     where
         S: Store + Sync,
         C: Clock + Sync,
         F: LocalFs + Sync,
     {
-        let mut serving: Vec<Serving> = Vec::new();
+        let mut serving: Vec<ServingHandle> = Vec::new();
         for prepared in self.entries {
             let exposure = prepared.exposure;
             let result = super::native::realize_prepared(
