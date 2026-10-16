@@ -28,7 +28,8 @@ pub use native_pool::{
     AuthenticatedNativeNodeClaim, AuthenticatedNativeNodeHostWindow,
     AuthenticatedNativePoolPurpose, AuthenticatedNativeWorldClaim,
     AuthenticatedNativeWorldCleanupLoan, AuthenticatedNativeWorldControlLease,
-    NativeNodeReservation, NativePoolRefusal, NativeWorldIdentity, NativeWorldReturn,
+    NativeNodeReservation, NativePoolRefusal, NativePoolReturnError, NativeWorldIdentity,
+    NativeWorldReturn,
 };
 
 mod host_descriptors;
@@ -486,11 +487,48 @@ impl AuthenticatedNativeSubdivision {
     ///
     /// # Errors
     /// Retains the same assignment on live landing, changed Main or uncertainty.
-    pub fn retire_after_control_free(&mut self) -> Result<(), ServiceBirthError> {
-        if let Some(node) = self.node.as_mut() {
-            node.retire_after_control_free()?;
-        }
-        Ok(())
+    pub fn retire_after_control_free(
+        &mut self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), NativePoolReturnError> {
+        let node = self
+            .node
+            .as_mut()
+            .ok_or_else(|| ServiceBirthError::policy("native return node is absent"))?;
+        node.retire_after_control_free(cleanup)
+    }
+
+    /// Enters once and borrows this exact node's existing World Cleanup.
+    ///
+    /// # Errors
+    /// Refuses stale node/World custody, saved admission failure or terminal Cleanup.
+    pub fn retained_world_cleanup(&self) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
+        self.node
+            .as_ref()
+            .ok_or_else(|| ServiceBirthError::policy("native return node is absent"))?
+            .retained_world_cleanup()
+    }
+
+    /// Verifies an already-latched exact World Cleanup without entering one.
+    ///
+    /// # Errors
+    /// Refuses stale/foreign assignment, a different guard, changed pins or bound.
+    pub fn verify_world_cleanup(
+        &self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        self.node
+            .as_ref()
+            .ok_or_else(|| ServiceBirthError::policy("native return node is absent"))?
+            .verify_world_cleanup(cleanup)
+    }
+
+    /// Observes actual node assignment return, without returning another credit.
+    #[must_use]
+    pub fn is_physically_returned(&self) -> bool {
+        self.node
+            .as_ref()
+            .is_some_and(|node| node.is_physically_returned())
     }
 
     /// Retains this node's Target landing before its actual saved Preparation effects.

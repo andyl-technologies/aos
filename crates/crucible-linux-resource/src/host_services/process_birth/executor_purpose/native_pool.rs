@@ -20,6 +20,30 @@ mod window;
 mod world_return;
 use ledger::{NodeSlot, PoolLedger, WorldSlot};
 
+pub use world_return::NativePoolReturnError;
+
+impl PoolState {
+    fn verify_return_custody(
+        &self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        cleanup.verify_operation_class(crate::host_supervision::HostOperationClass::Cleanup)?;
+        self.root.owner.family.check_retained_custody()?;
+        self.root
+            .owner
+            .host_descriptors
+            .try_lock()
+            .map_err(|_| {
+                ServiceBirthError::policy("native return descriptor custody is uncertain")
+            })?
+            .as_ref()
+            .ok_or_else(|| ServiceBirthError::policy("native return descriptor owner is absent"))?
+            .check()?;
+        cleanup.verify_operation_class(crate::host_supervision::HostOperationClass::Cleanup)?;
+        Ok(())
+    }
+}
+
 /// Names a selected operational owner and authenticated immutable World input.
 ///
 /// These copied coordinates grant no resources; a pool verifies and retains
@@ -67,6 +91,7 @@ pub struct AuthenticatedNativeWorldClaim {
     held: Option<Arc<PoolState>>,
     epoch: u64,
     original: Arc<HostOperationGuard>,
+    returned: bool,
 }
 
 /// Reports whether an exact World has returned or still owns its paid body.
@@ -449,6 +474,31 @@ impl AuthenticatedNativePoolPurpose {
         Arc::ptr_eq(&self.held.root.owner, main)
     }
 
+    /// Observes physical return of a genuine preexisting loan in this same pool.
+    ///
+    /// This checks the actual pool Arc before reading its monotonic publication
+    /// ledger. Absence proves return only because the sole row-removal cut
+    /// follows irreversible assignment consumption. It issues no new work,
+    /// return, Cleanup, or never-born assertion and does not erase prior reports.
+    ///
+    /// # Errors
+    /// Refuses a foreign loan/pool, an unissued epoch or uncertain ledger.
+    pub fn observe_world_returned(
+        &self,
+        loan: &AuthenticatedNativeWorldCleanupLoan,
+    ) -> Result<bool, ServiceBirthError> {
+        if !Arc::ptr_eq(&self.held, &loan.held) {
+            return Err(ServiceBirthError::policy(
+                "native return loan belongs to another pool",
+            ));
+        }
+        self.held
+            .ledger
+            .try_lock()
+            .map_err(|_| ServiceBirthError::policy("native World return ledger is uncertain"))?
+            .observe_world_returned(loan.epoch)
+    }
+
     /// Debits permanent worker bodies from this same Main pool before birth.
     ///
     /// This once-only standing assignment remains occupied for Main lifetime;
@@ -570,6 +620,7 @@ impl AuthenticatedNativePoolPurpose {
                 held: Some(Arc::clone(&self.held)),
                 epoch,
                 original: Arc::clone(original),
+                returned: false,
             };
             born = Some(claim);
 
@@ -613,6 +664,9 @@ impl AuthenticatedNativeWorldClaim {
     /// # Errors
     /// Refuses a consumed World facade; this method enters no Cleanup or work.
     pub fn cleanup_loan(&self) -> Result<AuthenticatedNativeWorldCleanupLoan, ServiceBirthError> {
+        if self.returned {
+            return Err(ServiceBirthError::policy("native World already returned"));
+        }
         let held = self
             .held
             .as_ref()
@@ -751,8 +805,12 @@ fn postcut(
 impl Drop for AuthenticatedNativeWorldClaim {
     fn drop(&mut self) {
         if let Some(held) = self.held.take() {
-            // Neither dropping a facade nor losing its caller proves return.
-            std::mem::forget(held);
+            if self.returned {
+                drop(held);
+            } else {
+                // Losing an unreturned facade still proves no physical return.
+                std::mem::forget(held);
+            }
         }
     }
 }
@@ -770,9 +828,21 @@ fn structure_bytes(capacity: usize) -> Result<u64, ServiceBirthError> {
         .map_err(|_| ServiceBirthError::policy("native selection scratch layout overflows"))?;
     let nodes = std::alloc::Layout::array::<Option<NodeSlot>>(capacity)
         .map_err(|_| ServiceBirthError::policy("native node array layout overflows"))?;
+    let (cleanup, _) = std::alloc::Layout::new::<(
+        std::sync::atomic::AtomicUsize,
+        std::sync::atomic::AtomicUsize,
+    )>()
+    .extend(std::alloc::Layout::new::<HostOperationGuard>())
+    .map_err(|_| ServiceBirthError::policy("native World Cleanup layout overflows"))?;
+    let cleanups = cleanup
+        .pad_to_align()
+        .size()
+        .checked_mul(capacity)
+        .ok_or_else(|| ServiceBirthError::policy("native World Cleanup peak overflows"))?;
     arc.pad_to_align()
         .size()
-        .checked_add(worlds.size())
+        .checked_add(cleanups)
+        .and_then(|bytes| bytes.checked_add(worlds.size()))
         .and_then(|bytes| bytes.checked_add(nodes.size()))
         .and_then(|bytes| bytes.checked_add(selection.size()))
         .and_then(|bytes| u64::try_from(bytes).ok())

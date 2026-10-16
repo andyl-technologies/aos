@@ -648,6 +648,13 @@ impl std::error::Error for QemuTargetDispatcherRetirementError {
 /// Errors returned by QEMU VM realization coordination.
 #[derive(Debug, Error)]
 pub enum QemuVmRealizationError {
+    /// Preserves actual native return work and the same saved Cleanup's postcut.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    NativePoolReturn {
+        /// Actual moved errors, without a late diagnostic allocation.
+        source: crucible_linux_resource::host_services::process_birth::NativePoolReturnError,
+    },
     /// Retains independent physical-return reports without replacing either.
     #[cfg(target_os = "linux")]
     #[error(transparent)]

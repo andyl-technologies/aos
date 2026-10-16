@@ -100,36 +100,104 @@ impl AuthenticatedNativeNodeClaim {
         }
     }
 
-    pub(in super::super) fn retire_after_control_free(&mut self) -> Result<(), ServiceBirthError> {
+    pub(in super::super) fn retained_world_cleanup(
+        &self,
+    ) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
         let held = self
             .held
             .as_ref()
             .ok_or_else(|| ServiceBirthError::policy("native node already returned"))?;
-        if let Some(window) = self
-            .target_window
-            .get_mut()
-            .map_err(|_| ServiceBirthError::policy("native Target landing custody is uncertain"))?
-        {
-            window.close_after_controls()?;
-        }
-        let mut ledger = held
+        let ledger = held
             .ledger
-            .lock()
+            .try_lock()
             .map_err(|_| ServiceBirthError::policy("native node retirement is uncertain"))?;
-        let prepared =
-            ledger.prepare_node_return(self.world_epoch, self.assignment_epoch, self.node_index)?;
-        held.root
-            .owner
-            .host_descriptors
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("Main descriptor owner is uncertain"))?
-            .as_mut()
-            .ok_or_else(|| ServiceBirthError::policy("Main descriptor owner is absent"))?
-            .close_pool_assignment(prepared.windows, prepared.tables)?;
-        ledger.commit_node_return(prepared);
-        drop(ledger);
-        drop(self.held.take());
-        Ok(())
+        ledger.node_bounds(self.world_epoch, self.assignment_epoch, self.node_index)?;
+        ledger.retained_cleanup(self.world_epoch)
+    }
+
+    pub(in super::super) fn verify_world_cleanup(
+        &self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        let held = self
+            .held
+            .as_ref()
+            .ok_or_else(|| ServiceBirthError::policy("native node already returned"))?;
+        {
+            let ledger = held
+                .ledger
+                .try_lock()
+                .map_err(|_| ServiceBirthError::policy("native node retirement is uncertain"))?;
+            ledger.node_bounds(self.world_epoch, self.assignment_epoch, self.node_index)?;
+            ledger.verify_cleanup(self.world_epoch, cleanup)?;
+        }
+        held.verify_return_custody(cleanup)?;
+        held.ledger
+            .try_lock()
+            .map_err(|_| ServiceBirthError::policy("native node retirement is uncertain"))?
+            .verify_cleanup(self.world_epoch, cleanup)
+    }
+
+    pub(in super::super) fn is_physically_returned(&self) -> bool {
+        self.held.is_none()
+    }
+
+    pub(in super::super) fn retire_after_control_free(
+        &mut self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), NativePoolReturnError> {
+        let Some(held) = self.held.as_ref().cloned() else {
+            return Ok(());
+        };
+        // Resolve only an already-latched result. Never run a postcheck against
+        // a substituted operation or initialize missing Cleanup by verification.
+        let saved = held
+            .ledger
+            .try_lock()
+            .map_err(|_| ServiceBirthError::policy("native node retirement is uncertain"))?
+            .saved_cleanup(self.world_epoch)?;
+        if !Arc::ptr_eq(&saved, cleanup) {
+            return Err(ServiceBirthError::policy("native node return Cleanup is foreign").into());
+        }
+        let result = (|| {
+            self.verify_world_cleanup(&saved)?;
+            if let Some(window) = self.target_window.get_mut().map_err(|_| {
+                ServiceBirthError::policy("native Target landing custody is uncertain")
+            })? {
+                window.close_after_controls()?;
+            }
+            let mut ledger = held
+                .ledger
+                .try_lock()
+                .map_err(|_| ServiceBirthError::policy("native node retirement is uncertain"))?;
+            ledger.verify_cleanup(self.world_epoch, &saved)?;
+            let prepared = ledger.prepare_node_return(
+                self.world_epoch,
+                self.assignment_epoch,
+                self.node_index,
+            )?;
+            let (work, consumed) = held
+                .root
+                .owner
+                .host_descriptors
+                .try_lock()
+                .map_err(|_| ServiceBirthError::policy("Main descriptor owner is uncertain"))?
+                .as_mut()
+                .ok_or_else(|| ServiceBirthError::policy("Main descriptor owner is absent"))?
+                .close_pool_assignment(prepared.windows, prepared.tables);
+            if consumed {
+                ledger.commit_node_return(prepared);
+            }
+            drop(ledger);
+            if consumed {
+                drop(self.held.take());
+            }
+            work
+        })();
+        NativePoolReturnError::finish(
+            result,
+            saved.verify_operation_class(crate::host_supervision::HostOperationClass::Cleanup),
+        )
     }
 
     /// Takes the initial Source's separately reserved Main-table landing once.

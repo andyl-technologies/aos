@@ -233,7 +233,11 @@ fn permanent_worker_controls_compete_with_every_world_without_a_second_bank() {
     assert_eq!(ledger.used, used);
 }
 
-fn selected_ledger() -> (PoolLedger, u64) {
+fn selected_ledger_with_supervisor() -> (
+    PoolLedger,
+    u64,
+    crate::host_supervision::HostOperationSupervisor,
+) {
     use crate::host_supervision::{
         HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
     };
@@ -257,6 +261,11 @@ fn selected_ledger() -> (PoolLedger, u64) {
         .reserve_resources(0, 26, 0)
         .unwrap();
     ledger.bind_window(epoch, window).unwrap();
+    (ledger, epoch, supervisor)
+}
+
+fn selected_ledger() -> (PoolLedger, u64) {
+    let (ledger, epoch, _) = selected_ledger_with_supervisor();
     (ledger, epoch)
 }
 
@@ -327,3 +336,198 @@ fn actual_node_entry_cannot_become_never_born_after_physical_return() {
 }
 
 mod pending_worlds;
+
+#[test]
+fn cleanup_verification_reads_only_the_exact_latched_guard() {
+    use crate::host_supervision::HostOperationClass;
+
+    let (ledger, epoch, supervisor) = selected_ledger_with_supervisor();
+    let foreign = Arc::new(
+        supervisor
+            .begin_control(HostOperationClass::Cleanup)
+            .unwrap(),
+    );
+    assert!(ledger.saved_cleanup(epoch).is_err());
+    assert!(ledger.verify_cleanup(epoch, &foreign).is_err());
+    assert!(
+        ledger
+            .worlds
+            .iter()
+            .flatten()
+            .all(|world| world.cleanup.get().is_none())
+    );
+
+    let saved = ledger.retained_cleanup(epoch).unwrap();
+    assert!(!Arc::ptr_eq(&saved, &foreign));
+    assert!(ledger.verify_cleanup(epoch, &foreign).is_err());
+    assert!(ledger.verify_cleanup(epoch + 1, &saved).is_err());
+    ledger.verify_cleanup(epoch, &saved).unwrap();
+    assert!(Arc::ptr_eq(&saved, &ledger.saved_cleanup(epoch).unwrap()));
+
+    let original = Arc::clone(&ledger.worlds.iter().flatten().next().unwrap()._original);
+    ledger.verify_world_original(epoch, &original).unwrap();
+    let other = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
+    assert!(ledger.verify_world_original(epoch, &other).is_err());
+}
+
+#[test]
+fn terminal_local_parent_keeps_same_cleanup_but_cannot_admit_work() {
+    use crate::host_supervision::HostOperationClass;
+
+    // This is a local supervisor/ledger control, not authenticated Main issuance.
+    let (ledger, epoch, supervisor) = selected_ledger_with_supervisor();
+    let original = Arc::clone(&ledger.worlds.iter().flatten().next().unwrap()._original);
+    let saved = ledger.retained_cleanup(epoch).unwrap();
+    supervisor.cancel().unwrap();
+
+    assert!(
+        original
+            .verify_operation_class(HostOperationClass::Preparation)
+            .is_err()
+    );
+    assert!(supervisor.begin(HostOperationClass::Preparation).is_err());
+    ledger.verify_cleanup(epoch, &saved).unwrap();
+    assert!(Arc::ptr_eq(
+        &saved,
+        &ledger.retained_cleanup(epoch).unwrap()
+    ));
+    assert_eq!(
+        ready_return_after_body_close(ledger, epoch)
+            .1
+            .file_descriptors,
+        3
+    );
+}
+
+fn ready_return_after_body_close(
+    mut ledger: PoolLedger,
+    epoch: u64,
+) -> (usize, HostResourceVector, u64, u64) {
+    ledger.take_consumer(epoch).unwrap();
+    ledger.close_consumer(epoch).unwrap();
+    ready_return(&ledger, epoch)
+}
+
+#[test]
+fn first_cleanup_admission_refusal_is_not_replaced_after_capacity_returns() {
+    use crate::host_supervision::{HostOperationClass, HostSupervisionError, MAX_HOST_OPERATIONS};
+
+    let (ledger, epoch, supervisor) = selected_ledger_with_supervisor();
+    let blockers: Vec<_> = (1..MAX_HOST_OPERATIONS)
+        .map(|_| {
+            supervisor
+                .begin_control(HostOperationClass::Cleanup)
+                .unwrap()
+        })
+        .collect();
+    assert!(ledger.retained_cleanup(epoch).is_err());
+    let world = ledger.worlds.iter().flatten().next().unwrap();
+    assert!(matches!(
+        world.cleanup.get(),
+        Some(Err(HostSupervisionError::CapacityExhausted))
+    ));
+
+    drop(blockers);
+    let available = supervisor
+        .begin_control(HostOperationClass::Cleanup)
+        .unwrap();
+    assert!(ledger.retained_cleanup(epoch).is_err());
+    assert!(matches!(
+        world.cleanup.get(),
+        Some(Err(HostSupervisionError::CapacityExhausted))
+    ));
+    assert!(ledger.verify_cleanup(epoch, &Arc::new(available)).is_err());
+}
+
+#[test]
+fn committed_return_preserves_post_refusal_without_a_second_subtraction() {
+    use crate::host_supervision::HostOperationClass;
+
+    let (mut ledger, epoch) = selected_ledger();
+    let saved = ledger.retained_cleanup(epoch).unwrap();
+    ledger.take_consumer(epoch).unwrap();
+    ledger.close_consumer(epoch).unwrap();
+    let (index, remaining, _, _) = ready_return(&ledger, epoch);
+    ledger.commit_world_return(index, epoch, remaining);
+
+    // Real operation completion makes the independent post refuse. The pure
+    // ledger commit models no kernel write or authenticated resource issuance.
+    saved.complete().unwrap();
+    let report = NativePoolReturnError::finish(
+        Ok(()),
+        saved.verify_operation_class(HostOperationClass::Cleanup),
+    )
+    .unwrap_err();
+    assert!(report.first_error().is_none());
+    assert!(report.post_error().is_some());
+    assert_eq!(ledger.used, remaining);
+    assert!(ledger.prepare_world_return(epoch).is_err());
+    assert_eq!(ledger.used, remaining);
+
+    let report = NativePoolReturnError::finish::<()>(
+        Err(ServiceBirthError::policy("actual retained work refusal")),
+        saved.verify_operation_class(HostOperationClass::Cleanup),
+    )
+    .unwrap_err();
+    assert!(report.first_error().is_some());
+    assert!(report.post_error().is_some());
+    assert_eq!(ledger.used, remaining);
+}
+
+#[test]
+fn cleanup_arc_geometry_is_included_once_per_finite_world_cell() {
+    let (cleanup, _) = std::alloc::Layout::new::<(
+        std::sync::atomic::AtomicUsize,
+        std::sync::atomic::AtomicUsize,
+    )>()
+    .extend(std::alloc::Layout::new::<HostOperationGuard>())
+    .unwrap();
+    let per_cell = cleanup.pad_to_align().size()
+        + std::mem::size_of::<Option<WorldSlot>>()
+        + std::mem::size_of::<Option<NodeSlot>>()
+        + std::mem::size_of::<NativeNodeReservation>();
+    assert_eq!(
+        super::super::structure_bytes(2).unwrap() - super::super::structure_bytes(1).unwrap(),
+        u64::try_from(per_cell).unwrap(),
+    );
+    assert!(super::super::structure_bytes(usize::MAX).is_err());
+}
+
+#[test]
+fn absent_row_requires_a_published_epoch_and_survives_exact_cell_reuse() {
+    let (mut ledger, epoch) = selected_ledger();
+    assert!(ledger.observe_world_returned(0).is_err());
+    assert!(ledger.observe_world_returned(epoch + 1).is_err());
+    assert!(!ledger.observe_world_returned(epoch).unwrap());
+    ledger.take_consumer(epoch).unwrap();
+    ledger.close_consumer(epoch).unwrap();
+    let (index, remaining, _, _) = ready_return(&ledger, epoch);
+    ledger.commit_world_return(index, epoch, remaining);
+    assert!(ledger.observe_world_returned(epoch).unwrap());
+
+    let supervisor = crate::host_supervision::HostOperationSupervisor::new(
+        crate::host_supervision::HostOperationBudgets::default(),
+        None,
+    )
+    .unwrap();
+    let original = Arc::new(
+        supervisor
+            .begin(crate::host_supervision::HostOperationClass::Preparation)
+            .unwrap(),
+    );
+    let (next, _, _) = ledger
+        .assign(
+            NativeWorldIdentity {
+                owner: [1; 32],
+                selection: [3; 32],
+            },
+            &requests(),
+            16,
+            &original,
+        )
+        .unwrap();
+    assert!(next > epoch);
+    assert!(ledger.observe_world_returned(epoch).unwrap());
+    assert!(!ledger.observe_world_returned(next).unwrap());
+    assert!(ledger.observe_world_returned(next + 1).is_err());
+}
