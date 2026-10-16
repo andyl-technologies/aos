@@ -187,6 +187,13 @@ pub enum NativeCommandResult {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
+enum Transition {
+    Retire,
+    Restore,
+    FinishNone,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum Location {
     Canonical,
     Pending,
@@ -378,13 +385,13 @@ impl CommandOwner {
                 "unsealed inspection awaits configured content roots",
             )),
             NativeOperation::Retire { key, incarnation } => {
-                self.transition(key, incarnation, false, false)
+                self.transition(key, incarnation, Transition::Retire)
             }
             NativeOperation::Restore { key, incarnation } => {
-                self.transition(key, incarnation, true, false)
+                self.transition(key, incarnation, Transition::Restore)
             }
             NativeOperation::FinishRetirement { key, incarnation } => {
-                self.transition(key, incarnation, false, true)
+                self.transition(key, incarnation, Transition::FinishNone)
             }
             NativeOperation::Inventory { .. } => Err(unsupported(
                 "inventory requires complete recovery metadata and pending-body rules",
@@ -412,8 +419,7 @@ impl CommandOwner {
         &mut self,
         key: NativeBodyKey,
         token: [u8; 32],
-        restore: bool,
-        finish: bool,
+        transition: Transition,
     ) -> io::Result<NativeCommandResult> {
         let index = self
             .bodies
@@ -425,17 +431,17 @@ impl CommandOwner {
         let body = &self.bodies[index];
         let claim = body.claim.clone();
         let expected = body.file.try_clone()?;
-        if finish || restore {
+        if matches!(transition, Transition::Restore | Transition::FinishNone) {
             if body.location != Location::Pending {
                 return Err(invalid("body is not pending retirement"));
             }
         } else if body.location != Location::Canonical {
             return Err(invalid("body is not canonical"));
         }
-        if restore {
+        if matches!(transition, Transition::Restore) {
             self.kernel(|native| native.restore_checked(&claim, &expected))?;
             self.bodies[index].location = Location::Canonical;
-        } else if finish {
+        } else if matches!(transition, Transition::FinishNone) {
             self.kernel(|native| native.finish_none_checked(&claim, &expected))?;
             self.bodies.remove(index);
         } else {

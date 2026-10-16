@@ -53,7 +53,7 @@ pub struct FsPublicationState<F> {
     directory: PathBuf,
 }
 
-impl<F: LocalFs> FsPublicationState<F> {
+impl<F: LocalFs + Sync> FsPublicationState<F> {
     /// Uses a provisioned publisher-private `state/publication` directory.
     ///
     /// The native command owner supplies independently verified directory
