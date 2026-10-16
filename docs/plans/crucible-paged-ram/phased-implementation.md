@@ -31,6 +31,7 @@ The current transport source contracts are:
 | Selected pre-exec Setup | Edition 5, selector `QEMU_CRUCIBLE_PREEXEC_SETUP=5`, tag `0x15`, 61-byte frame (4-byte length, 1-byte tag, 56-byte payload). |
 | Setup descriptor roster | Five mandatory roles, in order: shared region, wake event, sealed plan, read-only standing publication, distinct standing cancellation event. An optional device workspace is sixth. |
 | Sealed plan | `CRUCSUP8`, schema 8, containing one `CRUCPUR8` process purpose of 2520 bytes. |
+| Native receiver declaration | The selected complete ELF contains one 40-byte `CRUCRCV1` record. Source activation and checkpoint ingress have separate edition fields. Startup checks Source activation independently; zero and unspecified positive activation editions refuse. The complete declaration and ELF digest remain bound to the installed Source. A declaration grants no execution authority. |
 | Standing publication | Schema 3 in a 1504-byte shared file: one 8-byte sequence followed by a 1496-byte observation, accessed as atomic big-endian 64-bit words. The observation binds each action's kind, cohort, and parent-Park correlation where applicable. The host alone holds the writable mapping; the transmitted file role is read-only. |
 | Sealed standing corroboration | The purpose's 1520-byte tail binds the retained publication file identity/extent and its initial 1496-byte observation. Copied fields issue no authority. |
 | Standing cancellation | A separate nonblocking eventfd, with kernel event identity encoded as raw ID plus one. It is distinct from the wake event and Setup amendment event. |
@@ -58,6 +59,15 @@ remaining dirty-iterator fixture still assumes capture ownership that must come
 from the real Root, Source and writer lifecycle. These build results do not
 enable native receiver activation or qualify physical resource return. The
 package exit criteria and coordinated release gates below remain required.
+
+The private-feature QEMU test targets also compile independently of the
+test-support feature. A complete private-feature QEMU library run has 1,123
+passing tests, six failures and four ignored probes. The six capture/fault
+fixtures lack the genuine Source-backed control lifecycle, including paired
+capture; their intended positive assertions remain required. All 32 confinement
+lint tests pass, including controls that reject changed export visibility,
+source placement and operation-clock formulas. These component results do not
+qualify a live VM or replace the missing lifecycle evidence.
 
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.

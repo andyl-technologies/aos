@@ -3136,7 +3136,7 @@ fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownT
 }
 
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use test_support::hot_fork::{
     QemuTestHotForkIsolationFault, QemuTestHotForkOutcome, QemuTestHotForkSourceError,

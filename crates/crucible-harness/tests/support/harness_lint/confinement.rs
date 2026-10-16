@@ -3,6 +3,9 @@
 use super::*;
 use toml::Value;
 
+#[path = "confinement_contracts.rs"]
+mod confinement_contracts;
+
 #[path = "confinement_regression.rs"]
 mod confinement_regression;
 pub(super) use confinement_regression::confinement_regression_failures;
@@ -260,7 +263,8 @@ fn public_export_findings(path: &Path, content: &str, approved_exports: &[&str])
             // These crate-private coordinates carry the authenticated original
             // interval into its own supervisor. The exact route does not make
             // an externally public clock or sibling export admissible.
-            if private_origin_coordinates(path, &tokens, index, export, name)
+            if confinement_contracts::reviewed_export(path, content, &tokens, index)
+                || private_origin_coordinates(path, &tokens, index, export, name)
                 || reviewed_origin_reexport(path, &tokens, index)
             {
                 continue;

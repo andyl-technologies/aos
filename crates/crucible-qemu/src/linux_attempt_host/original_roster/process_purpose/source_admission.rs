@@ -31,6 +31,7 @@ struct InstalledSourceState {
     resources: HostResourceVector,
     original_metadata_bytes: u64,
     artifact_digest: [u8; 32],
+    receiver: crate::artifact_identity::NativeReceiverArtifact,
     supervisor: HostOperationSupervisor,
     host: AuthenticatedSourceHostPurpose,
     _control: crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
@@ -188,6 +189,9 @@ impl OriginalNativeNodeBinding {
             .controls
             .as_ref()
             .ok_or(InstalledProcessPurposeError::Identity)?;
+        let receiver = controls
+            .native_receiver_artifact()
+            .ok_or(InstalledProcessPurposeError::Identity)?;
         Ok(construct_source_admission(
             InstalledSourceSubject {
                 containing_cap,
@@ -198,6 +202,7 @@ impl OriginalNativeNodeBinding {
             normal.bounds(),
             credit.total_metadata_bytes(),
             *controls.plugin_sha256(),
+            receiver,
             node_supervisor,
             host,
             control,
@@ -286,6 +291,9 @@ impl OriginalNativeNodeBinding {
                     process_generation,
                 })
             || admission.held.artifact_digest != *controls.plugin_sha256()
+            || !controls
+                .native_receiver_artifact()
+                .is_some_and(|receiver| receiver.same_artifact(&admission.held.receiver))
             || admission.held.original_metadata_bytes != credit.total_metadata_bytes()
         {
             return Err(InstalledProcessPurposeError::Identity);
@@ -348,6 +356,7 @@ fn construct_source_admission(
     resources: HostResourceVector,
     original_metadata_bytes: u64,
     artifact_digest: [u8; 32],
+    receiver: crate::artifact_identity::NativeReceiverArtifact,
     supervisor: HostOperationSupervisor,
     host: AuthenticatedSourceHostPurpose,
     control: crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
@@ -358,6 +367,7 @@ fn construct_source_admission(
             resources,
             original_metadata_bytes,
             artifact_digest,
+            receiver,
             supervisor,
             host,
             _control: control,
@@ -384,6 +394,10 @@ impl InstalledSourceAdmission {
 
     pub(crate) fn resources(&self) -> HostResourceVector {
         self.held.resources
+    }
+
+    pub(crate) fn receiver_artifact(&self) -> &crate::artifact_identity::NativeReceiverArtifact {
+        &self.held.receiver
     }
 
     pub(crate) fn supervisor(&self) -> &HostOperationSupervisor {

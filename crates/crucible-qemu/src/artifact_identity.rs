@@ -16,7 +16,12 @@ mod installer_controls;
 mod native_constructor;
 
 #[cfg(target_os = "linux")]
-pub(crate) use native_constructor::UserfaultfdConstructorRequest;
+pub(crate) use native_constructor::{
+    NativeReceiverArtifact, NativeReceiverError, UserfaultfdConstructorRequest,
+};
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use native_constructor::test_support as native_constructor_test_support;
 
 #[cfg(target_os = "linux")]
 pub(crate) use installer_controls::installer_verifier_extent;
