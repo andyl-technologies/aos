@@ -195,6 +195,7 @@ pub use attempt_event_log::{
     AttemptLogSegmentSources, MAX_ATTEMPT_LOG_ENTRY_BYTES, MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS,
     MAX_ATTEMPT_LOG_SEGMENT_BYTES, MemorySegmentStore, decode_segment,
 };
+pub(crate) use attempt_event_log::{AttemptLogNamespace, AttemptLogStore};
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
     AutomaticFindingExecutionRunner, AutomaticFindingExecutionRunnerError,

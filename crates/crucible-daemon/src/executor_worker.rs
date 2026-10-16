@@ -559,6 +559,7 @@ pub struct AttemptExecutionContext {
     origin: AttemptExecutionOrigin,
     guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
     maximum_event_log_bytes: u64,
+    event_log_namespace: Option<Arc<crate::AttemptLogNamespace>>,
     selected_checkpoint: Mutex<Option<crate::executor_supervisor::SelectedExactCheckpointRoot>>,
 }
 
@@ -580,6 +581,7 @@ impl Clone for AttemptExecutionContext {
             origin: self.origin,
             guest_selectable_diagnostics: self.guest_selectable_diagnostics.clone(),
             maximum_event_log_bytes: self.maximum_event_log_bytes,
+            event_log_namespace: self.event_log_namespace.clone(),
             selected_checkpoint: Mutex::new(None),
         }
     }
@@ -660,6 +662,7 @@ impl AttemptExecutionContext {
             origin: AttemptExecutionOrigin::Initial,
             guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
             maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+            event_log_namespace: None,
             selected_checkpoint: Mutex::new(None),
         }
     }
@@ -804,6 +807,31 @@ impl AttemptExecutionContext {
     #[must_use]
     pub(crate) const fn maximum_event_log_bytes(&self) -> u64 {
         self.maximum_event_log_bytes
+    }
+
+    /// Seals attempt event logs into directories under `namespace`.
+    #[must_use]
+    pub(crate) fn with_event_log_namespace(
+        mut self,
+        namespace: Option<Arc<crate::AttemptLogNamespace>>,
+    ) -> Self {
+        self.event_log_namespace = namespace;
+        self
+    }
+
+    /// Creates a new directory store for one attempt event log.
+    ///
+    /// Returns `None` when the executor configured no namespace, in which
+    /// case logs stay in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the attempt directory cannot be created.
+    pub(crate) fn create_event_log_store(&self) -> std::io::Result<Option<crate::AttemptLogStore>> {
+        self.event_log_namespace
+            .as_deref()
+            .map(crate::AttemptLogNamespace::create_store)
+            .transpose()
     }
 
     /// Returns the resource limits available to a newly launched process owner.
@@ -1206,6 +1234,7 @@ pub struct RepositoryAttemptWorker<M> {
     model: M,
     guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
     maximum_event_log_bytes: u64,
+    event_log_namespace: Option<Arc<crate::AttemptLogNamespace>>,
 }
 
 impl<M> RepositoryAttemptWorker<M> {
@@ -1217,6 +1246,7 @@ impl<M> RepositoryAttemptWorker<M> {
             model,
             guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
             maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+            event_log_namespace: None,
         }
     }
 
@@ -1224,6 +1254,16 @@ impl<M> RepositoryAttemptWorker<M> {
     #[must_use]
     pub(crate) const fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
         self.maximum_event_log_bytes = maximum_bytes;
+        self
+    }
+
+    /// Seals every attempt's event log into its own directory under `namespace`.
+    #[must_use]
+    pub(crate) fn with_event_log_namespace(
+        mut self,
+        namespace: Arc<crate::AttemptLogNamespace>,
+    ) -> Self {
+        self.event_log_namespace = Some(namespace);
         self
     }
 
@@ -1315,7 +1355,8 @@ where
         .with_execution_origin(queued.origin())
         .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned())
         .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone())
-        .with_maximum_event_log_bytes(self.maximum_event_log_bytes);
+        .with_maximum_event_log_bytes(self.maximum_event_log_bytes)
+        .with_event_log_namespace(self.event_log_namespace.clone());
         let mut host_watchdog = host_watchdog_ms
             .map(|milliseconds| {
                 AssignmentHostWatchdogGuard::start(milliseconds, context.cancellation().clone())

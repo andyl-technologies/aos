@@ -1341,6 +1341,17 @@ fn drive_modeled_attempt_inner(
     let (mut event_log, mut completed_quanta, frontier, mut terminal_quiescence, terminal_verdict) =
         materialization.into_parts();
     event_log.set_maximum_bytes(context.maximum_event_log_bytes());
+    // Move the materialized prefix onto the attempt's own directory before any
+    // guest work, so replayed and live history is sealed to disk, not memory.
+    if let Some(store) = context.create_event_log_store().map_err(|source| {
+        AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::EventLog(
+            crate::AttemptEventLogError::Store { source },
+        ))
+    })? {
+        event_log
+            .move_to_store(store)
+            .map_err(AttemptWorkerFailure::Terminal)?;
+    }
     let authoritative_quanta = lifecycle.completed_quanta();
     if completed_quanta != authoritative_quanta {
         return Err(AttemptWorkerFailure::Terminal(

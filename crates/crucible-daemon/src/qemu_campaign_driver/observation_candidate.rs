@@ -118,9 +118,11 @@ pub(super) fn project_boundary(
     }
     let (measurement_publication, log_segments) = measurement_publication;
     let (measurement_evidence, _, measurements) = measurement_publication.into_parts();
-    let measurement_evidence =
-        crate::CrucibleMeasurementEvidenceBundle::collect(measurement_evidence, &log_segments)
-            .map_err(QemuFreshModeledDriverError::Measurements)?;
+    let measurement_evidence = crate::CrucibleMeasurementEvidenceBundle::referencing(
+        measurement_evidence,
+        log_segments.into(),
+    )
+    .map_err(QemuFreshModeledDriverError::Measurements)?;
     let mut stop = project_stop
         .then(|| stop_outcome(pending.stop, &report))
         .transpose()?;
@@ -217,7 +219,7 @@ pub(super) fn campaign_measurements(
 ) -> Result<
     (
         crate::CrucibleMeasurementPublication,
-        crate::MemorySegmentStore,
+        crate::AttemptLogStore,
     ),
     QemuFreshModeledDriverError,
 > {

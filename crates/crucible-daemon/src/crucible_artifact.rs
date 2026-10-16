@@ -844,7 +844,7 @@ where
     )?;
     let (replay_measurements, replay_segments) = replay_measurements.finish();
     result
-        .attach_finding(prepared, replay_measurements, replay_segments.into())
+        .attach_finding(prepared, replay_measurements, replay_segments)
         .map_err(AutomaticFindingPreparationError::PreparedResult)
 }
 
@@ -856,7 +856,7 @@ where
 struct BoundedReplayMeasurementEvidence<'a> {
     existing: BTreeMap<ContentId, &'a crate::CrucibleMeasurementReplayEvidence>,
     additional: BTreeMap<ContentId, crate::CrucibleMeasurementReplayEvidence>,
-    segments: crate::MemorySegmentStore,
+    segments: crate::AttemptLogSegmentSources,
     records: usize,
     canonical_bytes: usize,
 }
@@ -868,7 +868,7 @@ impl<'a> BoundedReplayMeasurementEvidence<'a> {
         let mut accumulator = Self {
             existing: BTreeMap::new(),
             additional: BTreeMap::new(),
-            segments: crate::MemorySegmentStore::default(),
+            segments: crate::AttemptLogSegmentSources::default(),
             records: 0,
             canonical_bytes: 0,
         };
@@ -941,7 +941,7 @@ impl<'a> BoundedReplayMeasurementEvidence<'a> {
         self,
     ) -> (
         Vec<crate::CrucibleMeasurementReplayEvidence>,
-        crate::MemorySegmentStore,
+        crate::AttemptLogSegmentSources,
     ) {
         (self.additional.into_values().collect(), self.segments)
     }

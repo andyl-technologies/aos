@@ -1,6 +1,8 @@
 //! A replay leaf carried together with the segments it references.
 //!
-//! Some carriers have no segment store: the resume request of the lifecycle
+//! In process, a bundle holds read handles to the stores that hold its
+//! segments, so carrying one costs no segment copies. Some carriers have no
+//! segment store: the resume request of the lifecycle
 //! API, a savepoint handle file, and a guarded run's result after its private
 //! repository is gone. They carry a bundle instead:
 //!
@@ -15,19 +17,34 @@
 //! leaf references, in order, each deriving its referenced identity.
 
 use super::*;
+use crate::AttemptLogSegmentSources;
 use crate::attempt_event_log::MemorySegmentStore;
 
 const BUNDLE_MAGIC: &[u8] = b"crucible.measurement-evidence-bundle.v1\0";
 
-/// A replay leaf and every log segment it references.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A replay leaf and read access to every log segment it references.
+///
+/// Two bundles are equal when their leaves are: a leaf names its segments by
+/// content identity, and every constructor authenticates them.
+#[derive(Clone, Debug)]
 pub struct CrucibleMeasurementEvidenceBundle {
     evidence: CrucibleMeasurementReplayEvidence,
-    segments: MemorySegmentStore,
+    segments: AttemptLogSegmentSources,
 }
+
+impl PartialEq for CrucibleMeasurementEvidenceBundle {
+    fn eq(&self, other: &Self) -> bool {
+        self.evidence == other.evidence
+    }
+}
+
+impl Eq for CrucibleMeasurementEvidenceBundle {}
 
 impl CrucibleMeasurementEvidenceBundle {
     /// Copies the segments `evidence` references out of `source`.
+    ///
+    /// Use [`Self::referencing`] when `source` outlives the bundle, to avoid
+    /// holding the segments in memory.
     ///
     /// # Errors
     ///
@@ -41,6 +58,31 @@ impl CrucibleMeasurementEvidenceBundle {
         for segment in evidence.segments() {
             segments.copy_from(source, segment)?;
         }
+        Ok(Self {
+            evidence,
+            segments: segments.into(),
+        })
+    }
+
+    /// Pairs `evidence` with the stores that hold its segments, without
+    /// copying them.
+    ///
+    /// Each referenced segment is read once and authenticated, one at a time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleMeasurementError::EventLog`] when a referenced
+    /// segment is absent from `segments` or fails authentication.
+    pub fn referencing(
+        evidence: CrucibleMeasurementReplayEvidence,
+        segments: AttemptLogSegmentSources,
+    ) -> Result<Self, CrucibleMeasurementError> {
+        for segment in evidence.segments() {
+            let bytes = segments.segment(segment.id).map_err(|source| {
+                crate::attempt_event_log::AttemptEventLogError::Store { source }
+            })?;
+            crate::decode_segment(segment, &bytes)?;
+        }
         Ok(Self { evidence, segments })
     }
 
@@ -50,15 +92,16 @@ impl CrucibleMeasurementEvidenceBundle {
         &self.evidence
     }
 
-    /// Returns the referenced segments, usable as the leaf's segment source.
+    /// Returns the stores holding the referenced segments, usable as the
+    /// leaf's segment source.
     #[must_use]
-    pub const fn segments(&self) -> &MemorySegmentStore {
+    pub const fn segments(&self) -> &AttemptLogSegmentSources {
         &self.segments
     }
 
-    /// Splits the bundle into its leaf and segments.
+    /// Splits the bundle into its leaf and segment stores.
     #[must_use]
-    pub fn into_parts(self) -> (CrucibleMeasurementReplayEvidence, MemorySegmentStore) {
+    pub fn into_parts(self) -> (CrucibleMeasurementReplayEvidence, AttemptLogSegmentSources) {
         (self.evidence, self.segments)
     }
 
@@ -139,7 +182,10 @@ impl CrucibleMeasurementEvidenceBundle {
         if !rest.is_empty() {
             return Err(malformed("bundle trailing bytes"));
         }
-        Ok(Self { evidence, segments })
+        Ok(Self {
+            evidence,
+            segments: segments.into(),
+        })
     }
 }
 

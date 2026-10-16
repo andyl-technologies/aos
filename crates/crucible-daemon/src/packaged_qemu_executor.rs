@@ -1278,6 +1278,19 @@ where
         resource_ceiling,
     ));
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    // Retired with the other native namespaces above, so it starts empty.
+    let event_log_root = config
+        .lifecycle
+        .run_state_root()
+        .join(PACKAGED_ATTEMPT_EVENT_LOG_NAMESPACE);
+    let event_log_namespace =
+        crate::AttemptLogNamespace::create(&event_log_root).map_err(|source| {
+            PackagedNativeCatalogRecoveryError::Io {
+                operation: "create",
+                path: event_log_root.clone(),
+                source,
+            }
+        })?;
     let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
     let finding_replay_state_root = config
         .lifecycle
@@ -1411,7 +1424,8 @@ where
                     .with_guest_selectable_boundary_diagnostics(
                         guest_selectable_diagnostics.clone(),
                     )
-                    .with_maximum_event_log_bytes(config.maximum_event_log_bytes),
+                    .with_maximum_event_log_bytes(config.maximum_event_log_bytes)
+                    .with_event_log_namespace(Arc::clone(&event_log_namespace)),
                 lifecycles: lifecycles.clone(),
             }
         })
@@ -1473,10 +1487,13 @@ where
 }
 
 // These are every ephemeral native lifecycle tree created by the packaged
-// composition. Durable exact/thin fallback records live under the campaign
-// service state directory and are deliberately outside this restart cleanup.
-const PACKAGED_NATIVE_NAMESPACES: [&str; 7] = [
+// composition, including running attempts' event-log segments. Durable
+// exact/thin fallback records live under the campaign service state directory,
+// and prepared-result journals hold their own segment copies, so both are
+// deliberately outside this restart cleanup.
+const PACKAGED_NATIVE_NAMESPACES: [&str; 8] = [
     "campaign-workers",
+    PACKAGED_ATTEMPT_EVENT_LOG_NAMESPACE,
     "campaign-finding-replays",
     "campaign-checkpoint-promotions",
     "campaign-baked-genesis",
@@ -1485,6 +1502,7 @@ const PACKAGED_NATIVE_NAMESPACES: [&str; 7] = [
     "campaign-hot-fork-demanded",
 ];
 const PACKAGED_PREPARED_RESULT_NAMESPACE: &str = "campaign-prepared-results";
+const PACKAGED_ATTEMPT_EVENT_LOG_NAMESPACE: &str = "campaign-attempt-event-logs";
 
 fn prepare_packaged_prepared_result_namespace(
     run_state_root: &Path,

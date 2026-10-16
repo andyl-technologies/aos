@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 mod store;
 
-pub(crate) use store::AttemptLogSegmentStore;
+pub(crate) use store::{AttemptLogNamespace, AttemptLogSegmentStore, AttemptLogStore};
 pub use store::{AttemptLogSegmentSource, AttemptLogSegmentSources, MemorySegmentStore};
 
 /// Trace payload schema of an encoded attempt-log segment.
@@ -411,6 +411,31 @@ impl<S: AttemptLogSegmentStore> AttemptEventLog<S> {
     pub(crate) fn seal_manifest(&mut self) -> Result<AttemptLogManifest, AttemptEventLogError> {
         self.seal()?;
         AttemptLogManifest::new(self.sealed.clone())
+    }
+
+    /// Moves every sealed segment into `store` and keeps writing there.
+    ///
+    /// Each segment is authenticated against its reference as it is copied.
+    /// On error the log keeps its current store, and `store` may hold copies
+    /// of some segments.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptEventLogError`] when a sealed segment cannot be read
+    /// back, fails authentication, or cannot be written to `store`.
+    pub(crate) fn replace_store(&mut self, mut store: S) -> Result<(), AttemptEventLogError> {
+        for segment in &self.sealed {
+            let bytes = self
+                .store
+                .segment(segment.id)
+                .map_err(|source| AttemptEventLogError::Store { source })?;
+            decode_segment(segment, &bytes)?;
+            store
+                .put(segment.id, &bytes)
+                .map_err(|source| AttemptEventLogError::Store { source })?;
+        }
+        self.store = store;
+        Ok(())
     }
 
     /// Borrows the segment store, for publication of sealed segments.

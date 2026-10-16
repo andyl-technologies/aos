@@ -9,7 +9,9 @@ use crucible::{
     SchedulerEventLogClass, VirtualTime,
 };
 
-use super::store::{AttemptLogDirectory, DirectorySegmentStore};
+use super::store::{
+    AttemptLogDirectory, AttemptLogNamespace, AttemptLogStore, DirectorySegmentStore,
+};
 use super::*;
 
 /// Builds one observational entry carrying `text_bytes` of payload text.
@@ -285,4 +287,90 @@ fn seal_refuses_segment_beyond_manifest_ceiling() {
         MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS
     );
     assert_eq!(log.tail().len(), 1);
+}
+
+#[test]
+fn namespace_gives_each_attempt_its_own_removable_directory() {
+    let parent = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary parent: {error}"));
+    let namespace = AttemptLogNamespace::create(parent.path().join("event-logs"))
+        .unwrap_or_else(|error| panic!("namespace: {error}"));
+    let directory_of = |store: &AttemptLogStore| match store {
+        AttemptLogStore::Directory(store) => store.directory().path().to_path_buf(),
+        AttemptLogStore::Memory(_) => panic!("namespace stores live on disk"),
+    };
+
+    let first = namespace
+        .create_store()
+        .unwrap_or_else(|error| panic!("first store: {error}"));
+    let second = namespace
+        .create_store()
+        .unwrap_or_else(|error| panic!("second store: {error}"));
+    let (first_path, second_path) = (directory_of(&first), directory_of(&second));
+    drop(first);
+
+    assert_ne!(first_path, second_path);
+    assert_eq!(first_path.parent(), Some(namespace.root()));
+    assert!(!first_path.exists());
+    assert!(second_path.is_dir());
+    assert!(AttemptLogNamespace::create(namespace.root()).is_err());
+}
+
+#[test]
+fn replace_store_moves_sealed_segments_and_keeps_appending_there() {
+    let (_parent, directory) = segment_directory();
+    let path = directory.path().to_path_buf();
+    let mut log = AttemptEventLog::new(AttemptLogStore::default(), u64::MAX, 0);
+    log.append(entries(20, 1024 * 1024))
+        .unwrap_or_else(|error| panic!("append: {error}"));
+    let sealed_before = log.sealed_segments().len();
+
+    log.replace_store(AttemptLogStore::Directory(DirectorySegmentStore::new(
+        directory,
+    )))
+    .unwrap_or_else(|error| panic!("replace store: {error}"));
+    log.append(entries(28, 1024 * 1024).into_iter().skip(20))
+        .unwrap_or_else(|error| panic!("append after move: {error}"));
+    log.seal().unwrap_or_else(|error| panic!("seal: {error}"));
+
+    assert!(sealed_before >= 2);
+    assert!(matches!(log.store(), AttemptLogStore::Directory(_)));
+    let files = fs::read_dir(&path)
+        .unwrap_or_else(|error| panic!("list segments: {error}"))
+        .count();
+    assert_eq!(files, log.sealed_segments().len());
+    let mut visited = 0_u64;
+    log.try_for_each_entry(|entry| {
+        assert_eq!(entry.sequence(), visited);
+        visited += 1;
+        Ok::<(), ()>(())
+    })
+    .unwrap_or_else(|error| panic!("read back moved log: {error:?}"));
+    assert_eq!(visited, 28);
+}
+
+#[test]
+fn replace_store_keeps_the_current_store_when_a_segment_is_corrupt() {
+    let mut log = AttemptEventLog::new(MemorySegmentStore::default(), u64::MAX, 0);
+    log.append(entries(3, 64))
+        .unwrap_or_else(|error| panic!("append: {error}"));
+    log.seal().unwrap_or_else(|error| panic!("seal: {error}"));
+    let segment = log.sealed_segments()[0];
+    let mut corrupt = log.clone();
+    corrupt.store = {
+        let mut store = MemorySegmentStore::default();
+        store
+            .put(segment.id, b"not the sealed segment")
+            .unwrap_or_else(|error| panic!("forge segment: {error}"));
+        store
+    };
+
+    let moved = corrupt.replace_store(MemorySegmentStore::default());
+
+    assert!(matches!(
+        moved,
+        Err(AttemptEventLogError::InvalidSegment { .. })
+    ));
+    assert!(corrupt.store().contains(segment.id));
+    assert!(log.replace_store(MemorySegmentStore::default()).is_ok());
+    assert!(log.store().contains(segment.id));
 }

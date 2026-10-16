@@ -9,6 +9,8 @@
 //!   references and its open tail in memory.
 //! - [`MemorySegmentStore`] keeps segments in memory for bounded in-process
 //!   callers, transport bundles, and tests.
+//! - [`AttemptLogStore`] is the store an executor attempt writes: a directory
+//!   created in the executor's [`AttemptLogNamespace`], or memory without one.
 //!
 //! A directory holds one file per segment, named by the lowercase hex digest
 //! of its identity:
@@ -391,6 +393,108 @@ impl AttemptLogSegmentSource for AttemptLogSegmentSources {
         Err(last_error.unwrap_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, "attempt log segment absent")
         }))
+    }
+}
+
+/// The segment store an executor attempt writes: in memory, or one directory.
+///
+/// Attempts that run under an [`AttemptLogNamespace`] seal into a directory,
+/// so their memory holds only segment references and the open tail. Callers
+/// without a namespace, such as in-process tools and tests, keep segments in
+/// memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AttemptLogStore {
+    /// Segments held in memory.
+    Memory(MemorySegmentStore),
+    /// Segments held as files in one attempt directory.
+    Directory(DirectorySegmentStore),
+}
+
+impl Default for AttemptLogStore {
+    fn default() -> Self {
+        Self::Memory(MemorySegmentStore::default())
+    }
+}
+
+impl AttemptLogSegmentStore for AttemptLogStore {
+    fn put(&mut self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Memory(store) => store.put(id, bytes),
+            Self::Directory(store) => store.put(id, bytes),
+        }
+    }
+}
+
+impl AttemptLogSegmentSource for AttemptLogStore {
+    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
+        match self {
+            Self::Memory(store) => store.segment(id),
+            Self::Directory(store) => store.segment(id),
+        }
+    }
+}
+
+impl From<AttemptLogStore> for AttemptLogSegmentSources {
+    fn from(store: AttemptLogStore) -> Self {
+        match store {
+            AttemptLogStore::Memory(store) => store.into(),
+            AttemptLogStore::Directory(store) => Self::from_directory(store),
+        }
+    }
+}
+
+/// Executor-owned root that gives each attempt log its own directory.
+///
+/// The namespace is ephemeral: its owner retires the whole root at startup,
+/// before any attempt runs, so directories a crash left behind never outlive
+/// one daemon incarnation. Durable copies of the segments a result references
+/// live in its prepared-result journal instead.
+///
+/// ```text
+/// <namespace>/
+///   attempt-<16 hex digits>/      one attempt log's AttemptLogDirectory
+/// ```
+#[derive(Debug)]
+pub(crate) struct AttemptLogNamespace {
+    root: PathBuf,
+    next_directory: AtomicU64,
+}
+
+impl AttemptLogNamespace {
+    /// Creates `root` as a new, empty, owner-only namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the parent does not exist, `root` already
+    /// exists, or the directory cannot be created.
+    pub(crate) fn create(root: impl Into<PathBuf>) -> io::Result<Arc<Self>> {
+        let root = root.into();
+        fs::DirBuilder::new().mode(0o700).create(&root)?;
+        Ok(Arc::new(Self {
+            root,
+            next_directory: AtomicU64::new(0),
+        }))
+    }
+
+    /// Returns the namespace root.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Creates a new, empty directory store for one attempt log.
+    ///
+    /// The directory is removed when the last handle to it drops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory cannot be created.
+    pub(crate) fn create_store(&self) -> io::Result<AttemptLogStore> {
+        let ordinal = self.next_directory.fetch_add(1, Ordering::Relaxed);
+        let directory =
+            AttemptLogDirectory::create(self.root.join(format!("attempt-{ordinal:016x}")))?;
+        Ok(AttemptLogStore::Directory(DirectorySegmentStore::new(
+            directory,
+        )))
     }
 }
 

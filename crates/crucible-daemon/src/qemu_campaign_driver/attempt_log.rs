@@ -5,7 +5,9 @@
 //! the whole log at the stop. [`RetainedAttemptLog`] holds that log as sealed
 //! segments plus an open tail ([`AttemptEventLog`]), so its size is bounded by
 //! the deployment's `maximum_event_log_bytes` rather than by a fixed entry
-//! count. Readers stream it one segment at a time.
+//! count. An executor attempt seals into its own directory, so memory holds
+//! only segment references and the tail. Readers stream it one segment at a
+//! time.
 //!
 //! Per-quantum consumers must not rescan the log (RFC-0020 section 15.9). The
 //! log therefore also folds the few facts they need as entries arrive: the
@@ -14,7 +16,7 @@
 use super::*;
 use crate::attempt_event_log::{
     AttemptEventLog, AttemptEventLogError, AttemptEventLogVisitError, AttemptLogManifest,
-    MemorySegmentStore,
+    AttemptLogStore,
 };
 use network_fault_boundary::NetworkFaultMarkerIndex;
 
@@ -28,7 +30,7 @@ pub const DEFAULT_MAXIMUM_EVENT_LOG_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// An attempt's event log from genesis, retained as segments plus a tail.
 #[derive(Clone, Debug)]
 pub(crate) struct RetainedAttemptLog {
-    log: AttemptEventLog<MemorySegmentStore>,
+    log: AttemptEventLog<AttemptLogStore>,
     last: Option<SchedulerEventLogEntry>,
     causal_entries: u64,
     network_faults: NetworkFaultMarkerIndex,
@@ -46,10 +48,14 @@ pub(crate) struct RetainedLogIdentity {
 }
 
 impl RetainedAttemptLog {
-    /// Starts an empty genesis log bounded by `maximum_bytes` encoded bytes.
+    /// Starts an empty genesis log, held in memory, bounded by `maximum_bytes`
+    /// encoded bytes.
+    ///
+    /// Executor attempts move the log onto their own directory with
+    /// [`Self::move_to_store`] before driving the world.
     pub(crate) fn new(maximum_bytes: u64) -> Self {
         Self {
-            log: AttemptEventLog::new(MemorySegmentStore::default(), maximum_bytes, 0),
+            log: AttemptEventLog::new(AttemptLogStore::default(), maximum_bytes, 0),
             last: None,
             causal_entries: 0,
             network_faults: NetworkFaultMarkerIndex::default(),
@@ -108,6 +114,21 @@ impl RetainedAttemptLog {
     /// A bound below the bytes already retained refuses the next append.
     pub(crate) fn set_maximum_bytes(&mut self, maximum_bytes: u64) {
         self.log.set_maximum_bytes(maximum_bytes);
+    }
+
+    /// Moves every sealed segment into `store` and seals there from now on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuFreshModeledDriverError::EventLog`] when a sealed segment
+    /// cannot be copied; the log then keeps its current store.
+    pub(crate) fn move_to_store(
+        &mut self,
+        store: AttemptLogStore,
+    ) -> Result<(), QemuFreshModeledDriverError> {
+        self.log
+            .replace_store(store)
+            .map_err(QemuFreshModeledDriverError::EventLog)
     }
 
     /// Returns the number of retained entries.
@@ -278,7 +299,7 @@ impl RetainedAttemptLog {
     /// be sealed or the log needs more segments than one manifest references.
     pub(crate) fn seal(
         mut self,
-    ) -> Result<(AttemptLogManifest, MemorySegmentStore), QemuFreshModeledDriverError> {
+    ) -> Result<(AttemptLogManifest, AttemptLogStore), QemuFreshModeledDriverError> {
         let manifest = self
             .log
             .seal_manifest()
