@@ -275,7 +275,7 @@ fn child(root: &Path, confined: bool) {
     let enable = Enable {
         version: 1,
         algorithm: 1,
-        block_size: 0,
+        block_size: 4096,
         salt_size: 0,
         salt: 0,
         signature_size: 0,
@@ -286,7 +286,9 @@ fn child(root: &Path, confined: bool) {
     // SAFETY: the initialized 128-byte fsverity_enable_arg ABI is read only.
     assert_eq!(
         unsafe { libc::ioctl(file.as_raw_fd(), 0x40806685u64, &enable) },
-        0
+        0,
+        "enable actual verity profile: {}",
+        io::Error::last_os_error()
     );
     assert_ne!(attributes(&file).flags & 0x20000, 0);
     #[repr(C)]

@@ -31,7 +31,9 @@
       mount -o remount,rw /
       mkdir -p /var/lib/terrane-confinement-proof /mnt/terrane-confinement
       truncate -s 96M /var/lib/terrane-confinement-proof/quota.img
-      mkfs.ext4 -F -O project,quota,verity -E quotatype=prjquota /var/lib/terrane-confinement-proof/quota.img
+      # The native verity profile uses 4096-byte blocks; small ext4 images
+      # otherwise default to blocks too small for that profile.
+      mkfs.ext4 -F -b 4096 -O project,quota,verity -E quotatype=prjquota /var/lib/terrane-confinement-proof/quota.img
       mount -t ext4 -o loop,prjquota /var/lib/terrane-confinement-proof/quota.img /mnt/terrane-confinement
       trap 'umount /mnt/terrane-confinement; rm -f /var/lib/terrane-confinement-proof/quota.img; rmdir /mnt/terrane-confinement /var/lib/terrane-confinement-proof' EXIT
       export TERRANE_QUOTA_CONFINEMENT_VM=1
