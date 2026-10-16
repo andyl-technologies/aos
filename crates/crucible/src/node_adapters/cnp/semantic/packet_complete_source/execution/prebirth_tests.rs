@@ -276,3 +276,31 @@ fn execution_reservation_freezes_report_selection_before_native_association() ->
     assert!(source.authenticate_current_native().is_err());
     Ok(())
 }
+
+#[test]
+fn typed_execution_reservation_uses_same_calculation_and_retains_actual_banks() -> TestResult {
+    let source = source()?;
+    let demand = source.original_complete_capture_execution_reservation_requested_data_with_error::<RuntimeError>(BACKEND_BYTES)
+        .map_err(|error| format!("{error:?}"))?;
+    assert_eq!(demand, source.original_complete_capture_execution_reservation_requested_data(BACKEND_BYTES)
+        .map_err(|error| format!("{error:?}"))?);
+    assert!(matches!(source.reserve_original_complete_capture_execution_with_error::<RuntimeError>(BACKEND_BYTES, demand - 1), Err(RuntimeError::ResourceLimit)));
+    assert!(source.capture_execution.try_borrow().map_err(|error| error.to_string())?.is_none());
+    source.reserve_original_complete_capture_execution_with_error::<RuntimeError>(BACKEND_BYTES, demand)
+        .map_err(|error| format!("{error:?}"))?;
+    let identity = allocation_identity(&source)?;
+    assert!(source.reserve_original_complete_capture_execution_with_error::<RuntimeError>(BACKEND_BYTES, demand).is_err());
+    assert_eq!(allocation_identity(&source)?, identity);
+    assert!(source.authenticate_current_native().is_err());
+    Ok(())
+}
+
+#[test]
+fn typed_execution_reservation_checks_creator_before_busy_owner_loan() -> TestResult {
+    let mut source = source()?;
+    source.process = source.process.wrapping_add(1);
+    let _busy = source.capture_execution.borrow_mut();
+    assert!(matches!(source.original_complete_capture_execution_reservation_requested_data_with_error::<RuntimeError>(BACKEND_BYTES), Err(RuntimeError::ForeignAuthority)));
+    assert!(matches!(source.reserve_original_complete_capture_execution_with_error::<RuntimeError>(BACKEND_BYTES, requested()), Err(RuntimeError::ForeignAuthority)));
+    Ok(())
+}

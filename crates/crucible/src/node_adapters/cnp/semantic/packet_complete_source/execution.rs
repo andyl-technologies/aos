@@ -210,24 +210,40 @@ impl PacketCompleteSemanticSource {
         maximum_backend_bytes: usize,
         admitted_bytes: usize,
     ) -> Result<(), OperationFailure> {
-        self.ensure_origin()?;
+        self.reserve_original_complete_capture_execution_with_error::<OperationFailure>(
+            maximum_backend_bytes, admitted_bytes,
+        )
+    }
+
+    // Only an independently issued same-Source startup member supplies the
+    // typed finalizer's allowance. This body retains all partial bank owners;
+    // its byte arguments and a successful reservation issue no admission.
+    pub(in crate::node_adapters::cnp::semantic) fn reserve_original_complete_capture_execution_with_error<E: StorageError>(
+        &self, maximum_backend_bytes: usize, admitted_bytes: usize,
+    ) -> Result<(), E> {
+        self.storage_origin_with_error::<E>()?;
+        let mut slot = self.capture_execution.try_borrow_mut()
+            .map_err(|_| E::refused("original output bank custody is borrowed"))?;
         if self.complete_bytes_launch_reserved.get()
-            || self.capture_execution.get_mut().is_some()
+            || slot.is_some()
             || !matches!(
-                self.selected_capture_profile()?,
-                PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+                match &self.original {
+                    CompletePacketOriginal::Producer(source) => source.complete_capture_profile.as_ref(),
+                    CompletePacketOriginal::Reactive(source) => source.complete_capture_profile.as_ref(),
+                },
+                Some(PacketNative5CaptureProfile::OwnedProtocol11 { .. })
             )
         {
-            return Err(refused(
+            return Err(E::refused(
                 "original capture execution banks unavailable before launch",
             ));
         }
         let unbound = match &self.original {
-            CompletePacketOriginal::Producer(source) => source.complete_preparation_unbound(),
-            CompletePacketOriginal::Reactive(source) => source.complete_preparation_unbound(),
+            CompletePacketOriginal::Producer(source) => source.complete_preparation_unbound_with_error::<E>(),
+            CompletePacketOriginal::Reactive(source) => source.complete_preparation_unbound_with_error::<E>(),
         }?;
         if !unbound {
-            return Err(refused(
+            return Err(E::refused(
                 "original capture execution banks follow native association",
             ));
         }
@@ -239,15 +255,15 @@ impl PacketCompleteSemanticSource {
                     .memory_bytes
                     .get(),
             )
-            .map_err(unknown)?,
+            .map_err(E::unknown)?,
         );
-        let allocation_selected = self.selected_capture_allocation_selection()?.is_some();
-        execution_reservation_requested_bytes(
+        let allocation_selected = self.capture_allocation_selection.flatten().is_some();
+        execution_reservation_requested_bytes_with_error::<E>(
             maximum_backend_bytes,
             allocation_selected,
             admitted,
         )?;
-        *self.capture_execution.get_mut() = Some(OriginalCompleteCaptureExecution {
+        *slot = Some(OriginalCompleteCaptureExecution {
             backend_bank: None,
             backend: None,
             allocation_selected,
@@ -268,31 +284,27 @@ impl PacketCompleteSemanticSource {
             failed: false,
             transferred: false,
         });
-        let execution = self
-            .capture_execution
-            .get_mut()
-            .as_mut()
-            .ok_or_else(|| refused("original output bank slot absent"))?;
+        let execution = slot.as_mut()
+            .ok_or_else(|| E::refused("original output bank slot absent"))?;
         let result = (|| {
-            execution.backend_bank = Some(CnpSemanticSnapshotReservation::reserve(
-                maximum_backend_bytes,
-                admitted,
-            )?);
+            CnpSemanticSnapshotReservation::reserve_into_with_error::<E>(
+                maximum_backend_bytes, admitted, &mut execution.backend_bank,
+            )?;
             if allocation_selected {
                 execution
                     .allocation_bank
                     .try_reserve_exact(allocation_report_capacity())
-                    .map_err(unknown)?;
+                    .map_err(E::unknown)?;
             }
             execution
                 .evidence
                 .try_reserve_exact(execution.evidence_roles())
-                .map_err(unknown)?;
+                .map_err(E::unknown)?;
             execution
                 .born
                 .try_reserve_exact(execution.born_roles())
-                .map_err(unknown)?;
-            execution.retained_storage(admitted)?;
+                .map_err(E::unknown)?;
+            execution.retained_storage_with_error::<E>(admitted)?;
             Ok(())
         })();
         if result.is_err() {
@@ -496,11 +508,18 @@ fn allocation_report_capacity() -> usize {
     crucible_node_provider::reference_packet::service::capture_allocation::MAXIMUM_NATIVE_CAPTURE_ALLOCATION_REPORT_BYTES
 }
 
+#[cfg(test)]
 fn execution_reservation_requested_bytes(
     backend: usize,
     allocation_selected: bool,
     admitted: usize,
 ) -> Result<usize, OperationFailure> {
+    execution_reservation_requested_bytes_with_error::<OperationFailure>(backend, allocation_selected, admitted)
+}
+
+fn execution_reservation_requested_bytes_with_error<E: StorageError>(
+    backend: usize, allocation_selected: bool, admitted: usize,
+) -> Result<usize, E> {
     let extra = usize::from(allocation_selected);
     let requested = backend
         .checked_add(if allocation_selected {
@@ -517,7 +536,7 @@ fn execution_reservation_requested_bytes(
             )
         })
         .filter(|n| backend != 0 && *n <= admitted)
-        .ok_or_else(|| refused("original output bank admission is insufficient"))?;
+        .ok_or_else(|| E::limit("original output bank admission is insufficient"))?;
     Ok(requested)
 }
 
@@ -525,6 +544,7 @@ impl OriginalCompleteCaptureExecution {
     fn evidence_roles(&self) -> usize {
         COMPLETE_EVIDENCE_ROLES + usize::from(self.allocation_selected)
     }
+
     fn born_roles(&self) -> usize {
         COMPLETE_BORN_ROLES + usize::from(self.allocation_selected)
     }
@@ -543,11 +563,29 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum_backend_bytes: usize,
     ) -> Result<usize, OperationFailure> {
-        self.ensure_origin()?;
-        execution_reservation_requested_bytes(
-            maximum_backend_bytes,
-            self.selected_capture_allocation_selection()?.is_some(),
-            usize::MAX,
-        )
+        self.original_complete_capture_execution_reservation_requested_data_with_error::<OperationFailure>(maximum_backend_bytes)
+    }
+}
+
+impl PacketCompleteSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_capture_execution_reservation_requested_data_with_error<E: StorageError>(
+        &self, maximum_backend_bytes: usize,
+    ) -> Result<usize, E> {
+        self.storage_origin_with_error::<E>()?;
+        execution_reservation_requested_bytes_with_error::<E>(maximum_backend_bytes,
+            self.capture_allocation_selection.flatten().is_some(), usize::MAX)
+    }
+
+    // Names fixed counter/initializer/borrow/error headers only. The enclosing
+    // action separately counts dynamic banks and actual Source inline layout;
+    // this is not a compiler-frame or entire-thread-stack bound.
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_capture_execution_counter_scratch_data() -> usize {
+        size_of::<OriginalCompleteCaptureExecution>()
+            + size_of::<std::cell::Ref<'static, Option<OriginalCompleteCaptureExecution>>>()
+            + size_of::<std::cell::RefMut<'static, Option<OriginalCompleteCaptureExecution>>>()
+            + size_of::<Result<(), RuntimeError>>()
+            + size_of::<std::collections::TryReserveError>()
+            + 4 * size_of::<usize>()
+            + CnpSemanticSnapshotReservation::reservation_counter_scratch_data()
     }
 }
