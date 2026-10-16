@@ -13,6 +13,8 @@ pub enum AdoptionFailure {
     KernelSeal(io::Error),
     /// The sealed inode failed independent plaintext verification.
     Plaintext(io::Error),
+    /// Durable quarantine succeeded but exact stale-state removal failed.
+    BindingRepair(io::Error),
     /// A rejected binding could not be moved into owned quarantine.
     Quarantine {
         /// The independently classified verification failure.
@@ -28,6 +30,7 @@ impl std::fmt::Display for AdoptionFailure {
             Self::RecordedBindingMismatch => {
                 formatter.write_str("recorded verity binding mismatch")
             }
+            Self::BindingRepair(error) => write!(formatter, "quarantined binding repair: {error}"),
             Self::KernelSeal(error) => write!(formatter, "canonical kernel seal: {error}"),
             Self::Plaintext(error) => write!(formatter, "canonical plaintext: {error}"),
             Self::Quarantine { cause, failure } => {
@@ -41,7 +44,9 @@ impl std::error::Error for AdoptionFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::RecordedBindingMismatch => None,
-            Self::KernelSeal(error) | Self::Plaintext(error) => Some(error),
+            Self::KernelSeal(error) | Self::Plaintext(error) | Self::BindingRepair(error) => {
+                Some(error)
+            }
             Self::Quarantine { failure, .. } => Some(failure),
         }
     }
@@ -72,6 +77,21 @@ pub trait PublicationState {
     /// Returns write or synchronization failures without acknowledging success.
     async fn record(&mut self, claim: &PublicationClaim, binding: &VerityBinding)
     -> io::Result<()>;
+
+    /// Removes only the exact stale record retained before durable quarantine.
+    ///
+    /// The caller invokes this only after inode-checked quarantine and both
+    /// namespace-parent synchronizations succeed. Implementations retain actual
+    /// record identity and must refuse replacement or unrelated state removal.
+    ///
+    /// # Errors
+    /// Returns unsupported repair, changed record or physical durability errors.
+    fn forget_quarantined(&mut self, _claim: &PublicationClaim) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "retained binding repair unavailable",
+        ))
+    }
 }
 
 /// Supplies inode-retaining operations unavailable through portable path I/O.
@@ -309,6 +329,14 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
                     failure,
                 },
             ));
+        }
+        if matches!(&cause, AdoptionFailure::RecordedBindingMismatch) {
+            if let Err(error) = self.state.forget_quarantined(claim) {
+                return Err(io::Error::new(
+                    error.kind(),
+                    AdoptionFailure::BindingRepair(error),
+                ));
+            }
         }
         let kind = match &cause {
             AdoptionFailure::KernelSeal(error) | AdoptionFailure::Plaintext(error) => error.kind(),

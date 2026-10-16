@@ -775,7 +775,7 @@ impl PublicationKernel for NativePublisher {
                     || error.kind() == io::ErrorKind::UnexpectedEof
                     || error.raw_os_error() == Some(libc::EIO)
             }
-            AdoptionFailure::Quarantine { .. } => false,
+            AdoptionFailure::Quarantine { .. } | AdoptionFailure::BindingRepair(_) => false,
         };
         if !corrupt {
             return Ok(());

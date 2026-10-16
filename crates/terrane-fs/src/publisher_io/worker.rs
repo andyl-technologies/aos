@@ -89,7 +89,11 @@ enum Command {
     },
 }
 
+#[path = "binding_repair.rs"]
+mod binding_repair;
+
 struct WorkerState {
+    repair: binding_repair::RetainedBinding,
     inner: FsPublicationState<TokioLocalFs>,
     #[cfg(test)]
     before_record: Option<WorkerGate>,
@@ -98,6 +102,8 @@ struct WorkerState {
 #[async_trait::async_trait]
 impl PublicationState for WorkerState {
     async fn binding(&self, claim: &PublicationClaim) -> io::Result<Option<VerityBinding>> {
+        self.repair
+            .capture(&self.inner.binding_record_path(claim))?;
         self.inner.binding(claim).await
     }
 
@@ -112,6 +118,10 @@ impl PublicationState for WorkerState {
         }
 
         self.inner.record(claim, binding).await
+    }
+
+    fn forget_quarantined(&mut self, claim: &PublicationClaim) -> io::Result<()> {
+        self.repair.remove(&self.inner.binding_record_path(claim))
     }
 }
 
@@ -371,6 +381,7 @@ impl NativePublicationWorker {
                     }
 
                     let state = WorkerState {
+                        repair: binding_repair::RetainedBinding::new(_retained_state),
                         inner: state,
                         #[cfg(test)]
                         before_record,

@@ -859,6 +859,28 @@ fn actual_binding_path_failure_rolls_back_before_backing_acknowledgment() {
         result.into_handle().metadata().unwrap().len(),
         expected.plaintext_size()
     );
+    let state = FsPublicationState::new(TokioLocalFs, paths[3].clone());
+    let binding_path = state.binding_record_path(&expected);
+    let record = fs::read_to_string(&binding_path).unwrap();
+    let prefix = record.split_once("verity_digest =").unwrap().0;
+    fs::write(
+        &binding_path,
+        format!("{prefix}verity_digest = {:?}\n", [0u8; 32]),
+    )
+    .unwrap();
+
+    assert!(runtime.block_on(worker.adopt(expected.clone())).is_err());
+    assert!(!canonical.exists());
+    assert!(
+        !binding_path.exists(),
+        "exact stale binding removed only after quarantine"
+    );
+    assert!(root.join("quarantine").join(&digest).exists());
+    runtime
+        .block_on(worker.publish(expected.clone(), source(root)))
+        .unwrap();
+    assert!(canonical.exists());
+
     drop(worker);
     owner.join().unwrap();
     let state = FsPublicationState::new(TokioLocalFs, paths[3].clone());
