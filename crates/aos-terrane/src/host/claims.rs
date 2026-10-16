@@ -421,4 +421,140 @@ mod tests {
         fs::remove_file(parent.join("project.toml")).expect("test cleanup");
         fs::remove_dir(parent).expect("directory cleanup");
     }
+
+    #[test]
+    #[ignore = "requires the explicit host-quota-proof administrative VM"]
+    fn host_global_claims_preserve_crash_custody_vm() {
+        use std::collections::BTreeSet;
+        use std::os::unix::fs::PermissionsExt;
+        use terrane_fs::host_quota::{NativeProject, filesystem_uuid};
+
+        assert_eq!(std::env::var("TERRANE_HOST_QUOTA_VM").as_deref(), Ok("1"));
+        let mount =
+            PathBuf::from(std::env::var_os("TERRANE_HOST_QUOTA_ADMIN_ROOT").expect("guest mount"));
+        let a = mount.join("claims-A");
+        let b = mount.join("claims-B");
+        for path in [&a, &b] {
+            fs::create_dir(path).expect("isolated administrative fixture");
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).expect("private custody");
+        }
+        let config = HostConfig {
+            socket: a.join("quota.sock"),
+            epoch: "00000000000000000000000000000001".into(),
+            tier_charge_budget_bytes: 4194304,
+            owners: Vec::new(),
+        };
+        let file = File::open(&a).expect("actual directory");
+        let uuid = filesystem_uuid(&file).expect("actual filesystem UUID");
+        let metadata = file.metadata().expect("actual binding");
+        let owner = |name: &str, project_id| ConfiguredOwner {
+            claim: None,
+            owner_id: name.into(),
+            domain: "public".into(),
+            filesystem_uuid: uuid,
+            project_id,
+            hard_limit_bytes: 2097152,
+            allowed_client_uids: BTreeSet::from([840]),
+            roots: Vec::new(),
+            scaffolding: Vec::new(),
+        };
+        let binding = |name: &str, project_id| Binding {
+            owner_id: name.into(),
+            domain: "public".into(),
+            filesystem_uuid: uuid,
+            project_id,
+            role_directory: "layout-root".into(),
+            path: a.clone(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            hard_limit_bytes: 2097152,
+            original_uid: metadata.uid(),
+            original_gid: metadata.gid(),
+            original_mode: metadata.mode() & 0o7777,
+        };
+        let registry_a =
+            Registry::open(&config, &a.join("ledger.toml"), true).expect("fixed anchored registry");
+        let registry_b =
+            Registry::open(&config, &b.join("ledger.toml"), true).expect("same common registry");
+        let ledger = |registry: &Registry, bindings| Ledger {
+            version: 2,
+            epoch: config.epoch.clone(),
+            registry: registry.identity(),
+            phase: super::super::ProvisioningPhase::Provisioning,
+            bindings,
+        };
+        let ledger_a = ledger(&registry_a, vec![binding("A", 49001)]);
+        let mut owners_a = vec![owner("A", 49001)];
+
+        // Crash after the permanent claim, before the per-layout ledger exists.
+        registry_a
+            .ensure(&ledger_a, &owners_a)
+            .expect("reserve before ledger");
+        assert!(!a.join("ledger.toml").exists());
+        registry_a
+            .ensure(&ledger_a, &owners_a)
+            .expect("matching crash retry");
+        super::super::persist_ledger(&a.join("ledger.toml"), &ledger_a)
+            .expect("durable Provisioning");
+        let ledger_b = ledger(&registry_b, vec![binding("B", 49001)]);
+        assert!(registry_b.ensure(&ledger_b, &[owner("B", 49001)]).is_err());
+        registry_a
+            .bind(&ledger_a, &mut owners_a)
+            .expect("original owner resume");
+        let retained = owners_a[0].claim.as_ref().expect("actual retained claim");
+        retained.verify(&uuid, 49001).expect("matching restart");
+        assert!(retained.verify(&uuid, 49002).is_err());
+        assert_eq!(
+            NativeProject::inspect(&file)
+                .expect("no native mutation")
+                .project_id,
+            0
+        );
+
+        // A partial multi-owner claim set never rolls back an earlier claim.
+        let foreign = ledger(&registry_b, vec![binding("foreign", 49002)]);
+        registry_b
+            .ensure(&foreign, &[owner("foreign", 49002)])
+            .expect("foreign permanent claim");
+        let multi = ledger(&registry_a, vec![binding("A", 49001), binding("C", 49002)]);
+        assert!(
+            registry_a
+                .ensure(&multi, &[owner("A", 49001), owner("C", 49002)])
+                .is_err()
+        );
+        retained
+            .verify(&uuid, 49001)
+            .expect("partial set preserves first owner");
+
+        // The sibling anchor rejects both an old owner and a fresh ledger after
+        // replacement of the registry, even though the new directory is empty.
+        let displaced = Path::new(REGISTRY_PATH).with_file_name("project-claims.vm-displaced");
+        fs::rename(REGISTRY_PATH, &displaced).expect("VM registry replacement");
+        assert!(retained.verify(&uuid, 49001).is_err());
+        assert!(Registry::open(&config, &b.join("fresh.toml"), true).is_err());
+        fs::create_dir(REGISTRY_PATH).expect("empty replacement");
+        fs::set_permissions(REGISTRY_PATH, fs::Permissions::from_mode(0o700))
+            .expect("replacement custody");
+        assert!(retained.verify(&uuid, 49001).is_err());
+        assert!(Registry::open(&config, &b.join("fresh.toml"), true).is_err());
+        fs::remove_dir(REGISTRY_PATH).expect("remove empty VM replacement");
+        fs::rename(&displaced, REGISTRY_PATH).expect("restore actual registry");
+        retained
+            .verify(&uuid, 49001)
+            .expect("restored administrative identity");
+
+        let missing = Path::new(ANCHOR_PATH).with_file_name("project-claims.identity.vm-displaced");
+        fs::rename(ANCHOR_PATH, &missing).expect("VM anchor loss");
+        assert!(retained.verify(&uuid, 49001).is_err());
+        assert!(Registry::open(&config, &a.join("ledger.toml"), false).is_err());
+        fs::rename(missing, ANCHOR_PATH).expect("restore anchor");
+        retained
+            .verify(&uuid, 49001)
+            .expect("retained ownership after restoration");
+        let anchor_bytes = fs::read(ANCHOR_PATH).expect("original anchor bytes");
+        fs::write(ANCHOR_PATH, b"malformed anchor").expect("VM administrative corruption");
+        assert!(Registry::open(&config, &b.join("fresh.toml"), true).is_err());
+        assert!(retained.verify(&uuid, 49001).is_err());
+        fs::write(ANCHOR_PATH, anchor_bytes).expect("VM administrator restoration");
+    }
 }

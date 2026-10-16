@@ -54,6 +54,10 @@ pub struct RetainedProjectClaim {
 impl RetainedProjectClaim {
     /// Opens a host-selected registry and verifies an already durable claim.
     ///
+    /// The protected sibling anchor bytes bind the registry incarnation across
+    /// registry replacement and loss. Both records are re-read on verification;
+    /// the embedding supplies their canonical administrative serialization.
+    ///
     /// # Errors
     /// Returns errors for unsupported host-root custody, an unsafe or changed
     /// registry, a missing or unsafe record, excessive size or differing bytes.

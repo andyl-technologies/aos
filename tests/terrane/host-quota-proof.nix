@@ -15,7 +15,7 @@
       cargo test --frozen --offline -p terrane-fs --lib \
         --test host_quota_protocol --test host_quota_native \
         --no-run --message-format=json > "$TMPDIR/host-quota-build.jsonl"
-      cargo test --frozen --offline -p aos-terrane --test host_quota_config \
+      cargo test --frozen --offline -p aos-terrane --lib --test host_quota_config \
         --no-run --message-format=json >> "$TMPDIR/host-quota-build.jsonl"
       rustc --print target-libdir > "$TMPDIR/host-quota-rust-libdir"
       python3 - "$TMPDIR/host-quota-build.jsonl" "$out" "$TMPDIR/host-quota-rust-libdir" <<'PY'
@@ -40,6 +40,11 @@
               "error_response_cannot_smuggle_quota_evidence",
               "nonroot_helper_identity_cannot_mint_native_evidence",
               "provisioning_guard_excludes_factories_until_exclusive_custody_ends",
+          },
+          "aos_terrane": {
+              "host::claims::tests::permanent_publication_survives_restart_and_refuses_collision",
+              "host::claims::tests::concurrent_claims_publish_one_complete_record",
+              "host::claims::tests::host_global_claims_preserve_crash_custody_vm",
           },
           "host_quota_config": {
               "configuration_rejects_mutation_command_fields",
@@ -80,7 +85,7 @@
           evidence[name] = {"inventory": sorted(actual), "executed": []}
           if name != "host_quota_native":
               for case in sorted(actual):
-                  if case == "host_quota_admin_ledger_preserves_domain_and_project_vm":
+                  if case.endswith("_vm"):
                       continue
                   result = subprocess.run([str(installed), "--exact", prefix + case, "--nocapture"], check=True, text=True, capture_output=True, env=environment)
                   if "test result: ok. 1 passed; 0 failed; 0 ignored;" not in result.stdout:
@@ -116,6 +121,9 @@
       setpriv --bounding-set=-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid \
         --clear-groups --inh-caps=-all --ambient-caps=-all \
         ${image}/bin/host_quota_config --exact host_quota_admin_ledger_preserves_domain_and_project_vm --ignored --nocapture
+      setpriv --bounding-set=-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid \
+        --clear-groups --inh-caps=-all --ambient-caps=-all \
+        ${image}/bin/aos_terrane --exact host::claims::tests::host_global_claims_preserve_crash_custody_vm --ignored --nocapture
     '';
   };
 in {
