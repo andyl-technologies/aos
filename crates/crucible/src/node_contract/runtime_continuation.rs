@@ -167,6 +167,7 @@ pub struct SavedRuntimeInput {
 ///
 /// ```json
 /// {"schema_version":1,"capture_ordinal":"7","operations":[],"inputs":[]}
+
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSnapshot {
@@ -451,6 +452,14 @@ impl VerifiedNativeContinuation {
 
 /// Provides a pre-reserved owning mailbox for complete runtime supervision.
 pub trait RuntimeCustodySlot {
+    /// Observes actual retained descriptor views without transferring the slot.
+    ///
+    /// # Errors
+    /// Defaults to unknown; concrete original queues authenticate their owners.
+    fn retained_descriptor_views_precredit_data(&self) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
+
     /// Borrows original Core queue correspondence without issuing any permission.
     ///
     /// Generic slots return unknown. Only the actual Core QueueSlot constructs

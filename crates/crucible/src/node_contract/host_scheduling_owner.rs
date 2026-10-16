@@ -727,7 +727,7 @@ impl HostSchedulingSource {
 fn failure(error: impl std::fmt::Display) -> OperationFailure {
     OperationFailure {
         effects: super::EffectKnowledge::None,
-        reason: error.to_string(),
+        reason: crate::node_admission::original_runtime_construction_failure_reason(error),
     }
 }
 

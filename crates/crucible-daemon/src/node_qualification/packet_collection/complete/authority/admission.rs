@@ -70,6 +70,37 @@ impl AdmissionEvidence for InstalledPacketCompleteCollectionAuthority {
 }
 
 impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn original_runtime_construction_policy(
+        &self,
+        _: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalRuntimeConstructionScope<'_>,
+    ) -> Result<
+        crucible::node_admission::OriginalRuntimeConstructionPolicy,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.original_runtime_construction_policy_data(scope)
+    }
+
+    fn authenticate_original_runtime_construction(
+        &self,
+        _: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalRuntimeConstructionScope<'_>,
+        policy: &crucible::node_admission::OriginalRuntimeConstructionPolicy,
+    ) -> Result<
+        crucible::node_admission::OriginalRuntimeConstructionStorage,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.authenticate_original_runtime_construction_data(scope, policy)
+    }
+
+    fn authenticate_original_runtime_construction_member(
+        &self,
+        _: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalRuntimeConstructionScope<'_>,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.authenticate_original_runtime_construction_member_data(scope)
+    }
+
     fn original_host_initial_lifecycle_policy(
         &self,
         _evidence: &ConformancePlanEvidence<'_>,
@@ -217,6 +248,14 @@ impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthorit
         scope: &crucible::node_admission::OriginalReportStartupMemberScope<'_>,
     ) -> Result<(), EvidenceError> {
         self.authenticate_original_report_startup_member_data(scope)
+    }
+
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, crucible::node_contract::RuntimeError> {
+        self.original_retained_requested_storage_precredit_data(maximum)
+            .map(Some)
     }
 
     fn retained_requested_storage_data(

@@ -182,7 +182,7 @@ pub(super) fn install(
         }));
     }
     let incoming = PacketCompleteOriginalSceneInputs {
-        supervisor: PacketWorldHostSupervisor::new_complete_original()?,
+        supervisor: PacketWorldHostSupervisor::new_complete_original()?.into(),
         activation,
         runtime_limits: RuntimeLimits {
             maximum_nodes: 4,

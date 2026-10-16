@@ -28,8 +28,8 @@ impl CnpSemanticLaunchGuard {
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
         native.storage_origin_precredit_data()?;
-        if native.runtime.is_some() {
-            return Err(RuntimeError::UnsupportedFacet);
+        if let Some(runtime) = &native.runtime {
+            runtime.dormant_storage_data()?;
         }
         Ok(())
     }
@@ -111,8 +111,8 @@ impl CnpSemanticProcessCustody {
             kernel_identity: _,
             executable_guard,
         } = self;
-        if runtime.is_some() {
-            return Err(RuntimeError::UnsupportedFacet);
+        if let Some(runtime) = runtime {
+            runtime.dormant_storage_data()?;
         }
         counter.path(directory)?;
         counter.content_reference(expected_executable)?;

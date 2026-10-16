@@ -12,7 +12,7 @@ use crate::node_contract::{
     ActivationRecord, CancelStatus, FacetKind, Lifecycle, NativeReclamationReceipt, NodeFacet,
     NodeRoute, NodeStatus, OperationAdmission, OperationFailure, OperationOutcome, OperationToken,
     OwnerIdentity, PhysicalState, ReadyAttestation, Refusal, SimulationNode, Submission,
-    ThreadAffinity,
+    RuntimeError, ThreadAffinity,
 };
 
 use super::{HostSchedulingSource, canonical, failure, json};
@@ -138,6 +138,34 @@ impl PreparedHostSchedulingNode {
 }
 
 impl SimulationNode for PreparedHostSchedulingNode {
+    fn retained_descriptor_views_precredit_data(&self) -> Result<Option<usize>, RuntimeError> {
+        // The closed original Host owns only metadata/Rc scheduling state;
+        // restoration, active readiness and unknown owners refuse below.
+        self.original_dormant_node_precredit_data(usize::MAX)?;
+        Ok(Some(0))
+    }
+
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, crate::node_contract::RuntimeError> {
+        self.original_dormant_node_precredit_data(maximum).map(Some)
+    }
+
+    fn retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, crate::node_contract::RuntimeError> {
+        if self.source.process != std::process::id()
+            || self.source.owner_thread != std::thread::current().id()
+        {
+            return Err(crate::node_contract::RuntimeError::ForeignAuthority);
+        }
+        // The source metadata walk excludes its shared runtime and follows
+        // only fixed original selection/anchor/attachment views. Installed
+        // authority counter banks remain independently admitted by the caller.
+        Ok(Some(Self::original_inactive_node_counter_scratch_data()))
+    }
+
     fn retained_requested_storage_data(
         &self,
         maximum: usize,
@@ -514,5 +542,13 @@ impl SimulationNode for PreparedHostSchedulingNode {
             ));
         }
         Ok(())
+    }
+}
+
+impl PreparedHostSchedulingNode {
+    pub(crate) fn original_inactive_node_counter_scratch_data() -> usize {
+        2 * std::mem::size_of::<crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter>(
+        ) + super::HostSchedulingSource::retained_original_metadata_counter_scratch_data()
+            + std::mem::size_of::<std::cell::Ref<'_, std::rc::Weak<()>>>()
     }
 }

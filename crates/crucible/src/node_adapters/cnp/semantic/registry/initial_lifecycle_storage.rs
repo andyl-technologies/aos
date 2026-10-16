@@ -166,8 +166,10 @@ impl InstalledCnpConformanceRole {
             && counter.rc(conformance)?
         {
             counter.add(
-                conformance
-                    .retained_requested_storage_precredit_data(counter.remaining())?
+                super::super::CnpSemanticConformanceAuthority::retained_requested_storage_precredit_data(
+                    conformance.as_ref(),
+                    counter.remaining(),
+                )?
                     .ok_or(RuntimeError::UnsupportedFacet)?,
             )?;
         }

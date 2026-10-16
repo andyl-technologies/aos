@@ -866,3 +866,37 @@ impl OriginalInitialLifecycleState {
         Ok(total)
     }
 }
+
+impl PacketCompleteOriginalHostSdk {
+    /// Borrows outstanding original commitments after this same lifecycle completes.
+    ///
+    /// This authenticates exact Source/launch/plan and completed private state
+    /// without invoking live currentness or an authority callback. The actual
+    /// current owners remain a separate row. Consumed initial construction is
+    /// retired only by its original nonrenewing marker, never by caller labels.
+    /// This DATA neither renews a window nor permits common construction.
+    ///
+    /// # Errors
+    /// Refuses foreign, busy, incomplete or inconsistent original owners.
+    pub fn original_completed_initial_commitments_storage_data(
+        &self,
+        source: &Rc<PacketCompleteSemanticSource>,
+        launch: &PacketNative5SourceLaunch,
+        plan: &InstalledConformancePlan,
+    ) -> Result<usize, RuntimeError> {
+        self.authenticate_initial_originals_data(source, launch, plan)?;
+        let state = self.initial_lifecycle.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        if state.phase != InitialPhase::Completed {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        {
+            let birth = source.ack_peer_birth.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+            let marker = birth.as_ref().ok_or(RuntimeError::OwnerUnavailable)?
+                .host_startup.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+            if !marker.as_ref().ok_or(RuntimeError::OwnerUnavailable)?.initial_lifecycle_completed {
+                return Err(RuntimeError::OutstandingObligations);
+            }
+        }
+        self.original_initial_lifecycle_outstanding_data(source, launch, plan, false)
+    }
+}

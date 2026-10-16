@@ -72,7 +72,7 @@ impl ConformanceRuntime {
             Some(Rc::clone(&graph)),
         )
         .map_err(|failure| ConformanceRuntimeFailure {
-            reason: failure.error.to_string(),
+            reason: crate::node_admission::original_runtime_construction_failure_reason(&failure.error),
             _retained: None,
             _preparation: Some(failure),
             _runtime: None,
@@ -81,7 +81,7 @@ impl ConformanceRuntime {
             // Retain this same complete runtime in the refusal. Its original
             // custody can only transfer through the already retained supervisor.
             return Err(ConformanceRuntimeFailure {
-                reason: error.to_string(),
+                reason: crate::node_admission::original_runtime_construction_failure_reason(&error),
                 _retained: None,
                 _preparation: None,
                 _runtime: Some(Box::new(runtime)),

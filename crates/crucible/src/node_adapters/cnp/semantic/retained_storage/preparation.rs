@@ -115,8 +115,8 @@ impl CnpSemanticPreparation {
     /// prospective or retained rows. This result grants no Fresh or Core rights.
     ///
     /// # Errors
-    /// Refuses foreign origins, busy scratch/owner loans, a populated semantic
-    /// runtime, inconsistent SDK originals, unsupported typed storage or checked
+    /// Refuses foreign origins, busy scratch/owner loans, active or populated semantic
+    /// runtime custody, inconsistent SDK originals, unsupported typed storage or checked
     /// storage/traversal bounds. Partial reports retain all unresolved owners.
     pub fn retained_requested_storage_precredit_data(
         &self,
@@ -177,3 +177,97 @@ impl CnpRetainedStorageReport {
 
 #[cfg(test)]
 mod tests;
+
+impl crate::node_adapters::cnp::semantic::CnpSemanticConformanceNode {
+    /// Observes this same inactive node and its independently boxed preparation.
+    ///
+    /// The fixed scratch and nested Source/SDK counters remain caller terms.
+    /// This raw owning walk accepts only the closed dormant common-custody
+    /// state. It grants no graph, currentness, activation or operation right.
+    ///
+    /// # Errors
+    /// Refuses foreign or busy custody, populated runtime state, unknown owning
+    /// leaves or checked storage beyond the ceiling.
+    pub fn retained_requested_storage_precredit_data(
+        &self,
+        scratch: &CnpPreparationStorageScratch,
+        registry: Option<&OriginalExtensionRegistryOwner>,
+        supervisor: Option<&OriginalRetainedSupervisor>,
+        maximum: usize,
+    ) -> Result<CnpRetainedStorageReport, RuntimeError> {
+        self.0
+            .original_retained_node_precredit_data(scratch, registry, supervisor, maximum)
+    }
+
+    /// Counts the same node's retained process and protocol descriptor views.
+    ///
+    /// # Errors
+    /// Refuses unknown, foreign, busy or populated custody without granting use.
+    pub fn retained_descriptor_views_precredit_data(&self) -> Result<usize, RuntimeError> {
+        self.0
+            .preparation
+            .retained_descriptor_views_precredit_data()
+    }
+}
+
+impl crate::node_adapters::cnp::semantic::CnpSemanticNode {
+    pub(in crate::node_adapters::cnp::semantic) fn original_retained_node_precredit_data(
+        &self,
+        scratch: &CnpPreparationStorageScratch,
+        registry: Option<&OriginalExtensionRegistryOwner>,
+        supervisor: Option<&OriginalRetainedSupervisor>,
+        maximum: usize,
+    ) -> Result<CnpRetainedStorageReport, RuntimeError> {
+        use crate::node_contract::RuntimeOwnedStorage;
+        let Self {
+            preparation: _,
+            route: _,
+            exact_profile: _,
+            affinity: _,
+            retained_registry: _,
+            retained_supervisor: _,
+            retained_operational: _,
+        } = self;
+        let node = self;
+        node.preparation
+            .guard
+            .preparation_storage_origin_precredit_data()?;
+        let registry = registry.or(node.retained_registry.as_ref());
+        let supervisor = supervisor.or(node.retained_supervisor.as_ref());
+        if let Some(operational) = &node.retained_operational {
+            let native = node
+                .preparation
+                .guard
+                .custody
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            let witness = native
+                .protocol_supervisor
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            witness
+                .as_ref()
+                .ok_or(RuntimeError::ForeignAuthority)?
+                .authenticate_original_operational_handle_data(operational)
+                .map_err(|_| RuntimeError::ForeignAuthority)?;
+        }
+        let mut loan = scratch.loan(maximum)?;
+        let counter = &mut *loan.0;
+        counter.add(size_of::<Self>())?;
+        counter.add(size_of::<CnpSemanticPreparation>())?;
+        counter.add(node.route.owned_storage()?)?;
+        counter.add(node.exact_profile.allocated_capacity())?;
+        charge_responses(
+            &node.preparation.discovery,
+            &node.preparation.realization,
+            counter,
+        )?;
+        node.preparation
+            .guard
+            .charge_retained_storage_precredit_data(registry, supervisor, counter)?;
+        node.preparation
+            .guard
+            .preparation_storage_origin_precredit_data()?;
+        Ok(counter.finish())
+    }
+}

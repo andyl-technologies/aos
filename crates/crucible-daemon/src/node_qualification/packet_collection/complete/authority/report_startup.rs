@@ -9,6 +9,8 @@ mod host_startup;
 mod native_startup;
 pub use native_startup::PacketCompleteNativeLaunchInputs;
 mod installed_source;
+mod runtime;
+pub use runtime::PacketCompleteOriginalSceneSupervisor;
 mod scene;
 pub use scene::PacketCompleteOriginalSceneInputs;
 mod preparation;
@@ -41,7 +43,12 @@ pub struct PacketCompleteReportStartupHolder {
     resources: ResourceLimits,
     purpose: StartupHolderPurpose,
     receiver_group: Rc<PacketCompleteEffectReceiverGroup>,
-    receiver_reader: PacketCompleteEffectReceiverReader,
+    receiver_reader: runtime::OriginalSharedOwner<PacketCompleteEffectReceiverReader>,
+    runtime_owners: RefCell<runtime::OriginalRuntimeOwners>,
+    runtime_members: [OnceCell<crucible::node_admission::CompleteOriginalRuntimeConstructionMember>; 3],
+    runtime_attempted: [Cell<bool>;3],
+    runtime_issuing: Cell<Option<crucible::node_admission::OriginalRuntimeConstructionPhase>>,
+    runtime_in_flight: Cell<Option<crucible::node_admission::OriginalRuntimeConstructionPhase>>,
     process: u32,
     thread: std::thread::ThreadId,
     attempted: Cell<bool>,
@@ -215,7 +222,12 @@ impl PacketCompleteReportStartupHolder {
             resources,
             purpose,
             receiver_group,
-            receiver_reader,
+            receiver_reader: runtime::OriginalSharedOwner::new(receiver_reader),
+            runtime_owners: RefCell::new(runtime::OriginalRuntimeOwners::new()),
+            runtime_members: std::array::from_fn(|_| OnceCell::new()),
+            runtime_attempted: std::array::from_fn(|_| Cell::new(false)),
+            runtime_issuing: Cell::new(None),
+            runtime_in_flight: Cell::new(None),
             process: std::process::id(),
             thread: std::thread::current().id(),
             attempted: Cell::new(false),
@@ -348,7 +360,7 @@ impl PacketCompleteReportStartupHolder {
         }
         self.graph_owner
             .authenticate_original_report_policy_data(&authority.graph_policy)?;
-        self.receiver_reader
+        self.receiver_reader.original_data().map_err(|_| refused())?
             .authenticate_original_group(&self.receiver_group)
             .map_err(|_| refused())?;
         for (member, source) in authority.roster.sources.iter().enumerate() {

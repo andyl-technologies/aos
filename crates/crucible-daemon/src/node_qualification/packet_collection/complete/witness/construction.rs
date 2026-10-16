@@ -211,6 +211,7 @@ mod tests {
     use super::*;
     use crate::node_qualification::QualificationUnit;
     use std::collections::{BTreeMap, BTreeSet};
+
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
@@ -320,5 +321,28 @@ mod tests {
             .is_err()
         );
         Ok(())
+    }
+}
+
+impl PacketCompleteNativeOracle {
+    pub(in crate::node_qualification::packet_collection::complete) fn charge_dormant_original_construction_data(
+        &self,
+        counter: &mut Counter,
+    ) -> Result<(), RuntimeError> {
+        counter
+            .charge(&self.programmes)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
+            .charge(&self.effect_paths)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
+            .charge(&self.schedule)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
+            .rc(&self.receiver_reader)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
+            .add(self.dormant_construction_backing_storage_data(counter.remaining())?)
+            .map_err(|_| RuntimeError::ResourceLimit)
     }
 }

@@ -26,6 +26,9 @@ pub use complete_capture::{
 #[path = "conformance/exact_inputs.rs"]
 mod exact_inputs;
 
+#[path = "conformance/construction_storage.rs"]
+mod construction_storage;
+
 use super::*;
 use crate::node_admission::{ConformanceGraph, ConformancePlanEvidence, EvidenceError};
 

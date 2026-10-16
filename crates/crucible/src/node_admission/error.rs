@@ -2,6 +2,9 @@
 
 use crucible_node_contract::Id;
 
+mod construction_diagnostics;
+pub(super) use construction_diagnostics::construction_diagnostic;
+
 /// Identifies the admission stage that refused a graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdmissionStage {
@@ -109,12 +112,30 @@ pub(super) fn refuse(
     required: impl Into<String>,
     observed: impl Into<String>,
 ) -> AdmissionError {
+    let (required, observed) = if construction_diagnostics::is_selected() {
+        // Preserve structured stage/code/subject/effect certainty. Arbitrary
+        // delegated Display is never needed for this selected failure owner.
+        (
+            construction_diagnostics::REQUIRED.to_owned(),
+            construction_diagnostics::OBSERVED.to_owned(),
+        )
+    } else {
+        (required.into(), observed.into())
+    };
     AdmissionError {
         stage,
         subject,
         code,
-        required: required.into(),
-        observed: observed.into(),
+        required,
+        observed,
         effects: EffectCertainty::Absent,
     }
 }
+
+// Two independent structured fields plus the dropped delegated fixed reason and
+// one cloned public Id can coexist during selected error conversion.
+pub(super) fn original_construction_diagnostic_requested_bytes() -> usize {
+    construction_diagnostics::REQUIRED.len() + 2 * construction_diagnostics::OBSERVED.len() + 128
+}
+
+pub(crate) use construction_diagnostics::OriginalConstructionDiagnosticScope;

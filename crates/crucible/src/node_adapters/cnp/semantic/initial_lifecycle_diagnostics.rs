@@ -17,24 +17,24 @@ const UNKNOWN_PREFIX: &str = "original initial Source outcome unknown; cause typ
 /// Restores the exact previous diagnostic mode on normal return or unwind.
 ///
 /// It is private diagnostic state, never a proof or an allocation permission.
-pub(super) struct OriginalInitialLifecycleDiagnostics {
+pub(crate) struct OriginalInitialLifecycleDiagnostics {
     previous: bool,
 }
 
 impl OriginalInitialLifecycleDiagnostics {
-    pub(super) fn begin() -> Self {
+    pub(crate) fn begin() -> Self {
         Self {
             previous: SELECTED_INITIAL_SOURCE.with(|selected| selected.replace(true)),
         }
     }
 
-    pub(super) const fn requested_bytes() -> usize {
+    pub(crate) const fn requested_bytes() -> usize {
         // Exactly one failure String is constructed at a time. An underlying
         // provider/contract error may coexist and remains its own admitted row.
         UNKNOWN_PREFIX.len() + MAXIMUM_CAUSE_BYTES
     }
 
-    pub(super) const fn counter_scratch_bytes() -> usize {
+    pub(crate) const fn counter_scratch_bytes() -> usize {
         std::mem::size_of::<Self>()
             + std::mem::size_of::<Cell<bool>>()
             + std::mem::size_of::<String>()
@@ -93,7 +93,7 @@ pub(super) fn refusal_reason(reason: impl InitialRefusalReason) -> String {
     }
 }
 
-pub(super) fn unknown_reason<E: Display>(error: E) -> String {
+pub(crate) fn unknown_reason<E: Display>(error: E) -> String {
     if SELECTED_INITIAL_SOURCE.with(Cell::get) {
         // The closed error family remains visible. Its potentially allocating
         // or user-defined Display implementation is deliberately never called.

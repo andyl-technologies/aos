@@ -460,7 +460,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             .and_then(std::rc::Weak::upgrade)
             .ok_or_else(refused)?;
         let held = original.try_borrow().map_err(|_| refused())?;
-        let selected = if let Some(scene) = held.original_scene.get() {
+        let selected = held.runtime_in_flight.get().is_some() || if let Some(scene) = held.original_scene.get() {
             scene
                 .try_borrow()
                 .map_err(|_| refused())?
@@ -509,7 +509,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             )
     }
 
-    fn original_initial_callback_transient_data(&self) -> Result<usize, RuntimeError> {
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn original_initial_callback_transient_data(&self) -> Result<usize, RuntimeError> {
         // All source/current Host diagnostics are a Source row. This concrete
         // daemon layer additionally owns complete file hashing, kernel checking,
         // the population ContentRef BLAKE3 identity and its own fixed diagnostic.
@@ -574,7 +574,7 @@ impl InstalledPacketCompleteCollectionAuthority {
 }
 
 impl PacketCompleteReportStartupHolder {
-    fn original_initial_retained_descriptors_data(&self) -> Result<usize, RuntimeError> {
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn original_initial_retained_descriptors_data(&self) -> Result<usize, RuntimeError> {
         self.authenticate_native_origin_data()?;
         let scene = self
             .original_scene
@@ -593,7 +593,7 @@ impl PacketCompleteReportStartupHolder {
             )
             .ok_or(RuntimeError::ResourceLimit)?;
         total = total
-            .checked_add(scene.inputs.supervisor.retained_descriptor_count_data()?)
+            .checked_add(scene.inputs.supervisor.original_data()?.retained_descriptor_count_data()?)
             .ok_or(RuntimeError::ResourceLimit)?;
         // Incoming owners exist before staging; successful staging moves each
         // original into the native fixed bank, leaving only genuinely empty slots.
@@ -648,6 +648,7 @@ impl PacketCompleteReportStartupHolder {
                     .retained_descriptor_views_precredit_data()?,
             )
             .ok_or(RuntimeError::ResourceLimit)?;
+        total=total.checked_add(self.original_runtime_descriptor_views_data()?).ok_or(RuntimeError::ResourceLimit)?;
         Ok(total)
     }
 }

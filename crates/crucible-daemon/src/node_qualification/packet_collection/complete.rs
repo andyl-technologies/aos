@@ -11,11 +11,13 @@ pub use capture_factory::{
     PacketCompleteArchiveCodeFactory, PacketCompleteCaptureFactory,
     PacketCompleteRestorationPrebirth, PacketCompleteWorldCapture,
 };
+
 mod execution;
 pub use execution::{
     PacketCompleteExecutionActor, PacketCompleteExecutionError, PacketCompleteExecutionScene,
     PacketCompleteRuntimeAttachmentFailure,
 };
+
 mod graph;
 mod installed;
 mod population;
@@ -50,3 +52,7 @@ pub use population::{PacketCompletePopulationRequest, PacketCompleteWitnessPopul
 
 mod witness;
 pub use witness::{PacketCompleteNativeOracle, PacketCompleteOracleRequest};
+
+pub use authority::PacketCompleteOriginalSceneSupervisor;
+
+mod construction_diagnostics;

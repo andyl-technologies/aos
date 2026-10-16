@@ -7,6 +7,7 @@
 mod report_startup;
 mod retained;
 pub use report_startup::{
+    PacketCompleteOriginalSceneSupervisor,
     PacketCompleteNativeLaunchInputs, PacketCompleteOriginalSceneInputs,
     PacketCompletePreparationConnection, PacketCompleteReportStartupHolder,
 };
@@ -93,6 +94,7 @@ pub struct InstalledPacketCompleteCollectionAuthority {
     original_ack_callback_started: Cell<bool>,
     // Only an issued initial-lifecycle window selects the bounded callback path.
     original_initial_callback_active: Cell<bool>,
+    original_runtime_callback_active: Cell<bool>,
     capture_factory: OnceCell<std::rc::Weak<super::capture_factory::PacketCompleteCaptureFactory>>,
     execution_scene: OnceCell<std::rc::Weak<super::execution::PacketCompleteExecutionScene>>,
 }
@@ -200,6 +202,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             original_ack_hello: RefCell::new(std::array::from_fn(|_| None)),
             original_ack_callback_started: Cell::new(false),
             original_initial_callback_active: Cell::new(false),
+            original_runtime_callback_active: Cell::new(false),
             capture_factory: OnceCell::new(),
             execution_scene: OnceCell::new(),
             report_startup_holder: OnceCell::new(),
@@ -227,6 +230,11 @@ impl InstalledPacketCompleteCollectionAuthority {
     /// # Errors
     /// Refuses changed source allocations, revocation, foreign origin or kernel.
     pub fn current(&self) -> Result<(), QualificationError> {
+        if self.original_runtime_callback_active.get() {
+            // Only a retained opaque Core construction member enables this
+            // same-body bounded file/kernel/Source callback phase.
+            return self.current_for_original_initial_callback();
+        }
         self.graph_policy.authenticate_scope(
             &self.roster,
             &self.host,
@@ -319,18 +327,22 @@ impl InstalledPacketCompleteCollectionAuthority {
     pub fn witness_plan(&self) -> &WitnessPlan {
         &self.population.plan
     }
+
     /// Borrows the original complete world declaration.
     pub fn world(&self) -> &WorldBinding {
         &self.world
     }
+
     /// Borrows the same genuine Host2 factory source.
     pub fn host_source(&self) -> &Rc<HostSchedulingSource> {
         &self.host
     }
+
     /// Borrows the three original concrete source handles.
     pub fn roster(&self) -> &PacketCompleteRoster {
         &self.roster
     }
+
     /// Borrows the exact original complete coordinator declaration.
     pub fn coordinator(&self) -> &PacketNative5CoordinatorInstallation {
         &self.roster.coordinator

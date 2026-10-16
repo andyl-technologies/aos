@@ -26,8 +26,9 @@ pub use actor::{
     PacketCompleteExecutionActor, PacketCompleteExecutionError,
     PacketCompleteRuntimeAttachmentFailure,
 };
+
 mod inputs;
-mod schedule;
+pub(in crate::node_qualification::packet_collection::complete) mod schedule;
 
 /// Retains one source-selected complete scene without ordinary acceptance.
 ///
@@ -110,7 +111,9 @@ impl PacketCompleteExecutionScene {
             .original_capture_factory()
             .map_err(evidence)?
             .authenticate_preparation()
-            .map_err(|error| QualificationError::Evidence(error.to_string()))?;
+            .map_err(|error| {
+                QualificationError::Evidence(super::construction_diagnostics::reason(error))
+            })?;
         self.authority.roster().current_native().map_err(native)?;
         self.authority
             .host_source()
@@ -256,7 +259,7 @@ impl PacketCompleteExecutionScene {
 }
 
 fn evidence(error: impl std::fmt::Display) -> QualificationError {
-    QualificationError::Evidence(error.to_string())
+    QualificationError::Evidence(super::construction_diagnostics::reason(error))
 }
 
 fn native(error: crucible::node_contract::OperationFailure) -> QualificationError {

@@ -435,6 +435,18 @@ impl CnpSemanticNode {
         registry: Option<&crucible_node_provider::handshake::OriginalExtensionRegistryOwner>,
         maximum: usize,
     ) -> Result<CnpRetainedStorageReport, OperationFailure> {
+        // The selected original conversion retains its genuine registry and
+        // supervisor witnesses through type erasure. Reuse the complete raw
+        // owning walk for that dormant family, without dropping those roots.
+        // Existing ordinary nodes keep their original observer path below.
+        if self.retained_registry.is_some() || self.retained_supervisor.is_some() {
+            let scratch = preparation::CnpPreparationStorageScratch::new(
+                preparation::CnpPreparationStorageScratch::requested_bytes(),
+            ).map_err(unknown)?;
+            return self.original_retained_node_precredit_data(
+                &scratch, registry, self.retained_supervisor.as_ref(), maximum,
+            ).map_err(unknown);
+        }
         self.preparation.guard.storage_origin_data()?;
         if !self.affinity.permits_current_thread() {
             return Err(refused(

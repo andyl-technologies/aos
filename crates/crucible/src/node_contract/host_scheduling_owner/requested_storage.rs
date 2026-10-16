@@ -104,3 +104,15 @@ impl HostSchedulingSource {
         Ok(bytes)
     }
 }
+
+impl HostSchedulingSource {
+    /// Names fixed borrowed views used by the raw original metadata observer.
+    ///
+    /// These are logical counter/borrow headers, excluding compiler recursion,
+    /// allocator residency and the independently counted shared runtime owner.
+    pub fn retained_original_metadata_counter_scratch_data() -> usize {
+        std::mem::size_of::<std::cell::Ref<'static, Option<OriginalSchedulingSource>>>()
+            + std::mem::size_of::<std::cell::Ref<'static, Option<Rc<capture_dependencies::OriginalHostDependencyPlan>>>>()
+            + std::mem::size_of::<[usize; 8]>()
+    }
+}

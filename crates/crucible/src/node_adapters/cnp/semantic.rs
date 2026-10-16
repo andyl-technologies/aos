@@ -22,6 +22,7 @@ pub use historical_protocol::{
     PacketCompleteHistoricalAllocationFacts, PacketCompleteHistoricalNativeGroup,
     PacketCompleteHistoricalProtocolData, PacketCompleteHistoricalProtocolDataBudget,
 };
+
 mod packet_connected_source;
 mod packet_grant;
 mod packet_lineage;
@@ -52,7 +53,9 @@ pub use world_provider::{
     CnpSemanticWorldPreparationFailure, CnpSemanticWorldReservationFailure,
 };
 
-pub use node::{CnpSemanticAdmissionFailure, CnpSemanticNode};
+pub use node::{
+    CnpConformanceNodeConstructionStorageData, CnpSemanticAdmissionFailure, CnpSemanticNode,
+};
 pub use packet_complete_source::{
     OriginalCaptureAllocationData, PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA,
     PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA, PacketCompleteAckHostRegistrationPlan,
@@ -151,4 +154,8 @@ mod tests {
 
 pub(crate) use packet_complete_source::{
     PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};
+
+pub(crate) use initial_lifecycle_diagnostics::{
+    OriginalInitialLifecycleDiagnostics, unknown_reason as original_construction_failure_reason,
 };

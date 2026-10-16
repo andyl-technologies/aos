@@ -118,7 +118,16 @@ impl InstalledCompleteScene {
         PacketCompleteReportStartupHolder::launch_original_scene(&self.original)
             .map_err(|_| refused())?;
         PacketCompleteReportStartupHolder::complete_original_scene_initial_lifecycle(&self.original)
-            .map_err(|_| refused())
+            .map_err(|_| refused())?;
+        // The earlier installation edition remains preparation-only. Only the
+        // explicitly installed full mechanism enters the separate Core-priced
+        // inactive constructor; this does not Arm or activate the runtime.
+        if PacketCompleteReportStartupHolder::has_original_runtime_mechanism_data(&self.original)
+            .map_err(|_| refused())? {
+            PacketCompleteReportStartupHolder::prepare_original_scene_runtime(&self.original)
+                .map_err(|_| refused())?;
+        }
+        Ok(())
     }
 
     /// Withdraws future actions and transfers originals to their same supervisor.

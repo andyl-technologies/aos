@@ -212,6 +212,26 @@ pub struct OriginalProtocolSupervisor {
 }
 
 impl OriginalProtocolSupervisor {
+    /// Authenticates the actual operational handle retained beside this witness.
+    ///
+    /// This read-only identity check clones no owner and invokes no supervisor
+    /// callback. It grants no connection, construction or execution authority.
+    ///
+    /// # Errors
+    /// Refuses a changed creating process/thread or a different supervisor Rc.
+    pub fn authenticate_original_operational_handle_data(
+        &self,
+        operational: &Rc<dyn ConnectionSupervisor>,
+    ) -> Result<(), ProviderError> {
+        self.actor.ensure_current()?;
+        if !Rc::ptr_eq(&self.supervisor, operational) {
+            return Err(ProviderError::Correlation(
+                "original operational supervisor differs",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn authenticate<S: ProviderStream>(
         &self,
         connection: &Connection<S>,
@@ -301,3 +321,45 @@ mod tests;
 #[path = "retained_supervisor.rs"]
 mod retained_supervisor;
 pub use retained_supervisor::OriginalRetainedSupervisor;
+
+#[cfg(test)]
+mod operational_handle_tests {
+    use super::*;
+
+    #[test]
+    fn original_operational_handle_refuses_foreign_rc_and_actor_without_owner_changes() {
+        struct NeverCalled;
+
+        impl ConnectionSupervisor for NeverCalled {
+            fn quarantine(&self, _: ConnectionIncident) {
+                panic!("identity inspection must not invoke supervisor callbacks");
+            }
+        }
+
+        let operational: Rc<dyn ConnectionSupervisor> = Rc::new(NeverCalled);
+        let foreign: Rc<dyn ConnectionSupervisor> = Rc::new(NeverCalled);
+        let witness = OriginalProtocolSupervisor {
+            actor: Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
+            supervisor: Rc::clone(&operational),
+        };
+        let count = Rc::strong_count(&operational);
+        let actor_count = Rc::strong_count(&witness.actor);
+
+        assert!(witness.authenticate_original_operational_handle_data(&operational).is_ok());
+        assert!(witness.authenticate_original_operational_handle_data(&foreign).is_err());
+        assert_eq!(Rc::strong_count(&operational), count);
+        assert_eq!(Rc::strong_count(&witness.actor), actor_count);
+        assert!(Rc::ptr_eq(&witness.supervisor, &operational));
+
+        let foreign_actor = std::thread::spawn(crate::protocol_snapshot::ProtocolCaptureOwner::new)
+            .join()
+            .unwrap();
+        let foreign_witness = OriginalProtocolSupervisor {
+            actor: Rc::new(foreign_actor),
+            supervisor: Rc::clone(&operational),
+        };
+        assert!(foreign_witness.authenticate_original_operational_handle_data(&operational).is_err());
+        assert!(Rc::ptr_eq(&foreign_witness.supervisor, &operational));
+        assert_eq!(Rc::strong_count(&operational), count + 1);
+    }
+}

@@ -50,7 +50,7 @@ fn fixture() -> Fixture {
         boundary: saved.boundary,
     };
     let inputs = PacketCompleteOriginalSceneInputs {
-        supervisor: PacketWorldHostSupervisor::new_complete_original().unwrap(),
+        supervisor: PacketWorldHostSupervisor::new_complete_original().unwrap().into(),
         activation,
         runtime_limits: RuntimeLimits {
             maximum_nodes: 4,

@@ -141,7 +141,7 @@ pub(super) fn validate_ports(
                             subject.clone(),
                             AdmissionCode::UnknownInterface,
                             "installed validator for actual versioned payload schema",
-                            error.to_string(),
+                            crate::node_admission::error::construction_diagnostic(&error),
                         )
                     })?;
                 content.verify(&lane_policy.ordering_ref)?;

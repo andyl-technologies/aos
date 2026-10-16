@@ -41,7 +41,7 @@ impl CnpSemanticLaunchGuard {
     /// boxed custody and slot storage, with the walk's real identity dedup.
     ///
     /// # Errors
-    /// Refuses foreign or busy origins, a populated native runtime, unavailable
+    /// Refuses foreign or busy origins, active or populated runtime custody, unavailable
     /// typed owners, unsupported erased callbacks or a complete row above the
     /// requested ceiling. A live or partial guard is never silently omitted.
     pub fn original_initial_lifecycle_retained_storage_precredit_data(
@@ -89,7 +89,7 @@ impl CnpSemanticLaunchGuard {
             .custody
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
-        if native.child.is_some() || native.runtime.is_some() || native.rejected_control.is_some() {
+        if native.child.is_some() || native.rejected_control.is_some() {
             return Err(RuntimeError::UnsupportedFacet);
         }
         let mut total = self
@@ -179,9 +179,11 @@ mod tests {
         fn identity(&self) -> U64 {
             U64::new(2001)
         }
+
         fn retain(&mut self, _: CnpSemanticProcessCustody) {
             panic!("data-only controls must not create or transfer Child");
         }
+
         fn retained_descriptor_views_precredit_data(&self) -> Result<Option<usize>, RuntimeError> {
             use std::os::fd::AsRawFd;
             assert!(self.socket.as_raw_fd() >= 0);
@@ -193,15 +195,18 @@ mod tests {
         _socket: UnixStream,
         dropped: Rc<Cell<bool>>,
     }
+
     impl Drop for UnknownSocketSlot {
         fn drop(&mut self) {
             self.dropped.set(true);
         }
     }
+
     impl CnpSemanticProcessSlot for UnknownSocketSlot {
         fn identity(&self) -> U64 {
             U64::new(2002)
         }
+
         fn retain(&mut self, _: CnpSemanticProcessCustody) {
             panic!("unknown data must not transfer Child");
         }

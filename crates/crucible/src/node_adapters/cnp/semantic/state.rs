@@ -19,6 +19,8 @@ use crate::{
 
 use super::budget::SemanticCredit;
 
+mod dormant_storage;
+
 pub(super) struct OriginalOperation {
     pub(super) admission: OperationAdmission,
     pub(super) begin: BeginRequest,

@@ -463,7 +463,7 @@ pub(super) fn schema_error(error: crucible_node_contract::ContractError) -> Admi
     failure(
         AdmissionCode::InvalidSchema,
         "supported exact extension schema/content",
-        &error.to_string(),
+        &crate::node_admission::error::construction_diagnostic(&error),
     )
 }
 

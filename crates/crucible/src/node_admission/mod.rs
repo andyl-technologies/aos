@@ -12,6 +12,7 @@ mod conformance;
 pub(crate) use conformance::{
     OriginalReportStartupMember, StartupRows, WeakInstalledConformancePlan,
 };
+
 mod error;
 mod evidence;
 mod extensions;
@@ -45,6 +46,7 @@ pub use conformance::{
     OriginalFreshRestoreHostPolicy, OriginalFreshRestoreHostScope, OriginalFreshRestoreHostStorage,
     OriginalReportStartupMemberScope, OriginalReportStartupPolicy, OriginalReportStartupScope,
     OriginalReportStartupStorage, admit_complete_archive_code_graph, admit_conformance_graph,
+    admit_original_fixed_four_conformance_graph,
 };
 
 pub use error::{AdmissionCode, AdmissionError, AdmissionStage, AdmissionSubject, EffectCertainty};
@@ -105,6 +107,10 @@ pub struct AdmittedGraph {
 }
 
 mod retained_runtime_storage;
+mod construction_storage;
+pub use construction_storage::{
+    FixedFourConformanceGraphConstructionInputs, FixedFourConformanceGraphConstructionStorageData,
+};
 
 impl AdmittedGraph {
     /// Borrows explicit mandatory capabilities bound into the selected scenario root.
@@ -475,3 +481,11 @@ pub use conformance::{
     OriginalHostInitialLifecyclePolicy, OriginalHostInitialLifecycleScope,
     OriginalHostInitialLifecycleStorage,
 };
+
+pub use conformance::{
+    CompleteOriginalRuntimeConstructionDiagnostics, CompleteOriginalRuntimeConstructionMember,
+    OriginalRuntimeConstructionPhase, OriginalRuntimeConstructionPolicy,
+    OriginalRuntimeConstructionScope, OriginalRuntimeConstructionStorage,
+};
+
+pub(crate) use conformance::original_runtime_construction_failure_reason;

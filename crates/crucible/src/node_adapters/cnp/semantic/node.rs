@@ -1,5 +1,8 @@
 //! Owns generic original admission and the source-qualified common node capsule.
 
+mod construction_storage;
+pub use construction_storage::CnpConformanceNodeConstructionStorageData;
+
 use std::rc::Rc;
 
 use crucible_node_contract::{Extensions, Id};
@@ -44,6 +47,11 @@ pub struct CnpSemanticNode {
     pub(super) route: NodeRoute,
     pub(super) exact_profile: Id,
     pub(super) affinity: ThreadAffinity,
+    // Selected same-holder conversion moves these genuine non-cloneable
+    // witnesses with the controller before common runtime erases its node type.
+    pub(super) retained_registry: Option<crucible_node_provider::handshake::OriginalExtensionRegistryOwner>,
+    pub(super) retained_supervisor: Option<crucible_node_provider::connection::OriginalRetainedSupervisor>,
+    pub(super) retained_operational: Option<std::rc::Rc<dyn crucible_node_provider::connection::ConnectionSupervisor>>,
 }
 
 impl CnpSemanticPreparation {
@@ -89,25 +97,7 @@ impl CnpSemanticPreparation {
         self,
         graph: &crate::node_admission::ConformanceGraph,
     ) -> Result<super::CnpSemanticConformanceNode, CnpSemanticAdmissionFailure> {
-        let checked = (|| {
-            self.reauthenticate()?;
-            graph.reauthenticate().map_err(unknown)?;
-            let native = self.guard.custody().map_err(unknown)?;
-            if !native
-                .collection_plan
-                .as_ref()
-                .is_some_and(|plan| plan.same_original(graph.plan()))
-            {
-                return Err(refused("collection graph belongs to another original plan"));
-            }
-            self.guard
-                .custody()
-                .map_err(unknown)?
-                .conformance
-                .as_ref()
-                .ok_or_else(|| refused("conformance node requires installed fixture custody"))?
-                .authenticate_graph(self.scope()?, graph)
-        })();
+        let checked = self.authenticate_original_conformance_graph(graph);
         if let Err(error) = checked {
             return Err(CnpSemanticAdmissionFailure {
                 error,
@@ -118,134 +108,165 @@ impl CnpSemanticPreparation {
             .map(super::CnpSemanticConformanceNode)
     }
 
-    fn into_node_installed(
-        mut self,
+    fn authenticate_original_conformance_graph(
+        &self,
+        graph: &crate::node_admission::ConformanceGraph,
+    ) -> Result<(), OperationFailure> {
+        self.reauthenticate()?;
+        graph.reauthenticate().map_err(unknown)?;
+        let native = self.guard.custody().map_err(unknown)?;
+        if !native
+            .collection_plan
+            .as_ref()
+            .is_some_and(|plan| plan.same_original(graph.plan()))
+        {
+            return Err(refused("collection graph belongs to another original plan"));
+        }
+        self.guard
+            .custody()
+            .map_err(unknown)?
+            .conformance
+            .as_ref()
+            .ok_or_else(|| refused("conformance node requires installed fixture custody"))?
+            .authenticate_graph(self.scope()?, graph)
+    }
+
+    fn prepare_original_node_installed(
+        &mut self,
         graph: &AdmittedGraph,
-    ) -> Result<CnpSemanticNode, CnpSemanticAdmissionFailure> {
-        let result = (|| {
-            self.reauthenticate()?;
+    ) -> Result<(NodeRoute, Id), OperationFailure> {
+        self.reauthenticate()?;
+        let scope = self.scope()?;
+        let install = scope.installation;
+        // Retain the result metadata before completed-admission validation.
+        // A Source getter after the terminal read could revoke that read.
+        let exact_profile = install.exact_facet.id.clone();
+        if graph.world_binding_hash() != &install.world_binding_hash
+            || graph.descriptor(&install.descriptor.id) != Some(&install.descriptor)
+            || graph.binding(&install.descriptor.id) != Some(&install.binding)
+            || graph.owner(&install.owner.owner.id) != Some(&install.owner)
+        {
+            return Err(refused(
+                "generic common admission differs from installed actual realization",
+            ));
+        }
+        let mut state = SemanticRuntimeCustody::default();
+        state
+            .credit
+            .reserve(&install.binding, install.maximum_semantic_bytes)?;
+        state
+            .credit
+            .reserve(&install.owner, install.maximum_semantic_bytes)?;
+        // Cleanup metadata is reserved before Admit or any activation effect.
+        // Exhausted later semantic credit must not obstruct original release.
+        state
+            .credit
+            .reserve_bytes(install.maximum_result_bytes, install.maximum_semantic_bytes)?;
+        let route = NodeRoute {
+            node: install.descriptor.id.clone(),
+            owners: vec![OwnerIdentity {
+                owner: install.owner.owner.id.clone(),
+                incarnation: install.binding.authority.incarnation_id.clone(),
+                generation: install.binding.authority.owner_generation,
+            }],
+        };
+        let request = AdmitRequest {
+            bindings: vec![install.binding.clone()],
+            world_binding_hash: install.world_binding_hash.clone(),
+            admission_receipt: install.admission_receipt.clone(),
+            extensions: Extensions::new(),
+        };
+        state
+            .credit
+            .reserve(&request, install.maximum_semantic_bytes)?;
+        let expected = install.binding.identity().map_err(unknown)?;
+        let expected_admission = install.admission.clone();
+        let id = request_id("admit", &install.realize.realization_id)?;
+        let native = self
+            .guard
+            .custody
+            .as_mut()
+            .ok_or_else(|| refused("generic original native custody is absent"))?;
+        if native.runtime.is_some() {
+            return Err(refused(
+                "generic original admission has already been reserved",
+            ));
+        }
+        native
+            .source
+            .as_ref()
+            .ok_or_else(|| refused("generic source admission policy is absent"))?
+            .preflight_transition(native, super::CnpSemanticTransition::Admission)?;
+        // The reserved native capsule owns bookkeeping before the first
+        // remote admission effect, including failure or caller unwind.
+        native.runtime = Some(state);
+        // Reusing a completed protocol Admit requires the graph, installation
+        // and runtime-credit checks above, followed by the same terminal
+        // native dispatch guard after all completed Source-pair validation.
+        let reused = {
             let scope = self.scope()?;
-            let install = scope.installation;
-            // Retain the result metadata before completed-admission validation.
-            // A Source getter after the terminal read could revoke that read.
-            let exact_profile = install.exact_facet.id.clone();
-            if graph.world_binding_hash() != &install.world_binding_hash
-                || graph.descriptor(&install.descriptor.id) != Some(&install.descriptor)
-                || graph.binding(&install.descriptor.id) != Some(&install.binding)
-                || graph.owner(&install.owner.owner.id) != Some(&install.owner)
-            {
+            let mut slot = scope
+                .native
+                .completed_ack_admission
+                .try_borrow_mut()
+                .map_err(|_| refused("completed world admission slot is busy"))?;
+            if let Some(original) = slot.as_mut() {
+                original.consume(&self, &scope, &request)?;
+                true
+            } else if scope.native.completed_ack_protocol_started {
                 return Err(refused(
-                    "generic common admission differs from installed actual realization",
+                    "assigned ACK Admit requires its original world token",
                 ));
+            } else {
+                self.authenticate_native_dispatch()?;
+                false
             }
-            let mut state = SemanticRuntimeCustody::default();
-            state
-                .credit
-                .reserve(&install.binding, install.maximum_semantic_bytes)?;
-            state
-                .credit
-                .reserve(&install.owner, install.maximum_semantic_bytes)?;
-            // Cleanup metadata is reserved before Admit or any activation effect.
-            // Exhausted later semantic credit must not obstruct original release.
-            state
-                .credit
-                .reserve_bytes(install.maximum_result_bytes, install.maximum_semantic_bytes)?;
-            let route = NodeRoute {
-                node: install.descriptor.id.clone(),
-                owners: vec![OwnerIdentity {
-                    owner: install.owner.owner.id.clone(),
-                    incarnation: install.binding.authority.incarnation_id.clone(),
-                    generation: install.binding.authority.owner_generation,
-                }],
-            };
-            let request = AdmitRequest {
-                bindings: vec![install.binding.clone()],
-                world_binding_hash: install.world_binding_hash.clone(),
-                admission_receipt: install.admission_receipt.clone(),
-                extensions: Extensions::new(),
-            };
-            state
-                .credit
-                .reserve(&request, install.maximum_semantic_bytes)?;
-            let expected = install.binding.identity().map_err(unknown)?;
-            let expected_admission = install.admission.clone();
-            let id = request_id("admit", &install.realize.realization_id)?;
+        };
+        if !reused {
             let native = self
                 .guard
                 .custody
                 .as_mut()
                 .ok_or_else(|| refused("generic original native custody is absent"))?;
-            if native.runtime.is_some() {
-                return Err(refused(
-                    "generic original admission has already been reserved",
+            let owner = Rc::clone(&native.read_owner);
+            let call = super::process::ReadCall::begin(owner).map_err(unknown)?;
+            let response = native
+                .controller
+                .as_mut()
+                .ok_or_else(|| refused("generic original controller is absent"))?
+                .call(id, None, Method::Admit, false, request)
+                .map_err(unknown);
+            call.finish(response.is_ok());
+            let response = response?;
+            let Some(MethodResult::Admit(admitted)) = response.result else {
+                return Err(unknown("generic original admission did not complete"));
+            };
+            if admitted.admission_id != expected_admission
+                || admitted.accepted_binding_hashes != [expected]
+            {
+                return Err(unknown(
+                    "generic original admission changed the complete native binding",
                 ));
             }
-            native
-                .source
-                .as_ref()
-                .ok_or_else(|| refused("generic source admission policy is absent"))?
-                .preflight_transition(native, super::CnpSemanticTransition::Admission)?;
-            // The reserved native capsule owns bookkeeping before the first
-            // remote admission effect, including failure or caller unwind.
-            native.runtime = Some(state);
-            // Reusing a completed protocol Admit requires the graph, installation
-            // and runtime-credit checks above, followed by the same terminal
-            // native dispatch guard after all completed Source-pair validation.
-            let reused = {
-                let scope = self.scope()?;
-                let mut slot = scope
-                    .native
-                    .completed_ack_admission
-                    .try_borrow_mut()
-                    .map_err(|_| refused("completed world admission slot is busy"))?;
-                if let Some(original) = slot.as_mut() {
-                    original.consume(&self, &scope, &request)?;
-                    true
-                } else if scope.native.completed_ack_protocol_started {
-                    return Err(refused(
-                        "assigned ACK Admit requires its original world token",
-                    ));
-                } else {
-                    self.authenticate_native_dispatch()?;
-                    false
-                }
-            };
-            if !reused {
-                let native = self
-                    .guard
-                    .custody
-                    .as_mut()
-                    .ok_or_else(|| refused("generic original native custody is absent"))?;
-                let owner = Rc::clone(&native.read_owner);
-                let call = super::process::ReadCall::begin(owner).map_err(unknown)?;
-                let response = native
-                    .controller
-                    .as_mut()
-                    .ok_or_else(|| refused("generic original controller is absent"))?
-                    .call(id, None, Method::Admit, false, request)
-                    .map_err(unknown);
-                call.finish(response.is_ok());
-                let response = response?;
-                let Some(MethodResult::Admit(admitted)) = response.result else {
-                    return Err(unknown("generic original admission did not complete"));
-                };
-                if admitted.admission_id != expected_admission
-                    || admitted.accepted_binding_hashes != [expected]
-                {
-                    return Err(unknown(
-                        "generic original admission changed the complete native binding",
-                    ));
-                }
-                self.reauthenticate()?;
-            }
-            Ok((route, exact_profile))
-        })();
+            self.reauthenticate()?;
+        }
+        Ok((route, exact_profile))
+    }
+
+    fn into_node_installed(
+        mut self,
+        graph: &AdmittedGraph,
+    ) -> Result<CnpSemanticNode, CnpSemanticAdmissionFailure> {
+        let result = self.prepare_original_node_installed(graph);
         match result {
             Ok((route, exact_profile)) => Ok(CnpSemanticNode {
                 preparation: Box::new(self),
                 route,
                 exact_profile,
                 affinity: ThreadAffinity::OwnerThread(std::thread::current().id()),
+                retained_registry: None,
+                retained_supervisor: None,
+                retained_operational: None,
             }),
             Err(error) => Err(CnpSemanticAdmissionFailure {
                 error,

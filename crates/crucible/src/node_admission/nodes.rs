@@ -30,7 +30,7 @@ pub(super) fn schema_error(error: ContractError) -> AdmissionError {
         AdmissionSubject::World,
         AdmissionCode::InvalidSchema,
         "valid closed core schema",
-        error.to_string(),
+        crate::node_admission::error::construction_diagnostic(&error),
     )
 }
 
@@ -341,7 +341,7 @@ pub(super) fn validate_nodes(
                         subject.clone(),
                         AdmissionCode::UnknownInterface,
                         "installed validator for exact complete format schema",
-                        error.to_string(),
+                        crate::node_admission::error::construction_diagnostic(&error),
                     )
                 })?;
         }
@@ -366,7 +366,7 @@ pub(super) fn validate_nodes(
                     subject.clone(),
                     AdmissionCode::IdentityMismatch,
                     "trusted measured installed implementation",
-                    error.to_string(),
+                    crate::node_admission::error::construction_diagnostic(&error),
                 )
             })?;
         content
@@ -378,7 +378,7 @@ pub(super) fn validate_nodes(
                     subject.clone(),
                     AdmissionCode::IdentityMismatch,
                     "authenticated actual live authority and host custody",
-                    error.to_string(),
+                    crate::node_admission::error::construction_diagnostic(&error),
                 )
             })?;
 

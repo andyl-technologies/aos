@@ -137,6 +137,36 @@ pub struct InstalledCnpConformanceRole(pub(super) InstalledCnpSemanticRole);
 pub struct CnpSemanticConformanceNode(pub(super) CnpSemanticNode);
 
 impl CnpSemanticConformanceNode {
+    /// Borrows this same admitted collecting node's actual retained route.
+    ///
+    /// This is data only and does not reauthenticate or grant an operation.
+    pub fn original_conformance_route_data(&self) -> &crate::node_contract::NodeRoute {
+        &self.0.route
+    }
+
+    /// Borrows facets from the exact original concrete Source of this node.
+    ///
+    /// The borrowed data does not replace the runtime's genuine graph and
+    /// collection-scope gates or grant execution authority.
+    ///
+    /// # Errors
+    /// Refuses a foreign Source, missing custody or foreign process/thread.
+    pub fn original_conformance_facets_data<'a>(
+        &self,
+        source: &'a std::rc::Rc<super::PacketCompleteSemanticSource>,
+    ) -> Result<&'a [crate::node_contract::FacetKind], crate::node_contract::RuntimeError> {
+        self.0.preparation.guard.preparation_storage_origin_precredit_data()?;
+        let native = self.0.preparation.guard.custody.as_ref()
+            .ok_or(crate::node_contract::RuntimeError::OwnerUnavailable)?;
+        let actual = native.source.as_ref()
+            .ok_or(crate::node_contract::RuntimeError::OwnerUnavailable)?;
+        let expected: &dyn super::CnpSemanticSource = source.as_ref();
+        if !std::ptr::eq(actual.as_ref(), expected) {
+            return Err(crate::node_contract::RuntimeError::ForeignAuthority);
+        }
+        Ok(super::CnpSemanticSource::installation(source.as_ref()).facets.as_slice())
+    }
+
     /// Transfers original native custody while retaining this collecting node's metadata.
     ///
     /// This is containment only. It grants no ordinary graph, renewed collection

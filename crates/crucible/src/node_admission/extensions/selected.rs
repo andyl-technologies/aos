@@ -274,7 +274,7 @@ impl InstalledExtensionRegistry {
                     application,
                     AdmissionCode::InvalidSchema,
                     "closed exact extension selection",
-                    &error.to_string(),
+                    &crate::node_admission::error::construction_diagnostic(&error),
                 )
             })?;
             selected

@@ -6,6 +6,7 @@
 
 mod connection;
 mod scene;
+mod runtime;
 pub use connection::PacketCompletePreparationConnection;
 
 use super::*;
@@ -708,6 +709,7 @@ impl PacketCompleteReportStartupHolder {
                 _ => return Err(RuntimeError::OwnerUnavailable),
             }
         }
+        held.charge_original_runtime_storage_data(&mut counter)?;
         held.authenticate_origin()
             .map_err(|_| RuntimeError::ForeignAuthority)?;
         Ok(counter.bytes())

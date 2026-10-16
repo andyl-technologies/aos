@@ -97,7 +97,7 @@ impl PacketCompleteReportStartupHolder {
         self.graph_owner
             .authenticate_original_report_policy_data(&authority.graph_policy)
             .map_err(|_| RuntimeError::ForeignAuthority)?;
-        self.receiver_reader
+        self.receiver_reader.original_data()?
             .authenticate_original_group(&self.receiver_group)
             .map_err(|_| RuntimeError::ForeignAuthority)?;
         // These loans inspect only the existing effect-group identities. They

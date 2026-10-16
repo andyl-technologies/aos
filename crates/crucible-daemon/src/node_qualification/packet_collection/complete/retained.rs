@@ -317,6 +317,8 @@ fields!(HashRef; algorithm, domain, digest);
 fields!(ContentRef; hash, length, media_type);
 fields!(Endpoint; node_id, port_id, lane_id);
 fields!(SchemaRef; id, version, definition, extensions);
+fields!(crucible_node_contract::LiveAuthority; schema_version, session_id, incarnation_id, realization_id, activation_id, world_generation, owner_generation, input_epoch, host_receipt, extensions);
+fields!(crucible_node_contract::NodeBinding; compatibility, authority, extensions);
 fields!(NodeBindingRef; node_id, binding_hash, extensions);
 fields!(WorldBinding; schema_version, scenario_ref, node_bindings, connections, ownership_ref, coordinator_contract_ref, ordering_profile, initialization_ref, extensions);
 fields!(ConnectionDescriptor; schema_version, id, producer, consumer, interface_id, features, payload_schema, minimum_latency_ps, policy_ref, capture_owner_id, extensions);
@@ -650,6 +652,67 @@ mod clock_root_tests {
         assert_eq!(counter.bytes(), before);
         assert_eq!(originals.len(), SHARED_OWNERS + 1);
         assert!(!counter.rc(&originals[0])?);
+        Ok(())
+    }
+}
+
+impl Owned for crucible_node_provider::reference_packet::service::PacketConnectedSourceProgram {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        use crucible_node_provider::reference_packet::{
+            PacketEvent, PacketProgramDefinition,
+            connected::{PacketConnectedDefinition, PacketInputConnection},
+            service::PacketConnectedSourceProgram,
+        };
+        match self {
+            PacketConnectedSourceProgram::Producer { program } => {
+                let PacketProgramDefinition { schema, events } = program;
+                counter.charge(schema)?;
+                counter.add(
+                    events
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<PacketEvent>())
+                        .ok_or_else(exhausted)?,
+                )?;
+                for event in events {
+                    let PacketEvent {
+                        id,
+                        evaluation: _,
+                        completion: _,
+                        payload,
+                    } = event;
+                    counter.charge(id)?;
+                    counter.charge(payload)?;
+                }
+            }
+            PacketConnectedSourceProgram::Reactive { program } => {
+                let PacketConnectedDefinition {
+                    schema,
+                    connections,
+                    output,
+                } = program;
+                counter.charge(schema)?;
+                counter.add(
+                    connections
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<PacketInputConnection>())
+                        .ok_or_else(exhausted)?,
+                )?;
+                for connection in connections {
+                    let PacketInputConnection {
+                        id,
+                        policy,
+                        producer,
+                        consumer,
+                        delay_ps: _,
+                    } = connection;
+                    counter.charge(id)?;
+                    counter.charge(policy)?;
+                    counter.charge(producer)?;
+                    counter.charge(consumer)?;
+                }
+                counter.charge(output)?;
+            }
+        }
         Ok(())
     }
 }

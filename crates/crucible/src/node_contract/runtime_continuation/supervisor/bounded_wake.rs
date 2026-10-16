@@ -67,6 +67,7 @@ impl Wake for CustodyNotifier {
     fn wake(self: Arc<Self>) {
         self.notify();
     }
+
     fn wake_by_ref(self: &Arc<Self>) {
         self.notify();
     }
@@ -589,4 +590,24 @@ mod descriptor_count_tests {
         assert_eq!(queue.reserved_worlds(), 0);
         assert_eq!(other.reserved_worlds(), 0);
     }
+}
+
+// The actual notifier owns exactly one writer OwnedFd; the independently held
+// wake reader's duplicate is counted by the same complete supervisor row.
+pub(super) fn notifier_descriptor_count_data(
+    notifier: &CustodyNotifier,
+) -> Result<usize, RuntimeError> {
+    use std::os::fd::AsRawFd;
+    let CustodyNotifier {
+        process,
+        fd,
+        fault: _,
+    } = notifier;
+    if *process != std::process::id() {
+        return Err(RuntimeError::ForeignAuthority);
+    }
+    if fd.as_raw_fd() < 0 {
+        return Err(RuntimeError::OwnerUnavailable);
+    }
+    Ok(1)
 }

@@ -24,6 +24,50 @@ impl FacetDescription for CnpSemanticNode {
 }
 
 impl SimulationNode for CnpSemanticNode {
+    fn retained_descriptor_views_precredit_data(&self) -> Result<Option<usize>, RuntimeError> {
+        self.preparation
+            .retained_descriptor_views_precredit_data()
+            .map(Some)
+    }
+
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        if self.retained_registry.is_none()
+            || self.retained_supervisor.is_none()
+            || self.retained_operational.is_none()
+        {
+            return Ok(None);
+        }
+        let scratch = super::CnpPreparationStorageScratch::new(
+            super::CnpPreparationStorageScratch::requested_bytes(),
+        )?;
+        let complete = self
+            .original_retained_node_precredit_data(&scratch, None, None, maximum)?
+            .complete_requested_bytes_precredit_data()?;
+        let nested = complete
+            .checked_sub(std::mem::size_of::<Self>())
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        Ok(Some(nested))
+    }
+
+    fn retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
+        self.preparation
+            .guard
+            .preparation_storage_origin_precredit_data()?;
+        if self.retained_registry.is_none()
+            || self.retained_supervisor.is_none()
+            || self.retained_operational.is_none()
+        {
+            return Ok(None);
+        }
+        super::CnpSemanticPreparation::original_conformance_node_retained_counter_scratch_data()
+            .map(Some)
+    }
+
     fn collection_scope(&self) -> Option<&crate::node_admission::InstalledConformancePlan> {
         self.preparation
             .guard
@@ -50,15 +94,19 @@ impl SimulationNode for CnpSemanticNode {
     fn descriptor(&self) -> &NodeDescriptor {
         self.preparation.descriptor()
     }
+
     fn binding(&self) -> &NodeBinding {
         self.preparation.binding()
     }
+
     fn route(&self) -> &NodeRoute {
         &self.route
     }
+
     fn thread_affinity(&self) -> ThreadAffinity {
         self.affinity
     }
+
     fn facets(&self) -> &[FacetKind] {
         self.preparation
             .guard

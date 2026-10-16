@@ -14,6 +14,10 @@ pub(super) struct SemanticCredit {
 }
 
 impl SemanticCredit {
+    pub(super) fn inline_storage_data(&self) {
+        let Self { retained: _ } = self;
+    }
+
     pub(super) fn retained_bytes(&self) -> usize {
         self.retained
     }

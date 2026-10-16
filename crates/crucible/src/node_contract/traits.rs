@@ -41,6 +41,12 @@ pub struct RetainedRetirementHistory {
 /// descriptions do not provide alternate mutation paths. Implementations need
 /// not be `Send` or `Sync`; a worker requires explicit custody transfer.
 pub trait SimulationNode {
+    /// Observes actual descriptor owners in this concrete inactive node.
+    ///
+    /// # Errors
+    /// Defaults to unknown; no erased node receives a zero descriptor row.
+    fn retained_descriptor_views_precredit_data(&self)->Result<Option<usize>,RuntimeError> {Ok(None)}
+
     /// Observes this original node's independently retained requested backing.
     ///
     /// The runtime separately charges the actual concrete Box data layout. A

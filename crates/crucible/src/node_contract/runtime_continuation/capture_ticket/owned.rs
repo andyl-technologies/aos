@@ -587,6 +587,7 @@ impl crate::node_contract::NodeRuntime {
     pub(crate) fn capture_map_node_storage<K, V>() -> usize {
         value_layout::map_node_bytes_for::<K, V>()
     }
+
     /// Bounds actual protocol tree nodes under the pinned compiler layout.
     ///
     /// Inputs come from the same borrowed typed metadata walk. The caller adds
@@ -671,5 +672,11 @@ impl OwnedStorage for crate::node_contract::RuntimeSnapshot {
         ]
         .into_iter()
         .try_fold(0, storage::add)
+    }
+}
+
+impl NodeRuntime {
+    pub(crate) fn original_runtime_constructor_serialization_storage_data(value:&impl serde::Serialize,maximum:usize)->Result<usize,RuntimeError> {
+        super::serialization::original_constructor_value_allocations(value,maximum)
     }
 }

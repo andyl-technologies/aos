@@ -45,7 +45,7 @@ pub use process::{
 pub use semantic::{
     CnpNativeAfterConfirmationCall, CnpOriginalSemanticSnapshot, CnpPreparationStorageScratch,
     CnpRetainedStorageReport, CnpRetainedStorageUnknowns, CnpSemanticAcceptance,
-    CnpSemanticAdmissionFailure, CnpSemanticAttachmentFailure, CnpSemanticCaptureScope,
+    CnpConformanceNodeConstructionStorageData, CnpSemanticAdmissionFailure, CnpSemanticAttachmentFailure, CnpSemanticCaptureScope,
     CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
     CnpSemanticConformanceWorldProvider, CnpSemanticExactConformanceWorldProvider,
     CnpSemanticExactWorldReservation, CnpSemanticExactWorldReservationFailure,
@@ -104,3 +104,5 @@ pub mod vendor;
 pub(crate) use semantic::{
     PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
 };
+
+pub(crate) use semantic::{OriginalInitialLifecycleDiagnostics,original_construction_failure_reason};

@@ -264,3 +264,243 @@ impl CnpSemanticExactConformanceWorldProvider {
         graph.authenticate_current_scope().map_err(unknown)
     }
 }
+
+impl CnpSemanticExactConformanceWorldProvider {
+    /// Observes held inactive original provider owners without callbacks or transfer.
+    ///
+    /// # Errors
+    /// Refuses entered retirement, unknown native backing or checked excess.
+    pub fn original_retained_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        use crate::node_contract::{NodeRuntime, RuntimeOwnedStorage};
+        if self.original.retirement.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let mut bytes = std::mem::size_of::<Self>()
+            .checked_add(self.original.activation.owned_storage()?)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        if let Some(graph) = &self.original.original_graph {
+            bytes = bytes
+                .checked_add(graph.original_retained_storage_precredit_data(maximum)?)
+                .ok_or(RuntimeError::ResourceLimit)?;
+        }
+        let scratch = crate::node_adapters::cnp::CnpPreparationStorageScratch::new(
+            crate::node_adapters::cnp::CnpPreparationStorageScratch::requested_bytes(),
+        )?;
+        if let Some(nodes) = &self.original.nodes {
+            bytes = bytes
+                .checked_add(
+                    nodes
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<CnpSemanticConformanceNode>())
+                        .ok_or(RuntimeError::ResourceLimit)?,
+                )
+                .ok_or(RuntimeError::ResourceLimit)?;
+            for node in nodes {
+                bytes = bytes
+                    .checked_add(
+                        node.retained_requested_storage_precredit_data(
+                            &scratch, None, None, maximum,
+                        )?
+                        .complete_requested_bytes_precredit_data()?,
+                    )
+                    .ok_or(RuntimeError::ResourceLimit)?;
+            }
+        }
+        if let Some(host) = &self.host {
+            bytes = bytes
+                .checked_add(std::mem::size_of_val(host))
+                .and_then(|n| {
+                    n.checked_add(
+                        host.retained_requested_storage_precredit_data(maximum)
+                            .ok()??,
+                    )
+                })
+                .ok_or(RuntimeError::UnsupportedFacet)?;
+        }
+        bytes = bytes
+            .checked_add(
+                self.original
+                    .native
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Box<dyn SimulationNode>>())
+                    .ok_or(RuntimeError::ResourceLimit)?,
+            )
+            .ok_or(RuntimeError::ResourceLimit)?;
+        for node in &self.original.native {
+            bytes = bytes
+                .checked_add(std::mem::size_of_val(node.as_ref()))
+                .and_then(|n| {
+                    n.checked_add(
+                        node.retained_requested_storage_precredit_data(maximum)
+                            .ok()??,
+                    )
+                })
+                .ok_or(RuntimeError::UnsupportedFacet)?;
+        }
+        if let Some(slot) = &self.original.runtime_custody {
+            bytes = bytes
+                .checked_add(std::mem::size_of_val(slot.as_ref()))
+                .and_then(|n| n.checked_add(slot.retained_requested_storage_data(maximum).ok()??))
+                .ok_or(RuntimeError::UnsupportedFacet)?;
+        }
+        bytes = bytes
+            .checked_add(NodeRuntime::capture_shared_allocation_storage::<
+                HostSchedulingSource,
+            >())
+            .and_then(|n| {
+                n.checked_add(
+                    self.source
+                        .retained_original_metadata_bytes_excluding_runtime_precredit_data(maximum)
+                        .ok()?,
+                )
+            })
+            .ok_or(RuntimeError::ResourceLimit)?;
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
+    }
+}
+
+impl CnpSemanticExactConformanceWorldProvider {
+    /// Observes actual retained descriptor views before the exact runtime transfer.
+    ///
+    /// # Errors
+    /// Refuses entered retirement, unknown concrete nodes/slot or checked excess.
+    pub fn original_retained_descriptor_views_precredit_data(&self) -> Result<usize, RuntimeError> {
+        if self.original.retirement.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let mut total = 0usize;
+        if let Some(nodes) = &self.original.nodes {
+            for node in nodes {
+                total = total
+                    .checked_add(node.retained_descriptor_views_precredit_data()?)
+                    .ok_or(RuntimeError::ResourceLimit)?;
+            }
+        }
+        for node in &self.original.native {
+            total = total
+                .checked_add(
+                    node.retained_descriptor_views_precredit_data()?
+                        .ok_or(RuntimeError::UnsupportedFacet)?,
+                )
+                .ok_or(RuntimeError::ResourceLimit)?;
+        }
+        if let Some(slot) = &self.original.runtime_custody {
+            total = total
+                .checked_add(
+                    slot.retained_descriptor_views_precredit_data()?
+                        .ok_or(RuntimeError::UnsupportedFacet)?,
+                )
+                .ok_or(RuntimeError::ResourceLimit)?;
+        }
+        Ok(total)
+    }
+}
+
+impl CnpSemanticExactConformanceWorldProvider {
+    /// Counts fixed views for the exact-input provider quote and construction.
+    ///
+    /// The installed action admits this static row before invoking the quote,
+    /// including its borrowed saved-activation serializer view. The returned
+    /// prospective construction row includes these headers independently.
+    /// Compiler frames, nested serializer work and existing owners stay separate.
+    ///
+    /// # Errors
+    /// Refuses checked header-layout addition overflow.
+    pub fn original_construction_counter_scratch_data() -> Result<usize, RuntimeError> {
+        use std::mem::size_of;
+
+        [
+            size_of::<crate::node_contract::RetirementActivation<'static>>(),
+            size_of::<CnpSemanticExactWorldReservation>(),
+            size_of::<Self>(),
+            size_of::<PreparedRealization>(),
+            size_of::<CnpSemanticWorldPreparationFailure>(),
+            size_of::<CnpSemanticExactWorldReservationFailure>(),
+            size_of::<BTreeSet<crucible_node_contract::Id>>(),
+            size_of::<BTreeSet<crate::node_contract::OwnerIdentity>>(),
+        ]
+        .into_iter()
+        .try_fold(0usize, |total, bytes| {
+            total.checked_add(bytes).ok_or(RuntimeError::ResourceLimit)
+        })
+    }
+
+    /// Quotes additional exact-input provider construction and transfer owners.
+    ///
+    /// Existing graph/node/slot backing and runtime maps are independently
+    /// counted. This row names the new pointer banks, concrete node Boxes,
+    /// graph Rc, activation copies and provider validation collections.
+    ///
+    /// # Errors
+    /// Refuses a non-four-owner proposal, overflow or the requested ceiling.
+    pub fn original_construction_storage_data(
+        graph: &ConformanceGraph,
+        activation: &ActivationRecord,
+        maximum: usize,
+    ) -> Result<(usize, usize, usize), RuntimeError> {
+        use crate::node_contract::{NodeRuntime, RuntimeOwnedStorage};
+        use std::mem::{align_of, size_of};
+        if activation.owners.len() != 4 {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let add = |a: usize, b: usize| {
+            a.checked_add(b)
+                .filter(|n| *n <= maximum)
+                .ok_or(RuntimeError::ResourceLimit)
+        };
+        let mut retained = size_of::<Self>(); // Box retained on reservation failure.
+        for bytes in [
+            3 * size_of::<CnpSemanticConformanceNode>(),
+            4 * size_of::<Box<dyn SimulationNode>>(),
+            3 * size_of::<super::super::CnpSemanticNode>(),
+            size_of::<PreparedHostSchedulingNode>(),
+            NodeRuntime::capture_shared_allocation_storage::<ConformanceGraph>(),
+            size_of::<crate::node_contract::NodeRuntime>(),
+        ] {
+            retained = add(retained, bytes)?;
+        }
+        // Provider, PreparedRealization and RuntimePreparationFailure may each
+        // retain an independent proposal clone across a failed transfer.
+        for _ in 0..3 {
+            retained = add(retained, activation.owned_storage()?)?;
+        }
+        let mut transient = NodeRuntime::capture_serialization_storage(
+            &crate::node_contract::RetirementActivation::from(activation),
+            maximum,
+        )?;
+        transient = add(
+            transient,
+            NodeRuntime::capture_protocol_tree_storage(
+                1,
+                4,
+                size_of::<crucible_node_contract::Id>(),
+                align_of::<crucible_node_contract::Id>(),
+                maximum,
+            )?,
+        )?;
+        transient = add(
+            transient,
+            NodeRuntime::capture_protocol_tree_storage(
+                1,
+                4,
+                size_of::<crate::node_contract::OwnerIdentity>(),
+                align_of::<crate::node_contract::OwnerIdentity>(),
+                maximum,
+            )?,
+        )?;
+        for owner in &activation.owners {
+            transient = add(transient, owner.owned_storage()?)?;
+        }
+        for node in graph.graph.node_ids() {
+            transient = add(transient, node.owned_storage()?)?;
+        }
+        let scratch = add(0, Self::original_construction_counter_scratch_data()?)?;
+        Ok((retained, transient, scratch))
+    }
+}

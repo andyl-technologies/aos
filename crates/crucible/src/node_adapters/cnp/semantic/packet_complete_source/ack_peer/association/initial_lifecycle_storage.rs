@@ -423,3 +423,49 @@ mod tests {
         );
     }
 }
+
+impl PacketCompleteSemanticSource {
+    /// Quotes this original Source's closed validation during collecting construction.
+    ///
+    /// The completed Source owns the same immutable launch, registration and
+    /// installed DTOs used by initial lifecycle validation. Revalidation rebuilds
+    /// proper subprojections of those same closed normalization/signing shapes.
+    /// Their complete existing construction quote is conservatively charged
+    /// again as temporary work, with no refund of the retained original owners.
+    /// It does not authorize socket, SDK, Admit, native or runtime construction.
+    ///
+    /// Native guard currentness, graph policy callbacks, daemon file/kernel
+    /// validation and their private failure owners remain separate caller rows.
+    /// The caller admits this method's fixed counter before entering it.
+    ///
+    /// # Errors
+    /// Refuses foreign or unavailable original birth, missing actual completed
+    /// association, unsupported storage or a checked sum beyond the ceiling.
+    pub fn original_collecting_validation_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let association_loan = self.ack_peer_association.try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let association = association_loan.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        if !association.completed_mechanism.get() || association.failed || !association.ready {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        drop(association_loan);
+        // No new receive occurs here. The largest independently retained
+        // assigned request is the already selected original message bound.
+        let frame_bytes = self.selected_storage_selection()
+            .map_err(|_| RuntimeError::ForeignAuthority)?.limits.frame_bytes;
+        let frame_bytes = usize::try_from(frame_bytes.get())
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        self.original_initial_source_storage_data(frame_bytes, maximum)?.requested_peak_data()
+    }
+
+    /// Names this exact Source validation quote's fixed counter views.
+    pub fn original_collecting_validation_counter_scratch_data() -> usize {
+        Self::original_initial_source_counter_scratch_data()
+            + std::mem::size_of::<std::cell::Ref<'static, Option<OriginalAckPeerAssociation>>>()
+            + std::mem::size_of::<usize>()
+    }
+}

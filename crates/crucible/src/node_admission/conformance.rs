@@ -18,6 +18,7 @@ mod extensions;
 mod fresh_restore_host;
 mod host_startup;
 mod native_startup;
+mod runtime_construction;
 mod report_startup;
 pub use host_startup::{
     CompleteOriginalNativeHostStartupAdmission, OriginalNativeHostStartupMemberScope,
@@ -27,6 +28,12 @@ pub use host_startup::{
 pub(crate) use host_startup::{OriginalNativeHostStartupMember, OriginalNativeHostStartupQuote};
 pub(crate) use native_startup::{
     NativeStartupRows, OriginalNativeStartupMember, OriginalNativeStartupQuote,
+};
+
+pub use runtime_construction::{
+    CompleteOriginalRuntimeConstructionDiagnostics, CompleteOriginalRuntimeConstructionMember,
+    OriginalRuntimeConstructionPhase, OriginalRuntimeConstructionPolicy,
+    OriginalRuntimeConstructionScope, OriginalRuntimeConstructionStorage,
 };
 
 pub use native_startup::{
@@ -77,6 +84,43 @@ pub struct ConformancePlanEvidence<'a> {
 /// [`AdmissionEvidence`]. Collection authorization must never issue an accepted
 /// class or use vendor-selected omissions as a normative witness population.
 pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
+    /// Selects the same installed inactive-runtime construction resource action.
+    ///
+    /// # Errors
+    /// Defaults to refusal; no numeric row, graph or report supplies this action.
+    fn original_runtime_construction_policy(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        _scope: &OriginalRuntimeConstructionScope<'_>,
+    ) -> Result<OriginalRuntimeConstructionPolicy, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Observes all same-holder owners and actual closed prospective constructor phases.
+    ///
+    /// # Errors
+    /// Defaults to refusal for unknown owners, unsupported phases or stale originals.
+    fn authenticate_original_runtime_construction(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        _scope: &OriginalRuntimeConstructionScope<'_>,
+        _policy: &OriginalRuntimeConstructionPolicy,
+    ) -> Result<OriginalRuntimeConstructionStorage, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Reauthenticates the same spent original member without borrowing constructor banks.
+    ///
+    /// # Errors
+    /// Defaults to refusal; callbacks must retain bank-free identity checks.
+    fn authenticate_original_runtime_construction_member(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        _scope: &OriginalRuntimeConstructionScope<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
     /// Supplies the same installed policy before initial host lifecycle observers.
     ///
     /// This callback checks raw original identity only, with no allocation,
@@ -307,6 +351,20 @@ pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
         &self,
         _maximum: usize,
     ) -> Result<Option<usize>, EvidenceError> {
+        Ok(None)
+    }
+
+    /// Observes the same concrete authority with allocation-free refusal values.
+    ///
+    /// This separate precredit path never invokes the legacy string-error
+    /// observer. Unknown backing remains `None`; metadata grants no authority.
+    ///
+    /// # Errors
+    /// Refuses foreign origins, busy ownership, unsupported phases or the bound.
+    fn retained_requested_storage_precredit_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, crate::node_contract::RuntimeError> {
         Ok(None)
     }
 
@@ -579,6 +637,21 @@ impl InstalledConformancePlan {
         &self,
         counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
     ) -> Result<(), crate::node_contract::RuntimeError> {
+        self.charge_original_retained_storage_for_purpose(counter, false)
+    }
+
+    pub(crate) fn charge_original_retained_storage_precredit_data(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        self.charge_original_retained_storage_for_purpose(counter, true)
+    }
+
+    fn charge_original_retained_storage_for_purpose(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+        precredit: bool,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
         use crate::node_contract::RuntimeError;
         if !counter.rc(&self.0)? {
             return Ok(());
@@ -599,10 +672,14 @@ impl InstalledConformancePlan {
         counter.owned(world)?;
         counter.owned(sources)?;
         if counter.rc(authority)? {
-            let backing = authority
-                .retained_requested_storage_data(counter.maximum())
-                .map_err(|_| RuntimeError::UnsupportedFacet)?
-                .ok_or(RuntimeError::UnsupportedFacet)?;
+            let backing = if precredit {
+                authority.retained_requested_storage_precredit_data(counter.maximum())?
+            } else {
+                authority
+                    .retained_requested_storage_data(counter.maximum())
+                    .map_err(|_| RuntimeError::UnsupportedFacet)?
+            }
+            .ok_or(RuntimeError::UnsupportedFacet)?;
             counter.add(backing)?;
         }
         Ok(())
@@ -633,12 +710,12 @@ impl InstalledConformancePlan {
         ] {
             reference
                 .verify(bytes)
-                .map_err(|error| failure(error.to_string()))?;
+                .map_err(|error| failure(super::error::construction_diagnostic(&error)))?;
             let parsed =
                 crucible_node_contract::canonical::parse_json(bytes, MAXIMUM_DOCUMENT_BYTES)
-                    .map_err(|error| failure(error.to_string()))?;
+                    .map_err(|error| failure(super::error::construction_diagnostic(&error)))?;
             if crucible_node_contract::canonical::canonical_json(&parsed)
-                .map_err(|error| failure(error.to_string()))?
+                .map_err(|error| failure(super::error::construction_diagnostic(&error)))?
                 != bytes
             {
                 return Err(failure("collection documents are not canonical originals"));
@@ -850,6 +927,24 @@ impl ConformanceGraph {
         counter.owned(owners)
     }
 
+    pub(crate) fn charge_original_retained_storage_precredit_data(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        let Self {
+            graph,
+            plan,
+            descriptors,
+            bindings,
+            owners,
+        } = self;
+        graph.charge_original_retained_storage(counter)?;
+        plan.charge_original_retained_storage_precredit_data(counter)?;
+        counter.owned(descriptors)?;
+        counter.owned(bindings)?;
+        counter.owned(owners)
+    }
+
     /// Borrows the original complete immutable world without its ordinary seal.
     pub fn world(&self) -> &WorldBinding {
         self.graph.world()
@@ -874,7 +969,7 @@ impl ConformanceGraph {
             let identity = binding
                 .compatibility
                 .identity()
-                .map_err(|error| failure(error.to_string()))?;
+                .map_err(|error| failure(super::error::construction_diagnostic(&error)))?;
             self.plan.0.authority.authenticate_collection_node(
                 self.plan.evidence(),
                 QualificationClaim::Node {
@@ -1049,7 +1144,7 @@ pub(super) fn authenticate_original_scope(
         if request
             .world
             .identity()
-            .map_err(|error| failure(error.to_string()))?
+            .map_err(|error| failure(super::error::construction_diagnostic(&error)))?
             != *plan.evidence().world
         {
             return Err(failure(
@@ -1083,6 +1178,7 @@ impl AdmissionEvidence for CollectionEvidence<'_> {
     fn extension_registry(&self) -> Option<&InstalledExtensionRegistry> {
         self.plan.0.authority.extension_registry()
     }
+
     fn content(
         &self,
         reference: &ContentRef,
@@ -1090,6 +1186,7 @@ impl AdmissionEvidence for CollectionEvidence<'_> {
     ) -> Result<Vec<u8>, EvidenceError> {
         self.plan.0.authority.content(reference, maximum_bytes)
     }
+
     fn authenticate_implementation(
         &self,
         implementation: &crucible_node_contract::ImplementationIdentity,
@@ -1099,15 +1196,18 @@ impl AdmissionEvidence for CollectionEvidence<'_> {
             .authority
             .authenticate_implementation(implementation)
     }
+
     fn authenticate_authority(&self, binding: &NodeBinding) -> Result<(), EvidenceError> {
         self.plan.0.authority.authenticate_authority(binding)
     }
+
     fn authenticate_schema(
         &self,
         schema: &crucible_node_contract::SchemaRef,
     ) -> Result<(), EvidenceError> {
         self.plan.0.authority.authenticate_schema(schema)
     }
+
     fn qualify_capability(
         &self,
         world: &WorldBinding,
@@ -1119,6 +1219,7 @@ impl AdmissionEvidence for CollectionEvidence<'_> {
             .authority
             .qualify_capability(world, binding, requirement)
     }
+
     fn qualify(&self, claim: QualificationClaim<'_>) -> Result<(), EvidenceError> {
         self.plan.reauthenticate()?;
         match claim {
@@ -1150,3 +1251,50 @@ pub use host_initial_lifecycle::{
     OriginalHostInitialLifecyclePolicy, OriginalHostInitialLifecycleScope,
     OriginalHostInitialLifecycleStorage,
 };
+
+/// Seals the same original four-owner graph with bounded failure diagnostics.
+///
+/// This runs every existing collecting admission check. It issues no memory,
+/// native, readiness or execution action. Its concrete installed caller must
+/// admit the complete prospective constructor/callback phase before entry.
+/// Ordinary collecting admission retains its existing diagnostic behavior.
+///
+/// # Errors
+/// Refuses another cardinality or any existing original graph/plan/schema gate.
+/// Structured stage, subject, code and effect certainty remain unchanged.
+pub fn admit_original_fixed_four_conformance_graph(
+    request: AdmissionRequest<'_>,
+    plan: &InstalledConformancePlan,
+    limits: AdmissionLimits,
+) -> Result<ConformanceGraph, AdmissionError> {
+    let _diagnostic = super::error::OriginalConstructionDiagnosticScope::enter();
+    if request.descriptors.len() != 4 || request.bindings.len() != 4 || request.owners.len() != 4 {
+        return Err(super::error::refuse(
+            AdmissionStage::Parse,
+            AdmissionSubject::World,
+            AdmissionCode::BoundMismatch,
+            "four original nodes and owners",
+            "another cardinality",
+        ));
+    }
+    admit_conformance_graph(request, plan, limits)
+}
+
+impl ConformanceGraph {
+    /// Observes this same complete graph's actual owning backing without callbacks.
+    ///
+    /// # Errors
+    /// Refuses unknown authority/source owners, busy data or checked excess.
+    pub fn original_retained_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        let mut counter =
+            crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter::new(maximum);
+        counter.add(std::mem::size_of::<Self>())?;
+        self.charge_original_retained_storage_precredit_data(&mut counter)?;
+        Ok(counter.bytes())
+    }
+}
+
+pub(crate) use runtime_construction::original_runtime_construction_failure_reason;

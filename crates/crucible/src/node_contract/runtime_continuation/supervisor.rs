@@ -250,6 +250,19 @@ struct QueueSlot {
 }
 
 impl RuntimeCustodySlot for QueueSlot {
+    fn retained_descriptor_views_precredit_data(&self)->Result<Option<usize>,RuntimeError> {
+        if self.process!=std::process::id()||self.thread!=std::thread::current().id()
+            ||self.inner.process!=self.process||self.inner.thread!=self.thread||self.transferred {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.original_queue_storage(usize::MAX)?.ok_or(RuntimeError::UnsupportedFacet)?;
+        let descriptors=match self.inner.notifier.as_ref() {
+            Some(notifier)=>bounded_wake::notifier_descriptor_count_data(notifier)?,
+            None=>0,
+        };
+        Ok(Some(descriptors))
+    }
+
     fn original_runtime_custody_queue(
         &self,
     ) -> Result<Option<RuntimeCustodyQueueWitness<'_>>, RuntimeError> {

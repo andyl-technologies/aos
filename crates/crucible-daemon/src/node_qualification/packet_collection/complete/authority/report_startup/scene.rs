@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 /// installed Source and opaque Core actions before construction or dispatch.
 pub struct PacketCompleteOriginalSceneInputs {
     /// Retains the selected complete-world cleanup owner before the first Child.
-    pub supervisor: PacketWorldHostSupervisor,
+    pub supervisor: super::PacketCompleteOriginalSceneSupervisor,
     /// Retains a complete initial proposal without claiming Ready or activation.
     pub activation: ActivationRecord,
     /// Bounds the single original runtime reservation, separately from native3.
@@ -46,16 +46,16 @@ pub struct PacketCompleteOriginalSceneInputs {
 }
 
 pub(super) struct OriginalSceneOwners {
-    inputs: PacketCompleteOriginalSceneInputs,
+    pub(super) inputs: PacketCompleteOriginalSceneInputs,
     journal_slots: [Option<Box<dyn PacketPeerJournalSlot>>; 3],
-    runtime_slot: Option<Box<dyn RuntimeCustodySlot>>,
+    pub(super) runtime_slot: Option<Box<dyn RuntimeCustodySlot>>,
     roles: RefCell<[Option<InstalledCnpConformanceRole>; 3]>,
     reservation_attempted: Cell<bool>,
-    staged: bool,
-    launched: Cell<bool>,
+    pub(super) staged: bool,
+    pub(super) launched: Cell<bool>,
     initial_attempted: [Cell<bool>; 3],
     initial_in_flight: [Cell<bool>; 3],
-    initial_completed: [Cell<bool>; 3],
+    pub(super) initial_completed: [Cell<bool>; 3],
     windows: [OnceCell<
         RefCell<crucible::node_admission::CompleteOriginalHostInitialLifecycleWindow>,
     >; 3],
@@ -176,6 +176,7 @@ impl PacketCompleteReportStartupHolder {
         } = scene
             .inputs
             .supervisor
+            .original_data()?
             .reserve_original(&scene.inputs.activation, scene.inputs.runtime_limits)
             .map_err(|_| RuntimeError::OwnerUnavailable)?;
         scene.runtime_slot = Some(runtime);
@@ -311,15 +312,17 @@ impl PacketCompleteReportStartupHolder {
             return Ok(());
         };
         let scene = scene.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
-        let supervisor = if scene.runtime_slot.is_some() {
+        let supervisor = if scene.staged || scene.runtime_slot.is_some() {
             scene
                 .inputs
                 .supervisor
+                .original_data()?
                 .retained_requested_storage_precredit_data(counter.remaining())?
         } else {
             scene
                 .inputs
                 .supervisor
+                .original_data()?
                 .unreserved_requested_storage_precredit_data(counter.remaining())?
         };
         counter
@@ -427,6 +430,7 @@ impl PacketCompleteReportStartupHolder {
             scene
                 .inputs
                 .supervisor
+                .original_data()?
                 .quote_original_scene_reservation_requested_storage_data(
                     &scene.inputs.activation,
                     policy.maximum_requested_bytes,
@@ -488,6 +492,7 @@ impl PacketCompleteReportStartupHolder {
             .get()
             .ok_or(RuntimeError::OwnerUnavailable)?;
         held.original_scene_retired.set(true);
+        held.retire_original_runtime_owners()?;
         held.retire_original_scene_native_guards()?;
         held.retire_original_scene_preparations()?;
         let mut scene = scene
@@ -538,6 +543,8 @@ impl PacketCompleteReportStartupHolder {
         scene
             .inputs
             .supervisor
+            .original_data()
+            .map_err(|_| refused())?
             .drive_complete_original_reclamation(maximum_passes)
     }
 }
