@@ -311,7 +311,10 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         Ok(paths)
     }
 
-    async fn standalone_identities(&self) -> Result<Vec<Identity>, StoreFailure> {
+    async fn standalone_identities(
+        &self,
+        max_entries: usize,
+    ) -> Result<Vec<Identity>, StoreFailure> {
         let mut identities = BTreeMap::new();
         for directory in self
             .directory_entries(&self.layout.root().join("chunks"))
@@ -348,6 +351,9 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
                 let identity = TERRANE_V1
                     .from_digest(IdentityKind::Chunk, &digest)
                     .map_err(|_| invalid())?;
+                if !identities.contains_key(&digest) && identities.len() >= max_entries {
+                    return Err(resource());
+                }
                 identities.insert(digest, identity);
             }
         }
@@ -707,6 +713,57 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         .map_err(|error| corrupt(identity, error))?;
         Ok(())
     }
+
+    pub(super) async fn list_bounded(
+        &self,
+        prefix: &IdentityPrefix,
+        max_entries: usize,
+    ) -> Result<Vec<Identity>, StoreFailure> {
+        let mut identities = BTreeMap::new();
+        for path in self.pack_paths().await? {
+            let bytes = self.read_file(&path).await?;
+            let reader = PackReader::open(&bytes).map_err(|error| {
+                StoreFailure::with_source(
+                    StoreErrorKind::Invalid(InvalidReason::MalformedRequest),
+                    error,
+                )
+            })?;
+            if self.layout.root().join(reader.header().id().pack_key()) != path {
+                return Err(invalid());
+            }
+            if prefix.kind == IdentityKind::Pack {
+                let identity = TERRANE_V1
+                    .calculate(IdentityKind::Pack, &bytes)
+                    .map_err(|_| invalid())?;
+                if identity.digest().starts_with(&prefix.digest_prefix) {
+                    insert_list_identity(&mut identities, identity, max_entries)?;
+                }
+            }
+            for entry in reader.entries() {
+                if entry.kind().identity_kind() == prefix.kind
+                    && entry.hash().starts_with(&prefix.digest_prefix)
+                {
+                    let identity = TERRANE_V1
+                        .from_digest(prefix.kind, entry.hash())
+                        .map_err(|_| invalid())?;
+                    insert_list_identity(&mut identities, identity, max_entries)?;
+                }
+            }
+        }
+        if prefix.kind == IdentityKind::Chunk {
+            for identity in self.standalone_identities(max_entries).await? {
+                if identity.digest().starts_with(&prefix.digest_prefix) {
+                    insert_list_identity(&mut identities, identity, max_entries)?;
+                }
+            }
+        }
+        let mut verified = Vec::with_capacity(identities.len());
+        for identity in identities.into_values() {
+            self.encoded(&identity).await?;
+            verified.push(identity);
+        }
+        Ok(verified)
+    }
 }
 
 impl<F, V> CapabilityReport for HostReadOnlyContent<F, V> {
@@ -764,51 +821,20 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> ContentSto
     }
 
     async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
-        let mut identities = BTreeMap::new();
-        for path in self.pack_paths().await? {
-            let bytes = self.read_file(&path).await?;
-            let reader = PackReader::open(&bytes).map_err(|error| {
-                StoreFailure::with_source(
-                    StoreErrorKind::Invalid(InvalidReason::MalformedRequest),
-                    error,
-                )
-            })?;
-            if self.layout.root().join(reader.header().id().pack_key()) != path {
-                return Err(invalid());
-            }
-            if prefix.kind == IdentityKind::Pack {
-                let identity = TERRANE_V1
-                    .calculate(IdentityKind::Pack, &bytes)
-                    .map_err(|_| invalid())?;
-                if identity.digest().starts_with(&prefix.digest_prefix) {
-                    identities.insert(identity.digest().to_vec(), identity);
-                }
-            }
-            for entry in reader.entries() {
-                if entry.kind().identity_kind() == prefix.kind
-                    && entry.hash().starts_with(&prefix.digest_prefix)
-                {
-                    let identity = TERRANE_V1
-                        .from_digest(prefix.kind, entry.hash())
-                        .map_err(|_| invalid())?;
-                    identities.insert(entry.hash().to_vec(), identity);
-                }
-            }
-        }
-        if prefix.kind == IdentityKind::Chunk {
-            for identity in self.standalone_identities().await? {
-                if identity.digest().starts_with(&prefix.digest_prefix) {
-                    identities.insert(identity.digest().to_vec(), identity);
-                }
-            }
-        }
-        let mut verified = Vec::with_capacity(identities.len());
-        for identity in identities.into_values() {
-            self.encoded(&identity).await?;
-            verified.push(identity);
-        }
-        Ok(verified)
+        self.list_bounded(prefix, usize::MAX).await
     }
+}
+
+fn insert_list_identity(
+    identities: &mut BTreeMap<Vec<u8>, Identity>,
+    identity: Identity,
+    max_entries: usize,
+) -> Result<(), StoreFailure> {
+    if !identities.contains_key(identity.digest()) && identities.len() >= max_entries {
+        return Err(resource());
+    }
+    identities.insert(identity.digest().to_vec(), identity);
+    Ok(())
 }
 
 fn resource() -> StoreFailure {

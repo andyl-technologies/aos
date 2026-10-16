@@ -13,7 +13,7 @@ use crate::{
     },
 };
 use std::collections::BTreeMap;
-use terrane_core::identity::{Identity, IdentityKind};
+use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 
 /// Carries one plaintext span and its verified manifest boundary context.
 ///
@@ -79,6 +79,8 @@ pub struct HostResidentContent<F, V, R> {
 impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOnlyContent<F, V> {
     /// Adds a trusted residence I/O binding and finite inventory policy.
     ///
+    /// The inventory cap bounds retained ordinary and residence identities;
+    /// underlying `LocalFs::read_dir` allocation remains the binding's concern.
     /// This composition is not evidence that native admission, seals, quota or
     /// domain authorization are qualified. Those belong to the concrete binding.
     ///
@@ -198,7 +200,10 @@ where
     }
 
     async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
-        let ordinary = self.ordinary.list(prefix).await?;
+        let ordinary = self
+            .ordinary
+            .list_bounded(prefix, self.max_inventory_entries)
+            .await?;
         if ordinary.len() > self.max_inventory_entries {
             return Err(capacity());
         }
@@ -215,7 +220,8 @@ where
                 return Err(capacity());
             }
             for identity in candidates {
-                if identity.kind() != IdentityKind::Chunk {
+                if identity.kind() != IdentityKind::Chunk || identity.profile() != TERRANE_V1.name()
+                {
                     return Err(StoreFailure::new(StoreErrorKind::Invalid(
                         InvalidReason::MalformedRequest,
                     )));
@@ -224,10 +230,12 @@ where
                     continue;
                 }
                 self.get(&identity, None).await?;
-                identities.insert(identity.digest().to_vec(), identity);
-                if identities.len() > self.max_inventory_entries {
+                if !identities.contains_key(identity.digest())
+                    && identities.len() >= self.max_inventory_entries
+                {
                     return Err(capacity());
                 }
+                identities.insert(identity.digest().to_vec(), identity);
             }
         }
         Ok(identities.into_values().collect())

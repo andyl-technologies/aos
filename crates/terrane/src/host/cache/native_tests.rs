@@ -574,3 +574,32 @@ async fn host_cache_residence_verifies_identity_and_honors_operator_capacity() {
         StoreErrorKind::Capacity
     ));
 }
+
+#[tokio::test]
+async fn host_cache_residence_inventory_budget_also_bounds_ordinary_identities() {
+    let scratch = Scratch::new();
+    let identity = scratch.chunk(b"first ordinary chunk");
+    scratch.chunk(b"second ordinary chunk");
+    let reader = scratch
+        .reader()
+        .await
+        .with_residences(
+            ResidenceFixture {
+                identity,
+                plaintext: b"first ordinary chunk".to_vec(),
+                calls: Default::default(),
+            },
+            1,
+        )
+        .unwrap();
+
+    let failure = reader
+        .list(&IdentityPrefix {
+            kind: IdentityKind::Chunk,
+            digest_prefix: Vec::new(),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(failure.kind(), StoreErrorKind::Capacity));
+}
