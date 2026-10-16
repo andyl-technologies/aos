@@ -20,13 +20,15 @@ fn observation_growth_bound_rebases_and_remains_restart_readable() {
             crate::observation::MAX_DISCOVERED_CHOICES,
             crate::exploration::MAX_BRANCH_PATH_EDGES,
             true,
+            true,
             MAX_FEEDBACK_FRONTIER_UPDATES,
         )
         .expect("maximum observation growth"),
         MAX_OBSERVATION_SUCCESSOR_GROWTH
     );
-    let growth = observation_successor_growth(observation.discovered_choices().len(), 0, true, 0)
-        .expect("fixture observation growth");
+    let growth =
+        observation_successor_growth(observation.discovered_choices().len(), 0, false, true, 0)
+            .expect("fixture observation growth");
     repository
         .validated_heads
         .lock()

@@ -263,10 +263,12 @@ local acceptance, import, and restart.
 
 Generator implementation-version 10 defines view-dependent
 `mutate_near_corpus` over a stepped integer domain. For the request's exact
-branch point, the owner scans at most 4,096 authenticated completed-observation
-credits. A credit contributes an anchor only when its branch attempt names the
-request's exact opportunity and domain and its observation child remains in the
-exact snapshot corpus. Anchors deduplicate in canonical integer order. For each
+branch point, the owner streams the snapshot's direct-selection index (§01) in
+ascending value order. Every entry is a completed branch selection made at that
+point; descendants that reached it through a deeper branch never appear. An
+entry contributes an anchor only when its selection names the request's exact
+opportunity and domain and its observation child remains in the exact snapshot
+corpus. Anchors deduplicate in canonical integer order. For each
 anchor in that order, the owner tries the legal one-step lower value and then
 the legal one-step upper value, followed by distance two in the same lower-then-
 upper order, through the declared `maximum_distance`. Out-of-domain values and
@@ -282,12 +284,18 @@ candidate exists, the continuation waits for the next completed branch-point
 credit rather than claiming domain exhaustion. It closes only at the request's
 proposal budget.
 
-The owner admits at most 4,096 legal-step distance, 4,096 proposals, and 65,536
-anchor-distance work units per recomputation. It charges at most 128 MiB of
-canonical credit, observation, and attempt bodies, in addition to the shared
-selection resolver's existing 4,096-ID and 128-MiB unique-record budget. Every
-limit and the exact proposal-set continuation are recomputed during local
-acceptance, import, and restart.
+The owner admits at most 4,096 legal-step distance and 4,096 proposals. Because
+anchors arrive in candidate order, the owner stops at the first unproposed
+candidate or once the first `maximum_proposals` candidates are known, without
+reading later anchors, and it skips runs of already emitted values instead of
+probing every distance. Neither the number of direct children nor the number of
+descendant credits at the point bounds the recomputation. Each index page holds
+at most 4,096 entries; the owner charges at most 128 MiB of canonical
+observation and attempt bodies per page, in addition to the shared selection
+resolver's 4,096-ID and 128-MiB unique-record budget for that page. Every limit
+and the exact proposal-set continuation are recomputed during local acceptance,
+import, and restart. The streamed order is identical to the whole-set order for
+every corpus the former 4,096-credit and 65,536-work-unit bounds admitted.
 
 The current progressive implementation uses an exact feedback-sensitive
 interval order with its stratified prefix, visit thresholds, midpoint rule,
@@ -520,8 +528,10 @@ unauthenticated telemetry or opaque measurement payloads.
   only from exact completed branch selections whose children remain in the
   snapshot corpus, reproduce the canonical anchor and lower-then-upper distance
   order in §03.2, and use the exact previously proposed value set as its
-  portable continuation. It MUST enforce the 4,096-credit, 4,096-distance,
-  4,096-proposal, 65,536-work-unit, and two 128-MiB input-resolution bounds
+  portable continuation. It MUST read anchors from the direct-selection index
+  rather than from the descendant credit index, MUST NOT retain more than one
+  index page plus the emitted candidate window, and MUST enforce the
+  4,096-distance, 4,096-proposal, and per-page 128-MiB input-resolution bounds
   during local acceptance, import, and restart. Noncurrent corpus-
   mutation versions MUST remain suspended.
 - **[GUIDE-27]** Rarity-progressive implementation-version 16 MUST enforce the

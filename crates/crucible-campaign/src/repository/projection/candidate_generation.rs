@@ -288,19 +288,6 @@ pub(in crate::repository) fn integer_step_neighbor(
     }
 }
 
-pub(in crate::repository) fn charge_corpus_mutation_input(
-    prior: usize,
-    bytes: usize,
-) -> Result<usize, CampaignRepositoryError> {
-    let total = prior
-        .checked_add(bytes)
-        .ok_or_else(|| integrity("corpus-mutation-generator-input-byte-limit"))?;
-    if total > crate::CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES {
-        return Err(integrity("corpus-mutation-generator-input-byte-limit"));
-    }
-    Ok(total)
-}
-
 pub(in crate::repository) fn charge_branch_edge_visit_evidence(
     prior: usize,
     bytes: usize,
@@ -480,59 +467,6 @@ pub(in crate::repository) fn charge_planner_guidance_domain_work(
         return Err(integrity("planner-guidance-domain-byte-limit"));
     }
     Ok(total)
-}
-
-pub(in crate::repository) fn corpus_mutation_integer_candidates(
-    domain: &IntegerDomain,
-    anchors: &BTreeSet<IntegerValue>,
-    maximum_distance: u64,
-    maximum_candidates: usize,
-) -> Result<Vec<IntegerValue>, CampaignRepositoryError> {
-    if maximum_distance == 0
-        || maximum_distance > crate::CORPUS_MUTATION_GENERATOR_MAX_DISTANCE
-        || maximum_candidates > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS as usize
-    {
-        return Err(integrity("corpus-mutation-generator-owner-limit"));
-    }
-
-    let mut candidates = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut work = 0_usize;
-    for anchor in anchors.iter().copied() {
-        let mut lower = Some(anchor);
-        let mut upper = Some(anchor);
-        for _ in 0..maximum_distance {
-            work = work
-                .checked_add(1)
-                .ok_or_else(|| integrity("corpus-mutation-generator-work-limit"))?;
-            if work > crate::CORPUS_MUTATION_GENERATOR_MAX_WORK_ITEMS {
-                return Err(integrity("corpus-mutation-generator-work-limit"));
-            }
-
-            lower = lower.and_then(|value| integer_step_neighbor(value, domain.step(), false));
-            upper = upper.and_then(|value| integer_step_neighbor(value, domain.step(), true));
-            let mut admitted = false;
-            for candidate in [lower, upper].into_iter().flatten() {
-                if domain.contains_integer(candidate) && seen.insert(candidate) {
-                    candidates.push(candidate);
-                    admitted = true;
-                    if candidates.len() == maximum_candidates {
-                        return Ok(candidates);
-                    }
-                }
-            }
-            if lower.is_none() && upper.is_none() {
-                break;
-            }
-            if !admitted
-                && lower.is_none_or(|value| !domain.contains_integer(value))
-                && upper.is_none_or(|value| !domain.contains_integer(value))
-            {
-                break;
-            }
-        }
-    }
-    Ok(candidates)
 }
 
 pub(in crate::repository) fn stratified_integer_candidate_count(

@@ -543,6 +543,11 @@ impl CampaignRepository {
         let observations = self
             .merkle
             .insert(empty, choice_source_index_anchor_key(), empty)?;
+        let observations = self.merkle.insert(
+            observations.content_id(),
+            direct_selection_index_anchor_key(),
+            empty,
+        )?;
         let exploration = self
             .merkle
             .insert(empty, frontier_index_anchor_key(), frontier_index)?;

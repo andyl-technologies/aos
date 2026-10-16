@@ -82,12 +82,16 @@ const MERKLE_UPDATE_NODE_UPPER: usize = 64;
 // Every discovered choice adds two graph keys plus one nested choice-index and
 // one nested choice-source insertion. Every credited branch point adds one
 // nested credit insertion, one outer observation-index update, and one immutable
-// credit record.
+// credit record. A first direct integer selection adds one per-branch-point
+// insertion, one nested anchor-map update, and one outer observation-index
+// update.
 const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 16;
 const OBSERVATION_PER_CHOICE_OWNER_UPSERTS: usize = 4;
+const OBSERVATION_DIRECT_SELECTION_UPSERTS: usize = 3;
 const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((OBSERVATION_PER_CHOICE_OWNER_UPSERTS
     * crate::observation::MAX_DISCOVERED_CHOICES
-    + OBSERVATION_FIXED_OWNER_UPSERTS)
+    + OBSERVATION_FIXED_OWNER_UPSERTS
+    + OBSERVATION_DIRECT_SELECTION_UPSERTS)
     * MERKLE_UPDATE_NODE_UPPER)
     + (crate::exploration::MAX_BRANCH_PATH_EDGES * ((2 * MERKLE_UPDATE_NODE_UPPER) + 1))
     + (MAX_FEEDBACK_FRONTIER_UPDATES * (MERKLE_UPDATE_NODE_UPPER + 1))
@@ -826,12 +830,19 @@ impl ProjectedState {
 fn observation_successor_growth(
     choice_count: usize,
     credit_count: usize,
+    indexes_direct_selection: bool,
     indexes_path: bool,
     frontier_update_count: usize,
 ) -> Result<usize, CampaignRepositoryError> {
+    let direct_selection_upserts = if indexes_direct_selection {
+        OBSERVATION_DIRECT_SELECTION_UPSERTS
+    } else {
+        0
+    };
     let owner_upserts = choice_count
         .checked_mul(OBSERVATION_PER_CHOICE_OWNER_UPSERTS)
         .and_then(|choices| choices.checked_add(OBSERVATION_FIXED_OWNER_UPSERTS))
+        .and_then(|upserts| upserts.checked_add(direct_selection_upserts))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
     let growth = owner_upserts
         .checked_mul(MERKLE_UPDATE_NODE_UPPER)

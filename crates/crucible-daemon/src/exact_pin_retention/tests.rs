@@ -287,10 +287,10 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         .to_hex(),
         // The current closure includes the v7 scheduler continuation, its
         // World-bound I/O ledger, the v3 host-assertion continuation, and the
-        // genesis observation choice-source index anchor.
+        // genesis observation choice-source and direct-selection index anchors.
         // Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "19418129aa9e3509fb2ff1da3ccdb641696c84e6bc0deef2e614be77f78a9e2e"
+        "3ffb2c6a44b6e4d1ef5912da7bec19d554f0f6cd3f45642b3b111de275422c36"
     );
     drop(store);
 

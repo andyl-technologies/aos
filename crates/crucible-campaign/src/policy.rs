@@ -144,20 +144,18 @@ pub const GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION: u32 = 18;
 /// Maximum tuples emitted by one group generator request.
 pub const GROUP_PROGRESSIVE_GENERATOR_MAX_PROPOSALS: u32 = 4_096;
 
-/// Maximum completed branch-point credits inspected by corpus mutation.
-pub const CORPUS_MUTATION_GENERATOR_MAX_CREDITS: u64 = 4_096;
-
 /// Maximum legal-step distance admitted by corpus-mutation version 10.
 pub const CORPUS_MUTATION_GENERATOR_MAX_DISTANCE: u64 = 4_096;
 
 /// Maximum proposals admitted by one corpus-mutation branch request.
 pub const CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS: u64 = 4_096;
 
-/// Maximum canonical credit, observation, and attempt bytes inspected per poll.
+/// Maximum canonical observation and attempt bytes authenticated per index page.
+///
+/// Corpus mutation streams its anchors from the direct-selection index one
+/// page of at most 4,096 entries at a time, so this bounds the records decoded
+/// for one page rather than for the whole branch point.
 pub const CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES: usize = 128 * 1024 * 1024;
-
-/// Maximum mutation-neighbor work units consumed by one owner recomputation.
-pub const CORPUS_MUTATION_GENERATOR_MAX_WORK_ITEMS: usize = 65_536;
 
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

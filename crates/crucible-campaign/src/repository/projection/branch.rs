@@ -1466,9 +1466,14 @@ impl CampaignRepository {
                 .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
         )?;
         let has_next_candidate = self
-            .corpus_mutation_candidates(request, &domain, view, additional_selection)?
-            .into_iter()
-            .any(|candidate| !proposed.contains(&candidate));
+            .first_unproposed_corpus_mutation(
+                request,
+                &domain,
+                view,
+                additional_selection,
+                &proposed,
+            )?
+            .is_some();
         continuation_state_after_progress(
             progress.profile,
             progress.proposed,

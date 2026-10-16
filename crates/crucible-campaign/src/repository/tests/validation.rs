@@ -2664,6 +2664,14 @@ fn head_rejects_genesis_without_canonical_configuration_membership() {
         .merkle
         .insert(empty, choice_source_index_anchor_key(), empty)
         .expect("choice-source index anchor");
+    let observations = repository
+        .merkle
+        .insert(
+            observations.content_id(),
+            direct_selection_index_anchor_key(),
+            empty,
+        )
+        .expect("direct-selection index anchor");
     let malformed = CampaignSnapshot::genesis(
         CampaignLineageId::from_content_id(lineage_content).expect("lineage id"),
         CampaignPolicyId::from_content_id(policy_content).expect("policy id"),

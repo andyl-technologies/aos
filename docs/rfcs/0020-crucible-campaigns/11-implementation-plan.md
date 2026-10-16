@@ -817,14 +817,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   executable finite children by exact weighted virtual finish time, suppresses
   duplicate values while advancing their provenance, and enforces 512-value,
   8,192-work-unit, and 64-level bounds. Implementation-version 10
-  `mutate_near_corpus` derives exact
-  retained completed integer selections at the request's branch point, emits
-  canonical lower-then-upper legal-step neighbors, and uses the immutable
-  request's exact previously proposed value set as its portable continuation so
-  corpus growth cannot reinterpret prior proposals. It enforces 4,096-credit,
-  4,096-distance, 4,096-proposal, 65,536-work-unit, 128-MiB canonical credit-
-  body, and existing 4,096-ID/128-MiB selection-resolution bounds during local
-  acceptance, import, and restart. It waits for another completed credit when
+  `mutate_near_corpus` streams exact
+  retained completed integer selections at the request's branch point from the
+  value-ordered direct-selection index, emits canonical lower-then-upper
+  legal-step neighbors, and uses the immutable request's exact previously
+  proposed value set as its portable continuation so corpus growth cannot
+  reinterpret prior proposals. It stops at the first unproposed candidate,
+  enforces 4,096-distance, 4,096-proposal, per-page 128-MiB canonical
+  observation and attempt bodies, and per-page 4,096-ID/128-MiB
+  selection-resolution bounds during local acceptance, import, and restart. It waits for another completed credit when
   the current retained corpus has no unproposed mutation and closes only at its
   proposal budget. Implementation-version 16 `progressive_integer` uses the
   exact stratified prefix, checked visit thresholds, 4,096-strata/proposal

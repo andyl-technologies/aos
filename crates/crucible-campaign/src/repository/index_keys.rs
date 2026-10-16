@@ -260,6 +260,56 @@ pub(super) fn branch_credit_index_key(branch_point: crate::BranchPointId) -> Cam
     )
 }
 
+/// Derives the observation-root anchor of the direct integer-selection index.
+///
+/// The anchor names a map from [`direct_selection_index_branch_key`] to one
+/// nested per-branch-point map. Genesis publishes it empty, so a current
+/// campaign never confuses an absent index with an index that has no entries.
+pub(super) fn direct_selection_index_anchor_key() -> CampaignHash {
+    CampaignHash::derive(
+        "crucible.campaign-observation-direct-selection-index.v1",
+        b"",
+    )
+}
+
+/// Derives the nested direct-selection slot for one semantic branch point.
+pub(super) fn direct_selection_index_branch_key(
+    branch_point: crate::BranchPointId,
+) -> CampaignHash {
+    CampaignHash::derive(
+        "crucible.campaign-observation-direct-selection-point.v1",
+        &branch_point.as_hash().as_bytes(),
+    )
+}
+
+/// Encodes one direct integer selection as an order-preserving nested key.
+///
+/// Byte zero is the representation tag (signed before unsigned, matching
+/// [`crate::IntegerValue`]'s derived order), and the next eight bytes are the
+/// big-endian value with the signed sign bit flipped. An ascending Merkle scan
+/// therefore yields values in canonical integer order, which is the
+/// version-10 corpus-mutation anchor order. The trailing selection-digest
+/// prefix keeps distinct selection records with an equal value as distinct
+/// entries, so readers still authenticate every recorded selection basis.
+///
+/// ```text
+/// key = u8(tag) || u64be(order value) || selection-digest[0..23]
+/// ```
+pub(super) fn direct_selection_index_order_key(
+    value: crate::IntegerValue,
+    selection: crate::SelectionId,
+) -> CampaignHash {
+    let (tag, order_value) = match value {
+        crate::IntegerValue::Signed(value) => (0_u8, value.cast_unsigned() ^ (1_u64 << 63)),
+        crate::IntegerValue::Unsigned(value) => (1_u8, value),
+    };
+    let mut bytes = [0_u8; 32];
+    bytes[0] = tag;
+    bytes[1..9].copy_from_slice(&order_value.to_be_bytes());
+    bytes[9..].copy_from_slice(&selection.content_id().digest()[..23]);
+    CampaignHash::from_bytes(bytes)
+}
+
 pub(super) fn configuration_path_index_key(configuration: ConfigurationArtifactId) -> CampaignHash {
     map_key_content(
         "observations.configuration-path-index",

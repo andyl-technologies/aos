@@ -6,6 +6,7 @@ use crate::ObservationCondition;
 struct ObservationProjection {
     disposition: ObservationDisposition,
     credits: Vec<ExpansionCredit>,
+    direct_selection: Option<direct_selection::DirectSelectionIndexEntry>,
     indexed_path: Option<(ConfigurationArtifactId, BranchPathId)>,
     frontier_updates: Vec<(
         BranchRequestId,
@@ -23,6 +24,7 @@ struct ObservationProjection {
 }
 
 mod candidate_validation;
+mod direct_selection;
 mod strict_order;
 
 impl CampaignRepository {
@@ -278,6 +280,17 @@ impl CampaignRepository {
                 return Err(integrity("expansion-credit-index-publication-mismatch"));
             }
         }
+        if let Some(entry) = &projection.direct_selection {
+            let published = self.direct_selection_index_after(roots.observations, entry, true)?;
+            if projection
+                .observations
+                .get(&direct_selection_index_anchor_key())
+                .copied()
+                != Some(published)
+            {
+                return Err(integrity("direct-selection-index-publication-mismatch"));
+            }
+        }
         if !projection.frontier_updates.is_empty() {
             let published =
                 self.frontier_index_after(roots.exploration, &projection.frontier_updates, true)?;
@@ -311,6 +324,7 @@ impl CampaignRepository {
         let closure_growth_upper = observation_successor_growth(
             observation.discovered_choices().len(),
             projection.credits.len(),
+            projection.direct_selection.is_some(),
             projection.indexed_path.is_some(),
             projection.frontier_updates.len(),
         )?;
@@ -465,6 +479,7 @@ impl CampaignRepository {
             return Ok(ObservationProjection {
                 disposition: ObservationDisposition::DeterminismConflict { canonical },
                 credits: Vec::new(),
+                direct_selection: None,
                 indexed_path: None,
                 frontier_updates: Vec::new(),
                 graph: BTreeMap::new(),
@@ -603,6 +618,14 @@ impl CampaignRepository {
                 )?,
             );
         }
+        let direct_selection =
+            self.direct_selection_index_entry(roots.observations, &attempt, observation_content)?;
+        if let Some(entry) = &direct_selection {
+            observations.insert(
+                direct_selection_index_anchor_key(),
+                self.direct_selection_index_after(roots.observations, entry, false)?,
+            );
+        }
         let indexed_path = Some((observation.child_content(), observation.path()));
         if let Some((configuration, path)) = indexed_path {
             let anchor = configuration_path_index_key(configuration);
@@ -726,6 +749,7 @@ impl CampaignRepository {
         Ok(ObservationProjection {
             disposition: ObservationDisposition::Canonical,
             credits,
+            direct_selection,
             indexed_path,
             frontier_updates,
             graph,

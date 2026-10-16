@@ -774,8 +774,9 @@ impl CampaignRepository {
         }
 
         let observations = self.merkle.inspect_shallow(roots.observations)?;
-        if observations.entry_count() != 1 {
-            return Err(integrity("genesis-choice-source-index-root-mismatch"));
+        // Genesis observations hold exactly the two empty index anchors.
+        if observations.entry_count() != 2 {
+            return Err(integrity("genesis-observation-index-root-mismatch"));
         }
         let choice_sources = self
             .merkle
@@ -783,6 +784,18 @@ impl CampaignRepository {
             .ok_or_else(|| integrity("genesis-choice-source-index-root-mismatch"))?;
         if self.merkle.inspect_shallow(choice_sources)?.entry_count() != 0 {
             return Err(integrity("genesis-choice-source-index-root-mismatch"));
+        }
+        let direct_selection_index = self
+            .merkle
+            .get(roots.observations, direct_selection_index_anchor_key())?
+            .ok_or_else(|| integrity("genesis-direct-selection-index-root-mismatch"))?;
+        if self
+            .merkle
+            .inspect_shallow(direct_selection_index)?
+            .entry_count()
+            != 0
+        {
+            return Err(integrity("genesis-direct-selection-index-root-mismatch"));
         }
 
         let empty_roots = [
@@ -849,6 +862,11 @@ impl CampaignRepository {
                 roots.exploration,
                 planner_scan_index_anchor_key(),
                 "current-campaign-planner-scan-index-is-missing",
+            ),
+            (
+                roots.observations,
+                direct_selection_index_anchor_key(),
+                "current-campaign-direct-selection-index-is-missing",
             ),
         ] {
             self.merkle

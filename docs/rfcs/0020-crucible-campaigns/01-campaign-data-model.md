@@ -1028,6 +1028,22 @@ are `CreditId` and whose values are exact expansion-credit content IDs. This
 lets restart and imported-snapshot validation recover visit counts without a
 process-local search stack or a repository listing operation.
 
+New genesis snapshots also anchor one canonical empty
+`crucible.campaign.observation-direct-selection-index.v1` map under
+`observations_root`; with the choice-source anchor below, these two anchors are
+the only genesis observation-root entries. The index maps a domain-separated branch-point key to a
+nested Merkle map whose keys order direct integer selections by value: a
+one-byte representation tag (signed before unsigned), the big-endian value with
+the signed sign bit flipped, and the first 23 bytes of the `SelectionId`
+digest. Each value is the content ID of the first canonical observation whose
+branch attempt realized that selection. Canonical observation publication adds
+the entry only when the attempt starts with an integer branch selection that
+has no entry yet at its branch point; a later realization, exact replay, or
+determinism conflict leaves the index unchanged. Import and restart validation
+recompute the insertion, and a current snapshot without the anchor fails
+closed. Descendants that reach the point through a deeper branch are credited
+but never indexed, so corpus mutation reads only the point's direct children.
+
 `ContinuationProjection` schema version 1 is the compact authenticated current
 state of one request. New genesis snapshots anchor one canonical empty nested
 frontier index under `exploration_root`. Each nested key is the exact

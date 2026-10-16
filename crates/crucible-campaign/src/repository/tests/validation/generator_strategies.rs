@@ -271,6 +271,43 @@ fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
         .expect("retain second corpus value")
         .new_snapshot;
 
+    // Only completed direct children are indexed, in ascending value order;
+    // the admitted but unobserved mutations 7 and 9 are absent.
+    let observations_root = repository
+        .read_snapshot(current.content_id())
+        .expect("second seed snapshot")
+        .snapshot
+        .roots()
+        .observations;
+    let direct_index = repository
+        .merkle
+        .get(observations_root, direct_selection_index_anchor_key())
+        .expect("read direct-selection anchor")
+        .expect("direct-selection anchor");
+    let point_index = repository
+        .merkle
+        .get(
+            direct_index,
+            direct_selection_index_branch_key(mutation_request.branch_point()),
+        )
+        .expect("read direct-selection point")
+        .expect("direct-selection point");
+    let indexed = repository
+        .merkle
+        .scan(point_index, None, 16)
+        .expect("scan direct selections")
+        .entries()
+        .iter()
+        .map(|(_, observation)| *observation)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        indexed,
+        vec![
+            second_observation.id().expect("second id").content_id(),
+            first_observation.id().expect("first id").content_id(),
+        ]
+    );
+
     let wrong = finite_proposal(
         &mutation_request,
         &policy,
