@@ -251,3 +251,24 @@ impl ProductionVmCleanupHandoff for CleanupReservation {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl LifecycleCleanupHandle {
+    /// Creates only an unavailable canonical token for refused-handoff controls.
+    ///
+    /// Its empty Weak can never authenticate a queue, select a cell or publish
+    /// an owner. This fixture issues no Main, World or cleanup authority.
+    pub(crate) fn unavailable_reservation_for_test() -> Box<
+        dyn ProductionVmCleanupReservation<
+            Failure = <crate::ProductionVmConstructionCustody as ProductionVmCleanupOwner>::Failure,
+        >,
+    > {
+        Box::new(CleanupReservation {
+            queue: Weak::new(),
+            index: usize::MAX,
+            epoch: 0,
+            observed: ProductionVmCleanupStage::BodyRetained,
+            first_failure: None,
+        })
+    }
+}

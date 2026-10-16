@@ -352,17 +352,29 @@ controls. The new B-tree geometry/accounting control also passes. The fresh API
 library and API ABI suite have 120 and six passes. Source hygiene has five passes;
 the standards suite retains its one unresolved broad classifier gate.
 
-Full affected-library and packaged-target qualification is in progress. The full
-storage run records a checked-fence allocation-observer test failure; an isolated
-diagnostic invocation passes, which does not clear the original failure. Its
-process-wide allocator roster now runs the unchanged six ordering/unwind cases
-in one dedicated test child. The parent requires successful exit and the real
-outer-fence measurement, so selecting no test cannot pass. The fresh focused
+The affected-library run completed with 1,701 daemon passes, 17 failures and 43
+ignored tests. The daemon and QEMU failed-name sets are unchanged. All 239
+resource controls pass, with one ignored probe; API, API ABI, harness, boundary,
+traceability and hygiene controls pass. The broad standards gate remains open.
+The original storage run has 685 passes and one checked-fence allocation-observer
+failure: its process-wide roster observed three reallocations rather than zero.
+Both 512-MiB workload cases pass. An isolated diagnostic invocation also passes,
+which does not clear the original failed run. The unchanged six ordering/unwind
+cases now run in one dedicated test child. The parent requires successful exit
+and the real outer-fence measurement, so selecting no test cannot pass. The fresh focused
 control, default/private workspace checks and hygiene pass; confirmation in the
-complete parallel storage suite remains pending. The original run still has one
-512-MiB capture/archive/restore/repack case in progress. These partial results do
-not qualify the complete library run, native integration, physical resource
-floors or VM performance.
+complete parallel storage suite remains pending. In that fresh four-thread run,
+the fixed control passes and the 512-MiB workload is in progress. Packaged target
+compilation also continues. These results do not qualify native integration,
+physical resource floors or VM performance.
+
+A new negative publication regression calls the actual constructor-failure
+adapter twice with its canonical reservation whose queue is unavailable. It
+preserves the same token, file-owning body and typed first cause, executes no
+cleanup, and refuses diagnostic extraction while custody remains. The exact
+release-mode control passes. Its local disposal returns no Main or World
+resource; positive authenticated publication and deployed cleanup remain separate
+requirements.
 
 Prepared Service retention also needs an actual owning continuation before the
 World claim: assignment/window changes can precede the before-effects callback.
