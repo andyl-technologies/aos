@@ -1,22 +1,62 @@
-//! Reconciles bounded inline bindings against independently verified native bytes.
+//! Reconciles bounded bindings against independently verified native content.
 //!
 //! The existing portable binding parser remains authoritative for its private
 //! format. Record names never supply a content claim. Unknown, orphaned, pending
-//! and manifest-backed state stays unresolved, without deletion or replacement.
+//! state stays unresolved, without deletion or replacement. Manifest claims keep
+//! their actual verified metadata pack/index and native custody through finish.
 
 use super::*;
 use std::os::unix::fs::MetadataExt;
-use terrane::host::publication::{FsPublicationState, PublicationState};
+use terrane::host::publication::{FsPublicationState, PublicationState, VerityBinding};
 
-// Retained Vec capacity is charged, not just initialized payload length. Each
-// sequential recheck additionally performs at most two bounded record reads;
-// none of those bounded scratch allocations survives the synchronous recheck.
+// Record capacity, retained canonical metadata and decoded payloads share one
+// budget. Entry counts separately bound fixed rows/FDs. Sequential rechecks use
+// at most two bounded record buffers; pack verification scratch is not retained.
 const MAX_RECORD: usize = 65536;
+
+fn add_retained(used: usize, bytes: usize) -> io::Result<usize> {
+    used.checked_add(bytes)
+        .filter(|total| *total <= HostReadLimits::default().max_allocation_bytes)
+        .ok_or_else(|| invalid("publication-state retained byte budget exceeded"))
+}
+
+fn retain_source_budget(used: usize, claim: &PublicationClaim) -> io::Result<usize> {
+    let Some(manifest) = claim.manifest() else {
+        return Ok(used);
+    };
+    // NativeManifestSource obtains the canonical buffer through the bounded
+    // TokioLocalFs exact-range allocation. The decoded chunk Vec can retain
+    // spare capacity, so charge that capacity rather than just initialized rows.
+    let used = add_retained(used, claim.canonical_manifest().map_or(0, <[u8]>::len))?;
+    let chunks = manifest
+        .chunks
+        .capacity()
+        .checked_mul(std::mem::size_of::<terrane_core::manifest::ChunkRef>())
+        .ok_or_else(|| invalid("retained manifest chunk allocation overflow"))?;
+    let used = add_retained(used, chunks)?;
+    let used = add_retained(
+        used,
+        manifest.media_type.as_ref().map_or(0, String::capacity),
+    )?;
+    // Charge a conservative stable row allowance for the small registered hash
+    // map in addition to each owned name/digest buffer, not allocator RSS.
+    manifest
+        .hashes
+        .iter()
+        .try_fold(used, |used, (name, digest)| {
+            let used = add_retained(used, 128)?;
+            let used = add_retained(used, name.capacity())?;
+            add_retained(used, digest.capacity())
+        })
+}
 
 struct Body {
     parent: File,
     name: String,
     file: File,
+    observed: std::fs::Metadata,
+    measured: VerityBinding,
+    verified: SealedClaim,
 }
 
 struct Record {
@@ -27,15 +67,20 @@ struct Record {
     body: Option<Body>,
 }
 
-/// Retains exhaustive private records until inline reconciliation completes.
+/// Retains exhaustive private records and verified sources through reconciliation.
 pub(super) struct StateInventory {
     directory: File,
     records: Vec<Record>,
+    retained_bytes: usize,
 }
 
 fn same_inode_snapshot(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
     left.dev() == right.dev()
         && left.ino() == right.ino()
+        && left.mode() == right.mode()
+        && left.uid() == right.uid()
+        && left.gid() == right.gid()
+        && left.nlink() == right.nlink()
         && left.len() == right.len()
         && left.ctime() == right.ctime()
         && left.ctime_nsec() == right.ctime_nsec()
@@ -69,10 +114,7 @@ impl StateInventory {
             inventory.check(&file, Custody::Publisher, InodeKind::File)?;
             let observed = file.metadata()?;
             let canonical = bytes(&mut file, MAX_RECORD)?;
-            retained_bytes = retained_bytes
-                .checked_add(canonical.capacity())
-                .filter(|total| *total <= HostReadLimits::default().max_allocation_bytes)
-                .ok_or_else(|| invalid("publication-state retained byte budget exceeded"))?;
+            retained_bytes = add_retained(retained_bytes, canonical.capacity())?;
             if !same_inode_snapshot(&observed, &file.metadata()?) {
                 return Err(invalid("publication-state record changed during capture"));
             }
@@ -84,7 +126,11 @@ impl StateInventory {
                 body: None,
             });
         }
-        Ok(Self { directory, records })
+        Ok(Self {
+            directory,
+            records,
+            retained_bytes,
+        })
     }
 
     fn recheck_record(
@@ -104,40 +150,47 @@ impl StateInventory {
         Ok(())
     }
 
-    /// Matches one existing record to independently verified inline content.
+    /// Matches an existing record to actual verified inline or manifest content.
     ///
     /// # Errors
-    /// Rejects changed custody, invalid content, malformed state or seal conflict.
-    pub(super) async fn reconcile_inline(
+    /// Rejects changed sources/custody, invalid content, malformed state, seal
+    /// conflict and exhausted retained-metadata budgets.
+    pub(super) async fn reconcile(
         &mut self,
         inventory: &NativeInventory,
         parent: &File,
         name: &str,
         file: &mut File,
-        key: &NativeBodyKey,
+        verified: SealedClaim,
     ) -> io::Result<()> {
-        let NativeBodyKey::Sealed { descriptor } = key else {
-            return Err(invalid("binding reconciliation requires a sealed key"));
-        };
-        if TERRANE_V1.kind(descriptor.domain()).map_err(source)? != IdentityKind::Chunk {
-            // A matching Manifest filename cannot be accepted by this inline
-            // case; the exhaustive final match check keeps it unresolved.
-            return Ok(());
+        let claim = verified.claim();
+        verified.recheck(inventory)?;
+        inventory.check(file, Custody::Publisher, InodeKind::File)?;
+        let observed = file.metadata()?;
+        if observed.mode() & 0o222 != 0 || observed.len() != claim.plaintext_size() {
+            return Err(invalid("unsafe canonical inventory inode"));
         }
-        let claim = PublicationClaim::new(
-            inventory.location.domain().to_owned(),
-            PublicationRecipe::Inline {
-                chunk: descriptor.clone(),
-            },
-            inventory.location.chunk_profile(),
-        )?;
+        let measured = crate::verity::measure(file)?;
+        file.seek(SeekFrom::Start(0))?;
+        // The manifest identity authenticates canonical metadata, never assembled
+        // bytes. This separately checks exact length, ordered chunks and every
+        // required whole-file hash under that authenticated claim.
+        claim.verify_reader(file)?;
+        verified.recheck(inventory)?;
+        if !same_inode_snapshot(&observed, &file.metadata()?)
+            || crate::verity::measure(file)? != measured
+        {
+            return Err(invalid(
+                "canonical inventory inode changed during verification",
+            ));
+        }
         // Only the actual retained private directory supplies this parser path.
         // No request path or private record bytes can create a claim authority.
         let state = FsPublicationState::new(
             TokioLocalFs,
             std::path::PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd())),
         );
-        let path = state.binding_record_path(&claim);
+        let path = state.binding_record_path(claim);
         let expected_name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -156,18 +209,10 @@ impl StateInventory {
                 "publication-state record matched multiple canonical bodies",
             ));
         }
-        inventory.check(file, Custody::Publisher, InodeKind::File)?;
-        let measured = crate::verity::measure(file)?;
-        file.seek(SeekFrom::Start(0))?;
-        claim.verify_reader(file)?;
-        let body = Body {
-            parent: parent.try_clone()?,
-            name: name.to_owned(),
-            file: file.try_clone()?,
-        };
+        let retained_bytes = retain_source_budget(self.retained_bytes, claim)?;
         Self::recheck_record(&self.directory, inventory, record)?;
         let recorded = state
-            .binding(&claim)
+            .binding(claim)
             .await?
             .ok_or_else(|| invalid("retained publication binding disappeared"))?;
         Self::recheck_record(&self.directory, inventory, record)?;
@@ -176,8 +221,34 @@ impl StateInventory {
                 "publication-state binding contradicts actual kernel seal",
             ));
         }
+        let body = Body {
+            parent: parent.try_clone()?,
+            name: name.to_owned(),
+            file: file.try_clone()?,
+            observed,
+            measured,
+            verified,
+        };
+        Self::recheck_body(inventory, &body)?;
         record.body = Some(body);
+        self.retained_bytes = retained_bytes;
         Ok(())
+    }
+
+    fn recheck_body(inventory: &NativeInventory, body: &Body) -> io::Result<()> {
+        body.verified.recheck(inventory)?;
+        inventory.check(&body.parent, Custody::Publisher, InodeKind::Directory)?;
+        let current = open(&body.parent, &body.name, false)?;
+        inventory.check(&current, Custody::Publisher, InodeKind::File)?;
+        inventory.check(&body.file, Custody::Publisher, InodeKind::File)?;
+        if !same_inode_snapshot(&body.observed, &current.metadata()?)
+            || !same_inode_snapshot(&body.observed, &body.file.metadata()?)
+            || crate::verity::measure(&current)? != body.measured
+            || crate::verity::measure(&body.file)? != body.measured
+        {
+            return Err(invalid("canonical binding body or seal changed"));
+        }
+        body.verified.recheck(inventory)
     }
 
     /// Rechecks exhaustive state and synchronizes actual matched record custody.
@@ -190,13 +261,7 @@ impl StateInventory {
                 .body
                 .as_ref()
                 .ok_or_else(|| invalid("unreconciled publication-state record"))?;
-            let current = open(&body.parent, &body.name, false)?;
-            inventory.check(&current, Custody::Publisher, InodeKind::File)?;
-            let expected = body.file.metadata()?;
-            let actual = current.metadata()?;
-            if (expected.dev(), expected.ino()) != (actual.dev(), actual.ino()) {
-                return Err(invalid("canonical binding body incarnation changed"));
-            }
+            Self::recheck_body(inventory, body)?;
             Self::recheck_record(&self.directory, inventory, record)?;
             // No model callback acknowledges durability: these are the retained
             // actual record inode and its actual private containing directory.
@@ -204,6 +269,11 @@ impl StateInventory {
         }
         self.directory.sync_all()?;
         for record in &mut self.records {
+            let body = record
+                .body
+                .as_ref()
+                .ok_or_else(|| invalid("unreconciled publication-state record"))?;
+            Self::recheck_body(inventory, body)?;
             Self::recheck_record(&self.directory, inventory, record)?;
         }
         let actual = names(&self.directory, MAX_CANDIDATES)?;
@@ -216,6 +286,115 @@ impl StateInventory {
         if actual != expected {
             return Err(invalid("publication-state physical record set changed"));
         }
+        for record in &self.records {
+            let body = record
+                .body
+                .as_ref()
+                .ok_or_else(|| invalid("unreconciled publication-state record"))?;
+            Self::recheck_body(inventory, body)?;
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use terrane_core::chunking::ChunkProfile;
+    use terrane_core::manifest::{ChunkRef, Manifest};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn retained_manifest_budget_includes_canonical_and_decoded_payloads() {
+        let profile = ChunkProfile::new(16, 32, 64, 48, 2, [0; 32]).unwrap();
+        let plaintext: Vec<u8> = (0..70).collect();
+        let manifest = Manifest {
+            size: plaintext.len() as u64,
+            chunks: [&plaintext[..40], &plaintext[40..]]
+                .into_iter()
+                .map(|bytes| ChunkRef {
+                    digest: TERRANE_V1
+                        .calculate(IdentityKind::Chunk, bytes)
+                        .unwrap()
+                        .terrane_v1_digest()
+                        .unwrap(),
+                    length: bytes.len() as u64,
+                })
+                .collect(),
+            media_type: Some("application/octet-stream".into()),
+            hashes: BTreeMap::from([(
+                "blake3".into(),
+                blake3::hash(&plaintext).as_bytes().to_vec(),
+            )]),
+        };
+        let canonical = manifest.encode(&profile).unwrap();
+        let identity = manifest.identity(&profile).unwrap();
+        let claim = PublicationClaim::new(
+            "public".into(),
+            PublicationRecipe::Manifest {
+                object: Descriptor::from_identity(&TERRANE_V1, &identity, &canonical).unwrap(),
+                canonical_manifest: canonical,
+            },
+            &profile,
+        )
+        .unwrap();
+
+        let charge = retain_source_budget(0, &claim).unwrap();
+        let canonical_bytes = claim.canonical_manifest().unwrap().len();
+        assert!(charge > canonical_bytes);
+        let limit = HostReadLimits::default().max_allocation_bytes;
+        assert_eq!(retain_source_budget(limit - charge, &claim).unwrap(), limit);
+        // A record-only budget would fit, but retaining the real reconstruction
+        // claim must refuse before it becomes part of the inventory snapshot.
+        assert!(retain_source_budget(limit - canonical_bytes, &claim).is_err());
+        assert!(retain_source_budget(limit - charge + 1, &claim).is_err());
+        assert!(add_retained(usize::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn retained_snapshot_rejects_mode_links_and_canonical_inode_replacement() {
+        let root = std::env::temp_dir().join(format!(
+            "terrane-inventory-binding-snapshot-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("body");
+        std::fs::write(&path, b"retained body").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let retained = File::open(&path).unwrap();
+        let expected = retained.metadata().unwrap();
+
+        assert!(same_inode_snapshot(
+            &expected,
+            &retained.metadata().unwrap()
+        ));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!same_inode_snapshot(
+            &expected,
+            &retained.metadata().unwrap()
+        ));
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let before_link = retained.metadata().unwrap();
+        std::fs::hard_link(&path, root.join("alias")).unwrap();
+        assert!(!same_inode_snapshot(
+            &before_link,
+            &retained.metadata().unwrap()
+        ));
+
+        std::fs::rename(&path, root.join("old-body")).unwrap();
+        std::fs::write(&path, b"retained body").unwrap();
+        assert!(!same_inode_snapshot(
+            &retained.metadata().unwrap(),
+            &std::fs::metadata(path).unwrap()
+        ));
+
+        drop(retained);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

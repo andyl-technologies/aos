@@ -5,7 +5,7 @@
 //! chunks retain only bounded frame-declared sizes until independent HOST-14
 //! verification. Pages retain one owner-issued snapshot, never caller offsets.
 //! Unhandled private staging or publication-state remnants fail the whole scan.
-//! Existing inline bindings require exhaustive independent native reconciliation.
+//! Existing bindings require exhaustive independent native reconciliation.
 //! Private descendants must retain the actual layout-root project assignment,
 //! with inheritance enabled on directories. These read-only comparisons grant
 //! no quota or recovery-completion receipt: configured runtime separately binds
@@ -27,7 +27,7 @@ use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 use terrane_core::pack_format::{HEADER_SIZE, Header};
 
 use super::{NativeBodyKey, NativeCommandResult, NativePublisherConfig};
-use crate::host_cache::{NativeHostLayout, NativeHostMetadataReader};
+use crate::host_cache::{NativeHostLayout, NativeHostMetadataReader, NativeManifestSource};
 
 #[path = "inventory_state.rs"]
 mod state;
@@ -60,6 +60,40 @@ struct Snapshot {
     keys: Vec<NativeBodyKey>,
     offset: usize,
     cursor: Vec<u8>,
+}
+
+// Neither variant is reconstructed from private publication-state bytes. The
+// manifest variant retains the actual verified pack/index and provisioning guard
+// until the exhaustive binding decision, without claiming a durable cache pin.
+enum SealedClaim {
+    Inline(PublicationClaim),
+    Manifest(NativeManifestSource),
+}
+
+impl SealedClaim {
+    fn claim(&self) -> &PublicationClaim {
+        match self {
+            Self::Inline(claim) => claim,
+            Self::Manifest(source) => source.claim(),
+        }
+    }
+
+    fn key(&self) -> NativeBodyKey {
+        NativeBodyKey::Sealed {
+            descriptor: self.claim().descriptor().clone(),
+        }
+    }
+
+    fn recheck(&self, inventory: &NativeInventory) -> io::Result<()> {
+        if let Self::Manifest(source) = self {
+            source.recheck()?;
+            for file in [source.files().0, source.files().1] {
+                inventory.check(file, Custody::Content, InodeKind::File)?;
+            }
+            source.recheck()?;
+        }
+        Ok(())
+    }
 }
 
 pub(super) struct NativeInventory {
@@ -299,7 +333,7 @@ impl NativeInventory {
         self.check_project(file, kind)
     }
 
-    async fn sealed(&self, name: &str, file: &mut File) -> io::Result<NativeBodyKey> {
+    async fn sealed(&self, name: &str, file: &mut File) -> io::Result<SealedClaim> {
         self.check(file, Custody::Publisher, InodeKind::File)?;
         let claimed_digest = digest(name, 32)?;
         // Actual Chunk identity verification proves the inline kind; length by
@@ -311,14 +345,14 @@ impl NativeInventory {
                 .from_digest(IdentityKind::Chunk, &claimed_digest)
                 .map_err(source)?;
             if let Ok(descriptor) = Descriptor::from_identity(&TERRANE_V1, &identity, &plaintext) {
-                PublicationClaim::new(
+                let claim = PublicationClaim::new(
                     self.location.domain().to_owned(),
                     PublicationRecipe::Inline {
                         chunk: descriptor.clone(),
                     },
                     self.location.chunk_profile(),
                 )?;
-                return Ok(NativeBodyKey::Sealed { descriptor });
+                return Ok(SealedClaim::Inline(claim));
             }
         }
         let layout = Arc::new(NativeHostLayout::inspect(self.location.clone())?);
@@ -332,18 +366,11 @@ impl NativeInventory {
         let identity = TERRANE_V1
             .from_digest(IdentityKind::Manifest, &claimed_digest)
             .map_err(source)?;
-        let canonical = reader.get(&identity).await.map_err(source)?;
-        let descriptor =
-            Descriptor::from_identity(&TERRANE_V1, &identity, &canonical).map_err(source)?;
-        PublicationClaim::new(
-            self.location.domain().to_owned(),
-            PublicationRecipe::Manifest {
-                object: descriptor.clone(),
-                canonical_manifest: canonical,
-            },
-            self.location.chunk_profile(),
-        )?;
-        Ok(NativeBodyKey::Sealed { descriptor })
+        let manifest =
+            NativeManifestSource::open(&reader, &identity, HostReadLimits::default()).await?;
+        let verified = SealedClaim::Manifest(manifest);
+        verified.recheck(self)?;
+        Ok(verified)
     }
 
     fn chunk(&self, name: &str, codec: u8, file: &mut File) -> io::Result<NativeBodyKey> {
@@ -468,13 +495,13 @@ impl NativeInventory {
                         if !name.starts_with(&shard) {
                             return Err(invalid("invalid inventory sealed shard"));
                         }
-                        self.sealed(&name, &mut file).await?
-                    };
-                    if !encoded {
+                        let verified = self.sealed(&name, &mut file).await?;
+                        let key = verified.key();
                         state
-                            .reconcile_inline(self, &shard_directory, &name, &mut file, &key)
+                            .reconcile(self, &shard_directory, &name, &mut file, verified)
                             .await?;
-                    }
+                        key
+                    };
                     if !keys.contains(&key) {
                         keys.push(key);
                     }
@@ -490,7 +517,7 @@ impl NativeInventory {
             digest(&name, 32)?;
             let mut file = open(&pending, &name, false)?;
             let key = if file.metadata()?.uid() == rustix::process::geteuid().as_raw() {
-                self.sealed(&name, &mut file).await?
+                self.sealed(&name, &mut file).await?.key()
             } else {
                 self.pending_encoded(&name, &mut file)?
             };
