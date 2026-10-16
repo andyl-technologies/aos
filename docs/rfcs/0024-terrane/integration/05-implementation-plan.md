@@ -8696,7 +8696,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 Status: in progress (2026-10-16). T1's 22 tasks and 89 current gates are
 complete; its identity, encoding, bucket-key and Store-trait freeze applies.
-Five separate worktrees cover the five T2 tasks. Shared module declarations,
+Seven separate implementation worktrees cover the five T2 tasks, including
+dedicated publisher-transport and host-quota helpers. Shared module declarations,
 dependency edges, kernel prerequisites and check wiring precede worker edits.
 No T2 task or gate is complete yet.
 
@@ -8711,8 +8712,12 @@ D-119 reconciles the native host command boundary with the frozen portable
 filesystem trait; D-120 distinguishes controllable access/modification times
 from native inode-change and birth times. The shared metadata executor uses
 the existing retained-effect method and requires an actual durability receipt.
-Its native library build passes; focused execution and task gates remain
-pending. The separate module branch has 33 passing declarative checks and 16
+Its native library build and five focused metadata executor tests pass. The
+surface branch has 21 passing SDK integration tests and a passing metadata-only
+schema observer with a positive content-read control. The host-cache branch
+builds and passes 19 focused tests with unchanged source inputs. Native admission,
+sealed-residence reads, and complete task gates remain pending.
+The separate module branch has 46 passing declarative checks and 16
 checks of actual rendered TOML through the built CLI across four roles and
 four configuration shapes. These establish syntax parsing, not backend or
 credential validation. Full trunk qualification and task acceptance remain
