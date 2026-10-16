@@ -90,9 +90,18 @@ pub(super) fn run(
     let source_fds = count_process_entries(&source_pids, "fd");
     let replay_host = LinuxQemuAttemptHostResourceFactory::open(source_config.host.clone())
         .expect("actual replay guard namespace");
+    let catalog_original = crucible::owned_decode::DecodeBudget::for_store(
+        model
+            .prepared
+            .checkpoints
+            .metadata_resource_authority()
+            .expect("retained checkpoint metadata authority"),
+    )
+    .expect("original checkpoint metadata account");
     let catalog = ProductionBakedGenesisReplayCatalogFactory::new(
         [model.baked.clone()],
         ComposedQemuAttemptResourceGuardFactory::new(replay_host),
+        &catalog_original,
     )
     .expect("same actual native basis used by accepted promotion")
     .with_replay_services(services.clone());

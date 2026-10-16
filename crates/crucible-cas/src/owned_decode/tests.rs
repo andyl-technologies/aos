@@ -227,3 +227,22 @@ fn bulk_btree_bound_is_one_target_request_and_overflow_is_sticky()
     assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
     Ok(())
 }
+
+#[test]
+fn btree_geometry_query_does_not_debit_and_matches_actual_admission()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let used = authority.used.load(Ordering::SeqCst);
+    let calls = authority.calls.load(Ordering::SeqCst);
+    let bytes = DecodeBudget::btree_control_bytes::<u8, ()>(1)?;
+    assert_eq!(bytes, btree_entry_bytes::<u8, ()>()?);
+    assert_eq!(DecodeBudget::btree_control_bytes::<u8, ()>(0)?, 0);
+    assert!(DecodeBudget::btree_control_bytes::<u64, u64>(usize::MAX).is_err());
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(authority.used.load(Ordering::SeqCst), used);
+    budget.charge_btree_entries::<u8, ()>(1)?;
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls + 1);
+    assert!(authority.used.load(Ordering::SeqCst) >= used + bytes);
+    Ok(())
+}

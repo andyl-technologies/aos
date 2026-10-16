@@ -153,9 +153,13 @@ impl GuardedCampaignOwner {
             cancellation.clone(),
             lifecycle,
         )?;
+        let catalog_original = crucible::owned_decode::current_budget().ok_or(
+            GuardedContinuationError::Refused("missing original replay metadata"),
+        )?;
         let mut replay = ProductionBakedGenesisReplayCatalogFactory::new(
             [baked],
             ComposedQemuAttemptResourceGuardFactory::new(self.inner.host.clone()),
+            &catalog_original,
         )
         .map_err(|error| GuardedContinuationError::operation("admit replay catalog", error))?
         .with_savepoint_replay_config(lifecycle.try_clone_admitted().map_err(|error| {

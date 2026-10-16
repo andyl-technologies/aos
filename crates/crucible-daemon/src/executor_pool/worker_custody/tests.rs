@@ -241,3 +241,29 @@ fn historical_first_body_cannot_hide_a_second_retained_worker()
     assert!(custody.verify_retired().is_ok());
     Ok(())
 }
+
+#[test]
+fn worker_admission_joins_unbuilt_producer_geometry_in_the_same_single_reservation() {
+    let producer = 12_345u64;
+    let expected = PreparedExecutorWorkers::<Worker>::control_bytes(1, 2)
+        .expect("component worker geometry")
+        .checked_add(producer)
+        .expect("checked total");
+    let calls = AtomicUsize::new(0);
+    let prepared = PreparedExecutorWorkers::<Worker>::prepare(1, 2, producer, None, |bytes| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(bytes, expected);
+        Ok(None)
+    })
+    .expect("unissued component custody");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        prepared.cells.is_empty(),
+        "worker bodies must be constructed later"
+    );
+    assert!(
+        prepared.controls().is_none(),
+        "component cannot fabricate Main payment"
+    );
+    drop(prepared);
+}

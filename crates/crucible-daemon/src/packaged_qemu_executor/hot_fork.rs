@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod promotion;
+
 pub(super) mod retained_service;
 
 use retained_service::{RetainedTemplateService, RetainedTemplateServiceFactory};
@@ -586,17 +588,14 @@ where
         + 'static,
 {
     let replay_services = super::RetainedTemplateServiceFactory::new(&preparation, &config);
-    let catalog = ProductionBakedGenesisReplayCatalogFactory::new(
-        baked.into_values(),
-        ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-    )?
-    .with_savepoint_replay_config(config.lifecycle.clone())
-    .with_replay_services(replay_services);
-    let promotion_catalog = catalog.clone();
-    let source_catalog = catalog;
+    let catalog_bytes = ProductionBakedGenesisReplayCatalogFactory::<
+        ComposedQemuAttemptResourceGuardFactory<SharedQemuAttemptHostResourceFactory<H>>,
+    >::catalog_control_bytes(baked.len())?;
+    let replay_config = Arc::clone(&config.lifecycle);
     let source_bases = basis.sources.values().cloned().collect::<Vec<_>>();
     let hot_fork = config.hot_fork.clone();
     let retained_service_config = config.clone();
+    let promotion_count = config.worker_count;
 
     compose_packaged_qemu_executor_with_builders(
         storage,
@@ -604,19 +603,13 @@ where
         config,
         shared,
         Some(preparation),
-        move |store, checkpoints, _shared, run_state_root, worker_count| {
-            (0..worker_count)
-                .map(|slot| {
-                    ProductionCheckpointPromotionWorker::new(
-                        store.clone(),
-                        Arc::clone(checkpoints),
-                        run_state_root.join(format!("worker-{slot:03}")),
-                        promotion_catalog.clone(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        },
-        move |store,
+        UnbuiltPromotions::new(
+            promotion_count,
+            catalog_bytes,
+            promotion::builder(baked, replay_config, replay_services),
+        ),
+        move |source_catalog: promotion::Catalog<H>,
+              store,
               checkpoints,
               finding_exact_retention,
               shared,

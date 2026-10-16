@@ -38,6 +38,7 @@ use crate::{
     QemuSavepointReplayProof, capture_fresh_genesis_checkpoint_candidate,
 };
 
+pub(crate) mod catalog;
 mod imported_replay;
 mod supervised_replay;
 pub use imported_replay::{ImportedProductionCheckpointReplay, ImportedProductionReplayError};
@@ -90,7 +91,7 @@ struct ProductionBakedGenesisReplayFactory {
 /// another scenario.
 #[derive(Clone)]
 pub struct ProductionBakedGenesisReplayCatalogFactory<R> {
-    baked_by_basis: BTreeMap<(ContentHash, ContentHash), ProductionBakedGenesisCheckpoint>,
+    baked_by_basis: catalog::PaidBakedCatalog<ProductionBakedGenesisCheckpoint>,
     resources: R,
     savepoint_replay_config: Option<Arc<ProductionVmLifecycleConfig>>,
     replay_services: Option<crate::packaged_qemu_executor::RetainedTemplateServiceFactory>,
@@ -352,24 +353,51 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
     /// # Errors
     ///
     /// Returns [`ProductionBakedGenesisReplayCatalogError`] when the catalog is
-    /// empty or contains two independently captured entries for one exact
-    /// World/scenario basis.
+    /// empty, repeats a World/scenario basis, lacks finite exact iterator
+    /// geometry, or its explicit original metadata admission refuses.
     pub fn new(
         baked: impl IntoIterator<Item = ProductionBakedGenesisCheckpoint>,
         resources: R,
+        original: &crucible::owned_decode::DecodeBudget,
     ) -> Result<Self, ProductionBakedGenesisReplayCatalogError> {
-        let mut baked_by_basis = BTreeMap::new();
-        for checkpoint in baked {
-            let basis = (checkpoint.world(), checkpoint.scenario());
-            if baked_by_basis.insert(basis, checkpoint).is_some() {
-                return Err(ProductionBakedGenesisReplayCatalogError::DuplicateBasis);
-            }
-        }
-        if baked_by_basis.is_empty() {
-            return Err(ProductionBakedGenesisReplayCatalogError::Empty);
-        }
         Ok(Self {
-            baked_by_basis,
+            baked_by_basis: catalog::PaidBakedCatalog::new_under_original(
+                baked
+                    .into_iter()
+                    .map(|checkpoint| ((checkpoint.world(), checkpoint.scenario()), checkpoint)),
+                original,
+            )?,
+            resources,
+            savepoint_replay_config: None,
+            replay_services: None,
+            replay_basis: None,
+        })
+    }
+
+    /// Measures the new shared map while moving already-owned checkpoint bodies.
+    ///
+    /// # Errors
+    /// Refuses an empty catalog or checked map/Arc layout overflow.
+    pub(crate) fn catalog_control_bytes(
+        count: usize,
+    ) -> Result<u64, ProductionBakedGenesisReplayCatalogError> {
+        catalog::PaidBakedCatalog::<ProductionBakedGenesisCheckpoint>::control_bytes(count)
+    }
+
+    pub(crate) fn from_paid_catalog(
+        baked: impl IntoIterator<Item = ProductionBakedGenesisCheckpoint>,
+        resources: R,
+        count: usize,
+        payment: catalog::CatalogPayment,
+    ) -> Result<Self, ProductionBakedGenesisReplayCatalogError> {
+        Ok(Self {
+            baked_by_basis: catalog::PaidBakedCatalog::new_prepaid(
+                baked
+                    .into_iter()
+                    .map(|checkpoint| ((checkpoint.world(), checkpoint.scenario()), checkpoint)),
+                count,
+                payment,
+            )?,
             resources,
             savepoint_replay_config: None,
             replay_services: None,
@@ -399,13 +427,13 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
     /// Returns the number of exact World/scenario checkpoints in the catalog.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.baked_by_basis.len()
+        self.baked_by_basis.entries.len()
     }
 
     /// Returns whether the catalog contains no checkpoint.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.baked_by_basis.is_empty()
+        self.baked_by_basis.entries.is_empty()
     }
 
     /// Authenticates that this catalog retains one exact World/scenario basis.
@@ -423,13 +451,19 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
         world: ContentHash,
         scenario: ContentHash,
     ) -> Result<(), QemuVmRealizationError> {
-        select_baked_catalog_entry(&self.baked_by_basis, world, scenario).map(|_| ())
+        select_baked_catalog_entry(&self.baked_by_basis.entries, world, scenario).map(|_| ())
     }
 }
 
 /// Invalid native baked-genesis replay catalog.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum ProductionBakedGenesisReplayCatalogError {
+    /// Original metadata admission refused before the catalog allocation.
+    #[error(transparent)]
+    Admission(#[from] crucible::owned_decode::DecodeAdmissionError),
+    /// A constructor cannot establish a finite exact input or layout.
+    #[error("production baked-genesis catalog control geometry is invalid")]
+    Geometry,
     /// No scenario checkpoint was supplied.
     #[error("production baked-genesis replay catalog is empty")]
     Empty,
@@ -515,7 +549,7 @@ where
         basis: ProductionCheckpointReplayBasis,
     ) -> Result<(), QemuVmRealizationError> {
         select_baked_catalog_entry(
-            &self.baked_by_basis,
+            &self.baked_by_basis.entries,
             basis.source().world().id,
             basis.source().scenario_def().id(),
         )?;
@@ -544,8 +578,11 @@ where
         target: ProductionVmReplayExactNodeRestoreAdmission,
         guard: &mut Self::Guard,
     ) -> Result<ProductionPausedCheckpointReplaySession, QemuVmRealizationError> {
-        let baked =
-            select_baked_catalog_entry(&self.baked_by_basis, world.id, configuration.def.id())?;
+        let baked = select_baked_catalog_entry(
+            &self.baked_by_basis.entries,
+            world.id,
+            configuration.def.id(),
+        )?;
         let mut selected = ProductionBakedGenesisReplayFactory::new(baked.clone());
         selected.registration_preparation = Some(guard.registration_preparation()?);
         selected.begin_target(world, configuration, target, guard)
