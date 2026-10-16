@@ -124,6 +124,26 @@ fn host_quota_native_privilege_and_helper_vm() {
     };
     child("direct");
     let socket = root.join("quota.sock");
+    let registry = root.join("fixture-claims");
+    fs::create_dir(&registry).expect("fixture protected registry");
+    fs::set_permissions(&registry, fs::Permissions::from_mode(0o700)).expect("registry custody");
+    let uuid = filesystem_uuid(&roots[0].directory).expect("filesystem UUID");
+    let record =
+        registry.join(terrane_fs::host_quota::project_claim_name(&uuid, 41001).expect("claim key"));
+    fs::write(&record, b"fixture host claim").expect("host claim");
+    fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).expect("claim custody");
+    let anchor = registry.join("fixture.identity");
+    fs::write(&anchor, b"fixture registry identity").expect("registry anchor");
+    fs::set_permissions(&anchor, fs::Permissions::from_mode(0o600)).expect("anchor custody");
+    let claim = terrane_fs::host_quota::RetainedProjectClaim::open(
+        &registry,
+        &anchor,
+        b"fixture registry identity",
+        uuid,
+        41001,
+        b"fixture host claim",
+    )
+    .expect("retained actual claim");
     let owner = ConfiguredOwner {
         owner_id: "public-owner".into(),
         domain: "public".into(),
@@ -133,6 +153,7 @@ fn host_quota_native_privilege_and_helper_vm() {
         allowed_client_uids: BTreeSet::from([840]),
         roots,
         scaffolding: Vec::new(),
+        claim: Some(claim),
     };
     let broker =
         HostQuotaBroker::bind(&socket, [1; 16], 4 * 1024 * 1024, vec![owner]).expect("bind broker");
@@ -143,6 +164,9 @@ fn host_quota_native_privilege_and_helper_vm() {
     child("helper");
     server.join().expect("server completion");
     fs::remove_file(socket).expect("remove socket");
+    fs::remove_file(record).expect("remove fixture claim");
+    fs::remove_file(anchor).expect("remove fixture anchor");
+    fs::remove_dir(registry).expect("remove fixture registry");
     for label in ROOT_LABELS {
         if label != "layout-root" {
             fs::remove_dir(root.join(label)).expect("remove allocation root");

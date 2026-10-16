@@ -12,6 +12,7 @@ pub use leases::{RetirementInode, RetirementLease, RetirementLeaseRequest};
 
 pub use claim::{PublicationClaim, PublicationRecipe};
 pub use sequence::{
-    AdoptionFailure, PublicationKernel, PublicationState, PublishedObject, Publisher, VerityBinding,
+    AdoptionFailure, PublicationKernel, PublicationState, PublishedObject, Publisher,
+    RetainedPublishedObject, VerityBinding,
 };
 pub use state::FsPublicationState;

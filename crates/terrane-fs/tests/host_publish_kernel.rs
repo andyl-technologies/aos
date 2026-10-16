@@ -58,6 +58,10 @@ fn claim(domain: &str, bytes: &[u8]) -> PublicationClaim {
 }
 
 fn directories(root: &Path, name: &str) -> [PathBuf; 3] {
+    let expected =
+        terrane_fs::host_quota::NativeProject::inspect(&File::open(root).unwrap()).unwrap();
+    assert_eq!(expected.project_id, 64109);
+    assert!(expected.inherit);
     let base = root.join(name);
     fs::create_dir(&base).unwrap();
     fs::create_dir(base.join("quarantine")).unwrap();
@@ -68,6 +72,11 @@ fn directories(root: &Path, name: &str) -> [PathBuf; 3] {
     ];
     for path in &paths {
         fs::create_dir(path).unwrap();
+        let actual =
+            terrane_fs::host_quota::NativeProject::inspect(&File::open(path).unwrap()).unwrap();
+        assert_eq!(actual.project_id, expected.project_id);
+        assert_eq!(actual.device, expected.device);
+        assert!(actual.inherit);
     }
     fs::set_permissions(&paths[1], fs::Permissions::from_mode(0o700)).unwrap();
     paths
@@ -122,7 +131,8 @@ pub fn run(confinement: Arc<terrane_fs::quota_confinement::Installed>) -> io::Re
         .unwrap();
     runtime.block_on(async {
         let root =
-            PathBuf::from(std::env::var_os("TERRANE_PUBLISH_VM_ROOT").expect("VM fixture root"));
+            PathBuf::from(std::env::var_os("TERRANE_PUBLISH_VM_ROOT").expect("VM fixture root"))
+                .join("kernel-sequence");
         let paths = directories(&root, "public");
         let claim = claim("public", b"immutable content");
         let state_path = root.join("publication-state");
@@ -230,7 +240,7 @@ pub fn run(confinement: Arc<terrane_fs::quota_confinement::Installed>) -> io::Re
         drop(publisher);
 
         let other_paths = directories(&root, "private");
-        let other_claim = crate::claim("private:other", b"immutable content");
+        let other_claim = self::claim("private:other", b"immutable content");
         let mut other = Publisher::new(
             adapter(&confinement, "private:other", &other_paths),
             State::default(),

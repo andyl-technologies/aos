@@ -27,6 +27,11 @@ pub struct NativeCachePreparation {
 }
 
 impl NativeCachePreparation {
+    /// Borrows actual retained probe custody without creating admission authority.
+    pub(super) fn probe_handle(&self) -> &std::fs::File {
+        self.seal.probe_handle()
+    }
+
     /// Retains actual readonly recovery inputs without issuing completion authority.
     ///
     /// # Errors

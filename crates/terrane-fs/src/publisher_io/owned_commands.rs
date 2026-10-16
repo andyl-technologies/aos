@@ -9,12 +9,14 @@ use terrane::store::{LocalFs, TokioClock, TokioLocalFs};
 use terrane_core::chunking::ChunkProfile;
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
+use super::super::NativeManifestWitness;
 use super::super::bodies::{BodyIo, EncodedUnit};
 use super::{
     NativePublishedObject, NativePublisher, NativePublisherConfig, NativeRetirementPolicy,
     NativeSealProbe, WorkerState,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 use terrane::host::publication::Publisher;
 use terrane::host::publication::{FsPublicationState, RetirementInode, RetirementLeaseRequest};
 
@@ -99,6 +101,28 @@ pub enum NativeOperation {
     Adopt {
         /// The immutable reconstruction witness.
         claim: PublicationClaim,
+    },
+    /// Publishes from an actual received metadata witness, without pin authority.
+    ///
+    /// The registered receiver remains closed until native cache composition
+    /// establishes genuine durable retention before submitting this operation.
+    PublishManifest {
+        /// The verified actual metadata-pack descriptor and canonical claim.
+        witness: NativeManifestWitness,
+        /// The owned read-only plaintext source descriptor.
+        source: File,
+    },
+    /// Adopts using an actual received reconstruction witness.
+    AdoptManifest {
+        /// The verified actual metadata-pack descriptor and canonical claim.
+        witness: NativeManifestWitness,
+    },
+    /// Adopts and binds a sealed key using actual reconstruction metadata.
+    InspectManifest {
+        /// The registered sealed key, checked against the exact witness.
+        key: NativeBodyKey,
+        /// The verified received reconstruction witness.
+        witness: NativeManifestWitness,
     },
     /// Retains an inode incarnation for a checked registered key.
     InspectBody {
@@ -216,11 +240,12 @@ enum Location {
 
 struct RetainedBody {
     key: NativeBodyKey,
-    claim: Option<PublicationClaim>,
+    claim: Option<Arc<PublicationClaim>>,
     token: [u8; 32],
     file: File,
     location: Location,
     encoded: Option<EncodedUnit>,
+    manifest: Option<Arc<NativeManifestWitness>>,
 }
 
 pub(super) struct CommandOwner {
@@ -239,6 +264,11 @@ pub(super) struct CommandOwner {
     profile: ChunkProfile,
     inventory: super::inventory::NativeInventory,
 }
+
+#[path = "manifest_commands.rs"]
+mod manifest_commands;
+#[path = "retention.rs"]
+mod retention;
 
 impl CommandOwner {
     pub(super) fn new(
@@ -307,54 +337,6 @@ impl CommandOwner {
         result
     }
 
-    async fn retain(
-        &mut self,
-        claim: PublicationClaim,
-        object: NativePublishedObject,
-    ) -> io::Result<NativeCommandResult> {
-        let metadata = object.object.handle().metadata()?;
-        let key = NativeBodyKey::Sealed {
-            descriptor: claim.descriptor().clone(),
-        };
-        for retained in &mut self.bodies {
-            let previous = retained.file.metadata()?;
-            if retained.key == key
-                && retained.location == Location::Canonical
-                && previous.dev() == metadata.dev()
-                && previous.ino() == metadata.ino()
-            {
-                retained.claim = Some(claim.clone());
-                return Ok(NativeCommandResult::Published {
-                    object,
-                    incarnation: NativeBodyIncarnation(retained.token),
-                });
-            }
-        }
-        if self.bodies.len() >= 4096 {
-            return Err(io::Error::new(
-                io::ErrorKind::OutOfMemory,
-                "publisher incarnation budget exhausted",
-            ));
-        }
-        let bytes = TokioLocalFs.random_bytes(32).await?;
-        let token: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| io::Error::other("invalid native random length"))?;
-        let file = object.object.handle().try_clone()?;
-        self.bodies.push(RetainedBody {
-            key,
-            claim: Some(claim),
-            token,
-            file,
-            location: Location::Canonical,
-            encoded: None,
-        });
-        Ok(NativeCommandResult::Published {
-            object,
-            incarnation: NativeBodyIncarnation(token),
-        })
-    }
-
     pub(super) async fn execute(
         &mut self,
         context: NativeCommandContext,
@@ -393,7 +375,9 @@ impl CommandOwner {
         if self.recovery
             && matches!(
                 operation,
-                NativeOperation::Publish { .. } | NativeOperation::Retire { .. }
+                NativeOperation::Publish { .. }
+                    | NativeOperation::PublishManifest { .. }
+                    | NativeOperation::Retire { .. }
             )
         {
             return Err(io::Error::new(
@@ -421,10 +405,21 @@ impl CommandOwner {
                         "manifest publication requires actual metadata retention custody",
                     ));
                 }
-                let object = self.publisher()?.publish(&claim, source).await?;
-                self.retain(claim, NativePublishedObject { object }).await
+                let claim = Arc::new(claim);
+                let prepared = self.prepare_retention(Arc::clone(&claim)).await?;
+                let object = self.publisher()?.publish_retained(&claim, source).await?;
+                Ok(self.commit_retention(prepared, object, None))
             }
             NativeOperation::Adopt { claim } => self.adopt(claim).await,
+            NativeOperation::PublishManifest { witness, source } => {
+                self.consume_manifest(witness, Some(source), None).await
+            }
+            NativeOperation::AdoptManifest { witness } => {
+                self.consume_manifest(witness, None, None).await
+            }
+            NativeOperation::InspectManifest { key, witness } => {
+                self.consume_manifest(witness, None, Some(key)).await
+            }
             NativeOperation::InspectBody {
                 key: NativeBodyKey::Sealed { descriptor },
                 claim: Some(claim),
@@ -453,7 +448,12 @@ impl CommandOwner {
                 self.transition(key, incarnation, Transition::FinishNone)
                     .await
             }
-            NativeOperation::Inventory { cursor } => self.inventory.page(cursor).await,
+            NativeOperation::Inventory { cursor } if self.recovery => {
+                self.inventory.page(cursor).await
+            }
+            NativeOperation::Inventory { .. } => {
+                Err(invalid("inventory requires drained recovery custody"))
+            }
         }
     }
 
@@ -504,6 +504,7 @@ impl CommandOwner {
             file,
             location: Location::Pending,
             encoded: None,
+            manifest: None,
         });
         Ok(NativeCommandResult::Pending {
             incarnation: NativeBodyIncarnation(token),
@@ -588,6 +589,7 @@ impl CommandOwner {
                 Location::Canonical
             },
             encoded: Some(unit),
+            manifest: None,
         });
         Ok(if pending {
             NativeCommandResult::Pending {
@@ -608,8 +610,10 @@ impl CommandOwner {
                 "manifest adoption requires actual metadata retention custody",
             ));
         }
-        let object = self.publisher()?.adopt(&claim).await?;
-        self.retain(claim, NativePublishedObject { object }).await
+        let claim = Arc::new(claim);
+        let prepared = self.prepare_retention(Arc::clone(&claim)).await?;
+        let object = self.publisher()?.adopt_retained(&claim).await?;
+        Ok(self.commit_retention(prepared, object, None))
     }
 
     async fn transition_encoded(

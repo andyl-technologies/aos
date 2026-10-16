@@ -8,7 +8,7 @@
 use super::{NativeHostLayout, open_directory_chain};
 use crate::publisher_local::client::PeerSealProbe;
 use rustix::fs::{FileType, OFlags, fcntl_getfl, fstat, fstatfs};
-use std::{io, sync::Arc};
+use std::{fs::File, io, sync::Arc};
 use terrane::host::cache::{DomainHostLayout, HostInspection, HostReadLocation, SealInspection};
 
 /// Retains independently measured seal support on one genuine native layout.
@@ -22,6 +22,11 @@ pub struct NativeSealCapability<L: HostReadLocation = DomainHostLayout> {
 }
 
 impl<L: HostReadLocation> NativeSealCapability<L> {
+    /// Borrows the real unlinked probe for native owner allocation observation.
+    pub(super) fn probe_handle(&self) -> &File {
+        self.probe.handle()
+    }
+
     /// Remeasures an actual authenticated peer probe and its root filesystem.
     ///
     /// The source must be the private receipt returned by the concrete native

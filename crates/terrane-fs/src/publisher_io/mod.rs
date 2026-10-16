@@ -6,6 +6,12 @@
 
 #[cfg(feature = "tokio")]
 mod bodies;
+#[cfg(feature = "tokio")]
+mod manifest;
+#[cfg(feature = "tokio")]
+pub use manifest::NativeManifestWitness;
+#[cfg(feature = "tokio")]
+pub(crate) use manifest::ReceivedManifest;
 mod native;
 #[cfg(feature = "tokio")]
 mod worker;
