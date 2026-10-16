@@ -11,7 +11,9 @@ use crucible_core::NetworkFaultSelectable;
 mod resource_audit;
 
 const ATTEMPT_WAIT: Duration = Duration::from_secs(600);
-const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 6 * 1024 * 1024 * 1024;
+// Admission reserves the measured five-guest profile for each retained world:
+// a thin root at the follow-up boundary and the hot child forked from it.
+const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 9 * 1024 * 1024 * 1024;
 // This is a cap on completed scheduler quanta across the packaged campaign,
 // independent of the exact logical ticks or retired instructions in each RUN.
 const ENVOY_QUANTUM_BUDGET: &str = "250000";
@@ -304,6 +306,15 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &followup_fault,
         "next-choice",
         0x75,
+    )?;
+    // The follow-up disruption is a fresh thin attempt. Its stopped world at
+    // the published next-choice boundary is retained as the root the
+    // completion attempt forks from.
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    guest_choice::assert_materialization_tier(
+        &materialization,
+        json_string(&followup_disruption["attempt"], "id")?,
+        "ThinReplay",
     )?;
     let completion = choose(
         &fixture,
@@ -1190,14 +1201,15 @@ fn product_hot_fork_deployment_with_template_limit(
     let deployment = fixture._temporary.path().join(name);
     let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
 
-    // Admission reserves the measured source profile once for the retained
-    // five-guest world and again for its child. The 5 GiB guest-RAM baseline
-    // needs headroom for QEMU resident memory and measured private dirties.
-    // The deployment's independent 7 GiB resident ceiling remains enforced.
+    // Admission reserves the measured source profile once for each retained
+    // five-guest world and again for each child. The 5 GiB guest-RAM baseline
+    // per world needs headroom for QEMU resident memory and measured private
+    // dirties. The deployment's independent per-attempt 7 GiB resident
+    // ceiling remains enforced.
     fs::write(
         &deployment,
         format!(
-            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = {maximum_template_bytes}\nmaximum_expected_private_dirty_bytes = {ENVOY_HOT_FORK_BYTE_CEILING}\nmaximum_processes = 16\nmaximum_virtual_cpus = 10\nmaximum_descriptors = 16384\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
+            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = {maximum_template_bytes}\nmaximum_expected_private_dirty_bytes = {ENVOY_HOT_FORK_BYTE_CEILING}\nmaximum_processes = 16\nmaximum_virtual_cpus = 16\nmaximum_descriptors = 24576\nmaximum_overlays = 24\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
         ),
     )?;
     fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))?;

@@ -244,8 +244,13 @@ assert !interruptedTransfer
     run_root = "/tmp/attempts/run"
     attempt_namespace = "packaged-flight"
     first_project_id = 30000
+    # Each running attempt and each retained hot-fork world holds one host
+    # project ID. The Envoy flight retains a thin root and its hot child
+    # beside its one running attempt.
     project_id_count = ${
-      if findingForkWrite || hotForkFlight || envoyProduct || singleGuestMaterialization
+      if envoyProduct
+      then "3"
+      else if findingForkWrite || hotForkFlight || singleGuestMaterialization
       then "2"
       else "1"
     }
@@ -411,9 +416,11 @@ assert !interruptedTransfer
       else if campaignMidpoint
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
+    # The Envoy flight can hold two retained five-guest worlds beside one
+    # running five-guest attempt.
     memory =
       if envoyProduct
-      then 8192
+      then 12288
       else if findingForkWrite || hotForkFlight || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || singleGuestMaterialization || twoNodeHttp
       then 3072
       else 2048;
