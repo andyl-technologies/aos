@@ -10,7 +10,17 @@ mod operational_inputs;
 #[path = "operational_recovery.rs"]
 mod operational_recovery;
 
+#[path = "operational_operations.rs"]
+mod operational_operations;
+
 pub(super) fn mask_operational_waits(package: &str, target: &str, code: &str) -> String {
+    // Whole-operation contracts observe the original source before input
+    // contracts mask individual declarations or assertions.
+    let continuations = operational_operations::mask(package, target, code);
+    mask_after_operations(package, target, &continuations)
+}
+
+fn mask_after_operations(package: &str, target: &str, code: &str) -> String {
     let operational = operational_inputs::mask(package, target, code);
     let recovery = operational_recovery::mask(package, target, &operational);
     let code = recovery.as_str();
@@ -208,6 +218,24 @@ fn compact_code(code: &str) -> String {
     code.chars()
         .filter(|character| !character.is_whitespace())
         .collect()
+}
+
+fn identifier_count(code: &str, name: &str) -> usize {
+    let is_identifier = |character: char| character.is_ascii_alphanumeric() || character == '_';
+    code.match_indices(name)
+        .filter(|(start, _)| {
+            let end = *start + name.len();
+            code[..*start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_identifier(c))
+                && code[end..].chars().next().is_none_or(|c| !is_identifier(c))
+        })
+        .count()
+}
+
+fn source_pattern(source: &str) -> String {
+    compact_code(&super::scrub_comments_and_strings(source))
 }
 
 fn mask_identifier(code: &str, name: &str) -> String {
