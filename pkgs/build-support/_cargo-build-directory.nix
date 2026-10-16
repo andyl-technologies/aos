@@ -4,7 +4,8 @@
 ##! pruned before any nested `src` tree can be visited by the source filter.
 root: path: let
   pathString = toString path;
-  relative = builtins.substring
+  relative =
+    builtins.substring
     (builtins.stringLength (toString root) + 1)
     (builtins.stringLength pathString)
     pathString;
