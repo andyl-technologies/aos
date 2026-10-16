@@ -660,6 +660,12 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
                     ));
                 }
             }
+            for owner in &owners {
+                terrane_fs::host_quota::require_unused_project(
+                    &owner.roots[0].directory,
+                    owner.project_id,
+                )?;
+            }
             let ledger = Ledger {
                 version: 1,
                 epoch: config.epoch.clone(),

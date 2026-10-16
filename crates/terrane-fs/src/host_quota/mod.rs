@@ -49,3 +49,5 @@ mod custody;
 pub use custody::{
     DirectoryChild, directory_children, open_directory_child, set_directory_custody,
 };
+
+pub use native::require_unused_project;

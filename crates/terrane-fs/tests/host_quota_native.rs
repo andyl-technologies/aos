@@ -99,6 +99,7 @@ fn host_quota_native_privilege_and_helper_vm() {
     }
     let quota = NativeQuota::query(&roots[0].directory, 41001).expect("privileged actual query");
     assert_eq!(quota.hard_limit_bytes, 2 * 1024 * 1024);
+    assert!(terrane_fs::host_quota::require_unused_project(&roots[0].directory, 41001).is_err());
     let file = File::create(root.join("chunks/body")).expect("create body");
     file.set_len(1024 * 1024).expect("sparse logical length");
     assert!(synchronized_allocated_bytes(&file).expect("synchronized allocation") < 1024 * 1024);
