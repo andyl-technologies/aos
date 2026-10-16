@@ -71,7 +71,7 @@ rows. They do not create an additional wire or durable schema:
   have no standalone decoder or registry row. The HPET VMState subsections
   remain separate, registered migration formats.
 - `crucible.model.measurement-definitions.v2` and
-  `crucible.model.measurement-evaluation.v2` are `ContentHash` domains over
+  `crucible.model.measurement-evaluation.v3` are `ContentHash` domains over
   canonical JSON bodies. Neither string is a decoded schema discriminator.
   The `crucible.execution.measurement-definitions` and
   `crucible.execution.measurement-evaluation` registry rows remain version 1;

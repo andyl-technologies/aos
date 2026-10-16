@@ -202,13 +202,14 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
     ];
 
     let evaluation = evaluate_measurements(&definitions, &entries, samples.clone(), &terminal(40))?;
-    // This binds exact event hashes under the entry v6 identity domain.
+    // This binds exact boundary event hashes under the entry v6 identity domain
+    // and the v3 evaluation body.
     assert_eq!(
         evaluation.content_hash(),
         ContentHash {
             bytes: [
-                45, 92, 171, 248, 239, 244, 147, 112, 250, 122, 230, 131, 26, 62, 26, 124, 2, 36,
-                38, 81, 105, 72, 225, 219, 180, 189, 208, 70, 89, 74, 24, 157,
+                189, 149, 219, 213, 197, 3, 204, 136, 125, 68, 91, 235, 231, 8, 3, 84, 108, 5, 167,
+                200, 106, 80, 190, 51, 218, 217, 138, 211, 202, 160, 193, 21,
             ],
         }
     );
@@ -222,12 +223,11 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
     assert_eq!(end.sequence(), Some(3));
     assert_eq!(end.events().len(), 2);
     let metric = &outcome.metrics()[&MetricId::parse("samples")?];
-    assert_eq!(metric.samples().len(), 2);
+    assert_eq!(metric.samples(), 2);
     assert_eq!(
         metric.aggregate(),
         Some(&MeasurementAggregateValue::Unsigned(12))
     );
-    assert_eq!(metric.evidence().len(), 2);
     let verified = verify_measurement_evaluation(
         &definitions,
         &entries,
@@ -464,7 +464,7 @@ fn synthetic_ready_coordinate_excludes_earlier_samples() -> Result<(), Box<dyn E
         MeasurementWindowOutcome::Completed { .. }
     ));
     let metric = &outcome.metrics()[&MetricId::parse("sum")?];
-    assert_eq!(metric.samples().len(), 1);
+    assert_eq!(metric.samples(), 1);
     assert_eq!(
         metric.aggregate(),
         Some(&MeasurementAggregateValue::Unsigned(7))
@@ -557,8 +557,8 @@ fn model_sources_project_exact_replay_samples() -> Result<(), Box<dyn Error>> {
             timeout: None,
             cohort: CohortPolicy::All(vec![server.clone()]),
             metrics: vec![
-                model_metric("virtual-time", "virtual_ticks", MetricSource::VirtualTime)?,
-                model_metric(
+                level_metric("virtual-time", "virtual_ticks", MetricSource::VirtualTime)?,
+                level_metric(
                     "node-icount",
                     "instructions",
                     MetricSource::NodeIcount {
@@ -780,78 +780,6 @@ fn malformed_model_source_events_fail_closed() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[test]
-fn model_source_projection_amplification_stops_at_the_sample_bound() -> Result<(), Box<dyn Error>> {
-    let fixture = crate::happy_path_scenario()?;
-    let server = node("server");
-    let definitions = (0..4)
-        .map(|measurement| {
-            let metrics = (0..MAX_METRICS_PER_MEASUREMENT)
-                .map(|metric| {
-                    model_metric(
-                        &format!("scheduler-{metric}"),
-                        "events",
-                        MetricSource::SchedulerEventCount,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(MeasurementDefinition {
-                id: MeasurementId::parse(format!("bounded-{measurement}"))?,
-                begin: BoundarySelector::ScenarioGenesis,
-                end: BoundarySelector::SchedulerQuiescence,
-                timeout: None,
-                cohort: CohortPolicy::All(vec![server.clone()]),
-                metrics,
-            })
-        })
-        .collect::<Result<Vec<_>, MeasurementDefinitionError>>()?;
-    let definitions = MeasurementDefinitions::new(
-        fixture.scenario.world(),
-        fixture.scenario.plan(),
-        fixture.scenario.properties(),
-        definitions,
-    )?;
-    let entries = (0_u64..977)
-        .map(|sequence| {
-            retained_model_event(
-                sequence,
-                sequence,
-                &server,
-                "tick",
-                BTreeMap::from([
-                    (
-                        String::from("icount"),
-                        EventAttributeValue::Icount(Icount { retired: sequence }),
-                    ),
-                    (
-                        String::from("virtual_time"),
-                        EventAttributeValue::VirtualTime(VirtualTime { ticks: sequence }),
-                    ),
-                ]),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    assert_eq!(
-        definitions
-            .definitions()
-            .iter()
-            .map(|definition| definition.metrics.len())
-            .sum::<usize>()
-            * entries.len(),
-        4_001_792
-    );
-    // Projection work is linear in entries times declared metrics; the
-    // runtime sample bounds, not a whole-log visit bound, stop amplification.
-    assert!(matches!(
-        derive_model_measurement_samples(&definitions, &entries),
-        Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-runtime-samples" | "measurement-runtime-sample-bytes"
-        })
-    ));
-    Ok(())
-}
-
 fn model_metric(
     id: &str,
     unit: &str,
@@ -863,6 +791,18 @@ fn model_metric(
         unit: UnitId::parse(unit)?,
         source,
         aggregation: Aggregation::Sum,
+    })
+}
+
+/// Declares a level source with an aggregation independent of entry count.
+fn level_metric(
+    id: &str,
+    unit: &str,
+    source: MetricSource,
+) -> Result<MetricDefinition, MeasurementDefinitionError> {
+    Ok(MetricDefinition {
+        aggregation: Aggregation::EventDelta,
+        ..model_metric(id, unit, source)?
     })
 }
 
@@ -989,3 +929,5 @@ fn uncommitted_windows_keep_empty_tolerant_aggregates() -> Result<(), Box<dyn Er
     );
     Ok(())
 }
+
+mod streaming;

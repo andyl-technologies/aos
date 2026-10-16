@@ -11,8 +11,6 @@ pub(super) struct GuestMeasurementNormalizer<'definitions> {
     definitions: &'definitions MeasurementDefinitions,
     definitions_by_id: BTreeMap<MeasurementId, &'definitions MeasurementDefinition>,
     open: BTreeSet<(NodeId, MeasurementId, MeasurementInstanceKey)>,
-    sample_count: usize,
-    sample_work_bytes: usize,
 }
 
 impl<'definitions> GuestMeasurementNormalizer<'definitions> {
@@ -26,8 +24,6 @@ impl<'definitions> GuestMeasurementNormalizer<'definitions> {
             definitions,
             definitions_by_id,
             open: BTreeSet::new(),
-            sample_count: 0,
-            sample_work_bytes: 0,
         }
     }
 
@@ -110,35 +106,12 @@ impl<'definitions> GuestMeasurementNormalizer<'definitions> {
                             format!("metric `{metric}` is not guest-sourced"),
                         ));
                     }
-                    if self.sample_count == MAX_MEASUREMENT_RUNTIME_SAMPLES {
-                        return Err(crucible::model::MeasurementEvaluationError::LimitExceeded {
-                            limit: "measurement-runtime-samples",
-                        }
-                        .into());
-                    }
                     validate_guest_measurement_value(value, contract).map_err(|error| {
                         guest_measurement_error(entry.sequence(), error.to_string())
                     })?;
-                    self.sample_work_bytes = self
-                        .sample_work_bytes
-                        .checked_add(guest_sample_normalization_work(
-                            measurement.as_str(),
-                            metric.as_str(),
-                            value,
-                        )?)
-                        .ok_or(crucible::model::MeasurementEvaluationError::LimitExceeded {
-                            limit: "measurement-runtime-sample-bytes",
-                        })?;
-                    if self.sample_work_bytes > MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES {
-                        return Err(crucible::model::MeasurementEvaluationError::LimitExceeded {
-                            limit: "measurement-runtime-sample-bytes",
-                        }
-                        .into());
-                    }
                     let value = normalize_guest_measurement_value(value).map_err(|error| {
                         guest_measurement_error(entry.sequence(), error.to_string())
                     })?;
-                    self.sample_count += 1;
                     return Ok(Some(MeasurementRuntimeSample::new(
                         entry.sequence(),
                         measurement,
@@ -413,32 +386,6 @@ pub(super) fn validate_guest_measurement_value(
         });
     }
     Ok(())
-}
-
-fn guest_sample_normalization_work(
-    measurement: &str,
-    metric: &str,
-    value: &GuestMeasurementValue,
-) -> Result<usize, CrucibleMeasurementError> {
-    let value_bytes = match value {
-        GuestMeasurementValue::Signed(_)
-        | GuestMeasurementValue::Unsigned(_)
-        | GuestMeasurementValue::Rational(_)
-        | GuestMeasurementValue::Boolean(_) => 64,
-        GuestMeasurementValue::Enumerated(value) => value.len(),
-        GuestMeasurementValue::SignedVector(values) => values.len().saturating_mul(21),
-        GuestMeasurementValue::UnsignedVector(values) => values.len().saturating_mul(20),
-    };
-    256usize
-        .checked_add(measurement.len())
-        .and_then(|bytes| bytes.checked_add(metric.len()))
-        .and_then(|bytes| bytes.checked_add(value_bytes))
-        .ok_or_else(|| {
-            crucible::model::MeasurementEvaluationError::LimitExceeded {
-                limit: "measurement-runtime-sample-bytes",
-            }
-            .into()
-        })
 }
 
 fn validate_protocol_identifier(

@@ -445,7 +445,7 @@ fn v3_publication_round_trips_and_rederives_guest_and_model_samples() {
     );
     assert_eq!(
         publication.measurement_set().evaluation().payload_schema(),
-        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
+        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3
     );
 
     // Verification streams segments, so a source missing them fails closed.

@@ -328,7 +328,7 @@ pub use crucible_execution::{
     decode_crucible_attempt_execution_with_resources,
 };
 pub use crucible_measurement::{
-    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
     CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3,
     CrucibleMeasurementError, CrucibleMeasurementEvidenceBundle, CrucibleMeasurementPublication,
     CrucibleMeasurementReplayEvidence, CrucibleMeasurementStopEvidence,

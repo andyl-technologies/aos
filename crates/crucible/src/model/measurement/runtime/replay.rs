@@ -1,23 +1,79 @@
 //! Single forward pass over a scheduler log for measurement evaluation.
 //!
 //! [`MeasurementReplay`] folds authenticated scheduler entries one at a time.
-//! Its state is bounded by the declared measurements and the samples they
-//! admit: window progress per definition, the admitted samples, and the
-//! scheduler coordinates of the entries carrying them. It never retains the
-//! log itself, so a caller can stream entries from storage in order.
+//! Each entry advances every window, and each sample the entry carries is
+//! folded into its metric's aggregate at once if its window is open there.
+//! The replay keeps window progress and one [`MetricFold`] per declared metric,
+//! so its state is bounded by the declarations rather than by the log or the
+//! samples it carries (RFC-0020 CMEAS-23). It never retains the log itself, so
+//! a caller can stream entries from storage in order.
 //!
 //! [`ModelSampleProjector`] derives model-owned samples for one entry. It is a
 //! separate producer, like the guest protocol adapter, so callers decide which
 //! producers feed a replay.
 
 use super::boundary::WindowProgress;
+use super::fold::MetricFold;
 use super::*;
 
-/// Scheduler coordinates of one entry that carries at least one sample.
-#[derive(Clone, Copy)]
-struct SampleEntry {
-    at: VirtualTime,
-    content_hash: ContentHash,
+/// Replay state for one declared measurement.
+struct MeasurementFolds<'definition> {
+    definition: &'definition MeasurementDefinition,
+    window: WindowProgress<'definition>,
+    // Whether the window is open at the entry being observed.
+    inside: bool,
+    // Samples admitted while the window is open, in declared metric order.
+    folds: Vec<MetricFold>,
+    // Samples at the terminal coordinate that arrived before any entry opened
+    // the window. A begin boundary resolved only at the terminal coordinate
+    // has exactly that coordinate, so these are the samples it admits.
+    terminal_folds: Vec<MetricFold>,
+    // Sequence of each metric's last sample, which rejects a second sample
+    // for one metric on one entry.
+    last_sample: Vec<Option<u64>>,
+}
+
+impl<'definition> MeasurementFolds<'definition> {
+    fn new(
+        definition: &'definition MeasurementDefinition,
+        scenario_ready_at: Option<VirtualTime>,
+    ) -> Self {
+        let folds = definition
+            .metrics
+            .iter()
+            .map(MetricFold::new)
+            .collect::<Vec<_>>();
+        Self {
+            definition,
+            window: WindowProgress::new(definition, scenario_ready_at),
+            inside: false,
+            terminal_folds: folds.clone(),
+            folds,
+            last_sample: vec![None; definition.metrics.len()],
+        }
+    }
+
+    fn finish(
+        self,
+        terminal: &MeasurementTerminalState,
+    ) -> Result<MeasurementOutcome, MeasurementEvaluationError> {
+        let opened_by_entry = self.window.is_opened();
+        let window = self.window.finish(terminal);
+        let folds = if opened_by_entry || matches!(window, MeasurementWindowOutcome::NotStarted) {
+            self.folds
+        } else {
+            self.terminal_folds
+        };
+
+        let mut metrics = BTreeMap::new();
+        for (metric, fold) in self.definition.metrics.iter().zip(folds) {
+            metrics.insert(
+                metric.id.clone(),
+                fold.finish(&metric.aggregation, &window)?,
+            );
+        }
+        Ok(MeasurementOutcome { window, metrics })
+    }
 }
 
 /// Incremental measurement evaluation over a dense scheduler log.
@@ -54,14 +110,8 @@ struct SampleEntry {
 pub struct MeasurementReplay<'definitions> {
     definitions: &'definitions MeasurementDefinitions,
     terminal: &'definitions MeasurementTerminalState,
-    definitions_by_id: BTreeMap<&'definitions MeasurementId, &'definitions MeasurementDefinition>,
-    windows: Vec<WindowProgress<'definitions>>,
-    samples: SampleIndex,
-    sample_count: usize,
-    // Length of the samples' canonical JSON array, counted incrementally so
-    // the bound matches encoding every admitted sample at once.
-    sample_bytes: usize,
-    sample_entries: BTreeMap<u64, SampleEntry>,
+    positions: BTreeMap<&'definitions MeasurementId, usize>,
+    measurements: Vec<MeasurementFolds<'definitions>>,
     last_sequence: Option<u64>,
 }
 
@@ -83,25 +133,22 @@ impl<'definitions> MeasurementReplay<'definitions> {
             });
         }
 
-        let definitions_by_id = definitions
+        let positions = definitions
             .definitions()
             .iter()
-            .map(|definition| (&definition.id, definition))
+            .enumerate()
+            .map(|(position, definition)| (&definition.id, position))
             .collect();
-        let windows = definitions
+        let measurements = definitions
             .definitions()
             .iter()
-            .map(|definition| WindowProgress::new(definition, terminal.scenario_ready_at))
+            .map(|definition| MeasurementFolds::new(definition, terminal.scenario_ready_at))
             .collect();
         Ok(Self {
             definitions,
             terminal,
-            definitions_by_id,
-            windows,
-            samples: SampleIndex::new(),
-            sample_count: 0,
-            sample_bytes: "[]".len(),
-            sample_entries: BTreeMap::new(),
+            positions,
+            measurements,
             last_sequence: None,
         })
     }
@@ -116,8 +163,7 @@ impl<'definitions> MeasurementReplay<'definitions> {
     /// Returns [`MeasurementEvaluationError`] when the entry fails its content
     /// hash, does not follow the previous entry densely, lies beyond the
     /// terminal coordinate or icount, or when a sample names another sequence,
-    /// an undeclared target, a mistyped value, a duplicate, or exceeds the
-    /// sample count or byte bound.
+    /// an undeclared target, a mistyped value, or a duplicate.
     pub fn observe(
         &mut self,
         entry: &SchedulerEventLogEntry,
@@ -125,23 +171,11 @@ impl<'definitions> MeasurementReplay<'definitions> {
     ) -> Result<(), MeasurementEvaluationError> {
         self.admit_entry(entry)?;
 
-        let mut carries_sample = false;
+        for measurement in &mut self.measurements {
+            measurement.inside = measurement.window.observe(entry);
+        }
         for sample in samples {
-            self.admit_sample(entry, sample)?;
-            carries_sample = true;
-        }
-        if carries_sample {
-            self.sample_entries.insert(
-                entry.sequence(),
-                SampleEntry {
-                    at: entry.at(),
-                    content_hash: entry.content_hash(),
-                },
-            );
-        }
-
-        for window in &mut self.windows {
-            window.observe(entry);
+            self.fold_sample(entry, sample)?;
         }
         Ok(())
     }
@@ -153,7 +187,7 @@ impl<'definitions> MeasurementReplay<'definitions> {
     /// Returns [`MeasurementEvaluationError`] when the scenario-ready
     /// coordinate follows the terminal coordinate, an aggregate fails exact
     /// arithmetic, or the evaluation exceeds its canonical byte bound.
-    pub fn finish(mut self) -> Result<MeasurementEvaluation, MeasurementEvaluationError> {
+    pub fn finish(self) -> Result<MeasurementEvaluation, MeasurementEvaluationError> {
         if self
             .terminal
             .scenario_ready_at
@@ -165,21 +199,9 @@ impl<'definitions> MeasurementReplay<'definitions> {
         }
 
         let mut outcomes = BTreeMap::new();
-        for (definition, window) in self.definitions.definitions().iter().zip(self.windows) {
-            let window = window.finish(self.terminal);
-            let mut metrics = BTreeMap::new();
-            for metric in &definition.metrics {
-                let offered = self
-                    .samples
-                    .remove(&(definition.id.clone(), metric.id.clone()))
-                    .unwrap_or_default();
-                let outcome = metric_outcome(metric, &window, offered, &self.sample_entries)?;
-                metrics.insert(metric.id.clone(), outcome);
-            }
-            outcomes.insert(
-                definition.id.clone(),
-                MeasurementOutcome { window, metrics },
-            );
+        for measurement in self.measurements {
+            let id = measurement.definition.id.clone();
+            outcomes.insert(id, measurement.finish(self.terminal)?);
         }
         MeasurementEvaluation::new(self.definitions.content_hash(), outcomes)
     }
@@ -223,7 +245,7 @@ impl<'definitions> MeasurementReplay<'definitions> {
         Ok(())
     }
 
-    fn admit_sample(
+    fn fold_sample(
         &mut self,
         entry: &SchedulerEventLogEntry,
         sample: MeasurementRuntimeSample,
@@ -233,113 +255,55 @@ impl<'definitions> MeasurementReplay<'definitions> {
                 sequence: sample.sequence,
             });
         }
-        validate_sample_target(&self.definitions_by_id, &sample)?;
+        let (position, metric) = locate_sample_target(&self.positions, self.definitions, &sample)?;
+        let at_terminal = entry.at() == self.terminal.at;
 
-        if self.sample_count == MAX_MEASUREMENT_RUNTIME_SAMPLES {
-            return Err(MeasurementEvaluationError::LimitExceeded {
-                limit: "measurement-runtime-samples",
-            });
-        }
-        let separator = usize::from(self.sample_count > 0);
-        let encoded = encoded_runtime_sample_len(&sample)?;
-        self.sample_bytes = self
-            .sample_bytes
-            .checked_add(separator)
-            .and_then(|length| length.checked_add(encoded))
-            .filter(|length| *length <= MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES)
-            .ok_or(MeasurementEvaluationError::LimitExceeded {
-                limit: "measurement-runtime-sample-bytes",
-            })?;
-
-        let retained = self
-            .samples
-            .entry((sample.measurement.clone(), sample.metric.clone()))
-            .or_default();
-        if retained
-            .last()
-            .is_some_and(|previous| previous.sequence == sample.sequence)
-        {
+        let measurement = &mut self.measurements[position];
+        if measurement.last_sample[metric] == Some(sample.sequence) {
             return Err(MeasurementEvaluationError::DuplicateSample {
                 measurement: sample.measurement,
                 metric: sample.metric,
                 sequence: sample.sequence,
             });
         }
-        retained.push(sample);
-        self.sample_count += 1;
+        measurement.last_sample[metric] = Some(sample.sequence);
+
+        if measurement.inside {
+            measurement.folds[metric].observe(&sample.value);
+        } else if at_terminal && !measurement.window.is_opened() {
+            measurement.terminal_folds[metric].observe(&sample.value);
+        }
         Ok(())
     }
 }
 
-/// Selects the samples a window admits and recomputes their aggregate.
-fn metric_outcome(
-    metric: &MetricDefinition,
-    window: &MeasurementWindowOutcome,
-    offered: Vec<MeasurementRuntimeSample>,
-    sample_entries: &BTreeMap<u64, SampleEntry>,
-) -> Result<MeasurementMetricOutcome, MeasurementEvaluationError> {
-    let mut samples = Vec::new();
-    let mut evidence = Vec::new();
-    for sample in offered {
-        let entry = sample_entries.get(&sample.sequence).ok_or(
-            MeasurementEvaluationError::UnknownSampleSequence {
-                sequence: sample.sequence,
-            },
-        )?;
-        if window.includes(entry.at, sample.sequence) {
-            evidence.push(entry.content_hash);
-            samples.push(sample);
-        }
-    }
-
-    let values = samples
-        .iter()
-        .map(|sample| sample.value.clone())
-        .collect::<Vec<_>>();
-    // Only a completed window commits a measurement. A window that never
-    // opened, is still open, or timed out may lack every sample, so an
-    // aggregation undefined on empty input is reported absent rather than
-    // failing the whole evaluation.
-    let aggregate = if values.is_empty()
-        && !matches!(window, MeasurementWindowOutcome::Completed { .. })
-        && aggregation_requires_samples(&metric.aggregation)
-    {
-        None
-    } else {
-        Some(aggregate_metric_samples(metric, &values)?)
-    };
-    Ok(MeasurementMetricOutcome {
-        samples,
-        aggregate,
-        evidence,
-    })
-}
-
-fn validate_sample_target(
-    definitions_by_id: &BTreeMap<&MeasurementId, &MeasurementDefinition>,
+/// Resolves a sample's declared measurement and metric positions.
+fn locate_sample_target(
+    positions: &BTreeMap<&MeasurementId, usize>,
+    definitions: &MeasurementDefinitions,
     sample: &MeasurementRuntimeSample,
-) -> Result<(), MeasurementEvaluationError> {
-    let definition = definitions_by_id.get(&sample.measurement).ok_or_else(|| {
+) -> Result<(usize, usize), MeasurementEvaluationError> {
+    let position = *positions.get(&sample.measurement).ok_or_else(|| {
         MeasurementEvaluationError::UnknownSampleTarget {
             kind: "measurement",
             id: sample.measurement.as_str().to_owned(),
         }
     })?;
-    let metric = definition
-        .metrics
+    let metrics = &definitions.definitions()[position].metrics;
+    let metric = metrics
         .iter()
-        .find(|metric| metric.id == sample.metric)
+        .position(|metric| metric.id == sample.metric)
         .ok_or_else(|| MeasurementEvaluationError::UnknownSampleTarget {
             kind: "metric",
             id: sample.metric.as_str().to_owned(),
         })?;
-    if !sample_matches_type(&sample.value, &metric.value_type) {
+    if !sample_matches_type(&sample.value, &metrics[metric].value_type) {
         return Err(MeasurementEvaluationError::SampleTypeMismatch {
             measurement: sample.measurement.clone(),
             metric: sample.metric.clone(),
         });
     }
-    Ok(())
+    Ok((position, metric))
 }
 
 /// Derives model-owned samples one scheduler entry at a time.

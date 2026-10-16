@@ -950,7 +950,7 @@ fn guest_measurement_messages_normalize_against_the_exact_scenario_contract() {
 
     assert!(payload.contains("\"driver-window\""));
     assert!(payload.contains("\"healthy-peers\""));
-    assert!(payload.contains("\"sequence\":1"));
+    assert!(payload.contains("\"samples\":1"));
     assert!(payload.contains("\"value\":3"));
 }
 

@@ -15,7 +15,7 @@ use crucible_campaign::{
 };
 
 use crate::{
-    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2, CampaignRuntimeDriver,
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3, CampaignRuntimeDriver,
     CampaignRuntimeStepDisposition, CrucibleArtifactError, CrucibleMeasurementError,
     CrucibleMeasurementReplayEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     decode_crucible_scenario_artifact, evaluate_crucible_objectives,
@@ -179,10 +179,10 @@ fn require_current_measurement_payload(
     measurements: &MeasurementSet,
 ) -> Result<(), CrucibleMeasurementError> {
     let actual = measurements.evaluation().payload_schema();
-    if actual != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if actual != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
             actual,
-            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
         });
     }
     Ok(())
@@ -250,7 +250,7 @@ mod tests {
             require_current_measurement_payload(&measurements),
             Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
                 actual: 1,
-                expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+                expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
             })
         ));
     }

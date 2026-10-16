@@ -69,7 +69,7 @@ use super::{
     prepare_original_reproduction, replay_recorded_signature_pass,
 };
 use crate::{
-    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2, CrucibleMeasurementError,
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3, CrucibleMeasurementError,
     CrucibleMeasurementReplayEvidence, MemorySegmentStore, measurement_replay_leaf_id,
     verify_crucible_measurement_publication,
 };
@@ -934,7 +934,7 @@ fn validate_measurement_evidence(
 }
 
 fn measurement_requires_replay_evidence(measurement: &MeasurementSet) -> bool {
-    measurement.evaluation().payload_schema() == CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
+    measurement.evaluation().payload_schema() == CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3
 }
 
 fn validate_observation_stop_evidence(
@@ -956,7 +956,7 @@ fn validate_observation_stop_evidence(
     }
 
     let evaluation = candidate.measurements().evaluation();
-    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Err(inconsistent("observation stop measurement evidence"));
     }
     let evidence = measurement_replay_leaf_id(evaluation.evidence())
@@ -982,7 +982,7 @@ fn verify_measurement_record(
     log_segments: &MemorySegmentStore,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let evaluation = measurement.evaluation();
-    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Ok(());
     }
     let evidence_id = measurement_replay_leaf_id(evaluation.evidence())
@@ -1014,7 +1014,7 @@ fn validate_measurement_record(
     owned: &mut BTreeSet<crucible_cas::content_store::ContentId>,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let evaluation = measurement.evaluation();
-    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Ok(());
     }
     let evidence_id = measurement_replay_leaf_id(evaluation.evidence())

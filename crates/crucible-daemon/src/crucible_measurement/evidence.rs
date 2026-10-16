@@ -36,14 +36,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
 use crucible::model::{
-    BoundarySelector, CohortPolicy, MAX_MEASUREMENT_EVENT_ENTRIES,
-    MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES, MAX_MEASUREMENT_RUNTIME_SAMPLES,
-    MAX_MEASUREMENT_TERMINAL_NODES, MeasurementDefinition, MeasurementDefinitions,
-    MeasurementEvaluation, MeasurementEvaluationError, MeasurementId, MeasurementInstanceKey,
-    MeasurementReplay, MeasurementRuntimeSample, MeasurementSampleValue, MeasurementTerminalState,
-    MetricDefinition, MetricId, MetricSource, MetricValueType, ModelSampleProjector,
-    ReducedRational, append_model_measurement_samples, evaluate_measurements,
-    validate_measurement_event_log,
+    BoundarySelector, CohortPolicy, MAX_MEASUREMENT_EVENT_ENTRIES, MAX_MEASUREMENT_TERMINAL_NODES,
+    MeasurementDefinition, MeasurementDefinitions, MeasurementEvaluation,
+    MeasurementEvaluationError, MeasurementId, MeasurementInstanceKey, MeasurementReplay,
+    MeasurementRuntimeSample, MeasurementSampleValue, MeasurementTerminalState, MetricDefinition,
+    MetricId, MetricSource, MetricValueType, ModelSampleProjector, ReducedRational,
+    append_model_measurement_samples, evaluate_measurements, validate_measurement_event_log,
 };
 use crucible::{
     AssertionPhase, EventLogOffset, EventSource, GuestMeasurementEvent, GuestMeasurementValue,
@@ -87,8 +85,11 @@ use guest::validate_guest_measurement_value;
 use guest::{GuestMeasurementNormalizer, normalize_guest_measurements};
 use wire::{EvidenceWire, EvidenceWireRef, enforce_evidence_bytes, measure_canonical_bytes};
 
-/// Payload schema requiring retained raw replay evidence.
-pub const CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2: u32 = 2;
+/// Payload schema carrying a folded evaluation and retained raw replay evidence.
+///
+/// Version 3 carries `crucible.model.measurement-evaluation.v3`, whose metrics
+/// report a sample count and aggregate rather than every sample.
+pub const CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3: u32 = 3;
 
 /// Content-object schema embedding the complete log; read-only.
 pub const CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2: u32 = 2;
@@ -808,7 +809,7 @@ fn evaluate_crucible_measurement_evidence(
     )?;
     let measurement_set = MeasurementSet::from_evaluation(
         campaign_hash(evaluation.definitions()),
-        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
         campaign_hash(evaluation.content_hash()),
         evaluation.canonical_bytes().to_vec(),
         evidence.evidence_ids()?,
@@ -840,10 +841,10 @@ pub fn verify_crucible_measurement_publication(
     definitions: &MeasurementDefinitions,
 ) -> Result<MeasurementEvaluation, CrucibleMeasurementError> {
     let retained = measurement_set.evaluation();
-    if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
             actual: retained.payload_schema(),
-            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
         });
     }
     if retained.evidence() != &evidence.evidence_ids()? {

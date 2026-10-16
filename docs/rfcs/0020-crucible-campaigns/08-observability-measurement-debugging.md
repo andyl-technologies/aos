@@ -126,22 +126,37 @@ rather than silently undercounting. Guest and model samples are merged only
 after independent source validation and before the common window and
 aggregation evaluator.
 
-Projection admits at most 4,000,000 model-metric-by-event visits, 1,000,000
-emitted samples, and 64 MiB of aggregate canonical sample JSON. These checks
-use checked arithmetic and run before proportional allocation. The same log
-and definitions therefore produce byte-identical samples regardless of host
-timing or adapter call order.
+Both producers emit an entry's samples while that entry is replayed, and the
+evaluator folds each sample into its metric's aggregate at once; no sample
+outlives its entry. Projection work per entry is bounded by the declared model
+metrics, so neither the sample count nor the log length bounds memory. The same
+log and definitions therefore produce byte-identical results regardless of
+host timing or adapter call order.
+
+`virtual_time` and `node_icount` are level sources: they report a coordinate
+at every entry that carries one, so the number of samples they produce depends
+on how finely the scheduler divided the run. Only aggregations that depend on
+a window's endpoints or extremes, `first`, `last`, `event_delta`, `min`, and
+`max`, are defined over them. Event sources (`modeled_event_count`,
+`network_modeled_drop_count`, `storage_completion_count`, and
+`scheduler_event_count`) and guest samples admit every aggregation.
+
+- **[CMEAS-23]** Measurement evaluation MUST fold each admitted sample into its
+  metric's aggregate when the sample's entry is replayed and MUST NOT retain
+  samples or per-sample evidence. Its state MUST be bounded by the declared
+  measurements, metrics, and histogram bins, independent of log length.
+  Scenario validation MUST reject `count`, `sum`, `exact_mean`, and
+  `histogram` over the level sources `virtual_time` and `node_icount`.
 
 The pure replay result is
-`crucible.model.measurement-evaluation.v2`. Evaluation first authenticates a
-dense scheduler-log range, then admits at most 1,000,000 normalized samples and
-1,000,000 scheduler entries. Normalized samples have a separate aggregate
-64-MiB canonical-body limit, and terminal input contains at most 65,536 node
-counters. The checked product of all begin/end selector-tree nodes and scheduler
-entries plus the terminal visit is at most 4,000,000 visits. A fixed-memory
-preflight also caps the final canonical evaluation body at 32 MiB. These are
-deliberate aggregate work bounds: individual schema maxima are not promised to
-compose without limit.
+`crucible.model.measurement-evaluation.v3`. Evaluation authenticates each
+scheduler entry as it streams, in dense order, and terminal input contains at
+most 65,536 node counters. A window decides whether an entry lies inside it
+when that entry is replayed, except that a begin boundary resolved only at the
+terminal coordinate admits the samples at that coordinate; the evaluator keeps
+one pending fold per unopened window for the samples at the latest virtual
+time and discards it when time advances. A fixed-memory preflight caps the
+final canonical evaluation body at 32 MiB.
 
 The canonical v1 evaluation body is whitespace-free UTF-8 JSON with this
 language-neutral shape (brackets denote ordered collections, not literal JSON
@@ -153,9 +168,8 @@ Evaluation = {
   measurement: { MeasurementId: { window: Window, metrics: { MetricId: Metric } } }
 }
 Metric = {
-  samples: [{ sequence, measurement, metric, value }],
-  aggregate: Aggregate | null,
-  evidence: [ContentHash]
+  samples: u64,
+  aggregate: Aggregate | null
 }
 Boundary = { sequence: u64|null, at: VirtualTime, events: [Event], cohort: [NodeId] }
 Event = { sequence: u64, content_hash: ContentHash }
@@ -171,10 +185,12 @@ lowercase `snake_case` `kind` plus `value`; their common tags are `signed`,
 `unsigned`, `rational`, `boolean`, `enumerated`, `signed_vector`, and
 `unsigned_vector`, and aggregates additionally admit `histogram`. A rational
 value is `{negative,numerator,denominator}` in that order. `ContentHash` remains
-`{bytes:[32 u8]}`. The identity is
-`H("crucible.model.measurement-evaluation.v2", lowercase_hex(body))`. A
-present aggregate encodes exactly as before `null` was admitted, so every
-body without a `null` aggregate keeps its identity.
+`{bytes:[32 u8]}`. A metric's `samples` is the number of samples its window
+admitted. The identity is
+`H("crucible.model.measurement-evaluation.v3", lowercase_hex(body))`. Version 3
+drops version 2's per-sample list and per-sample entry hashes: both are a pure
+function of the replayed log, which the measurement set already references
+segment by segment ([CMEAS-20]), so [CMEAS-8] is met by derivation.
 
 Each satisfying boundary retains its completing sequence and virtual-time
 coordinate plus the exact scheduler-entry hashes in scheduler order and the
@@ -297,9 +313,9 @@ constructing a scheduler event. RFC-0010 §16.5 owns the byte-exact layout and
 golden vectors.
 
 The scenario predeclares accepted measurement and metric IDs, metric types and
-units, exact marker/instance boundary pairs, and node/cohort policies. One run
-retains at most 1,000,000 scheduler entries and at most 65,536 simultaneously
-open `(node,measurement,instance)` tuples. `MeasurementBegin` opens exactly one
+units, exact marker/instance boundary pairs, and node/cohort policies. A run
+holds at most 65,536 simultaneously open `(node,measurement,instance)` tuples.
+`MeasurementBegin` opens exactly one
 tuple; duplicate begin, sample/end without an open tuple, and an unclosed tuple
 at sealing are terminal guest-protocol violations. A sample must name a guest-
 sourced declared metric and match its declared type, enumerated vocabulary, and
@@ -375,8 +391,8 @@ plus canonical framing fits one generic envelope. `definitions` and
 `evaluation` are the exact raw execution-model identities; the payload schema
 selects the model-specific verifier. The campaign layer retains those bytes and
 generic evidence children but never treats a caller-asserted hash as semantic
-proof. Current Crucible payload schema 2 retains the canonical
-`crucible.model.measurement-evaluation.v2` body and adds an exact raw-input
+proof. Current Crucible payload schema 3 retains the canonical
+`crucible.model.measurement-evaluation.v3` body and adds an exact raw-input
 contract. Its `evidence` set contains one `Trace` content ID using
 `crucible.executor.measurement-replay-evidence.v3` plus the attempt-log segment
 leaves it references. The strict canonical CBOR manifest binds the
@@ -479,7 +495,7 @@ floating point.
 
 The execution-model adapter owns the semantic projection from a verified model
 measurement payload to objective values. For current Crucible measurement
-payload schema 2, objective names are `measurement-id.metric-id`; the adapter
+payload schema 3, objective names are `measurement-id.metric-id`; the adapter
 verifies the definition hash, evaluation hash, payload bytes, and observation's
 exact measurement-set identity, accepts only scalar numeric aggregates, and
 rejects ambiguous qualified names or nonnumeric aggregates. A caller must first

@@ -387,7 +387,8 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   constructs a byte automaton cannot decide causally, and checkpoint one
   automaton state per declared node and pattern.
 - [ ] **T-CAM-3.10** Publish measurement replay evidence v3 as a manifest of
-  ordered segment leaves, verify and rederive measurements in one forward pass,
+  ordered segment leaves, verify and rederive measurements in one forward pass
+  that folds samples into per-metric aggregates (measurement evaluation v3),
   and stream the seal-time assertion check and reproduction trace hash.
 
 **Gates:** `gate:campaign-model`, `gate:campaign-replay`, guest protocol

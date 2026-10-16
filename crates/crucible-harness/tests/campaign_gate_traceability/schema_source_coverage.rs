@@ -309,7 +309,7 @@ fn measurement_hash_domains_do_not_relabel_payload_versions() {
         "ContentHash::from_canonical_hex_bytes(\n            \"crucible.model.measurement-definitions.v2\""
     ));
     assert!(evaluation.contains(
-        "ContentHash::from_canonical_hex_bytes(\n            \"crucible.model.measurement-evaluation.v2\""
+        "ContentHash::from_canonical_hex_bytes(\n            \"crucible.model.measurement-evaluation.v3\""
     ));
     assert_eq!(
         registry.get("crucible.execution.measurement-definitions"),

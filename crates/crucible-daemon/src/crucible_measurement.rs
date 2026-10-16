@@ -32,7 +32,7 @@ pub(crate) use evidence::{
 pub(crate) use evidence::{observation_event_prefix_digest, verified_assertion_transition};
 
 pub use evidence::{
-    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
     CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3,
     CrucibleMeasurementEvidenceBundle, CrucibleMeasurementPublication,
     CrucibleMeasurementReplayEvidence, CrucibleMeasurementStopEvidence,
@@ -256,10 +256,10 @@ pub fn evaluate_crucible_objectives(
     properties: &PropertyVerdictSet,
 ) -> Result<ObjectiveEvaluation, CrucibleMeasurementError> {
     let retained = measurement_set.evaluation();
-    if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
             actual: retained.payload_schema(),
-            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
         });
     }
     if retained.definitions() != campaign_hash(evaluation.definitions()) {

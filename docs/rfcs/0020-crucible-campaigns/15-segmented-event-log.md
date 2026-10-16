@@ -230,16 +230,16 @@ MeasurementReplayEvidence v3
 
 Each segment is a separate trace leaf referenced as an evidence child.
 Measurement derivation is a single forward pass: guest normalization and model
-sampling already fold forward, and window evaluation reads each sample's
-originating entry from a side table filled during the same pass, sized by the
-sample count rather than the log length.
+projection emit each entry's samples, and window evaluation folds them into
+per-metric aggregates as the entry is replayed ([CMEAS-23]). No sample, sample
+index, or per-sample evidence survives its entry.
 
 - **[CMEAS-20]** Measurement replay evidence MUST reference the attempt log as
   ordered segment leaves and MUST NOT embed entries. Verification MUST fetch
   and authenticate segments in order against the chain, MUST fail closed on a
   missing, reordered, substituted, or non-dense segment, and MUST rederive and
-  exact-compare samples and evaluations in one forward pass whose state is
-  bounded by the declared measurements and their samples.
+  exact-compare evaluations in one forward pass whose state is bounded by the
+  declared measurements ([CMEAS-23]).
 - **[CMEAS-21]** The seal-time assertion check MUST consume segments in order
   with lookahead of at most one atomic evaluation batch and MUST produce the
   same verdicts as the live fold ([OBS-26]). The reproduction trace hash MUST

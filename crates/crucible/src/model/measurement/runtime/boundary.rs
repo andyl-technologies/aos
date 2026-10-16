@@ -295,9 +295,16 @@ impl<'definition> WindowProgress<'definition> {
         }
     }
 
-    pub(super) fn observe(&mut self, entry: &SchedulerEventLogEntry) {
+    /// Advances the window by one entry and reports whether it lies inside.
+    ///
+    /// An entry is inside when the window is open at it: on or after the
+    /// begin boundary and no later than the entry that completes the end
+    /// boundary or timeout. Membership is final when reported, except for a
+    /// begin boundary that only the terminal coordinate resolves, which
+    /// [`Self::is_opened`] lets the caller anticipate.
+    pub(super) fn observe(&mut self, entry: &SchedulerEventLogEntry) -> bool {
         if self.decided.is_some() {
-            return;
+            return false;
         }
         if self.timeout_awaits_first_entry {
             self.timeout_awaits_first_entry = false;
@@ -314,10 +321,10 @@ impl<'definition> WindowProgress<'definition> {
             }
         }
         let Some(opened) = &self.opened else {
-            return;
+            return false;
         };
         if !entry_not_before_boundary(entry, opened) {
-            return;
+            return false;
         }
 
         if let Some(completed) = self
@@ -335,6 +342,12 @@ impl<'definition> WindowProgress<'definition> {
                 timeout: expired,
             });
         }
+        true
+    }
+
+    /// Reports whether an observed entry has opened the window.
+    pub(super) const fn is_opened(&self) -> bool {
+        self.opened.is_some()
     }
 
     pub(super) fn finish(

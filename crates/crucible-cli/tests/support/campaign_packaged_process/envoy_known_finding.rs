@@ -337,7 +337,7 @@ fn verify_measured_objective(
     }
     let traffic = &evaluation.outcomes()[&MeasurementId::parse("traffic_loss_packets")?];
     let drops = &traffic.metrics()[&MetricId::parse("modeled_drop_count")?];
-    if drops.samples().is_empty()
+    if drops.samples() == 0
         || !matches!(
             drops.aggregate(),
             Some(MeasurementAggregateValue::Unsigned(_))

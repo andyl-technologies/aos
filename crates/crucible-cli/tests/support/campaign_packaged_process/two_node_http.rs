@@ -764,9 +764,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
 -> Result<(), Box<dyn Error>> {
     use crucible_campaign::{ConfigurationId, ScenarioDefId};
     use crucible_core::SchedulerEventLogEntry;
-    use crucible_core::model::{
-        MeasurementAggregateValue, MeasurementSampleValue, MeasurementTerminalState,
-    };
+    use crucible_core::model::{MeasurementAggregateValue, MeasurementTerminalState};
     use crucible_daemon::{
         CrucibleMeasurementError, MemorySegmentStore, evaluate_crucible_measurement_publication,
         verify_crucible_measurement_publication,
@@ -932,11 +930,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         assert_eq!(begin.events()[0].content_hash(), marker.content_hash());
 
         let metric = &outcome.metrics()[&MetricId::parse("completion_virtual_time")?];
-        assert_eq!(metric.samples().len(), 1);
-        assert_eq!(
-            metric.samples()[0].value(),
-            &MeasurementSampleValue::Unsigned(marker.at().ticks)
-        );
+        assert_eq!(metric.samples(), 1);
         assert_eq!(
             metric.aggregate(),
             Some(&MeasurementAggregateValue::Unsigned(marker.at().ticks))
