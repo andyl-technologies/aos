@@ -456,3 +456,36 @@ fn host_mirror_transitions_round_trip_one_completed_request()
     assert_eq!(SelectableCatalogPlan::decode(&plan.encode()?)?, plan);
     Ok(())
 }
+
+#[test]
+fn payload_geometry_counts_pending_and_abandoned_continuations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut plan = restored_plan()?;
+    let before = plan.clone();
+    // 136-byte header, two framed registrations (92 + 90), registered IDs
+    // (18 + 16), one completed counter (24), and the 160-byte pending buffer.
+    assert_eq!(plan.encoded_len()?, 536);
+    assert_eq!(plan, before);
+    let encoded = plan.encode()?;
+    assert_eq!(encoded.len(), 536);
+    assert_eq!(&encoded[16..20], &[0, 0, 2, 24]);
+    assert_eq!(SelectableCatalogPlan::decode(&encoded)?, plan);
+
+    let pending = plan
+        .continuation()
+        .pending()
+        .ok_or("pending fixture")?
+        .clone();
+    plan.apply_reset_abandonment(&pending)?;
+    // Replace the 160-byte pending buffer with its 26-byte abandoned-ID counter.
+    // The completed counter remains in this same immutable catalog.
+    assert_eq!(plan.encoded_len()?, 402);
+    let encoded = plan.encode()?;
+    assert_eq!(encoded.len(), 402);
+    assert_eq!(SelectableCatalogPlan::decode(&encoded)?, plan);
+    assert!(matches!(
+        checked_add(usize::MAX, 1),
+        Err(SelectableCatalogPlanError::LengthOverflow)
+    ));
+    Ok(())
+}

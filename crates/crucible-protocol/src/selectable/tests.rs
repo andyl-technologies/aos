@@ -28,6 +28,7 @@ fn selected_reply() -> Result<SelectionReply, SelectableProtocolError> {
 #[test]
 fn selectable_registration_v1_has_frozen_canonical_bytes() -> Result<(), SelectableProtocolError> {
     let register = register()?;
+    assert_eq!(register.encoded_len()?, 68);
     let bytes = register.encode()?;
     let expected = [
         1, 0, 1, 0, 56, 0, 0, 0, 68, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 56, 0, 0, 0, 3, 0, 0, 0, 59,
@@ -43,6 +44,7 @@ fn selectable_registration_v1_has_frozen_canonical_bytes() -> Result<(), Selecta
 fn selection_request_v1_reserves_one_exact_zeroed_reply_buffer()
 -> Result<(), SelectableProtocolError> {
     let request = request()?;
+    assert_eq!(request.encoded_len()?, 104);
     let bytes = request.encode()?;
     assert_eq!(bytes.len(), 104);
     assert_eq!(
@@ -278,5 +280,36 @@ fn selection_request_optional_domain_flag_and_capacity_are_exact()
             field: "narrowed_domain"
         })
     );
+    Ok(())
+}
+
+#[test]
+fn length_queries_keep_nested_message_capacity_refusals() -> Result<(), SelectableProtocolError> {
+    let mut request = request()?;
+    request.reply_capacity = 48;
+    let before = request.clone();
+    assert!(matches!(
+        request.encoded_len(),
+        Err(SelectableProtocolError::ReplyCapacityTooSmall { capacity: 48, .. })
+    ));
+    assert_eq!(
+        request.encode().unwrap_err(),
+        request.encoded_len().unwrap_err()
+    );
+    assert_eq!(request, before);
+
+    request.reply_capacity = usize::MAX;
+    assert_eq!(
+        request.encode().unwrap_err(),
+        request.encoded_len().unwrap_err()
+    );
+    let mut register = register()?;
+    register.domain.resize(SELECTABLE_MESSAGE_MAX_BYTES, 1);
+    let before = register.clone();
+    assert_eq!(
+        register.encode().unwrap_err(),
+        register.encoded_len().unwrap_err()
+    );
+    assert_eq!(register, before);
     Ok(())
 }

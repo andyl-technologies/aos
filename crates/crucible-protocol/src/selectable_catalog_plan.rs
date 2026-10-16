@@ -891,7 +891,8 @@ impl SelectableCatalogPlan {
             .transpose()?;
         let pending_len = pending_bytes.as_ref().map_or(0, Vec::len);
 
-        let mut bytes = vec![0; SELECTABLE_CATALOG_PLAN_HEADER_BYTES];
+        let mut bytes = Vec::with_capacity(total_len);
+        bytes.resize(SELECTABLE_CATALOG_PLAN_HEADER_BYTES, 0);
         bytes[..8].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
         write_u32(&mut bytes, 8, SELECTABLE_CATALOG_PLAN_VERSION)?;
         write_u32(
@@ -1211,10 +1212,17 @@ impl SelectableCatalogPlan {
         Ok(value)
     }
 
-    fn encoded_len(&self) -> Result<usize, SelectableCatalogPlanError> {
+    /// Reports the canonical payload length without encoding or allocating.
+    ///
+    /// The immutable messages and continuation were validated at construction.
+    /// The result counts requested payload bytes, not allocator bookkeeping.
+    ///
+    /// # Errors
+    /// Refuses checked length overflow or an oversized nested message or plan.
+    pub fn encoded_len(&self) -> Result<usize, SelectableCatalogPlanError> {
         let mut total = SELECTABLE_CATALOG_PLAN_HEADER_BYTES;
         for declaration in self.declarations.values() {
-            let bytes = declaration.registration.encode()?.len();
+            let bytes = declaration.registration.encoded_len()?;
             total = checked_add(total, EXPECTED_ENTRY_HEADER_BYTES)?;
             total = checked_add(total, bytes)?;
         }
@@ -1233,7 +1241,13 @@ impl SelectableCatalogPlan {
             total = checked_add(total, 8)?;
         }
         if let Some(pending) = &self.continuation.pending {
-            total = checked_add(total, pending.request.encode()?.len())?;
+            total = checked_add(total, pending.request.encoded_len()?)?;
+        }
+        if total > SELECTABLE_CATALOG_PLAN_MAX_BYTES {
+            return Err(SelectableCatalogPlanError::PlanTooLarge {
+                bytes: total,
+                maximum: SELECTABLE_CATALOG_PLAN_MAX_BYTES,
+            });
         }
         Ok(total)
     }

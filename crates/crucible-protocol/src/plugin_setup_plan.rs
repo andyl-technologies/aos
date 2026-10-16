@@ -119,6 +119,47 @@ impl PluginSetupPlan {
         (self.app_random_branch_plan, self.selectable_catalog_plan)
     }
 
+    /// Reports the assembly payload length without encoding or allocating.
+    ///
+    /// This counts the optional startup section and both immutable nested plans.
+    /// It does not reserve memory or establish an issuer or startup permission.
+    ///
+    /// # Errors
+    /// Refuses nested length overflow or the unchanged aggregate byte limit.
+    pub fn encoded_len(&self) -> Result<usize, PluginSetupPlanError> {
+        self.encoded_body_len(
+            0,
+            self.startup_operation
+                .as_ref()
+                .map_or(0, |_| STARTUP_OPERATION_BYTES),
+            0,
+        )
+    }
+
+    /// Reports the selected pre-exec payload length without issuing material.
+    ///
+    /// The workspace flag selects only the fixed section length. The actual
+    /// encoder still checks structural correspondence of the supplied records.
+    /// This counts requested payload bytes, not allocator bookkeeping.
+    ///
+    /// This query includes the mandatory fixed startup and process sections even
+    /// before their records exist. The actual encoder still refuses missing or
+    /// mismatched records; a length is never evidence of their issuance.
+    ///
+    /// # Errors
+    /// Refuses nested length overflow or the unchanged aggregate byte limit.
+    pub fn preexec_encoded_len(&self, has_workspace: bool) -> Result<usize, PluginSetupPlanError> {
+        self.encoded_body_len(
+            if has_workspace {
+                DEVICE_DIGEST_PURPOSE_BYTES
+            } else {
+                0
+            },
+            STARTUP_OPERATION_BYTES,
+            PROCESS_PURPOSE_BYTES,
+        )
+    }
+
     /// Encodes this plan in the canonical composite descriptor-body format.
     ///
     /// # Errors
@@ -161,31 +202,16 @@ impl PluginSetupPlan {
         startup_bytes: Option<[u8; STARTUP_OPERATION_BYTES]>,
         purpose: Option<&[u8; PROCESS_PURPOSE_BYTES]>,
     ) -> Result<Vec<u8>, PluginSetupPlanError> {
+        let workspace_len = workspace_bytes.as_ref().map_or(0, |bytes| bytes.len());
+        let startup_len = startup_bytes.as_ref().map_or(0, |bytes| bytes.len());
+        let purpose_len = purpose.map_or(0, |bytes| bytes.len());
+        let total_len = self.encoded_body_len(workspace_len, startup_len, purpose_len)?;
+
         let app_random_bytes = self.app_random_branch_plan.encode();
         let selectable_bytes = self
             .selectable_catalog_plan
             .encode()
             .map_err(|source| PluginSetupPlanError::Selectable { source })?;
-        let workspace_len = workspace_bytes.as_ref().map_or(0, |bytes| bytes.len());
-        let startup_len = startup_bytes.as_ref().map_or(0, |bytes| bytes.len());
-        let purpose_len = purpose.map_or(0, |bytes| bytes.len());
-        let total_len = checked_total_len(
-            app_random_bytes.len(),
-            selectable_bytes.len(),
-            workspace_len,
-            startup_len,
-        )?
-        .checked_add(purpose_len)
-        .ok_or(PluginSetupPlanError::PlanTooLarge {
-            bytes: usize::MAX,
-            maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
-        })?;
-        if total_len > PLUGIN_SETUP_PLAN_MAX_BYTES {
-            return Err(PluginSetupPlanError::PlanTooLarge {
-                bytes: total_len,
-                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
-            });
-        }
         let total_len_u32 =
             u32::try_from(total_len).map_err(|_| PluginSetupPlanError::PlanTooLarge {
                 bytes: total_len,
@@ -225,6 +251,35 @@ impl PluginSetupPlan {
             bytes.extend_from_slice(purpose);
         }
         Ok(bytes)
+    }
+
+    fn encoded_body_len(
+        &self,
+        workspace_len: usize,
+        startup_len: usize,
+        purpose_len: usize,
+    ) -> Result<usize, PluginSetupPlanError> {
+        let app_random_len = self
+            .app_random_branch_plan
+            .encoded_len()
+            .map_err(|source| PluginSetupPlanError::AppRandom { source })?;
+        let selectable_len = self
+            .selectable_catalog_plan
+            .encoded_len()
+            .map_err(|source| PluginSetupPlanError::Selectable { source })?;
+        let total = checked_total_len(app_random_len, selectable_len, workspace_len, startup_len)?
+            .checked_add(purpose_len)
+            .ok_or(PluginSetupPlanError::PlanTooLarge {
+                bytes: usize::MAX,
+                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
+            })?;
+        if total > PLUGIN_SETUP_PLAN_MAX_BYTES {
+            return Err(PluginSetupPlanError::PlanTooLarge {
+                bytes: total,
+                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
+            });
+        }
+        Ok(total)
     }
 
     /// Decodes the nested plans from the selected edition-3 pre-exec carrier.
@@ -483,6 +538,48 @@ mod tests {
         assert_eq!(&bytes[20..24], &[0, 0, 0, 16]);
         assert_eq!(&bytes[24..28], &[0, 0, 0, 136]);
         assert_eq!(PluginSetupPlan::decode(&bytes), Ok(plan));
+    }
+
+    #[test]
+    fn payload_geometry_counts_only_the_selected_fixed_sections() {
+        let plain = empty_plan();
+        assert_eq!(plain.encoded_len(), Ok(192));
+        assert_eq!(plain.preexec_encoded_len(false), Ok(2840));
+        assert_eq!(
+            plain.encode_preexec(&[0; PROCESS_PURPOSE_BYTES], None),
+            Err(PluginSetupPlanError::InvalidPreexecSection { section: "startup" })
+        );
+
+        let plan = plain.with_startup_operation(fixed_startup());
+        let before = plan.clone();
+        assert_eq!(plan.encoded_len(), Ok(320));
+        assert_eq!(plan.preexec_encoded_len(false), Ok(2840));
+        assert_eq!(plan.preexec_encoded_len(true), Ok(2968));
+        assert_eq!(plan, before);
+        let bytes = plan.encode().unwrap();
+        assert_eq!(bytes.len(), 320);
+        assert_eq!(&bytes[16..20], &[0, 0, 1, 64]);
+        assert_eq!(PluginSetupPlan::decode(&bytes), Ok(plan));
+    }
+
+    #[test]
+    fn payload_geometry_preserves_overflow_and_aggregate_refusals() {
+        assert_eq!(
+            checked_total_len(usize::MAX, 136, 0, 0),
+            Err(PluginSetupPlanError::PlanTooLarge {
+                bytes: usize::MAX,
+                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
+            })
+        );
+        assert!(
+            checked_total_len(
+                MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
+                SELECTABLE_CATALOG_PLAN_MAX_BYTES,
+                0,
+                0,
+            )
+            .is_err()
+        );
     }
 
     #[test]

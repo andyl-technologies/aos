@@ -134,6 +134,17 @@ impl AppRandomBranchPlan {
         &self.entries
     }
 
+    /// Reports the canonical payload length without encoding or allocating.
+    ///
+    /// The immutable entries were validated when this plan was constructed.
+    /// This counts requested payload bytes, not allocator bookkeeping.
+    ///
+    /// # Errors
+    /// Returns [`AppRandomBranchPlanError`] if checked length arithmetic overflows.
+    pub fn encoded_len(&self) -> Result<usize, AppRandomBranchPlanError> {
+        encoded_len(&self.entries)
+    }
+
     /// Encodes this plan in the canonical descriptor-body format.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
@@ -383,12 +394,20 @@ mod tests {
             .unwrap_or_else(|error| panic!("entry should validate: {error}")),
         ])
         .unwrap_or_else(|error| panic!("plan should validate: {error}"));
+        assert_eq!(plan.encoded_len(), Ok(113));
         let bytes = plan.encode();
         assert_eq!(&bytes[..8], b"CRUCABP1");
         assert_eq!(&bytes[8..12], &[0, 0, 0, 1]);
         assert_eq!(&bytes[12..16], &[0, 0, 0, 1]);
         assert_eq!(&bytes[16..24], &[0, 0, 0, 0, 0, 0, 0, 3]);
         assert_eq!(AppRandomBranchPlan::decode(&bytes), Ok(plan));
+    }
+
+    #[test]
+    fn empty_branch_plan_length_is_the_literal_header_size() {
+        let plan = AppRandomBranchPlan::default();
+        assert_eq!(plan.encoded_len(), Ok(16));
+        assert_eq!(plan.encode().as_slice(), b"CRUCABP1\0\0\0\x01\0\0\0\0");
     }
 
     #[test]
