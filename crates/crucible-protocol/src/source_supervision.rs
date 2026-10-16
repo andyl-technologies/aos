@@ -33,6 +33,8 @@ pub const SOURCE_SUPERVISION_PAYLOAD_BYTES: usize = 1496;
 /// Fixed sealed file corroboration and initial-observation extent.
 pub const SOURCE_SUPERVISION_CORROBORATION_BYTES: usize = 1520;
 
+const SCHEMA: u32 = 3;
+
 /// Pure observations decoded from a standing Source publication.
 ///
 /// No observation authenticates a descriptor, issuer or runtime assignment.
@@ -82,7 +84,7 @@ pub fn decode_source_supervision_payload(
     let invalid = SourceSupervisionDecodeError;
     if bytes.len() != SOURCE_SUPERVISION_PAYLOAD_BYTES
         || bytes[..8] != *b"CRUCSRV3"
-        || u32_at(bytes, 8) != Some(3)
+        || u32_at(bytes, 8) != Some(SCHEMA)
         || u32_at(bytes, 12) != Some(1496)
         || bytes[64] > 1
         || bytes[65] > 3
