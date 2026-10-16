@@ -105,9 +105,26 @@ fn query_receive_storage_from_limits(
     Ok(result)
 }
 
+impl<S: ProviderStream> Connection<S> {
+    /// Quotes the same returned Observe layout from this actual connection.
+    ///
+    /// This is arithmetic DATA only. Actual original startup/currentness and
+    /// the restricted receive predicate remain separate required guards.
+    ///
+    /// # Errors
+    /// Refuses invalid negotiated limits or checked layout overflow.
+    pub(crate) fn original_observe_returned_query_storage_data(&self) -> Result<usize, ProviderError> {
+        let receive = query_receive_storage_from_limits(self.authority.limits(),Purpose::OriginalObserve12)?;
+        OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)
+    }
+}
+
 /// Names declared local headers only, excluding compiler/recursive/allocator work.
 pub(crate) const fn original_report_query_receive_counter_scratch_data() -> usize {
     size_of::<OriginalReportQueryReceiveStorageData>()
+        + size_of::<Result<OriginalReportQueryReceiveStorageData, ProviderError>>()
+        + size_of::<Result<usize, ProviderError>>()
+        + size_of::<&OriginalReportQueryReceiveStorageData>()
         + size_of::<Envelope>()
         + size_of::<ReceivedFrame>()
         + size_of::<Purpose>()

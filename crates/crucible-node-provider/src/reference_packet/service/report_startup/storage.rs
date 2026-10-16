@@ -136,7 +136,7 @@ fn original(
             media_type: PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA,
         },
     ];
-    let prefix = crate::connection::quote_original_packet_prefix_startup_storage_data(
+    let (prefix, preparation) = crate::connection::quote_original_native_observe_prefix_startup_storage_data(
         launch,
         OriginalPacketPrefixProjectionInput {
             terminal: &shapes.terminal,
@@ -151,7 +151,11 @@ fn original(
     // partitioned so returning work is not also described as permanent growth.
     let prefix_lifetime = prefix
         .exchange
-        .native_observe_lifetime_storage_data(MAXIMUM_COMPILED_PROJECTION_BYTES)?;
+        .native_original_observe_prepared_lifetime_storage_data(
+            &preparation,
+            usize::try_from(launch.limits.frame_bytes.get()).map_err(|_| exhausted())?,
+            MAXIMUM_COMPILED_PROJECTION_BYTES,
+        )?;
     let mut trees = MetadataObserver::new();
     // Independent content keys for raw, receipt5, wrapper12 and report12;
     // the immutable original cache owns one additional Id/hash/reply row.
@@ -235,7 +239,7 @@ fn original(
         // only its returning raw/parser work belongs in the other max arm.
         typed_query_requested_bytes,
         binding_identity_transient,
-        prefix_lifetime.work_requested_bytes()?,
+        prefix_lifetime.encoding_work_requested_bytes()?,
         prefix.declared_counter_scratch_bytes,
         shapes.original.requested_total()?,
         shapes.raw.requested_total()?,
@@ -257,6 +261,14 @@ fn original(
         mul(4, content_references)?,
         size_of::<blake3::Hasher>(),
     ])?;
+    // ACK receipt starts only after the actual transform/dispatch/prepare
+    // stack returns. The returned typed Observe query survives through publish;
+    // preserve it and both defining counter windows in this distinct arm.
+    let acknowledgement = sum(&[
+        typed_query_requested_bytes,
+        prefix_lifetime.acknowledgement_work_requested_bytes()?,
+        prefix.declared_counter_scratch_bytes,
+    ])?;
     Ok(PacketNativeReportStartupStorageData {
         retained_growth_bytes: retained,
         // The full untrusted query is still funded at the negotiated raw cap.
@@ -264,7 +276,7 @@ fn original(
         // returned before publish_original_capture_allocation_observe begins.
         // Original/containment remain funded above; the returned typed Box and
         // Observe children are explicitly carried in encoding, not maxed away.
-        maximum_simultaneous_transient_bytes: initial_receive.max(encoding),
+        maximum_simultaneous_transient_bytes: initial_receive.max(encoding).max(acknowledgement),
         declared_counter_scratch_bytes: original_report_startup_counter_scratch_data(),
     })
 }
@@ -366,7 +378,12 @@ pub fn original_report_startup_counter_scratch_data() -> usize {
 
         crate::reference_packet::service::ack_emitter::original_native_report_startup_scope_layout_data(),
         crate::connection::original_packet_prefix_startup_counter_scratch_data(),
-        crate::connection::OriginalPacketPrefixStorageData::native_observe_lifetime_counter_scratch_data(),
+        crate::connection::OriginalPacketPrefixStorageData::native_original_observe_prepared_lifetime_counter_scratch_data(),
+        // The independent ACK arm retains its actual typed query and both
+        // counter windows, using this direct three-term sum view.
+        size_of::<[usize; 3]>(),
+        size_of::<Result<usize, ProviderError>>(),
+        size_of::<usize>(),
         crate::connection::original_report_query_receive_counter_scratch_data(),
         super::super::fresh_restore_allocation::fresh_restore_allocation_startup_counter_scratch_data(),
         crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::requested_serialization_scratch_bytes(),

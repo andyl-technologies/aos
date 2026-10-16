@@ -25,6 +25,9 @@ mod storage;
 pub(crate) use storage::{
     OriginalContinuationContentExtent, OriginalContinuationPrefixKind,
     OriginalContinuationPrefixStorageData, OriginalContinuationPrefixStorageInput,
+    OriginalNativeObservePreparationStorageData,
+    original_native_observe_preparation_counter_scratch_data,
+    quote_original_native_observe_prefix_startup_storage_data,
     OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
     OriginalPacketPrefixStorageData, OriginalReportQueryReceiveStorageData,
     authenticate_original_report_query_header_data, original_host_initial_raw_receive_storage_data,

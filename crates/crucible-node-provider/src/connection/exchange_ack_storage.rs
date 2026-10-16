@@ -182,3 +182,80 @@ pub(super) fn serde_error_storage(bytes: usize) -> Result<usize, ProviderError> 
     let text = sum(&[mul(6, bytes)?, mul(4, names)?, 256, 2 * 20])?;
     sum(&[boxed_error, growth(text)?, text])
 }
+
+/// Separates one terminating raw ACK's owners from its returning validation.
+///
+/// Error details and every uncertain raw/decoded owner remain persistent. This
+/// DATA neither restricts input nor substitutes the closed successful-ACK bound.
+pub(super) struct OpenAckLifetimeStorageData {
+    pub(super) retained: usize,
+    pub(super) returning: usize,
+}
+
+pub(super) fn open_ack_lifetime_storage_data(bytes: usize) -> Result<OpenAckLifetimeStorageData, ProviderError> {
+    if bytes == 0 || bytes > crate::transport::MAX_FRAME_BYTES {
+        return Err(credit());
+    }
+    let entries = bytes / 4;
+    let elements = bytes / 2;
+    // Nested singleton arrays have only two exclusive delimiter bytes each.
+    // Count those separately from elements; min4/growth is charged per array.
+    let arrays = bytes / 2;
+    let arrays_requested = mul(add(mul(2, elements)?, mul(4, arrays)?)?, size_of::<Value>())?;
+    let tree = super::super::super::restore_input_quote::tree_storage(
+        entries,
+        entries,
+        size_of::<String>() + size_of::<Value>(),
+        align_of::<String>().max(align_of::<Value>()),
+    )?;
+    let dom = sum(&[bytes, arrays_requested, tree, size_of::<Value>()])?;
+    let parser = add(dom, growth(bytes)?)?;
+
+    // canonical.rs uses only finite ryu-js::Buffer::format. The source-pinned
+    // Buffer has132 bytes (including its larger toFixed storage). This bounds
+    // any numeric token independently of its short input spelling; strings can
+    // escape to six bytes per UTF-8 input byte. No number-free assumption is
+    // made for Error details or untrusted negotiated extension JSON.
+    const PINNED_RYU_BUFFER_BYTES: usize = 132;
+    let canonical = mul(PINNED_RYU_BUFFER_BYTES + 6 + 1, bytes)?;
+    let sort_keys = mul(add(mul(4, bytes)?, mul(8, entries)?)?, size_of::<u16>())?;
+    let sort_tree = super::super::super::restore_input_quote::tree_storage(
+        entries,
+        entries,
+        size_of::<Vec<u16>>() + size_of::<(&str, &Value)>(),
+        align_of::<Vec<u16>>().max(align_of::<(&str, &Value)>()),
+    )?;
+    // ErrorRecord validation may canonicalize details while the outer body
+    // canonical bank remains alive. Other raw/shape/result clones fit within
+    // four complete DOM budgets, including the failed result retained in the
+    // actual record before the private validator refuses it.
+    // All five complete DOM budgets stay persistent: this conservatively
+    // includes raw Envelope/body, decoded Error details and uncertain partials.
+    // Keep raw/growth, error formatting/box, response and incident-facing
+    // headers too. Only canonical output/sort work is returned by validation.
+    let retained = sum(&[
+        bytes, parser, mul(4, dom)?,
+        growth(add(mul(6, bytes)?, 2)?)?,
+        size_of::<ResponseBody>(), size_of::<ReceivedFrame>(),
+        serde_error_storage(bytes)?,
+    ])?;
+    let returning = sum(&[mul(2, growth(canonical)?)?, sort_keys, sort_tree])?;
+    if add(retained, returning)? != open_ack_storage(bytes)? {
+        return Err(credit());
+    }
+    Ok(OpenAckLifetimeStorageData { retained, returning })
+}
+
+pub(super) const fn open_ack_lifetime_counter_scratch_data() -> usize {
+    size_of::<OpenAckLifetimeStorageData>()
+        + size_of::<Result<OpenAckLifetimeStorageData, ProviderError>>()
+        + size_of::<Result<usize, ProviderError>>()
+        + size_of::<[usize; 7]>()
+        + size_of::<[usize; 4]>()
+        + size_of::<[usize; 3]>()
+        + size_of::<&[usize]>()
+        + size_of::<std::slice::Iter<'static, usize>>()
+        // entries/elements/arrays, array/tree/DOM/parser and canonical/sort
+        // extents are the same explicit scalar formula views as the old quote.
+        + 12 * size_of::<usize>()
+}

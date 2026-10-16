@@ -87,7 +87,7 @@ fn program(bytes: &[u8]) -> Result<(), ProviderError> {
     }
 }
 
-fn recognized(bytes: &[u8]) -> Result<(), ProviderError> {
+pub(super) fn recognized(bytes: &[u8]) -> Result<(), ProviderError> {
     let mut fields = Fields::object(bytes)?;
     let mut seen = 0u32;
     while let Some((key, value)) = fields.pair()? {

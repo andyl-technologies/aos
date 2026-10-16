@@ -28,6 +28,9 @@ pub(super) struct NativeEndpointCaptureStateData<'a> {
     pub(super) service_inline_bytes: usize,
     pub(super) snapshot_backing_bytes: usize,
     pub(super) incoming_typed_header_bytes: usize,
+    // Same closed returned Observe layout as the pre-child startup producer,
+    // borrowed from this actual connection's immutable negotiated limits.
+    pub(super) returned_observe_query_requested_bytes: usize,
     pub(super) future_capture_request:
         crate::reference_packet::control::NativeProjectedCaptureRequestData,
     pub(super) report_shape: crate::reference_packet::control::NativeCaptureReportProjectionData,
@@ -53,6 +56,9 @@ pub(super) struct NativeEndpointCaptureStateData<'a> {
     // It must be dropped before the completed fourth owner becomes capturable;
     // future Capture/confirmation plans are recomputed under that report.
     pub(super) observe_prefix_storage: crate::connection::OriginalPacketPrefixProjectionStorageData,
+    // Fixed scalar DATA from this same complete live prefix. All owning banks
+    // remain in observe_prefix_storage and its independent publication rows.
+    pub(super) observe_preparation: crate::connection::OriginalNativeObservePreparationStorageData,
     pub(super) completed_observe_record_encoding:
         crate::connection::OriginalPacketCompletedRecordEncodingData,
 }
@@ -115,12 +121,14 @@ impl PacketEndpoint<DeadlineStream> {
         };
         startup.authenticate_compiled_headers(
             connection,
-            std::mem::size_of::<NativeEndpointCaptureStateData<'static>>(),
+            original_capture_report_quote_layout_data(),
             super::capture_allocation::original_capture_report_owner_layout_data(),
         )?;
         // The SDK checks the actual actor and sealed native codec before any
         // pin/Hello/Control data borrow. Neither those owners nor their numeric
         // facts may replace the genuine installed native admission.
+        let returned_observe_query_requested_bytes =
+            connection.original_observe_returned_query_storage_data()?;
         let installed = connection.original_native_owned11_admission()?;
         if installed.policy.capture_allocation_selection()
             != Some(PacketNative5CaptureAllocationSelection::OriginalObserve12)
@@ -139,7 +147,7 @@ impl PacketEndpoint<DeadlineStream> {
             startup.authenticate_compiled_headers(
                 connection,
                 checked_sum(&[
-                    std::mem::size_of::<NativeEndpointCaptureStateData<'static>>(),
+                    original_capture_report_quote_layout_data(),
                     additional,
                 ])?,
                 super::capture_allocation::original_capture_report_owner_layout_data(),
@@ -260,7 +268,7 @@ impl PacketEndpoint<DeadlineStream> {
                 maximum: maximum_serialization_requested_bytes,
             },
         )?;
-        let (observe_prefix_storage, completed_observe_record_encoding) = {
+        let (observe_prefix_storage, observe_preparation, completed_observe_record_encoding) = {
             let mut original_fields = crate::retained_metadata::MetadataObserver::new();
             original_fields.observe(request)?;
             let original =
@@ -303,11 +311,13 @@ impl PacketEndpoint<DeadlineStream> {
             )?;
             // Native history precedes this suffix and remains charged. The SDK
             // independently checks its same original frame/descriptor banks.
+            let preparation =
+                connection.quote_original_native_observe_preparation_storage_data(&quoted)?;
             let record = quoted.completed_record_encoding_data(connection)?;
             quoted
                 .exchange
                 .preflight_transport_credit_data(*self_transport_credit)?;
-            (quoted, record)
+            (quoted, preparation, record)
         };
         let candidate_owner = super::capture_candidate::quote_original_candidate_owner(
             connection,
@@ -515,6 +525,7 @@ impl PacketEndpoint<DeadlineStream> {
             service_inline_bytes: std::mem::size_of::<super::super::service::PacketSourceService>(),
             snapshot_backing_bytes,
             incoming_typed_header_bytes,
+            returned_observe_query_requested_bytes,
             future_capture_request,
             report_shape,
             retained_requested_bytes,
@@ -530,6 +541,7 @@ impl PacketEndpoint<DeadlineStream> {
             capture_prefix_storage,
             confirmation_prefix_storage,
             observe_prefix_storage,
+            observe_preparation,
             completed_observe_record_encoding,
         })
     }
@@ -551,8 +563,23 @@ fn exhausted() -> ProviderError {
 
 /// Names the real transient quote's inline fields, including numeric subplans.
 pub(crate) fn original_capture_report_quote_layout_data() -> usize {
+    // The live block retains all three fixed numeric outputs before building
+    // its final quote. Their referenced owning banks remain independently priced.
+    let preparation_views = std::mem::size_of::<(
+        crate::connection::OriginalPacketPrefixProjectionStorageData,
+        crate::connection::OriginalNativeObservePreparationStorageData,
+        crate::connection::OriginalPacketCompletedRecordEncodingData,
+    )>()
+        + std::mem::size_of::<[usize; 6]>()
+        + std::mem::size_of::<std::array::IntoIter<usize, 6>>()
+        + std::mem::size_of::<Option<usize>>()
+        + std::mem::size_of::<usize>();
     [
         std::mem::size_of::<NativeEndpointCaptureStateData<'static>>(),
+        preparation_views,
+        // Startup authenticates this complete counter window before any live
+        // per-frame projection; returning DATA grants no publication right.
+        crate::connection::OriginalPacketPrefixStorageData::native_original_observe_prepared_lifetime_counter_scratch_data(),
         super::capture_startup::original_startup_capture_endpoint_counter_scratch_data(),
         crate::reference_packet::control::original_startup_capture_counter_scratch_data(),
         crate::reference_packet::service::native_snapshot::native_owned13_snapshot_schema_counter_scratch_data(),

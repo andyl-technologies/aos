@@ -329,3 +329,12 @@ const fn startup_counter_additional_scratch_data() -> usize {
 #[cfg(test)]
 #[path = "exchange_packet_startup_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::connection) fn native_observe_projection_for_test(
+    scope: (&Id, &Id),
+    limits: crate::handshake::Limits,
+    input: OriginalPacketPrefixProjectionInput<'_>,
+) -> Result<OriginalPacketPrefixProjectionStorageData, ProviderError> {
+    quote_startup_parts(scope, limits, 0, input, false)
+}

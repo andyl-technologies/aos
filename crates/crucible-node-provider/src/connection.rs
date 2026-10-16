@@ -59,6 +59,9 @@ mod exchange;
 pub(crate) use exchange::{
     OriginalContinuationContentExtent, OriginalContinuationPrefixKind,
     OriginalContinuationPrefixStorageData, OriginalContinuationPrefixStorageInput,
+    OriginalNativeObservePreparationStorageData,
+    original_native_observe_preparation_counter_scratch_data,
+    quote_original_native_observe_prefix_startup_storage_data,
     OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
     OriginalPacketPrefixStorageData, OriginalReportQueryReceiveStorageData,
     PreparedOriginalRestoreHeldProof, authenticate_original_report_query_header_data,

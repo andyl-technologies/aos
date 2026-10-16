@@ -126,3 +126,139 @@ impl OriginalPacketPrefixStorageData {
             + size_of::<std::slice::Iter<'static, usize>>()
     }
 }
+
+/// Keeps a selected original Observe's independent encoding and ACK phases.
+///
+/// The original full quote/builder remains authoritative. Both new axes still
+/// include every persistent owner from a terminating Error or malformed ACK.
+pub(crate) struct NativeOriginalObservePrefixLifetimeStorageData {
+    pub(crate) retained_requested_bytes: usize,
+    encoding: usize,
+    acknowledgement: usize,
+    scratch: usize,
+}
+
+impl NativeOriginalObservePrefixLifetimeStorageData {
+    pub(crate) fn encoding_work_requested_bytes(&self) -> Result<usize, ProviderError> {
+        add(self.encoding, self.scratch)
+    }
+
+    pub(crate) fn acknowledgement_work_requested_bytes(&self) -> Result<usize, ProviderError> {
+        add(self.acknowledgement, self.scratch)
+    }
+}
+
+impl OriginalPacketPrefixStorageData {
+    /// Splits the actual original Observe's terminating ACK validation lifetime.
+    ///
+    /// The defining native publisher finishes dispatch/transform/prepare before
+    /// publish starts reading any ACK. Its actual typed query and all retained
+    /// originals/canonical/guard/cache/error banks remain independently live.
+    /// The selected caller must therefore add those enclosing owners to both
+    /// transient arms, rather than subtracting their allowance or maxing peers.
+    ///
+    /// # Errors
+    /// Refuses overflow, a cap not matching the original complete ACK quote or
+    /// an original full quote above the compiled projection maximum.
+    pub(crate) fn native_original_observe_lifetime_storage_data(
+        &self,
+        maximum_frame: usize,
+        maximum: usize,
+    ) -> Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError> {
+        let old = self.native_observe_lifetime_storage_data(maximum)?;
+        let (retained_ack, returning_ack) = if self.requests == 0 {
+            if self.one_open_ack_requested_bytes != 0 {
+                return Err(credit());
+            }
+            (0, 0)
+        } else {
+            let ack = acknowledgements::open_ack_lifetime_storage_data(maximum_frame)?;
+            if add(ack.retained, ack.returning)? != self.one_open_ack_requested_bytes {
+                return Err(credit());
+            }
+            (ack.retained, ack.returning)
+        };
+        let retained = old
+            .retained_requested_bytes
+            .checked_sub(self.one_open_ack_requested_bytes)
+            .and_then(|n| n.checked_add(retained_ack))
+            .ok_or_else(credit)?;
+        let result = NativeOriginalObservePrefixLifetimeStorageData {
+            retained_requested_bytes: retained,
+            encoding: old.maximum_simultaneous_transient_bytes,
+            acknowledgement: returning_ack,
+            scratch: old.declared_counter_scratch_bytes,
+        };
+        let phase = result
+            .encoding_work_requested_bytes()?
+            .max(result.acknowledgement_work_requested_bytes()?);
+        if add(result.retained_requested_bytes, phase)? > self.requested_bytes()? {
+            return Err(credit());
+        }
+        Ok(result)
+    }
+
+    pub(crate) const fn native_original_observe_lifetime_counter_scratch_data() -> usize {
+        Self::native_observe_lifetime_counter_scratch_data()
+            + acknowledgements::open_ack_lifetime_counter_scratch_data()
+            + size_of::<Result<NativeObservePrefixLifetimeStorageData, ProviderError>>()
+            + size_of::<NativeOriginalObservePrefixLifetimeStorageData>()
+            + size_of::<Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError>>()
+            + size_of::<(usize, usize)>()
+            + size_of::<Option<usize>>()
+            + size_of::<Result<usize, ProviderError>>()
+            + size_of::<&OriginalPacketPrefixStorageData>()
+            + size_of::<&NativeOriginalObservePrefixLifetimeStorageData>()
+            + 6 * size_of::<usize>()
+    }
+}
+
+
+impl OriginalPacketPrefixStorageData {
+    /// Separates the selected preparation loop without releasing retained owners.
+    ///
+    /// The opaque preparation row must match every field of this complete
+    /// original quote. It bounds one returning loop iteration; all completed
+    /// canonical banks, plans, guards, partials and terminating ACK owners remain
+    /// in the independently derived retained axis. Construction and iteration
+    /// work stay summed with the largest preparation iteration.
+    ///
+    /// # Errors
+    /// Refuses another complete quote, an insufficient limit, overflow or a
+    /// preparation phase exceeding the original conservative summed allowance.
+    pub(crate) fn native_original_observe_prepared_lifetime_storage_data(
+        &self,
+        preparation: &OriginalNativeObservePreparationStorageData,
+        maximum_frame: usize,
+        maximum: usize,
+    ) -> Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError> {
+        let mut lifetime = self.native_original_observe_lifetime_storage_data(
+            maximum_frame,
+            maximum,
+        )?;
+        let preparation = preparation.maximum_simultaneous_transient_bytes_data(self, maximum)?;
+        if preparation > self.preparation_transient_requested_bytes {
+            return Err(credit());
+        }
+
+        lifetime.encoding = sum(&[
+            self.construction_transient_requested_bytes,
+            preparation,
+            self.response_iterator_requested_bytes,
+        ])?;
+        Ok(lifetime)
+    }
+
+    /// Names the complete selected producer and nested lifetime return views.
+    pub(crate) fn native_original_observe_prepared_lifetime_counter_scratch_data() -> usize {
+        Self::native_original_observe_lifetime_counter_scratch_data()
+            + crate::connection::original_native_observe_preparation_counter_scratch_data()
+            + size_of::<&OriginalNativeObservePreparationStorageData>()
+            + size_of::<NativeOriginalObservePrefixLifetimeStorageData>()
+            + size_of::<Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError>>()
+            + size_of::<Result<usize, ProviderError>>()
+            + size_of::<[usize; 3]>()
+            + size_of::<usize>()
+            + size_of::<bool>()
+    }
+}

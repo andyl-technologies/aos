@@ -432,3 +432,6 @@ mod observe_lifetime;
 
 #[path = "exchange_packet_projection_tests.rs"]
 mod packet_projection;
+
+#[path = "exchange_native_observe_prepare_tests.rs"]
+mod native_observe_preparation;

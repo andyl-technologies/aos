@@ -271,7 +271,14 @@ fn project_with_source(
     // is not the later permanent service coordinator.
     let decode_phase = sum(
         &[
-            launch_validation_work(input, maximum)?,
+            if preflight {
+                // Bootstrap keeps the deserialized launch before reading Boot
+                // and entering validate(). Its typed carry below is still live
+                // in both phases; no failed/retained Boot owner is reclaimed.
+                launch_validation::preflight_work(input, maximum)?
+            } else {
+                launch_validation_work(input, maximum)?
+            },
             source,
             registration,
             additions.requested_total()?,

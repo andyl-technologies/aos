@@ -22,6 +22,7 @@ mod decoded;
 mod hello;
 mod initial;
 mod launch_decode;
+mod launch_validation;
 mod private_bootstrap;
 mod retained_overlap;
 pub use retained_overlap::PacketNativeBirthRetainedOverlapData;
@@ -137,6 +138,7 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + coordinator_decode::counter_scratch_data()
         + decoded::counter_scratch_data()
         + launch_validation_counter_scratch_data()
+        + launch_validation::counter_scratch_data()
         + launch_decode::counter_scratch_data()
         + super::pre_dom::counter_scratch_data()
         // Complete return views coexist with the named payload/observer rows:

@@ -46,7 +46,11 @@ impl NativeEndpointCaptureStateData<'_> {
         let observe_lifetime = self
             .observe_prefix_storage
             .exchange
-            .native_observe_lifetime_storage_data(self.counter_requested_limit)?;
+            .native_original_observe_prepared_lifetime_storage_data(
+                &self.observe_preparation,
+                receive.maximum_frame_body_bytes,
+                self.counter_requested_limit,
+            )?;
         let observe_publication = sum(&[
             self.control_growth.publication_retained_bytes,
             observe_lifetime.retained_requested_bytes,
@@ -131,10 +135,19 @@ impl NativeEndpointCaptureStateData<'_> {
                 .typed_receipt_requested_bytes,
             self.observe_publication_shapes
                 .binding_identity_requested_bytes,
-            observe_lifetime.work_requested_bytes()?,
+            observe_lifetime.encoding_work_requested_bytes()?,
             self.observe_prefix_storage.declared_counter_scratch_bytes,
             self.candidate_owner.serialization_requested_bytes,
         ])?;
+        // The same publisher finishes transform/prepare before it reads ACKs.
+        // Preserve the actual returned query and both defining counter windows
+        // here, matching the separately admitted startup phase projection.
+        let observe_acknowledgement = sum(&[
+            self.returned_observe_query_requested_bytes,
+            observe_lifetime.acknowledgement_work_requested_bytes()?,
+            self.observe_prefix_storage.declared_counter_scratch_bytes,
+        ])?;
+        let observe_encoding = observe_encoding.max(observe_acknowledgement);
         let before_encoding = sum(&[
             self.outer_encoding.native_before.requested_total()?,
             self.outer_encoding.protocol_before.requested_total()?,
@@ -175,7 +188,10 @@ impl NativeEndpointCaptureStateData<'_> {
             size_of::<Self>(),
             crate::reference_packet::control::original_observe_dispatch_scratch_data(),
             size_of::<NativeCaptureReportObligationsData>(),
-            crate::connection::OriginalPacketPrefixStorageData::native_observe_lifetime_counter_scratch_data(),
+            crate::connection::OriginalPacketPrefixStorageData::native_original_observe_prepared_lifetime_counter_scratch_data(),
+            size_of::<[usize; 3]>(),
+            size_of::<Result<usize, ProviderError>>(),
+            size_of::<usize>(),
             super::capture_startup::original_startup_capture_endpoint_counter_scratch_data(),
             crate::reference_packet::control::original_startup_capture_counter_scratch_data(),
             crate::reference_packet::service::native_snapshot::native_owned13_snapshot_schema_counter_scratch_data(),
