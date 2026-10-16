@@ -31,6 +31,7 @@ pub use owner::{
 #[cfg(feature = "tokio")]
 pub(crate) use owner::{
     LiveManifestRecoveryContext, PublisherResumeTurn, PublisherRunningTurn,
+    RecoveryManifestBackingRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
     RecoveryRetainedManifest,
 };
 pub use quota::ProjectQuota;

@@ -9,10 +9,17 @@ use super::{executor::NativeOwnerExecutor, *};
 use crate::publisher_local::client::PublisherRecoveryContext;
 use std::{cell::Cell, rc::Rc};
 
+mod backing;
+mod effect;
+mod reconcile;
+pub(crate) use backing::RecoveryManifestBackingRetention;
+pub(crate) use effect::{RecoveryManifestEffect, RecoveryManifestEffectFailure};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RecoveryPhase {
     Active,
     InFlight,
+    EffectInFlight,
     Faulted,
 }
 
@@ -25,6 +32,14 @@ struct InFlightRetention {
 impl InFlightRetention {
     fn begin(phase: &Rc<Cell<RecoveryPhase>>) -> Self {
         phase.set(RecoveryPhase::InFlight);
+        Self {
+            phase: Rc::clone(phase),
+            reconciled: false,
+        }
+    }
+
+    fn begin_effect(phase: &Rc<Cell<RecoveryPhase>>) -> Self {
+        phase.set(RecoveryPhase::EffectInFlight);
         Self {
             phase: Rc::clone(phase),
             reconciled: false,
@@ -239,7 +254,16 @@ pub(crate) struct RecoveryRetainedManifest<'phase, 'executor> {
     live: &'phase LiveManifestRecoveryContext<'executor>,
 }
 
-impl RecoveryRetainedManifest<'_, '_> {
+impl<'phase, 'executor> RecoveryRetainedManifest<'phase, 'executor> {
+    /// Arms downstream effects while retaining the original exclusive turn.
+    ///
+    /// # Errors
+    /// Refuses stale source/pin/phase or original context before any new RPC.
+    /// The guard must be created, completed or dropped outside Client mutexes.
+    pub(crate) fn begin_effect(self) -> io::Result<RecoveryManifestEffect<'phase, 'executor>> {
+        RecoveryManifestEffect::begin(self)
+    }
+
     /// Borrows the exact original live recovery turn for an atomic RPC check.
     pub(crate) fn live_context(&self) -> &LiveManifestRecoveryContext<'_> {
         self.live
@@ -291,7 +315,11 @@ impl RecoveryRetainedManifest<'_, '_> {
     /// Refuses stale owner/session/root/generation, changed source or absent pins.
     /// The consumer must perform this before acquiring its publisher RPC mutex.
     pub(crate) fn check_current(&self) -> io::Result<()> {
-        self.live.check_current()?;
+        self.check_current_phase(RecoveryPhase::Active)
+    }
+
+    fn check_current_phase(&self, phase: RecoveryPhase) -> io::Result<()> {
+        self.live.check_current_phase(phase)?;
         let owner = self
             .live
             .executor
@@ -301,7 +329,7 @@ impl RecoveryRetainedManifest<'_, '_> {
         if !Arc::ptr_eq(&self.retained.custody, self.live.executor.custody()) {
             return Err(invalid("recovery metadata belongs to another owner"));
         }
-        self.live.check_owner(&owner)?;
+        self.live.check_owner_phase(&owner, phase)?;
         self.retained.check_registration(&owner)
     }
 }
@@ -336,5 +364,20 @@ mod tests {
         assert!(phase.get() == RecoveryPhase::Active);
         drop(InFlightRetention::begin(&phase));
         assert!(phase.get() == RecoveryPhase::Faulted);
+    }
+    #[test]
+    fn abandoned_rpc_effect_faults_without_a_state_or_client_lock() {
+        let phase = Rc::new(Cell::new(RecoveryPhase::Active));
+        let flight = InFlightRetention::begin_effect(&phase);
+        assert!(phase.get() == RecoveryPhase::EffectInFlight);
+        drop(flight);
+        assert!(phase.get() == RecoveryPhase::Faulted);
+    }
+
+    #[test]
+    fn reconciled_rpc_effect_releases_the_exclusive_phase() {
+        let phase = Rc::new(Cell::new(RecoveryPhase::Active));
+        InFlightRetention::begin_effect(&phase).complete();
+        assert!(phase.get() == RecoveryPhase::Active);
     }
 }
