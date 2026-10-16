@@ -57,3 +57,72 @@ fn original_five_constructs_full_suffix_grammar_without_selecting_startup_sixtee
         );
     }
 }
+
+#[test]
+fn full_invocation_fresh_report_quote_preserves_sixty_four_kib_query_limits() {
+    use crucible_node_provider::reference_packet::service::report_startup::{
+        PacketNativeReportStartupPurpose, original_invocation_report_startup_storage_data,
+    };
+
+    let executable = std::env::current_exe().unwrap();
+    let (_code_source, declaration) = native_roundtrip::declaration(&executable);
+    let selected: Manifest = serde_json::from_value(declaration).unwrap();
+    let measurements = selected.measurements.map(|one| PacketFixtureMeasurements {
+        peer: artifact(one.peer),
+        host: one.host,
+        sources: one.sources.into_iter().map(artifact).collect(),
+    });
+    let content = super::super::manifest::content(selected.content).unwrap();
+    let (_sources, declarations) = prepare_sources(
+        selected.participants,
+        &selected.coordinator,
+        selected.maximum_native_rows,
+        selected.maximum_initial_bytes,
+        selected.mechanism,
+        true,
+        true,
+        true,
+        false,
+        &content,
+    )
+    .unwrap();
+    let initial_bytes = encoded(&selected.coordinator).unwrap();
+    let initial = InstalledContent {
+        reference: canonical::content_ref(&initial_bytes, "application/json").unwrap(),
+        bytes: Bytes::new(initial_bytes),
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let paths =
+        std::array::from_fn(|member| directory.path().join(format!("effect-{member}.sock")));
+    let launches = launch_declarations(
+        declarations,
+        &selected.coordinator,
+        &initial,
+        &measurements,
+        &paths,
+    )
+    .unwrap();
+
+    // These are the actual same Source-selected full32-format launch records
+    // from the installed regression. No native process or receipt is created.
+    for mut launch in launches {
+        assert_eq!(launch.limits.frame_bytes.get(), 65_536);
+        let data = original_invocation_report_startup_storage_data(
+            &launch,
+            PacketNativeReportStartupPurpose::FreshCompletedAdmit13,
+        )
+        .unwrap();
+        assert_eq!(data.raw_report_capacity(), 16_384);
+        assert!(data.retained_growth_bytes() > 0);
+        assert!(data.maximum_simultaneous_transient_bytes() > 0);
+
+        launch.limits.frame_bytes = U64::new(0);
+        assert!(
+            original_invocation_report_startup_storage_data(
+                &launch,
+                PacketNativeReportStartupPurpose::FreshCompletedAdmit13,
+            )
+            .is_err()
+        );
+    }
+}

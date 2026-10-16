@@ -85,8 +85,11 @@ pub(crate) fn original_fresh_report_startup_publication_data(
         launch,
         crate::reference_packet::service::report_startup::PacketNativeReportStartupPurpose::FreshCompletedAdmit13,
     )?.requested_bytes()?;
+    // The restricted receive has returned before publication starts. Its raw
+    // parser/error work cannot overlap this complete encoding phase. Returned
+    // raw/typed query owners remain independently retained above, including
+    // failures; the live publication quote uses this same encoding sum.
     let transient = sum(&[
-        initial_receive,
         inventory.requested_total()?,
         shapes.report_authentication_transient_requested_bytes,
         shapes.report.requested_total()?,
@@ -101,7 +104,7 @@ pub(crate) fn original_fresh_report_startup_publication_data(
     ])?;
     let data = PacketNativeFreshPublicationStartupStorageData {
         retained_growth_bytes: retained,
-        maximum_simultaneous_transient_bytes: transient,
+        maximum_simultaneous_transient_bytes: initial_receive.max(transient),
         declared_counter_scratch_bytes: scratch,
     };
     if sum(&[
