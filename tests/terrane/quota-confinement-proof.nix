@@ -28,6 +28,8 @@
     rootfsDeps = [image pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs];
     testScript = ''
       set -eu
+      cd ${image}
+      sha256sum -c share/checksums.sha256
       mount -o remount,rw /
       mkdir -p /var/lib/terrane-confinement-proof /mnt/terrane-confinement
       truncate -s 96M /var/lib/terrane-confinement-proof/quota.img

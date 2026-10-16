@@ -43,6 +43,7 @@ require(artifact["package_id"] == package[0]["id"]
         and artifact["profile"]["test"] is False
         and artifact["profile"]["opt_level"] == "0"
         and artifact["profile"]["debug_assertions"] is True
+        and artifact["profile"]["overflow_checks"] is True
         and artifact["profile"]["debuginfo"] == 2
         and sorted(artifact["features"]) == ["tokio"]
         and executable.is_file() and os.access(executable, os.X_OK)
@@ -108,3 +109,12 @@ identity = {"schema_version": 1, "source": str(source), "package_id": artifact["
 for name in ["confinement-artifacts.jsonl", "confinement-packages.json",
              "confinement-cargo-discovery.log"]:
     shutil.copy2(temporary / name, output / "share" / name)
+
+# The guest checks retained bytes after package fixups and rootfs copying,
+# including the wrapper and runtime libraries that actually launch the ELF.
+checksums = []
+for path in sorted(output.rglob("*")):
+    if path.is_file():
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        checksums.append(f"{digest}  {path.relative_to(output)}")
+(output / "share/checksums.sha256").write_text("\n".join(checksums) + "\n")
