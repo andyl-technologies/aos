@@ -84,8 +84,10 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability(
     confinement: Arc<crate::quota_confinement::Installed>,
 ) {
     let paths = fixture("worker-cancellation");
-    let stale = paths[3].join(".binding-incomplete");
+    let stale = paths[3].join(format!(".binding-{}", "ab".repeat(16)));
     fs::write(&stale, b"unfinished metadata").unwrap();
+    let lease_scratch = paths[3].join(format!(".binding-retirement-{}", "cd".repeat(16)));
+    fs::write(&lease_scratch, b"incomplete lease").unwrap();
     let (arrived_sender, arrived) = mpsc::sync_channel(1);
     let (release, released) = mpsc::sync_channel(1);
     let gate = WorkerGate {
@@ -103,6 +105,7 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability(
         !stale.exists(),
         "successful start must finish actual state recovery"
     );
+    assert!(!lease_scratch.exists());
 
     let claim = claim();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -161,7 +164,12 @@ fn startup_reports_actual_private_state_recovery_failure(
     confinement: Arc<crate::quota_confinement::Installed>,
 ) {
     let paths = fixture("worker-startup-failure");
-    fs::create_dir(paths[3].join(".binding-invalid-directory")).unwrap();
+    let malformed = paths[3].join(".binding-not-a-generated-name");
+    let valid = paths[3].join(format!(".binding-{}", "ef".repeat(16)));
+    fs::write(&malformed, b"unknown must survive").unwrap();
+    fs::write(&valid, b"generated scratch must survive failed preflight").unwrap();
+    let invalid_directory = paths[3].join(".binding-invalid-directory");
+    fs::create_dir(&invalid_directory).unwrap();
     assert!(
         NativePublicationWorker::start(
             configuration(paths[0].parent().unwrap(), NativeWipePolicy::None),
@@ -169,6 +177,12 @@ fn startup_reports_actual_private_state_recovery_failure(
         )
         .is_err()
     );
+    assert_eq!(fs::read(malformed).unwrap(), b"unknown must survive");
+    assert_eq!(
+        fs::read(valid).unwrap(),
+        b"generated scratch must survive failed preflight"
+    );
+    assert!(invalid_directory.is_dir());
 }
 
 fn unsupported_wipe_policy_is_refused_before_directory_effects(

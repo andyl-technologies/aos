@@ -32,6 +32,15 @@ use crate::host_cache::{NativeHostLayout, NativeHostMetadataReader};
 #[path = "inventory_state.rs"]
 mod state;
 
+#[path = "inventory_startup.rs"]
+mod startup;
+
+/// Retains actual generated temporary inodes until startup cleanup completes.
+pub(super) struct RetainedScratch {
+    directory: File,
+    files: Vec<(String, File)>,
+}
+
 const MAX_CANDIDATES: usize = 4096;
 const PAGE_SIZE: usize = 64;
 
@@ -59,6 +68,16 @@ pub(super) struct NativeInventory {
     content_uid: u32,
     content_gid: u32,
     snapshot: Option<Snapshot>,
+}
+
+impl RetainedScratch {
+    /// Confirms actual cleanup and parent durability before startup succeeds.
+    ///
+    /// # Errors
+    /// Rejects surviving scratch, changed namespaces or synchronization failure.
+    pub(super) fn verify_removed(&self) -> io::Result<()> {
+        startup::verify_removed(self)
+    }
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -185,6 +204,14 @@ impl NativeInventory {
             content_gid: config.content_gid,
             snapshot: None,
         })
+    }
+
+    /// Retains validated generated scratch through actual startup cleanup.
+    ///
+    /// # Errors
+    /// Rejects malformed names, unsafe physical state or exhausted bounds.
+    pub(super) fn startup_scratch(&self) -> io::Result<RetainedScratch> {
+        startup::capture(self)
     }
 
     pub(super) fn reset(&mut self) {
