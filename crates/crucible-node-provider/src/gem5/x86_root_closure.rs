@@ -289,15 +289,25 @@ impl X86RootNativeProcess {
         })?;
         let original_deadline = super::arm_root_io::deadline(launch.timeout)?;
         use super::native_command::{Atom, CommandSpec};
-        let args = [Atom::text("-B"), Atom::Joined(&launch.resource_root, "x86-root-process-image-audit.py")];
-        let child = CommandSpec { executable: &launch.artifact("python")?.path,
-            temporary_root: &launch.tools.temporary_root, args: &args, environment: &[("PYTHONNOUSERSITE", Atom::text("1")), ("PYTHONDONTWRITEBYTECODE", Atom::text("1"))],
-        }.construct(launch.command_construction_budget()?)?
-            .process_group(0)
-            .stdin(Stdio::from(input))
-            .stdout(Stdio::from(output))
-            .stderr(Stdio::from(diagnostics))
-            .spawn()?;
+        let args = [
+            Atom::text("-B"),
+            Atom::Joined(&launch.resource_root, "x86-root-process-image-audit.py"),
+        ];
+        let child = CommandSpec {
+            executable: &launch.artifact("python")?.path,
+            temporary_root: &launch.tools.temporary_root,
+            args: &args,
+            environment: &[
+                ("PYTHONNOUSERSITE", Atom::text("1")),
+                ("PYTHONDONTWRITEBYTECODE", Atom::text("1")),
+            ],
+        }
+        .construct(launch.command_construction_budget()?)?
+        .process_group(0)
+        .stdin(Stdio::from(input))
+        .stdout(Stdio::from(output))
+        .stderr(Stdio::from(diagnostics))
+        .spawn()?;
         // Storage was reserved before spawn. Retain first, then measure while
         // the original Child remains owned through errors and unwinding.
         custody.unenrolled_helpers.push(child);

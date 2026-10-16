@@ -318,23 +318,40 @@ impl X86RootNativeProcess {
             .open(output)?;
         use super::native_command::{Atom, CommandSpec};
         let args = [
-            Atom::text("--new-coordinator"), Atom::text("--coord-port"), Atom::text("0"),
-            Atom::text("--no-gzip"), Atom::text("--interval"), Atom::text("0"),
-            Atom::text("--ckpt-signal"), Atom::text("40"), Atom::text("--with-plugin"),
-            Atom::path(&launch.tools.resource_helper.path), Atom::text("--ckptdir"),
-            Atom::path(&launch.tools.image_root), Atom::text("--tmpdir"),
-            Atom::path(&launch.tools.temporary_root), Atom::path(&launch.artifact("native_executable")?.path),
-            Atom::text("--listener-mode=off"), Atom::PrefixedJoin("--outdir=", &launch.resource_root, "output"),
+            Atom::text("--new-coordinator"),
+            Atom::text("--coord-port"),
+            Atom::text("0"),
+            Atom::text("--no-gzip"),
+            Atom::text("--interval"),
+            Atom::text("0"),
+            Atom::text("--ckpt-signal"),
+            Atom::text("40"),
+            Atom::text("--with-plugin"),
+            Atom::path(&launch.tools.resource_helper.path),
+            Atom::text("--ckptdir"),
+            Atom::path(&launch.tools.image_root),
+            Atom::text("--tmpdir"),
+            Atom::path(&launch.tools.temporary_root),
+            Atom::path(&launch.artifact("native_executable")?.path),
+            Atom::text("--listener-mode=off"),
+            Atom::PrefixedJoin("--outdir=", &launch.resource_root, "output"),
             Atom::Joined(&launch.resource_root, "native-controller-x86-root.py"),
         ];
         let environment = [
             ("PYTHONNOUSERSITE", Atom::text("1")),
             ("PYTHONDONTWRITEBYTECODE", Atom::text("1")),
-            ("CRUCIBLE_CAPTURE_RESOURCE_ROOT", Atom::path(&launch.resource_root)),
+            (
+                "CRUCIBLE_CAPTURE_RESOURCE_ROOT",
+                Atom::path(&launch.resource_root),
+            ),
         ];
-        let mut command = CommandSpec { executable: &launch.tools.launcher.path,
-            temporary_root: &launch.tools.temporary_root, args: &args, environment: &environment,
-        }.construct(launch.command_construction_budget()?)?;
+        let mut command = CommandSpec {
+            executable: &launch.tools.launcher.path,
+            temporary_root: &launch.tools.temporary_root,
+            args: &args,
+            environment: &environment,
+        }
+        .construct(launch.command_construction_budget()?)?;
         command
             .process_group(0)
             .stdin(Stdio::from(OwnedFd::from(child_bootstrap)))

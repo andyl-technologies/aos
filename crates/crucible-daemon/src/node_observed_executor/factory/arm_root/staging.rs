@@ -119,7 +119,10 @@ impl RootStaging {
             image_root: self.namespace.join("images"),
             temporary_root: self.namespace.join("temporary"),
             timeout: Duration::from_secs(60),
-            command_budget: self.queue.reserved_command_budget(&self.target, target_owner, &self.archive).map_err(state_error)?,
+            command_budget: self
+                .queue
+                .reserved_command_budget(&self.target, target_owner, &self.archive)
+                .map_err(state_error)?,
         };
         let slot = self
             .slot

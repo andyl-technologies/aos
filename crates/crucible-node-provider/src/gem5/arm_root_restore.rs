@@ -128,27 +128,57 @@ impl ArmRootNativeProcess {
         history.reserve(3)?;
         history.reserve_session()?;
         use super::native_command::{Atom, CommandSpec};
-        let args = [Atom::text("--new-coordinator"), Atom::text("--coord-port"), Atom::text("0"),
-            Atom::text("--interval"), Atom::text("0"), Atom::text("--ckptdir"),
-            Atom::path(&launch.tools.image_root), Atom::text("--tmpdir"),
-            Atom::path(&launch.tools.temporary_root), Atom::path(image.process_image()?)];
-        let environment = [
-            ("CRUCIBLE_RESTORE_RESOURCE_ROOT", Atom::path(&launch.resource_root)),
-            ("CRUCIBLE_RESTORE_SAVED_FILES_SOURCE_ROOT", Atom::path(image.source_supplementary_files_root())),
-            ("CRUCIBLE_RESTORE_SAVED_FILES_TARGET_ROOT", Atom::path(&supplementary)),
-            ("CRUCIBLE_RESTORE_SAVED_FILES_MANIFEST", Atom::path(&manifest)),
-            ("CRUCIBLE_GEM5_OPERATIONAL_ROOT", Atom::path(&launch.tools.temporary_root)),
-            ("CRUCIBLE_GEM5_CONTROL_SOCKET", Atom::path(&endpoint)),
-            ("DMTCP_PATH_MAPPING", Atom::Mapping(&image.source().resource_root, &launch.resource_root)),
+        let args = [
+            Atom::text("--new-coordinator"),
+            Atom::text("--coord-port"),
+            Atom::text("0"),
+            Atom::text("--interval"),
+            Atom::text("0"),
+            Atom::text("--ckptdir"),
+            Atom::path(&launch.tools.image_root),
+            Atom::text("--tmpdir"),
+            Atom::path(&launch.tools.temporary_root),
+            Atom::path(image.process_image()?),
         ];
-        let child = CommandSpec { executable: &launch.tools.restarter.path,
-            temporary_root: &launch.tools.temporary_root, args: &args, environment: &environment,
-        }.construct(launch.command_construction_budget()?)?
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .spawn()?;
+        let environment = [
+            (
+                "CRUCIBLE_RESTORE_RESOURCE_ROOT",
+                Atom::path(&launch.resource_root),
+            ),
+            (
+                "CRUCIBLE_RESTORE_SAVED_FILES_SOURCE_ROOT",
+                Atom::path(image.source_supplementary_files_root()),
+            ),
+            (
+                "CRUCIBLE_RESTORE_SAVED_FILES_TARGET_ROOT",
+                Atom::path(&supplementary),
+            ),
+            (
+                "CRUCIBLE_RESTORE_SAVED_FILES_MANIFEST",
+                Atom::path(&manifest),
+            ),
+            (
+                "CRUCIBLE_GEM5_OPERATIONAL_ROOT",
+                Atom::path(&launch.tools.temporary_root),
+            ),
+            ("CRUCIBLE_GEM5_CONTROL_SOCKET", Atom::path(&endpoint)),
+            (
+                "DMTCP_PATH_MAPPING",
+                Atom::Mapping(&image.source().resource_root, &launch.resource_root),
+            ),
+        ];
+        let child = CommandSpec {
+            executable: &launch.tools.restarter.path,
+            temporary_root: &launch.tools.temporary_root,
+            args: &args,
+            environment: &environment,
+        }
+        .construct(launch.command_construction_budget()?)?
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()?;
         let custody = ArmRootNativeCustody {
             group: None,
             unenrolled: Some(child),

@@ -51,7 +51,16 @@ impl X86RootLaunch {
         temporary_root: PathBuf,
         timeout: Duration,
     ) -> Result<Self, ProviderError> {
-        Self::installed_with_command_budget(owner, incarnation, generation, resource_root, image_root, temporary_root, timeout, super::NativeCommandConstructionPolicy::default().reserve()?)
+        Self::installed_with_command_budget(
+            owner,
+            incarnation,
+            generation,
+            resource_root,
+            image_root,
+            temporary_root,
+            timeout,
+            super::NativeCommandConstructionPolicy::default().reserve()?,
+        )
     }
 
     /// Measures the installed model under a separately retained construction budget.
@@ -59,8 +68,13 @@ impl X86RootLaunch {
     /// # Errors
     /// Refuses every invalid installed launch condition described by `installed`.
     pub fn installed_with_command_budget(
-        owner: Id, incarnation: Id, generation: U64, resource_root: PathBuf,
-        image_root: PathBuf, temporary_root: PathBuf, timeout: Duration,
+        owner: Id,
+        incarnation: Id,
+        generation: U64,
+        resource_root: PathBuf,
+        image_root: PathBuf,
+        temporary_root: PathBuf,
+        timeout: Duration,
         command_budget: super::NativeCommandConstructionBudget,
     ) -> Result<Self, ProviderError> {
         if generation.get() == 0 || timeout.is_zero() || timeout > Duration::from_secs(600) {
@@ -232,7 +246,13 @@ impl X86RootLaunch {
     ///
     /// # Errors
     /// Refuses inert imported source records without a fresh operational budget.
-    pub fn command_construction_budget(&self) -> Result<&super::NativeCommandConstructionBudget, ProviderError> {
-        self.command_budget.as_ref().ok_or(ProviderError::Correlation("Root archive has no operational command reservation"))
+    pub fn command_construction_budget(
+        &self,
+    ) -> Result<&super::NativeCommandConstructionBudget, ProviderError> {
+        self.command_budget
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "Root archive has no operational command reservation",
+            ))
     }
 }

@@ -191,7 +191,10 @@ fn actual_root_serial_source_gone_twins_require_fresh_certificates() {
             let restored = ArmRootNativeProcess::restore(
                 &saved,
                 ArmRootRestoreTarget {
-                command_budget: crucible_node_provider::gem5::NativeCommandConstructionPolicy::default().reserve().unwrap(),
+                    command_budget:
+                        crucible_node_provider::gem5::NativeCommandConstructionPolicy::default()
+                            .reserve()
+                            .unwrap(),
                     incarnation: Id::new(name)?,
                     generation: 2.into(),
                     resource_root: resources,

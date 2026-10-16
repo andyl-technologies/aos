@@ -207,10 +207,18 @@ impl X86RootCustodyQueue {
     }
 
     pub(super) fn reserved_command_budget(
-        &self, target: &ActivationRecord, owner: &OwnerIdentity, archive: &NativeArchiveRecord,
-    ) -> Result<crucible_node_provider::gem5::NativeCommandConstructionBudget, NodeObservedError> {
+        &self,
+        target: &ActivationRecord,
+        owner: &OwnerIdentity,
+        archive: &NativeArchiveRecord,
+    ) -> Result<crucible_node_provider::gem5::NativeCommandConstructionBudget, NodeObservedError>
+    {
         self.verify_reserved(target, owner, archive)?;
-        self.0.lock().slots.iter().flatten()
+        self.0
+            .lock()
+            .slots
+            .iter()
+            .flatten()
             .find(|entry| &entry.scope.activation == target && &entry.scope.owner == owner)
             .map(|entry| entry.scope.command_budget.clone())
             .ok_or_else(|| refused("Root original command reservation absent"))
@@ -352,8 +360,9 @@ impl X86RootCustodySlot for Slot {
             if launch.owner() != &entry.scope.owner.owner
                 || launch.incarnation() != &entry.scope.owner.incarnation
                 || launch.generation() != entry.scope.owner.generation
-                || !launch.command_construction_budget().is_ok_and(|budget|
-                    budget.same_reservation_data(&entry.scope.command_budget))
+                || !launch
+                    .command_construction_budget()
+                    .is_ok_and(|budget| budget.same_reservation_data(&entry.scope.command_budget))
             {
                 entry.failed = true;
                 CleanupFailureRecord::retain_first(
@@ -378,8 +387,12 @@ impl Drop for Slot {
     fn drop(&mut self) {
         if !self.transferred {
             let mut registry = self.shared.lock();
-            let spent = registry.slots[self.index].as_ref().is_some_and(|entry|
-                entry.scope.command_budget.has_original_construction_debits_data());
+            let spent = registry.slots[self.index].as_ref().is_some_and(|entry| {
+                entry
+                    .scope
+                    .command_budget
+                    .has_original_construction_debits_data()
+            });
             if spent {
                 // No Child escaped: every post-spawn path is owned by the
                 // construction guard and transfers via retain. Keep the spent

@@ -349,7 +349,8 @@ fn map_node_bytes() -> Result<usize, Excess> {
 
 /// Names the defining checked node-layout arithmetic's complete return views.
 pub(crate) fn original_serialization_tree_node_counter_scratch_data() -> usize {
-    size_of::<Result<usize, Excess>>() + size_of::<Result<usize, ProviderError>>()
+    size_of::<Result<usize, Excess>>()
+        + size_of::<Result<usize, ProviderError>>()
         + size_of::<Option<usize>>()
 }
 

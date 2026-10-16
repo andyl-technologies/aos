@@ -77,7 +77,8 @@ impl RootInstalledEngine {
     }
 
     pub(super) fn with_runtime_and_command_policy(
-        root: PathBuf, runtime: RuntimeCustodyQueue,
+        root: PathBuf,
+        runtime: RuntimeCustodyQueue,
         command_policy: crucible_node_provider::gem5::NativeCommandConstructionPolicy,
     ) -> Result<Self, NodeObservedError> {
         validate_private_root(&root)?;
