@@ -130,7 +130,7 @@ pub enum RetainedExecutorRetirementError {
     /// The same Main could not enter its once-only saved Cleanup.
     #[error("retained executor Cleanup admission refused: {0}")]
     Admission(#[source] ServiceBirthError),
-    /// Cleanup refused with the same whole constructor still in its inline cell.
+    /// Cleanup retained a cause, independently of the body's physical closure.
     #[error(
         "retained executor constructor first failed: {first}; cleanup: {cause:?}; Main controls: {controls:?}; independent post: {post:?}"
     )]
@@ -236,39 +236,66 @@ impl CampaignProcessOwner {
         // retaining its worker. Always revisit both before deciding ownership.
         let controls = super::try_retire_executor_controls(main, &original).err();
         let post = original.wait_slice().err();
-        let physically_closed = match owner {
-            RetainedExecutorConstruction::Packaged(owner) => owner.physically_retired(),
-            RetainedExecutorConstruction::Guarded(owner) => owner.physically_retired(),
-            RetainedExecutorConstruction::Attached(_) => false,
-        } && controls
-            .as_ref()
-            .is_none_or(|error| error.physically_closed())
-            && post.is_none();
-        if !physically_closed {
-            return Err(RetainedExecutorRetirementError::Cleanup {
-                first,
-                cause: work.err(),
-                controls,
-                post,
-            });
-        }
-        let historical_cause = work.err();
-        let returned = slot.take();
-        drop(slot);
-        // Physical cleanup succeeded. Destroy the exact body before returning;
-        // neither this postcut nor a prior semantic failure starts new effects.
-        drop(returned);
-        if historical_cause.is_some() || controls.is_some() {
-            return Err(RetainedExecutorRetirementError::Cleanup {
-                first,
-                cause: historical_cause,
-                controls,
-                post,
-            });
-        }
-        match post {
-            Some(post) => Err(RetainedExecutorRetirementError::Post { first, post }),
-            None => Ok(()),
-        }
+        finish_retained_construction(
+            slot,
+            |owner| match owner {
+                RetainedExecutorConstruction::Packaged(owner) => owner.physically_retired(),
+                RetainedExecutorConstruction::Guarded(owner) => owner.physically_retired(),
+                RetainedExecutorConstruction::Attached(_) => false,
+            },
+            first,
+            work.err(),
+            controls,
+            post,
+        )
     }
 }
+
+/// Destroys an actually closed body before reporting its independent history.
+///
+/// The private production caller supplies only the retained owner's observation.
+/// A failed Original post cannot reverse physical closure or require another
+/// cleanup attempt on resources that have already returned.
+fn finish_retained_construction<T>(
+    mut slot: std::sync::MutexGuard<'_, Option<T>>,
+    owner_closed: impl FnOnce(&T) -> bool,
+    first: &'static ServiceBirthError,
+    cause: Option<RetainedExecutorCleanupError>,
+    controls: Option<super::ExecutorControlRetirementError>,
+    post: Option<HostSupervisionError>,
+) -> Result<(), RetainedExecutorRetirementError> {
+    let physically_closed = slot.as_ref().is_some_and(owner_closed)
+        && controls
+            .as_ref()
+            .is_none_or(|error| error.physically_closed());
+    if !physically_closed {
+        return Err(RetainedExecutorRetirementError::Cleanup {
+            first,
+            cause,
+            controls,
+            post,
+        });
+    }
+
+    let returned = slot.take();
+    drop(slot);
+    // Destruction follows actual member closure and runs outside the cell lock.
+    // Historical reports cannot require another attempt before releasing this body.
+    drop(returned);
+    if cause.is_some() || controls.is_some() {
+        return Err(RetainedExecutorRetirementError::Cleanup {
+            first,
+            cause,
+            controls,
+            post,
+        });
+    }
+    match post {
+        Some(post) => Err(RetainedExecutorRetirementError::Post { first, post }),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+#[path = "retained_construction/tests.rs"]
+mod tests;
