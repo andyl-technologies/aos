@@ -12,7 +12,9 @@ pub(super) struct OriginalRestorationWholeObservation {
 
 impl OriginalRestorationWholeObservation {
     pub(super) fn new_pending() -> Self {
-        Self { pending: Cell::new(true) }
+        Self {
+            pending: Cell::new(true),
+        }
     }
 
     pub(super) fn require_observation(&self) {
@@ -38,17 +40,28 @@ mod tests {
     #[test]
     fn binding_and_each_completed_group_require_a_new_whole_observation() {
         let observation = OriginalRestorationWholeObservation::new_pending();
-        assert!(matches!(observation.authenticate_dispatch_data(), Err(RuntimeError::OutstandingObligations)));
+        assert!(matches!(
+            observation.authenticate_dispatch_data(),
+            Err(RuntimeError::OutstandingObligations)
+        ));
 
         observation.complete_observation();
         assert!(observation.authenticate_dispatch_data().is_ok());
-        for _phase in [OriginalRestorationTransactionPhase::Prepare,
+        for _phase in [
+            OriginalRestorationTransactionPhase::Prepare,
             OriginalRestorationTransactionPhase::Inputs,
-            OriginalRestorationTransactionPhase::Commit] {
+            OriginalRestorationTransactionPhase::Commit,
+        ] {
             observation.require_observation();
-            assert!(matches!(observation.authenticate_dispatch_data(), Err(RuntimeError::OutstandingObligations)));
+            assert!(matches!(
+                observation.authenticate_dispatch_data(),
+                Err(RuntimeError::OutstandingObligations)
+            ));
             // Inspecting the same pending boundary never consumes or clears it.
-            assert!(matches!(observation.authenticate_dispatch_data(), Err(RuntimeError::OutstandingObligations)));
+            assert!(matches!(
+                observation.authenticate_dispatch_data(),
+                Err(RuntimeError::OutstandingObligations)
+            ));
             observation.complete_observation();
             assert!(observation.authenticate_dispatch_data().is_ok());
         }

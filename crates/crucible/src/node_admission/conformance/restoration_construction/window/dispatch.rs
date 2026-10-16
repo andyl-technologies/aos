@@ -31,7 +31,10 @@ impl<'a> RestorationDispatchAttempt<'a> {
     ) -> Result<Self, RuntimeError> {
         window.origin()?;
         if window.stage.get() != WindowStage::TransactionAdmitted
-            || window.whole_observation.authenticate_dispatch_data().is_err()
+            || window
+                .whole_observation
+                .authenticate_dispatch_data()
+                .is_err()
             || window.phase_in_flight.replace(true)
         {
             window.stage.set(WindowStage::Failed);
