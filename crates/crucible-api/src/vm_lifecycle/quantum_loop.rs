@@ -47,6 +47,7 @@ pub(in crate::vm_lifecycle) use lifecycle::map_journal_limit;
 pub(super) use lifecycle::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
+    truncate_lifecycle_exit_log_tail,
 };
 #[cfg(test)]
 pub(super) use lifecycle::{HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal};

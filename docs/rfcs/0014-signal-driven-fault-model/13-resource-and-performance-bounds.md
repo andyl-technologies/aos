@@ -213,18 +213,34 @@ uses the separately bounded, fallible raw-event drain described above and
 poisons the continuation if authentication or typed allocation fails.
 
 The controller's terminal-lifecycle process ownership uses one versioned
-`run-state.json` envelope. The envelope atomically couples the current and
-staged QEMU process identities to the lifecycle phase, authenticated action and
-evidence hashes, completed exits, and the runtime event-record and byte bases.
-There is no separately published manifest or journal and no legacy fallback,
-so a rename cannot expose half of a process-generation transition. Encoding is
-measured before one fallible exact reservation and then writes only within that
-reserved storage. Recovery bounds the file before reading, performs a
-count-only preflight before constructing owned maps or record vectors, charges
-the complete envelope against the remaining `event_log_bytes`, charges journal
-records against the remaining aggregate `event_records`, and rejects any phase,
-generation, transition, or process-identity ownership matrix that the live
-publisher cannot produce.
+`run-state.json` envelope (version 3) and an append-only
+`lifecycle-exits.jsonl` exit log beside it. The envelope atomically couples the
+current and staged QEMU process identities to the lifecycle phase,
+authenticated action and evidence hashes, the committed exit-log prefix, and the
+runtime event-record and byte bases. There is no separately published manifest
+or journal and no legacy fallback, so a rename cannot expose half of a
+process-generation transition. Completed exits are history that is only counted
+and validated after commit, so they live in the log rather than the envelope,
+which therefore stays bounded by node count. The log holds one canonical
+compact JSON line per committed exit; the envelope records its record count,
+byte length, and a SHA-256 chain over the lines. A lifecycle commit first
+truncates the log to the recorded prefix, appends the transaction's exits, and
+syncs the file (and its directory when new); only then does it rename the
+envelope that records the longer prefix. A crash between the two steps leaves
+an unreferenced tail, which the next append or a recovery takeover of a dead
+owner truncates; a failed append or rename restores the committed reference so
+a retry writes the same bytes. Encoding is measured before one fallible exact
+reservation and then writes only within that reserved storage. Recovery bounds
+the envelope before reading, performs a count-only preflight before
+constructing owned maps or record vectors, charges the envelope plus the
+recorded log length against the remaining `event_log_bytes`, charges journal
+nodes plus recorded exits against the remaining aggregate `event_records`
+without reading the log, and rejects any phase, generation, transition, or
+process-identity ownership matrix that the live publisher cannot produce. It
+then streams only the recorded log prefix once, verifying each record's
+canonical encoding and fields, non-decreasing transactions, per-transaction
+node uniqueness, the record count, and the chain; a live owner's in-progress
+tail is ignored.
 
 Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
 envelopes admit their representation against `fat_checkpoint_bytes` and its

@@ -1040,7 +1040,8 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
             transaction: 0,
             phase: ProductionLifecycleJournalPhase::Idle,
             nodes: Vec::new().into(),
-            completed_exits: Vec::new().into(),
+            exit_log: ProductionLifecycleExitLog::empty(),
+            pending_exits: Vec::new(),
         },
         lifecycle_persistence: LifecycleStatePersistence::new(run_directory.path())
             .unwrap_or_else(|error| panic!("test lifecycle state should initialize: {error}")),

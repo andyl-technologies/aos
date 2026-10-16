@@ -116,6 +116,7 @@ crucible.api.rpc|crates/crucible-api/src/rpc_abi.rs|number|RPC_PROTOCOL_MAJOR
 crucible.production-network-adapter-checkpoint|crates/crucible-api/src/vm_lifecycle/network_faults.rs|number|NETWORK_ADAPTER_CHECKPOINT_VERSION
 crucible.production-run-lock|crates/crucible-api/src/vm_lifecycle.rs|number|PRODUCTION_RUN_LOCK_VERSION
 crucible.production-run-state|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs|number|PRODUCTION_RUN_STATE_VERSION
+crucible.production-lifecycle-exit-log|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence/exit_log.rs|number|PRODUCTION_LIFECYCLE_EXIT_LOG_VERSION
 crucible.shmem.region|crates/crucible-shmem/src/lib.rs|number|ABI_VERSION
 crucible.shmem.fault-clock-evidence|crates/crucible-shmem/src/shmem/fault_clock_evidence.rs|magic|FAULT_CLOCK_EVIDENCE_MAGIC_V2
 crucible.shmem.fault-clock-manifest|crates/crucible-shmem/src/shmem/fault_target_manifest.rs|number|FAULT_CLOCK_MANIFEST_VERSION_V2

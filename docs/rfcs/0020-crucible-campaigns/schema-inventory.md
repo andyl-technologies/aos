@@ -23,7 +23,8 @@ The untagged-writer review found these independently versioned contracts:
 
 | Format | Source evidence | Registry entry |
 | --- | --- | --- |
-| Durable production lifecycle state | `crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence` writes `run-state.json` with `PRODUCTION_RUN_STATE_VERSION = 2`; `recovery` checks that version before decoding. | `crucible.production-run-state` |
+| Durable production lifecycle state | `crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence` writes `run-state.json` with `PRODUCTION_RUN_STATE_VERSION = 3`; `recovery` checks that version before decoding. | `crucible.production-run-state` |
+| Production lifecycle exit log | `crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence::exit_log` appends committed exits to `lifecycle-exits.jsonl`; run state records `PRODUCTION_LIFECYCLE_EXIT_LOG_VERSION = 1`, the committed prefix, and its chain, and recovery verifies that version before streaming the prefix. | `crucible.production-lifecycle-exit-log` |
 | Production run ownership lock | `crucible-api::vm_lifecycle` writes and rereads `active-run.lock` across process lifetimes. Its record requires version 1, and the reader rejects unversioned or unsupported records. | `crucible.production-run-lock` |
 | Production network adapter continuation | `crucible-api::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 11` and validates that version on restore. | `crucible.production-network-adapter-checkpoint` |
 | Pending network output | `crucible::backend::io::network_checkpoint` independently encodes and decodes canonical CBOR for each routed frame, with `BACKEND_NETWORK_OUTPUT_VERSION = 2`. | `crucible.execution.backend-network-output` |
@@ -90,7 +91,8 @@ rows. They do not create an additional wire or durable schema:
 - Standard 9P, virtio, QMP, and QEMU migration versions are owned by their
   upstream protocols. The registry owns Crucible-added QEMU migration
   sections; fields within each section share its version.
-- The lifecycle manifest and journal are fields of `run-state.json`, and the
+- The lifecycle manifest and journal are fields of `run-state.json`; the
+  journal's completed exits live in the separately versioned exit log. The
   campaign runtime identity is a hash of the emitted configuration. Neither
   is a separately decoded format.
 - `crucible.scheduler.event-log.segment-text.v6` is a text projection generated
@@ -117,6 +119,7 @@ paths were reviewed as a bounded source family, excluding test fixtures:
 | --- | --- |
 | `vm_lifecycle.rs` run-lock encode/write/decode | Independent durable ownership record, now registered as `crucible.production-run-lock`. |
 | `vm_lifecycle/quantum_loop/lifecycle/persistence{,/recovery}.rs` JSON measurement, write, and decode | One `run-state.json` record, registered as `crucible.production-run-state`; the counting writer and staged write do not create additional formats. |
+| `vm_lifecycle/quantum_loop/lifecycle/persistence/exit_log.rs` line encode, append, and streaming decode | The append-only completed-exit log, registered as `crucible.production-lifecycle-exit-log`. |
 | `vm_lifecycle/network_faults.rs` adapter-state encode/decode | Nested opaque checkpoint body independently decoded at version 11, registered as `crucible.production-network-adapter-checkpoint`. |
 | `vm_lifecycle/network_faults{,/boundary,/evidence}.rs` remaining JSON encodes | Digest and evidence material only: observation lists, campaign records, control events, mapping outputs, and queue state feed hashes or the containing adapter checkpoint. They are not separately decoded records. |
 | `vm_lifecycle/checkpoint_store/{storage,sparse}.rs` and `storage/{file_io,copy}.rs` writes | Authenticated copies or sparse reconstruction of existing checkpoint artifacts and content-addressed bytes. Their formats are owned by the corresponding checkpoint and QEMU VM-state registry rows; copying does not introduce a new decoder. |

@@ -49,6 +49,7 @@ use crucible_qemu::{
 use quantum_loop::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
+    truncate_lifecycle_exit_log_tail,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -2151,8 +2152,8 @@ mod helpers;
 mod network_faults;
 mod process_owners;
 use process_owners::{
-    ProductionLifecycleCompletedExit, ProductionLifecycleJournal, ProductionLifecycleJournalNode,
-    ProductionLifecycleJournalPhase, ProductionRunManifest,
+    ProductionLifecycleCompletedExit, ProductionLifecycleExitLog, ProductionLifecycleJournal,
+    ProductionLifecycleJournalNode, ProductionLifecycleJournalPhase, ProductionRunManifest,
 };
 mod quantum_loop;
 mod retention_drain;
@@ -2317,6 +2318,11 @@ fn production_run_directory(
                     },
                 )?;
             }
+            // The dead owner may have crashed between appending exits and
+            // renaming the run state that counts them; discard that tail
+            // before this process republishes the run.
+            truncate_lifecycle_exit_log_tail(directory, &journal.exit_log)
+                .map_err(durable_run_state_api_error)?;
             journal.phase = ProductionLifecycleJournalPhase::Quarantined;
             manifest.clean_shutdown = true;
             manifest.recovered_after_host_exit = true;
@@ -2363,7 +2369,8 @@ fn production_run_directory(
         transaction: 0,
         phase: ProductionLifecycleJournalPhase::Idle,
         nodes: Vec::new().into(),
-        completed_exits: Vec::new().into(),
+        exit_log: ProductionLifecycleExitLog::empty(),
+        pending_exits: Vec::new(),
     };
     persist_run_state_atomic(
         &path.join(PRODUCTION_RUN_STATE_FILE),

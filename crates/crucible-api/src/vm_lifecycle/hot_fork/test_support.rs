@@ -495,7 +495,8 @@ fn lifecycle_without_backends(
             transaction: 0,
             phase: ProductionLifecycleJournalPhase::Idle,
             nodes: Vec::new().into(),
-            completed_exits: Vec::new().into(),
+            exit_log: ProductionLifecycleExitLog::empty(),
+            pending_exits: Vec::new(),
         },
         lifecycle_persistence: LifecycleStatePersistence::new(run_directory.path())
             .map_err(|error| test_support_error("construct test lifecycle persistence", error))?,
