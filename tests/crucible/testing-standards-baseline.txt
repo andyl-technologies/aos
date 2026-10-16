@@ -219,8 +219,6 @@ crucible-qemu	src/ram_control/tests	retry	1
 crucible-qemu	src/ram_control/tests	thread::sleep	1
 crucible-qemu	src/ram_source	thread::sleep	1
 crucible-qemu	src/supervision/host_io_runtime/operational_wait	thread::sleep	1
-crucible-qemu-plugin	src/paged_ram/controller/admission	thread::sleep	1
-crucible-qemu-plugin	src/paged_ram/controller/admission	std::thread::sleep	1
 # Control-worker readiness waits retain the original live operation token;
 # the controller test deliberately crosses its original-start deadline before
 # amending a budget. Neither path repeats failed tests or hides a timeout.

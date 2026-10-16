@@ -71,16 +71,21 @@ const CONTRACTS: &[Contract] = &[
                 "} operation.wait_slice()?; if inventory.existing_tasks == 0",
                 "Ok((inventory, operation))",
                 "letstatus=(controller.native_grant)(generation,metadata_bytes,&mutallowance);",
+                "if status != 0 || allowance == 0 { controller.mark_failed(); return Err(RamError::Native",
                 "ifallowance<rust_metadata_required_bytes{controller.mark_failed();",
                 "}operation.wait_slice()?;Ok(allowance)",
             ],
             // Pending-record sleep adds one boundary on the same setup start;
             // export, completed census and native grant preserve their cuts.
-            counts: &[("operation.wait_slice()?;", 7)],
+            counts: &[
+                ("operation.wait_slice()?;", 7),
+                ("controller.begin(SourceOperationClass::ControlSetup)?", 1),
+            ],
         }],
     },
-    // Only the explicit pre-census pending record can repeat native observation.
-    // It retains the same setup owner and refuses any prematurely published census.
+    // Native record polling and host grant polling retain the same exported
+    // setup operation. Only explicit pending records repeat native observation;
+    // both waits leave their locks before sleeping and preserve the original cap.
     Contract {
         package: "crucible-qemu-plugin",
         target: "src/paged_ram/controller/admission",
@@ -98,11 +103,37 @@ const CONTRACTS: &[Contract] = &[
             "let slice = operation.wait_slice()?;",
             "} operation.wait_slice()?; if inventory.existing_tasks == 0 || inventory.existing_file_descriptors == 0 || inventory.registered_service_tasks > inventory.existing_tasks",
             "Ok((inventory, operation))",
+            "let (owner_resources, operation) = export_owner_inventory(&controller, |inventory|",
+            r#"let (grant, spill_quota) = loop {
+                let slice = operation.wait_slice()?;
+                let grant = controller.state.lock()
+                    .map_err(|_| RamError::Invariant("RAM controller poisoned"))?
+                    .inventory.as_ref().and_then(|inventory| inventory.grant);
+                if let Some(grant) = grant { break grant; }
+                std::thread::sleep(slice.min(Duration::from_millis(10)));
+            };"#,
+            r#"let allowance = grant_native_rust_allowance(
+                &controller, operation.as_ref(), generation, grant.metadata_bytes,
+                rust_metadata_required_bytes,
+            )?;
+            let owner = PausedPagingOwner::new(grant, controller.clone())?;"#,
+            r#"operation.wait_slice()?;
+                let mut allowance = 0;
+                let status = (controller.native_grant)(generation, metadata_bytes, &mut allowance);"#,
+            "if status != 0 || allowance == 0 { controller.mark_failed(); return Err(RamError::Native",
+            "if allowance < rust_metadata_required_bytes { controller.mark_failed();",
+            "} operation.wait_slice()?; Ok(allowance)",
         ],
-        expressions: &[(
-            "std::thread::sleep(slice.min(Duration::from_millis(10)));",
-            1,
-        )],
+        expressions: &[
+            (
+                "let slice = operation.wait_slice()?; std::thread::sleep(slice.min(Duration::from_millis(10)));",
+                1,
+            ),
+            (
+                "if let Some(grant) = grant { break grant; } std::thread::sleep(slice.min(Duration::from_millis(10)));",
+                1,
+            ),
+        ],
         companions: &[Companion {
             path: "crates/crucible-qemu-plugin/src/paged_ram/controller/tests/admission.rs",
             required: &[
@@ -118,6 +149,14 @@ const CONTRACTS: &[Contract] = &[
                 "for status in [-libc::EAGAIN, -libc::EBUSY, -libc::EIO, 2]",
                 "fn pending_inventory_with_output_or_success_without_census_refuses_publication()",
                 "assert!(controller.state.lock().unwrap().inventory.is_none());",
+                "fn pending_record_retries_without_reissuing_setup_or_publishing_partial_census()",
+                "assert_eq!(attempts, 3);",
+                "fn successful_export_returns_same_setup_custody_without_completion_or_renewal()",
+                "assert!(Arc::ptr_eq(&operation, &retained));",
+                "fn actual_native_residual_must_cover_the_complete_report_before_owner_birth()",
+                "assert!(matches!(result, Err(RamError::MetadataAdmission { required: actual, admitted, }) if actual == required && admitted == required - 1));",
+                "assert!(state.owner.is_none());",
+                "assert!(operation.wait_slice().is_err());",
             ],
             counts: &[(
                 "fn pending_record_cannot_publish_census_or_renew_expired_setup(",
@@ -332,6 +371,14 @@ mod tests {
             .any(|finding| finding.contains("`retry`") || finding.contains("`thread::sleep`"))
     }
 
+    // Recovery custody has its own exact contract and mutation controls. Apply
+    // it to the original source before this suite changes wait obligations or
+    // appends forbidden attempts, so those additions cannot be pre-masked.
+    fn input_contract_source(contract: &Contract, source: &str) -> String {
+        let code = super::super::super::scrub_comments_and_strings(source);
+        super::super::operational_recovery::mask(contract.package, contract.target, &code)
+    }
+
     #[test]
     fn exact_operational_inputs_reject_drift_extra_waits_and_test_reruns()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -342,9 +389,19 @@ mod tests {
                     .join(contract.package)
                     .join(format!("{}.rs", contract.target)),
             )?;
-            let code = super::super::super::scrub_comments_and_strings(&source);
+            let code = input_contract_source(contract, &source);
             let compact = compact_code(&code);
             let companions = read_companions(contract)?;
+            assert!(
+                super::super::super::flaky_escape_failures(
+                    contract.package,
+                    contract.target,
+                    &source,
+                )
+                .is_empty(),
+                "composed operational contracts rejected reviewed source: {}",
+                contract.target
+            );
             for requirement in contract.required {
                 assert!(
                     compact.contains(&pattern(requirement)),
@@ -371,7 +428,9 @@ mod tests {
             );
 
             for (expression, count) in contract.expressions {
-                assert_eq!(compact.match_indices(expression).count(), *count);
+                // Count the same canonical tokens used by the live matcher.
+                let expression = pattern(expression);
+                assert_eq!(compact.match_indices(expression.as_str()).count(), *count);
                 let additional = format!("{compact}{expression}");
                 assert!(
                     has_escape(&mask_with_companions(contract, &additional, &companions)),
@@ -384,8 +443,8 @@ mod tests {
                     .replace("from_millis(10)", "from_millis(11)")
                     .replace("from_millis(1)", "from_millis(2)")
                     .replace("read_retry", "read_retry_changed");
-                assert_ne!(changed_expression, *expression);
-                let changed = compact.replacen(expression, &changed_expression, 1);
+                assert_ne!(changed_expression, expression);
+                let changed = compact.replacen(expression.as_str(), &changed_expression, 1);
                 assert!(
                     has_escape(&mask_with_companions(contract, &changed, &companions)),
                     "changed expression was masked: {} {expression}",
@@ -403,6 +462,17 @@ mod tests {
                 assert!(
                     has_escape(&mask_with_companions(contract, &changed, &companions)),
                     "additional escape was masked: {} {addition}",
+                    contract.target
+                );
+                let changed_source = format!("{source}\n{addition}");
+                assert!(
+                    !super::super::super::flaky_escape_failures(
+                        contract.package,
+                        contract.target,
+                        &changed_source,
+                    )
+                    .is_empty(),
+                    "composed operational contracts masked an additional escape: {} {addition}",
                     contract.target
                 );
             }
@@ -425,7 +495,7 @@ mod tests {
                     .join(contract.package)
                     .join(format!("{}.rs", contract.target)),
             )?;
-            let code = super::super::super::scrub_comments_and_strings(&source);
+            let code = input_contract_source(contract, &source);
             let companions = read_companions(contract)?;
             for (index, binding) in contract.companions.iter().enumerate() {
                 let compact = compact_code(&super::super::super::scrub_comments_and_strings(
@@ -490,7 +560,8 @@ mod tests {
                 );
 
                 for (expression, count) in binding.counts {
-                    assert_eq!(compact.match_indices(expression).count(), *count);
+                    let expression = pattern(expression);
+                    assert_eq!(compact.match_indices(expression.as_str()).count(), *count);
                     let mut changed = companions.clone();
                     changed[index] = format!("{compact}{expression}");
                     assert!(

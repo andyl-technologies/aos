@@ -4,6 +4,9 @@
 //! count, and the checks that make the wait bounded or an adversarial input.
 //! Additional sleeps and changed expressions remain visible to the lint.
 
+#[path = "operational_target_cleanup.rs"]
+mod operational_target_cleanup;
+
 #[path = "operational_inputs.rs"]
 mod operational_inputs;
 

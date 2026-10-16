@@ -4,6 +4,7 @@
 //! Missing caller/helper observations or changed occurrence counts fail closed.
 //! Passing these source checks does not qualify native lifecycle integration.
 
+use super::operational_target_cleanup;
 use super::{
     compact_code, expression_offsets, identifier_count, mask_expression, mask_identifier,
     source_pattern,
@@ -25,6 +26,8 @@ struct Contract {
     identifiers: &'static [(&'static str, usize)],
     companions: &'static [Companion],
 }
+
+const TARGET_CLEANUP_REQUIRED: &[(&str, usize)] = &operational_target_cleanup::REQUIRED;
 
 const CONTRACTS: &[Contract] = &[
     Contract {
@@ -500,7 +503,10 @@ const CONTRACTS: &[Contract] = &[
                 1,
             ),
             (r#"cleanup.complete()?; slot.cleanup = None;"#, 1),
-            (r#"slot.installed_process = None; slot.active = None;"#, 1),
+            (
+                r#"slot.installed_process = None; slot.source_control_payer = None; slot.active = None;"#,
+                1,
+            ),
             (
                 r#"after_boundary(result, cleanup.wait_slice().map(|_| ()).map_err(Into::into))"#,
                 1,
@@ -536,30 +542,7 @@ const CONTRACTS: &[Contract] = &[
         ],
         companions: &[Companion {
             path: "crates/crucible-qemu/src/linux_attempt_host/original_roster/fork_target.rs",
-            required: &[
-                (
-                    r#"if target.cleanup.is_none() { target.cleanup = Some(Arc::new(target.preparation.as_ref().ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?.begin_original_cleanup_control().map_err(|source| original_error(source.into()))?, )); }"#,
-                    1,
-                ),
-                (
-                    r#"target.unsettled.as_mut().ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?.finish(cleanup)?;"#,
-                    1,
-                ),
-                (
-                    r#"let unique = Arc::get_mut(cleanup).ok_or(OriginalActorAccountError::Unavailable)?;"#,
-                    1,
-                ),
-                (
-                    r#"Arc::get_mut(preparation).ok_or(OriginalActorAccountError::Unavailable)?; unique.complete()?;"#,
-                    1,
-                ),
-                (
-                    r#"let preparation = target.preparation.as_mut().ok_or(OriginalActorAccountError::Unavailable)?;"#,
-                    1,
-                ),
-                (r#"source, original: cleanup.wait_slice().err(),"#, 1),
-                (r#"close_target_slot(slot).map_err(original_error)"#, 1),
-            ],
+            required: TARGET_CLEANUP_REQUIRED,
         }],
     },
     Contract {
@@ -784,6 +767,25 @@ fn continuation_waits_require_original_posts_and_physical_custody()
             "composed operation contracts changed: {}",
             contract.target
         );
+
+        if contract.package == "crucible-qemu"
+            && contract.target == "src/linux_attempt_host/original_roster"
+        {
+            let obligation = source_pattern(
+                "slot.installed_process = None; slot.source_control_payer = None; slot.active = None;",
+            );
+            for replacement in [
+                "slot.installed_process = None; slot.active = None;",
+                "slot.source_control_payer = None; slot.installed_process = None; slot.active = None;",
+                "slot.installed_process = None; slot.active = None; slot.source_control_payer = None;",
+            ] {
+                let changed = replace_one_obligation(&code, &obligation, replacement);
+                assert!(
+                    rejects(&changed, &companions),
+                    "omitted or reordered Source payer return was masked: {replacement}"
+                );
+            }
+        }
 
         for (requirement, count) in contract.required {
             let obligation = source_pattern(requirement);
