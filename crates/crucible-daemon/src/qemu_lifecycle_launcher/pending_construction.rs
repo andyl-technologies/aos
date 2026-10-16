@@ -20,13 +20,7 @@ pub(crate) struct PendingSourceConstruction<F: QemuAttemptResourceGuardFactory> 
     generation_storage: Option<crate::QemuAttemptGenerationStorage>,
     factory: Option<F>,
     world: Option<AuthenticatedNativeWorldCleanupLoan>,
-    reservation: Option<
-        Box<
-            dyn ProductionVmCleanupReservation<
-                Failure = crate::ProductionVmConstructionCleanupError,
-            >,
-        >,
-    >,
+    reservation: Option<crate::WorldLifecycleCleanupReservation>,
     construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
     // Remains here on genuine cell-admission refusal; no charge is discarded.
     controls: Option<AuthenticatedNativeWorldControlLease>,
@@ -86,8 +80,15 @@ where
             .ok_or_else(|| missing_pending("actual body lease is absent"))?;
         match factory.reserve_world_lifecycle_cleanup(controls) {
             Ok(reservation) => {
+                let reserved = reservation.is_reserved();
                 self.reservation = Some(reservation);
-                Ok(())
+                if reserved {
+                    Ok(())
+                } else {
+                    Err(QemuVmRealizationError::CleanupRetained {
+                        operation: "authenticate exact World cleanup reservation",
+                    })
+                }
             }
             Err((controls, source)) => {
                 self.controls = Some(controls);
@@ -125,11 +126,7 @@ where
             F::Guard,
             crate::QemuAttemptGenerationStorage,
             F,
-            Box<
-                dyn ProductionVmCleanupReservation<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-            >,
+            crate::WorldLifecycleCleanupReservation,
             Box<crate::ProductionVmConstructionCustody>,
             AuthenticatedNativeWorldCleanupLoan,
         ),
@@ -139,7 +136,10 @@ where
         if self.first_failure.is_some()
             || self.generation_storage.is_none()
             || self.factory.is_none()
-            || self.reservation.is_none()
+            || self
+                .reservation
+                .as_ref()
+                .is_none_or(|reservation| !reservation.is_reserved())
             || self.controls.is_some()
             || self.construction_custody.is_none()
             || self.world.is_none()
@@ -206,7 +206,10 @@ where
         ),
         SourceConstructionCustodyFailure<C>,
     > {
-        let reservation = self.reservation.take();
+        let reservation = self
+            .reservation
+            .take()
+            .map(crate::WorldLifecycleCleanupReservation::into_reservation);
         retain_source_owner(reservation, self, source)
     }
 }
@@ -440,7 +443,9 @@ where
             >,
         >,
     > {
-        self.reservation.take()
+        self.reservation
+            .take()
+            .map(crate::WorldLifecycleCleanupReservation::into_reservation)
     }
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
         Err(launcher_message(

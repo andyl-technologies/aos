@@ -152,6 +152,7 @@ pub mod executor_worker;
 pub mod host_operational_registry;
 pub mod imported_checkpoint;
 mod lifecycle_cleanup;
+pub use lifecycle_cleanup::WorldLifecycleCleanupReservation;
 mod provider_error_custody;
 pub use host_operational_registry::HostOperationalRegistry;
 pub mod finding_production_replay;

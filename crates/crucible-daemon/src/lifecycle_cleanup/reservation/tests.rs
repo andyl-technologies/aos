@@ -139,6 +139,92 @@ fn receipt(epoch: u64) -> CleanupReservation {
 }
 
 #[test]
+fn unavailable_world_bundle_returns_the_same_reservation_box() {
+    let reservation = LifecycleCleanupHandle::unavailable_reservation_for_test();
+    let original = std::ptr::from_ref(reservation.as_ref()).cast::<()>();
+    let bundle = WorldLifecycleCleanupReservation {
+        reservation,
+        cell: ReservedWorldCell {
+            queue: Weak::new(),
+            index: 0,
+            epoch: 7,
+        },
+    };
+
+    assert!(!bundle.is_reserved());
+    let reservation = bundle.into_reservation();
+
+    assert_eq!(
+        std::ptr::from_ref(reservation.as_ref()).cast::<()>(),
+        original
+    );
+}
+
+#[test]
+fn reserved_cell_observation_preserves_real_custody_on_every_refusal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let selected = fixture(7, false)?;
+    let owner = {
+        let mut cell = selected.slot.cell.lock().unwrap();
+        cell.handoff = false;
+        cell.owner.take().unwrap()
+    };
+    selected.slot.publish(CleanupPhase::Reserved);
+    // This exercises only row observation, without a Main or World lease.
+    // Full bundle validation additionally requires its genuine queue/controls.
+    assert!(
+        borrow_reserved_cell(&selected.slot, 7)
+            .unwrap()
+            .controls
+            .is_none()
+    );
+    assert!(borrow_reserved_cell(&selected.slot, 8).is_none());
+
+    for phase in [
+        CleanupPhase::Publishing,
+        CleanupPhase::Queued,
+        CleanupPhase::Closed,
+    ] {
+        selected.slot.publish(phase);
+        assert!(borrow_reserved_cell(&selected.slot, 7).is_none());
+    }
+    selected.slot.publish(CleanupPhase::Reserved);
+    {
+        let mut cell = selected.slot.cell.lock().unwrap();
+        assert!(borrow_reserved_cell(&selected.slot, 7).is_none());
+        cell.handoff = true;
+    }
+    assert!(borrow_reserved_cell(&selected.slot, 7).is_none());
+    selected.slot.cell.lock().unwrap().handoff = false;
+    selected.slot.cell.lock().unwrap().owner = Some(owner);
+    assert!(borrow_reserved_cell(&selected.slot, 7).is_none());
+    let owner = selected.slot.cell.lock().unwrap().owner.take().unwrap();
+
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _cell = selected.slot.cell.lock().unwrap();
+        panic!("component control poisons the retained cell");
+    }));
+    assert!(poisoned.is_err());
+    assert!(borrow_reserved_cell(&selected.slot, 7).is_none());
+    let poisoned_cell = match selected.slot.cell.lock() {
+        Err(poison) => poison.into_inner(),
+        Ok(_) => panic!("the actual cell must remain poisoned"),
+    };
+    assert_eq!(poisoned_cell.epoch, 7);
+    assert!(poisoned_cell.owner.is_none());
+    assert!(!poisoned_cell.handoff);
+    drop(poisoned_cell);
+
+    let retained = fs::metadata(format!("/proc/self/fd/{}", selected.descriptor))?;
+    assert_eq!((retained.dev(), retained.ino()), selected.identity);
+    assert_eq!(selected.attempts.load(Ordering::Acquire), 0);
+    assert!(!selected.dropped.load(Ordering::Acquire));
+    drop(owner);
+    assert!(selected.dropped.load(Ordering::Acquire));
+    Ok(())
+}
+
+#[test]
 fn exact_retry_preserves_siblings_and_history_until_receipt_observes_close()
 -> Result<(), Box<dyn std::error::Error>> {
     let selected = fixture(7, true)?;

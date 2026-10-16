@@ -166,6 +166,28 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
             "queue: Weak::clone(&self.queue), index, epoch,",
             "queue: Weak::clone(&foreign_queue), index, epoch,",
         ),
+        (
+            1,
+            "cell: ReservedWorldCell { queue: Weak::clone(&self.queue), index, epoch, }",
+            "cell: ReservedWorldCell { queue: Weak::clone(&self.queue), index, epoch: foreign_epoch, }",
+        ),
+        (
+            1,
+            "queue.slots.get(self.cell.index)",
+            "queue.slots.get(foreign_index)",
+        ),
+        (
+            1,
+            "borrow_reserved_cell(slot, self.cell.epoch)",
+            "borrow_reserved_cell(slot, foreign_epoch)",
+        ),
+        (1, "cell.controls.is_some()", "true"),
+        (1, "slot.cell.try_lock().ok()?", "slot.cell.lock().ok()?"),
+        (
+            1,
+            "cell.epoch != epoch || cell.owner.is_some()",
+            "cell.owner.is_some()",
+        ),
         (1, "cell.controls = Some(controls)", "drop(controls)"),
         (1, "checked_add(1)", "wrapping_add(1)"),
         (
@@ -218,6 +240,16 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
             4,
             "factory.reserve_world_lifecycle_cleanup(controls)",
             "factory.reserve_world_lifecycle_cleanup(foreign_controls)",
+        ),
+        (
+            4,
+            "let reserved = reservation.is_reserved();",
+            "let reserved = true;",
+        ),
+        (
+            4,
+            "self.reservation.as_ref().is_none_or(|reservation| !reservation.is_reserved())",
+            "self.reservation.is_none()",
         ),
         (
             4,
