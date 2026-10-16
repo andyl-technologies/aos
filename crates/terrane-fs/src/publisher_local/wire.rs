@@ -72,16 +72,16 @@ pub enum ResultCode {
 /// The registered publisher bodykey message.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct BodyKey {
-    /// The registered `kind` field (tag 1).
+    /// The sealed, chunk or pack key shape.
     #[prost(enumeration = "BodyKind", tag = "1")]
     pub kind: i32,
-    /// The registered `descriptor` field (tag 2).
+    /// The canonical chunk or manifest descriptor; absent for pack keys.
     #[prost(bytes = "vec", tag = "2")]
     pub descriptor: Vec<u8>,
-    /// The registered `codec` field (tag 3).
+    /// The registered chunk codec byte (0, 1 or 2); absent for other keys.
     #[prost(uint32, tag = "3")]
     pub codec: u32,
-    /// The registered `pack_id` field (tag 4).
+    /// The existing 16-byte pack identity; absent for other key shapes.
     #[prost(bytes = "vec", tag = "4")]
     pub pack_id: Vec<u8>,
 }
@@ -89,22 +89,22 @@ pub struct BodyKey {
 /// The registered publisher claim message.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct Claim {
-    /// The registered `descriptor` field (tag 1).
+    /// The canonical inline-chunk or manifest descriptor.
     #[prost(bytes = "vec", tag = "1")]
     pub descriptor: Vec<u8>,
-    /// The registered `chunk_profile` field (tag 2).
+    /// The configured registered chunk-profile label.
     #[prost(string, tag = "2")]
     pub chunk_profile: String,
-    /// The registered `plaintext_size` field (tag 3).
+    /// The exact assembled plaintext size, independent of manifest encoded size.
     #[prost(uint64, tag = "3")]
     pub plaintext_size: u64,
-    /// The registered `manifest_offset` field (tag 4).
+    /// The manifest range start in the optional read-only metadata-pack file.
     #[prost(uint64, tag = "4")]
     pub manifest_offset: u64,
-    /// The registered `manifest_length` field (tag 5).
+    /// The nonzero manifest range length; zero for inline claims.
     #[prost(uint64, tag = "5")]
     pub manifest_length: u64,
-    /// The registered `retention_id` field (tag 6).
+    /// The 16-byte cache-owned pin identifier; this is not a retention proof.
     #[prost(bytes = "vec", tag = "6")]
     pub retention_id: Vec<u8>,
 }
@@ -112,49 +112,49 @@ pub struct Claim {
 /// The registered publisher packet message.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct Packet {
-    /// The registered `version` field (tag 1).
+    /// The transport version, exactly one.
     #[prost(uint32, tag = "1")]
     pub version: u32,
-    /// The registered `request_id` field (tag 2).
+    /// The nonzero connection-scoped request identity, unique while active.
     #[prost(uint64, tag = "2")]
     pub request_id: u64,
-    /// The registered `operation` field (tag 3).
+    /// The registered fixed native command, never a filesystem callback.
     #[prost(enumeration = "Operation", tag = "3")]
     pub operation: i32,
-    /// The registered `domain` field (tag 4).
+    /// The configured disclosure-domain label selecting trusted physical roots.
     #[prost(string, tag = "4")]
     pub domain: String,
-    /// The registered `cache_incarnation` field (tag 5).
+    /// The 16-byte cache-owner incarnation governed by the drain barrier.
     #[prost(bytes = "vec", tag = "5")]
     pub cache_incarnation: Vec<u8>,
-    /// The registered `wait_budget_ms` field (tag 6).
+    /// The request wait budget (1..=300000); zero on responses.
     #[prost(uint64, tag = "6")]
     pub wait_budget_ms: u64,
-    /// The registered `claim` field (tag 7).
+    /// The publication or sealed-adoption witness; absent from responses.
     #[prost(message, optional, tag = "7")]
     pub claim: Option<Claim>,
-    /// The registered `body` field (tag 8).
+    /// The operation-specific checked content key; absent from responses.
     #[prost(message, optional, tag = "8")]
     pub body: Option<BodyKey>,
-    /// The registered `body_incarnation` field (tag 9).
+    /// The 32-byte publisher-issued retained-inode token, when required.
     #[prost(bytes = "vec", tag = "9")]
     pub body_incarnation: Vec<u8>,
-    /// The registered `response` field (tag 10).
+    /// Whether the packet is a publisher response rather than a serve request.
     #[prost(bool, tag = "10")]
     pub response: bool,
-    /// The registered `result` field (tag 11).
+    /// The response outcome; requests omit this field.
     #[prost(enumeration = "ResultCode", tag = "11")]
     pub result: i32,
-    /// The registered `verity_algorithm` field (tag 12).
+    /// The successful sealed/probe binding algorithm (1 or 2), when required.
     #[prost(uint32, tag = "12")]
     pub verity_algorithm: u32,
-    /// The registered `verity_digest` field (tag 13).
+    /// The measured kernel digest, 32 or 64 bytes for algorithms 1 or 2.
     #[prost(bytes = "vec", tag = "13")]
     pub verity_digest: Vec<u8>,
-    /// The registered `inventory_cursor` field (tag 14).
+    /// The opaque connection/domain/incarnation cursor, at most 64 bytes.
     #[prost(bytes = "vec", tag = "14")]
     pub inventory_cursor: Vec<u8>,
-    /// The registered `inventory` field (tag 15).
+    /// The inventory response page, at most 64 unverified key names.
     #[prost(message, repeated, tag = "15")]
     pub inventory: Vec<BodyKey>,
 }
