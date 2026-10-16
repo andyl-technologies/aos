@@ -72,12 +72,17 @@ impl FixtureResourceBudget {
         Ok((usage.descriptors, usage.resident_bytes))
     }
 
+    /// Returns this fixture's actual shared-loan control extent.
+    pub(crate) const fn loan_control_bytes() -> u64 {
+        crate::owned_decode::ResourceLoan::allocation_bytes::<FixtureResourceLoan>()
+    }
+
     /// Reserves an explicit model purpose including its own loan allocation.
     pub(crate) fn reserve_with_control(
         &self,
         resident_bytes: u64,
     ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
-        let control = crate::owned_decode::ResourceLoan::allocation_bytes::<FixtureResourceLoan>();
+        let control = Self::loan_control_bytes();
         let charged = resident_bytes
             .checked_add(control)
             .ok_or(StoreError::Quota)?;

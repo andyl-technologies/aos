@@ -116,6 +116,12 @@ fn checked_default<'read>(
     backend
 }
 
+fn selected_physical<'read>(
+    physical: Option<&'read PhysicalReadCheck<'read>>,
+) -> Option<&'read dyn crate::content_store::StorePhysicalQuotaGuard> {
+    physical.map(|check| check.guard)
+}
+
 fn verify_physical(
     original: &crate::owned_decode::DecodeBudget,
     physical: Option<&PhysicalReadCheck<'_>>,
@@ -368,7 +374,7 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
                  id,
                  boundary: &mut dyn FnMut() -> Result<(), StoreError>| {
                     selected.set(Some(id));
-                    reader.lookup(backend, original, id, boundary)
+                    reader.lookup(backend, original, id, selected_physical(physical), boundary)
                 };
             let mut verify = |original: &crate::owned_decode::DecodeBudget| {
                 // The graph's exact selected-ID admission remains ahead of the

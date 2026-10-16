@@ -55,7 +55,10 @@ mod maintenance;
 mod placement_index;
 pub(crate) mod read_view;
 mod repack;
+mod shared_cache;
+
 use placement_index as index_snapshot;
+pub use shared_cache::{PackedManifestCache, PackedManifestRead};
 #[cfg(test)]
 mod placement_tests;
 

@@ -242,6 +242,19 @@ const CONTRACTS: &[Contract] = &[
             1,
         )],
     },
+    Contract {
+        package: "crucible-cas",
+        target: "src/content_store/packed/read_view/tests/shared_cache",
+        required: &[
+            r#"if admitted.get() { Err(StoreError::Unauthorized) } else { Ok(()) }"#,
+            r#".retain_in(&fixture.quota.1, |bytes, check| { check()?; let credit = fixture.quota.0.reserve_with_control(bytes)?; admitted.set(true); Ok(credit) })"#,
+            r#"assert!(matches!(error, StoreError::Unauthorized)); drop(request); assert_eq!(fixture.quota.0.usage().unwrap(), baseline);"#,
+            r#"assert_eq!(fixture.quota.1.reclaim(u64::MAX).unwrap(), Some(0));"#,
+            r#"fixture.quota.read_packed_manifest(&mut retry).unwrap(); assert!(retry.finish().unwrap().is_none());"#,
+            r#"assert!(fixture.quota.1.reclaim(u64::MAX).unwrap().unwrap() > 0); assert_eq!(fixture.quota.0.usage().unwrap(), baseline);"#,
+        ],
+        identifiers: &[("retry", 3)],
+    },
 ];
 
 pub(super) fn mask(package: &str, target: &str, code: &str) -> String {

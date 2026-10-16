@@ -1,18 +1,22 @@
-//! One original-paid manifest retained across bounded archive source reads.
+//! One original-paid archive session with bounded manifest selection state.
 //!
-//! Each read still opens its current paths and releases all locks and file
-//! descriptors before returning. Reuse requires the same authenticated root
-//! generation and the exact immutable pack inode stamp. Replacement retires
-//! the previous manifest before admitting another one.
+//! Each read opens fresh paths and closes all locks and descriptors before
+//! returning. An ordinary read retains one Original-paid manifest; a physical
+//! service may retain shared rows while this session keeps only an inert
+//! configuration/generation/pack/count hint. Reuse still checks the actual
+//! immutable inode stamp, selected coordinates and complete object EOF.
+//! Replacement retires ordinary rows before admitting another manifest.
 
 use super::read_view::Manifest;
 use super::*;
 use crate::content_store::{batch, checked_reader};
 use crate::owned_decode::{DecodeBudget, DecodeScratch};
 
-/// Retains one manifest and its same-operation resource custody.
+/// Retains same-operation custody for one bounded archive read session.
 pub(crate) struct Session {
     manifest: Option<Manifest>,
+    // Session::new prepays this inline selection geometry through sizeof<Self>.
+    manifest_hint: Option<super::shared_cache::ManifestHint>,
     generation: Option<[u8; 32]>,
     configuration: [u8; 32],
     original: DecodeBudget,
@@ -35,6 +39,7 @@ impl Session {
             .map_err(|error| batch::admission_under(original, error))?;
         Ok(Self {
             manifest: None,
+            manifest_hint: None,
             generation: None,
             configuration: backend.configuration,
             original: original.clone(),
@@ -53,9 +58,10 @@ impl Session {
         backend: &PackedBlobBackend,
         original: &DecodeBudget,
         id: ContentId,
+        physical: Option<&dyn super::super::StorePhysicalQuotaGuard>,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<BlobHandle, StoreError> {
-        checked::lookup_cached(backend, original, id, self, boundary)
+        checked::lookup_cached(backend, original, id, self, physical, boundary)
     }
 
     /// Binds reuse to the exact freshly authenticated root image.
@@ -73,6 +79,7 @@ impl Session {
         }
         if self.generation != Some(generation) {
             self.manifest = None;
+            self.manifest_hint = None;
             self.generation = Some(generation);
         }
         Ok(())
@@ -89,6 +96,7 @@ impl Session {
         original: &DecodeBudget,
         id: ContentId,
         entry: IndexEntry,
+        physical: Option<&dyn super::super::StorePhysicalQuotaGuard>,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         if let Some(manifest) = &self.manifest
@@ -96,8 +104,26 @@ impl Session {
         {
             return manifest.verify(file, original, id, entry, boundary);
         }
+        if let Some(physical) = physical {
+            self.manifest = None;
+            let generation = self.generation.ok_or(StoreError::Incompatible)?;
+            let mut request = super::shared_cache::PackedManifestRead::new(
+                file, backend, original, id, entry, generation, boundary,
+            )
+            .with_retention_hint(self.manifest_hint.take());
+            physical.read_packed_manifest(&mut request)?;
+            #[cfg(test)]
+            if request.authenticated() {
+                self.authenticated_manifests += 1;
+            }
+            let hint = request.retention_hint();
+            self.manifest = request.finish()?;
+            self.manifest_hint = hint;
+            return Ok(());
+        }
         // Retire the old body and its loan before the replacement's admission.
         self.manifest = None;
+        self.manifest_hint = None;
         self.manifest = Some(Manifest::load(
             file, backend, original, id, entry, boundary,
         )?);

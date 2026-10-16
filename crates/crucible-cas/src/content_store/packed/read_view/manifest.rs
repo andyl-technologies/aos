@@ -1,4 +1,4 @@
-//! Original-paid authenticated metadata for one exact immutable pack inode.
+//! Authenticated metadata for one exact immutable pack inode.
 //!
 //! Stamp reuse applies only under a freshly authenticated placement generation
 //! and the store protocol's immutable committed-pack contract. It is not a
@@ -7,19 +7,21 @@
 
 use super::*;
 
-/// Retains authenticated rows for one immutable pack and original owner.
+/// Retains rows under either its Original or the enclosing service cache.
 pub(in crate::content_store::packed) struct Manifest {
     /// Contains strictly ordered, fully authenticated manifest entries.
     pub(in crate::content_store::packed) entries: Vec<PackManifestEntry>,
     /// Names the content-derived pack identity authenticated at loading.
     pub(in crate::content_store::packed) id: PackId,
-    stamp: FileStamp,
-    original: DecodeBudget,
-    _credit: DecodeScratch,
+    pub(in crate::content_store::packed) stamp: FileStamp,
+    // Shared rows retain neither a request Original nor its credit. Only the
+    // enclosing cache may call load_shared after its service admission.
+    original: Option<DecodeBudget>,
+    _credit: Option<DecodeScratch>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct FileStamp {
+pub(in crate::content_store::packed) struct FileStamp {
     device: u64,
     inode: u64,
     length: u64,
@@ -28,7 +30,7 @@ struct FileStamp {
 }
 
 impl FileStamp {
-    fn read(
+    pub(in crate::content_store::packed) fn read(
         file: &File,
         original: &DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
@@ -65,6 +67,71 @@ impl Manifest {
         entry: IndexEntry,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<Self, StoreError> {
+        let count = Self::row_count(file, backend, original, boundary)?;
+        Self::load_with_count(file, backend, original, id, entry, boundary, count)
+    }
+
+    // The caller has checked the bounded header for selection. load_shared
+    // still rereads that actual header and requires count == paid_rows before
+    // allocating, so this does not elide the concurrent-mutation check.
+    pub(in crate::content_store::packed) fn load_with_count(
+        file: &File,
+        backend: &PackedBlobBackend,
+        original: &DecodeBudget,
+        id: ContentId,
+        entry: IndexEntry,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+        count: usize,
+    ) -> Result<Self, StoreError> {
+        let bytes = count
+            .checked_mul(std::mem::size_of::<PackManifestEntry>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(StoreError::Quota)?;
+        let credit = original
+            .reserve_scratch_bytes(bytes)
+            .map_err(|error| batch::admission_under(original, error))?;
+        let mut manifest = Self::load_shared(file, backend, original, id, entry, boundary, count)?;
+        manifest.original = Some(original.clone());
+        manifest._credit = Some(credit);
+        Ok(manifest)
+    }
+
+    pub(in crate::content_store::packed) fn row_count(
+        file: &File,
+        backend: &PackedBlobBackend,
+        original: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
+        let mut fixed = [0_u8; PACK_MAGIC.len() + 32 + 4 + 4];
+        checked_io::read_exact_at(file, &mut fixed, 0, original, boundary)?;
+        let mut cursor = format::PackedCursor::new(&fixed);
+        if cursor.fixed(PACK_MAGIC.len())? != PACK_MAGIC
+            || cursor.array_32()? != backend.configuration
+        {
+            return Err(StoreError::Incompatible);
+        }
+        let count = usize::try_from(cursor.u32()?).map_err(|_| StoreError::Quota)?;
+        if count == 0
+            || count > MAX_PACK_ENTRIES
+            || u64::from(cursor.u32()?) > MAX_PACK_MANIFEST_BYTES
+        {
+            return Err(StoreError::Incompatible);
+        }
+        Ok(count)
+    }
+
+    // Only the scoped service cache calls this after admitting the row array
+    // and containing cache node. It retains no caller account or authority.
+    pub(in crate::content_store::packed) fn load_shared(
+        file: &File,
+        backend: &PackedBlobBackend,
+        original: &DecodeBudget,
+        id: ContentId,
+        entry: IndexEntry,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+        paid_rows: usize,
+    ) -> Result<Self, StoreError> {
         let stamp = FileStamp::read(file, original, boundary)?;
         let mut fixed = [0_u8; PACK_MAGIC.len() + 32 + 4 + 4];
         checked_io::read_exact_at(file, &mut fixed, 0, original, boundary)?;
@@ -79,14 +146,9 @@ impl Manifest {
         if count == 0 || count > MAX_PACK_ENTRIES || length > MAX_PACK_MANIFEST_BYTES {
             return Err(StoreError::Incompatible);
         }
-        let bytes = count
-            .checked_mul(std::mem::size_of::<PackManifestEntry>())
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(StoreError::Quota)?;
-        let credit = original
-            .reserve_scratch_bytes(bytes)
-            .map_err(|error| batch::admission_under(original, error))?;
+        if count != paid_rows {
+            return Err(StoreError::Corrupt { id });
+        }
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(count)
@@ -122,8 +184,8 @@ impl Manifest {
             entries,
             id: entry.pack,
             stamp,
-            original: original.clone(),
-            _credit: credit,
+            original: None,
+            _credit: None,
         })
     }
 
@@ -139,12 +201,25 @@ impl Manifest {
         entry: IndexEntry,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        if !self.original.same_account(original) {
+        if self
+            .original
+            .as_ref()
+            .is_some_and(|owner| !owner.same_account(original))
+        {
             return Err(StoreError::Incompatible);
         }
         if FileStamp::read(file, original, boundary)? != self.stamp {
             return Err(StoreError::Corrupt { id });
         }
+        self.verify_selection(id, entry)?;
+        checked_reader::check(original, boundary)
+    }
+
+    pub(in crate::content_store::packed) fn verify_selection(
+        &self,
+        id: ContentId,
+        entry: IndexEntry,
+    ) -> Result<(), StoreError> {
         let position = self
             .entries
             .binary_search_by_key(&id, |candidate| candidate.id)
@@ -153,6 +228,6 @@ impl Manifest {
         if (found.offset, found.length) != (entry.offset, entry.length) || entry.pack != self.id {
             return Err(StoreError::Corrupt { id });
         }
-        checked_reader::check(original, boundary)
+        Ok(())
     }
 }

@@ -102,8 +102,9 @@ pub use namespace::{
     StoreNamespaceOperation,
 };
 pub use packed::{
-    PackedBlobBackend, PackedIncompleteCleanupReport, PackedPublicationOutcome, PackedRepackPlan,
-    PackedRepackPlanId, PackedRepackReport, PackedScopeError, PackedStorageAccounting,
+    PackedBlobBackend, PackedIncompleteCleanupReport, PackedManifestCache, PackedManifestRead,
+    PackedPublicationOutcome, PackedRepackPlan, PackedRepackPlanId, PackedRepackReport,
+    PackedScopeError, PackedStorageAccounting,
 };
 pub use physical_quota::{
     StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaBinderHandle,

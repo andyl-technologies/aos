@@ -7,6 +7,7 @@
 //! and paired metadata/resident credits without releasing the pinned quota.
 
 mod archive;
+mod metadata;
 pub use archive::CampaignArchiveNamespace;
 
 use std::path::Path;
@@ -33,6 +34,10 @@ use crucible_linux_resource::{LinuxProjectQuotaBinding, LinuxProjectQuotaError};
 
 #[derive(Debug)]
 struct QuotaService {
+    // Cache bodies own direct paired credits, never a quota/service Arc. They
+    // physically close before supervision and the enclosing original accounts.
+    packed_metadata: crucible_cas::content_store::PackedManifestCache<QuotaMetadataCredit>,
+    metadata_admission: Mutex<()>,
     supervisor: HostOperationSupervisor,
     resources: HostServiceAllocator,
     metadata: HostServiceAllocator,
@@ -487,6 +492,11 @@ impl LinuxProjectQuotaBinder {
         let archive_operation = construction.archive_operation.take();
         let binder = Self {
             service: QuotaServiceOwner::new(QuotaService {
+                packed_metadata: crucible_cas::content_store::PackedManifestCache::new(
+                    admitted.metadata_bytes,
+                    2 * HostServiceLease::metadata_bytes(),
+                ),
+                metadata_admission: Mutex::new(()),
                 supervisor: construction.supervisor,
                 resources: construction.resources,
                 metadata: construction.metadata,
@@ -589,10 +599,8 @@ impl StorePhysicalQuotaBinder for LinuxProjectQuotaBinder {
             service.verify_memory_original()?;
             // Both original accounts grant all material before either lease
             // control or ResourceLoan control. No disk root is authenticated.
-            let (metadata, resident) = service
-                .metadata
-                .reserve_paired_bytes(&service.resources, charged)?;
-            let credit = QuotaMetadataCredit::new(resident, metadata);
+            let credit =
+                service.reserve_precharged_metadata(charged, &operation, &mut || Ok(()))?;
             operation.wait_slice()?;
             let loan = crucible_cas::owned_decode::ResourceLoan::new(MemoryNamespaceCredit {
                 _service: self.service.clone(),
@@ -810,6 +818,18 @@ impl StorePhysicalQuotaGuard for BoundLinuxProjectQuota {
         self.authority.binding.verify().map_err(store_error)
     }
 
+    fn read_packed_manifest(
+        &self,
+        request: &mut crucible_cas::content_store::PackedManifestRead<'_>,
+    ) -> Result<(), StoreError> {
+        self.verify()?;
+        let service = &self.authority.service;
+        request.retain_in(&service.packed_metadata, |bytes, check| {
+            service.reserve_metadata_checked(bytes, Some(check))
+        })?;
+        self.verify()
+    }
+
     fn reserve_resources(
         &self,
         descriptors: u64,
@@ -858,45 +878,6 @@ impl QuotaService {
         self.resources.verify_live()?;
         self.metadata.verify_live()?;
         Ok(())
-    }
-
-    fn reserve_descriptor_metadata(
-        &self,
-        descriptors: u64,
-        bytes: u64,
-    ) -> Result<QuotaDescriptorCredit, StoreError> {
-        // Pay the descriptor control before creating it. The returned field
-        // order keeps that payment through all subsequent binding failures.
-        let metadata = self.reserve_metadata(
-            bytes
-                .checked_add(HostServiceLease::metadata_bytes())
-                .ok_or(StoreError::Quota)?,
-        )?;
-        let descriptors = self
-            .resources
-            .reserve_resources(0, descriptors, 0)
-            .map_err(supervision_error)?;
-        Ok(QuotaDescriptorCredit {
-            descriptors,
-            metadata,
-        })
-    }
-
-    fn reserve_metadata(&self, bytes: u64) -> Result<QuotaMetadataCredit, StoreError> {
-        let operation = self
-            .supervisor
-            .begin(HostOperationClass::Preparation)
-            .map_err(supervision_error)?;
-        let charged = bytes
-            .checked_add(2 * HostServiceLease::metadata_bytes())
-            .ok_or(StoreError::Quota)?;
-        // Metadata admission takes precedence when both original subsets
-        // refuse. Both stack grants exist before either lease control does.
-        let (metadata, resident) = self
-            .metadata
-            .reserve_paired_bytes(&self.resources, charged)
-            .map_err(supervision_error)?;
-        QuotaMetadataCredit::new(resident, metadata).complete(&operation)
     }
 }
 
@@ -960,8 +941,8 @@ mod tests {
             resources: HostResourceVector {
                 resident_peak_bytes: 1024 * 1024,
                 backing_peak_bytes: 1024 * 1024,
-                // Preserve the prior loan allowance while explicitly authoring
-                // the newly covered structural peak in this fixture.
+                // Constructor geometry and later loans share this finite
+                // remainder after bootstrap and diagnostic prepayment.
                 metadata_bytes: 4096
                     + provider_diagnostic_bytes()
                     + quota_bootstrap_bytes(BinderPublication::Value)
@@ -1272,19 +1253,36 @@ mod tests {
             .build()
             .unwrap_or_else(|error| panic!("construct standalone admission: {error}"));
         let cloned = binder.clone();
+        let projects =
+            usize::try_from(binder.service.resources.maximum_file_descriptors() / 2).unwrap();
+        let baseline = quota_bootstrap_bytes(BinderPublication::Value).unwrap()
+            + quota_constructor_bytes(projects).unwrap();
+        let remaining = binder
+            .service
+            .metadata
+            .maximum_resident_bytes()
+            .checked_sub(baseline)
+            .unwrap();
+        let charged = remaining / 2 + 1;
+        let payload = charged
+            .checked_sub(2 * HostServiceLease::metadata_bytes())
+            .unwrap();
+        assert!(payload > 0);
+        assert!(charged > remaining / 2);
+
         let held = Arc::new(
             binder
                 .service
-                .reserve_metadata(3000)
+                .reserve_metadata(payload)
                 .unwrap_or_else(|error| panic!("reserve retained metadata: {error}")),
         );
         let last_owner = held.clone();
 
-        assert!(cloned.service.reserve_metadata(3000).is_err());
+        assert!(cloned.service.reserve_metadata(payload).is_err());
         drop(held);
-        assert!(cloned.service.reserve_metadata(3000).is_err());
+        assert!(cloned.service.reserve_metadata(payload).is_err());
         drop(last_owner);
-        assert!(cloned.service.reserve_metadata(3000).is_ok());
+        assert!(cloned.service.reserve_metadata(payload).is_ok());
     }
 
     #[test]

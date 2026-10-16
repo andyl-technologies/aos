@@ -1,8 +1,9 @@
 //! Pins one authenticated Packed generation for a bounded RAM inventory walk.
 //!
-//! The caller's original account pays every buffer, control and descriptor.
-//! One last-pack metadata cache is bounded by the existing manifest limit;
-//! every selected object still uses the existing full ContentId EOF reader.
+//! The caller's Original pays the concrete view, reader and active pack pin.
+//! An ordinary path retains one manifest; a physical service may retain shared
+//! rows while the reader keeps only an inert exact-key/count hint. Every
+//! selected object still passes fresh stamp, coordinate and full EOF checks.
 
 use super::*;
 use crate::content_store::{batch, checked_reader};
@@ -14,12 +15,13 @@ use super::placement_index::{FreshRoot, IndexSnapshot, Reader as IndexReader};
 
 #[cfg(test)]
 pub(crate) mod cost;
-mod manifest;
+pub(super) mod manifest;
 
 pub(in crate::content_store::packed) use manifest::Manifest;
 
 pub(crate) struct View {
     snapshot: IndexSnapshot,
+    original: DecodeBudget,
     _state: checked_io::OwnedFile,
     _lifecycle: checked_io::OwnedFile,
     _credit: DecodeScratch,
@@ -41,6 +43,7 @@ impl View {
         checked_reader::check(original, boundary)?;
         Ok(Self {
             snapshot,
+            original: original.clone(),
             _state: state,
             _lifecycle: lifecycle,
             _credit: credit,
@@ -53,6 +56,9 @@ impl View {
         original: &DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<Reader<'view>, StoreError> {
+        if !self.original.same_account(original) {
+            return Err(StoreError::Incompatible);
+        }
         let credit = original
             .reserve_scratch_bytes(std::mem::size_of::<Reader<'_>>() as u64)
             .map_err(|error| batch::admission_under(original, error))?;
@@ -70,6 +76,8 @@ impl View {
         operation.check()?;
         Ok(Reader {
             index,
+            original: original.clone(),
+            generation: self.snapshot.digest(),
             page,
             root,
             last_pack: None,
@@ -80,6 +88,8 @@ impl View {
 
 pub(crate) struct Reader<'view> {
     index: IndexReader<'view>,
+    original: DecodeBudget,
+    generation: [u8; 32],
     page: Bytes,
     root: Option<FreshRoot>,
     last_pack: Option<CachedPack>,
@@ -92,10 +102,14 @@ impl Reader<'_> {
         backend: &PackedBlobBackend,
         original: &DecodeBudget,
         id: ContentId,
+        physical: Option<&dyn super::super::StorePhysicalQuotaGuard>,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<BlobHandle, StoreError> {
         #[cfg(test)]
         cost::lookup();
+        if !self.original.same_account(original) {
+            return Err(StoreError::Incompatible);
+        }
         checked_reader::check(original, boundary)?;
         let mut operation = Operation {
             original: Some(original),
@@ -123,24 +137,61 @@ impl Reader<'_> {
         if self
             .last_pack
             .as_ref()
-            .is_none_or(|pack| pack.manifest.id != entry.pack)
+            .is_none_or(|pack| pack.id != entry.pack)
         {
             #[cfg(test)]
             cost::switch_pack();
             // Retire the prior pin before opening its replacement: the view
             // keeps at most two locks, one arena and one pack descriptor.
             self.last_pack = None;
-            self.last_pack = Some(CachedPack::open(backend, original, id, entry, boundary)?);
+            self.last_pack = Some(CachedPack::open(
+                backend,
+                original,
+                id,
+                entry,
+                physical.is_none(),
+                boundary,
+            )?);
         }
-        let pack = self.last_pack.as_ref().ok_or(StoreError::Corrupt { id })?;
-        pack.verify(original, id, entry, boundary)?;
+        let pack = self.last_pack.as_mut().ok_or(StoreError::Corrupt { id })?;
+        if let Some(physical) = physical {
+            if let Some(manifest) = &pack.manifest {
+                manifest.verify(
+                    pack.file.file().ok_or(StoreError::Corrupt { id })?,
+                    original,
+                    id,
+                    entry,
+                    boundary,
+                )?;
+            } else {
+                let mut request = super::shared_cache::PackedManifestRead::new(
+                    pack.file.file().ok_or(StoreError::Corrupt { id })?,
+                    backend,
+                    original,
+                    id,
+                    entry,
+                    self.generation,
+                    boundary,
+                )
+                .with_retention_hint(pack.manifest_hint.take());
+                physical.read_packed_manifest(&mut request)?;
+                let hint = request.retention_hint();
+                pack.manifest = request.finish()?;
+                pack.manifest_hint = hint;
+            }
+        } else {
+            pack.verify(original, id, entry, boundary)?;
+        }
         checked::source_from_pin(original, id, entry, pack.file.clone(), boundary)
     }
 }
 
 struct CachedPack {
+    // Inline in the already-precharged Reader; contains no rows or authority.
+    manifest_hint: Option<super::shared_cache::ManifestHint>,
     file: checked::PackPin,
-    manifest: Manifest,
+    id: PackId,
+    manifest: Option<Manifest>,
 }
 
 impl CachedPack {
@@ -149,6 +200,7 @@ impl CachedPack {
         original: &DecodeBudget,
         id: ContentId,
         entry: IndexEntry,
+        retain_manifest: bool,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<Self, StoreError> {
         let pin_credit = original
@@ -173,11 +225,24 @@ impl CachedPack {
                 error
             }
         })?;
-        let manifest = Manifest::load(file.file(), backend, original, id, entry, boundary)?;
+        let manifest = if retain_manifest {
+            Some(Manifest::load(
+                file.file(),
+                backend,
+                original,
+                id,
+                entry,
+                boundary,
+            )?)
+        } else {
+            None
+        };
         checked_reader::check(original, boundary)?;
         let (file, descriptor) = file.into_parts();
         Ok(Self {
+            manifest_hint: None,
             file: checked::PackPin::with_resources(file, pin_credit, descriptor),
+            id: entry.pack,
             manifest,
         })
     }
@@ -190,7 +255,10 @@ impl CachedPack {
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         let file = self.file.file().ok_or(StoreError::Corrupt { id })?;
-        self.manifest.verify(file, original, id, entry, boundary)
+        self.manifest
+            .as_ref()
+            .ok_or(StoreError::Corrupt { id })?
+            .verify(file, original, id, entry, boundary)
     }
 }
 

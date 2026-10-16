@@ -59,7 +59,13 @@ impl BoundedReadRequest<'_, '_> {
                     if let Some(admit) = admission {
                         admit(selected)?;
                     }
-                    retained.lookup(backend, original, selected, boundary)
+                    retained.lookup(
+                        backend,
+                        original,
+                        selected,
+                        selected_physical(physical),
+                        boundary,
+                    )
                 };
             let mut verify = |original: &crate::owned_decode::DecodeBudget| {
                 if let Some(admit) = admission {

@@ -69,6 +69,21 @@ lint tests pass, including controls that reject changed export visibility,
 source placement and operation-clock formulas. These component results do not
 qualify a live VM or replace the missing lifecycle evidence.
 
+Packed inventory, publication readback and canonical archive reads now borrow
+one metadata cache from the existing physical-quota service. Its rows and index
+use the same paired resident/metadata accounts as ordinary service work; they
+retain no Source, operation authority, file descriptor or active pack pin.
+Before admitting competing allocations, the service physically reclaims cached
+storage and rechecks the actual accounts. In-flight fills remain charged until
+their bodies close. Every read still authenticates its fresh configuration,
+placement generation, file stamp, selected entry and complete object identity.
+Small manifests use ordinary operation-owned storage when the cache's index
+and control payload would cost more than their row storage. Ordinary single-tree
+reads retain their existing dispatch; this is not a claim that every page read
+uses shared metadata. The storage cost controls cover tiny, mixed and dense packs
+and 32/512 MiB RAM traversals. Their integrity/resource results do not establish
+VM performance parity or authorize new resource ceilings.
+
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.
 
