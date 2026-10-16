@@ -8696,7 +8696,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 Status: in progress (2026-10-16). T1's 22 tasks and 89 current gates are
 complete; its identity, encoding, bucket-key and Store-trait freeze applies.
-Nine separate implementation worktrees cover the five T2 tasks, including
+Ten separate implementation worktrees cover the five T2 tasks, including
 dedicated publisher-transport, host-quota, native confinement and recovery
 inspection components.
 Shared module declarations,
@@ -8771,21 +8771,28 @@ publisher fixture helper reference and quota fixture synchronization races.
 The quota claim implementation now permanently binds each filesystem/project
 pair before ledger publication or native mutation; full process-crash and
 broker scenarios await execution. Configured SDK runtime composition and its
-separate unit/native proof harness pass source review; compilation and guest
-execution remain pending. The actual durable metadata-pin producer passes
+separate unit/native proof harness pass source review. Its source-bound image
+and eleven unit cases pass; the guest stopped before any actor because its
+fixture parent was absent. The corrected fixture is undergoing fresh image,
+unit and guest qualification. The actual durable metadata-pin producer passes
 source review for consumer integration, without native qualification. Recovery
 inspection review found plaintext-allocation and retained-custody defects;
 their corrections precede integration. Publisher review likewise found a
-shared-claim field type mismatch before compilation. The frozen surface
-candidate passes its interface and schema gates. Its status gate fails on
-required xattrs; a finite probe confirms the actual Nix fixture filesystem
-rejects regular-file user xattrs both before and inside the protected namespace.
-The owning gate must run that presentation case on actual capable storage;
-unsupported metadata is not skipped. A separate native cache proof executable
+shared-claim field type mismatch before compilation. An earlier frozen surface
+candidate passes its interface and schema gates. Its status gate exposed
+unsupported regular-file user xattrs on the actual Nix fixture filesystem.
+The corrected status gate passes by requiring the unchanged presentation case
+in an actual ext4 guest as UID 840 with empty capabilities: one passed, none
+ignored. Its commit-path gate also passes with unchanged source guards.
+Interface, schema and aggregate qualification remain to be repeated on that
+candidate. A separate native cache proof executable
 and image/guest selectors are declared but fail until implemented. Remaining
 surface gates and complete trunk qualification remain pending. These source
 reviews and component results do not establish configured role operation,
-completed recovery or task acceptance.
+completed recovery or task acceptance. The CLI now has reviewed thin dispatch
+to the configured publisher bootstrap. Serialized empty-case cache recovery is
+under source review; nonempty reconstruction, actual admission and native cache
+execution remain incomplete.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
