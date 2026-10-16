@@ -882,17 +882,30 @@ installer. Six actual lifecycle, content-bound and manifest controls pass in
 stored-publisher forward; the current daemon test target also compiles. The
 current positive fixture includes a separately measured provider, three genuine
 stored grants, Capture and selected reload, but has not yet passed its owning
-native path. Both selected native tests fail during actual installation before
-Child creation, with zero passes and two failures in 1.20 seconds. The generic
-refusal is under test-only stage diagnosis. Its finite content budget counts three actual peer artifact reads,
+native path. The initial two failures occur during installation before Child
+creation. Commit `0fe7470ad1` validates the optional advertised restoration grammar
+without selecting fresh startup from declarations; installation then succeeds.
+Both selected native tests still fail during preparation, with zero passes and
+two failures in 21.70 seconds. Temporary diagnostics locate the refusal in launch
+resource admission, before baseline construction. Reclamation assertions pass.
+Its finite content budget counts three actual peer artifact reads,
 one Host artifact read and an explicit metadata allowance, preserving the older
 fixtures and refusal limits. The publisher remains retained through reclamation.
 
-A separate fresh-holder baseline driver is being integrated. Independent source
-review identifies a real missing cleanup-supervisor descriptor census; no fresh
-native qualification is claimed. Restored nodes still need the full ordinary
-operation path beyond current-state Observe, including pre-effect admission,
-progressed native evidence and durable outcome publication.
+A separate fresh-holder baseline driver retains the same cleanup supervisor.
+Commit `a48cc8c721` corrects its native-slot reservation and descriptor census;
+four focused schema and supervisor controls pass in 6.38 seconds. The broader
+Complete daemon suite passes 106 tests with two explicit native tests ignored
+before these final corrections. No fresh native qualification is claimed.
+
+Commit `717e7a7093` adds construction projections for the same archived Host and
+callback-free transfer of the actual three prepared peers, Host and cleanup slot
+into a retained preparation. Six-crate all-feature/all-target checking and two
+geometry/missing-owner controls pass. These helpers do not create graph admission
+or restoration authority; their genuine retained-owner caller remains under
+implementation. Restored nodes also need the full ordinary operation path beyond
+current-state Observe, including pre-effect admission, progressed native evidence
+and durable outcome publication.
 
 ## Known gaps and exit criteria
 
