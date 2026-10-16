@@ -1,11 +1,10 @@
-//! One original-paid archive session with bounded manifest selection state.
+//! One Original-paid active manifest across bounded archive source reads.
 //!
 //! Each read opens fresh paths and closes all locks and descriptors before
-//! returning. An ordinary read retains one Original-paid manifest; a physical
-//! service may retain shared rows while this session keeps only an inert
-//! configuration/generation/pack/count hint. Reuse still checks the actual
-//! immutable inode stamp, selected coordinates and complete object EOF.
-//! Replacement retires ordinary rows before admitting another manifest.
+//! returning. A physical service may supply authenticated rows, copied into
+//! independently prepaid Original storage. Reuse still requires the same
+//! authenticated generation, immutable inode stamp, selected coordinates and
+//! complete object EOF. Replacement retires the old copy before admission.
 
 use super::read_view::Manifest;
 use super::*;
@@ -15,8 +14,6 @@ use crate::owned_decode::{DecodeBudget, DecodeScratch};
 /// Retains same-operation custody for one bounded archive read session.
 pub(crate) struct Session {
     manifest: Option<Manifest>,
-    // Session::new prepays this inline selection geometry through sizeof<Self>.
-    manifest_hint: Option<super::shared_cache::ManifestHint>,
     generation: Option<[u8; 32]>,
     configuration: [u8; 32],
     original: DecodeBudget,
@@ -39,7 +36,6 @@ impl Session {
             .map_err(|error| batch::admission_under(original, error))?;
         Ok(Self {
             manifest: None,
-            manifest_hint: None,
             generation: None,
             configuration: backend.configuration,
             original: original.clone(),
@@ -79,7 +75,6 @@ impl Session {
         }
         if self.generation != Some(generation) {
             self.manifest = None;
-            self.manifest_hint = None;
             self.generation = Some(generation);
         }
         Ok(())
@@ -109,21 +104,17 @@ impl Session {
             let generation = self.generation.ok_or(StoreError::Incompatible)?;
             let mut request = super::shared_cache::PackedManifestRead::new(
                 file, backend, original, id, entry, generation, boundary,
-            )
-            .with_retention_hint(self.manifest_hint.take());
+            );
             physical.read_packed_manifest(&mut request)?;
             #[cfg(test)]
             if request.authenticated() {
                 self.authenticated_manifests += 1;
             }
-            let hint = request.retention_hint();
             self.manifest = request.finish()?;
-            self.manifest_hint = hint;
             return Ok(());
         }
         // Retire the old body and its loan before the replacement's admission.
         self.manifest = None;
-        self.manifest_hint = None;
         self.manifest = Some(Manifest::load(
             file, backend, original, id, entry, boundary,
         )?);

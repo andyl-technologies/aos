@@ -136,7 +136,11 @@ pub(super) const CONTRACTS: &[Contract] = &[
                         1,
                     ),
                     (
-                        r#"if entries.capacity() != count { return Err(StoreError::Quota); }"#,
+                        r#"if entries.capacity() != count { return Err(StoreError::Quota); } checked_reader::check(original, boundary)?; Ok(ManifestCopy {"#,
+                        1,
+                    ),
+                    (
+                        r#"if entries.capacity() != count { return Err(StoreError::Quota); } checked::authenticate_manifest_into("#,
                         1,
                     ),
                     (

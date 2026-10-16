@@ -5,7 +5,7 @@
 //! survives individual removals until the entire actual B-tree closes; row
 //! credit returns only after its Vec closes. No node retains read authority.
 
-use super::read_view::manifest::{FileStamp, Manifest};
+use super::read_view::manifest::{Manifest, ManifestCopy};
 use super::*;
 use crate::content_store::checked_reader;
 use crate::owned_decode::{DecodeBudget, btree_entry_bytes};
@@ -18,14 +18,6 @@ struct Key {
     configuration: [u8; 32],
     generation: [u8; 32],
     pack: PackId,
-}
-
-// Inert geometry from a completed read, never rows, a descriptor or credit.
-// The complete key prevents a last-pack hint crossing any selection boundary.
-#[derive(Clone, Copy)]
-pub(super) struct ManifestHint {
-    key: Key,
-    rows: usize,
 }
 
 struct Rows<Credit> {
@@ -228,13 +220,6 @@ impl<Credit> PackedManifestCache<Credit> {
         Ok(Some(if requested == 0 { 0 } else { state.clear() }))
     }
 
-    #[cfg(test)]
-    pub(super) fn with_locked_state_for_test(&self, while_locked: impl FnOnce()) {
-        // Deliberately creates real contention for a bounded waiter control.
-        let _held = self.state.lock().unwrap();
-        while_locked();
-    }
-
     fn directory_bytes(&self) -> Result<u64, StoreError> {
         btree_entry_bytes::<Key, Rows<Credit>>()
             .map_err(|source| StoreError::DecodeAdmission {
@@ -323,7 +308,6 @@ pub struct PackedManifestRead<'read> {
     generation: [u8; 32],
     boundary: &'read mut dyn FnMut() -> Result<(), StoreError>,
     complete: bool,
-    hint: Option<ManifestHint>,
     #[cfg(test)]
     authenticated: bool,
     ordinary: Option<Manifest>,
@@ -348,27 +332,9 @@ impl<'read> PackedManifestRead<'read> {
             generation,
             boundary,
             complete: false,
-            hint: None,
             #[cfg(test)]
             authenticated: false,
             ordinary: None,
-        }
-    }
-
-    pub(super) fn with_retention_hint(mut self, hint: Option<ManifestHint>) -> Self {
-        self.hint = hint.filter(|hint| hint.key == self.selection_key());
-        self
-    }
-
-    pub(super) fn retention_hint(&self) -> Option<ManifestHint> {
-        if self.complete { self.hint } else { None }
-    }
-
-    fn selection_key(&self) -> Key {
-        Key {
-            configuration: self.backend.configuration,
-            generation: self.generation,
-            pack: self.entry.pack,
         }
     }
 
@@ -383,15 +349,10 @@ impl<'read> PackedManifestRead<'read> {
         self.check()
     }
 
-    fn complete_shared(&mut self, stamp: FileStamp, rows: usize) -> Result<(), StoreError> {
-        if FileStamp::read(self.file, self.original, self.boundary)? != stamp {
-            return Err(StoreError::Corrupt { id: self.id });
-        }
-        self.check()?;
-        self.hint = Some(ManifestHint {
-            key: self.selection_key(),
-            rows,
-        });
+    fn complete_copy(&mut self, copy: ManifestCopy) -> Result<(), StoreError> {
+        let manifest = copy.finish()?;
+        manifest.verify(self.file, self.original, self.id, self.entry, self.boundary)?;
+        self.ordinary = Some(manifest);
         self.complete = true;
         Ok(())
     }
@@ -422,10 +383,6 @@ impl<'read> PackedManifestRead<'read> {
         {
             self.authenticated = true;
         }
-        self.hint = Some(ManifestHint {
-            key: self.selection_key(),
-            rows: count,
-        });
         self.complete = true;
         Ok(())
     }
@@ -437,8 +394,10 @@ impl<'read> PackedManifestRead<'read> {
     /// Its wait paths must poll the lent SAME request boundary as well as its
     /// existing service guard; the boundary creates no new Original or clock.
     /// Credits must not retain the service/cache itself. No Original or row
-    /// reference escapes into cached metadata; hits make no allocation. Tiny
-    /// manifests whose row vector cannot cover one actual index payload use
+    /// reference escapes into cached metadata. The Original prepays an active
+    /// copy outside the cache lock; copying under that lock neither allocates
+    /// nor invokes a boundary. Later same-pack reads use that independent copy.
+    /// Tiny manifests whose row vector cannot cover one actual index payload use
     /// the Original-paid path before any shared admission or lock.
     ///
     /// # Errors
@@ -463,30 +422,30 @@ impl<'read> PackedManifestRead<'read> {
         {
             return self.without_retention();
         }
-        let count = match self.hint {
-            Some(hint) => hint.rows,
-            None => Manifest::row_count(self.file, self.backend, self.original, self.boundary)?,
-        };
+        let count = Manifest::row_count(self.file, self.backend, self.original, self.boundary)?;
         if !cache.retention_is_proportionate(count)? {
             return self.without_retention_with_count(count);
         }
         let row_bytes = cache.row_bytes(count)?;
         self.check()?;
-        let key = self.selection_key();
+        // Original admission may reclaim service metadata, so both its grant
+        // and Vec allocation must finish before borrowing the cache state.
+        let mut active_copy = Manifest::prepare_copy(self.original, count, self.boundary)?;
+        let key = Key {
+            configuration: self.backend.configuration,
+            generation: self.generation,
+            pack: self.entry.pack,
+        };
 
         loop {
             let mut state = cache.lock(self)?;
             if let Some(rows) = state.entries.get(&key) {
                 let manifest = rows.manifest.as_ref().ok_or(StoreError::Unauthorized)?;
                 manifest.verify_selection(self.id, self.entry)?;
-                let stamp = manifest.stamp;
-                let count = manifest.entries.len();
+                active_copy.copy_from(manifest, self.id)?;
                 state.touch(key)?;
                 drop(state);
-                // No caller or filesystem work runs under the cache mutex.
-                // One fresh post-unlock stamp covers changes before/during
-                // lock acquisition, just as ordinary Manifest::verify does.
-                return self.complete_shared(stamp, count);
+                return self.complete_copy(active_copy);
             }
             let pending_rows = cache.pending_rows.load(AtomicOrdering::Acquire);
             let pending_directory = cache.pending_directory.load(AtomicOrdering::Acquire);
@@ -576,6 +535,7 @@ impl<'read> PackedManifestRead<'read> {
         // complete manifest identity and before/after file stamps. Publication
         // below still checks this authenticated stamp after releasing the lock.
         let stamp = manifest.stamp;
+        active_copy.copy_from(&manifest, self.id)?;
         self.check()?;
         let mut rows = Rows {
             manifest: Some(manifest),
@@ -597,13 +557,12 @@ impl<'read> PackedManifestRead<'read> {
                 return Err(StoreError::Corrupt { id: self.id });
             }
             existing.verify_selection(self.id, self.entry)?;
-            let count = existing.entries.len();
             state.touch(key)?;
             drop(state);
             drop(rows);
             drop(directory);
             drop(pending);
-            return self.complete_shared(stamp, count);
+            return self.complete_copy(active_copy);
         }
         let retained_rows = state.rows.checked_add(row_bytes).ok_or(StoreError::Quota)?;
         let retained_directory = state
@@ -634,7 +593,7 @@ impl<'read> PackedManifestRead<'read> {
             .fetch_sub(directory_bytes, AtomicOrdering::AcqRel);
         pending.active = false;
         drop(state);
-        self.complete_shared(stamp, count)
+        self.complete_copy(active_copy)
     }
 
     #[cfg(test)]

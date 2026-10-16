@@ -796,7 +796,7 @@ struct IndexEntry {
     length: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PackManifestEntry {
     id: ContentId,
     offset: u64,
