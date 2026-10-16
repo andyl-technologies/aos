@@ -11,7 +11,7 @@
     nukeRefsKeep = [pkgs.terrane.src];
   } "host-quota-proof-image" ''
     cd crates
-    cargo test --frozen --offline -p terrane-fs \
+    cargo test --frozen --offline -p terrane-fs --lib \
       --test host_quota_protocol --test host_quota_native \
       --no-run --message-format=json > "$TMPDIR/host-quota-build.jsonl"
     rustc --print target-libdir > "$TMPDIR/host-quota-rust-libdir"
@@ -27,10 +27,16 @@
     (output / "bin").mkdir()
     (output / "lib").mkdir()
     expected = {
+        "terrane_fs": {
+            "kernel_peer_identity_is_not_a_packet_assertion",
+            "oversized_native_packet_is_rejected_after_receive_truncation",
+            "descriptor_ancillary_is_rejected_without_returning_custody",
+        },
         "host_quota_protocol": {
             "query_rejects_ambiguous_extended_or_truncated_packets",
             "error_response_cannot_smuggle_quota_evidence",
             "nonroot_helper_identity_cannot_mint_native_evidence",
+            "provisioning_guard_excludes_factories_until_exclusive_custody_ends",
         },
         "host_quota_native": {
             "host_quota_native_privilege_and_helper_vm",
@@ -60,13 +66,14 @@
         installed = output / "bin" / name
         shutil.copy2(executable, installed)
         listed = subprocess.run([str(installed), "--list", "--format", "terse"], check=True, text=True, capture_output=True, env=environment).stdout
-        actual = {line.removesuffix(": test") for line in listed.splitlines() if line.endswith(": test")}
+        prefix = "host_quota::socket::tests::" if name == "terrane_fs" else ""
+        actual = {line.removesuffix(": test").removeprefix(prefix) for line in listed.splitlines() if line.endswith(": test") and line.startswith(prefix)}
         if actual != expected[name]:
             raise SystemExit(f"host-quota exact inventory mismatch: {name}: {actual}")
         evidence[name] = {"inventory": sorted(actual), "executed": []}
-        if name == "host_quota_protocol":
+        if name != "host_quota_native":
             for case in sorted(actual):
-                result = subprocess.run([str(installed), "--exact", case, "--nocapture"], check=True, text=True, capture_output=True, env=environment)
+                result = subprocess.run([str(installed), "--exact", prefix + case, "--nocapture"], check=True, text=True, capture_output=True, env=environment)
                 if "test result: ok. 1 passed; 0 failed; 0 ignored;" not in result.stdout:
                     raise SystemExit(f"host-quota case did not execute exactly once: {case}")
                 evidence[name]["executed"].append({"case": case, "stdout": result.stdout, "stderr": result.stderr})

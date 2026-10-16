@@ -38,3 +38,6 @@ pub fn validate_domain_label(domain: &str) -> std::io::Result<()> {
             )
         })
 }
+
+mod guard;
+pub use guard::DomainProvisioningGuard;

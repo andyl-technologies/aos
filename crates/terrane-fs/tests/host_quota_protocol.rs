@@ -55,3 +55,32 @@ fn error_response_cannot_smuggle_quota_evidence() {
 fn nonroot_helper_identity_cannot_mint_native_evidence() {
     assert!(HostQuotaClient::connect(std::path::Path::new("/unused"), 65534, [1; 16]).is_err());
 }
+
+#[test]
+fn provisioning_guard_excludes_factories_until_exclusive_custody_ends() {
+    use std::fs::{self, File};
+    use terrane_fs::host_quota::DomainProvisioningGuard;
+
+    let directory =
+        std::env::temp_dir().join(format!("terrane-quota-guard-{}", std::process::id()));
+    fs::create_dir(&directory).expect("isolated guard fixture");
+    let root = File::open(&directory).expect("retained root");
+    let exclusive = DomainProvisioningGuard::exclusive(&root).expect("exclusive provisioning");
+    assert!(DomainProvisioningGuard::shared(&root).is_err());
+    assert!(DomainProvisioningGuard::exclusive(&root).is_err());
+    drop(exclusive);
+
+    let first = DomainProvisioningGuard::shared(&root).expect("first factory");
+    let second = DomainProvisioningGuard::shared(&root).expect("second factory");
+    assert_eq!(
+        first.identity().expect("first identity"),
+        second.identity().expect("second identity")
+    );
+    assert!(DomainProvisioningGuard::exclusive(&root).is_err());
+    drop(first);
+    assert!(DomainProvisioningGuard::exclusive(&root).is_err());
+    drop(second);
+    drop(DomainProvisioningGuard::exclusive(&root).expect("quiescent provisioning"));
+    drop(root);
+    fs::remove_dir(directory).expect("guard fixture cleanup");
+}

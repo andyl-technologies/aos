@@ -278,7 +278,8 @@ fn validate_initial_skeleton(config: &HostConfig) -> io::Result<()> {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir() || !paths.contains(entry.path().as_path()) {
-                return Err(io::Error::other(
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
                     "initial provisioning permits only the exact configured directory skeleton",
                 ));
             }
@@ -305,6 +306,17 @@ fn verify_ledger(path: &Path, config: &HostConfig, bindings: &[Binding]) -> io::
 pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     let config = load(config_path)?;
     let (owners, bindings) = retain(&config)?;
+    let mut provisioning_guards = Vec::new();
+    for owner in &owners {
+        let layout = owner
+            .roots
+            .iter()
+            .find(|root| root.role_directory == "layout-root")
+            .ok_or_else(|| io::Error::other("missing explicit layout root"))?;
+        provisioning_guards.push(terrane_fs::host_quota::DomainProvisioningGuard::exclusive(
+            &layout.directory,
+        )?);
+    }
     if config
         .owners
         .iter()

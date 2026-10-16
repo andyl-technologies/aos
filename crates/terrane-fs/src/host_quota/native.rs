@@ -170,11 +170,12 @@ pub fn synchronized_allocated_bytes(file: &File) -> io::Result<u64> {
         .ok_or_else(|| io::Error::other("allocated block count overflow"))
 }
 
-/// Assigns an empty inheriting root and sets a finite project quota.
+/// Assigns a quiescent inheriting root and sets a finite project quota.
 ///
 /// This host administrative operation must never be exposed through a query
 /// broker. The caller must durably bind root, domain and owner before invoking
-/// it, and must prevent concurrent creation beneath the root.
+/// it, validate an empty directory skeleton, retain exclusive provisioning
+/// custody, and prevent concurrent creation beneath the root.
 ///
 /// # Errors
 /// Returns invalid-input errors for zero or unaligned limits, and kernel errors

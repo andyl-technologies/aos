@@ -215,3 +215,105 @@ impl PacketSocket {
         Ok(packet)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pair() -> (PacketSocket, PacketSocket) {
+        let mut descriptors = [-1; 2];
+        // SAFETY: descriptors supplies the two writable integer slots required
+        // by socketpair; success transfers two independent descriptors.
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    descriptors.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        // SAFETY: successful socketpair returned two new, distinct descriptors.
+        unsafe {
+            (
+                PacketSocket(OwnedFd::from_raw_fd(descriptors[0])),
+                PacketSocket(OwnedFd::from_raw_fd(descriptors[1])),
+            )
+        }
+    }
+
+    #[test]
+    fn kernel_peer_identity_is_not_a_packet_assertion() {
+        let (sender, receiver) = pair();
+        assert_eq!(
+            receiver.peer_uid().expect("kernel credentials"),
+            rustix::process::geteuid().as_raw()
+        );
+        sender.send(b"claimed uid zero").expect("send assertion");
+        assert_eq!(
+            receiver.receive().expect("receive assertion"),
+            b"claimed uid zero"
+        );
+        assert_eq!(
+            receiver.peer_uid().expect("unchanged kernel credentials"),
+            rustix::process::geteuid().as_raw()
+        );
+    }
+
+    #[test]
+    fn oversized_native_packet_is_rejected_after_receive_truncation() {
+        let (sender, receiver) = pair();
+        let bytes = vec![1u8; 16385];
+        // SAFETY: bytes remains readable and sender is a live socket.
+        assert_eq!(
+            unsafe {
+                libc::send(
+                    sender.0.as_raw_fd(),
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            bytes.len() as isize
+        );
+        assert!(receiver.receive().is_err());
+    }
+
+    #[test]
+    fn descriptor_ancillary_is_rejected_without_returning_custody() {
+        let (sender, receiver) = pair();
+        let file = std::fs::File::open("/dev/null").expect("descriptor fixture");
+        let mut byte = [1u8];
+        let mut vector = libc::iovec {
+            iov_base: byte.as_mut_ptr().cast(),
+            iov_len: 1,
+        };
+        let mut control = [0usize; 8];
+        // SAFETY: zero initializes unused msghdr members, pointers below refer
+        // to aligned buffers retained until sendmsg returns.
+        let mut message: libc::msghdr = unsafe { zeroed() };
+        message.msg_iov = &mut vector;
+        message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        // SAFETY: one c_int fits in the control buffer with required alignment.
+        unsafe {
+            message.msg_controllen = libc::CMSG_SPACE(size_of::<libc::c_int>() as u32) as usize;
+            let header = libc::CMSG_FIRSTHDR(&message);
+            (*header).cmsg_level = libc::SOL_SOCKET;
+            (*header).cmsg_type = libc::SCM_RIGHTS;
+            (*header).cmsg_len = libc::CMSG_LEN(size_of::<libc::c_int>() as u32) as usize;
+            *libc::CMSG_DATA(header).cast::<libc::c_int>() = file.as_raw_fd();
+            assert_eq!(
+                libc::sendmsg(sender.0.as_raw_fd(), &message, libc::MSG_NOSIGNAL),
+                1
+            );
+        }
+        assert!(receiver.receive().is_err());
+        assert!(
+            file.metadata().is_ok(),
+            "sending retains the original descriptor"
+        );
+    }
+}
