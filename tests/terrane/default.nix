@@ -61,6 +61,22 @@
       ];
     };
 
+  # Keep the native proof selectable while its implementation is isolated on
+  # the current task branch. Presence alone never qualifies the owning gate.
+  quotaConfinementProof =
+    if builtins.pathExists ./quota-confinement-proof.nix
+    then import ./quota-confinement-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    else {
+      image = pendingGate {
+        name = "native-quota-confinement-image";
+        requirements = "HOST-23 native confinement proof image";
+      };
+      native = pendingGate {
+        name = "native-quota-confinement";
+        requirements = "HOST-23 native confinement proof";
+      };
+    };
+
   algebraFormatVectors = import ./algebra-models.nix {inherit sourceGate;};
 
   # Share compilation of one immutable native test image, while every gate
@@ -298,6 +314,8 @@ in {
   integration.collection-reference-generator = import ./collection-reference.nix {inherit pkgs;};
   integration.collection-format-vectors = import ./collection-vectors.nix {inherit sourceGate;};
   integration.foundation-reference-generator = import ./foundation-reference.nix {inherit sourceGate;};
+  integration.native-quota-confinement-image = quotaConfinementProof.image;
+  integration.native-quota-confinement = quotaConfinementProof.native;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
   integration.retirement-reference-models = import ./retirement-models.nix {inherit sourceGate;};
