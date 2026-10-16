@@ -715,6 +715,12 @@ fn actual_birth_phase_selection_survives_realize_and_admit_for_all_three_models(
 
         let mut discover = request(&control);
         discover.request_id = Nullable(Some(id("actual-birth-discover")));
+        discover.body = object(crate::bodies::DiscoverRequest {
+            profile_ids: Default::default(),
+            cursor: None,
+            extensions: Extensions::new(),
+        })
+        .unwrap();
         control.dispatch(&discover).unwrap();
         assert!(
             control

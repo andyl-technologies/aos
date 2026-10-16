@@ -256,7 +256,19 @@ fn original_host_peer_path_uses_complete_actual_pid_spellings() {
 }
 
 pub(super) fn prepared_initial_model() -> (Inputs, OriginalPacketHostStartup) {
-    let inputs = fixture();
+    prepare_initial_model(fixture())
+}
+
+pub(super) fn prepared_initial_lifecycle_model() -> (Inputs, OriginalPacketHostStartup) {
+    let mut inputs = fixture();
+    // Hello-only construction fits the smaller fixture bank. The full lifecycle
+    // also retains two proof uploads; use the same bank as the complete caller
+    // fixture rather than changing the production quote's capacity guards.
+    inputs.launch.storage.frame_bank_bytes = U64::new(1024 * 1024);
+    prepare_initial_model(inputs)
+}
+
+fn prepare_initial_model(inputs: Inputs) -> (Inputs, OriginalPacketHostStartup) {
     let mut original = None;
     let quote =
         original_packet_host_startup_storage_data(&inputs.borrowed(), &inputs.hello_id).unwrap();

@@ -389,6 +389,9 @@ mod tests {
     #[test]
     fn actual_selected_discover_retains_reply_and_same_nonrenewed_cut() {
         let (_handshake, mut controller, mut peer, selection, _supervisor) = fixture();
+        // The fixture transport already owns a thirty-second cut. A larger
+        // per-call allowance must preserve that earlier absolute deadline.
+        controller.budget = Duration::from_secs(60);
         let before = controller
             .session
             .current_original_complete_restore_cut()
@@ -432,6 +435,32 @@ mod tests {
                 .authenticate_original_controller_data(&other_controller)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn actual_selected_discover_tightens_a_longer_original_cut() {
+        let (_handshake, mut controller, mut peer, selection, _supervisor) = fixture();
+        let before = controller
+            .session
+            .current_original_complete_restore_cut()
+            .unwrap()
+            .1;
+        let id = Id::new("selected-initial-discover-tighten").unwrap();
+        let reply = response(&controller, &selection, &id, 2);
+        write_frame(&mut peer, &serde_json::to_value(&reply).unwrap(), 65536).unwrap();
+        let mut result = None;
+
+        controller
+            .call_original_host_initial_lifecycle_into(id, Method::Discover, &mut result)
+            .unwrap();
+
+        let after = controller
+            .session
+            .current_original_complete_restore_cut()
+            .unwrap()
+            .1;
+        assert!(after < before);
+        assert_eq!(result.unwrap().response_original_data().unwrap(), &reply);
     }
 
     #[test]

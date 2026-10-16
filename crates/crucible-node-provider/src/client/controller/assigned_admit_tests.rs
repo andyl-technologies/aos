@@ -767,11 +767,31 @@ fn owned11_model_host_roundtrip_with_proofs(
     }
     if with_provider_proofs {
         // Missing new retained-owner coverage is historical data, never a full target.
-        let mut older: Value = serde_json::from_slice(captured.bytes()).unwrap();
-        let controller_fields = older[1].as_array_mut().unwrap();
-        controller_fields[0] = Value::String("source-private.controller-complete/11".into());
-        assert!(controller_fields.pop().unwrap().is_null());
-        let older = serde_json::to_vec(&older).unwrap();
+        // Preserve the declaration order of every nested typed object. A Value
+        // round trip sorts those keys and would test malformed history instead.
+        let mut older = captured.bytes().to_vec();
+        let current_tag = b"\"source-private.controller-restorable-complete/11\"";
+        let older_tag = b"\"source-private.controller-complete/11\"";
+        let tag_starts = older
+            .windows(current_tag.len())
+            .enumerate()
+            .filter_map(|(index, bytes)| (bytes == current_tag).then_some(index))
+            .collect::<Vec<_>>();
+        assert_eq!(tag_starts.len(), 1);
+        let tag_start = tag_starts[0];
+        assert_eq!(older[tag_start - 1], b'[');
+        let controller_end = {
+            let mut controller = serde_json::Deserializer::from_slice(&older[tag_start - 1..])
+                .into_iter::<serde::de::IgnoredAny>();
+            controller.next().unwrap().unwrap();
+            tag_start - 1 + controller.byte_offset()
+        };
+        assert_eq!(&older[controller_end - 6..controller_end], b",null]");
+        older.drain(controller_end - 6..controller_end - 1);
+        older.splice(
+            tag_start..tag_start + current_tag.len(),
+            older_tag.iter().copied(),
+        );
         let mut older_scratch = vec![HistoricalAliasSummary::default(); 16384];
         let mut older_plan =
             ValidatedOwnedProtocol11::validate(&older, limits, &mut older_scratch).unwrap();

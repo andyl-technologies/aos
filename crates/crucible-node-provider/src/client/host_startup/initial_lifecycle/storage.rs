@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn actual_prepared_initial_quote_is_readonly_and_each_axis_is_independent() {
-        let (inputs, root) = crate::client::host_startup::tests::prepared_initial_model();
+        let (inputs, root) = crate::client::host_startup::tests::prepared_initial_lifecycle_model();
         let before = root.retained_requested_storage_data(None).unwrap();
         let actual = root
             .quote_original_initial_lifecycle_storage_data(inputs.borrowed().launch)
@@ -560,8 +560,33 @@ mod tests {
     }
 
     #[test]
-    fn initial_quote_refuses_changed_actual_launch_and_checked_peak_overflow() {
+    fn hello_only_bank_refuses_initial_lifecycle_without_changing_prepared_owners() {
         let (inputs, root) = crate::client::host_startup::tests::prepared_initial_model();
+        let before = root.retained_requested_storage_data(None).unwrap();
+
+        assert_eq!(
+            inputs.borrowed().launch.storage.frame_bank_bytes.get(),
+            262144
+        );
+        assert!(matches!(
+            root.quote_original_initial_lifecycle_storage_data(inputs.borrowed().launch),
+            Err(ProviderError::ResourceExhausted(
+                "original packet host SDK construction"
+            ))
+        ));
+
+        assert_eq!(root.retained_requested_storage_data(None).unwrap(), before);
+        assert!(root.prepared);
+        assert!(root.custody.is_some());
+        assert!(root.controller.is_none());
+        assert!(root.frames.is_some());
+        assert!(root.failure.is_none());
+        assert!(!root.initial_attachment_attempted);
+    }
+
+    #[test]
+    fn initial_quote_refuses_changed_actual_launch_and_checked_peak_overflow() {
+        let (inputs, root) = crate::client::host_startup::tests::prepared_initial_lifecycle_model();
         let launch = inputs.borrowed().launch;
         assert!(
             root.quote_original_initial_lifecycle_storage_data(launch)
