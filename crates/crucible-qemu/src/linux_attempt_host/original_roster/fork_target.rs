@@ -59,6 +59,7 @@ impl ForkTargetSlot {
 }
 
 /// Owns the one fixed target slot; copied limits cannot construct this loan.
+#[derive(Debug)]
 pub(in crate::linux_attempt_host) struct ForkTargetReservation {
     pub(in crate::linux_attempt_host) attempt: NativeAccountAttempt,
     epoch: u64,

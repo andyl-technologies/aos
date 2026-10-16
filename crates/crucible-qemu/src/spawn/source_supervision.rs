@@ -8,7 +8,7 @@
 //! the distinct standing cancellation event, never Setup's amendment wake.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -36,7 +36,6 @@ pub(crate) struct OriginalSourceSupervision {
     publisher: Arc<SourcePublisher>,
 }
 
-#[derive(Debug)]
 struct SourcePublisher {
     reader: OwnedFd,
     cancellation: OwnedFd,
@@ -49,6 +48,16 @@ struct SourcePublisher {
     action_mapping: Mutex<Option<(crucible_shmem::SetupRegionBackingIdentity, u32)>>,
     action_wake: Mutex<Option<Arc<std::fs::File>>>,
     _admission: InstalledSourceAdmission,
+}
+
+impl std::fmt::Debug for SourcePublisher {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SourcePublisher")
+            .field("subject", &self.subject)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]

@@ -71,7 +71,7 @@ fn begin_requires_actual_original_then_saves_the_same_connection_receipt() {
     ));
     assert_eq!(client.stream.get_ref().output.len(), before);
     let (_owner, original, supervisor, _event, _account) =
-        crate::node::exact_snapshot::capture_original::loan_fixture();
+        crate::node::checkpoint_original_loan_fixture();
     client.bind_checkpoint_original(original).unwrap();
 
     client.begin_checkpoint_receiving(arm).unwrap();
@@ -93,7 +93,7 @@ fn begin_refuses_a_mismatched_or_absent_connection_receipt_and_poisoning_blocks_
         json!({ "arm-request-digest": "00".repeat(32), "request-generation": 7, "connection-epoch": 11 }),
     ] {
         let (_owner, original, _supervisor, _event, _account) =
-            crate::node::exact_snapshot::capture_original::loan_fixture();
+            crate::node::checkpoint_original_loan_fixture();
         let mut client = QmpClient::connect(Stream::new(value)).unwrap();
         client.bind_checkpoint_original(original).unwrap();
         assert!(matches!(

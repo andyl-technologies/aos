@@ -42,7 +42,7 @@ fn disposition_framing_refuses_previous_edition_and_generic_operator_dispatch() 
     let mut body = [0; RAM_CONTROL_CHECKPOINT_MAX_BYTES];
     let length = encode_ram_checkpoint_control(&request, &mut body).unwrap();
     assert_eq!(length, 206);
-    assert_eq!(&body[..5], &[0, 0, 0, 10, 10]);
+    assert_eq!(&body[..5], &[0, 0, 0, 11, 10]);
     assert_eq!(decode_ram_control(&body[..length]).unwrap(), request);
     assert_eq!(encode_ram_control(&request).unwrap(), body[..length]);
     let mut digest = blake3::Hasher::new();
@@ -53,11 +53,13 @@ fn disposition_framing_refuses_previous_edition_and_generic_operator_dispatch() 
         *digest.finalize().as_bytes()
     );
 
-    body[..4].copy_from_slice(&9_u32.to_be_bytes());
-    assert!(matches!(
-        decode_ram_control(&body[..length]),
-        Err(RamControlError::UnsupportedVersion(9))
-    ));
+    for version in [9_u32, 10] {
+        body[..4].copy_from_slice(&version.to_be_bytes());
+        assert!(matches!(
+            decode_ram_control(&body[..length]),
+            Err(RamControlError::UnsupportedVersion(observed)) if observed == version
+        ));
+    }
     let mut stream = Cursor::new(Vec::new());
     write_ram_control(&mut stream, &request).unwrap();
     stream.set_position(0);

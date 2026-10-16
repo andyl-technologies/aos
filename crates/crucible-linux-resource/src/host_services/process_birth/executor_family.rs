@@ -276,7 +276,7 @@ fn open_directory(parent: BorrowedFd<'_>, name: &str) -> Result<File, ServiceBir
         .map_err(super::message)?,
     );
     if rustix::fs::fstatfs(&file).map_err(super::message)?.f_type as u64
-        != rustix::fs::CGROUP2_SUPER_MAGIC as u64
+        != libc::CGROUP2_SUPER_MAGIC as u64
     {
         return Err(ServiceBirthError::policy(
             "normal family directory is not cgroup v2",

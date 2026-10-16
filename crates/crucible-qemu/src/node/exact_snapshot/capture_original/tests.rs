@@ -203,10 +203,18 @@ fn subscriber_refusal_keeps_entered_identity_even_after_capacity_returns() {
         first.source,
         CheckpointOriginalCause::Account(HostServiceError::CapacityExhausted)
     );
-    assert_eq!(owner.enter(&event).unwrap_err(), first);
+    assert_eq!(first.original_after, None);
+    let retained = CheckpointOriginalError {
+        source: first.source,
+        original_after: Some(HostSupervisionError::Unavailable),
+    };
+    // Subscriber admission never completed. Its independent retry postcut
+    // reports that absence without replacing the initiating account refusal.
+    assert_eq!(owner.enter(&event).unwrap_err(), retained);
     drop(competing_descriptor);
-    assert_eq!(owner.enter(&event).unwrap_err(), first);
-    assert_eq!(owner.check(target()).unwrap_err(), first);
+    assert_eq!(owner.enter(&event).unwrap_err(), retained);
+    assert_eq!(owner.check(target()).unwrap_err(), retained);
+    assert_eq!(owner.body.as_ref().unwrap().first_refusal, Some(first));
 
     let entered = owner
         .body

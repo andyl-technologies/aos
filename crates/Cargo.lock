@@ -2728,6 +2728,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crucible-linux-resource",
+ "crucible-protocol",
  "crucible-ram",
  "libc",
  "rustix 1.1.4",

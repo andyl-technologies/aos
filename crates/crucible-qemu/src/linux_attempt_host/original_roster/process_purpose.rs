@@ -383,15 +383,15 @@ impl NativeAccountAttempt {
                     && !slot.launch_abandoned
             })
             .ok_or(InstalledProcessPurposeError::Identity)?;
+        let envelope = contract
+            .configured_process_envelope()
+            .ok_or(InstalledProcessPurposeError::Identity)?;
         slot.reserve_family_constructor()?;
         let credit = slot
             .credit
             .as_ref()
             .ok_or(InstalledProcessPurposeError::Identity)?;
         let local_descriptors = credit.local_descriptor_ceiling()?;
-        let envelope = contract
-            .configured_process_envelope()
-            .ok_or(InstalledProcessPurposeError::Identity)?;
         credit.require_vcpu_ceiling(envelope.maximum_vcpus())?;
         if envelope.maximum_vcpus() != 1
             || u64::from(envelope.maximum_tasks()) > credit.task_ceiling()

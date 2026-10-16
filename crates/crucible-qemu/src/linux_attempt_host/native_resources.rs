@@ -165,7 +165,7 @@ impl Drop for OriginalNativeControlRetirement {
 
 fn unwrap_without_weak<T>(mut value: Arc<T>) -> Result<T, Arc<T>> {
     let observed_weak = Arc::weak_count(&value);
-    #[cfg(test)]
+    #[cfg(all(test, feature = "private-measurement-domain"))]
     original_retirement_tests::after_weak_snapshot();
     if observed_weak != 0 {
         return Err(value);

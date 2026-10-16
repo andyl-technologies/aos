@@ -80,7 +80,7 @@ pub(crate) enum ProcessEnvelopeRefinementError {
     #[error("refined descriptor limit must be finite, monotonic and fit fixed launch targets")]
     DescriptorLimit,
     #[error("QEMU memory refinement failed: {0}")]
-    Control(#[source] crate::LinuxQemuCgroupError),
+    Control(#[source] crate::linux_cgroup::LinuxQemuCgroupError),
 }
 
 /// Retains the identity and exact configured ceilings of one contained process.
@@ -347,6 +347,8 @@ mod tests {
             binding: Arc::downgrade(binding),
             child_cgroup_device: 1,
             child_cgroup_inode: 2,
+            child_user_id: 1000,
+            child_group_id: 1000,
             maximum_vcpus: 2,
             maximum_resident_bytes: 4096,
             maximum_tasks: 8,

@@ -13,7 +13,9 @@ impl OriginalNativeAccountRoster {
     ///
     /// # Errors
     /// Refuses competing access, poison, live Source/Target custody or original.
-    pub(super) fn verify_quiescent(&self) -> Result<(), OriginalActorAccountError> {
+    pub(in crate::linux_attempt_host) fn verify_quiescent(
+        &self,
+    ) -> Result<(), OriginalActorAccountError> {
         if let Some(held) = self.held.as_ref() {
             let state = held
                 .try_lock()
@@ -121,11 +123,7 @@ mod tests {
         roster.verify_quiescent()?;
         assert!(roster.held.is_some());
         assert!(roster.try_close().is_err());
-        assert!(
-            resident
-                .reserve_native_pair(&metadata, 69, 1056, 1536 << 20, 512 << 20)
-                .is_err()
-        );
+        assert!(OriginalNativeAccountCredit::reserve_mechanism_pair(&resident, &metadata).is_err());
 
         let attempt = binding.claim(1, 512 << 20, 1 << 30)?;
         assert!(roster.verify_quiescent().is_err());
@@ -146,17 +144,13 @@ mod tests {
             OriginalNativeAccountRoster::publish([Some(credit), None, None, None], 1)?;
 
         assert!(roster.try_close().is_err());
-        assert!(
-            resident
-                .reserve_native_pair(&metadata, 69, 1056, 1536 << 20, 512 << 20)
-                .is_err()
-        );
+        assert!(OriginalNativeAccountCredit::reserve_mechanism_pair(&resident, &metadata).is_err());
         drop(binding);
         roster.try_close()?;
 
         assert!(roster.held.is_none());
         assert!(roster.retiring_credits.iter().all(Option::is_none));
-        let released = resident.reserve_native_pair(&metadata, 69, 1056, 1536 << 20, 512 << 20)?;
+        let released = OriginalNativeAccountCredit::reserve_mechanism_pair(&resident, &metadata)?;
         drop(released);
         roster.try_close()?;
         Ok(())
@@ -183,11 +177,7 @@ mod tests {
         assert!(roster.retiring_credits[0].is_some());
         drop(roster);
 
-        assert!(
-            resident
-                .reserve_native_pair(&metadata, 69, 1056, 1536 << 20, 512 << 20)
-                .is_err()
-        );
+        assert!(OriginalNativeAccountCredit::reserve_mechanism_pair(&resident, &metadata).is_err());
         Ok(())
     }
 
@@ -205,11 +195,7 @@ mod tests {
 
         assert!(roster.try_close().is_err());
         assert!(roster.held.is_some());
-        assert!(
-            resident
-                .reserve_native_pair(&metadata, 69, 1056, 1536 << 20, 512 << 20)
-                .is_err()
-        );
+        assert!(OriginalNativeAccountCredit::reserve_mechanism_pair(&resident, &metadata).is_err());
         Ok(())
     }
 }

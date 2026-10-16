@@ -126,8 +126,7 @@ impl OriginalNativeNodeBinding {
         process_generation: u64,
         budgets: crucible_linux_resource::host_supervision::HostOperationBudgets,
     ) -> Result<InstalledSourceAdmission, InstalledProcessPurposeError> {
-        let loan = self
-            .installed_process
+        self.installed_process
             .as_ref()
             .filter(|loan| {
                 loan.subdivision_index == 0 && loan.process_generation == process_generation

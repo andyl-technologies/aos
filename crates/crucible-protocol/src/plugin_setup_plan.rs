@@ -547,7 +547,7 @@ mod tests {
             PluginSetupPlan::decode(&bytes),
             Err(PluginSetupPlanError::UnsupportedVersion { version: 2 })
         );
-        bytes[8..12].copy_from_slice(&5_u32.to_be_bytes());
+        bytes[8..12].copy_from_slice(&8_u32.to_be_bytes());
         bytes[28..32].copy_from_slice(&127_u32.to_be_bytes());
         assert!(matches!(
             PluginSetupPlan::decode(&bytes),

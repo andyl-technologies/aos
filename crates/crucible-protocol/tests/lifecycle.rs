@@ -644,7 +644,7 @@ fn completed_preexec_receipt_commits_without_a_second_frame() -> Result<(), Box<
     let receipt = crucible_protocol::send_preexec_setup_frame_with_descriptors(
         host.as_raw_fd(),
         &frame,
-        &[descriptor.as_raw_fd(); 3],
+        &[descriptor.as_raw_fd(); 5],
     )?;
     let mut observed = [0; 61];
     peer.read_exact(&mut observed)?;
@@ -671,7 +671,7 @@ fn preexec_receipt_refuses_another_endpoint_without_advancing() -> Result<(), Bo
     let receipt = crucible_protocol::send_preexec_setup_frame_with_descriptors(
         first.as_raw_fd(),
         &selected_preexec_frame(),
-        &[descriptor.as_raw_fd(); 3],
+        &[descriptor.as_raw_fd(); 5],
     )?;
     first_peer.read_exact(&mut [0; 61])?;
 
@@ -699,7 +699,7 @@ fn selected_preexec_geometry_refuses_before_any_frame() -> Result<(), Box<dyn Er
             crucible_protocol::send_preexec_setup_frame_with_descriptors(
                 host.as_raw_fd(),
                 &frame,
-                &[descriptor.as_raw_fd(); 3],
+                &[descriptor.as_raw_fd(); 5],
             )
             .is_err()
         );

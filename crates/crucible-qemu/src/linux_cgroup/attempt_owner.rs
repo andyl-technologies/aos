@@ -147,7 +147,6 @@ pub(crate) struct LinuxQemuAttemptProcessOwner {
 
 impl LinuxQemuAttemptProcessOwner {
     /// Retains a configured group before watcher or contract publication.
-    #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn retain_created(group: LinuxQemuCgroup) -> Self {
         Self {
             group: Some(group),
@@ -800,7 +799,6 @@ mod tests {
                 parent_directory,
                 name: String::from(name),
                 limits: LinuxQemuCgroupLimits::new(1, 4096, 4)?,
-                #[cfg(feature = "private-measurement-domain")]
                 memory_oom_kill_baseline: None,
                 control,
             },

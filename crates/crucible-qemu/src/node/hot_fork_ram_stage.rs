@@ -284,18 +284,20 @@ impl QemuHotForkRamContinuation {
         self.cleanup.published().map_err(failure)
     }
 
-    pub(super) fn finish(&mut self) -> Result<(), QemuNodeChannelError> {
-        if let Some(source) = self.source.take()
-            && let Err(error) = source.stop()
-        {
-            self.source = Some(error.service);
-            return Err(failure(error.source));
-        }
+    pub(super) fn finish(&mut self) -> Result<(), QemuNodeError> {
+        super::host_policy::finish_ram_source_cleanup(
+            &mut self.source,
+            "join hot-fork RAM source",
+        )?;
         if self.cleanup.is_published() {
             self.registration
                 .registrar
                 .prepare_retirement_after_cleanup(self.registration.target)
-                .map_err(failure)?;
+                .map_err(|source| QemuNodeError::Channel {
+                    plane: QemuNodeChannelPlane::PluginIpcControl,
+                    operation: "join hot-fork RAM source",
+                    message: failure(source).to_string(),
+                })?;
         }
         Ok(())
     }

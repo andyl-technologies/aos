@@ -496,7 +496,7 @@ impl OriginalSourceSupervision {
                 *slot = None;
             }
         }
-        let mut state = self
+        let state = self
             .publisher
             .state
             .lock()

@@ -146,6 +146,7 @@ impl NativeAccountAttempt {
             .credit
             .as_ref()
             .ok_or(OriginalActorAccountError::Unavailable)?;
+        credit.require_original()?;
         let host_bytes = crate::spawn::OriginalDeviceDigestWorkspace::host_allocation_extent()
             .map_err(|_| OriginalActorAccountError::Unavailable)?;
         let installed = slot

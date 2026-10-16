@@ -1,4 +1,4 @@
-//! Retains typed host-source failure identity through an asynchronous quantum.
+//! Retains typed host-source failure identity through node execution and cleanup.
 //!
 //! A source failure is infrastructure evidence. It never supplies a completed
 //! guest outcome or releases a pending process, transport, or backing claim.
@@ -11,7 +11,7 @@ use crate::ram_source::{QemuRamSourceError, QemuRamWorkerFailure};
 use crucible::{BackendOperationalCause, BackendOperationalFailureKind};
 use crucible_linux_resource::host_supervision::{HostOperationState, HostSupervisionError};
 
-/// An owned host service failure while a guest quantum remains pending.
+/// An owned host service failure observed during node execution or cleanup.
 ///
 /// Clones retain the original error allocation. Equality identifies observers
 /// of that same failure, rather than comparing mutable diagnostics or clocks.

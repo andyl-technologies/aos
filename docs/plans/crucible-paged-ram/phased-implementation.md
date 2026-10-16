@@ -29,9 +29,9 @@ The current transport source contracts are:
 | Plugin control | Version 8; noncurrent peers are refused. |
 | Selected pre-exec Setup | Edition 5, selector `QEMU_CRUCIBLE_PREEXEC_SETUP=5`, tag `0x15`, 61-byte frame (4-byte length, 1-byte tag, 56-byte payload). |
 | Setup descriptor roster | Five mandatory roles, in order: shared region, wake event, sealed plan, read-only standing publication, distinct standing cancellation event. An optional device workspace is sixth. |
-| Sealed plan | `CRUCSUP7`, schema 7, containing one `CRUCPUR7` process purpose of 1624 bytes. |
-| Standing publication | 608-byte shared file: one 8-byte sequence followed by a 600-byte observation, accessed as atomic big-endian 64-bit words. The host alone holds the writable mapping; the transmitted file role is read-only. |
-| Sealed standing corroboration | The purpose's 624-byte tail binds the retained publication file identity/extent and its initial 600-byte observation. Copied fields issue no authority. |
+| Sealed plan | `CRUCSUP8`, schema 8, containing one `CRUCPUR8` process purpose of 2520 bytes. |
+| Standing publication | 1504-byte shared file: one 8-byte sequence followed by a 1496-byte observation, accessed as atomic big-endian 64-bit words. The observation includes the action cohort. The host alone holds the writable mapping; the transmitted file role is read-only. |
+| Sealed standing corroboration | The purpose's 1520-byte tail binds the retained publication file identity/extent and its initial 1496-byte observation. Copied fields issue no authority. |
 | Standing cancellation | A separate nonblocking eventfd, with kernel event identity encoded as raw ID plus one. It is distinct from the wake event and Setup amendment event. |
 | Operational durations | One exact-nanosecond roster under RAM schema 11; Host operational frames use schema 4. Configured values are positive and checked; observed expiry may be zero. |
 

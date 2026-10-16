@@ -82,7 +82,9 @@ impl InstalledProcessFamily {
             .normal
             .as_ref()
             .ok_or(InstalledProcessPurposeError::Identity)?;
-        normal.verify_native_preparation(&retained.preparation)?;
+        normal
+            .verify_native_preparation(&retained.preparation)
+            .map_err(super::OriginalActorAccountError::from)?;
         let basis = retained
             .preparation
             .serialize_original_preparation_basis()

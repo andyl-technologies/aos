@@ -6,6 +6,7 @@ use std::process::Command;
 use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
 
 use super::*;
+use crate::node::source_child::OwnedNodeChild;
 
 #[test]
 fn child_poll_preserves_clean_exit_status_and_disarms_drop_cleanup() -> Result<(), Box<dyn Error>> {
@@ -64,7 +65,11 @@ fn failed_helper_cleanup_reaps_original_child_and_is_idempotent() -> Result<(), 
 }
 
 fn wait_for_test_child_exit_pending(child: &QemuNodeChild) -> Result<(), Box<dyn Error>> {
-    let pid = Pid::from_child(&child.child);
+    let pid = match &child.child {
+        OwnedNodeChild::Ordinary(child) => Pid::from_child(child),
+        #[cfg(target_os = "linux")]
+        OwnedNodeChild::Source(_) => return Err("fixture requires an ordinary child".into()),
+    };
     waitid(
         WaitId::Pid(pid),
         WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,

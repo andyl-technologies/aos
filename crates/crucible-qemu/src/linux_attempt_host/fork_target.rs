@@ -20,8 +20,9 @@ pub struct LinuxQemuForkTargetPermit {
     quota: LinuxProjectQuotaController,
 }
 
+#[derive(Debug)]
 pub(super) struct ForkTargetCustody {
-    reservation: original_roster::ForkTargetReservation,
+    pub(super) reservation: original_roster::ForkTargetReservation,
     source: Weak<NativeResourceState>,
     quota: LinuxProjectQuotaController,
 }
@@ -264,6 +265,7 @@ impl LinuxQemuAttemptHostOwner {
             .map_err(original_roster::original_error)?;
         cleanup
             .wait_slice()
+            .map(|_| ())
             .map_err(|source| original_roster::original_error(source.into()))
     }
 

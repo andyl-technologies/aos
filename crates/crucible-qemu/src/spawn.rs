@@ -505,7 +505,7 @@ impl QemuChildProcessContract {
     }
 
     #[cfg(test)]
-    fn for_test(
+    pub(crate) fn for_test(
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
         maximum_writable_bytes: u64,

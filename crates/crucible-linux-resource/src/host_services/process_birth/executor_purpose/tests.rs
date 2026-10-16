@@ -193,13 +193,11 @@ fn native_preparation_requires_actual_shared_outer_running_class() {
     let nested = root
         .new_budget_owner(HostOperationBudgets::default())
         .unwrap();
-    let preparation = nested
-        .begin_work(HostOperationClass::Preparation, 0)
-        .unwrap();
+    let preparation = nested.begin(HostOperationClass::Preparation).unwrap();
     verify_preparation(&root, &preparation).unwrap();
-    let read = nested.begin_work(HostOperationClass::Read, 0).unwrap();
+    let page_in = nested.begin(HostOperationClass::PageIn).unwrap();
     assert!(matches!(
-        verify_preparation(&root, &read),
+        verify_preparation(&root, &page_in),
         Err(ServiceBirthError::Supervision(
             crate::host_supervision::HostSupervisionError::InvalidBudget
         ))
@@ -209,9 +207,7 @@ fn native_preparation_requires_actual_shared_outer_running_class() {
         Some(std::time::Duration::from_secs(30)),
     )
     .unwrap();
-    let foreign = other
-        .begin_work(HostOperationClass::Preparation, 0)
-        .unwrap();
+    let foreign = other.begin(HostOperationClass::Preparation).unwrap();
     assert!(matches!(
         verify_preparation(&root, &foreign),
         Err(ServiceBirthError::Policy(_))
@@ -232,9 +228,7 @@ fn native_preparation_retains_cancellation_before_identity_refusal() {
         Some(std::time::Duration::from_secs(30)),
     )
     .unwrap();
-    let preparation = foreign
-        .begin_work(HostOperationClass::Preparation, 0)
-        .unwrap();
+    let preparation = foreign.begin(HostOperationClass::Preparation).unwrap();
     foreign.cancel().unwrap();
 
     assert!(matches!(
