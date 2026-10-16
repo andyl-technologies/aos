@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; fifteen of twenty-two T1 tasks are complete.
+**Status:** In progress; sixteen of twenty-two T1 tasks are complete.
 
 The qualified source checkpoint `1d7451dd75` has independently reviewed passing
 outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
@@ -8479,7 +8479,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.prov-selector-presets`,
   `checks.terrane.gates.prov-commit-verify`,
   `checks.terrane.gates.prov-disclosure-boundary`.
-- [ ] **T-DOM-1** Domain property semantics, cross-domain reference checks,
+- [x] **T-DOM-1** Domain property semantics, cross-domain reference checks,
   dedup scoping, existence-oracle rules and durable disclosure evidence.
   Special tree, whiteout, conflict and index disclosure remain required;
   file/directory-marker/symlink certificates alone do not qualify DOM-7.
