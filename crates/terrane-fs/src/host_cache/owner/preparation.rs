@@ -17,8 +17,8 @@ use terrane::host::cache::HostDomainLocation;
 /// custody, perform bounded recovery, durably reconcile its accounting and
 /// complete the registered publisher resume barrier before accepting writes.
 pub struct NativeCachePreparation {
-    config: NativeCacheOwnerConfig,
-    confinement: Arc<Installed>,
+    pub(super) config: NativeCacheOwnerConfig,
+    pub(super) confinement: Arc<Installed>,
     layout: Arc<NativeHostLayout<HostDomainLocation>>,
     quota_client: HostQuotaClient,
     observation: VerifiedQuotaObservation,

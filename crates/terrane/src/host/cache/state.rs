@@ -103,6 +103,23 @@ impl Default for CacheState {
 }
 
 impl CacheState {
+    /// Checks the complete snapshot encoding and returns its exact byte length.
+    ///
+    /// This performs no filesystem effects. Native owners use it before
+    /// reserving or synchronizing a multi-step durable state transition.
+    ///
+    /// # Errors
+    /// Refuses invalid records, serialization failures and the configured byte
+    /// budget, including snapshots whose record count alone would fit.
+    pub fn encoded_len(&self, limits: StateLimits) -> Result<usize, StoreFailure> {
+        self.validate(limits)?;
+        let text = toml::to_string(self).map_err(|_| capacity())?;
+        if text.len() > limits.bytes {
+            return Err(capacity());
+        }
+        Ok(text.len())
+    }
+
     /// Validates bounds and every record before accepting durable state.
     ///
     /// # Errors

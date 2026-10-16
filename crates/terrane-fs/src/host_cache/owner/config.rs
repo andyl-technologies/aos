@@ -49,8 +49,13 @@ pub struct NativeCacheOwnerConfig {
     pub state: StateLimits,
     /// Maximum retained entries in one complete native recovery inventory.
     pub inventory_entries: usize,
-    /// Maximum queued commands, excluding the physically executing command.
+    /// Maximum queued commands, from one through 1024, excluding the active command.
     pub queued_commands: usize,
+    /// Conservative future hold for state replacement and metadata synchronization.
+    ///
+    /// This covers simultaneous old/new snapshots and synchronization overhead;
+    /// it is not measured allocation or a guarantee that allocation succeeds.
+    pub metadata_sync_hold_bytes: u64,
 }
 
 impl NativeCacheOwnerConfig {
@@ -115,7 +120,13 @@ impl NativeCacheOwnerConfig {
             || self.state.bytes == 0
             || self.state.records == 0
             || self.inventory_entries == 0
-            || self.queued_commands == 0
+            || !(1..=1024).contains(&self.queued_commands)
+            || self.metadata_sync_hold_bytes == 0
+            || self.metadata_sync_hold_bytes > self.policy.capacity
+            || u64::try_from(self.state.bytes)
+                .ok()
+                .and_then(|bytes| bytes.checked_mul(2))
+                .is_none_or(|overlap| self.metadata_sync_hold_bytes < overlap)
         {
             return Err(invalid(
                 "native owner requires finite nonzero resource budgets",
@@ -174,15 +185,15 @@ mod tests {
             quota_owner: "fixture".into(),
             filesystem_uuid: [2; 16],
             project_id: 100,
-            project_hard_limit_bytes: 1024,
+            project_hard_limit_bytes: 65536,
             project_hard_inode_limit: 0,
             content_uid: 840,
             content_gid: 845,
             state_gid: 844,
-            tier_charge_budget_bytes: 2048,
+            tier_charge_budget_bytes: 131072,
             policy: PolicyConfig {
-                capacity: 900,
-                low_watermark: 500,
+                capacity: 60000,
+                low_watermark: 32000,
                 probation_bytes: 100,
                 release_grace: Duration::from_secs(30),
                 scan_limit: 64,
@@ -194,6 +205,7 @@ mod tests {
             },
             inventory_entries: 128,
             queued_commands: 4,
+            metadata_sync_hold_bytes: 16384,
         }
     }
 
@@ -218,6 +230,18 @@ mod tests {
 
         let mut config = configuration();
         config.state_gid = config.content_gid;
+        assert!(config.validate().is_err());
+
+        let mut config = configuration();
+        config.queued_commands = 1025;
+        assert!(config.validate().is_err());
+
+        let mut config = configuration();
+        config.metadata_sync_hold_bytes = config.state.bytes as u64;
+        assert!(config.validate().is_err());
+
+        let mut config = configuration();
+        config.state.bytes = usize::MAX;
         assert!(config.validate().is_err());
 
         for path in [

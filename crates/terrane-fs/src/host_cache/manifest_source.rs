@@ -40,6 +40,8 @@ pub struct NativeManifestSource {
     index: File,
     pack_metadata: Metadata,
     index_metadata: Metadata,
+    pack_directory: File,
+    shard_directory: File,
 }
 
 impl NativeManifestSource {
@@ -177,6 +179,8 @@ impl NativeManifestSource {
             index,
             pack_metadata,
             index_metadata,
+            pack_directory: File::from(packs),
+            shard_directory: File::from(shard),
         };
         source.recheck()?;
         Ok(source)
@@ -226,6 +230,16 @@ impl NativeManifestSource {
             flags,
             Mode::empty(),
         )?;
+        for (retained, current) in [
+            (&self.pack_directory, &packs),
+            (&self.shard_directory, &shard),
+        ] {
+            let expected = retained.metadata()?;
+            let actual = rustix::fs::fstat(current)?;
+            if expected.dev() != actual.st_dev || expected.ino() != actual.st_ino {
+                return Err(invalid("canonical metadata parent directory was replaced"));
+            }
+        }
         for (name, expected) in [
             (format!("{}.pack", self.pack_id), &self.pack_metadata),
             (format!("{}.idx", self.pack_id), &self.index_metadata),
@@ -241,6 +255,31 @@ impl NativeManifestSource {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn synchronize(&self) -> io::Result<()> {
+        self.recheck()?;
+        self.pack.sync_all()?;
+        self.index.sync_all()?;
+        self.shard_directory.sync_all()?;
+        self.pack_directory.sync_all()?;
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let objects = self
+            .layout
+            .directories
+            .get("objects")
+            .ok_or_else(|| invalid("retained objects directory is absent"))?;
+        File::from(openat(objects, ".", flags, Mode::empty())?).sync_all()?;
+        File::from(openat(&self.layout.root, ".", flags, Mode::empty())?).sync_all()?;
+        self.recheck()
+    }
+
+    pub(super) fn files(&self) -> (&File, &File) {
+        (&self.pack, &self.index)
+    }
+
+    pub(super) fn layout(&self) -> &Arc<NativeHostLayout<HostDomainLocation>> {
+        &self.layout
     }
 }
 

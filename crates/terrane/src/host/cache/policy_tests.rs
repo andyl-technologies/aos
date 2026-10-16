@@ -3,6 +3,41 @@
 use super::{CacheEntry, CachePolicy, CircuitBreaker, PolicyConfig};
 use std::time::Duration;
 
+#[test]
+fn host_cache_pin_preflight_checks_full_snapshot_bytes_before_reserving() {
+    use super::{CacheState, LeaseRecord, PinRecord, ReservationRecord, StateLimits};
+
+    let mut reserved = CacheState::default();
+    reserved.reservations.push(ReservationRecord {
+        id: "a".repeat(32),
+        owner: "fixture".into(),
+        bytes: 16384,
+    });
+    let generous = StateLimits {
+        bytes: 4096,
+        records: 4,
+    };
+    let reserved_bytes = reserved.encoded_len(generous).unwrap();
+    let mut pinned = reserved.clone();
+    pinned.leases.push(LeaseRecord {
+        owner: "metadata:fixture".into(),
+        expires: u64::MAX,
+    });
+    pinned.pins.push(PinRecord {
+        owner: "metadata:fixture".into(),
+        hash: "b".repeat(64),
+        expires: u64::MAX,
+    });
+    let exact = StateLimits {
+        bytes: reserved_bytes,
+        records: 4,
+    };
+
+    assert_eq!(reserved.encoded_len(exact).unwrap(), reserved_bytes);
+    assert!(pinned.encoded_len(exact).is_err());
+    assert!(pinned.encoded_len(generous).unwrap() > reserved_bytes);
+}
+
 fn cache() -> CachePolicy {
     CachePolicy::new(PolicyConfig {
         capacity: 100,
