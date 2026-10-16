@@ -104,7 +104,9 @@ mod tests {
                 .canonical_bytes()
                 .unwrap_or_else(|error| panic!("encode reversed queue: {error}"))
         );
-        let deliveries = first.deliver_due(u64::MAX);
+        let deliveries = first
+            .deliver_due(u64::MAX)
+            .unwrap_or_else(|error| panic!("deliver original queue: {error}"));
         assert_eq!(deliveries.len(), 2);
         for (sequence, delivery) in deliveries.iter().enumerate() {
             let completion = delivery
@@ -118,7 +120,12 @@ mod tests {
                 delivery.delivery_icount
             );
         }
-        assert_eq!(deliveries, second.deliver_due(u64::MAX));
+        assert_eq!(
+            deliveries,
+            second
+                .deliver_due(u64::MAX)
+                .unwrap_or_else(|error| panic!("deliver reversed queue: {error}"))
+        );
     }
 
     #[test]

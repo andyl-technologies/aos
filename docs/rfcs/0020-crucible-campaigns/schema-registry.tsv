@@ -230,7 +230,7 @@ crucible.execution.dequeued-fault-event	1	crucible-shmem::fault_event::checkpoin
 crucible.execution.event-log-segment	6	crucible::scheduler::event_codec	trace	gate:campaign-replay,gate:exact-closure-streaming
 crucible.attempt.event-log-segment	1	crucible-daemon::attempt_event_log	trace	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.backend-network-output	2	crucible::backend::io::network_checkpoint	device-state	gate:exact-closure-streaming
-crucible.execution.device-scheduling-subnode	1	crucible::device_subnode::checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
+crucible.execution.device-scheduling-subnode	2	crucible::device_subnode::checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.scheduler-network	2	crucible::scheduler::runtime_state::network_checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.event-graph-state	2	crucible::trigger::event_graph	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.scenario-selectable-component	1	crucible::model::scenario_selectables	execution-model-payload	gate:typed-choice,gate:campaign-replay

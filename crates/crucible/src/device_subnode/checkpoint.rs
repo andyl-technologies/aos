@@ -1,11 +1,32 @@
 //! Canonical continuation for one scheduler-owned block or 9p sub-node.
+//!
+//! The continuation holds the nested device snapshot plus the bridge's
+//! undelivered completions. Delivered completions are retired from the bridge
+//! and the device before any checkpoint can observe them, so the completion
+//! lists are bounded by in-flight requests rather than by run length.
+//!
+//! ```text
+//! b"crucible.device-scheduling-subnode.v2\0" || CBOR {
+//!     sub_node, sub_node_kind, target, device_id,
+//!     device_kind, device: nested canonical snapshot bytes,
+//!     modeled:  [{ modeled_icount, src_node, seq, payload }] in key order,
+//!     resolved: [{ modeled_icount, modeled_src_node, modeled_seq,
+//!                  delivery_icount, src_node, seq, payload?, decisions }]
+//!               in (delivery_icount, src_node, seq) order,
+//! }
+//! ```
+//!
+//! Every resolved entry names exactly one modeled entry and every modeled entry
+//! has exactly one resolved entry.
+
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
 use super::{DeviceSchedulingSubNode, ModeledCompletion, PendingCompletion, ScheduledDevice};
 use crate::Schedule;
 
-const MAGIC: &[u8] = b"crucible.device-scheduling-subnode.v1\0";
+const MAGIC: &[u8] = b"crucible.device-scheduling-subnode.v2\0";
 const MAX_BYTES: usize = 1_073_741_824;
 
 /// Complete mutable continuation of one scheduler-owned I/O sub-node.
@@ -59,7 +80,6 @@ struct ResolvedWire {
     seq: u32,
     payload: Option<Vec<u8>>,
     decisions: Vec<u8>,
-    delivered: bool,
 }
 
 impl DeviceSchedulingSubNode {
@@ -79,8 +99,8 @@ impl DeviceSchedulingSubNode {
                     DeviceCheckpoint::Ninep(Box::new(device.snapshot()))
                 }
             },
-            modeled: self.modeled.clone(),
-            resolved: self.resolved.clone(),
+            modeled: self.modeled.values().cloned().collect(),
+            resolved: self.resolved.values().cloned().collect(),
         }
     }
 
@@ -113,8 +133,17 @@ impl DeviceSchedulingSubNode {
                 .map_err(DeviceSchedulingSubNodeCheckpointError::Device)?,
             _ => return Err(DeviceSchedulingSubNodeCheckpointError::Kind),
         }
-        self.modeled = checkpoint.modeled.clone();
-        self.resolved = checkpoint.resolved.clone();
+        // Validation proved both lists strictly ordered by these keys.
+        self.modeled = checkpoint
+            .modeled
+            .iter()
+            .map(|completion| (completion.key(), completion.clone()))
+            .collect();
+        self.resolved = checkpoint
+            .resolved
+            .iter()
+            .map(|completion| (completion.delivery_key(), completion.clone()))
+            .collect();
         Ok(())
     }
 }
@@ -173,7 +202,6 @@ impl DeviceSchedulingSubNodeCheckpoint {
                     payload: completion.payload.clone(),
                     decisions: Schedule::from_decisions(completion.decisions.clone())
                         .to_compact_binary(),
-                    delivered: completion.delivered,
                 })
                 .collect(),
         };
@@ -244,7 +272,6 @@ impl DeviceSchedulingSubNodeCheckpoint {
                     seq: completion.seq,
                     payload: completion.payload,
                     decisions: decisions.decisions().to_vec(),
-                    delivered: completion.delivered,
                 })
             })
             .collect::<Result<Vec<_>, DeviceSchedulingSubNodeCheckpointError>>()?;
@@ -282,6 +309,21 @@ impl DeviceSchedulingSubNodeCheckpoint {
         {
             return Err(DeviceSchedulingSubNodeCheckpointError::Ordering);
         }
+
+        // Delivered completions are retired, so the two lists join one to one.
+        let modeled_keys = self
+            .modeled
+            .iter()
+            .map(ModeledCompletion::key)
+            .collect::<BTreeSet<_>>();
+        let resolved_keys = self
+            .resolved
+            .iter()
+            .map(|completion| completion.modeled_key)
+            .collect::<BTreeSet<_>>();
+        if resolved_keys.len() != self.resolved.len() || resolved_keys != modeled_keys {
+            return Err(DeviceSchedulingSubNodeCheckpointError::Join);
+        }
         Ok(())
     }
 }
@@ -310,6 +352,9 @@ pub enum DeviceSchedulingSubNodeCheckpointError {
     /// Modeled or resolved completions are not in strict canonical order.
     #[error("device scheduling sub-node completions are not canonically ordered")]
     Ordering,
+    /// Resolved completions do not name the modeled completions one to one.
+    #[error("device scheduling sub-node resolved and modeled completions do not join")]
+    Join,
     /// The checkpoint exceeds the compiled byte ceiling.
     #[error("device scheduling sub-node checkpoint exceeds its size limit")]
     Limit,
@@ -328,5 +373,77 @@ const fn scheduling_kind_tag(kind: crate::SchedulingNodeKind) -> u8 {
         crate::SchedulingNodeKind::NineP => 3,
         crate::SchedulingNodeKind::Network => 4,
         crate::SchedulingNodeKind::ControlPlane => 5,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DeviceId, NodeId, SchedulerNodeId, Seed};
+    use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
+
+    fn disk() -> DeviceSchedulingSubNode {
+        let core = IoCore::new(7, 16, 16).unwrap_or_else(|error| panic!("io core: {error}"));
+        DeviceSchedulingSubNode::new(
+            SchedulerNodeId {
+                node: NodeId {
+                    name: "disk".into(),
+                },
+                kind: crate::SchedulingNodeKind::Disk,
+            },
+            NodeId { name: "vm".into() },
+            DeviceId {
+                name: "disk".into(),
+            },
+            BlockDevice::new(core, BaseImage::new(vec![0; 32]), BlockLatency::default()),
+            Seed::from_u64(7),
+        )
+    }
+
+    fn pending_checkpoint() -> DeviceSchedulingSubNodeCheckpoint {
+        let mut disk = disk();
+        disk.submit_fifo(0, &BlockRequest::read(1, 0, 4))
+            .unwrap_or_else(|error| panic!("submit: {error}"));
+        disk.checkpoint()
+    }
+
+    #[test]
+    fn resolved_completion_without_its_modeled_completion_is_rejected() {
+        let mut checkpoint = pending_checkpoint();
+        assert_eq!(checkpoint.modeled.len(), 1);
+        checkpoint.modeled.clear();
+
+        assert!(matches!(
+            checkpoint.canonical_bytes(),
+            Err(DeviceSchedulingSubNodeCheckpointError::Join)
+        ));
+    }
+
+    #[test]
+    fn modeled_completion_without_a_resolved_completion_is_rejected() {
+        let mut checkpoint = pending_checkpoint();
+        checkpoint.resolved.clear();
+
+        assert!(matches!(
+            disk().restore_checkpoint(&checkpoint),
+            Err(DeviceSchedulingSubNodeCheckpointError::Join)
+        ));
+    }
+
+    #[test]
+    fn previous_envelope_version_is_rejected() {
+        let bytes = pending_checkpoint()
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode: {error}"));
+        let payload = bytes
+            .strip_prefix(MAGIC)
+            .unwrap_or_else(|| panic!("current magic prefix"));
+        let mut previous = b"crucible.device-scheduling-subnode.v1\0".to_vec();
+        previous.extend_from_slice(payload);
+
+        assert!(matches!(
+            DeviceSchedulingSubNodeCheckpoint::from_canonical_bytes(&previous),
+            Err(DeviceSchedulingSubNodeCheckpointError::Version)
+        ));
     }
 }

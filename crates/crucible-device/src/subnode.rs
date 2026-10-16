@@ -260,6 +260,35 @@ impl IoCore {
         Ok(self.inflight.drain_all())
     }
 
+    /// Retires in-flight responses that the owner already delivered itself.
+    ///
+    /// A scheduler bridge that makes completions visible without publishing
+    /// them to the outbound ring calls this after delivery, so the in-flight
+    /// queue holds only undelivered responses. The clock does not advance and
+    /// the outbound ring is untouched. Keys that are not in flight are ignored.
+    /// Returns the number of responses retired; the queue revision advances
+    /// only when at least one response is retired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::IoQueueRevisionExhausted`] before retiring any
+    /// response.
+    pub fn retire_delivered(
+        &mut self,
+        keys: &std::collections::BTreeSet<FrameDeliveryKey>,
+    ) -> Result<usize, DeviceError> {
+        let retained = self
+            .inflight
+            .entries()
+            .iter()
+            .filter(|pending| !keys.contains(&pending.key))
+            .cloned()
+            .collect::<Vec<_>>();
+        let retired = self.inflight.len() - retained.len();
+        self.replace_inflight(retained)?;
+        Ok(retired)
+    }
+
     /// Atomically replaces the computed queue after a device-owned rewrite.
     pub(crate) fn replace_inflight(
         &mut self,

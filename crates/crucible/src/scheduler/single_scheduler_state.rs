@@ -715,8 +715,8 @@ impl SingleScheduler {
     ///
     /// # Errors
     ///
-    /// This currently never returns an error; the `Result` is kept for forward
-    /// compatibility with sequence-exhaustion guards.
+    /// Returns [`SchedulerError::BoundaryViolation`] when a sub-node's device
+    /// exhausts its queue revision while retiring delivered completions.
     pub fn resolve_device_completions(
         &mut self,
         node: &SchedulerNodeId,
@@ -730,7 +730,12 @@ impl SingleScheduler {
         let mut due: Vec<crate::device_subnode::DeviceDelivery> = Vec::new();
         if let Some(sub_nodes) = self.device_sub_nodes.get_mut(&node.node) {
             for sub_node in sub_nodes.iter_mut() {
-                due.extend(sub_node.deliver_due(consumer_icount));
+                let delivered = sub_node.deliver_due(consumer_icount).map_err(|error| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!("retire delivered device completions: {error}"),
+                    }
+                })?;
+                due.extend(delivered);
             }
         }
         // Canonical (delivery_icount, then producer sub-node id) order so the
