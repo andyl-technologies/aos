@@ -273,6 +273,33 @@ impl OperationToken {
     }
 }
 
+impl PreparedWorldPublication {
+    /// Observes independent coordinator/owner clones and the same shared preparations.
+    ///
+    /// The enclosing inline slot is excluded. This read-only layout observation
+    /// does not authenticate durability or grant activation permission.
+    ///
+    /// # Errors
+    /// Refuses unsupported fields, checked overflow or the supplied maximum.
+    pub fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<RetainedCoreOwnerStorage<'_>, RuntimeError> {
+        let Self {
+            nodes,
+            owners,
+            coordinator,
+        } = self;
+        let mut facts = RetainedCoreOwnerStorage::new(maximum);
+        facts.independent(storage::add(
+            owners.owned_storage()?,
+            coordinator.owned_storage()?,
+        )?)?;
+        facts.preparations(nodes)?;
+        Ok(facts)
+    }
+}
+
 impl WorldActivation {
     /// Observes actual record clones and separate original shared activation roots.
     ///

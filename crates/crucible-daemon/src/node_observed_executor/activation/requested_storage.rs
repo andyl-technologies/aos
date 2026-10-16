@@ -2,13 +2,13 @@
 
 use super::*;
 use crate::node_qualification::{QualificationError, RetainedMetadataCounter as Counter};
-use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
+use crucible_cas::content_store::DirectoryBlobBackend;
 
 impl StoredWorldActivationPublisher {
-    pub(crate) fn charge_original_directory_storage_data(
+    pub(crate) fn charge_original_directory_storage_data<T: MutableRefBackend + ?Sized>(
         &self,
         expected_blobs: &Arc<DirectoryBlobBackend>,
-        expected_refs: &Arc<DirectoryRefBackend>,
+        expected_refs: &Arc<T>,
         counter: &mut Counter,
     ) -> Result<(), QualificationError> {
         let Self {

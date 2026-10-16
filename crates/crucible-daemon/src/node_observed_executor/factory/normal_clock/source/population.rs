@@ -52,6 +52,7 @@ impl Population {
         unit: &unit::Unit,
         original: &OriginalClockQualificationRun,
         adverse_executions: [ExecutionId; 2],
+        publication_executions: [ExecutionId; 2],
     ) -> Result<Self, QualificationError> {
         let mut content = BTreeMap::new();
         let mut cases = Vec::new();
@@ -121,6 +122,7 @@ impl Population {
                     name,
                     property,
                     &unit.value,
+                    publication_executions.map(execution_text),
                 ),
             )?;
             cases.push(PlannedWitnessCase {

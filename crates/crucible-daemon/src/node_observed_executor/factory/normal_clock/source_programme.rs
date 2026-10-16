@@ -19,6 +19,8 @@ impl NormalClockProgramme {
     /// remain in this programme. Missing adverse originals remain NotExecuted
     /// and make the ordinary enrollment gate refuse; no successful subset or
     /// decoded report can install classes. A failed attempt cannot be renewed.
+    /// The two publication execution IDs are distinct from the original, both
+    /// adverse worlds and both restore branches, and enter the plan before Arm.
     ///
     /// # Errors
     /// Refuses missing original enforcement/state preparation, an earlier
@@ -29,6 +31,7 @@ impl NormalClockProgramme {
         &mut self,
         catalog: &mut InstalledNodeCatalog,
         adverse_executions: [crucible_campaign::ExecutionId; 2],
+        publication_executions: [ExecutionId; 2],
     ) -> Result<(), NodeObservedError> {
         if self.normal_attempted
             || !self.bounded_valid
@@ -41,6 +44,26 @@ impl NormalClockProgramme {
             .as_ref()
             .ok_or_else(|| refused("Clock normal original absent"))?
             .current()?;
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| refused("Clock state owner absent"))?;
+        let executions = [
+            self.execution,
+            adverse_executions[0],
+            adverse_executions[1],
+            publication_executions[0],
+            publication_executions[1],
+            state.branches[0].execution,
+            state.branches[1].execution,
+        ];
+        if executions
+            .iter()
+            .enumerate()
+            .any(|(index, execution)| executions[..index].contains(execution))
+        {
+            return Err(refused("Clock original experiment executions overlap"));
+        }
         self.normal_attempted = true;
         let aggregate = Rc::clone(
             self.aggregate_resources
@@ -65,6 +88,11 @@ impl NormalClockProgramme {
             self.execution,
             adverse_executions,
         )?);
+        self.failures = Some(super::super::failures::OriginalClockFailureProgramme::new(
+            catalog,
+            &aggregate,
+            publication_executions,
+        )?);
         let original = self
             .original
             .as_ref()
@@ -76,6 +104,7 @@ impl NormalClockProgramme {
             self.adverse
                 .as_ref()
                 .ok_or_else(|| refused("Clock original adverse programme absent"))?,
+            publication_executions,
         ) {
             Ok(source) => Rc::new(source),
             Err(original) => {
@@ -167,7 +196,8 @@ impl NormalClockProgramme {
                 &mut runner,
                 source.state_case_data().0,
                 source.state_case_data().1,
-            )
+            )?;
+            self.execute_original_failure_cases(catalog, &source, &mut runner)
         }));
         match execution {
             Ok(Ok(())) => {}
@@ -277,5 +307,62 @@ impl NormalClockProgramme {
                 .map_err(super::super::super::native)?;
         }
         Ok(self.normal_acceptance.as_ref())
+    }
+}
+
+impl NormalClockProgramme {
+    fn execute_original_failure_cases(
+        &mut self,
+        catalog: &InstalledNodeCatalog,
+        source: &OriginalNormalClockSource,
+        runner: &mut ProductionConformanceRunner<'_>,
+    ) -> Result<(), NodeObservedError> {
+        use super::super::failures::{AFTER, BEFORE, DAMAGED, MAXIMUM_REPORT_BYTES};
+        for (index, case) in [BEFORE, AFTER, DAMAGED].into_iter().enumerate() {
+            self.check_aggregate_resources()?;
+            self.check_whole_original_storage_data(catalog, Some(runner), None)
+                .map_err(super::super::super::native)?;
+            let oracle = source
+                .failure_case_data(case)
+                .map_err(super::super::super::native)?;
+            let reservation = runner
+                .reserve_clock_failure(case, oracle, MAXIMUM_REPORT_BYTES)
+                .map_err(super::super::super::native)?;
+            let failures = self
+                .failures
+                .as_mut()
+                .ok_or_else(|| refused("Clock original failure owner absent"))?;
+            let original = self
+                .original
+                .as_ref()
+                .ok_or_else(|| refused("Clock source original absent"))?;
+            let state = self
+                .state
+                .as_ref()
+                .ok_or_else(|| refused("Clock source state absent"))?;
+            let aggregate = self
+                .aggregate_resources
+                .as_ref()
+                .ok_or_else(|| refused("Clock aggregate absent"))?;
+            if case == DAMAGED {
+                failures.execute_damage(state, original, aggregate)?;
+            } else {
+                failures.execute_publication(index, &self.profile, original, aggregate)?;
+            }
+            let witness = failures.witness(case, original, state)?;
+            runner
+                .collect_clock_failure_reserved(
+                    reservation,
+                    case,
+                    oracle,
+                    MAXIMUM_REPORT_BYTES,
+                    &witness,
+                )
+                .map_err(super::super::super::native)?;
+            drop(witness);
+            self.check_whole_original_storage_data(catalog, Some(runner), None)
+                .map_err(super::super::super::native)?;
+        }
+        Ok(())
     }
 }

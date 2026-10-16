@@ -533,3 +533,139 @@ fn missing_mixed_clock_checksum_acceptance_refuses_before_native_world_reservati
     assert_eq!(catalog.custody().reserved_worlds(), 0);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+#[ignore = "requires genuine source-built native artifacts and externally admitted finite CPU/AS/FD limits plus a private quota-enforced CRUCIBLE_CLOCK_PROJECT_ROOT"]
+fn original_clock_failure_population_enrolls_then_refuses_missing_second_checksum_before_reservation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::node_observed_executor::{NormalClockProgramme, OriginalClockAggregateResources};
+    use crate::node_qualification::{AcceptanceDecision, CaseVerdict, InstalledAcceptancePolicy};
+    use crucible_node_contract::ResourceLimits;
+    use std::{path::PathBuf, rc::Rc};
+
+    // This test never lowers or fabricates a quota. The invoking qualification
+    // process must already own the real finite policy and private ext4 project.
+    let root = PathBuf::from(std::env::var("CRUCIBLE_CLOCK_PROJECT_ROOT")?);
+    let limits: ResourceLimits = serde_json::from_slice(&std::fs::read(std::env::var(
+        "CRUCIBLE_CLOCK_AGGREGATE_LIMITS",
+    )?)?)?;
+    let project_id = std::env::var("CRUCIBLE_CLOCK_PROJECT_ID")?.parse()?;
+    let maximum_inodes = std::env::var("CRUCIBLE_CLOCK_MAXIMUM_INODES")?.parse()?;
+    let mut aggregate = None;
+    OriginalClockAggregateResources::bind_current_into(
+        &mut aggregate,
+        &limits,
+        &root,
+        project_id,
+        maximum_inodes,
+    )?;
+    let executable = PathBuf::from(std::env::var("CRUCIBLE_REFERENCE_DEVICE")?);
+    let mut catalog = InstalledNodeCatalog::new_with_bounded_runtime_wake(
+        executable.clone(),
+        measure_executable(&executable)?,
+        root.join("normal-enrollment-original"),
+        Duration::from_secs(5),
+        4,
+    )?;
+    let mut programme = NormalClockProgramme::new(&catalog, ExecutionId::from_bytes([131; 16])?)?;
+    programme.prepare_original_bounded(
+        &mut catalog,
+        aggregate.take().ok_or("actual aggregate absent")?,
+    )?;
+    programme.prepare_original_state_bounded(
+        &catalog,
+        [
+            ExecutionId::from_bytes([132; 16])?,
+            ExecutionId::from_bytes([133; 16])?,
+        ],
+    )?;
+
+    // The same actual Source/runner now owns exact timing, two fresh restores,
+    // two independent failed publications and all four signed-index refusals.
+    // Any missing prerequisite is a test failure, never a modeled Accepted row.
+    programme.execute_normal_enrollment(
+        &mut catalog,
+        [
+            ExecutionId::from_bytes([134; 16])?,
+            ExecutionId::from_bytes([135; 16])?,
+        ],
+        [
+            ExecutionId::from_bytes([136; 16])?,
+            ExecutionId::from_bytes([137; 16])?,
+        ],
+    )?;
+    let accepted = Rc::clone(
+        programme
+            .normal_acceptance_data()?
+            .ok_or("genuine Clock enrollment absent")?,
+    );
+    let originals = accepted.originals()?;
+    for name in [
+        "clock/failed-publication-before-commit",
+        "clock/failed-publication-after-commit",
+        "clock/damaged-restoration-refusals",
+    ] {
+        let observation = originals
+            .clock_adverse_observations
+            .get(name)
+            .ok_or("actual failure original absent")?;
+        assert_eq!(observation.verdict(), Some(CaseVerdict::Passed));
+        observation.reference().verify(observation.bytes())?;
+    }
+    let clock = InstalledNodeSelection {
+        node: Id::new("clock")?,
+        owner: Id::new("owner/clock")?,
+        kind: InstalledNodeKind::HostClock,
+    };
+    let checksum = InstalledNodeSelection {
+        node: Id::new("checksum")?,
+        owner: Id::new("owner/checksum")?,
+        kind: InstalledNodeKind::ReferenceDevice {
+            quantum_ps: 1000.into(),
+            host_budget_ns: 1_000_000.into(),
+        },
+    };
+    let mixed = [clock.clone(), checksum];
+    let raw_mixed = catalog.scenario(&mixed)?;
+    let raw_clock = programme.profile_data().scenario().clone();
+    let scope = accepted.scope_for_node(&clock.node)?;
+    assert_eq!(scope.record.decision, AcceptanceDecision::Accepted);
+    assert!(accepted.scope_for_node(&mixed[1].node).is_err());
+    let original_report = scope.original_claim.clone();
+    let original_bytes = scope.original_bytes.to_vec();
+    catalog.install_shared_behavioral_acceptance(accepted.clone(), AcceptanceLimits::default())?;
+
+    // A real single-Clock transformation must succeed first: this rules out
+    // satisfying the mixed negative by refusing the accepted first participant.
+    let ordinary = catalog.scenario(std::slice::from_ref(&clock))?;
+    assert_eq!(
+        ordinary.compatibility[0],
+        *accepted.scope_for_node(&clock.node)?.binding
+    );
+    assert_eq!(ordinary.descriptors, raw_clock.descriptors);
+    assert!(
+        ordinary.compatibility[0]
+            .qualification_refs
+            .contains(&original_report)
+    );
+    assert_eq!(catalog.custody().reserved_worlds(), 0);
+    assert!(catalog.scenario(&mixed).is_err());
+    assert_eq!(catalog.custody().reserved_worlds(), 0);
+    assert!(
+        catalog
+            .prepare_world(&mixed, raw_mixed, ExecutionId::from_bytes([138; 16])?)
+            .is_err()
+    );
+    assert_eq!(catalog.custody().reserved_worlds(), 0);
+    assert_eq!(
+        accepted.scope_for_node(&clock.node)?.original_bytes,
+        original_bytes
+    );
+    programme.normal_acceptance_data()?;
+
+    // Withdrawal of that same genuine owner cannot fall back to baseline Clock.
+    accepted.revoke();
+    assert!(catalog.scenario(std::slice::from_ref(&clock)).is_err());
+    assert_eq!(catalog.custody().reserved_worlds(), 0);
+    Ok(())
+}

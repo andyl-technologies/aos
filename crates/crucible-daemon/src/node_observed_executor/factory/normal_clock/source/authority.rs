@@ -369,6 +369,19 @@ impl InstalledConformanceAuthority for OriginalNormalClockSource {
         self.retain_adverse_original(case, oracle, witness, reference, bytes)
     }
 
+    fn retain_original_clock_failure_witness(
+        &self,
+        plan: &WitnessPlan,
+        case: &str,
+        oracle: &ContentRef,
+        witness: &OriginalClockFailureWitness<'_>,
+        reference: &ContentRef,
+        bytes: &[u8],
+    ) -> Result<CaseVerdict, QualificationError> {
+        self.plan_is_current(plan)?;
+        self.retain_failure_original(case, oracle, witness, reference, bytes)
+    }
+
     fn execute_original_source_inspection(
         &self,
         plan: &WitnessPlan,

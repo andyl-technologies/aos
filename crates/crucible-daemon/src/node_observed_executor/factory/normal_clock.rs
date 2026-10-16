@@ -8,8 +8,10 @@
 
 mod admission_cases;
 mod adverse;
+mod failures;
 pub use admission_cases::ClockAdmissionObservationData;
 pub use adverse::OriginalClockAdverseWitness;
+pub use failures::OriginalClockFailureWitness;
 mod oracle;
 mod pause;
 pub(super) mod profile;

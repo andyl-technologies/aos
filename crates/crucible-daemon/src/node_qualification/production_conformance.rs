@@ -207,6 +207,27 @@ pub trait InstalledConformanceAuthority:
         ))
     }
 
+    /// Authenticates real Clock publication and signed-archive refusal owners.
+    ///
+    /// The actor retains every runtime, publisher, original index and failed
+    /// attempt. Portable reports cannot construct the borrowed witness.
+    ///
+    /// # Errors
+    /// Defaults to refusal without the same predeclared installed source.
+    fn retain_original_clock_failure_witness(
+        &self,
+        _population: &WitnessPlan,
+        _case: &str,
+        _oracle: &ContentRef,
+        _original: &crate::node_observed_executor::OriginalClockFailureWitness<'_>,
+        _reference: &ContentRef,
+        _bytes: &[u8],
+    ) -> Result<CaseVerdict, QualificationError> {
+        Err(QualificationError::Refused(
+            "no installed original Clock failure oracle",
+        ))
+    }
+
     /// Authenticates a fixed realized-case template before its original Begin.
     ///
     /// This callback binds the predeclared semantic programme, case/oracle and

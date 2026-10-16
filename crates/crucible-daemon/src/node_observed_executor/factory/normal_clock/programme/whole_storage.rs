@@ -45,6 +45,7 @@ impl NormalClockProgramme {
             normal_panic,
             adverse,
             adverse_observation,
+            failures,
         } = self;
         let aggregate = aggregate_resources
             .as_ref()
@@ -71,6 +72,7 @@ impl NormalClockProgramme {
         counter.charge(bounded_publications)?;
         counter.charge(adverse)?;
         counter.charge(adverse_observation)?;
+        counter.charge(failures)?;
         counter.charge(normal_collection)?;
         counter.charge(normal_source_failure)?;
         if let Some(error) = normal_operation_failure {
@@ -169,6 +171,9 @@ impl NormalClockProgramme {
         }
         if let Some(adverse) = &self.adverse {
             native = native.max(adverse.original_storage_scratch_data()?);
+        }
+        if let Some(failures) = &self.failures {
+            native = native.max(failures.original_storage_scratch_data()?);
         }
         if let Some(state) = &self.state {
             native = native.max(state.original_storage_scratch_data()?);

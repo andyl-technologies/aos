@@ -38,8 +38,8 @@ mod typed_reader;
 pub use normal_clock::{
     ClockAdmissionObservationData, ClockStateObservationData, InstalledNormalClockProfile,
     InstalledNormalClockStateFactory, NormalClockProgramme, OriginalClockAdverseWitness,
-    OriginalClockAggregateResources, OriginalClockProcessBootstrap, OriginalClockQualificationRun,
-    OriginalClockStateProgramme, OriginalClockStateWitness,
+    OriginalClockAggregateResources, OriginalClockFailureWitness, OriginalClockProcessBootstrap,
+    OriginalClockQualificationRun, OriginalClockStateProgramme, OriginalClockStateWitness,
 };
 
 pub use typed_reader::{

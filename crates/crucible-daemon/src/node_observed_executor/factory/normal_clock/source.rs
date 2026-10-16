@@ -21,6 +21,7 @@ mod adverse;
 mod authority;
 mod enrollment;
 mod evidence;
+mod failures;
 mod population;
 mod requested_storage;
 mod unit;
@@ -56,6 +57,7 @@ pub struct OriginalNormalClockSource {
     expected: BTreeMap<String, ExpectedCase>,
     proposal: crucible::node_contract::ActivationRecord,
     adverse_executions: [ExecutionId; 2],
+    publication_executions: [ExecutionId; 2],
     activation: RefCell<Option<WorldActivation>>,
     results: RefCell<BTreeMap<String, RetainedResult>>,
     failed: Cell<bool>,
@@ -75,6 +77,7 @@ impl OriginalNormalClockSource {
         original: &OriginalClockQualificationRun,
         aggregate: Rc<OriginalClockAggregateResources>,
         adverse: &super::adverse::OriginalClockAdverseProgramme,
+        publication_executions: [ExecutionId; 2],
     ) -> Result<Self, QualificationError> {
         original.current().map_err(failure)?;
         aggregate.authenticate_current().map_err(failure)?;
@@ -122,7 +125,12 @@ impl OriginalNormalClockSource {
             return Err(reject("normal Clock complete case population changed"));
         }
         let adverse_executions = adverse.original_executions_data();
-        let population = population::Population::new(&unit, original, adverse_executions)?;
+        let population = population::Population::new(
+            &unit,
+            original,
+            adverse_executions,
+            publication_executions,
+        )?;
         Ok(Self {
             origin: original.origin.clone(),
             lifetime: Rc::downgrade(&original.source_lifetime),
@@ -136,6 +144,7 @@ impl OriginalNormalClockSource {
             expected,
             proposal: original.proposal.clone(),
             adverse_executions,
+            publication_executions,
             activation: RefCell::new(None),
             results: RefCell::new(BTreeMap::new()),
             failed: Cell::new(false),

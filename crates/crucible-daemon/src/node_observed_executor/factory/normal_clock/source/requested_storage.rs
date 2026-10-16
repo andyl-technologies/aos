@@ -24,6 +24,7 @@ impl Owned for OriginalNormalClockSource {
             expected,
             proposal,
             adverse_executions: _,
+            publication_executions: _,
             activation,
             results,
             failed: _,

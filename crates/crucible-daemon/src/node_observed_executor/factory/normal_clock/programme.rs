@@ -36,6 +36,7 @@ pub struct NormalClockProgramme {
     normal_panic: Option<Box<dyn std::any::Any + Send>>,
     adverse: Option<super::adverse::OriginalClockAdverseProgramme>,
     adverse_observation: Option<InputPayload>,
+    failures: Option<super::failures::OriginalClockFailureProgramme>,
 }
 
 impl NormalClockProgramme {
@@ -71,6 +72,7 @@ impl NormalClockProgramme {
             normal_panic: None,
             adverse: None,
             adverse_observation: None,
+            failures: None,
         })
     }
 
