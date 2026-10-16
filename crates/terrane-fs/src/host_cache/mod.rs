@@ -5,6 +5,10 @@
 //! the publisher's responsibility; filesystem names alone do not prove a seal.
 
 use rustix::fs::{Mode, OFlags, fstat, fstatfs, open, openat};
+mod quota;
+
+pub use quota::ProjectQuota;
+
 use std::{collections::BTreeMap, io, os::fd::OwnedFd};
 use terrane::host::cache::DomainHostLayout;
 

@@ -5,14 +5,14 @@
 
 use super::DomainHostLayout;
 #[cfg(all(feature = "tokio", unix))]
-use crate::store::OrdinaryReadOutcome;
+use crate::store::{NativeOrdinaryRead, OrdinaryReadOutcome};
 use crate::{
     bucket::BucketBinding,
     pack::PackReader,
     store::{
         ByteRange, Capabilities, CapabilityReport, ContentStore, ContentUpload, ContentValidator,
         CorruptSubject, Durability, IdentityPrefix, InvalidReason, LocalFs, MetaUpload,
-        NativeOrdinaryRead, RangeCapability, RefCapability, StoreErrorKind, StoreFailure,
+        RangeCapability, RefCapability, StoreErrorKind, StoreFailure,
     },
 };
 use std::{
@@ -215,6 +215,14 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
     }
 
     async fn encoded(&self, identity: &Identity) -> Result<Vec<u8>, StoreFailure> {
+        self.encoded_with_dictionary(identity, true).await
+    }
+
+    async fn encoded_with_dictionary(
+        &self,
+        identity: &Identity,
+        allow_dictionary: bool,
+    ) -> Result<Vec<u8>, StoreFailure> {
         if identity.profile() != TERRANE_V1.name() || identity.digest().len() != 32 {
             return Err(invalid());
         }
@@ -263,15 +271,13 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             }
             self.close_parents(parents).await?;
             if identity.kind() == IdentityKind::Chunk {
-                crate::codec::decode_verified(
+                self.verify_chunk(
                     &bytes,
                     record.plaintext_len as usize,
-                    self.layout.chunk_profile(),
-                    true,
                     identity,
-                    None,
+                    allow_dictionary,
                 )
-                .map_err(|error| corrupt(identity, error))?;
+                .await?;
             } else {
                 TERRANE_V1
                     .verify(identity, &bytes)
@@ -288,7 +294,7 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             .map(|byte| format!("{byte:02x}"))
             .collect();
         if identity.kind() == IdentityKind::Chunk {
-            for codec in 0..=2 {
+            for codec in 0_u8..=2 {
                 let path =
                     self.layout
                         .root()
@@ -302,31 +308,93 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
                     Ok(_) => {}
                 }
                 let bytes = self.read_file(&path).await?;
+                if bytes.first() != Some(&codec) {
+                    return Err(corrupt(
+                        identity,
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "chunk filename codec differs from body",
+                        ),
+                    ));
+                }
                 let envelope = terrane_core::codec::parse_envelope(&bytes)
                     .map_err(|error| corrupt(identity, error))?;
                 let length = match envelope.codec {
                     terrane_core::codec::Codec::Raw => envelope.body.len(),
-                    terrane_core::codec::Codec::Zstd => {
+                    terrane_core::codec::Codec::Zstd
+                    | terrane_core::codec::Codec::ZstdDictionary(_) => {
                         zstd::zstd_safe::get_frame_content_size(envelope.body)
                             .map_err(|_| invalid())?
                             .and_then(|size| usize::try_from(size).ok())
                             .ok_or_else(invalid)?
                     }
-                    _ => return Err(StoreFailure::new(StoreErrorKind::Unsupported)),
                 };
-                crate::codec::decode_verified(
-                    &bytes,
-                    length,
-                    self.layout.chunk_profile(),
-                    true,
-                    identity,
-                    None,
-                )
-                .map_err(|error| corrupt(identity, error))?;
+                self.verify_chunk(&bytes, length, identity, allow_dictionary)
+                    .await?;
                 return Ok(bytes);
             }
         }
         Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())))
+    }
+
+    async fn verify_chunk(
+        &self,
+        encoded: &[u8],
+        length: usize,
+        identity: &Identity,
+        allow_dictionary: bool,
+    ) -> Result<(), StoreFailure> {
+        let envelope = terrane_core::codec::parse_envelope(encoded)
+            .map_err(|error| corrupt(identity, error))?;
+        let dictionary = if let terrane_core::codec::Codec::ZstdDictionary(digest) = envelope.codec
+        {
+            if !allow_dictionary {
+                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+            }
+            let dictionary_identity = TERRANE_V1
+                .from_digest(IdentityKind::Chunk, &digest)
+                .map_err(|_| invalid())?;
+            // A dictionary must be independently encoded. This single permitted
+            // dependency hop also prevents hostile envelope cycles from recursing.
+            let bytes = Box::pin(self.encoded_with_dictionary(&dictionary_identity, false)).await?;
+            let dictionary_envelope = terrane_core::codec::parse_envelope(&bytes)
+                .map_err(|error| corrupt(&dictionary_identity, error))?;
+            let dictionary_length = match dictionary_envelope.codec {
+                terrane_core::codec::Codec::Raw => dictionary_envelope.body.len(),
+                terrane_core::codec::Codec::Zstd => {
+                    zstd::zstd_safe::get_frame_content_size(dictionary_envelope.body)
+                        .map_err(|_| invalid())?
+                        .and_then(|size| usize::try_from(size).ok())
+                        .ok_or_else(invalid)?
+                }
+                _ => return Err(StoreFailure::new(StoreErrorKind::Unsupported)),
+            };
+            Some(
+                crate::codec::decode_verified(
+                    &bytes,
+                    dictionary_length,
+                    self.layout.chunk_profile(),
+                    true,
+                    &dictionary_identity,
+                    None,
+                )
+                .map_err(|error| corrupt(&dictionary_identity, error))?
+                .plaintext()
+                .to_vec(),
+            )
+        } else {
+            None
+        };
+        crate::codec::decode_verified(
+            encoded,
+            length,
+            self.layout.chunk_profile(),
+            true,
+            identity,
+            dictionary.as_deref(),
+        )
+        .map_err(|error| corrupt(identity, error))?;
+        Ok(())
     }
 }
 

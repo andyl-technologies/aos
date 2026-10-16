@@ -41,7 +41,8 @@ impl HostInspection {
     /// # Errors
     /// Refuses unsupported filesystem types, mismatched devices or bad digests.
     pub fn validate(&self) -> io::Result<()> {
-        if self.device != self.seal.device
+        if self.mount_flags & 1 != 0
+            || self.device != self.seal.device
             || !matches!(self.filesystem_type, 0xef53 | 0x9123683e | 0xf2f52010)
             || !matches!(
                 (self.seal.algorithm, self.seal.digest.len()),
@@ -76,9 +77,9 @@ pub trait HostKernel {
     /// Rejects replaced paths and failed kernel allocation queries.
     fn allocated_bytes(&self, path: &Path) -> io::Result<u64>;
 
-    /// Assigns an owner's project identifier and exact quota where supported.
+    /// Verifies the host-provisioned project identifier and exact quota.
     ///
     /// # Errors
     /// Rejects unsupported or unavailable required project quota enforcement.
-    fn assign_project_quota(&self, path: &Path, project: u32, bytes: u64) -> io::Result<()>;
+    fn verify_project_quota(&self, path: &Path, project: u32, bytes: u64) -> io::Result<()>;
 }
