@@ -144,3 +144,87 @@ fn canonical_path(path: &std::path::Path) -> io::Result<()> {
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::publisher_local::socket::RoleIdentities;
+    use std::time::Duration;
+
+    fn configuration() -> NativeCacheOwnerConfig {
+        NativeCacheOwnerConfig {
+            location: HostDomainLocation::new(
+                "/nonexistent/cache/domain".into(),
+                "private:fixture".into(),
+                ChunkProfile::cdc_1m([0; 32]),
+            )
+            .unwrap(),
+            administrative_root: None,
+            publisher: ClientConfig {
+                socket_path: "/nonexistent/runtime/publisher.sock".into(),
+                identities: RoleIdentities {
+                    serve_uid: 840,
+                    publish_uid: 841,
+                },
+                chunk_profile_name: "cdc-1m".into(),
+                wait_budget_ms: 1000,
+            },
+            quota_socket: "/nonexistent/runtime/quota.sock".into(),
+            quota_epoch: [1; 16],
+            quota_owner: "fixture".into(),
+            filesystem_uuid: [2; 16],
+            project_id: 100,
+            project_hard_limit_bytes: 1000,
+            project_hard_inode_limit: 100,
+            content_uid: 840,
+            content_gid: 845,
+            state_gid: 844,
+            tier_charge_budget_bytes: 2000,
+            policy: PolicyConfig {
+                capacity: 900,
+                low_watermark: 500,
+                probation_bytes: 100,
+                release_grace: Duration::from_secs(30),
+                scan_limit: 64,
+            },
+            reads: HostReadLimits::default(),
+            state: StateLimits {
+                bytes: 4096,
+                records: 32,
+            },
+            inventory_entries: 128,
+            queued_commands: 4,
+        }
+    }
+
+    #[test]
+    fn native_host_cache_config_validation_needs_no_existing_paths() {
+        configuration().validate().unwrap();
+    }
+
+    #[test]
+    fn native_host_cache_config_refuses_ambiguous_custody_and_unfunded_capacity() {
+        let mut config = configuration();
+        config.publisher.identities.publish_uid = config.content_uid;
+        assert!(config.validate().is_err());
+
+        let mut config = configuration();
+        config.policy.capacity = config.project_hard_limit_bytes + 1;
+        assert!(config.validate().is_err());
+
+        let mut config = configuration();
+        config.state_gid = config.content_gid;
+        assert!(config.validate().is_err());
+
+        for path in [
+            "/runtime//quota",
+            "/runtime/./quota",
+            "/runtime/../quota",
+            "runtime/quota",
+        ] {
+            let mut config = configuration();
+            config.quota_socket = path.into();
+            assert!(config.validate().is_err(), "accepted {path}");
+        }
+    }
+}
