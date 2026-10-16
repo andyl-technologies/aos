@@ -18,7 +18,10 @@ fn private_directory() -> tempfile::TempDir {
     assert!(metadata.is_dir());
     assert_eq!(metadata.mode() & 0o777, 0o700);
     assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
-    assert_eq!(std::fs::canonicalize(directory.path()).unwrap(), directory.path());
+    assert_eq!(
+        std::fs::canonicalize(directory.path()).unwrap(),
+        directory.path()
+    );
     directory
 }
 
@@ -189,7 +192,10 @@ fn actual_installer_rejects_public_parent_and_accepts_private_parent() {
     assert!(metadata.is_dir());
     assert_eq!(metadata.mode() & 0o777, 0o755);
     assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
-    assert_eq!(std::fs::canonicalize(directory.path()).unwrap(), directory.path());
+    assert_eq!(
+        std::fs::canonicalize(directory.path()).unwrap(),
+        directory.path()
+    );
     assert!(InstalledCompleteScene::install(manifest.clone(), target.clone()).is_err());
     assert!(!target.exists());
 
