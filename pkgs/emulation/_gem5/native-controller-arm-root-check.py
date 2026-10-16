@@ -218,7 +218,16 @@ try:
         historical_image = archive / primary[0].name
         saved_archive = archive / source_saved_root.name
 
-        def reconstruct(name):
+        from threading import Barrier, Lock
+
+        # Neither audited original group may start its suffix or retirement
+        # until both independent live-anchor checks have completed.
+        audited = Barrier(2, timeout=60)
+        checked_live = Barrier(2, timeout=60)
+        participants = {}
+        participant_lock = Lock()
+
+        def reconstruct_branch(name):
             branch = root / name
             image_check.copy_tree(archive / "resources", branch)
             scratch = root / f"tmp-{name}"
@@ -290,6 +299,19 @@ try:
                     image_check.audit(exchange, fresh, restored, root, branch, current_images[0],
                                       receipt["after"], current["model_scope"], native,
                                       image_guard, source_directory, name)
+                    with participant_lock:
+                        if name in participants:
+                            raise ValueError("fresh witness branch was already enrolled")
+                        participants[name] = restored
+                    audited.wait()
+                    with participant_lock:
+                        if set(participants) != {"child-a", "child-b"}:
+                            raise ValueError("fresh witness lacks both audited original owners")
+                        current_groups = tuple(participants[label] for label in ("child-a", "child-b"))
+                    coexisting_anchors = image_check.require_coexisting_groups(current_groups)
+                    original_anchor = next(row for row in coexisting_anchors
+                                           if row["pid"] == str(restored.pid))
+                    checked_live.wait()
                     assert exchange(fresh, first) == receipt
                     assert exchange(fresh, ack) == exchange(fresh, ack)
                     assert finish(fresh) == suffix
@@ -301,10 +323,23 @@ try:
                     return {"branch": name, "fresh_capture_byte_closure": True,
                             "original_held_receipt_unchanged": True, "exact_suffix": True,
                             "source_namespace_absent": True,
+                            "coexisting_fresh_groups_checked": True,
+                            "coexisting_kernel_anchors": coexisting_anchors,
+                            "fresh_kernel_anchor": original_anchor,
                             "group_reclaimed": image_check.reclaim(restored)}
                 finally:
                     fresh_listener.close()
                     image_check.reclaim(restored)
+
+        def reconstruct(name):
+            try:
+                return reconstruct_branch(name)
+            except BaseException:
+                # Include setup/Popen and cleanup failures, not only the live
+                # owner block: neither sibling may remain at a rendezvous.
+                audited.abort()
+                checked_live.abort()
+                raise
 
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as pool:

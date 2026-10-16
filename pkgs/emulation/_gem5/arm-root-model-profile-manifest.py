@@ -143,9 +143,30 @@ def validate_witness(witness):
         raise ValueError("ARM model lacks two independent reconstruction witnesses")
     for branch in branches:
         for key in ("fresh_capture_byte_closure", "original_held_receipt_unchanged",
-                    "exact_suffix", "source_namespace_absent", "group_reclaimed"):
+                    "exact_suffix", "source_namespace_absent", "group_reclaimed",
+                    "coexisting_fresh_groups_checked"):
             if branch.get(key) is not True:
                 raise ValueError("ARM fresh reconstruction witness is incomplete")
+    anchors = branches[0].get("coexisting_kernel_anchors")
+    if (type(anchors) is not list or len(anchors) != 2
+            or branches[1].get("coexisting_kernel_anchors") != anchors
+            or [branch.get("fresh_kernel_anchor") for branch in sorted(
+                branches, key=lambda branch: branch["branch"])] != anchors):
+        raise ValueError("ARM root lacks the same two simultaneously live kernel anchors")
+    for anchor in anchors:
+        if type(anchor) is not dict or set(anchor) != {"pid", "group", "start_ticks"}:
+            raise ValueError("ARM root kernel anchor has unknown or missing fields")
+        for field in ("pid", "group", "start_ticks"):
+            value = anchor[field]
+            if (type(value) is not str or not value.isascii() or not value.isdecimal()
+                    or len(value) > 20 or str(int(value)) != value or not 0 <= int(value) < 1 << 64
+                    or (field != "start_ticks" and int(value) == 0)):
+                raise ValueError("ARM root kernel anchor is not finite original data")
+        if anchor["pid"] != anchor["group"]:
+            raise ValueError("ARM root fresh owner has no private group")
+    if anchors[0]["pid"] == anchors[1]["pid"]:
+        raise ValueError("ARM root reused one native group for two branches")
+
     publications = witness.get("publications")
     if (not isinstance(publications, list) or len(publications) != 1
             or publications[0].get("facet") != "serial"

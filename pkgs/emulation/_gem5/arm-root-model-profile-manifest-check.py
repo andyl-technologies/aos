@@ -37,11 +37,50 @@ class EvidenceTests(unittest.TestCase):
     def test_each_fresh_branch_requires_all_actual_gates(self):
         for index in range(2):
             for key in ("fresh_capture_byte_closure", "original_held_receipt_unchanged",
-                        "exact_suffix", "source_namespace_absent", "group_reclaimed"):
+                        "exact_suffix", "source_namespace_absent", "group_reclaimed",
+                        "coexisting_fresh_groups_checked"):
                 changed = copy.deepcopy(installed)
                 changed["fresh_branches"][index][key] = False
                 with self.subTest(index=index, key=key), self.assertRaises(ValueError):
                     profile.validate_witness(changed)
+
+    def test_missing_or_disagreeing_actual_kernel_pair_refuses(self):
+        for index in range(2):
+            for key in ("coexisting_kernel_anchors", "fresh_kernel_anchor"):
+                changed = copy.deepcopy(installed)
+                del changed["fresh_branches"][index][key]
+                with self.subTest(index=index, key=key), self.assertRaises(ValueError):
+                    profile.validate_witness(changed)
+        changed = copy.deepcopy(installed)
+        changed["fresh_branches"][0]["coexisting_kernel_anchors"][0]["start_ticks"] = "changed"
+        with self.assertRaises(ValueError):
+            profile.validate_witness(changed)
+
+    def test_duplicate_foreign_or_noncanonical_kernel_anchor_refuses(self):
+        original = installed["fresh_branches"][0]["coexisting_kernel_anchors"]
+        cases = []
+        duplicate = copy.deepcopy(original)
+        duplicate[1] = copy.deepcopy(duplicate[0])
+        cases.append(duplicate)
+        foreign_group = copy.deepcopy(original)
+        foreign_group[0]["group"] = str(int(foreign_group[0]["pid"]) + 1)
+        cases.append(foreign_group)
+        unknown_field = copy.deepcopy(original)
+        unknown_field[0]["extra"] = "1"
+        cases.append(unknown_field)
+        for field in ("pid", "group", "start_ticks"):
+            for value in ("01", "-1", "18446744073709551616", 1, True, None):
+                anchors = copy.deepcopy(original)
+                anchors[0][field] = value
+                cases.append(anchors)
+        for anchors in cases:
+            changed = copy.deepcopy(installed)
+            for branch, anchor in zip(sorted(changed["fresh_branches"],
+                                             key=lambda row: row["branch"]), anchors):
+                branch["coexisting_kernel_anchors"] = copy.deepcopy(anchors)
+                branch["fresh_kernel_anchor"] = copy.deepcopy(anchor)
+            with self.subTest(anchors=anchors), self.assertRaises(ValueError):
+                profile.validate_witness(changed)
 
     def test_duplicate_and_missing_independent_branch_refuse(self):
         for branches in ([], installed["fresh_branches"][:1],

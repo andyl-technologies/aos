@@ -74,5 +74,53 @@ class RootConstructionTests(unittest.TestCase):
         self.assertEqual(original["model_id"], "old-model")
 
 
+class ArmRootCoexistenceTests(unittest.TestCase):
+    def setUp(self):
+        path = Path(__file__).with_name("native-controller-arm-root-image-check.py")
+        if not path.is_file():
+            # The fixed proof recipe installs this same ARM helper under the
+            # original generic witness basename. No live owner is imported.
+            path = Path(__file__).with_name("native-controller-image-check.py")
+        specification = importlib.util.spec_from_file_location("arm_root_image_data_controls", path)
+        self.image = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(self.image)
+
+    def process(self, pid, start):
+        return types.SimpleNamespace(pid=pid, returncode=None, _crucible_group_custody={
+            "identity": (pid, pid, start), "signal_attempted": False,
+            "reaped": False, "reclaimed": False, "wait_error": False})
+
+    def test_two_original_live_groups_are_censused_without_reenrollment(self):
+        processes = (self.process(11, "101"), self.process(12, "102"))
+        identities = {process.pid: process._crucible_group_custody["identity"] for process in processes}
+        with patch.object(self.image, "kernel_identity", side_effect=identities.__getitem__):
+            with patch.object(self.image.os, "getpgid", side_effect=lambda pid: pid):
+                with patch.object(self.image, "observe_exit", return_value=None) as observed:
+                    anchors = self.image.require_coexisting_groups(processes)
+        self.assertEqual(anchors, [{"pid": "11", "group": "11", "start_ticks": "101"},
+                                   {"pid": "12", "group": "12", "start_ticks": "102"}])
+        self.assertEqual(observed.call_count, 2)
+
+    def test_duplicate_changed_or_exited_original_groups_cannot_claim_coexistence(self):
+        first, second = self.process(11, "101"), self.process(12, "102")
+        with self.assertRaises(ValueError):
+            self.image.require_coexisting_groups((first, first))
+        with patch.object(self.image, "kernel_identity", return_value=(11, 11, "changed")):
+            with self.assertRaises(ValueError):
+                self.image.require_coexisting_groups((first, second))
+        for field in ("signal_attempted", "reclaimed"):
+            with self.subTest(field=field):
+                first._crucible_group_custody[field] = True
+                with self.assertRaises(ValueError):
+                    self.image.require_coexisting_groups((first, second))
+                first._crucible_group_custody[field] = False
+        identities = {11: (11, 11, "101"), 12: (12, 12, "102")}
+        with patch.object(self.image, "kernel_identity", side_effect=identities.__getitem__):
+            with patch.object(self.image.os, "getpgid", side_effect=lambda pid: pid):
+                with patch.object(self.image, "observe_exit", return_value=object()):
+                    with self.assertRaises(ValueError):
+                        self.image.require_coexisting_groups((first, second))
+
+
 if __name__ == "__main__":
     unittest.main()

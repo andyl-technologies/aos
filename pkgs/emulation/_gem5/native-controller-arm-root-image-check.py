@@ -169,6 +169,25 @@ def observe_exit(process):
     return observed
 
 
+def require_coexisting_groups(processes):
+    """Reads both original live kernel anchors while neither branch may retire."""
+    if len(processes) != 2 or len({process.pid for process in processes}) != 2:
+        raise ValueError("two distinct original fresh native groups are required")
+    anchors = []
+    for process in processes:
+        retained = getattr(process, "_crucible_group_custody", None)
+        if retained is None or retained["signal_attempted"] or retained["reclaimed"]:
+            raise ValueError("fresh coexistence lacks original unsignaled group custody")
+        assert_waitable_anchor(process, retained)
+        if observe_exit(process) is not None:
+            raise ValueError("fresh native owner exited before simultaneous suffix release")
+        pid, group, start = retained["identity"]
+        if pid != group:
+            raise ValueError("fresh native owner lacks its independent original group")
+        anchors.append({"pid": str(pid), "group": str(group), "start_ticks": start})
+    return anchors
+
+
 def wait_exited(process, timeout=10):
     """Waits for an exit observation while leaving the leader waitable."""
     deadline = time.monotonic() + timeout
