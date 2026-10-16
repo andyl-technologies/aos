@@ -7,6 +7,7 @@
 use super::{NativeChunkSource, NativeHostLayout};
 use std::io::{self, Cursor, Read};
 use terrane::{
+    host::cache::HostReadLocation,
     host::publication::{PublicationClaim, PublicationRecipe},
     store::ChunkPosition,
 };
@@ -27,13 +28,13 @@ impl NativeReassemblyPlan {
     /// # Errors
     /// Rejects another domain, malformed claim, missing/reordered sources,
     /// incorrect sizes, and relaxed final-chunk checks on nonfinal positions.
-    pub fn new(
-        layout: &NativeHostLayout,
+    pub fn new<L: HostReadLocation>(
+        layout: &NativeHostLayout<L>,
         claim: PublicationClaim,
         sources: Vec<NativeChunkSource>,
     ) -> io::Result<Self> {
         layout.recheck()?;
-        if claim.domain() != layout.layout().domain_binding().domain {
+        if claim.domain() != layout.layout().domain() {
             return Err(invalid("reassembly claim belongs to another domain"));
         }
         let recipe = match claim.canonical_manifest() {

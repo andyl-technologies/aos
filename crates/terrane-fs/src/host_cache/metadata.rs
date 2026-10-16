@@ -7,7 +7,7 @@
 use super::NativeHostLayout;
 use std::sync::Arc;
 use terrane::{
-    host::cache::{HostDomainLocation, HostMetadataReader, HostReadLimits},
+    host::cache::{HostDomainLocation, HostMetadataEntry, HostMetadataReader, HostReadLimits},
     repository::MetadataValidator,
     store::{StoreErrorKind, StoreFailure, TokioLocalFs},
 };
@@ -20,6 +20,10 @@ pub struct NativeHostMetadataReader {
 }
 
 impl NativeHostMetadataReader {
+    pub(super) fn layout(&self) -> &Arc<NativeHostLayout<HostDomainLocation>> {
+        &self.layout
+    }
+
     /// Opens bounded metadata verification over retained native directory facts.
     ///
     /// It accepts no caller assertion of device identity, fake repository binding
@@ -64,8 +68,21 @@ impl NativeHostMetadataReader {
     /// Propagates absence, capacity, schema/identity corruption, changed native
     /// roots and filesystem failures. Chunk/pack identities are unsupported.
     pub async fn get(&self, identity: &Identity) -> Result<Vec<u8>, StoreFailure> {
+        Ok(self.get_entry(identity).await?.canonical)
+    }
+
+    /// Reads verified metadata together with its existing pack-body location.
+    ///
+    /// Retained root custody is checked before and after lookup. The returned
+    /// pack identifier and range grant no native pin or durability authority;
+    /// the physical writer must retain and independently verify actual pack and
+    /// index descriptors before synchronizing them and recording a durable pin.
+    ///
+    /// # Errors
+    /// Propagates metadata lookup errors and refuses replaced native roots.
+    pub async fn get_entry(&self, identity: &Identity) -> Result<HostMetadataEntry, StoreFailure> {
         self.layout.recheck().map_err(native_failure)?;
-        let result = self.reader.get(identity).await;
+        let result = self.reader.get_entry(identity).await;
         self.layout.recheck().map_err(native_failure)?;
         result
     }

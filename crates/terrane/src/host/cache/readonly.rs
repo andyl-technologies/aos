@@ -32,6 +32,11 @@ pub struct HostReadLimits {
     pub max_allocation_bytes: usize,
 }
 
+pub(super) struct EncodedRead {
+    pub(super) bytes: Vec<u8>,
+    pub(super) pack: Option<(PackId, ByteRange)>,
+}
+
 impl Default for HostReadLimits {
     fn default() -> Self {
         Self {
@@ -388,12 +393,20 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding, L: HostRea
         identity: &Identity,
         allow_dictionary: bool,
     ) -> Result<Vec<u8>, StoreFailure> {
+        Ok(self.read_encoded(identity, allow_dictionary).await?.bytes)
+    }
+
+    pub(super) async fn read_encoded(
+        &self,
+        identity: &Identity,
+        allow_dictionary: bool,
+    ) -> Result<EncodedRead, StoreFailure> {
         if identity.profile() != TERRANE_V1.name() || identity.digest().len() != 32 {
             return Err(invalid());
         }
         if identity.kind() == IdentityKind::Chunk {
             match self.standalone(identity, allow_dictionary).await {
-                Ok(bytes) => return Ok(bytes),
+                Ok(bytes) => return Ok(EncodedRead { bytes, pack: None }),
                 Err(error) if matches!(error.kind(), StoreErrorKind::Absent(_)) => {}
                 Err(error) => return Err(error),
             }
@@ -410,7 +423,7 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding, L: HostRea
                     if self.layout.root().join(reader.header().id().pack_key()) != path {
                         return Err(invalid());
                     }
-                    return Ok(bytes);
+                    return Ok(EncodedRead { bytes, pack: None });
                 }
                 continue;
             }
@@ -502,7 +515,16 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding, L: HostRea
                 self.validator
                     .validate_meta(&MetaUpload::new(identity.kind(), &bytes)?)?;
             }
-            return Ok(bytes);
+            return Ok(EncodedRead {
+                bytes,
+                pack: Some((
+                    PackId::from_random_bytes(*header.id()),
+                    ByteRange {
+                        start: record.offset,
+                        length: u64::from(record.body_len),
+                    },
+                )),
+            });
         }
         Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())))
     }

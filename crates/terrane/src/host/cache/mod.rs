@@ -10,6 +10,7 @@ mod metadata;
 mod policy;
 mod readonly;
 mod reassembly;
+mod recovery;
 mod residence;
 mod state;
 mod verification;
@@ -17,10 +18,11 @@ mod verification;
 pub use fetch::{FetchRequirement, fetch_verified};
 pub use kernel::{HostInspection, HostKernel, SealInspection};
 pub use layout::{DomainHostLayout, HostDomainLocation, HostReadLocation};
-pub use metadata::HostMetadataReader;
+pub use metadata::{HostMetadataEntry, HostMetadataReader};
 pub use policy::{CacheEntry, CachePolicy, CircuitBreaker, PolicyConfig};
 pub use readonly::{HostReadLimits, HostReadOnlyContent};
 pub use reassembly::ReassemblyMode;
+pub use recovery::{ReconstructedPackIndex, reconstruct_pack_index};
 pub use residence::{HostResidenceReader, HostResidentContent, ResidenceChunk};
 pub use state::{
     CacheState, LeaseRecord, PinRecord, ReservationRecord, ResidenceRecord, StateLimits,
