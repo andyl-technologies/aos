@@ -294,3 +294,8 @@ pub use invocation::{
 };
 
 pub(crate) use storage::original_native_invocation_baseline_storage_data;
+
+mod pre_dom;
+pub(crate) use pre_dom::OriginalNativeFramePreflight;
+
+pub(in crate::reference_packet::service) use storage::original_private_launch_backing_data;

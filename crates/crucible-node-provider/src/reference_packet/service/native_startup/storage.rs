@@ -121,6 +121,7 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + decoded::counter_scratch_data()
         + launch_validation_counter_scratch_data()
         + launch_decode::counter_scratch_data()
+        + super::pre_dom::counter_scratch_data()
         // Private second-frame projection retains its independent raw extent
         // beside the original max-raw result and nested helper views.
         + size_of::<crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData>()
@@ -552,4 +553,28 @@ pub(crate) fn original_host_initial_codec_schema_storage_data(
 ) -> Result<(usize, usize), ProviderError> {
     let data = schemas::project(launch, maximum)?;
     Ok((data.transient, data.retained_reference_children))
+}
+
+// The original boot supplies its actual launch/registration and native row.
+// Only the transient phase is restricted here; all independent retained roots
+// remain in the original native quote and actual owner walk.
+pub(super) fn hello_frame_work_data(
+    launch: &PacketNative5SourceLaunch,
+    registration: &[u8],
+    raw: crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData,
+    maximum: usize,
+) -> Result<usize, ProviderError> {
+    hello::project_with_raw(launch, registration, raw, maximum).map(|shape| shape.transient)
+}
+
+/// Counts the actual typed launch carried across the second raw frame.
+///
+/// This readonly capacity walk follows the original canonical digest guard.
+///
+/// # Errors
+/// Refuses an unsupported metadata owner, borrowed child, or checked overflow.
+pub(in crate::reference_packet::service) fn original_private_launch_backing_data(
+    launch: &PacketNative5SourceLaunch,
+) -> Result<usize, ProviderError> {
+    metadata_backing(launch)
 }

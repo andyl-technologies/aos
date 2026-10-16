@@ -22,10 +22,10 @@ pub(super) struct HelloStorage {
 const MAXIMUM_NATIVE_FEATURES: usize = 19;
 
 fn generated_result(
-    input: &PacketNativeBirthStartupInputs<'_>,
+    launch: &PacketNative5SourceLaunch,
     maximum: usize,
 ) -> Result<OriginalSerializationStorageData, ProviderError> {
-    let [binding] = input.launch.selection.realization.bindings.as_slice() else {
+    let [binding] = launch.selection.realization.bindings.as_slice() else {
         return Err(refused());
     };
     let mut result = Projection::new(maximum)?;
@@ -53,9 +53,9 @@ fn generated_result(
     for _ in 0..MAXIMUM_NATIVE_FEATURES {
         result.add_string_extent(128)?;
     }
-    result.add_value(&input.launch.limits)?;
+    result.add_value(&launch.limits)?;
     result.add_value(&Option::<bool>::None)?;
-    result.add_value(&input.launch.selection.provider)?;
+    result.add_value(&launch.selection.provider)?;
     result.add_array_extent(0)?;
     result.finish(maximum)
 }
@@ -64,8 +64,16 @@ pub(super) fn project(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum: usize,
 ) -> Result<HelloStorage, ProviderError> {
-    let raw = original_json_value_storage_extent_data(NATIVE_HELLO_BYTES)?;
-    let result = generated_result(input, maximum)?;
+    project_with_raw(input.launch, input.host_registration, original_json_value_storage_extent_data(NATIVE_HELLO_BYTES)?, maximum)
+}
+
+pub(super) fn project_with_raw(
+    launch: &PacketNative5SourceLaunch,
+    registration_bytes: &[u8],
+    raw: crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData,
+    maximum: usize,
+) -> Result<HelloStorage, ProviderError> {
+    let result = generated_result(launch, maximum)?;
     // Request arrays contain String/Id; arbitrary extensions retain complete
     // Value geometry. Resume is inline, not a full DTO per raw token.
     let element = size_of::<String>()
@@ -119,13 +127,13 @@ pub(super) fn project(
     // The full actual registration DOM dominates Id/String/Vec/Set backing;
     // explicit authority headers remain counted independently of phase roots.
     let registration = decoded::quote(
-        input.host_registration,
+        registration_bytes,
         size_of::<crate::handshake::ConnectionAuthority>(),
         size_of::<serde_json::Value>(),
         maximum,
     )?
     .typed_backing;
-    let [binding] = input.launch.selection.realization.bindings.as_slice() else {
+    let [binding] = launch.selection.realization.bindings.as_slice() else {
         return Err(refused());
     };
     let mut rosters = MetadataObserver::new();
@@ -137,7 +145,7 @@ pub(super) fn project(
             registration.checked_mul(11).ok_or_else(refused)?,
             requested_metadata_backing_storage_data(&rosters.finish())?,
             6 * MAXIMUM_NATIVE_FEATURES * 128,
-            metadata_backing(&input.launch.selection.provider)?,
+            metadata_backing(&launch.selection.provider)?,
             metadata_backing(&binding.compatibility.guarantees_ref)?,
             128, // Independent Admit Id; the nonce clone is transient below.
         ],

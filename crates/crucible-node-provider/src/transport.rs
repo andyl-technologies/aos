@@ -169,6 +169,34 @@ impl<R: Read> FrameReader<R> {
         result
     }
 
+    /// Reads an original frame under its caller-authenticated layout window.
+    ///
+    /// The view restricts allocation and grants no read or native authority.
+    ///
+    /// # Errors
+    /// Preserves framing/read errors and fences the same reader on refused
+    /// preflight or strict parsing. Existing literal originals stay retained.
+    pub(crate) fn read_original_native_preflight(
+        &mut self,
+        maximum_bytes: usize,
+        preflight: &crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>,
+    ) -> Result<Option<RetainedFrame>, ProviderError> {
+        if self.failed {
+            return Err(ProviderError::Frame("connection already failed"));
+        }
+        if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
+            return Err(ProviderError::Frame("selected read exceeds negotiated frame limit"));
+        }
+        if self.originals.is_none() {
+            return Err(ProviderError::Frame("original bank absent"));
+        }
+        let result = self.read_original_frame_with_preflight(maximum_bytes, Some(preflight));
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
     pub(crate) fn stream_mut(&mut self) -> &mut R {
         &mut self.stream
     }
@@ -219,6 +247,14 @@ impl<R: Read> FrameReader<R> {
         &mut self,
         maximum_bytes: usize,
     ) -> Result<Option<RetainedFrame>, ProviderError> {
+        self.read_original_frame_with_preflight(maximum_bytes, None)
+    }
+
+    fn read_original_frame_with_preflight(
+        &mut self,
+        maximum_bytes: usize,
+        preflight: Option<&crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>>,
+    ) -> Result<Option<RetainedFrame>, ProviderError> {
         let bank = self
             .originals
             .as_ref()
@@ -250,6 +286,9 @@ impl<R: Read> FrameReader<R> {
         if length == 0 || length > maximum_bytes {
             return Err(ProviderError::Frame("length outside admitted allowance"));
         }
+        if let Some(preflight) = preflight {
+            preflight.admit_raw_bank(length)?;
+        }
         let mut body = vec![0_u8; length];
         used = 0;
         while used < length {
@@ -264,6 +303,9 @@ impl<R: Read> FrameReader<R> {
             used += count;
         }
         bank.borrow_mut().finish(slot)?;
+        if let Some(preflight) = preflight {
+            preflight.admit(&body)?;
+        }
         let value = canonical::parse_json_with_depth(&body, maximum_bytes, self.maximum_nesting)?;
         Ok(Some(RetainedFrame { value, bytes: body }))
     }

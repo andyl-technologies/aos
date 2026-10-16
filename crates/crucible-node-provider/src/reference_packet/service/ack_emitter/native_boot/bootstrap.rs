@@ -168,10 +168,26 @@ pub(in crate::reference_packet::service) fn accept_invocation(
 
 impl<S: AsFd> Bootstrap<S> {
     fn prepare(&mut self, socket: &Path) -> Result<PacketSourceService, ProviderError> {
+        let pre_dom_selected = self.startup.as_ref().map(|startup| {
+            startup.has_invocation_prefix().map(|invocation| !invocation)
+        }).transpose()?.unwrap_or(false);
         self.launch_value = Some(
-            self.reader
-                .read()?
-                .ok_or(ProviderError::Frame("native private launch absent"))?,
+            if let Some(startup) = self.startup.as_ref().filter(|_| pre_dom_selected) {
+                startup.ensure_original()?;
+                let budget = crate::reference_packet::service::native_startup::OriginalNativeFramePreflight::private(
+                    &startup.private_bootstrap,
+                    0,
+                );
+                let frame = self.reader.read_original_native_preflight(
+                    startup.maximum_launch_bytes.max(startup.maximum_boot_bytes),
+                    &budget,
+                )?;
+                startup.ensure_original()?;
+                frame.map(|frame| frame.value)
+            } else {
+                self.reader.read()?
+            }
+            .ok_or(ProviderError::Frame("native private launch absent"))?,
         );
         self.launch_bytes = crucible_node_contract::canonical::canonical_json(
             self.launch_value
@@ -253,14 +269,21 @@ impl<S: AsFd> Bootstrap<S> {
             }
         }
         self.boot_value = Some(
-            self.reader
-                .read_retained_with_maximum_bytes(
-                    self.startup
-                        .as_ref()
-                        .map_or(512 * 1024, |startup| startup.maximum_boot_bytes),
-                )?
-                .ok_or(ProviderError::Frame("native private boot absent"))?
-                .value,
+            if let Some(startup) = self.startup.as_ref().filter(|_| pre_dom_selected) {
+                startup.ensure_original()?;
+                let carry = crate::reference_packet::service::native_startup::original_private_launch_backing_data(launch)?;
+                let budget = crate::reference_packet::service::native_startup::OriginalNativeFramePreflight::private(
+                    &startup.private_bootstrap,
+                    carry,
+                );
+                let frame = self.reader.read_original_native_preflight(startup.maximum_boot_bytes, &budget)?;
+                startup.ensure_original()?;
+                frame
+            } else {
+                self.reader.read_retained_with_maximum_bytes(self.startup.as_ref().map_or(512 * 1024, |startup| startup.maximum_boot_bytes))?
+            }
+            .ok_or(ProviderError::Frame("native private boot absent"))?
+            .value,
         );
         let boot_value = self
             .boot_value

@@ -99,3 +99,34 @@ impl NativeAckBoot {
 #[path = "native_startup_receive.rs"]
 mod receive;
 pub(crate) use receive::OriginalNativeBirthReadScope;
+
+impl NativeAckBoot {
+    /// Borrows initial Hello credit from the same actual original boot6 owner.
+    ///
+    /// Decoded rows and ordinary service entries cannot create this owner.
+    /// Other boot editions retain their existing receive path.
+    ///
+    /// # Errors
+    /// Refuses creator drift, unavailable or completed original birth state.
+    pub(crate) fn original_native_hello_preflight<'a>(
+        &'a self,
+        launch: &'a crate::reference_packet::service::PacketNative5SourceLaunch,
+    ) -> Result<Option<crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'a>>, ProviderError> {
+        self.ensure_origin()?;
+        let Some(original) = self.startup.as_ref() else {
+            return Ok(None);
+        };
+        // Keep the separate invocation consumer's old admission path intact.
+        if self.data.schema != PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA {
+            return Ok(None);
+        }
+        if !self.ready || self.verified || !original.native_birth_issued || original.baseline_complete {
+            return Err(ProviderError::Correlation("native original Hello scope unavailable"));
+        }
+        Ok(Some(crate::reference_packet::service::native_startup::OriginalNativeFramePreflight::hello(
+            &original.allocation.native_birth,
+            launch,
+            &self.host_body,
+        )))
+    }
+}

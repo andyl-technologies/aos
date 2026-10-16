@@ -297,6 +297,25 @@ impl<S: Read + Write> OriginalNativeHelloExchange<S> {
     /// Refuses owner drift, repeated reads, invalid/partial framing, duplicate
     /// keys or malformed JSON. Partial originals stay in the same bank.
     pub fn receive(&mut self) -> Result<Option<Value>, ProviderError> {
+        self.receive_with_preflight(None)
+    }
+
+    /// Receives the same once-only Hello through its original layout window.
+    ///
+    /// # Errors
+    /// Refuses a foreign/spent original, framing/layout overflow or strict parse
+    /// failure while retaining the same journal and permanently spent attempt.
+    pub(crate) fn receive_original_preflight(
+        &mut self,
+        preflight: &crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>,
+    ) -> Result<Option<Value>, ProviderError> {
+        self.receive_with_preflight(Some(preflight))
+    }
+
+    fn receive_with_preflight(
+        &mut self,
+        preflight: Option<&crate::reference_packet::service::native_startup::OriginalNativeFramePreflight<'_>>,
+    ) -> Result<Option<Value>, ProviderError> {
         self.journal.owner.ensure_current()?;
         if self.journal.attempted || self.journal.failed {
             return Err(ProviderError::Conflict(
@@ -304,7 +323,12 @@ impl<S: Read + Write> OriginalNativeHelloExchange<S> {
             ));
         }
         self.journal.attempted = true;
-        match self.reader.read() {
+        let received = match preflight {
+            Some(preflight) => self.reader.read_original_native_preflight(self.journal.maximum_bytes, preflight)
+                .map(|frame| frame.map(|frame| frame.value)),
+            None => self.reader.read(),
+        };
+        match received {
             Ok(value) => {
                 self.journal.received = value.is_some();
                 Ok(value)
