@@ -634,17 +634,23 @@ impl PublicationKernel for NativePublisher {
                 Err(error) => return Err(error.into()),
             };
             let mut writer = File::from(descriptor);
+            // Never write the lookahead byte: at an allocation boundary it
+            // would consume a block outside the claimed plaintext reservation.
             let copied = io::copy(
-                &mut source.take(claim.plaintext_size().saturating_add(1)),
+                &mut Read::by_ref(&mut source).take(claim.plaintext_size()),
                 &mut writer,
             );
-            if let Err(error) = copied.and_then(|copied| {
+            let verified_length = copied.and_then(|copied| {
                 if copied != claim.plaintext_size() {
-                    Err(invalid("source length changed during copy"))
-                } else {
-                    Ok(())
+                    return Err(invalid("source length changed during copy"));
                 }
-            }) {
+                let mut extra = [0];
+                if source.read(&mut extra)? != 0 {
+                    return Err(invalid("source length changed during copy"));
+                }
+                Ok(())
+            });
+            if let Err(error) = verified_length {
                 let _cleanup = fs::unlinkat(staging.as_ref(), temporary.as_str(), AtFlags::empty());
                 return Err(error);
             }
