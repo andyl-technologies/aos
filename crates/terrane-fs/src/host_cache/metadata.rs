@@ -20,6 +20,10 @@ pub struct NativeHostMetadataReader {
 }
 
 impl NativeHostMetadataReader {
+    pub(super) fn layout(&self) -> &Arc<NativeHostLayout<HostDomainLocation>> {
+        &self.layout
+    }
+
     /// Opens bounded metadata verification over retained native directory facts.
     ///
     /// It accepts no caller assertion of device identity, fake repository binding
