@@ -853,16 +853,46 @@ ignored tests. Five failures require the installed reference-provider executable
 at runtime; rerunning those five with its genuine source-built binary passes all
 five. Three expose a real prelaunch descriptor-census dispatch error: the launch
 reservation asks the launched guard for an executable that does not yet exist.
-A reservation-specific borrowed census is under test. The launched guard still
-refuses the unlaunched shape; neither a fake process nor an executable is inserted.
-All six new current-observation and retained-dispatch controls pass.
+Commit `617ab7bd72` adds a reservation-specific borrowed census. The corrected
+full Core suite passes 1,723 tests, with zero failures and 32 ignored, in 17.01
+seconds using the real installed provider; the later complete-coordinator Source follow-up
+rerun also passes all 1,723 in 18.03 seconds. The launched guard still refuses the
+unlaunched shape; neither a fake process nor an executable is inserted. All six
+new current-observation and retained-dispatch controls pass.
 
 The ordinary native Complete four-owner initial-scene fixture compiles and runs,
 but refuses before Child creation. Its complete immutable coordinator declaration
 is 171,918 bytes, above the existing 131,072-byte installation limit; the template
 and local declaration are individually within that limit. This is not a guest
 execution or capture result, and a larger transport buffer alone cannot fix it.
-The production limit and full-declaration carrier are under investigation.
+Commit `db30acf3fa` derives a distinct 393,324-byte full-installation bound from
+three separately bounded local selections, the Host selection, the unchanged
+Control template limit and the exact wrapper. Each component is independently
+checked; Connected4, Control and template bounds remain unchanged. The Provider
+suite passes 1,024 tests, zero failures and thirteen ignored in 19.32 seconds
+before the final two coordinator parser alignments; the current reference
+provider rebuild passes. Follow-up `4e839e0e9d` corrects the same inherited
+whole-installation mismatch in the Core constructors and measured daemon roster.
+Actual installed runs expose those additional checks before Child creation.
+
+Commits `4f5c5e3162` and `1ad448e99b` add retained original actor lifecycle,
+concrete durable Complete publication and the explicit ticketed fresh-target
+installer. Six actual lifecycle, content-bound and manifest controls pass in
+11.42 seconds. Six-crate all-feature/all-target checking passes before the final
+stored-publisher forward; the current daemon test target also compiles. The
+current positive fixture includes a separately measured provider, three genuine
+stored grants, Capture and selected reload, but has not yet passed its owning
+native path. Both selected native tests fail during actual installation before
+Child creation, with zero passes and two failures in 1.20 seconds. The generic
+refusal is under test-only stage diagnosis. Its finite content budget counts three actual peer artifact reads,
+one Host artifact read and an explicit metadata allowance, preserving the older
+fixtures and refusal limits. The publisher remains retained through reclamation.
+
+A separate fresh-holder baseline driver is being integrated. Independent source
+review identifies a real missing cleanup-supervisor descriptor census; no fresh
+native qualification is claimed. Restored nodes still need the full ordinary
+operation path beyond current-state Observe, including pre-effect admission,
+progressed native evidence and durable outcome publication.
 
 ## Known gaps and exit criteria
 
