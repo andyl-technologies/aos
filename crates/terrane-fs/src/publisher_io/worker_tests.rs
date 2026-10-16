@@ -33,7 +33,14 @@ fn fixture(name: &str) -> [PathBuf; 4] {
         root.join("pending-delete"),
         root.join("state/publication"),
     ];
+    let project = crate::host_quota::NativeProject::inspect(&File::open(&root).unwrap()).unwrap();
+    assert!((64101..=64108).contains(&project.project_id));
+    assert!(project.inherit);
     for path in &paths {
+        let actual = crate::host_quota::NativeProject::inspect(&File::open(path).unwrap()).unwrap();
+        assert_eq!(actual.project_id, project.project_id);
+        assert_eq!(actual.device, project.device);
+        assert!(actual.inherit);
         let metadata = fs::metadata(path).unwrap();
         assert!(metadata.is_dir());
         assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
@@ -807,7 +814,7 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion(
         .build()
         .unwrap();
     runtime.block_on(async {
-        use super::{NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeOperation};
+        use super::{NativeCommandContext, NativeOperation};
         let expected = claim();
         worker
             .publish(expected.clone(), source(root))
@@ -821,20 +828,19 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion(
             .execute(context.clone(), NativeOperation::Drain)
             .await
             .unwrap();
-        let result = worker
+        // This is cold nonempty publication state, not an empty recovery
+        // proof. Until genuine binding-record reconciliation exists, inventory
+        // must refuse the whole scan rather than omit its physical state.
+        let error = worker
             .execute(context.clone(), NativeOperation::Inventory { cursor: None })
             .await
+            .err()
             .unwrap();
-        let NativeCommandResult::Inventory { keys, next_cursor } = result else {
-            panic!("inventory grants no native body authority")
-        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(
-            keys,
-            vec![NativeBodyKey::Sealed {
-                descriptor: expected.descriptor().clone()
-            }]
+            error.to_string(),
+            "unreconciled publisher publication-state contents"
         );
-        assert!(next_cursor.is_none());
         assert!(
             worker
                 .execute(
