@@ -651,6 +651,31 @@ remain unresolved and were not rerun here. Complete native Capture, restored
 execution with nonempty operations and inputs, fresh recapture, device parity
 and final-source application qualification remain outstanding.
 
+### Original canonical-output bounds
+
+Commits `4ef69f432b` and `66e8fab2de` narrow only the canonical-output banks for
+selected original Observe replies and their restricted first query. The pinned
+formatter emits at most 25 bytes per number; its larger 132-byte scratch buffer
+remains charged independently. The new conservative output bound is 32 times
+the raw extent. Generic parsing, retained owners, correlation and full-cap
+validation remain unchanged. At a 16 KiB extent this removes 13.4 MiB from each
+affected returning-work term; other simultaneous phases can still determine the
+whole peak. This is requested-storage accounting, not measured RAM or speed.
+
+The same five Rust post bodies pass standalone six-crate all-feature/all-target
+checking and three fresh normal library-test producers. A subsequent prospective
+first-report/lifecycle combination passes 140 selected controls, including all
+four new canonical-output controls, then fails its new three-Source fixture
+with `ResourceLimit` during startup finalization. Two lifecycle controls are
+unrun. Independent review verifies all 144 original waits and releases, source
+and executable closures. The earlier standalone runtime stopped on descriptor
+observation after 35 accepted passes; it remains a failed checkpoint.
+
+Only the five canonical-output files are committed here. First-report and
+lifecycle changes remain outside the branch while the fixture refusal is
+investigated. Neither checkpoint establishes a full 135/143-control pass,
+constructor fit or native restoration.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
