@@ -9,6 +9,7 @@ mod layout;
 mod policy;
 mod readonly;
 mod reassembly;
+mod residence;
 mod state;
 mod verification;
 
@@ -18,6 +19,7 @@ pub use layout::DomainHostLayout;
 pub use policy::{CacheEntry, CachePolicy, CircuitBreaker, PolicyConfig};
 pub use readonly::{HostReadLimits, HostReadOnlyContent};
 pub use reassembly::ReassemblyMode;
+pub use residence::{HostResidenceReader, HostResidentContent, ResidenceChunk};
 pub use state::{
     CacheState, LeaseRecord, PinRecord, ReservationRecord, ResidenceRecord, StateLimits,
 };

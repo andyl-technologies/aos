@@ -404,3 +404,173 @@ async fn host_cache_native_resident_chunk_survives_unrelated_overbudget_index() 
 
     assert_eq!(reader.get(&identity, None).await.unwrap(), b"\0x");
 }
+
+// Explicit portable I/O fixture: this data is never a native seal/domain/pin
+// receipt. Production residence binding separately owns those kernel facts.
+struct ResidenceFixture {
+    identity: Identity,
+    plaintext: Vec<u8>,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+impl super::HostResidenceReader for ResidenceFixture {
+    async fn read_chunk(
+        &self,
+        _layout: &DomainHostLayout,
+        identity: &Identity,
+        _max_plaintext_bytes: usize,
+    ) -> Result<Option<super::ResidenceChunk>, crate::store::StoreFailure> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok((identity == &self.identity).then(|| super::ResidenceChunk {
+            plaintext: self.plaintext.clone(),
+            final_chunk: true,
+        }))
+    }
+
+    async fn chunk_identities(
+        &self,
+        _layout: &DomainHostLayout,
+        max_entries: usize,
+    ) -> Result<Vec<Identity>, crate::store::StoreFailure> {
+        if max_entries == 0 {
+            return Err(crate::store::StoreFailure::new(StoreErrorKind::Capacity));
+        }
+        Ok(vec![self.identity.clone()])
+    }
+}
+
+#[tokio::test]
+async fn host_cache_residence_returns_verified_raw_encoding_and_encoded_ranges() {
+    let scratch = Scratch::new();
+    let plaintext = b"sealed residence content";
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, plaintext)
+        .unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reader = scratch
+        .reader()
+        .await
+        .with_residences(
+            ResidenceFixture {
+                identity: identity.clone(),
+                plaintext: plaintext.to_vec(),
+                calls: calls.clone(),
+            },
+            8,
+        )
+        .unwrap();
+
+    assert_eq!(
+        reader.get(&identity, None).await.unwrap(),
+        [b"\0", plaintext.as_slice()].concat()
+    );
+    assert_eq!(
+        reader
+            .get(
+                &identity,
+                Some(ByteRange {
+                    start: 1,
+                    length: 6
+                })
+            )
+            .await
+            .unwrap(),
+        b"sealed"
+    );
+    assert_eq!(reader.has(&[identity.clone()]).await.unwrap(), [true]);
+    assert_eq!(
+        reader
+            .list(&IdentityPrefix {
+                kind: IdentityKind::Chunk,
+                digest_prefix: Vec::new()
+            })
+            .await
+            .unwrap(),
+        [identity]
+    );
+    assert!(calls.load(Ordering::SeqCst) >= 4);
+}
+
+#[tokio::test]
+async fn host_cache_residence_does_not_hide_corrupt_ordinary_content() {
+    let scratch = Scratch::new();
+    let identity = scratch.chunk(b"ordinary content");
+    let hash: String = identity
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    std::fs::write(
+        scratch.0.join(format!("chunks/{}/{}.0", &hash[..2], hash)),
+        b"\0damaged",
+    )
+    .unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reader = scratch
+        .reader()
+        .await
+        .with_residences(
+            ResidenceFixture {
+                identity: identity.clone(),
+                plaintext: b"ordinary content".to_vec(),
+                calls: calls.clone(),
+            },
+            8,
+        )
+        .unwrap();
+
+    let failure = reader.get(&identity, None).await.unwrap_err();
+
+    assert!(matches!(failure.kind(), StoreErrorKind::Corrupt(_)));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn host_cache_residence_verifies_identity_and_honors_operator_capacity() {
+    let scratch = Scratch::new();
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, b"expected")
+        .unwrap();
+    let reader = scratch
+        .reader()
+        .await
+        .with_residences(
+            ResidenceFixture {
+                identity: identity.clone(),
+                plaintext: b"modified".to_vec(),
+                calls: Default::default(),
+            },
+            8,
+        )
+        .unwrap();
+    assert!(matches!(
+        reader.get(&identity, None).await.unwrap_err().kind(),
+        StoreErrorKind::Corrupt(_)
+    ));
+
+    let limited = HostReadOnlyContent::open_existing_with_limits(
+        scratch.layout(),
+        TokioLocalFs,
+        MetadataValidator::new(ChunkProfile::cdc_1m([0; 32])),
+        super::HostReadLimits {
+            max_allocation_bytes: 4,
+        },
+    )
+    .await
+    .unwrap()
+    .with_residences(
+        ResidenceFixture {
+            identity: identity.clone(),
+            plaintext: b"expected".to_vec(),
+            calls: Default::default(),
+        },
+        8,
+    )
+    .unwrap();
+    assert!(matches!(
+        limited.get(&identity, None).await.unwrap_err().kind(),
+        StoreErrorKind::Capacity
+    ));
+}

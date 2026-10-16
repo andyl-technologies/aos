@@ -132,6 +132,11 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         &self.layout
     }
 
+    /// Returns the configured per-allocation encoded read budget.
+    pub fn read_limits(&self) -> HostReadLimits {
+        self.limits
+    }
+
     /// Returns the root device and inode observed during read-only opening.
     ///
     /// This observation detects configured aliases; it grants no authority.
