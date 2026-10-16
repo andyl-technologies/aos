@@ -276,10 +276,11 @@ impl PacketCompleteSemanticSource {
             crucible_node_provider::reference_packet::service::native_startup::original_native_private_boot_fields_storage_data(&input,maximum)
                 .map_err(|_|RuntimeError::ResourceLimit)?,
         ],maximum)?;
-        let (source_capture_backend_bytes, source_capture_execution_bytes,
-            source_capture_execution_scratch) = self.original_native_source_capture_construction_data(
-                launch, maximum,
-            )?;
+        let (
+            source_capture_backend_bytes,
+            source_capture_execution_bytes,
+            source_capture_execution_scratch,
+        ) = self.original_native_source_capture_construction_data(launch, maximum)?;
         let finalization_bytes=retained_values::sum_with_error::<RuntimeError,_>([
             wire_bytes,
             source_capture_execution_bytes,
@@ -353,7 +354,11 @@ impl PacketCompleteSemanticSource {
             // Its whole-action quote admitted these separate host allocations
             // before any reserve call; no row14/report scalar authorizes them.
             self.reserve_original_native_source_capture_construction_data(
-                &birth.native_startup.as_ref().ok_or(RuntimeError::OwnerUnavailable)?.member,
+                &birth
+                    .native_startup
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .member,
                 launch,
             )?;
             finalize_bank(birth, launch, rows, capacity, maximum)
