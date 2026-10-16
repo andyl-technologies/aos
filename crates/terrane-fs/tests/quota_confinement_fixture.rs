@@ -296,10 +296,26 @@ fn main() {
                 "VM must permit a baseline ring: {}",
                 io::Error::last_os_error()
             );
-            assert!(terrane_fs::quota_confinement::install().is_err());
+            // SAFETY: ring is our owned descriptor; removing CLOEXEC passes the
+            // actual existing ring through exec into a fresh bootstrap process.
+            assert_eq!(
+                unsafe { libc::fcntl(ring as libc::c_int, libc::F_SETFD, 0) },
+                0
+            );
+            assert!(
+                Command::new(&arguments[0])
+                    .arg("reject-inherited-ring")
+                    .arg(root)
+                    .status()
+                    .expect("exec child with actual inherited ring")
+                    .success()
+            );
             // SAFETY: setup returned this owned descriptor; no other owner exists.
             assert_eq!(unsafe { libc::close(ring as libc::c_int) }, 0);
             println!("actual inherited ring refused before confinement receipt");
+        }
+        Some("reject-inherited-ring") => {
+            assert!(terrane_fs::quota_confinement::install().is_err());
         }
         #[cfg(target_arch = "x86_64")]
         Some("x32") => {
