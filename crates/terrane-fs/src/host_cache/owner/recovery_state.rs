@@ -10,7 +10,7 @@ use std::{
     fs::File,
     io::{self, Read},
 };
-use terrane::host::cache::{CacheState, ReservationRecord};
+use terrane::host::cache::{CacheState, ReservationRecord, ResidenceRecord};
 
 /// Contains policy data awaiting actual owner synchronization and reconciliation.
 pub(super) struct BootstrapState {
@@ -74,9 +74,32 @@ pub(super) fn check_bootstrap(
     state: &CacheState,
     id: &[u8; 16],
 ) -> io::Result<()> {
+    check_reconciled(config, state, id, &[])
+}
+
+/// Validates the sole bootstrap hold plus exact reconstructed inline ranges.
+///
+/// # Errors
+/// Refuses changed holds, unexpected records, ranges or configured state limits.
+pub(super) fn check_reconciled(
+    config: &NativeCacheOwnerConfig,
+    state: &CacheState,
+    id: &[u8; 16],
+    residences: &[ResidenceRecord],
+) -> io::Result<()> {
     if !state.pins.is_empty()
         || !state.leases.is_empty()
-        || !state.residences.is_empty()
+        || state.residences.len() != residences.len()
+        || state
+            .residences
+            .iter()
+            .zip(residences)
+            .any(|(actual, expected)| {
+                actual.chunk != expected.chunk
+                    || actual.object != expected.object
+                    || actual.offset != expected.offset
+                    || actual.length != expected.length
+            })
         || state.reservations.len() != 1
         || !state.reservations.iter().any(|record| {
             record.id == token(id)

@@ -23,6 +23,7 @@ pub(super) struct NativeOwnerExecutor {
     worker: ThreadId,
     running: Option<Arc<PublisherRunningContext>>,
     failed_resume: Option<(ResumeFailureStage, CompletedRecovery)>,
+    adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
 }
 
 impl NativeOwnerExecutor {
@@ -33,12 +34,23 @@ impl NativeOwnerExecutor {
             worker: thread::current().id(),
             running: None,
             failed_resume: None,
+            adopted_inline: Vec::new(),
         }
     }
 
     /// Borrows actual custody for one serialized physical command.
     pub(super) fn custody(&self) -> &Arc<Mutex<Custody>> {
         &self.custody
+    }
+
+    /// Runs supported recovery while retaining adopted backing beyond any reply.
+    ///
+    /// # Errors
+    /// Refuses unsupported candidates, stale custody, failed synchronization,
+    /// quota reconciliation or a prior handoff; all adopted handles stay owned.
+    pub(super) async fn recover(&mut self) -> io::Result<CompletedRecovery> {
+        self.check_recovery_phase()?;
+        super::super::recovery::run(&self.custody, &mut self.adopted_inline).await
     }
 
     /// Retains the complete acknowledged or failed handoff before any reply.

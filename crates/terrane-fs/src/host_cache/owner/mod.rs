@@ -10,6 +10,7 @@ mod index_io;
 mod preparation;
 mod recovery;
 mod recovery_accounting;
+mod recovery_inline;
 mod recovery_namespace;
 mod recovery_state;
 mod recovery_state_parent;

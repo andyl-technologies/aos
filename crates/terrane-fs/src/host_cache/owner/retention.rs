@@ -187,9 +187,7 @@ impl NativeMetadataOwner {
                             let _ = response.send(result);
                         }
                         Command::Recover { response } => {
-                            let result = executor.check_recovery_phase().and_then(|()| {
-                                runtime.block_on(super::recovery::run(executor.custody()))
-                            });
+                            let result = runtime.block_on(executor.recover());
                             let _ = response.send(result);
                         }
                         Command::Retain { identity, response } => {
