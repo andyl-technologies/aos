@@ -290,7 +290,7 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         // genesis observation choice-source and direct-selection index anchors.
         // Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "3ffb2c6a44b6e4d1ef5912da7bec19d554f0f6cd3f45642b3b111de275422c36"
+        "1c7ed772bdc71ea518b4eebf613402c81dfb187d3cde683ecfe92dc1c30cee85"
     );
     drop(store);
 

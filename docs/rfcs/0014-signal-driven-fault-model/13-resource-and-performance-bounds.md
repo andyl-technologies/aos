@@ -289,7 +289,7 @@ production-runtime-v6, and VM-snapshot-v4 formats; production runtime identity
 uses the v9 domain and VM snapshot identity uses the
 `exact-snapshot.v7` domain, so old policy identities cannot alias new artifacts.
 
-## 13.8 Search and minimization limits
+## 13.8 Search limits
 
 | Field | Default | Hard ceiling |
 | --- | ---: | ---: |
@@ -299,15 +299,21 @@ uses the v9 domain and VM snapshot identity uses the
 | `search_choices_per_state` | 65,536 | 262,144 |
 | `trace_mutation_windows` | 65,536 | 262,144 |
 | `mapping_mutation_points` | 65,536 | 262,144 |
-| `minimization_attempts` | 1,048,576 | 16,777,216 |
 
 Search strategies additionally declare a finite fuel count. For a finite
 mutation product, `search_states` is one global counter: materializing each
 candidate root consumes one state and expanding any frontier within that
 candidate consumes one more. The counter never resets between candidates.
-Replay, minimization trials, and candidate generation consume their separately
-declared finite bounds. Exhaustion returns a complete bounded-search result and
-never silently switches strategy.
+Replay and candidate generation consume their separately declared finite
+bounds. Exhaustion returns a complete bounded-search result and never silently
+switches strategy.
+
+The fault plan carries no minimization limit. The fault runtime performs no
+minimization; failure-preserving finding minimization is bounded by the
+compiled 4,096-candidate minimization policy of RFC-0020 section 03.10, which
+is published there and retained in every minimized reproduction's policy
+identity rather than hidden. An authored plan that still names a
+`minimization_attempts` field is rejected as an unknown resource limit.
 
 ## 13.9 Future sensor bounds
 

@@ -5,7 +5,7 @@
 schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:72d2596b768bfb114f7954e32dc4d687529d8f25454a09401f74fe93f6eaac19"
+id = "blake3:9c18ac52a911d4b86b7d9613ed262485b4c6c41f996220b1a61a7faa373cd54d"
 seed = "0xda8ac2eb79f1230b000000000000000000000000000000000000000000000000"
 app_random_draw_cap = "u64:18446744073709551615"
 selectable_declarations_per_node = 1
@@ -378,7 +378,7 @@ segment = "segment-router-a-traffic-west"
 direction = "b_to_a"
 
 [plan]
-id = "blake3:996a77348355c06c12b44b3801729cd1302d51ac8be8f4a3c6d1135b8ec2ad7e"
+id = "blake3:ca328b2f2045901aada638bc397225b0fb95b29711bbb485d61cc11765bdfde7"
 fault_model = "signal_bindings_v2"
 fault_signal_semantic_version = 2
 
@@ -472,7 +472,6 @@ search_candidates_per_choice = 256
 search_choices_per_state = 65536
 trace_mutation_windows = 65536
 mapping_mutation_points = 65536
-minimization_attempts = 1048576
 
 [properties]
 id = "blake3:e50c95939c09158b59e4fc5d605939b8d43d56f394c17932d0f74795bf60040b"

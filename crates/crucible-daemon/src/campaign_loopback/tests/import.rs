@@ -135,7 +135,7 @@ fn verifier_import_then_create_works_on_a_blank_repository() {
             "blank-imported",
             resumed.new_snapshot(),
             None,
-            1,
+            16,
         ))
         .expect("current graph page");
     assert_eq!(graph.snapshot(), resumed.new_snapshot());
@@ -150,8 +150,14 @@ fn verifier_import_then_create_works_on_a_blank_repository() {
         graph.snapshot_body().roots().graph.kind(),
         ObjectKind::MerkleNode
     );
-    assert_eq!(graph.entries().len(), 1);
-    let graph_entry = graph.entries()[0];
+    // Graph keys are content addresses, so the configuration entry's page
+    // position depends on scenario identity. Nested-index anchors such as
+    // the choice index are Merkle nodes that the object query cannot return.
+    let graph_entry = *graph
+        .entries()
+        .iter()
+        .find(|entry| entry.object().kind() == ObjectKind::Configuration)
+        .expect("current graph page includes the configuration artifact");
     let graph_object = client
         .get_campaign_graph_object(&graph_object_request(
             "blank-imported",
