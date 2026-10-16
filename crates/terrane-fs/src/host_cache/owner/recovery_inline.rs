@@ -53,7 +53,7 @@ pub(super) fn claims(
             PublicationClaim::new(
                 location.domain().to_owned(),
                 PublicationRecipe::Inline { chunk: descriptor },
-                location.chunk_profile().clone(),
+                location.chunk_profile(),
             )
             .map_err(io::Error::other)?,
         );
@@ -133,7 +133,7 @@ mod tests {
                 PublicationClaim::new(
                     "public".into(),
                     PublicationRecipe::Inline { chunk: descriptor },
-                    ChunkProfile::cdc_1m([0; 32]),
+                    &ChunkProfile::cdc_1m([0; 32]),
                 )
                 .unwrap()
             })
