@@ -8696,11 +8696,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 Status: in progress (2026-10-16). T1's 22 tasks and 89 current gates are
 complete; its identity, encoding, bucket-key and Store-trait freeze applies.
-Eight separate implementation worktrees cover the five T2 tasks, including
-dedicated publisher-transport, host-quota and native confinement components.
+Nine separate implementation worktrees cover the five T2 tasks, including
+dedicated publisher-transport, host-quota, native confinement and recovery
+inspection components.
 Shared module declarations,
 dependency edges, kernel prerequisites and check wiring precede worker edits.
-No T2 task or gate is complete yet.
+No T2 task is accepted; full current-trunk qualification remains pending.
 
 Contract review identifies a blocking conflict for zero-wipe sealed files:
 HOST-3 requires permanent kernel immutability, while HOST-25 and DOM-18
@@ -8720,7 +8721,7 @@ remain in progress; an earlier source passes the metadata-only schema observer
 with a positive content-read control. The host-cache branch
 builds and passes 19 focused tests with unchanged source inputs. Native admission,
 sealed-residence reads, and complete task gates remain pending.
-The separate module branch has 81 passing declarative checks, 40 positive
+The separate module branch has 86 passing declarative checks, 40 positive
 checks of actual rendered TOML through the built CLI across four roles and
 ten configuration shapes, and six negative parser cases. These establish
 syntax parsing, not backend or
@@ -8757,6 +8758,34 @@ alias coverage and service-identity isolation pass the quota gate. The quota
 helper's build and eight focused tests pass, as do twelve shared-directory
 and nineteen publisher-transport baseline tests; these do not establish
 native confinement, VM execution or T2 acceptance.
+
+The corrected source-bound confinement proof image builds with identical Cargo
+and installed executable hashes. Its actual AOS ext4 guest passes setter
+refusals, thread/fork inheritance, finite-quota enforcement, fs-verity, startup
+refusals and both alternate-ABI assertions, with unchanged source guards.
+An earlier guest failed before the fixture's zero Merkle block size and small
+filesystem block size were corrected to the native 4096-byte profile. This
+component pass does not establish complete native admission or HOST-23.
+Source review corrected a
+publisher fixture helper reference and quota fixture synchronization races.
+The quota claim implementation now permanently binds each filesystem/project
+pair before ledger publication or native mutation; full process-crash and
+broker scenarios await execution. Configured SDK runtime composition and its
+separate unit/native proof harness pass source review; compilation and guest
+execution remain pending. The actual durable metadata-pin producer passes
+source review for consumer integration, without native qualification. Recovery
+inspection review found plaintext-allocation and retained-custody defects;
+their corrections precede integration. Publisher review likewise found a
+shared-claim field type mismatch before compilation. The frozen surface
+candidate passes its interface and schema gates. Its status gate fails on
+required xattrs; a finite probe confirms the actual Nix fixture filesystem
+rejects regular-file user xattrs both before and inside the protected namespace.
+The owning gate must run that presentation case on actual capable storage;
+unsupported metadata is not skipped. A separate native cache proof executable
+and image/guest selectors are declared but fail until implemented. Remaining
+surface gates and complete trunk qualification remain pending. These source
+reviews and component results do not establish configured role operation,
+completed recovery or task acceptance.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
