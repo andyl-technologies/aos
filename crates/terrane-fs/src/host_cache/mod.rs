@@ -44,10 +44,12 @@ impl NativeHostLayout {
         let mut directories = BTreeMap::new();
         for name in [
             "chunks",
+            "objects",
             "sealed",
             "staging",
             "quarantine",
             "pending-delete",
+            "state",
         ] {
             let descriptor = openat(
                 &root,
@@ -80,6 +82,24 @@ impl NativeHostLayout {
     /// Returns the inspected domain layout.
     pub fn layout(&self) -> &DomainHostLayout {
         &self.layout
+    }
+
+    /// Observes one configured allocation root through its retained descriptor.
+    ///
+    /// Labels name fixed host-layout roles, never caller-selected paths. This
+    /// observation alone grants no quota, reservation or admission authority.
+    /// The native owner must compare it with a fresh authenticated helper query
+    /// while retaining its admission custody.
+    ///
+    /// # Errors
+    /// Refuses unknown labels, replaced roots and failed native metadata reads.
+    pub fn directory_binding(&self, label: &str) -> io::Result<(u64, u64)> {
+        self.recheck()?;
+        let descriptor = self.directories.get(label).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "unknown host allocation root")
+        })?;
+        let metadata = fstat(descriptor)?;
+        Ok((metadata.st_dev, metadata.st_ino))
     }
 
     /// Rechecks every retained directory against its current canonical name.
