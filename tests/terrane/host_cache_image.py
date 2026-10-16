@@ -101,8 +101,14 @@ def main():
     target = pathlib.Path(os.environ["CARGO_TARGET_DIR"])
     source = pathlib.Path(os.environ["src"])
     output = pathlib.Path(os.environ["out"])
-    for path in [pathlib.Path(__file__), pathlib.Path(shared.__file__)]:
-        relative = "tests/terrane/" + path.name
+    # Nix file inputs have hash-prefixed store basenames. Their repository
+    # identities are explicit; neither a basename guess nor a fallback may bind
+    # the executed installer to another immutable source file.
+    for path, name in [
+        (pathlib.Path(__file__), "host_cache_image.py"),
+        (pathlib.Path(shared.__file__), "native_sdk_test_image.py"),
+    ]:
+        relative = "tests/terrane/" + name
         shared.require(path.read_bytes() == (source / relative).read_bytes(), "executed proof helper differs from source")
     artifacts = selected_artifacts(workspace, temporary, target)
     source_hashes = shared.source_hashes(workspace, source)
