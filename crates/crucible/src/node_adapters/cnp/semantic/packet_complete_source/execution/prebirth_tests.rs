@@ -235,11 +235,18 @@ fn selected_report_return_bank_has_independent_prechild_credit() -> TestResult {
     let selected = execution_reservation_requested_bytes(BACKEND_BYTES, true, usize::MAX)
         .map_err(|error| format!("{error:?}"))?;
     assert_eq!(ordinary, requested());
-    assert_eq!(selected - ordinary, allocation_report_capacity()
-        + size_of::<InputPayload>() + size_of::<born::OriginalBornObject>());
+    assert_eq!(
+        selected - ordinary,
+        allocation_report_capacity()
+            + size_of::<InputPayload>()
+            + size_of::<born::OriginalBornObject>()
+    );
     assert!(execution_reservation_requested_bytes(BACKEND_BYTES, true, selected - 1).is_err());
-    assert_eq!(execution_reservation_requested_bytes(BACKEND_BYTES, true, selected)
-        .map_err(|error| format!("{error:?}"))?, selected);
+    assert_eq!(
+        execution_reservation_requested_bytes(BACKEND_BYTES, true, selected)
+            .map_err(|error| format!("{error:?}"))?,
+        selected
+    );
     assert!(execution_reservation_requested_bytes(usize::MAX, true, usize::MAX).is_err());
     Ok(())
 }
@@ -247,16 +254,21 @@ fn selected_report_return_bank_has_independent_prechild_credit() -> TestResult {
 #[test]
 fn execution_reservation_freezes_report_selection_before_native_association() -> TestResult {
     let mut source = source()?;
-    let demand = source.original_complete_capture_execution_reservation_requested_data(BACKEND_BYTES)
+    let demand = source
+        .original_complete_capture_execution_reservation_requested_data(BACKEND_BYTES)
         .map_err(|error| format!("{error:?}"))?;
-    source.reserve_original_complete_capture_execution(BACKEND_BYTES, demand)
+    source
+        .reserve_original_complete_capture_execution(BACKEND_BYTES, demand)
         .map_err(|error| format!("{error:?}"))?;
     let identity = allocation_identity(&source)?;
     assert!(source.bind_original_capture_allocation_selection(Some(
         crucible_node_provider::reference_packet::service::capture_allocation::PacketNative5CaptureAllocationSelection::OriginalObserve12
     )).is_err());
     assert_eq!(allocation_identity(&source)?, identity);
-    let slots = source.capture_execution.try_borrow().map_err(|error| error.to_string())?;
+    let slots = source
+        .capture_execution
+        .try_borrow()
+        .map_err(|error| error.to_string())?;
     let execution = slots.as_ref().ok_or("execution absent")?;
     assert!(!execution.allocation_selected);
     assert_eq!(execution.allocation_bank.capacity(), 0);

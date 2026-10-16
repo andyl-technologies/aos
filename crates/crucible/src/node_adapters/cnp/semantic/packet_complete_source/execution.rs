@@ -10,6 +10,8 @@ use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::
 use crucible_node_provider::protocol_snapshot::OriginalProtocolPayloadOwner;
 use std::mem::size_of;
 
+#[path = "execution/allocation_report.rs"]
+mod allocation_report;
 #[path = "execution/born.rs"]
 mod born;
 #[path = "execution/dependency_credit.rs"]
@@ -20,15 +22,14 @@ mod dispatch;
 mod finish;
 #[path = "execution/move_output.rs"]
 mod move_output;
-#[path = "execution/allocation_report.rs"]
-mod allocation_report;
 
 const COMPLETE_EVIDENCE_ROLES: usize = 8;
 const COMPLETE_BORN_ROLES: usize = 10;
 // The pinned CNP decimal_integer serializer owns at most twenty formatter bytes.
 const NUMERIC_SERIALIZER_SCRATCH: usize = 20;
 const BACKEND_MEDIA: &str = "application/vnd.source-owned.packet-complete-archive-backend.v15+json";
-const STARTUP_BACKEND_MEDIA: &str = "application/vnd.source-owned.packet-complete-archive-backend.v16+json";
+const STARTUP_BACKEND_MEDIA: &str =
+    "application/vnd.source-owned.packet-complete-archive-backend.v16+json";
 
 pub(super) struct OriginalCompleteCaptureExecution {
     backend_bank: Option<CnpSemanticSnapshotReservation>,
@@ -78,10 +79,16 @@ impl OriginalCompleteCaptureExecution {
                 bank,
                 references,
                 self.allocation_bank.capacity(),
-                self.allocation.as_ref().map_or(0, |body| body.bytes.capacity()),
-                self.allocation.as_ref()
-                    .map(|body| NodeRuntime::capture_reference_storage(&body.reference).map_err(E::unknown))
-                    .transpose()?.unwrap_or(0),
+                self.allocation
+                    .as_ref()
+                    .map_or(0, |body| body.bytes.capacity()),
+                self.allocation
+                    .as_ref()
+                    .map(|body| {
+                        NodeRuntime::capture_reference_storage(&body.reference).map_err(E::unknown)
+                    })
+                    .transpose()?
+                    .unwrap_or(0),
                 self.evidence
                     .capacity()
                     .checked_mul(size_of::<InputPayload>())
@@ -235,7 +242,11 @@ impl PacketCompleteSemanticSource {
             .map_err(unknown)?,
         );
         let allocation_selected = self.selected_capture_allocation_selection()?.is_some();
-        execution_reservation_requested_bytes(maximum_backend_bytes, allocation_selected, admitted)?;
+        execution_reservation_requested_bytes(
+            maximum_backend_bytes,
+            allocation_selected,
+            admitted,
+        )?;
         *self.capture_execution.get_mut() = Some(OriginalCompleteCaptureExecution {
             backend_bank: None,
             backend: None,
@@ -268,7 +279,10 @@ impl PacketCompleteSemanticSource {
                 admitted,
             )?);
             if allocation_selected {
-                execution.allocation_bank.try_reserve_exact(allocation_report_capacity()).map_err(unknown)?;
+                execution
+                    .allocation_bank
+                    .try_reserve_exact(allocation_report_capacity())
+                    .map_err(unknown)?;
             }
             execution
                 .evidence
@@ -308,7 +322,9 @@ impl PacketCompleteSemanticSource {
             let installed = self.installation();
             let snapshot_class = self.selected_complete_native_snapshot_class()?;
             if execution.allocation_selected != snapshot_class.has_allocation() {
-                return Err(refused("original Report reservation differs from installed snapshot class"));
+                return Err(refused(
+                    "original Report reservation differs from installed snapshot class",
+                ));
             }
             if execution.key.is_none() {
                 let mut formats =
@@ -383,11 +399,12 @@ impl PacketCompleteSemanticSource {
                     .key
                     .as_ref()
                     .ok_or_else(|| refused("original output key absent"))?;
-                let view = PacketCompleteSettledJournal::backend_registry_identity_view_for_class_data(
-                    &installed.binding.compatibility.implementation,
-                    key,
-                    snapshot_class,
-                );
+                let view =
+                    PacketCompleteSettledJournal::backend_registry_identity_view_for_class_data(
+                        &installed.binding.compatibility.implementation,
+                        key,
+                        snapshot_class,
+                    );
                 retained_values::sum(
                     [
                         execution.retained_storage(maximum)?,
@@ -427,7 +444,11 @@ impl PacketCompleteSemanticSource {
                     )?;
                     execution.backend = Some(super::super::semantic_snapshot::take_component(
                         &mut execution.backend_bank,
-                        if snapshot_class.has_allocation() { STARTUP_BACKEND_MEDIA } else { BACKEND_MEDIA },
+                        if snapshot_class.has_allocation() {
+                            STARTUP_BACKEND_MEDIA
+                        } else {
+                            BACKEND_MEDIA
+                        },
                     )?);
                 }
             }
@@ -476,20 +497,37 @@ fn allocation_report_capacity() -> usize {
 }
 
 fn execution_reservation_requested_bytes(
-    backend: usize, allocation_selected: bool, admitted: usize,
+    backend: usize,
+    allocation_selected: bool,
+    admitted: usize,
 ) -> Result<usize, OperationFailure> {
     let extra = usize::from(allocation_selected);
-    let requested = backend.checked_add(if allocation_selected { allocation_report_capacity() } else { 0 })
-        .and_then(|n| n.checked_add((COMPLETE_EVIDENCE_ROLES + extra).checked_mul(size_of::<InputPayload>())?))
-        .and_then(|n| n.checked_add((COMPLETE_BORN_ROLES + extra).checked_mul(size_of::<born::OriginalBornObject>())?))
+    let requested = backend
+        .checked_add(if allocation_selected {
+            allocation_report_capacity()
+        } else {
+            0
+        })
+        .and_then(|n| {
+            n.checked_add((COMPLETE_EVIDENCE_ROLES + extra).checked_mul(size_of::<InputPayload>())?)
+        })
+        .and_then(|n| {
+            n.checked_add(
+                (COMPLETE_BORN_ROLES + extra).checked_mul(size_of::<born::OriginalBornObject>())?,
+            )
+        })
         .filter(|n| backend != 0 && *n <= admitted)
         .ok_or_else(|| refused("original output bank admission is insufficient"))?;
     Ok(requested)
 }
 
 impl OriginalCompleteCaptureExecution {
-    fn evidence_roles(&self) -> usize { COMPLETE_EVIDENCE_ROLES + usize::from(self.allocation_selected) }
-    fn born_roles(&self) -> usize { COMPLETE_BORN_ROLES + usize::from(self.allocation_selected) }
+    fn evidence_roles(&self) -> usize {
+        COMPLETE_EVIDENCE_ROLES + usize::from(self.allocation_selected)
+    }
+    fn born_roles(&self) -> usize {
+        COMPLETE_BORN_ROLES + usize::from(self.allocation_selected)
+    }
 }
 
 impl PacketCompleteSemanticSource {
@@ -502,10 +540,14 @@ impl PacketCompleteSemanticSource {
     /// # Errors
     /// Refuses foreign creator custody, a zero backend bound or layout overflow.
     pub fn original_complete_capture_execution_reservation_requested_data(
-        &self, maximum_backend_bytes: usize,
+        &self,
+        maximum_backend_bytes: usize,
     ) -> Result<usize, OperationFailure> {
         self.ensure_origin()?;
-        execution_reservation_requested_bytes(maximum_backend_bytes,
-            self.selected_capture_allocation_selection()?.is_some(), usize::MAX)
+        execution_reservation_requested_bytes(
+            maximum_backend_bytes,
+            self.selected_capture_allocation_selection()?.is_some(),
+            usize::MAX,
+        )
     }
 }

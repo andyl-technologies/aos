@@ -229,11 +229,16 @@ impl PacketCompleteSemanticSource {
         if execution.allocation_selected {
             // The independent Report InputPayload fullref is constructed in
             // addition to the born-row reference and its returned Core clones.
-            plan.data.source_born_growth = retained_values::sum([
-                plan.data.source_born_growth, generated_reference_bytes(NativeAllocationReport),
-            ], maximum)?;
+            plan.data.source_born_growth = retained_values::sum(
+                [
+                    plan.data.source_born_growth,
+                    generated_reference_bytes(NativeAllocationReport),
+                ],
+                maximum,
+            )?;
             plan.data.maximum_lookup_scratch = plan.data.maximum_lookup_scratch.max(
-                allocation_report::allocation_reference_phase_storage_data(maximum)?);
+                allocation_report::allocation_reference_phase_storage_data(maximum)?,
+            );
         }
         let mut semantic = RowQuote::new(maximum);
         semantic.existing(&runtime_object.reference)?;

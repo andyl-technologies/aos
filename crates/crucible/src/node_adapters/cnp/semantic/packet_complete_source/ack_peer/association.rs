@@ -1019,7 +1019,9 @@ impl PacketCompleteSemanticSource {
             .as_ref()
             .ok_or_else(|| refused("complete original private birth absent"))?;
         birth.authenticate_original()?;
-        if snapshot_class == super::super::archive_owner::CompleteNativeSnapshotClass::StartupCapture14 {
+        if snapshot_class
+            == super::super::archive_owner::CompleteNativeSnapshotClass::StartupCapture14
+        {
             birth.authenticate_selected_native_startup(self)?;
         }
         self.original_extension_registry_storage_data(512 * 1024 * 1024)?;
@@ -1168,11 +1170,13 @@ impl PacketCompleteSemanticSource {
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn selected_complete_native_snapshot_class(
         &self,
     ) -> Result<super::super::archive_owner::CompleteNativeSnapshotClass, OperationFailure> {
+        use super::super::archive_owner::CompleteNativeSnapshotClass;
         use crucible_node_provider::reference_packet::service::{
             capture_allocation::PacketNative5CaptureAllocationSelection,
-            complete_restore::{PacketNative5CompleteRestoreSelection, PacketNative5RestoreInputEmitterSelection},
+            complete_restore::{
+                PacketNative5CompleteRestoreSelection, PacketNative5RestoreInputEmitterSelection,
+            },
         };
-        use super::super::archive_owner::CompleteNativeSnapshotClass;
 
         self.ensure_origin()?;
         match self.selected_capture_allocation_selection()? {

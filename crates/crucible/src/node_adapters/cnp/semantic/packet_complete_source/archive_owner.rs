@@ -112,8 +112,18 @@ impl PacketCompleteSemanticSource {
             || owner.key.implementation != installation.provider.implementation.implementation_id
             || owner.key.profile.as_str() != "source-owned.packet-complete-original-lineage/5"
             || owner.key.schema != snapshot_class.schema()?
-            || snapshot_class.has_allocation() && (!installation.provider.implementation.formats.contains(&owner.key.schema)
-                || !installation.binding.compatibility.implementation.formats.contains(&owner.key.schema))
+            || snapshot_class.has_allocation()
+                && (!installation
+                    .provider
+                    .implementation
+                    .formats
+                    .contains(&owner.key.schema)
+                    || !installation
+                        .binding
+                        .compatibility
+                        .implementation
+                        .formats
+                        .contains(&owner.key.schema))
             || !matches!(profile, PacketNative5CaptureProfile::OwnedProtocol11 { .. })
             || !owner.evidence.contains(journal_reference)
         {

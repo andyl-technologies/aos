@@ -385,7 +385,9 @@ impl OriginalAckPeerBirth {
     ) -> Result<(), OperationFailure> {
         self.authenticate_original()?;
         if self.native_startup.is_none() {
-            return Err(refused("selected startup snapshot has no original startup member"));
+            return Err(refused(
+                "selected startup snapshot has no original startup member",
+            ));
         }
         self.authenticate_native_startup_before_boot(source)
     }

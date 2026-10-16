@@ -196,7 +196,8 @@ impl PacketCompleteSemanticSource {
             || original.key.is_none()
             || original.backend.is_none()
             || original.allocation.is_some()
-            || original.allocation_selected && original.allocation_bank.capacity() < allocation_report_capacity()
+            || original.allocation_selected
+                && original.allocation_bank.capacity() < allocation_report_capacity()
             || original
                 .dependency_plan
                 .as_ref()
@@ -204,7 +205,8 @@ impl PacketCompleteSemanticSource {
             || original.evidence.capacity() < original.evidence_roles()
             || original.born.capacity() < original.born_roles()
             || limits.maximum_objects < original.born_roles()
-            || original.allocation_selected && limits.maximum_record_bytes < allocation_report_capacity()
+            || original.allocation_selected
+                && limits.maximum_record_bytes < allocation_report_capacity()
         {
             return Err(refused(
                 "original Capture preparation is incomplete or spent",
