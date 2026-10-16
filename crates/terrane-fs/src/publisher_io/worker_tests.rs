@@ -4,9 +4,10 @@
 
 use std::fs::{self, File};
 use std::future::{Future, poll_fn};
+use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::task::Poll;
 use std::time::Duration;
 
@@ -26,13 +27,6 @@ fn fixture(name: &str) -> [PathBuf; 4] {
     let root =
         PathBuf::from(std::env::var_os("TERRANE_PUBLISH_VM_ROOT").expect("disk-backed VM fixture"));
     let root = root.join(name);
-    fs::create_dir(&root).unwrap();
-    for name in ["chunks", "objects", "quarantine"] {
-        fs::create_dir(root.join(name)).unwrap();
-        std::os::unix::fs::chown(root.join(name), Some(840), Some(845)).unwrap();
-        fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o2770)).unwrap();
-    }
-    fs::create_dir(root.join("state")).unwrap();
     let paths = [
         root.join("sealed"),
         root.join("staging"),
@@ -40,8 +34,10 @@ fn fixture(name: &str) -> [PathBuf; 4] {
         root.join("state/publication"),
     ];
     for path in &paths {
-        fs::create_dir(path).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        let metadata = fs::metadata(path).unwrap();
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
+        assert_eq!(metadata.mode() & 0o777, 0o700);
     }
     paths
 }
@@ -77,9 +73,9 @@ fn source(path: &Path) -> File {
     File::open(path).unwrap()
 }
 
-#[test]
-#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
-fn canceled_waiter_retains_owner_through_actual_binding_durability() {
+fn canceled_waiter_retains_owner_through_actual_binding_durability(
+    confinement: Arc<crate::quota_confinement::Installed>,
+) {
     let paths = fixture("worker-cancellation");
     let stale = paths[3].join(".binding-incomplete");
     fs::write(&stale, b"unfinished metadata").unwrap();
@@ -90,6 +86,7 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability() {
         release: Mutex::new(released),
     };
     let (worker, owner) = NativePublicationWorker::start_thread(
+        Arc::clone(&confinement),
         configuration(paths[0].parent().unwrap(), NativeWipePolicy::None),
         Some(gate),
         None,
@@ -121,7 +118,14 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability() {
     drop(runtime);
 
     assert!(
-        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err(),
+        NativePublisher::open(
+            Arc::clone(&confinement),
+            "public".into(),
+            &paths[0],
+            &paths[1],
+            &paths[2]
+        )
+        .is_err(),
         "canceling every client must not release the active publisher exclusion"
     );
     release.send(()).unwrap();
@@ -133,44 +137,55 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability() {
         .unwrap();
     let state = FsPublicationState::new(TokioLocalFs, paths[3].clone());
     assert!(runtime.block_on(state.binding(&claim)).unwrap().is_some());
-    let native = NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).unwrap();
+    let native = NativePublisher::open(
+        Arc::clone(&confinement),
+        "public".into(),
+        &paths[0],
+        &paths[1],
+        &paths[2],
+    )
+    .unwrap();
     let mut publisher = Publisher::new(native, state);
     let adopted = runtime.block_on(publisher.adopt(&claim)).unwrap();
     assert_eq!(adopted.into_handle().metadata().unwrap().len(), 11);
 }
 
-#[test]
-#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
-fn startup_reports_actual_private_state_recovery_failure() {
+fn startup_reports_actual_private_state_recovery_failure(
+    confinement: Arc<crate::quota_confinement::Installed>,
+) {
     let paths = fixture("worker-startup-failure");
     fs::create_dir(paths[3].join(".binding-invalid-directory")).unwrap();
     assert!(
-        NativePublicationWorker::start(configuration(
-            paths[0].parent().unwrap(),
-            NativeWipePolicy::None
-        ))
+        NativePublicationWorker::start(
+            configuration(paths[0].parent().unwrap(), NativeWipePolicy::None),
+            Arc::clone(&confinement),
+        )
         .is_err()
     );
 }
 
-#[test]
-fn unsupported_wipe_policy_is_refused_before_directory_effects() {
+fn unsupported_wipe_policy_is_refused_before_directory_effects(
+    confinement: Arc<crate::quota_confinement::Installed>,
+) {
     let missing = Path::new("/unprovisioned-terrane-publisher");
     for policy in [
         NativeWipePolicy::Zero,
         NativeWipePolicy::Discard,
         NativeWipePolicy::Volatile,
     ] {
-        let error = NativePublicationWorker::start(configuration(missing, policy))
-            .err()
-            .expect("unsupported policy must refuse");
+        let error = NativePublicationWorker::start(
+            configuration(missing, policy),
+            Arc::clone(&confinement),
+        )
+        .err()
+        .expect("unsupported policy must refuse");
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
     }
 }
 
-#[test]
-#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
-fn pending_restart_rebuilds_lease_and_requires_canonical_adoption() {
+fn pending_restart_rebuilds_lease_and_requires_canonical_adoption(
+    confinement: Arc<crate::quota_confinement::Installed>,
+) {
     use super::{NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeOperation};
 
     let paths = fixture("worker-pending-restart");
@@ -192,7 +207,9 @@ fn pending_restart_rebuilds_lease_and_requires_canonical_adoption() {
         domain: "public".into(),
         cache_incarnation: [1; 16],
     };
-    let (worker, owner) = NativePublicationWorker::start_thread(make_config(), None, None).unwrap();
+    let (worker, owner) =
+        NativePublicationWorker::start_thread(Arc::clone(&confinement), make_config(), None, None)
+            .unwrap();
 
     let old_token = runtime.block_on(async {
         worker
@@ -261,7 +278,9 @@ fn pending_restart_rebuilds_lease_and_requires_canonical_adoption() {
         }
     }
     File::open(&paths[3]).unwrap().sync_all().unwrap();
-    let (worker, owner) = NativePublicationWorker::start_thread(make_config(), None, None).unwrap();
+    let (worker, owner) =
+        NativePublicationWorker::start_thread(Arc::clone(&confinement), make_config(), None, None)
+            .unwrap();
     let context = NativeCommandContext {
         domain: "public".into(),
         cache_incarnation: [2; 16],
@@ -363,15 +382,20 @@ fn pending_restart_rebuilds_lease_and_requires_canonical_adoption() {
 }
 
 fn shared_directory(path: &Path) {
-    fs::create_dir(path).unwrap();
-    std::os::unix::fs::chown(path, Some(840), Some(845)).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o2770)).unwrap();
+    let metadata = fs::metadata(path).expect("external supervisor provisioned shared directory");
+    assert!(metadata.is_dir());
+    assert_eq!(
+        (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777),
+        (840, 845, 0o2770)
+    );
 }
 
 fn shared_file(path: &Path, bytes: &[u8]) {
-    fs::write(path, bytes).unwrap();
-    std::os::unix::fs::chown(path, Some(840), Some(845)).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
+    let metadata =
+        fs::metadata(path).expect("external supervisor provisioned immutable fixture bytes");
+    assert!(metadata.is_file());
+    assert_eq!((metadata.uid(), metadata.gid()), (840, 845));
+    assert_eq!(fs::read(path).unwrap(), bytes);
 }
 
 fn pack_fixture(root: &Path, id: [u8; 16]) -> (PathBuf, PathBuf, String, String, Vec<u8>) {
@@ -416,9 +440,9 @@ fn pack_fixture(root: &Path, id: [u8; 16]) -> (PathBuf, PathBuf, String, String,
     (pack_path, index_path, pack_pending, index_pending, pack)
 }
 
-#[test]
-#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
-fn pack_pair_reconciles_actual_partial_rename_without_replacing_collision() {
+fn pack_pair_reconciles_actual_partial_rename_without_replacing_collision(
+    confinement: Arc<crate::quota_confinement::Installed>,
+) {
     use super::{NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeOperation};
     use std::io::Read;
 
@@ -438,6 +462,7 @@ fn pack_pair_reconciles_actual_partial_rename_without_replacing_collision() {
         .build()
         .unwrap();
     let (worker, owner) = NativePublicationWorker::start_thread(
+        Arc::clone(&confinement),
         configuration(root, NativeWipePolicy::None),
         None,
         None,
@@ -488,6 +513,7 @@ fn pack_pair_reconciles_actual_partial_rename_without_replacing_collision() {
 
     fs::remove_file(&collision).unwrap();
     let (worker, owner) = NativePublicationWorker::start_thread(
+        Arc::clone(&confinement),
         configuration(root, NativeWipePolicy::None),
         None,
         None,
@@ -541,9 +567,9 @@ fn pack_pair_reconciles_actual_partial_rename_without_replacing_collision() {
     owner.join().unwrap();
 }
 
-#[test]
-#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
-fn failed_second_unlink_recovers_orphan_index_without_pack_authority() {
+fn failed_second_unlink_recovers_orphan_index_without_pack_authority(
+    confinement: Arc<crate::quota_confinement::Installed>,
+) {
     use super::{NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeOperation};
 
     let paths = fixture("worker-pack-partial-unlink");
@@ -564,8 +590,13 @@ fn failed_second_unlink_recovers_orphan_index_without_pack_authority() {
         arrived: arrived_sender,
         release: Mutex::new(released),
     };
-    let (worker, owner) =
-        NativePublicationWorker::start_thread(make_config(), None, Some(gate)).unwrap();
+    let (worker, owner) = NativePublicationWorker::start_thread(
+        Arc::clone(&confinement),
+        make_config(),
+        None,
+        Some(gate),
+    )
+    .unwrap();
     let context = NativeCommandContext {
         domain: "public".into(),
         cache_incarnation: [4; 16],
@@ -641,7 +672,14 @@ fn failed_second_unlink_recovers_orphan_index_without_pack_authority() {
         "the second actual unlink must fail on a directory"
     );
     assert!(
-        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err(),
+        NativePublisher::open(
+            Arc::clone(&confinement),
+            "public".into(),
+            &paths[0],
+            &paths[1],
+            &paths[2]
+        )
+        .is_err(),
         "failure retains publisher custody"
     );
     fs::remove_dir(&index_pending).unwrap();
@@ -650,7 +688,9 @@ fn failed_second_unlink_recovers_orphan_index_without_pack_authority() {
     drop(worker);
     owner.join().unwrap();
 
-    let (worker, owner) = NativePublicationWorker::start_thread(make_config(), None, None).unwrap();
+    let (worker, owner) =
+        NativePublicationWorker::start_thread(Arc::clone(&confinement), make_config(), None, None)
+            .unwrap();
     let token = runtime.block_on(async {
         worker
             .execute(context.clone(), NativeOperation::Drain)
@@ -701,9 +741,9 @@ fn failed_second_unlink_recovers_orphan_index_without_pack_authority() {
     fs::remove_file(survivor).unwrap();
 }
 
-#[test]
-#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
-fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion() {
+fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion(
+    confinement: Arc<crate::quota_confinement::Installed>,
+) {
     let paths = fixture("worker-prepared-roots");
     let root = paths[0].parent().unwrap();
     let previous = paths[1].join("previous-publisher");
@@ -713,14 +753,23 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion() {
     fs::write(&unfinished, b"unserved staging").unwrap();
 
     let prepared = configuration(root, NativeWipePolicy::None)
-        .prepare()
+        .prepare(Arc::clone(&confinement))
         .unwrap();
     assert_eq!(prepared.configuration().domain, "public");
     assert!(unfinished.exists(), "preflight does not perform cleanup");
     assert_eq!(fs::read_dir(&paths[1]).unwrap().count(), 1);
-    assert!(NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err());
+    assert!(
+        NativePublisher::open(
+            Arc::clone(&confinement),
+            "public".into(),
+            &paths[0],
+            &paths[1],
+            &paths[2]
+        )
+        .is_err()
+    );
     let error = configuration(root, NativeWipePolicy::Zero)
-        .prepare()
+        .prepare(Arc::clone(&confinement))
         .err()
         .unwrap();
     assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
@@ -793,24 +842,44 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion() {
     owner.join().unwrap();
 }
 
-#[test]
-#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
-fn staged_writer_retains_root_exclusion_after_adapter_drop() {
+fn staged_writer_retains_root_exclusion_after_adapter_drop(
+    confinement: Arc<crate::quota_confinement::Installed>,
+) {
     use terrane::host::publication::PublicationKernel;
 
     let paths = fixture("worker-staged-root-retention");
     let root = paths[0].parent().unwrap();
-    let mut native =
-        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).unwrap();
+    let mut native = NativePublisher::open(
+        Arc::clone(&confinement),
+        "public".into(),
+        &paths[0],
+        &paths[1],
+        &paths[2],
+    )
+    .unwrap();
     let staged = native.stage(&claim(), source(root)).unwrap();
     drop(native);
 
     assert!(
-        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err(),
+        NativePublisher::open(
+            Arc::clone(&confinement),
+            "public".into(),
+            &paths[0],
+            &paths[1],
+            &paths[2]
+        )
+        .is_err(),
         "a live staged writer keeps the actual staging-root flock"
     );
     drop(staged);
-    let _native = NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).unwrap();
+    let _native = NativePublisher::open(
+        Arc::clone(&confinement),
+        "public".into(),
+        &paths[0],
+        &paths[1],
+        &paths[2],
+    )
+    .unwrap();
     let directories: Vec<_> = fs::read_dir(&paths[1])
         .unwrap()
         .map(Result::unwrap)
@@ -819,9 +888,9 @@ fn staged_writer_retains_root_exclusion_after_adapter_drop() {
     assert_eq!(fs::read_dir(directories[0].path()).unwrap().count(), 0);
 }
 
-#[test]
-#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
-fn actual_binding_path_failure_rolls_back_before_backing_acknowledgment() {
+fn actual_binding_path_failure_rolls_back_before_backing_acknowledgment(
+    confinement: Arc<crate::quota_confinement::Installed>,
+) {
     let paths = fixture("worker-binding-path-failure");
     let root = paths[0].parent().unwrap();
     let (arrived_sender, arrived) = mpsc::sync_channel(1);
@@ -831,6 +900,7 @@ fn actual_binding_path_failure_rolls_back_before_backing_acknowledgment() {
         release: Mutex::new(released),
     };
     let (worker, owner) = NativePublicationWorker::start_thread(
+        Arc::clone(&confinement),
         configuration(root, NativeWipePolicy::None),
         Some(gate),
         None,
@@ -880,7 +950,14 @@ fn actual_binding_path_failure_rolls_back_before_backing_acknowledgment() {
     );
     drop(actual);
     assert!(
-        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err(),
+        NativePublisher::open(
+            Arc::clone(&confinement),
+            "public".into(),
+            &paths[0],
+            &paths[1],
+            &paths[2]
+        )
+        .is_err(),
         "the physical owner still retains its exclusions"
     );
     drop(worker);
@@ -889,6 +966,7 @@ fn actual_binding_path_failure_rolls_back_before_backing_acknowledgment() {
     fs::remove_file(&paths[3]).unwrap();
     fs::rename(saved_state, &paths[3]).unwrap();
     let (worker, owner) = NativePublicationWorker::start_thread(
+        Arc::clone(&confinement),
         configuration(root, NativeWipePolicy::None),
         None,
         None,
@@ -936,4 +1014,54 @@ fn actual_binding_path_failure_rolls_back_before_backing_acknowledgment() {
             .unwrap()
             .is_some()
     );
+}
+
+/// Runs one explicitly selected non-production native conformance scenario.
+///
+/// # Errors
+/// Refuses a changed process receipt or an unknown fixture selector.
+///
+/// # Panics
+/// Panics when actual kernel, custody, durability or recovery assertions fail.
+pub(super) fn run(
+    selector: &str,
+    confinement: Arc<crate::quota_confinement::Installed>,
+) -> io::Result<()> {
+    confinement.check_current()?;
+    match selector {
+        "canceled_waiter_retains_owner_through_actual_binding_durability" => {
+            canceled_waiter_retains_owner_through_actual_binding_durability(confinement)
+        }
+        "startup_reports_actual_private_state_recovery_failure" => {
+            startup_reports_actual_private_state_recovery_failure(confinement)
+        }
+        "unsupported_wipe_policy_is_refused_before_directory_effects" => {
+            unsupported_wipe_policy_is_refused_before_directory_effects(confinement)
+        }
+        "pending_restart_rebuilds_lease_and_requires_canonical_adoption" => {
+            pending_restart_rebuilds_lease_and_requires_canonical_adoption(confinement)
+        }
+        "pack_pair_reconciles_actual_partial_rename_without_replacing_collision" => {
+            pack_pair_reconciles_actual_partial_rename_without_replacing_collision(confinement)
+        }
+        "failed_second_unlink_recovers_orphan_index_without_pack_authority" => {
+            failed_second_unlink_recovers_orphan_index_without_pack_authority(confinement)
+        }
+        "prepared_roots_defer_staging_effects_and_retain_actual_exclusion" => {
+            prepared_roots_defer_staging_effects_and_retain_actual_exclusion(confinement)
+        }
+        "staged_writer_retains_root_exclusion_after_adapter_drop" => {
+            staged_writer_retains_root_exclusion_after_adapter_drop(confinement)
+        }
+        "actual_binding_path_failure_rolls_back_before_backing_acknowledgment" => {
+            actual_binding_path_failure_rolls_back_before_backing_acknowledgment(confinement)
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown native publication fixture",
+            ));
+        }
+    }
+    Ok(())
 }

@@ -11,7 +11,8 @@ use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
 use super::super::bodies::{BodyIo, EncodedUnit};
 use super::{
-    NativePublishedObject, NativePublisher, NativeRetirementPolicy, NativeSealProbe, WorkerState,
+    NativePublishedObject, NativePublisher, NativePublisherConfig, NativeRetirementPolicy,
+    NativeSealProbe, WorkerState,
 };
 use std::path::PathBuf;
 use terrane::host::publication::Publisher;
@@ -223,6 +224,7 @@ struct RetainedBody {
 }
 
 pub(super) struct CommandOwner {
+    confinement: std::sync::Arc<crate::quota_confinement::Installed>,
     domain: String,
     publisher: Option<Publisher<NativePublisher, WorkerState>>,
     cache: Option<[u8; 16]>,
@@ -237,24 +239,24 @@ pub(super) struct CommandOwner {
 
 impl CommandOwner {
     pub(super) fn new(
-        domain: String,
+        config: NativePublisherConfig,
         publisher: Publisher<NativePublisher, WorkerState>,
         state_directory: PathBuf,
-        retirement: NativeRetirementPolicy,
         body_io: BodyIo,
-        profile: ChunkProfile,
         inventory: super::inventory::NativeInventory,
+        confinement: std::sync::Arc<crate::quota_confinement::Installed>,
     ) -> Self {
         Self {
-            domain,
+            confinement,
+            domain: config.domain,
             publisher: Some(publisher),
             cache: None,
             recovery: true,
             bodies: Vec::new(),
             leases: FsPublicationState::new(TokioLocalFs, state_directory),
-            retirement,
+            retirement: config.retirement,
             body_io,
-            profile,
+            profile: config.profile,
             inventory,
         }
     }
@@ -266,6 +268,7 @@ impl CommandOwner {
     }
 
     pub(super) fn validate_claim(&self, claim: &PublicationClaim) -> io::Result<()> {
+        self.confinement.check_current()?;
         if claim.domain() != self.domain {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -352,6 +355,7 @@ impl CommandOwner {
         context: NativeCommandContext,
         operation: NativeOperation,
     ) -> io::Result<NativeCommandResult> {
+        self.confinement.check_current()?;
         if context.domain != self.domain {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,

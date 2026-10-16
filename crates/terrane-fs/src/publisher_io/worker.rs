@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use terrane::host::publication::{
@@ -98,7 +99,7 @@ mod binding_repair;
 struct WorkerState {
     repair: binding_repair::RetainedBinding,
     inner: FsPublicationState<TokioLocalFs>,
-    #[cfg(test)]
+    #[cfg(feature = "native-test-fixtures")]
     before_record: Option<WorkerGate>,
 }
 
@@ -115,7 +116,7 @@ impl PublicationState for WorkerState {
         claim: &PublicationClaim,
         binding: &VerityBinding,
     ) -> io::Result<()> {
-        #[cfg(test)]
+        #[cfg(feature = "native-test-fixtures")]
         if let Some(gate) = self.before_record.take() {
             gate.wait()?;
         }
@@ -128,13 +129,13 @@ impl PublicationState for WorkerState {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "native-test-fixtures")]
 pub(super) struct WorkerGate {
     arrived: std::sync::mpsc::SyncSender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
-#[cfg(test)]
+#[cfg(feature = "native-test-fixtures")]
 impl WorkerGate {
     pub(super) fn wait(self) -> io::Result<()> {
         self.arrived.send(()).map_err(io::Error::other)?;
@@ -210,6 +211,7 @@ pub struct NativePublisherConfig {
 /// constructor or native-handle conversion; startup consumes these same guards.
 /// It establishes directory custody, not complete host quota admission.
 pub struct NativePublisherPrepared {
+    confinement: Arc<crate::quota_confinement::Installed>,
     config: NativePublisherConfig,
     native: NativePublisher,
     state_directory: PathBuf,
@@ -232,13 +234,20 @@ impl NativePublisherConfig {
     /// A service prepares every configured domain before consuming any result
     /// with `NativePublicationWorker::start_prepared`. Root guards prevent host
     /// provisioning changes during this interval and the complete worker lifetime.
+    /// The actual installed confinement receipt remains retained through the
+    /// prepared guards, worker, native adapter and every staged inode.
     ///
     /// # Errors
     /// Returns unsupported wipe policy, invalid domain or path, overlapping
     /// service identity, unsafe native directory custody, incompatible filesystem,
-    /// conflicting publisher or provisioning-lock errors. No failure creates a
+    /// conflicting publisher, changed confinement or provisioning-lock errors.
+    /// No failure creates a
     /// sealed inode or staging subdirectory.
-    pub fn prepare(self) -> io::Result<NativePublisherPrepared> {
+    pub fn prepare(
+        self,
+        confinement: Arc<crate::quota_confinement::Installed>,
+    ) -> io::Result<NativePublisherPrepared> {
+        confinement.check_current()?;
         if self.wipe != NativeWipePolicy::None {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -278,6 +287,7 @@ impl NativePublisherConfig {
         )?;
         let body_io = BodyIo::open(&self)?;
         let native = NativePublisher::open_unrecovered(
+            Arc::clone(&confinement),
             self.domain.clone(),
             &self.layout_root.join("sealed"),
             &self.layout_root.join("staging"),
@@ -286,6 +296,7 @@ impl NativePublisherConfig {
         let state_directory = self.layout_root.join("state/publication");
         let retained_state = super::native::open_directory(&state_directory)?;
         Ok(NativePublisherPrepared {
+            confinement,
             config: self,
             native,
             state_directory,
@@ -304,6 +315,7 @@ impl NativePublisherConfig {
 /// The worker serializes mutations and never receives paths or arbitrary callbacks.
 #[derive(Clone)]
 pub struct NativePublicationWorker {
+    confinement: Arc<crate::quota_confinement::Installed>,
     sender: mpsc::Sender<Command>,
 }
 
@@ -318,8 +330,12 @@ impl NativePublicationWorker {
     /// publisher, runtime creation, state recovery or thread creation errors.
     /// Returns `Unsupported` for zero, discard or volatile policies before
     /// creating any sealed or staging inode; no policy silently becomes unlink.
-    pub fn start(config: NativePublisherConfig) -> io::Result<Self> {
-        Self::start_prepared(config.prepare()?)
+    pub fn start(
+        config: NativePublisherConfig,
+        confinement: Arc<crate::quota_confinement::Installed>,
+    ) -> io::Result<Self> {
+        confinement.check_current()?;
+        Self::start_prepared(config.prepare(confinement)?)
     }
 
     /// Starts an owner using the exact actual guards retained by preparation.
@@ -329,32 +345,41 @@ impl NativePublicationWorker {
     /// including when the client drops its response waiter.
     ///
     /// # Errors
-    /// Returns runtime/thread creation or actual staging/state recovery errors.
+    /// Returns changed confinement, runtime/thread creation or actual
+    /// staging/state recovery errors.
     pub fn start_prepared(prepared: NativePublisherPrepared) -> io::Result<Self> {
-        #[cfg(test)]
+        prepared.confinement.check_current()?;
+        #[cfg(feature = "native-test-fixtures")]
         let started = Self::start_prepared_thread(prepared, None, None);
-        #[cfg(not(test))]
+        #[cfg(not(feature = "native-test-fixtures"))]
         let started = Self::start_prepared_thread(prepared);
         let (worker, thread) = started?;
         drop(thread);
         Ok(worker)
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "native-test-fixtures")]
     fn start_thread(
+        confinement: Arc<crate::quota_confinement::Installed>,
         config: NativePublisherConfig,
         before_record: Option<WorkerGate>,
         finish_first_unlink: Option<WorkerGate>,
     ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
-        Self::start_prepared_thread(config.prepare()?, before_record, finish_first_unlink)
+        Self::start_prepared_thread(
+            config.prepare(confinement)?,
+            before_record,
+            finish_first_unlink,
+        )
     }
 
     fn start_prepared_thread(
         prepared: NativePublisherPrepared,
-        #[cfg(test)] before_record: Option<WorkerGate>,
-        #[cfg(test)] finish_first_unlink: Option<WorkerGate>,
+        #[cfg(feature = "native-test-fixtures")] before_record: Option<WorkerGate>,
+        #[cfg(feature = "native-test-fixtures")] finish_first_unlink: Option<WorkerGate>,
     ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
+        prepared.confinement.check_current()?;
         let NativePublisherPrepared {
+            confinement,
             config,
             mut native,
             state_directory,
@@ -363,9 +388,8 @@ impl NativePublicationWorker {
             body_io,
             inventory,
         } = prepared;
-        #[cfg(test)]
+        #[cfg(feature = "native-test-fixtures")]
         let body_io = body_io.with_finish_gate(finish_first_unlink);
-        let domain = config.domain;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -375,6 +399,7 @@ impl NativePublicationWorker {
         // A dedicated physical owner retains its own runtime. Cancellation or
         // shutdown of a caller's runtime cannot abort this owner while LocalFs
         // workers still use its directory and inode custody.
+        let caller_confinement = Arc::clone(&confinement);
         let thread = std::thread::Builder::new()
             .name("terrane-publisher".into())
             .spawn(move || {
@@ -396,18 +421,17 @@ impl NativePublicationWorker {
                     let state = WorkerState {
                         repair: binding_repair::RetainedBinding::new(_retained_state),
                         inner: state,
-                        #[cfg(test)]
+                        #[cfg(feature = "native-test-fixtures")]
                         before_record,
                     };
                     let publisher = Publisher::new(native, state);
                     let mut owner = owned_commands::CommandOwner::new(
-                        domain,
+                        config,
                         publisher,
                         state_directory,
-                        config.retirement,
                         body_io,
-                        config.profile,
                         inventory,
+                        Arc::clone(&confinement),
                     );
                     while let Some(command) = receiver.recv().await {
                         match command {
@@ -451,7 +475,13 @@ impl NativePublicationWorker {
                 "publisher worker stopped during state recovery",
             )
         })??;
-        Ok((Self { sender }, thread))
+        Ok((
+            Self {
+                sender,
+                confinement: caller_confinement,
+            },
+            thread,
+        ))
     }
 
     /// Submits a fixed domain-bound native lifecycle command.
@@ -469,6 +499,7 @@ impl NativePublicationWorker {
         context: NativeCommandContext,
         operation: NativeOperation,
     ) -> io::Result<NativeCommandResult> {
+        self.confinement.check_current()?;
         let (response, received) = oneshot::channel();
         self.sender
             .send(Command::Execute {
@@ -497,6 +528,7 @@ impl NativePublicationWorker {
         claim: PublicationClaim,
         source: File,
     ) -> io::Result<NativePublishedObject> {
+        self.confinement.check_current()?;
         if claim.manifest().is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -526,6 +558,7 @@ impl NativePublicationWorker {
     /// Returns `Unsupported` for manifest claims without a retention receipt,
     /// worker shutdown, failed verification, or failed durable binding.
     pub async fn adopt(&self, claim: PublicationClaim) -> io::Result<NativePublishedObject> {
+        self.confinement.check_current()?;
         if claim.manifest().is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -546,6 +579,25 @@ impl NativePublicationWorker {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "native-test-fixtures")]
 #[path = "worker_tests.rs"]
 mod tests;
+
+/// Runs one non-production native conformance fixture in an already confined process.
+///
+/// The dedicated example installs confinement before runtimes or worker threads.
+/// The guest supervisor provisions fixed fixture roots and immutable encoded
+/// inputs before launching the publisher identity; this dispatch never chowns.
+///
+/// # Errors
+/// Rejects changed confinement or an unknown selector.
+///
+/// # Panics
+/// Panics when a fixture's actual kernel, custody or durability assertion fails.
+#[cfg(feature = "native-test-fixtures")]
+pub fn run_native_fixture(
+    selector: &str,
+    confinement: Arc<crate::quota_confinement::Installed>,
+) -> io::Result<()> {
+    tests::run(selector, confinement)
+}
