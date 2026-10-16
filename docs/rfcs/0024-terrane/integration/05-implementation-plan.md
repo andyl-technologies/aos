@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; fourteen of twenty-two T1 tasks are complete.
+**Status:** In progress; fifteen of twenty-two T1 tasks are complete.
 
 The qualified source checkpoint `1d7451dd75` has independently reviewed passing
 outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
@@ -7239,7 +7239,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   PACK-28; `checks.terrane.gates.index-shard-generations`,
   `checks.terrane.gates.index-rebuild`,
   `checks.terrane.gates.bundle-verify`.
-- [ ] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
+- [x] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
   classes, atomic writes, filesystem CAS, generation manifests, startup
   probe. Independent full review identifies an inherited STORE-8 outcome
   discrepancy: a safely read existing legacy log with different proposed
