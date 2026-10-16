@@ -527,7 +527,8 @@ pub(crate) use managed_qemu_hot_fork_source_world_pool::{
     SharedQemuHotForkSourceWorldProviderError,
 };
 pub use packaged_qemu_executor::{
-    AttachedPackagedQemuExecutor, GuardedCampaignOwnerRetirementError, GuardedSourceTransferOffer,
+    AttachedPackagedQemuExecutor, GuardedCampaignOwnerRetirementCause,
+    GuardedCampaignOwnerRetirementError, GuardedSourceTransferOffer,
     GuardedSourceTransferOperation, GuardedTransferError, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
     PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
     PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,

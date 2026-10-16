@@ -110,9 +110,9 @@ pub use ram_catalog::{PackagedRamCatalogConfig, PackagedRamCatalogConfigError};
 pub(crate) mod guarded;
 pub(crate) use guarded::GuardedReceivingReady;
 pub use guarded::{
-    GuardedCampaignOwnerRetirementError, GuardedSourceTransferOffer,
-    GuardedSourceTransferOperation, GuardedTransferError, ReceivingExecutionPreparation,
-    ReceivingExecutionPreparationError,
+    GuardedCampaignOwnerRetirementCause, GuardedCampaignOwnerRetirementError,
+    GuardedSourceTransferOffer, GuardedSourceTransferOperation, GuardedTransferError,
+    ReceivingExecutionPreparation, ReceivingExecutionPreparationError,
 };
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) mod original_campaign;

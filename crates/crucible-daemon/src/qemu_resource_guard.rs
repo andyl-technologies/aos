@@ -1679,6 +1679,16 @@ impl<H> ComposedQemuAttemptResourceGuardFactory<H> {
     }
 }
 
+// Terminal containment is not physical return. The first raw leaf moves to
+// the caller's history; this finite state prevents a later call or Drop from
+// retrying the effect or treating delivered diagnostics as successful cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposedResourceRetirement {
+    Active,
+    Returned,
+    Quarantined,
+}
+
 /// One exact attempt resource guard composed from a host owner.
 #[must_use = "finish the QEMU resource guard or transfer it to quarantine"]
 pub struct ComposedQemuAttemptResourceGuard<H>
@@ -1691,9 +1701,8 @@ where
     cancellation_failure: Arc<Mutex<Option<String>>>,
     cancellation_registration: Option<ExecutionCancellationHookRegistration>,
     original_native_registry: Option<crate::HostOperationalRegistry>,
-    original_native_retirement_failed: bool,
     host: H,
-    terminal: bool,
+    retirement: ComposedResourceRetirement,
 }
 
 impl<H> fmt::Debug for ComposedQemuAttemptResourceGuard<H>
@@ -1706,7 +1715,7 @@ where
             .field("resources", &self.resources)
             .field("quantum_counter", &self.quantum_counter)
             .field("host", &self.host)
-            .field("terminal", &self.terminal)
+            .field("retirement", &self.retirement)
             .finish_non_exhaustive()
     }
 }
@@ -1871,9 +1880,8 @@ where
             cancellation_failure,
             cancellation_registration: Some(cancellation_registration),
             original_native_registry: None,
-            original_native_retirement_failed: false,
             host,
-            terminal: false,
+            retirement: ComposedResourceRetirement::Active,
         };
         if let Err(error) = guard.check_operational_boundary() {
             return match guard.finish_raw() {
@@ -1902,22 +1910,28 @@ where
     ) -> Result<(), crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure> {
         use crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure;
 
-        if self.terminal {
-            if self.original_native_retirement_failed {
+        match self.retirement {
+            ComposedResourceRetirement::Returned => return Ok(()),
+            ComposedResourceRetirement::Quarantined => {
                 return Err(QemuAttemptResourceGuardCleanupFailure::quarantined(
                     QemuVmRealizationError::Canceled {
-                        operation: "repeat quarantined original native retirement",
+                        operation: if self.original_native_registry.is_some() {
+                            "repeat quarantined original native retirement"
+                        } else {
+                            "repeat quarantined attempt host retirement"
+                        },
                     },
                 ));
             }
-            return Ok(());
+            ComposedResourceRetirement::Active => {}
         }
         self.cancellation_registration = None;
         let result = finish_host_raw(&mut self.host, self.original_native_registry.as_ref());
-        self.terminal = true;
-        if result.is_err() && self.original_native_registry.is_some() {
-            self.original_native_retirement_failed = true;
-        }
+        self.retirement = if result.is_ok() {
+            ComposedResourceRetirement::Returned
+        } else {
+            ComposedResourceRetirement::Quarantined
+        };
         result
     }
 }
@@ -1935,7 +1949,7 @@ where
     }
 
     fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.terminal {
+        if self.retirement != ComposedResourceRetirement::Active {
             return Err(QemuVmRealizationError::Executor {
                 operation: "check QEMU attempt resources",
                 message: String::from("attempt resource guard is already terminal"),
@@ -1982,12 +1996,12 @@ where
     }
 
     fn quarantine(&mut self) {
-        if self.terminal {
+        if self.retirement != ComposedResourceRetirement::Active {
             return;
         }
         self.cancellation_registration = None;
         self.host.quarantine();
-        self.terminal = true;
+        self.retirement = ComposedResourceRetirement::Quarantined;
     }
 }
 
@@ -2174,7 +2188,7 @@ where
                 // A routing refusal cannot certify reap or destroy the only
                 // child handle. Preserve it and quarantine the whole World.
                 std::mem::forget(child);
-                self.host.quarantine();
+                self.quarantine();
             }
         }
     }
@@ -2307,7 +2321,9 @@ where
         &mut self,
         registry: crate::HostOperationalRegistry,
     ) -> Result<(), QemuVmRealizationError> {
-        if self.original_native_registry.is_some() || self.terminal {
+        if self.original_native_registry.is_some()
+            || self.retirement != ComposedResourceRetirement::Active
+        {
             return Err(QemuVmRealizationError::Executor {
                 operation: "retain original native registry",
                 message: String::from("original registry is already bound or guard is terminal"),
@@ -2374,7 +2390,7 @@ where
         node: &NodeId,
         basis: QemuHotForkChildProcessBasis,
     ) -> Result<Self::Authority, QemuNodeChannelError> {
-        if self.terminal {
+        if self.retirement != ComposedResourceRetirement::Active {
             return Err(QemuNodeChannelError::new(
                 "retain selected forked child",
                 "aggregate World is terminal",
@@ -2385,7 +2401,7 @@ where
             Err(source) => {
                 // A failed selector cannot return a reported live child to an
                 // ordinary path. The containing kernel owners retain all jobs.
-                self.host.quarantine();
+                self.quarantine();
                 Err(QemuNodeChannelError::new(
                     "retain selected forked child",
                     source.to_string(),
@@ -2400,7 +2416,7 @@ where
         &mut self,
         basis: QemuHotForkChildProcessBasis,
     ) -> Result<Self::Authority, QemuNodeChannelError> {
-        if self.terminal {
+        if self.retirement != ComposedResourceRetirement::Active {
             return Err(QemuNodeChannelError::new(
                 "retain forked child process",
                 "attempt resource guard is already terminal",
