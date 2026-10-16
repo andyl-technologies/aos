@@ -124,6 +124,9 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + super::pre_dom::counter_scratch_data()
         // Complete return views coexist with the named payload/observer rows:
         // edition transpose, actual Hello phase, and exhaustive launch facts.
+        // Canonical private bank growth: checked full/spare scalar views.
+        + size_of::<[usize; 3]>()
+        + size_of::<Result<usize, ProviderError>>()
         + size_of::<Result<Option<bool>, ProviderError>>()
         + size_of::<Result<hello::HelloStorage, ProviderError>>()
         + size_of::<Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError>>()

@@ -273,6 +273,10 @@ fn project_with_source(
             super::super::original_native_private_invocation_backing_data()?,
             super::super::original_native_private_bank_shared_layout_data()?,
             input.encoded_launch.len(),
+            // Bootstrap canonical_json writes a growable Vec, not a boxed
+            // exact-length slice. Keep the original length term and separately
+            // fund its possible spare backing in both14 and15 projections.
+            canonical_launch_spare_data(input.encoded_launch.len(), maximum)?,
             launch_backing,
             source_backing,
             registration_backing,
@@ -291,4 +295,43 @@ fn project_with_source(
         source_requested_bytes: source,
         source_value_backing_bytes: source_backing,
     })
+}
+
+// This is the existing canonical-output growth geometry (4*n+256). The old
+// length term remains in retained; this supplies only its missing spare bank.
+// It is unrelated to the second independent launch_body clone carried in T.
+fn canonical_launch_spare_data(encoded: usize, maximum: usize) -> Result<usize, ProviderError> {
+    let complete = encoded
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(256))
+        .filter(|bytes| *bytes <= maximum)
+        .ok_or_else(refused)?;
+    complete.checked_sub(encoded).ok_or_else(refused)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_launch_bank_covers_actual_capacity_and_refuses_one_short_retained_window()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"launch": "x".repeat(8193)}),
+            serde_json::json!({"escaped": "\n\t\"\\", "unicode": "𝄞", "values": [1, 2, 3]}),
+        ] {
+            let actual = crucible_node_contract::canonical::canonical_json(&value)?;
+            let spare = canonical_launch_spare_data(actual.len(), usize::MAX)?;
+            let complete = sum(&[actual.len(), spare], usize::MAX)?;
+
+            assert!(complete >= actual.capacity());
+            assert!(spare > 0);
+            assert_eq!(canonical_launch_spare_data(actual.len(), complete)?, spare);
+            assert!(canonical_launch_spare_data(actual.len(), complete - 1).is_err());
+        }
+        assert!(canonical_launch_spare_data(usize::MAX, usize::MAX).is_err());
+        Ok(())
+    }
 }
