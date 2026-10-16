@@ -43,7 +43,7 @@
       trap 'umount "$TERRANE_CACHE_VM_ROOT"; rm -f "$TERRANE_CACHE_VM_IMAGE"; rmdir "$TERRANE_CACHE_VM_ROOT" /var/lib/terrane-cache-proof' EXIT
       (cd ${image} && sha256sum --check share/elf-sha256sum)
       export LD_LIBRARY_PATH="$(cat ${image}/share/runtime-library-path)"
-      ${pkgs.python3}/bin/python3 ${./host_cache_vm.py} ${image} ${pkgs.terrane.src}
+      ${pkgs.python3}/bin/python3 ${image}/share/host_cache_vm.py ${image} ${pkgs.terrane.src}
     '';
   };
 in {

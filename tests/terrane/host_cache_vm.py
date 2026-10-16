@@ -284,7 +284,15 @@ def verify_image():
     identity = json.loads((IMAGE / "share/identity.json").read_text())
     require(identity["schema_version"] == 1 and identity["source"] == str(SOURCE)
             and identity["native_cases_executed"] == [], "image source or execution identity mismatch")
-    require(pathlib.Path(__file__).read_bytes() == (SOURCE / "tests/terrane/host_cache_vm.py").read_bytes(),
+    supervisor_source = SOURCE / "tests/terrane/host_cache_vm.py"
+    supervisor = IMAGE / "share/host_cache_vm.py"
+    supervisor_hash = hashlib.sha256(supervisor.read_bytes()).hexdigest()
+    require(identity["supervisor"] == {"source_path": "tests/terrane/host_cache_vm.py",
+                                      "installed_path": "share/host_cache_vm.py", "sha256": supervisor_hash}
+            and supervisor_hash == identity["input_sha256"]["tests/terrane/host_cache_vm.py"]
+            and supervisor.read_bytes() == supervisor_source.read_bytes(),
+            "installed VM supervisor differs from immutable source")
+    require(pathlib.Path(__file__).read_bytes() == supervisor_source.read_bytes(),
             "executed VM supervisor differs from source")
     expected = {"host_cache_fixture": ("terrane-fs", "example", ["native-test-fixtures", "tokio"]),
                 "terrane": ("terrane-cli", "bin", []), "aos-terrane-host": ("aos-terrane", "bin", [])}

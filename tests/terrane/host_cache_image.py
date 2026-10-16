@@ -147,6 +147,16 @@ def main():
         shutil.copy2(path, installed)
         shared.require(digest(installed) == digest(path), "installed runtime changed: " + name)
         checksums.append(f"{digest(installed)}  lib/{name}\n")
+    # Retain the actual guest entry point in the image closure, with the same
+    # immutable-source binding as the executable artifacts.
+    supervisor_source = source / "tests/terrane/host_cache_vm.py"
+    supervisor = output / "share/host_cache_vm.py"
+    shutil.copy2(supervisor_source, supervisor)
+    shared.require(supervisor.read_bytes() == supervisor_source.read_bytes(), "installed supervisor differs from source")
+    supervisor_identity = {"source_path": "tests/terrane/host_cache_vm.py",
+                           "installed_path": "share/host_cache_vm.py", "sha256": digest(supervisor)}
+    checksums.append(f"{digest(supervisor)}  share/host_cache_vm.py\n")
+
     library_path = ":".join(map(str, [output / "lib", *store_paths]))
     listed = subprocess.run([str(output / "bin/host_cache_fixture"), "--list"],
                             env=dict(os.environ, LD_LIBRARY_PATH=library_path), check=True,
@@ -154,7 +164,7 @@ def main():
     expected = ["host-cache:" + name for name in ["prepare", "empty", "refuse", "cancel", "edquot", "hold", "start-refuse"]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     identity = {"schema_version": 1, "source": str(source), "artifacts": identities,
-                "input_sha256": source_hashes, "selectors": listed,
+                "input_sha256": source_hashes, "selectors": listed, "supervisor": supervisor_identity,
                 "runtime_library_path": library_path, "native_cases_executed": []}
     (output / "share/identity.json").write_text(json.dumps(identity, indent=2) + "\n")
     (output / "share/runtime-library-path").write_text(library_path + "\n")
