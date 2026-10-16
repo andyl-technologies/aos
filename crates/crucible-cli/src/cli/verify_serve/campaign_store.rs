@@ -344,7 +344,7 @@ pub(super) fn verify_campaign_store_inventory(
     spool_parent: Option<&Path>,
 ) -> Result<VerifiedCampaignStoreInventory, CliError> {
     let loaded = load_campaign_repository_graph(deployment_path)?;
-    let spool = private_inventory_spool(spool_parent)?;
+    let spool = private_inventory_spool(spool_parent, deployment_path)?;
     verify_loaded_campaign_store_inventory(loaded, limits, spool.path())
 }
 
@@ -352,7 +352,7 @@ pub(super) fn authenticate_campaign_store_capabilities(
     deployment_path: &Path,
 ) -> Result<AuthenticatedCampaignStoreCapabilities, CliError> {
     let loaded = load_campaign_repository_graph(deployment_path)?;
-    let spool = private_inventory_spool(None)?;
+    let spool = private_inventory_spool(None, deployment_path)?;
     let physical = loaded
         .maintenance
         .verify_physical_inventory(StoreGraphVerificationLimits::DEFAULT, spool.path())
@@ -375,12 +375,21 @@ pub(super) fn authenticate_campaign_store_capabilities(
 /// Creates an owner-only directory for the physical-inventory spool.
 ///
 /// The spool lists every placement's object ID, so it lives in a fresh `0700`
-/// directory under `parent` (or the process temporary directory) that is
-/// removed when the returned guard drops. A large store's spool needs disk
-/// proportional to its placement count; point `parent` at persistent storage
-/// rather than a RAM-backed temporary directory for such stores.
-fn private_inventory_spool(parent: Option<&Path>) -> Result<tempfile::TempDir, CliError> {
-    let parent = parent.map_or_else(std::env::temp_dir, Path::to_path_buf);
+/// directory that is removed when the returned guard drops. Its size grows
+/// with the store's placement count, so the default parent is the deployment
+/// file's own directory: operator-owned persistent storage, never the process
+/// temporary directory, which is often RAM-backed.
+fn private_inventory_spool(
+    parent: Option<&Path>,
+    deployment_path: &Path,
+) -> Result<tempfile::TempDir, CliError> {
+    let parent = match parent {
+        Some(parent) => parent.to_path_buf(),
+        None => match deployment_path.parent() {
+            Some(directory) if !directory.as_os_str().is_empty() => directory.to_path_buf(),
+            _ => PathBuf::from("."),
+        },
+    };
     tempfile::Builder::new()
         .prefix(STORE_VERIFY_SPOOL_PREFIX)
         .permissions(fs::Permissions::from_mode(0o700))
@@ -1217,7 +1226,7 @@ root = {:?}
             .graph
             .put_if_absent(first_id, &BlobHandle::from_bytes(first_bytes.to_vec()))
             .expect("publish first physical placement");
-        let spool = private_inventory_spool(Some(&fixture.root)).expect("private spool");
+        let spool = private_inventory_spool(None, &deployment).expect("private spool");
         let spool_mode = fs::metadata(spool.path()).expect("spool metadata").mode();
 
         let Err(error) = verify_loaded_campaign_store_inventory(
@@ -1230,6 +1239,11 @@ root = {:?}
 
         assert!(error.to_string().contains("verification bound"));
         assert_eq!(spool_mode & 0o077, 0, "spool directory must be owner-only");
+        assert_eq!(
+            spool.path().parent(),
+            deployment.parent(),
+            "the default spool must sit beside the deployment, not in TMPDIR"
+        );
         assert!(
             spool
                 .path()

@@ -769,7 +769,7 @@ struct StoreVerifyArgs {
         default_value_t = crucible_daemon::campaign_store_composition::DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES
     )]
     max_logical_bytes: u64,
-    /// Parent directory for the private inventory spool [default: TMPDIR].
+    /// Parent directory for the private inventory spool [default: deployment directory].
     #[arg(long, value_name = "path")]
     spool_dir: Option<PathBuf>,
 }

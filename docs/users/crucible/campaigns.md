@@ -1124,8 +1124,8 @@ crucible --format json store verify "$STORE"
 
 `verify` stops once the summed logical bytes exceed `--max-logical-bytes`
 (128 GiB by default). It spools the placement inventory, 45 bytes per
-placement, to a private directory under `--spool-dir` or `$TMPDIR`; for a
-large store, point `--spool-dir` at persistent storage rather than a
+placement, to a private directory under `--spool-dir`, or by default next to
+the deployment file, so the spool lands on persistent storage rather than a
 RAM-backed temporary directory.
 
 These commands do not grant campaign-ref or deletion authority. An ID appearing
