@@ -189,13 +189,17 @@ impl<S: AsFd> Bootstrap<S> {
                     startup.maximum_launch_bytes.max(startup.maximum_boot_bytes),
                     &budget,
                 )?;
-                startup.ensure_original()?;
                 frame.map(|frame| frame.value)
             } else {
                 self.reader.read()?
             }
             .ok_or(ProviderError::Frame("native private launch absent"))?,
         );
+        // A completed Value belongs to this same bootstrap before the next
+        // fallible cut check. Expiry retains it alongside its literal journal.
+        if let Some(startup) = self.startup.as_ref().filter(|_| pre_dom_selected) {
+            startup.ensure_original()?;
+        }
         self.launch_bytes = crucible_node_contract::canonical::canonical_json(
             self.launch_value
                 .as_ref()
@@ -284,7 +288,6 @@ impl<S: AsFd> Bootstrap<S> {
                     carry,
                 );
                 let frame = self.reader.read_original_native_preflight(startup.maximum_boot_bytes, &budget)?;
-                startup.ensure_original()?;
                 frame
             } else {
                 self.reader.read_retained_with_maximum_bytes(self.startup.as_ref().map_or(512 * 1024, |startup| startup.maximum_boot_bytes))?
@@ -292,6 +295,11 @@ impl<S: AsFd> Bootstrap<S> {
             .ok_or(ProviderError::Frame("native private boot absent"))?
             .value,
         );
+        // Keep the complete second Value on expiry before any boot DTO or
+        // Source/registration preparation borrows it.
+        if let Some(startup) = self.startup.as_ref().filter(|_| pre_dom_selected) {
+            startup.ensure_original()?;
+        }
         let boot_value = self
             .boot_value
             .as_ref()
