@@ -1,7 +1,9 @@
 //! Queries kernel project-quota assignments without granting provisioning power.
 //!
 //! Quota limits and project ownership are provisioned by the host administrator.
-//! Cache roles verify those facts; they never acquire `CAP_SYS_ADMIN`.
+//! Project-quota queries themselves require host privilege. This raw helper is
+//! for a host-supplied supervisor; it is not an unprivileged cache acceptance
+//! mechanism. Terrane roles never acquire `CAP_SYS_ADMIN`.
 
 use std::{
     io,

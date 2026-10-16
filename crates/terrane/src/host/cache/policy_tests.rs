@@ -128,3 +128,64 @@ fn host_cache_eviction_counts_reservations_and_large_incoming_allocations() {
         .unwrap();
     assert_eq!(cache.charged_bytes(), 100);
 }
+
+#[test]
+fn host_cache_reassembly_never_keeps_multi_chunk_and_still_seals_inline() {
+    use super::ReassemblyMode;
+    use crate::host::publication::{PublicationClaim, PublicationRecipe};
+    use terrane_core::{
+        chunking::ChunkProfile,
+        identity::{Descriptor, IdentityKind, TERRANE_V1},
+        manifest::{ChunkRef, Manifest},
+    };
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let inline_id = TERRANE_V1.calculate(IdentityKind::Chunk, b"x").unwrap();
+    let inline = PublicationClaim::new(
+        "tenant:fixture".into(),
+        PublicationRecipe::Inline {
+            chunk: Descriptor::from_identity(&TERRANE_V1, &inline_id, b"x").unwrap(),
+        },
+        &profile,
+    )
+    .unwrap();
+    let mut first = vec![0_u8; profile.maximum()];
+    let boundary = profile.first_boundary(&first);
+    first.truncate(boundary);
+    let first_id = TERRANE_V1.calculate(IdentityKind::Chunk, &first).unwrap();
+    let final_id = TERRANE_V1.calculate(IdentityKind::Chunk, b"x").unwrap();
+    let mut full = first.clone();
+    full.push(b'x');
+    let manifest = Manifest {
+        size: full.len() as u64,
+        chunks: vec![
+            ChunkRef {
+                digest: first_id.terrane_v1_digest().unwrap(),
+                length: first.len() as u64,
+            },
+            ChunkRef {
+                digest: final_id.terrane_v1_digest().unwrap(),
+                length: 1,
+            },
+        ],
+        hashes: [("blake3".into(), blake3::hash(&full).as_bytes().to_vec())].into(),
+        media_type: None,
+    };
+    let encoded = manifest.encode(&profile).unwrap();
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Manifest, &encoded)
+        .unwrap();
+    let multi = PublicationClaim::new(
+        "tenant:fixture".into(),
+        PublicationRecipe::Manifest {
+            object: Descriptor::from_identity(&TERRANE_V1, &identity, &encoded).unwrap(),
+            canonical_manifest: encoded,
+        },
+        &profile,
+    )
+    .unwrap();
+
+    assert!(ReassemblyMode::Never.requires_sealed_file(&inline));
+    assert!(!ReassemblyMode::Never.requires_sealed_file(&multi));
+    assert!(ReassemblyMode::Always.requires_sealed_file(&multi));
+    assert!(ReassemblyMode::try_from("smart").is_err());
+}

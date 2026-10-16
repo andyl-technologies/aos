@@ -6,8 +6,12 @@
 
 use rustix::fs::{Mode, OFlags, fstat, fstatfs, open, openat};
 mod quota;
+mod reassembly;
+mod source;
 
 pub use quota::ProjectQuota;
+pub use reassembly::NativeReassemblyPlan;
+pub use source::NativeChunkSource;
 
 use std::{collections::BTreeMap, io, os::fd::OwnedFd};
 use terrane::host::cache::DomainHostLayout;
@@ -82,6 +86,20 @@ impl NativeHostLayout {
     /// # Errors
     /// Refuses renamed/replaced directories and failed kernel metadata reads.
     pub fn recheck(&self) -> io::Result<()> {
+        let current_root = open(
+            self.layout.root(),
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let expected_root = fstat(&self.root)?;
+        let actual_root = fstat(&current_root)?;
+        if expected_root.st_dev != actual_root.st_dev || expected_root.st_ino != actual_root.st_ino
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "host cache root was replaced",
+            ));
+        }
         for (name, descriptor) in &self.directories {
             let current = openat(
                 &self.root,
