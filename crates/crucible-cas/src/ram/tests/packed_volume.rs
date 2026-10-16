@@ -53,10 +53,13 @@ struct Fixture {
 
 impl Fixture {
     fn new(root: &Path) -> Self {
-        let quota = Arc::new(FixtureRamQuota(
+        Self::with_quota(root, Self::new_quota())
+    }
+
+    fn new_quota() -> Arc<FixtureRamQuota> {
+        Arc::new(FixtureRamQuota(
             crate::content_store::test_resources::FixtureResourceBudget::new(128, 256 << 20),
-        ));
-        Self::with_quota(root, quota)
+        ))
     }
 
     fn with_quota(root: &Path, quota: Arc<FixtureRamQuota>) -> Self {
@@ -273,6 +276,16 @@ fn packed_incompressible_512_mib_capture_archive_restore_and_repack() {
 }
 
 #[test]
+fn packed_shared_canonical_round_trip_and_fenced_maintenance() {
+    exercise_volume_with_retention(4096 * 8, true);
+}
+
+#[test]
+fn packed_shared_512_mib_capture_archive_restore_and_repack() {
+    exercise_volume_with_retention(VOLUME_BYTES, true);
+}
+
+#[test]
 fn packed_repack_depth_first_read_costs() {
     cost::assert_repack_read_costs(32 << 20);
 }
@@ -283,12 +296,56 @@ fn packed_repack_512_mib_depth_first_read_costs() {
 }
 
 fn exercise_volume(bytes: u64) {
+    exercise_volume_with_retention(bytes, false);
+}
+
+fn exercise_volume_with_retention(bytes: u64, shared_metadata: bool) {
     let complete = VolumeStage::start(bytes, "exercise");
     let setup = VolumeStage::start(bytes, "setup");
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
-    let source = Fixture::new(source_directory.path());
-    let destination = Fixture::new(destination_directory.path());
+    let fixture = |path: &Path| {
+        if shared_metadata {
+            let (fixture, shared) = shared_metadata::volume_fixture(path);
+            (fixture, Some(shared))
+        } else {
+            (Fixture::new(path), None)
+        }
+    };
+    let (source, source_cache) = fixture(source_directory.path());
+    let (destination, destination_cache) = fixture(destination_directory.path());
+    let source_bank = source.quota.clone();
+    let destination_bank = destination.quota.clone();
+
+    exercise_volume_on_fixtures(
+        bytes,
+        source_directory.path(),
+        source,
+        destination,
+        source_cache,
+        destination_cache,
+        setup,
+    );
+    if shared_metadata {
+        assert_eq!(source_bank.0.usage().unwrap(), (0, 0));
+        assert_eq!(destination_bank.0.usage().unwrap(), (0, 0));
+    }
+    complete.finish(format_args!(
+        "pages={} objects={} logical_bytes={bytes}",
+        bytes / 4096,
+        3 * (bytes / 4096),
+    ));
+}
+
+fn exercise_volume_on_fixtures(
+    bytes: u64,
+    source_directory: &Path,
+    source: Fixture,
+    destination: Fixture,
+    source_cache: Option<Arc<shared_metadata::SharedQuota>>,
+    destination_cache: Option<Arc<shared_metadata::SharedQuota>>,
+    setup: VolumeStage,
+) {
     let source_retention = source.retention();
     let pages = bytes / 4096;
     let objects = 3 * pages;
@@ -434,11 +491,31 @@ fn exercise_volume(bytes: u64) {
     pinned_read.finish(format_args!("bytes={count}"));
     drop((pinned, handle, scope));
     assert_restored(&source, &root, pages, "source_restore_after_repack");
+    if source_cache.is_some() {
+        let cold = crate::content_store::packed_read_costs();
+        assert_eq!(cold.lookups, objects - 1);
+        assert!(cold.authenticated_manifests > 0);
+        assert!(cold.authenticated_manifests <= report.after().packs());
+        assert!(cold.authenticated_rows <= objects);
+
+        // Keep the entire lifecycle's cache live: no stage flush may make the
+        // repacked working set appear smaller than its real overlapping debt.
+        assert_restored(&source, &root, pages, "source_restore_after_repack_warm");
+        let warm = crate::content_store::packed_read_costs();
+        assert_eq!(warm.lookups, cold.lookups);
+        assert_eq!(warm.pack_switches, cold.pack_switches);
+        assert_eq!(warm.authenticated_manifests, 0);
+        assert_eq!(warm.authenticated_rows, 0);
+        assert_eq!(warm.authenticated_manifest_bytes, 0);
+    }
 
     // Reopening authenticates the complete persisted generation under the
     // same finite namespace bank, independently of the still-live old graph.
     let reopen = VolumeStage::start(bytes, "reopen");
-    let restarted = Fixture::with_quota(source_directory.path(), source.quota.clone());
+    let restarted = match &source_cache {
+        Some(shared) => shared.reopen_fixture(source_directory),
+        None => Fixture::with_quota(source_directory, source.quota.clone()),
+    };
     assert_eq!(restarted.objects(), objects);
     let reopened = restarted
         .store
@@ -450,6 +527,11 @@ fn exercise_volume(bytes: u64) {
         reopened.object_id()
     ));
     assert_restored(&restarted, &reopened, pages, "reopened_restore");
+    if source_cache.is_some() {
+        let reopened_cost = crate::content_store::packed_read_costs();
+        assert_eq!(reopened_cost.lookups, objects - 1);
+        assert_eq!(reopened_cost.authenticated_manifests, 0);
+    }
     drop((reopened, restarted));
 
     // Complete authenticated marking is streamed under actual GC exclusion.
@@ -520,9 +602,12 @@ fn exercise_volume(bytes: u64) {
     assert_restored(&source, &root, pages, "source_final_restore");
     source.original.verify_live().unwrap();
     destination.original.verify_live().unwrap();
-    complete.finish(format_args!(
-        "pages={pages} objects={objects} logical_bytes={bytes}"
-    ));
+    if let Some(shared) = source_cache {
+        shared.assert_reclaimed();
+    }
+    if let Some(shared) = destination_cache {
+        shared.assert_reclaimed();
+    }
 }
 
 // A start record locates interrupted stages; only completed stages have an end

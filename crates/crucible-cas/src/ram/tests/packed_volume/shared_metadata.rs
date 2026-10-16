@@ -1,4 +1,4 @@
-//! Canonical sender turns borrowing one physical service metadata core.
+//! Canonical sender and complete-lifecycle fixtures sharing physical metadata.
 //!
 //! The finite portable bank models the authored metadata subset. It issues no
 //! kernel quota, native Source or process envelope; real archive/Graph/EOF
@@ -16,11 +16,12 @@ const METADATA_BYTES: u64 = 64 << 20;
 pub(super) struct SharedQuota {
     cache: PackedManifestCache<ResourceLoan>,
     quota: Arc<FixtureRamQuota>,
+    maximum_bytes: u64,
 }
 
 impl StorePhysicalQuotaGuard for SharedQuota {
     fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
-        Ok(METADATA_BYTES)
+        Ok(self.maximum_bytes)
     }
 
     fn verify(&self) -> Result<(), StoreError> {
@@ -52,34 +53,66 @@ pub(super) fn fixture(root: &Path) -> (Fixture, Arc<SharedQuota>) {
     let quota = Arc::new(FixtureRamQuota(
         crate::content_store::test_resources::FixtureResourceBudget::new(128, METADATA_BYTES),
     ));
+    fixture_with_quota(root, quota, METADATA_BYTES)
+}
+
+/// Uses the complete lifecycle's unchanged descriptor and resident bank.
+pub(super) fn volume_fixture(root: &Path) -> (Fixture, Arc<SharedQuota>) {
+    let quota = Fixture::new_quota();
+    let maximum_bytes = quota.decoded_metadata_limit().unwrap();
+    fixture_with_quota(root, quota, maximum_bytes)
+}
+
+fn fixture_with_quota(
+    root: &Path,
+    quota: Arc<FixtureRamQuota>,
+    maximum_bytes: u64,
+) -> (Fixture, Arc<SharedQuota>) {
     let shared = Arc::new(SharedQuota {
         cache: PackedManifestCache::new(
-            METADATA_BYTES,
+            maximum_bytes,
             crate::content_store::test_resources::FixtureResourceBudget::loan_control_bytes(),
         ),
-        quota: quota.clone(),
-    });
-    let fixture = Fixture::with_guard(
-        root,
         quota,
-        shared.clone(),
-        BTreeSet::from([
-            ObjectKind::RamExtent,
-            ObjectKind::RamTree,
-            ObjectKind::ExactManifest,
-            ObjectKind::Trace,
-        ]),
-    );
+        maximum_bytes,
+    });
+    let fixture = shared.reopen_fixture(root);
     (fixture, shared)
 }
 
 impl SharedQuota {
+    /// Reopens the Graph using this SAME cache owner and finite bank.
+    pub(super) fn reopen_fixture(self: &Arc<Self>, root: &Path) -> Fixture {
+        Fixture::with_guard(
+            root,
+            self.quota.clone(),
+            self.clone(),
+            BTreeSet::from([
+                ObjectKind::RamExtent,
+                ObjectKind::RamTree,
+                ObjectKind::ExactManifest,
+                ObjectKind::Trace,
+            ]),
+        )
+    }
+
+    pub(super) fn assert_reclaimed(&self) {
+        let before = self.quota.0.usage().unwrap();
+        let reclaimed = self.reclaim();
+        let after = self.quota.0.usage().unwrap();
+        assert!(reclaimed > 0, "the lifecycle retained shared metadata");
+        assert_eq!(after.0, before.0, "metadata owns no pack descriptors");
+        assert_eq!(before.1 - after.1, reclaimed);
+        assert_eq!(self.reclaim(), 0, "physical refund occurs only once");
+        assert_eq!(self.quota.0.usage().unwrap(), after);
+    }
+
     fn reclaim_shortfall(&self, requested: u64) -> Result<(), StoreError> {
         let used = self.quota.0.usage()?.1;
         let shortfall = used
             .checked_add(requested)
             .ok_or(StoreError::Quota)?
-            .saturating_sub(METADATA_BYTES);
+            .saturating_sub(self.maximum_bytes);
         if shortfall != 0 {
             // The real finite bank is rechecked by the following reservation.
             // No lock is held during physical cache destruction, and pending

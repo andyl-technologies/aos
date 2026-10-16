@@ -97,8 +97,16 @@ separate cost control and production quota guard use the service-owned cache;
 the measured switch count is the same, while authenticated manifests fall from
 391,776 to 628 in the 512-MiB post-repack traversal. This identifies two guard
 policies, not a demonstrated shared-cache eviction defect. The cache-disabled
-integrity coverage remains required. Complete capture/archive/reopen/GC overlap
-with one retained cache owner still needs its own lifecycle control.
+integrity coverage remains required. Additional complete lifecycle controls now
+use the same retained cache across capture, archive, repeated archive, repack,
+reopen and GC. Their source and destination each keep the original 128-descriptor,
+256-MiB fixture bank; the separate cost fixture keeps its 64-MiB bank. The quick
+case and full 512-MiB case pass, the latter in 954.84 seconds. After repack, cold
+restore authenticates 628 manifests over 393,216 rows; warm and reopened restores
+authenticate none. Actual reclamation refunds the matching bank exactly once,
+and both banks have zero descriptor and resident debt after final destruction.
+The original cache-disabled lifecycle remains required and unchanged in scope.
+These are integrity and accounting controls, not VM throughput measurements.
 
 Execution runners now expose retirement through an existing supervised
 operation. Routers visit both contained runners even when neither became the
