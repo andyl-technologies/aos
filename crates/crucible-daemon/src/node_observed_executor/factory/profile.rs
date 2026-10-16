@@ -845,60 +845,59 @@ pub(super) fn authenticate_recorded(
     configuration: &crate::node_scenario::NodeRunConfiguration,
     request: &crucible_campaign::observed_node_attempt::ObservedAttemptRequest,
 ) -> Result<(), NodeObservedError> {
-    use crucible_campaign::{
-        CampaignHash,
-        executor_node_capabilities::{
-            ExecutorNodeCapabilities, ExecutorNodeRoster, ExecutorOwnerRole,
-            NodeExecutionGuarantee, NodeMaterializationStrategy, OwnerImplementationBinding,
-        },
+    use crucible_campaign::executor_node_capabilities::{
+        ExecutorNodeCapabilities, NodeMaterializationStrategy,
     };
 
     let scenario_artifact = scenario.artifact()?;
     let configuration_artifact = configuration.artifact(scenario)?;
-    let mut owners = BTreeMap::new();
-    for owner in &scenario.owners {
-        let node = owner
-            .owner
-            .participant_ids
-            .first()
-            .ok_or_else(|| refused("recorded installed owner has no participant"))?;
-        let binding = scenario
-            .compatibility
-            .iter()
-            .find(|binding| &binding.node_id == node)
-            .ok_or_else(|| refused("recorded installed owner has no complete node binding"))?;
-        let guarantees: GuaranteeProfile = serde_json::from_slice(
+    let ownership: OwnershipPolicy = serde_json::from_slice(
+        &scenario
+            .content_bytes(&scenario.world.ownership_ref, 4 * 1024 * 1024)
+            .map_err(|error| refused(&error.message))?,
+    )?;
+    let mut guarantees = BTreeMap::new();
+    for binding in &scenario.compatibility {
+        let profile: GuaranteeProfile = serde_json::from_slice(
             &scenario
                 .content_bytes(&binding.guarantees_ref, 4 * 1024 * 1024)
                 .map_err(|error| refused(&error.message))?,
         )?;
-        let guarantee = match guarantees.repeatability {
-            Repeatability::Qualified => NodeExecutionGuarantee::Repeatable,
-            Repeatability::Nondeterministic => NodeExecutionGuarantee::Nondeterministic,
-            Repeatability::Unqualified => NodeExecutionGuarantee::Unqualified,
-        };
-        let roles = BTreeSet::from([ExecutorOwnerRole::Capture, ExecutorOwnerRole::Execution]);
-        owners.insert(
-            owner.owner.id.as_str().to_owned(),
-            OwnerImplementationBinding::new_with_roles(
-                binding.implementation.implementation_id.as_str().to_owned(),
-                CampaignHash::parse(&owner.identity()?.digest)?,
-                owner
-                    .owner
-                    .participant_ids
-                    .iter()
-                    .map(|node| node.as_str().to_owned())
-                    .collect(),
-                guarantee,
-                roles,
-            )?,
-        );
+        guarantees.insert(binding.node_id.clone(), profile);
     }
-    let roster = ExecutorNodeRoster::new(
+    let public_edges = scenario.world.connections.iter().map(|connection| {
+        (
+            connection.producer.node_id.clone(),
+            connection.consumer.node_id.clone(),
+        )
+    });
+    let internal_edges = ownership.internal_dependencies.iter().map(|dependency| {
+        (
+            dependency.producer_node_id.clone(),
+            dependency.consumer_node_id.clone(),
+        )
+    });
+    // Reuse admission's actual influence propagation. Raw per-node declarations
+    // cannot erase a coupled owner's taint during recovery of this same attempt.
+    let (effective, _) = crucible::node_admission::effective_repeatability_data(
+        &scenario.owners,
+        &ownership,
+        &guarantees,
+        public_edges.chain(internal_edges),
+    )
+    .map_err(native)?;
+    let roster = crate::executor_node_capabilities::roster_from_graph_data(
+        &scenario.owners,
+        |node| {
+            scenario
+                .compatibility
+                .iter()
+                .find(|binding| &binding.node_id == node)
+        },
+        |node| effective.get(node).copied(),
+        &scenario.world.identity()?,
         scenario_artifact.id()?,
         configuration_artifact.id()?,
-        CampaignHash::parse(&scenario.world.identity()?.digest)?,
-        owners,
     )?;
     let capabilities = ExecutorNodeCapabilities::new(
         roster,

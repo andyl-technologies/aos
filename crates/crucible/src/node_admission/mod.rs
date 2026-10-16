@@ -17,6 +17,7 @@ mod error;
 mod evidence;
 mod extensions;
 mod graph;
+pub use graph::effective_repeatability_data;
 mod nodes;
 mod policy;
 mod ports;

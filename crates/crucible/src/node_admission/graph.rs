@@ -187,7 +187,18 @@ pub(super) fn validate_graph(
         world_hash,
         content,
     )?;
-    propagate_guarantees(request, ownership, guarantees, edges)
+    let (effective_repeatability, world_repeatability) = effective_repeatability_data(
+        request.owners,
+        ownership,
+        guarantees,
+        edges
+            .into_iter()
+            .map(|(producer, consumer, _)| (producer, consumer)),
+    )?;
+    Ok(GraphGuarantees {
+        effective_repeatability,
+        world_repeatability,
+    })
 }
 
 fn require_node(request: &AdmissionRequest<'_>, id: &Id) -> Result<(), AdmissionError> {
@@ -845,24 +856,33 @@ fn validate_zero_cycles(
     Ok(())
 }
 
-fn propagate_guarantees(
-    request: &AdmissionRequest<'_>,
+/// Derives repeatability through complete causal and shared-owner relationships.
+///
+/// Admission supplies its validated edges. Historical request authentication may
+/// supply the same immutable public and internal edges to regenerate the recorded
+/// classification without allocating a native world. The caller must include the
+/// complete owner, policy, guarantee and edge rosters; this DATA calculation does
+/// not validate those inputs or issue admission, isolation or execution authority.
+///
+/// # Errors
+/// Refuses a propagated edge whose consumer is absent from the guarantee roster.
+pub fn effective_repeatability_data(
+    owners: &[crucible_node_contract::OwnerBinding],
     ownership: &OwnershipPolicy,
     guarantees: &BTreeMap<Id, GuaranteeProfile>,
-    edges: CausalEdges,
-) -> Result<GraphGuarantees, AdmissionError> {
+    edges: impl IntoIterator<Item = (Id, Id)>,
+) -> Result<(BTreeMap<Id, Repeatability>, Repeatability), AdmissionError> {
     let mut adjacency: BTreeMap<Id, BTreeSet<Id>> = BTreeMap::new();
-    for (producer, consumer, _) in edges {
+    for (producer, consumer) in edges {
         adjacency.entry(producer).or_default().insert(consumer);
     }
     // Shared execution, state, and cut dependencies carry influence even when
     // no network lane directly connects the public views. A star preserves
     // group reachability without allocating a quadratic clique.
-    for owner in request.owners {
+    for owner in owners {
         connect_group(&mut adjacency, &owner.owner.participant_ids);
     }
-    let owners: BTreeMap<_, _> = request
-        .owners
+    let owners: BTreeMap<_, _> = owners
         .iter()
         .map(|owner| (&owner.owner.id, owner))
         .collect();
@@ -932,10 +952,7 @@ fn propagate_guarantees(
         .copied()
         .max_by_key(|value| rank(*value))
         .unwrap_or(Repeatability::Unqualified);
-    Ok(GraphGuarantees {
-        effective_repeatability: effective,
-        world_repeatability: world,
-    })
+    Ok((effective, world))
 }
 
 fn connect_group(adjacency: &mut BTreeMap<Id, BTreeSet<Id>>, participants: &[Id]) {

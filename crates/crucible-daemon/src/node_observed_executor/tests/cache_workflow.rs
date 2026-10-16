@@ -349,3 +349,156 @@ fn actual_mixed_nondeterministic_world_refuses_cache_before_replacement_allocati
     );
     retire(service);
 }
+
+#[test]
+#[ignore = "requires CRUCIBLE_REFERENCE_DEVICE pointing to the source-built companion"]
+fn connected_world_restart_resubmits_same_tainted_result_without_new_reservation() {
+    use crucible_campaign::executor_node_capabilities::NodeExecutionGuarantee;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "connected-recorded-recovery",
+        temporary.path().join("blobs"),
+    ));
+    let refs: Arc<dyn MutableRefBackend> =
+        Arc::new(DirectoryRefBackend::new(temporary.path().join("refs")));
+    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+    let selected = vec![
+        InstalledNodeSelection {
+            node: id("consumer"),
+            owner: id("consumer-owner"),
+            kind: InstalledNodeKind::ReferenceNativeLinked {
+                quantum_ps: U64::new(50),
+                host_budget_ns: U64::new(20_000_000),
+                closed_ingress: false,
+            },
+        },
+        InstalledNodeSelection {
+            node: id("link"),
+            owner: id("link-owner"),
+            kind: InstalledNodeKind::HostNetLink {
+                producer: id("producer"),
+                consumer: id("consumer"),
+                source_node: 7,
+                latency_ps: U64::new(5),
+                floor_ps: U64::new(5),
+            },
+        },
+        InstalledNodeSelection {
+            node: id("producer"),
+            owner: id("producer-owner"),
+            kind: InstalledNodeKind::ReferenceNativeLinked {
+                quantum_ps: U64::new(50),
+                host_budget_ns: U64::new(20_000_000),
+                closed_ingress: true,
+            },
+        },
+    ];
+    let original = service(
+        &temporary,
+        repository.clone(),
+        blobs.clone(),
+        refs.clone(),
+        vec![],
+    );
+    let scenario = original.compile(selected.clone()).unwrap();
+    let authored = NodeScenario::from_json(&scenario).unwrap();
+    let link = authored
+        .compatibility
+        .iter()
+        .find(|binding| binding.node_id == id("link"))
+        .unwrap();
+    let raw: crucible_node_contract::GuaranteeProfile = serde_json::from_slice(
+        &authored
+            .content_bytes(&link.guarantees_ref, 4 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        raw.repeatability,
+        crucible_node_contract::Repeatability::Qualified
+    );
+    let configuration = canonical::canonical_json(
+        &serde_json::to_value(NodeRunConfiguration {
+            horizon_ps: U64::new(150),
+            maximum_rounds: U64::new(32),
+            ..configuration()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let execution = ExecutionId::from_bytes([93; 16]).unwrap();
+    original
+        .submit(
+            "connected-recovery".into(),
+            execution,
+            selected.clone(),
+            scenario.clone(),
+            configuration.clone(),
+        )
+        .unwrap();
+    let result = complete(&original, execution);
+    assert_eq!(result.outcome(), ObservedAttemptOutcome::Completed);
+    assert_eq!(
+        result.request().capabilities().roster().owners()["link-owner"].guarantee(),
+        &NodeExecutionGuarantee::Nondeterministic
+    );
+    let original_bytes = result.canonical_bytes();
+    retire(original);
+
+    let roots = [
+        "node-world-activations",
+        "observed-execution-reservations",
+        "observed-attempt-ledgers",
+        "node-original-preparation-claims",
+        "node-original-preparation-quota",
+    ];
+    let before = roots.map(|root| namespace(refs.as_ref(), root));
+    let restarted = service(&temporary, repository, blobs, refs.clone(), vec![]);
+    for _ in 0..2 {
+        let recovered = restarted
+            .submit(
+                "connected-recovery".into(),
+                execution,
+                selected.clone(),
+                scenario.clone(),
+                configuration.clone(),
+            )
+            .unwrap();
+        assert_eq!(recovered, ObservedAttemptState::Completed(result.clone()));
+        let ObservedAttemptState::Completed(recovered) = recovered else {
+            unreachable!()
+        };
+        assert_eq!(recovered.request().execution(), execution);
+        assert_eq!(recovered.canonical_bytes(), original_bytes);
+    }
+    assert_eq!(roots.map(|root| namespace(refs.as_ref(), root)), before);
+    let mut changed_configuration = NodeRunConfiguration::from_json(&configuration).unwrap();
+    changed_configuration.horizon_ps = U64::new(200);
+    let changed_configuration =
+        canonical::canonical_json(&serde_json::to_value(changed_configuration).unwrap()).unwrap();
+    assert!(
+        restarted
+            .submit(
+                "connected-recovery".into(),
+                execution,
+                selected.clone(),
+                scenario.clone(),
+                changed_configuration
+            )
+            .is_err()
+    );
+    assert_eq!(
+        restarted.state(execution).unwrap(),
+        ObservedAttemptState::Completed(result.clone())
+    );
+    assert!(
+        restarted
+            .reuse_cache(request(selected, scenario, configuration, &result))
+            .unwrap_err()
+            .to_string()
+            .contains("nondeterministic owner")
+    );
+    assert_eq!(roots.map(|root| namespace(refs.as_ref(), root)), before);
+    retire(restarted);
+}

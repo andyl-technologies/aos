@@ -12,7 +12,7 @@ use crucible_campaign::executor_node_capabilities::{
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, ConfigurationArtifactId, ScenarioArtifactId,
 };
-use crucible_node_contract::Repeatability;
+use crucible_node_contract::{BindingCompatibility, HashRef, Id, OwnerBinding, Repeatability};
 
 /// Constructs a complete owner roster from a host-sealed realized graph.
 ///
@@ -31,27 +31,45 @@ pub fn roster_from_admitted_graph(
     scenario: ScenarioArtifactId,
     configuration: ConfigurationArtifactId,
 ) -> Result<ExecutorNodeRoster, CampaignCodecError> {
+    roster_from_graph_data(
+        graph.owners(),
+        |node| graph.binding(node).map(|binding| &binding.compatibility),
+        |node| graph.effective_repeatability(node),
+        graph.world_binding_hash(),
+        scenario,
+        configuration,
+    )
+}
+
+/// Regenerates the same roster from authenticated immutable graph facts.
+///
+/// This does not seal a graph or authenticate live resources. The historical
+/// caller independently checks the exact installed scenario and original request.
+///
+/// # Errors
+/// Refuses missing bindings or classifications, unsupported owner roles, invalid
+/// compatibility identities, duplicate owners or an oversized complete roster.
+pub(crate) fn roster_from_graph_data<'a>(
+    owner_bindings: impl IntoIterator<Item = &'a OwnerBinding>,
+    binding_for: impl Fn(&Id) -> Option<&'a BindingCompatibility>,
+    repeatability_for: impl Fn(&Id) -> Option<Repeatability>,
+    world: &HashRef,
+    scenario: ScenarioArtifactId,
+    configuration: ConfigurationArtifactId,
+) -> Result<ExecutorNodeRoster, CampaignCodecError> {
     let mut owners = BTreeMap::new();
-    for owner in graph.owners() {
+    for owner in owner_bindings {
         let mut providers = BTreeSet::new();
         let mut nodes = BTreeSet::new();
         let mut guarantee = NodeExecutionGuarantee::Repeatable;
         for node in &owner.owner.participant_ids {
-            let binding = graph
-                .binding(node)
-                .ok_or(CampaignCodecError::InvalidValue {
-                    reason: "admitted owner participant has no node binding",
-                })?;
-            providers.insert(
-                binding
-                    .compatibility
-                    .implementation
-                    .implementation_id
-                    .as_str(),
-            );
+            let binding = binding_for(node).ok_or(CampaignCodecError::InvalidValue {
+                reason: "admitted owner participant has no node binding",
+            })?;
+            providers.insert(binding.implementation.implementation_id.as_str());
             nodes.insert(node.as_str().to_owned());
 
-            match graph.effective_repeatability(node) {
+            match repeatability_for(node) {
                 Some(Repeatability::Qualified) => {}
                 Some(Repeatability::Nondeterministic) => {
                     guarantee = NodeExecutionGuarantee::Nondeterministic;
@@ -119,7 +137,7 @@ pub fn roster_from_admitted_graph(
     ExecutorNodeRoster::new(
         scenario,
         configuration,
-        CampaignHash::parse(&graph.world_binding_hash().digest)?,
+        CampaignHash::parse(&world.digest)?,
         owners,
     )
 }
