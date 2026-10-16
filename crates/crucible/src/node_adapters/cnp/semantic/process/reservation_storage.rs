@@ -29,7 +29,36 @@ fn quote_shared_storage<T>(maximum: usize) -> Result<usize, RuntimeError> {
 impl CnpSemanticLaunchReservation {
     /// Returns the fixed nested observer bank required before this data walk.
     pub const fn unlaunched_storage_counter_scratch_data() -> usize {
-        size_of::<PreparationCounter>()
+        size_of::<PreparationCounter>() + Self::unlaunched_descriptor_counter_scratch_data()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::process) const fn unlaunched_descriptor_counter_scratch_data()
+    -> usize {
+        use super::super::super::packet_complete_source::OriginalCompletedCanonicalAckWorldAdmission;
+        use crucible_node_provider::connection::OriginalProtocolSupervisor;
+        use std::cell::{BorrowError, Ref};
+
+        type SupervisorLoan = Ref<'static, Option<OriginalProtocolSupervisor>>;
+        type AdmissionLoan = Ref<'static, Option<OriginalCompletedCanonicalAckWorldAdmission>>;
+
+        size_of::<&Self>()
+            + size_of::<&CnpSemanticProcessCustody>()
+            + size_of::<Result<&CnpSemanticProcessCustody, RuntimeError>>()
+            + size_of::<Option<&Box<CnpSemanticProcessCustody>>>()
+            + size_of::<Result<&Box<CnpSemanticProcessCustody>, RuntimeError>>()
+            + size_of::<Result<(), RuntimeError>>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<Result<Option<usize>, RuntimeError>>()
+            + size_of::<Option<usize>>()
+            + size_of::<Option<&Box<dyn CnpSemanticProcessSlot>>>()
+            + size_of::<Result<&Box<dyn CnpSemanticProcessSlot>, RuntimeError>>()
+            + size_of::<&dyn CnpSemanticProcessSlot>()
+            // The terminal phase check reborrows both same immutable cells
+            // while the descriptor walk retains its original loan pair.
+            + 2 * size_of::<SupervisorLoan>()
+            + 2 * size_of::<AdmissionLoan>()
+            + 2 * size_of::<Result<SupervisorLoan, BorrowError>>()
+            + 2 * size_of::<Result<AdmissionLoan, BorrowError>>()
     }
 
     /// Observes the original unattempted reservation and actual supervisor slot.
@@ -47,6 +76,43 @@ impl CnpSemanticLaunchReservation {
         &self,
         maximum: usize,
     ) -> Result<CnpRetainedStorageReport, RuntimeError> {
+        let native = self.unlaunched_storage_origin_precredit_data()?;
+        // Preserve these immutable loans across the typed slot observer.
+        let _supervisor = native
+            .protocol_supervisor
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let _completed = native
+            .completed_ack_admission
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let mut counter = PreparationCounter::new(maximum);
+        counter.add(size_of::<CnpSemanticProcessCustody>())?;
+        counter.path(&native.directory)?;
+        counter.content_reference(&native.expected_executable)?;
+        counter.rc(&native.read_owner)?;
+        let slot = self
+            .guard
+            .slot
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        counter.add(size_of_val(slot.as_ref()))?;
+        match slot.retained_requested_storage_precredit_data(counter.remaining())? {
+            Some(bytes) => counter.add(bytes)?,
+            None => counter.unknowns.supervisor_slot = true,
+        }
+        native.read_owner.storage_precredit_data()?;
+        Ok(counter.finish())
+    }
+}
+
+impl CnpSemanticLaunchReservation {
+    // This phase is fixed by the genuine reservation, never inferred from a
+    // missing executable or a claimed descriptor count. Revocation removes read
+    // rights but does not erase retained data; busy owner loans still refuse.
+    fn unlaunched_storage_origin_precredit_data(
+        &self,
+    ) -> Result<&CnpSemanticProcessCustody, RuntimeError> {
         if self.guard.creator_process != std::process::id() {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -96,27 +162,32 @@ impl CnpSemanticLaunchReservation {
             return Err(RuntimeError::UnsupportedFacet);
         }
         native.read_owner.storage_precredit_data()?;
-        let mut counter = PreparationCounter::new(maximum);
-        counter.add(size_of::<CnpSemanticProcessCustody>())?;
-        counter.path(&native.directory)?;
-        counter.content_reference(&native.expected_executable)?;
-        counter.rc(&native.read_owner)?;
-        let slot = self
+        Ok(native)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::process) fn unlaunched_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<usize, RuntimeError> {
+        let native = self.unlaunched_storage_origin_precredit_data()?;
+        let _supervisor = native
+            .protocol_supervisor
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let _completed = native
+            .completed_ack_admission
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let count = self
             .guard
             .slot
             .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?;
-        counter.add(size_of_val(slot.as_ref()))?;
-        match slot.retained_requested_storage_precredit_data(counter.remaining())? {
-            Some(bytes) => counter.add(bytes)?,
-            None => counter.unknowns.supervisor_slot = true,
-        }
-        native.read_owner.storage_precredit_data()?;
-        Ok(counter.finish())
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .retained_descriptor_views_precredit_data()?
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        self.unlaunched_storage_origin_precredit_data()?;
+        Ok(count)
     }
-}
 
-impl CnpSemanticLaunchReservation {
     /// Quotes the new unattempted custody from the original borrowed inputs.
     ///
     /// The containing holder counts its reservation inline. Directory and full
@@ -239,6 +310,34 @@ mod tests {
         ) -> Result<Option<usize>, RuntimeError> {
             Ok(Some(0))
         }
+    }
+
+    #[test]
+    fn attempted_reservation_cannot_reenter_unlaunched_descriptor_census() {
+        let mut reservation = CnpSemanticLaunchReservation::reserve_original_native_startup(
+            std::path::PathBuf::from("/tmp/aos-unlaunched-descriptor-data-only"),
+            canonical::content_ref(b"fixture executable", "application/octet-stream").unwrap(),
+            Box::new(FlatSlot),
+        );
+        reservation.attempted = true;
+
+        assert_eq!(
+            reservation.retained_descriptor_views_precredit_data(),
+            Err(RuntimeError::OwnerUnavailable)
+        );
+        assert_eq!(
+            reservation.unlaunched_descriptor_views_precredit_data(),
+            Err(RuntimeError::UnsupportedFacet)
+        );
+        assert!(
+            reservation
+                .guard
+                .custody
+                .as_ref()
+                .unwrap()
+                .original_child
+                .is_none()
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ impl CnpSemanticLaunchGuard {
         size_of::<PreparationCounter>()
             + size_of::<Option<&OriginalExtensionRegistryOwner>>()
             + size_of::<Option<&OriginalRetainedSupervisor>>()
+            + super::CnpSemanticLaunchReservation::unlaunched_descriptor_counter_scratch_data()
     }
 
     /// Counts the same actual launched process, slot and retained protocol owners.
@@ -126,8 +127,13 @@ impl super::CnpSemanticLaunchReservation {
     /// Counts actual descriptors in the same retained original reservation.
     ///
     /// # Errors
-    /// Refuses a foreign, unsupported or transferred custody row.
+    /// Refuses a foreign, busy, unsupported or transferred custody row. An
+    /// unattempted selected reservation uses its exact empty-phase census;
+    /// attempted or authenticated custody keeps the launched guard's checks.
     pub fn retained_descriptor_views_precredit_data(&self) -> Result<usize, RuntimeError> {
+        if self.original_host_startup_unlaunched_data() {
+            return self.unlaunched_descriptor_views_precredit_data();
+        }
         self.original_host_startup_guard_data()
             .retained_descriptor_views_precredit_data()
     }
@@ -240,9 +246,8 @@ mod tests {
         assert_eq!(
             original
                 .original_host_startup_guard_data()
-                .retained_descriptor_views_precredit_data()
-                .unwrap(),
-            1
+                .retained_descriptor_views_precredit_data(),
+            Err(RuntimeError::OwnerUnavailable)
         );
         let identity = original.original_host_launch_identity_data().unwrap();
         assert!(
@@ -257,6 +262,38 @@ mod tests {
             original.retained_descriptor_views_precredit_data().unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn original_initial_descriptor_census_refuses_busy_owner_without_reopening_read_rights() {
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        let dropped = Rc::new(Cell::new(false));
+        let original = reservation(Box::new(SocketSlot {
+            socket,
+            dropped: Rc::clone(&dropped),
+        }));
+        let native = original
+            .original_host_startup_guard_data()
+            .custody
+            .as_ref()
+            .unwrap();
+        let call = super::super::ReadCall::begin(Rc::clone(&native.read_owner)).unwrap();
+
+        assert_eq!(
+            original.retained_descriptor_views_precredit_data(),
+            Err(RuntimeError::OwnerBusy)
+        );
+        drop(call);
+
+        assert_eq!(original.retained_descriptor_views_precredit_data(), Ok(1));
+        assert!(
+            native
+                .read_owner
+                .authenticate_original_host_startup_data()
+                .is_err()
+        );
+        assert!(!dropped.get());
+        assert!(original.original_host_startup_unlaunched_data());
     }
 
     #[test]
