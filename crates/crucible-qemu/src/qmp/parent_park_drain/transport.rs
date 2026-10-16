@@ -7,7 +7,7 @@
 use super::receipt::WireResult;
 use super::{ParentParkRequest, QmpClient, QmpCommandKind, QmpError, QmpTimeoutStream};
 use serde::Deserialize;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead};
 
 // Actual generated labels and the fixed HexIdentity visitor refusals.
 const DIAGNOSTIC_LABELS: &[&str] = &[

@@ -252,6 +252,16 @@ stamp and selected-entry checks, complete object authentication and EOF checks,
 and the initiating operation's failures. A failed reservation cannot be hidden
 by falling back to an uncached read. Performance parity remains unqualified.
 
+The retention policy must reach the actual inventory, lazy checkpoint reader,
+archive sender and closure-verification constructors through their selected
+physical-quota owner. The current cache candidate misses several of those
+production joins and remains unapplied. Resource qualification must use the
+actual owner topology: ordinary CLI archive transfers borrow exclusive service
+owners and send roots sequentially, retaining one source session. Their Packed
+service's authored metadata bank is distinct from the catalog service's SQLite
+heap partition. Neither a hypothetical concurrency count nor a successful
+component fixture proves that the normal configuration fits unchanged limits.
+
 ## 8 Package G: custom pager and authority lifecycle
 
 First implement stable mappings, missing-page service, page/version state

@@ -67,8 +67,6 @@ enum PreexecSetupCause {
     Startup(#[source] super::PluginStartupError),
     #[error("issued process material refused: {0}")]
     Purpose(#[source] super::source_supervision::SourceEmissionError),
-    #[error("standing Source publication refused: {0}")]
-    Standing(#[source] super::source_supervision::SourceSupervisionError),
     #[error("canonical shared region layout refused: {0}")]
     RegionLayout(#[source] crucible_shmem::RegionLayoutError),
     #[error("canonical shared region serialization refused: {0}")]

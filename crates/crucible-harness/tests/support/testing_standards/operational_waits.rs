@@ -93,6 +93,55 @@ pub(super) fn mask_operational_waits(package: &str, target: &str, code: &str) ->
             ],
             &[("std::thread::sleep(Duration::from_millis(20));", 1)],
         ),
+        // Component mechanisms and deliberate expiry inputs do not establish
+        // native pager lifecycle or Source authority.
+        ("crucible-qemu", "src/linux_cgroup/target_dispatcher/tests") => (
+            &[
+                "letworker=thread::spawn(move||run(worker_state));",
+                "letworker_id=worker.thread().id();",
+                "letend=std::time::Instant::now()+Duration::from_secs(5);",
+                "forepochin1..=4{",
+                "while!job.is_finished()&&std::time::Instant::now()<end{",
+                "while!worker.is_finished()&&std::time::Instant::now()<end{",
+                "assert!(job.is_finished(),);",
+                "assert_eq!(worker.thread().id(),worker_id);",
+                "assert!(!worker.is_finished());",
+                "drop(job.retire().unwrap());",
+                "assert!(worker.is_finished(),);",
+                "worker.join().unwrap();",
+                "assert_eq!(Arc::strong_count(&state),1);",
+            ],
+            &[("thread::sleep(Duration::from_millis(1));", 2)],
+        ),
+        ("crucible-qemu", "src/node/exact_snapshot/capture_original/tests/external") => (
+            &[
+                "fnwait(&self,timeout:Duration)",
+                "letbegan=Instant::now();",
+                "ifself.observe()?.is_some(){returnOk(true);}",
+                "ifbegan.elapsed()>=timeout{returnOk(false);}",
+                "parent.terminal=parent.child.try_wait()",
+                "assert!(!process.reaped());",
+                "assert!(process.checkpoint_original().unwrap().body.is_some());",
+                "assert!(account.reserve_resources(0,2,16384).is_err());",
+                "process.reap(Duration::from_secs(3)).unwrap(),QemuReap::Reaped",
+                "assert!(parent.lock().unwrap().terminal.is_some());",
+                "assert!(process.checkpoint_original().unwrap().body.is_none());",
+                "assert!(account.reserve_resources(0,2,16384).is_ok());",
+            ],
+            &[("std::thread::sleep(Duration::from_millis(1));", 1)],
+        ),
+        ("crucible-qemu-plugin", "src/paged_ram/controller/actor/tests") => (
+            &[
+                "fnexpanding_policy_cannot_renew_an_expired_inline_record()",
+                ".begin_inline::<true>(SourceOperationClass::Cleanup)",
+                ".budgets[13].total_ns=Some(1_000_000);assert!(operation.wait_slice_for_observation().is_err());",
+                ".budgets[13].total_ns=Some(30_000_000_000);assert!(operation.wait_slice_for_observation().is_err());",
+                "assert!(operation.wait_slice_for_observation().is_err());",
+                "assert!(operation.complete_observation().is_err());",
+                "assert_ne!(operation.terminal.load(Ordering::Acquire),1);",
+            ],
+            &[("std::thread::sleep(Duration::from_millis(5));", 1)],
+        ),
         _ => (&[], &[]),
     };
 
@@ -257,6 +306,21 @@ fn reviewed_waits_keep_deadlines_and_reject_additional_delays()
             "crucible-daemon",
             "src/packaged_qemu_executor/tests/paging_native/blocked_control",
             "let refusal = boundary();",
+        ),
+        (
+            "crucible-qemu",
+            "src/linux_cgroup/target_dispatcher/tests",
+            "let end = std::time::Instant::now() + Duration::from_secs(5);",
+        ),
+        (
+            "crucible-qemu",
+            "src/node/exact_snapshot/capture_original/tests/external",
+            "if began.elapsed() >= timeout",
+        ),
+        (
+            "crucible-qemu-plugin",
+            "src/paged_ram/controller/actor/tests",
+            ".budgets[13].total_ns = Some(1_000_000);",
         ),
     ] {
         let path = root

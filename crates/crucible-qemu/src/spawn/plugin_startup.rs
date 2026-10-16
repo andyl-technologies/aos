@@ -385,21 +385,6 @@ impl OriginalPluginStartup {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn workspace_refusal(
-        &self,
-        source: super::DeviceDigestWorkspaceIssueError,
-    ) -> PluginStartupError {
-        PluginStartupError {
-            source: PluginStartupCause::Workspace(source),
-            original_after: self
-                .state()
-                .and_then(|state| state.original.wait_slice().map(|_| ()))
-                .err(),
-            _control: None,
-        }
-    }
-
     /// Checks the receiver declaration retained by this exact admitted Source.
     ///
     /// # Errors
