@@ -1,6 +1,7 @@
 {
   pkgs,
   lib,
+  mkSystem,
 }: let
   registry = builtins.fromJSON (builtins.readFile ./gate_registry.json);
   checkNames = builtins.toFile "terrane-check-names.json" (builtins.toJSON (builtins.attrNames registeredGates));
@@ -221,7 +222,7 @@
             inherit pkgs lib sourceGate structureGate;
             forkPrerequisites = builtins.attrValues nativeForkPrerequisites;
           }
-          // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix"]) {inherit nativeSdkGate;}
+          // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "shared-dir.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
@@ -285,6 +286,7 @@
   };
 in {
   package = pkgs.terrane;
+  module-eval = import ./module-eval.nix {inherit pkgs lib mkSystem;};
   gates = aggregate // registeredGates;
   activeGates = implementedGates;
   integration.local-workflow-ext4 = localWorkflow;

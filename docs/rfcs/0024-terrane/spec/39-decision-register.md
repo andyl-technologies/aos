@@ -2462,6 +2462,57 @@ is added rather than editing history.
     completes no task or gate.
   - **Affects:** ALG-3/9/10/11/29 and TREE-4/5/30.
 
+- **[D-117] Verify host plaintext without redefining object identity.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Host publication and reassembly verify canonical manifest
+    identity separately from the assembled plaintext's ordered chunk
+    commitments, length and whole-file hashes. Retain verified reconstruction
+    manifests as ordinary immutable metadata packs outside embedded state,
+    durably before dependent sealed publication and throughout its residence.
+    A post-insertion publication failure is unacknowledged and requires
+    cleanup or independently verified durable recovery before service.
+  - **Rationale:** OBJ-4 identifies an object by canonical manifest bytes;
+    hashing assembled plaintext in that domain would change frozen identity.
+    Plaintext alone cannot reconstruct an arbitrary original chunk sequence
+    after embedded-state loss. HOST-29 forbids storing manifests in that
+    state, while ordinary cached metadata already has a registered pack
+    representation. Finally, parent synchronization and state recording can
+    fail after canonical insertion, and cleanup can itself fail or crash.
+    An unconditional promise that no name remains cannot hold in that window.
+    Withholding service until verification and durable binding preserves the
+    actual publication invariant without claiming impossible rollback.
+  - **Alternatives considered:** Hash plaintext as a manifest (rejected:
+    changes identity); recover chunk order by rechunking plaintext (rejected:
+    invents rather than verifies the original manifest); put manifests in
+    embedded state (rejected: violates HOST-29); acknowledge an inserted but
+    unsynchronized link or trust its filename (rejected: loses durability and
+    adoption checks); delete an existing canonical inode on conflict
+    (rejected: violates no-replace publication).
+  - **Compatibility:** No identity domain, encoding, bucket key, Store trait,
+    golden byte, requirement ID or gate name changes. Existing manifest and
+    metadata-pack formats are used unchanged. These host rules are clarified
+    after T1's freeze and before the host implementation. Zero wiping of
+    permanently sealed inodes remains unresolved; this decision neither
+    relaxes HOST-3/HOST-25 nor completes any task or gate.
+  - **Affects:** HOST-7/9/13/29/31/32/33, OBJ-4 and HOST-4/5.
+
+- **[D-118] Use registered surface names in the feature table.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Correct the feature table to use the exact surface-registry
+    names required by CRATE-28, including the missing `virtio-pmem` and `api`
+    rows. Unimplemented surfaces remain unavailable at configuration time.
+  - **Rationale:** The table's `nix`, `gha` and `web` abbreviations conflict
+    with the normative names `nix-cache`, `gha-cache` and `browse`. A closed
+    build vocabulary cannot require both spellings for the same feature.
+  - **Alternatives considered:** Preserve aliases as additional feature
+    names (rejected: adds ambiguity without an implemented compatibility
+    need); compile placeholder surfaces (rejected: registration is not an
+    implementation or a conformance claim).
+  - **Compatibility:** No implemented feature is renamed. The existing
+    `surface-sdk` feature and every content identity, encoding, key, Store
+    trait, requirement ID, gate name and golden byte remain unchanged.
+  - **Affects:** CRATE-28 and the surface feature-flag table.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

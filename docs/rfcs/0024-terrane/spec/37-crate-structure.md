@@ -210,12 +210,14 @@ contains exactly the surfaces it needs and the vocabulary stays closed.
 | `surface-erofs` | `terrane-fs` | the EROFS and overlayfs surface |
 | `surface-block` | `terrane-fs` | the block surface |
 | `surface-virtiofs` | `terrane-fs` | the virtiofs surface |
-| `surface-nix` | `terrane` | the Nix binary-cache surface |
+| `surface-virtio-pmem` | `terrane-fs` | the virtio-pmem surface |
+| `surface-nix-cache` | `terrane` | the Nix binary-cache surface |
 | `surface-reapi` | `terrane` | the Remote Execution API surface |
-| `surface-gha` | `terrane` | the Actions-cache surface |
+| `surface-gha-cache` | `terrane` | the Actions-cache surface |
 | `surface-git` | `terrane` | the git surface |
 | `surface-oci` | `terrane` | the OCI Distribution surface |
-| `surface-web` | `terrane` | the HTTP browse surface |
+| `surface-browse` | `terrane` | the HTTP browse surface |
+| `surface-api` | `terrane` | the Terrane wire API surface |
 
 - **[CRATE-28]** Every surface in `reference/surface-registry.md` MUST have a
   feature named `surface-<name>`, and no surface MAY be compiled in without

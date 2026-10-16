@@ -89,12 +89,34 @@ tier's fetch and reassembly paths.
   *Gate:* `gate:host-publisher-sole-writer`.
 - **[HOST-7]** Publication MUST follow this sequence: create a new inode
   under `staging/` owned by the publisher; copy or reflink the content from
-  the passed descriptor; recompute the object hash over the written bytes
-  and compare it to the descriptor's claim; close every writer; enable and
+  the passed descriptor; verify the written plaintext against the claimed
+  content identity as specified below; close every writer; enable and
   verify the seal on the private inode; `fsync` it; link or rename it to its
   canonical name with no-replace semantics; `fsync` the parent directory;
-  and only then record it in `state/`. A failure at any step MUST leave no
-  canonical name. *Gate:* `gate:host-publish-sequence`.
+  and only then durably record its verified binding in `state/`. Before
+  canonical insertion, a failure MUST leave no canonical name created by
+  that attempt. After insertion, a failure MUST NOT acknowledge publication
+  or return a backing descriptor. The publisher MUST attempt to remove only
+  its own newly inserted link, checking the directory-relative inode identity
+  before removal, and synchronize the parent. If cleanup cannot
+  be confirmed, it MUST withhold that object from service until recovery
+  independently verifies the content claim and seal, synchronizes the file
+  and parent, and durably records the binding. A mismatch with an existing
+  recorded binding MUST be rejected and quarantined under HOST-4/32, rather
+  than silently replacing that binding. Reconstruction under HOST-31 applies
+  when the binding was lost, not when a conflicting binding is present.
+  A preexisting canonical inode MUST NOT be removed or replaced by this
+  cleanup.
+  *Gate:* `gate:host-publish-sequence`.
+
+  For an inline chunk, verification recomputes the registered chunk identity
+  over the exact plaintext and checks inline eligibility under the active
+  chunk profile. For a manifest-backed object, verification first checks
+  the canonical manifest against its claimed identity under OBJ-4, then
+  checks the exact assembled length, every ordered chunk identity and
+  length, and the manifest's required whole-file content hashes. The
+  manifest identity MUST NOT be recomputed over assembled plaintext.
+  A one-chunk object that is not inline retains its manifest identity.
 - **[HOST-8]** A reflink from staging is acceptable only when the source
   cannot be modified by any later writer and source and destination are in
   the same disclosure domain
@@ -131,9 +153,12 @@ reassembly mode, a property on the view's root
   deleting it. *Gate:* `gate:host-single-residence`.
 - **[HOST-12]** Single-chunk objects MUST be sealed by decompressing the
   chunk directly to a staged file; no reassembly step exists for them.
-- **[HOST-13]** Reassembly MUST verify the assembled file's object hash
-  before publication even when every input chunk was already verified,
-  because chunk order and the manifest are inputs too.
+- **[HOST-13]** Reassembly MUST verify the assembled file against its
+  independently verified canonical manifest before publication, using
+  HOST-7's ordered chunk, length and whole-file hash checks even when every
+  input chunk was already verified. The object identity remains the hash of
+  the canonical manifest under OBJ-4, rather than a hash of the assembled
+  plaintext, because chunk order and the manifest are inputs too.
   *Gate:* `gate:host-reassembly-verify`.
 
 ## Admission and verification
@@ -239,14 +264,27 @@ cannot be reconstructed from the filesystem alone.
   leases, verity bindings, project-quota assignments, and the chunk-to-file
   residence map for reassembled objects. It MUST NOT hold the chunk index,
   tree nodes, or anything consulted on the read path of an already-sealed
-  object. *Gate:* `gate:host-state-scope`.
+  object. Reconstruction manifests MUST remain ordinary verified immutable
+  cached metadata outside `state/`; they MUST NOT be copied into the
+  embedded store. *Gate:* `gate:host-state-scope`.
 - **[HOST-30]** A read of a sealed object MUST NOT take a lock in the
   embedded store. A stalled embedded-store writer MUST NOT stall passthrough
   reads.
-- **[HOST-31]** The embedded store MUST be rebuildable: on loss, the tier
-  MUST be able to re-derive residence and verity bindings by scanning
-  `sealed/` and `chunks/`, and MUST treat every pin as released (over-evict,
-  never under-protect a live consumer beyond the release grace).
+- **[HOST-31]** The embedded store MUST be rebuildable from the filesystem.
+  Before publishing a manifest-backed sealed file, the tier MUST durably
+  retain its verified canonical manifest in ordinary cached metadata packs
+  under the existing bucket layout, syncing the pack, index and containing
+  directories. That metadata MUST remain available until the dependent
+  sealed file is durably retired; relocation MUST durably publish verified
+  replacement metadata before retiring the previous copy. On state loss,
+  the tier MUST reconstruct residence and verity bindings by scanning
+  `sealed/`, `chunks/`, and these cached metadata packs, verifying manifest
+  identities, ordered chunk ranges, whole-file hashes and kernel seals.
+  A file whose required metadata is missing or invalid MUST NOT be adopted
+  or served until the metadata is recovered and verified. Reconstruction
+  MUST precede eviction, including eviction of reconstruction metadata.
+  Every pin MUST be treated as released (over-evict, never under-protect a
+  live consumer beyond the release grace).
 
 ## Crash recovery
 

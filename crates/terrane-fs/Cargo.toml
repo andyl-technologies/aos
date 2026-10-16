@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 terrane = { workspace = true, features = ["std"] }
+terrane-core.workspace = true
+libc.workspace = true
+rustix = { workspace = true, features = ["net", "process"] }
 
 [lints]
 workspace = true

@@ -16,6 +16,7 @@ let
     ./profiles
     ./systemd
     ./tests
+    ./terrane
   ];
 
   # Discover all .nix files in a directory tree (recursive).

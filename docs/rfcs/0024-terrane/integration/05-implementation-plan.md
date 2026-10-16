@@ -8694,6 +8694,21 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Status: in progress (2026-10-16). T1's 22 tasks and 89 current gates are
+complete; its identity, encoding, bucket-key and Store-trait freeze applies.
+Five separate worktrees cover the five T2 tasks. Shared module declarations,
+dependency edges, kernel prerequisites and check wiring precede worker edits.
+No T2 task or gate is complete yet.
+
+Contract review identifies a blocking conflict for zero-wipe sealed files:
+HOST-3 requires permanent kernel immutability, while HOST-25 and DOM-18
+require overwriting the same file before unlinking it. The affected zero
+path is stopped; unlinking or replacing the inode is not credited as wiping.
+D-117 resolves the separate manifest-identity, post-publication failure and
+reconstruction-metadata contradictions without changing frozen formats or
+traits. D-118 corrects the surface feature table's unimplemented aliases.
+Other T2 implementation continues. T3 and branch worklines remain unopened.
+
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
 `realize`, `publish`, and `gc` roles as systemd units. No FUSE yet.

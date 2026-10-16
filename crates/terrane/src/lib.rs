@@ -21,6 +21,8 @@ pub mod domain;
 pub mod gc;
 pub mod guard;
 #[cfg(feature = "std")]
+pub mod host;
+#[cfg(feature = "std")]
 pub mod indexing;
 pub mod model;
 pub mod pack;

@@ -18,6 +18,8 @@ mod native_effect;
 mod ordinary_read;
 #[cfg(feature = "std")]
 pub(crate) mod protected_read;
+#[cfg(feature = "std")]
+pub mod shared_dir;
 
 #[cfg(feature = "std")]
 pub use native_clock::NativeEffectClock;

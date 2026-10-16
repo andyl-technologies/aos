@@ -79,6 +79,8 @@ impl FromStr for Role {
 /// Describes role selection or dispatch failures.
 #[derive(Debug, Eq, PartialEq)]
 pub enum RoleError {
+    /// Requires an explicit configured or command-line process role.
+    Missing,
     /// Rejects a name outside the closed role vocabulary.
     Unknown(String),
     /// Reports a role whose runtime has not been implemented.
@@ -95,6 +97,9 @@ pub enum RoleError {
 impl fmt::Display for RoleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Missing => {
+                formatter.write_str("a process role is required in configuration or --role")
+            }
             Self::Unknown(name) => write!(formatter, "unknown role {name:?}"),
             Self::Mismatch {
                 configured,

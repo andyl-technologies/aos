@@ -29,7 +29,7 @@ struct Arguments {
     /// Load one process role and store expression from TOML.
     #[arg(long, required = true)]
     config: Option<PathBuf>,
-    /// Select the process role named in configuration.
+    /// Select a process role, agreeing with configuration when it names one.
     #[arg(long)]
     role: Option<Role>,
     /// Check configuration syntax without opening stores or starting services.
