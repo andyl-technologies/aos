@@ -98,7 +98,7 @@ pub(super) fn quote_original_candidate_owner(
 ) -> Result<NativeCaptureCandidateOwnerData, ProviderError> {
     currency.authenticate_before_observe(native)?;
     sdk.authenticate_current(connection, blobs, context)?;
-    let mut declared_scratch_bytes = sum(&[
+    let declared_scratch_bytes = sum(&[
         BorrowedCompactBytes::requested_serialization_scratch_bytes(),
         crate::retained_metadata::original_metadata_observer_layout_bytes(),
         crate::retained_metadata::original_metadata_observer_layout_bytes(),

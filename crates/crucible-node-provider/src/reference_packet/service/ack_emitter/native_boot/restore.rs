@@ -234,7 +234,7 @@ impl NativeAckBoot {
                 flight.request.as_ref().ok_or_else(refused)?,
             )?;
         }
-        let mut owner = boot.try_borrow_mut().map_err(|_| borrowed())?;
+        let owner = boot.try_borrow_mut().map_err(|_| borrowed())?;
         owner.ensure_origin()?;
         let mut flight = attempt.try_borrow_mut().map_err(|_| borrowed())?;
         let mapping_data = mapping.try_borrow().map_err(|_| borrowed())?;

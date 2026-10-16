@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::node_admission::{
-    OriginalInstalledRestorationActivationPhase, OriginalInstalledRestorationObservationClaim,
+    OriginalInstalledRestorationObservationClaim,
     OriginalInstalledRestorationObservationSigningConstructionInputs,
     OriginalInstalledRestorationObservationSigningInputs,
 };

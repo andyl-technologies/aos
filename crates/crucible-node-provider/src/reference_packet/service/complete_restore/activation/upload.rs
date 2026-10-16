@@ -13,8 +13,10 @@
 //! finish before the final WorldActivate assignment is reserved or signed.
 
 use super::*;
+#[cfg(test)]
 use crate::envelope::{Envelope, MessageKind};
-use crucible_node_contract::{ContractError, SchemaRef, canonical};
+#[cfg(test)]
+use crucible_node_contract::{ContractError, canonical};
 
 mod contract;
 mod crypto;

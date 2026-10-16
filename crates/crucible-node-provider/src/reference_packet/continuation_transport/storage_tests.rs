@@ -11,7 +11,6 @@ use crate::retained_metadata::{
     serialization_storage::{OriginalSerializationStorageData, actual_serialization_storage_data},
 };
 use crate::{
-    bodies::*,
     handshake::{ConnectionAuthority, Handshake},
 };
 use crucible_node_contract::{Extensions, Phase, Position, Tick, U64, canonical};

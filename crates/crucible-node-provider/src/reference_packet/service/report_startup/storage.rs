@@ -13,7 +13,6 @@ use crate::retained_metadata::serialization_storage::{
 };
 use crate::retained_metadata::{MetadataObserver, RetainedProtocolMetadataFacts};
 use crucible_node_contract::{ContentRef, Id};
-use serde_json::Value;
 use std::mem::size_of;
 
 mod observe;

@@ -9,7 +9,6 @@
 use super::storage::{OriginalInstalledRestorationActivationConstructionData, PhaseStorage};
 use super::*;
 use crate::client::CnpController;
-use crate::reference_packet::service::complete_restore::PacketNativeRestoredRecord;
 use crate::reference_packet::service::{PacketNative5SourceLaunch, complete_restore::transfer::*};
 use crate::retained_metadata::serialization_storage::OriginalSerializationStorageData;
 use std::mem::size_of;

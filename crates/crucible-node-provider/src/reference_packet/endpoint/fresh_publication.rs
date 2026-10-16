@@ -5,7 +5,7 @@
 //! No parsed report, ceiling or incomplete publication creates the completed
 //! owner needed by the next Prepare.
 
-use super::fresh_restore::{NativeFreshCurrentCensus, NativeFreshRestoreAttempt};
+use super::fresh_restore::NativeFreshCurrentCensus;
 use super::*;
 use crate::client::DeadlineStream;
 use crate::reference_packet::serialization_storage::encode_original_precharged_serialization_into;

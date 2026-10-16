@@ -12,7 +12,7 @@ use super::*;
 use crate::node_contract::runtime_owned_counter::OwnedStorage;
 use crate::node_contract::{
     OriginalLineageJournal, OriginalLineageNativeScope, OriginalLineageOwnerMapping,
-    OriginalLineageRuntimeRecord, SavedOriginalInputScope, SavedRuntimeResult,
+    SavedOriginalInputScope, SavedRuntimeResult,
 };
 
 pub(super) struct OriginalRestorationScopeOwner {
