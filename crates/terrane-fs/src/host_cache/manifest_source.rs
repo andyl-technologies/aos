@@ -89,19 +89,11 @@ impl NativeManifestSource {
                 "metadata shard differs from shared content custody",
             ));
         }
-        let body_flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let mut pack = File::from(openat(
-            &shard,
-            format!("{}.pack", entry.pack_id),
-            body_flags,
-            Mode::empty(),
-        )?);
-        let mut index = File::from(openat(
-            &shard,
-            format!("{}.idx", entry.pack_id),
-            body_flags,
-            Mode::empty(),
-        )?);
+        let shard_file = File::from(shard);
+        let mut pack =
+            super::owner::open_regular_at(&shard_file, &format!("{}.pack", entry.pack_id))?;
+        let mut index =
+            super::owner::open_regular_at(&shard_file, &format!("{}.idx", entry.pack_id))?;
         let pack_metadata = pack.metadata()?;
         let index_metadata = index.metadata()?;
         for metadata in [&pack_metadata, &index_metadata] {
@@ -180,7 +172,7 @@ impl NativeManifestSource {
             pack_metadata,
             index_metadata,
             pack_directory: File::from(packs),
-            shard_directory: File::from(shard),
+            shard_directory: shard_file,
         };
         source.recheck()?;
         Ok(source)

@@ -8,8 +8,8 @@
 //! charged-and-reserved quota usage remains a distinct full-owner observation.
 
 use super::{
-    recovery_namespace::SharedNamespaceObservation, recovery_state_parent::StateParentObservation,
-    retention::Custody,
+    recovery_inline::AdoptedInline, recovery_namespace::SharedNamespaceObservation,
+    recovery_state_parent::StateParentObservation, retention::Custody,
 };
 use rustix::fs::{Mode, OFlags, openat, syncfs};
 use std::{collections::BTreeMap, fs::File, io, os::unix::fs::MetadataExt};
@@ -36,6 +36,7 @@ pub(super) fn observe(
     owner: &Custody,
     shared: &SharedNamespaceObservation,
     state_parent: &StateParentObservation,
+    adopted_inline: &[AdoptedInline],
 ) -> io::Result<SynchronizedAllocation> {
     owner.check_current()?;
     let layout = owner.preparation.layout();
@@ -70,6 +71,9 @@ pub(super) fn observe(
         measure(file, &mut measured)?;
     }
     measure(owner.preparation.probe_handle(), &mut measured)?;
+    for body in adopted_inline {
+        measure(body.handle(), &mut measured)?;
+    }
     let (snapshot, _) = owner
         .snapshot
         .as_ref()

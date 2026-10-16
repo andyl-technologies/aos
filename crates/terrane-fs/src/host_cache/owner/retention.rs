@@ -36,8 +36,16 @@ use terrane_core::identity::{Identity, IdentityKind};
 use tokio::sync::oneshot;
 
 mod executor;
+mod manifest;
+mod recovery_manifest;
 use executor::NativeOwnerExecutor;
 pub(crate) use executor::{PublisherResumeTurn, PublisherRunningTurn};
+use manifest::retain;
+pub(crate) use recovery_manifest::{
+    AcceptedRecoveryManifestEffect, LiveManifestRecoveryContext, RecoveryManifestBackingRetention,
+    RecoveryManifestBodyFailure, RecoveryManifestBodyRetention, RecoveryManifestEffect,
+    RecoveryManifestEffectFailure, RecoveryRetainedManifest,
+};
 
 /// Retains a native queue for durable metadata pins and missing-index repair.
 ///
@@ -79,12 +87,32 @@ struct IndexRepairCustody {
     completed: Option<IndexWriteCompletion>,
 }
 
+/// Records only a completed physical snapshot write and its retained incarnation.
+///
+/// Cold loads never produce this provenance. It is cleared before every write
+/// attempt and recreated only after file/parent durability and currentness.
+struct SynchronizedState {
+    state: CacheState,
+    generation: u64,
+    device: u64,
+    inode: u64,
+}
+
+impl SynchronizedState {
+    fn matches_snapshot(&self, generation: u64, expected: &Metadata, actual: &Metadata) -> bool {
+        self.generation == generation
+            && (self.device, self.inode) == (expected.dev(), expected.ino())
+            && same_file(expected, actual)
+    }
+}
+
 /// Retains native proofs, exclusive state ownership and physical command resources.
 pub(super) struct Custody {
     pub(super) preparation: NativeCachePreparation,
     pub(super) directory: File,
     pub(super) state: CacheState,
     pub(super) snapshot: Option<(File, Metadata)>,
+    synchronized_state: Option<SynchronizedState>,
     sources: BTreeMap<[u8; 16], Arc<NativeManifestSource>>,
     index_repairs: BTreeMap<[u8; 16], IndexRepairCustody>,
     pub(super) faulted: bool,
@@ -187,9 +215,7 @@ impl NativeMetadataOwner {
                             let _ = response.send(result);
                         }
                         Command::Recover { response } => {
-                            let result = executor.check_recovery_phase().and_then(|()| {
-                                runtime.block_on(super::recovery::run(executor.custody()))
-                            });
+                            let result = runtime.block_on(executor.recover());
                             let _ = response.send(result);
                         }
                         Command::Retain { identity, response } => {
@@ -456,6 +482,21 @@ impl RetainedManifest {
         {
             return Err(invalid("metadata retention custody is no longer current"));
         }
+        self.check_registration(&custody)
+    }
+
+    /// Checks actual durable retention records without changing owner phase.
+    fn check_registration(&self, custody: &Custody) -> io::Result<()> {
+        if custody.snapshot.is_none()
+            || !custody
+                .sources
+                .get(&self.retention_id)
+                .is_some_and(|source| Arc::ptr_eq(source, &self.source))
+            || !Arc::ptr_eq(&self.session, &custody.preparation.publisher_session())
+            || custody.preparation.publisher().cache_incarnation() != &self.cache_incarnation
+        {
+            return Err(invalid("metadata registration differs from actual custody"));
+        }
         let token = hex(&self.retention_id);
         let pin_owner = format!("metadata:{token}");
         if !custody.state.reservations.iter().any(|record| {
@@ -529,6 +570,7 @@ impl Custody {
             directory,
             state: CacheState::default(),
             snapshot: None,
+            synchronized_state: None,
             sources: BTreeMap::new(),
             index_repairs: BTreeMap::new(),
             faulted: false,
@@ -632,6 +674,9 @@ impl Custody {
     /// # Errors
     /// Refuses failed snapshot/parent durability and missing or changed state.
     pub(super) async fn persist(&mut self) -> io::Result<()> {
+        // An old successful snapshot cannot certify the next in-memory state
+        // when this attempt fails or its future is cancelled before replacement.
+        self.synchronized_state = None;
         let path = self.preparation.config.location.root().join("state/cache");
         self.state
             .persist(&TokioLocalFs, &path, self.preparation.config.state)
@@ -658,7 +703,44 @@ impl Custody {
         if self.snapshot.is_none() {
             return Err(invalid("synchronized metadata pin snapshot is absent"));
         }
-        self.check_current()
+        self.check_current()?;
+        let metadata = &self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| invalid("synchronized snapshot absent"))?
+            .1;
+        self.synchronized_state = Some(SynchronizedState {
+            state: self.state.clone(),
+            generation: self.generation,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        });
+        Ok(())
+    }
+
+    /// Requires the actual producer's synchronized snapshot of this bootstrap.
+    ///
+    /// # Errors
+    /// Refuses cold/failed/abandoned writes, another generation or inode, and a
+    /// prior synchronized state that does not contain the exact required hold.
+    fn check_synchronized_bootstrap(&self, id: &[u8; 16]) -> io::Result<()> {
+        self.check_current()?;
+        let completed = self
+            .synchronized_state
+            .as_ref()
+            .ok_or_else(|| invalid("bootstrap snapshot has no completed native write"))?;
+        let (snapshot, metadata) = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| invalid("bootstrap snapshot is absent"))?;
+        let actual = snapshot.metadata()?;
+        if !completed.matches_snapshot(self.generation, metadata, &actual) {
+            return Err(invalid(
+                "bootstrap write provenance differs from retained snapshot",
+            ));
+        }
+        super::recovery_state::check_bootstrap(&self.preparation.config, &completed.state, id)?;
+        super::recovery_state::check_bootstrap(&self.preparation.config, &self.state, id)
     }
 
     /// Invalidates an older completion before any new durable command effects.
@@ -673,149 +755,6 @@ impl Custody {
         self.recovery_id = None;
         Ok(())
     }
-}
-
-async fn retain(custody: &Arc<Mutex<Custody>>, identity: Identity) -> io::Result<RetainedManifest> {
-    let mut owner = custody
-        .lock()
-        .map_err(|_| io::Error::other("metadata custody poisoned"))?;
-    if owner.faulted || owner.recovery_required {
-        return Err(io::Error::other(
-            "metadata owner requires failed-operation recovery",
-        ));
-    }
-    owner.check_current()?;
-    owner.preparation.recheck()?;
-    let reader = NativeHostMetadataReader::open(
-        Arc::clone(owner.preparation.layout()),
-        owner.preparation.config.reads,
-    )
-    .await
-    .map_err(io::Error::other)?;
-    let source = Arc::new(
-        NativeManifestSource::open(&reader, &identity, owner.preparation.config.reads).await?,
-    );
-    for file in [source.files().0, source.files().1] {
-        if NativeProject::inspect(file)?.project_id != owner.preparation.config.project_id {
-            return Err(invalid("retained metadata has another native project"));
-        }
-    }
-    owner.preparation.recheck()?;
-    let future = owner.state.reservations.iter().try_fold(
-        owner.preparation.config.metadata_sync_hold_bytes,
-        |total, reservation| {
-            total
-                .checked_add(reservation.bytes)
-                .ok_or_else(|| invalid("future hold sum overflow"))
-        },
-    )?;
-    let charged = owner
-        .preparation
-        .quota()
-        .observation()
-        .charged_reserved_bytes;
-    if charged
-        .checked_add(future)
-        .is_none_or(|total| total > owner.preparation.config.policy.capacity)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::StorageFull,
-            "native metadata future hold exceeds available charge budget",
-        ));
-    }
-    let mut retention_id = [0; 16];
-    File::open("/dev/urandom")?.read_exact(&mut retention_id)?;
-    if owner.sources.contains_key(&retention_id) || owner.index_repairs.contains_key(&retention_id)
-    {
-        return Err(io::Error::other(
-            "random metadata retention identifier collision",
-        ));
-    }
-    let token = hex(&retention_id);
-    let pin_owner = format!("metadata:{token}");
-    let reservation = ReservationRecord {
-        id: token,
-        owner: owner.preparation.config.quota_owner.clone(),
-        bytes: owner.preparation.config.metadata_sync_hold_bytes,
-    };
-    let mut next = owner.state.clone();
-    next.reservations.push(reservation);
-    let mut pinned = next.clone();
-    pinned.leases.push(LeaseRecord {
-        owner: pin_owner.clone(),
-        expires: u64::MAX,
-    });
-    for hash in [hex(identity.digest()), hex(source.pack_identity().digest())] {
-        pinned.pins.push(PinRecord {
-            owner: pin_owner.clone(),
-            hash,
-            expires: u64::MAX,
-        });
-    }
-    next.encoded_len(owner.preparation.config.state)
-        .map_err(io::Error::other)?;
-    pinned
-        .encoded_len(owner.preparation.config.state)
-        .map_err(io::Error::other)?;
-    owner.begin_mutation()?;
-    owner.sources.insert(retention_id, Arc::clone(&source));
-    owner.state = next;
-    // From the first attempted snapshot onward, all failure paths keep this
-    // source and hold registered and refuse subsequent mutations. Once this
-    // reservation snapshot is durable, later failures remain visible on disk.
-    owner.faulted = true;
-    owner.persist().await?;
-    source.synchronize()?;
-    owner.state = pinned;
-    owner.persist().await?;
-    let mut allocated = BTreeMap::new();
-    for file in [source.files().0, source.files().1] {
-        let bytes = synchronized_allocated_bytes(file)?;
-        let metadata = file.metadata()?;
-        allocated.insert((metadata.dev(), metadata.ino()), bytes);
-    }
-    let synchronized_source_bytes = allocated.values().try_fold(0_u64, |total, bytes| {
-        total
-            .checked_add(*bytes)
-            .ok_or_else(|| invalid("source allocation overflow"))
-    })?;
-    let snapshot_bytes = owner
-        .snapshot
-        .as_ref()
-        .ok_or_else(|| invalid("completed metadata pin snapshot is absent"))
-        .and_then(|(file, _)| synchronized_allocated_bytes(file))?;
-    owner.snapshot_allocated_bytes = snapshot_bytes;
-    owner.directory_allocated_bytes = synchronized_allocated_bytes(&owner.directory)?;
-    owner.preparation.recheck()?;
-    if owner
-        .preparation
-        .quota()
-        .observation()
-        .charged_reserved_bytes
-        .checked_add(future)
-        .is_none_or(|total| total > owner.preparation.config.policy.capacity)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::StorageFull,
-            "reconciled charge and retained holds exceed cache policy",
-        ));
-    }
-    source.recheck()?;
-    owner.check_current()?;
-    // The policy hold remains durable for the dependent metadata's entire
-    // lifetime. Only actual retirement/recovery can release it; waiter or receipt
-    // destruction never does. Allocation and kernel charge remain separate.
-    owner.faulted = false;
-    let cache_incarnation = *owner.preparation.publisher().cache_incarnation();
-    let session = owner.preparation.publisher_session();
-    Ok(RetainedManifest {
-        source,
-        custody: Arc::clone(custody),
-        retention_id,
-        cache_incarnation,
-        session,
-        synchronized_source_bytes,
-    })
 }
 
 async fn repair_index(
@@ -998,4 +937,39 @@ fn same_file(left: &Metadata, right: &Metadata) -> bool {
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(test)]
+mod snapshot_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn previous_write_cannot_certify_new_generation_or_another_inode() {
+        // Real ordinary files test identity only: no native preparation,
+        // confinement, quota or bootstrap receipt is fabricated here.
+        let path = std::env::temp_dir().join(format!(
+            "terrane-snapshot-provenance-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let first = File::create_new(path.join("first")).unwrap();
+        let second = File::create_new(path.join("second")).unwrap();
+        let observed = first.metadata().unwrap();
+        let provenance = SynchronizedState {
+            state: CacheState::default(),
+            generation: 3,
+            device: observed.dev(),
+            inode: observed.ino(),
+        };
+        assert!(provenance.matches_snapshot(3, &observed, &first.metadata().unwrap()));
+        assert!(!provenance.matches_snapshot(4, &observed, &first.metadata().unwrap()));
+        assert!(!provenance.matches_snapshot(3, &observed, &second.metadata().unwrap()));
+        drop(first);
+        drop(second);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }

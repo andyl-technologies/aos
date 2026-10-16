@@ -10,15 +10,23 @@ mod index_io;
 mod preparation;
 mod recovery;
 mod recovery_accounting;
+mod recovery_inline;
 mod recovery_namespace;
 mod recovery_state;
 mod recovery_state_parent;
 mod resume_error;
 mod retention;
 
+pub(super) use index_io::open_regular_at;
+
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
 pub use recovery::CompletedRecovery;
 pub use resume_error::NativeResumeError;
+pub(crate) use retention::{
+    AcceptedRecoveryManifestEffect, LiveManifestRecoveryContext, PublisherResumeTurn,
+    PublisherRunningTurn, RecoveryManifestBackingRetention, RecoveryManifestBodyFailure,
+    RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
+    RecoveryRetainedManifest,
+};
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};
-pub(crate) use retention::{PublisherResumeTurn, PublisherRunningTurn};

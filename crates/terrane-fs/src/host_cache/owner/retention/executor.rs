@@ -23,6 +23,16 @@ pub(super) struct NativeOwnerExecutor {
     worker: ThreadId,
     running: Option<Arc<PublisherRunningContext>>,
     failed_resume: Option<(ResumeFailureStage, CompletedRecovery)>,
+    adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
+    manifest_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
+    manifest_bodies: Vec<
+        Arc<
+            crate::publisher_local::client::PeerPublishedObject<
+                terrane::host::cache::HostDomainLocation,
+            >,
+        >,
+    >,
+    manifest_backings: Vec<super::recovery_manifest::RecoveryManifestBodyRetention>,
 }
 
 impl NativeOwnerExecutor {
@@ -33,12 +43,111 @@ impl NativeOwnerExecutor {
             worker: thread::current().id(),
             running: None,
             failed_resume: None,
+            adopted_inline: Vec::new(),
+            manifest_sources: Vec::new(),
+            manifest_bodies: Vec::new(),
+            manifest_backings: Vec::new(),
         }
     }
 
     /// Borrows actual custody for one serialized physical command.
     pub(super) fn custody(&self) -> &Arc<Mutex<Custody>> {
         &self.custody
+    }
+
+    /// Checks the actual physical worker before a fixed native command.
+    ///
+    /// # Errors
+    /// Refuses a caller on any thread other than this retained executor.
+    pub(super) fn check_physical_worker(&self) -> io::Result<()> {
+        if self.worker != thread::current().id() {
+            return Err(io::Error::other(
+                "native command belongs to another physical worker",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Retains actual source handles outside embedded state before write effects.
+    ///
+    /// # Errors
+    /// Refuses another worker or unavailable finite registry allocation.
+    pub(super) fn retain_manifest_source(
+        &mut self,
+        source: Arc<crate::host_cache::NativeManifestSource>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        self.manifest_sources
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        self.manifest_sources.push(source);
+        Ok(())
+    }
+
+    /// Reserves bounded registry slots before a downstream recovery effect.
+    ///
+    /// # Errors
+    /// Refuses another worker, poisoned custody, exhausted configured record
+    /// capacity or unavailable memory. No native publisher effect occurs here.
+    pub(super) fn reserve_manifest_body_slots(&mut self) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self.manifest_bodies.len() >= limit || self.manifest_backings.len() >= limit {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "manifest body registry limit reached",
+            ));
+        }
+        self.manifest_bodies
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        self.manifest_backings
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        Ok(())
+    }
+
+    /// Retains an owned response body before any subsequent fallible checks.
+    ///
+    /// The exclusive effect owns the slot reserved before its RPC. Only that
+    /// effect inserts here, once; no intervening command can consume capacity.
+    pub(super) fn retain_adopted_manifest_body(
+        &mut self,
+        body: Arc<
+            crate::publisher_local::client::PeerPublishedObject<
+                terrane::host::cache::HostDomainLocation,
+            >,
+        >,
+    ) {
+        self.manifest_bodies.push(body);
+    }
+
+    /// Retains the actual body/metadata pair before completing its response.
+    ///
+    /// The same exclusive effect owns the pre-reserved pairing slot. This
+    /// registry preserves unresolved pairs too and grants no serving authority.
+    pub(super) fn retain_manifest_backing(
+        &mut self,
+        retained: super::recovery_manifest::RecoveryManifestBodyRetention,
+    ) {
+        self.manifest_backings.push(retained);
+    }
+
+    /// Runs supported recovery while retaining adopted backing beyond any reply.
+    ///
+    /// # Errors
+    /// Refuses unsupported candidates, stale custody, failed synchronization,
+    /// quota reconciliation or a prior handoff; all adopted handles stay owned.
+    pub(super) async fn recover(&mut self) -> io::Result<CompletedRecovery> {
+        self.check_recovery_phase()?;
+        super::super::recovery::run(&self.custody, &mut self.adopted_inline).await
     }
 
     /// Retains the complete acknowledged or failed handoff before any reply.

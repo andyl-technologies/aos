@@ -1,7 +1,8 @@
 //! Runs serialized actual recovery without conflating it with tier readiness.
 //!
-//! The first complete case is an actually empty content namespace and empty
-//! cold policy. Unknown names, private publication state, temporary files,
+//! Supported cases contain empty cold policy and either no content or only
+//! canonical sealed inline chunks with exact verified bindings. Unknown names,
+//! unhandled private publication state, temporary files,
 //! pending bodies and every unhandled candidate remain non-ready. A receipt
 //! requires real shared/private scans, durable state, synchronized allocation,
 //! fresh authenticated quota charges and the original successful drain epoch.
@@ -9,6 +10,7 @@
 
 use super::{
     recovery_accounting::{self, SynchronizedAllocation},
+    recovery_inline::{self, AdoptedInline},
     recovery_namespace::SharedNamespaceObservation,
     recovery_state,
     recovery_state_parent::StateParentObservation,
@@ -26,7 +28,7 @@ use std::{
 use terrane::host::cache::HostDomainLocation;
 use tokio::sync::oneshot;
 
-/// Retains genuine completion of the currently implemented empty recovery case.
+/// Retains genuine completion of supported empty or inline-only recovery.
 ///
 /// Only the physical owner constructs this after exhaustive actual observations
 /// and durable reconciliation. It cannot be constructed from a boolean, caller
@@ -45,6 +47,7 @@ pub struct CompletedRecovery {
     allocation: SynchronizedAllocation,
     charged_reserved_bytes: u64,
     future_hold_bytes: u64,
+    adopted_inline: Vec<AdoptedInline>,
 }
 
 impl CompletedRecovery {
@@ -115,23 +118,29 @@ impl CompletedRecovery {
                 "recovery completion no longer matches actual owner custody",
             ));
         }
-        recovery_state::check_bootstrap(
+        let claims = recovery_inline::claims(&self.inventory, owner.preparation.layout())?;
+        recovery_state::check_reconciled(
             &owner.preparation.config,
             &owner.state,
             &self.recovery_id,
+            &recovery_inline::residences(&claims),
         )?;
         self.shared.check_current()?;
         self.state_parent.check_current()?;
         self.inventory.check_current()?;
-        require_empty_inventory(&self.inventory)
+        recovery_inline::check(
+            &self.inventory,
+            owner.preparation.layout(),
+            &self.adopted_inline,
+        )
     }
 }
 
 impl NativeMetadataOwner {
     /// Runs bounded actual recovery in the retained physical command queue.
     ///
-    /// The currently complete case requires empty cold policy and an exhaustive
-    /// empty content namespace. Every other case remains explicitly unresolved;
+    /// Supported cases require empty cold policy and an exhaustive empty or
+    /// canonical inline-only namespace. Other cases remain explicitly unresolved;
     /// no record is auto-cleared and no exposure is resumed. Request cancellation
     /// never cancels accepted physical work or releases its durable future hold.
     ///
@@ -159,13 +168,16 @@ impl NativeMetadataOwner {
     }
 }
 
-/// Completes the actual empty case on the sole physical command executor.
+/// Completes supported empty or inline-only recovery on the physical executor.
 ///
 /// # Errors
 /// Refuses every unresolved record/name/candidate, stale native or publisher
 /// custody, failed durability, unknown quota or excessive actual charge. After
 /// the first snapshot attempt, failures retain the owner's hold and fault state.
-pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRecovery> {
+pub(super) async fn run(
+    custody: &Arc<Mutex<Custody>>,
+    adopted_inline: &mut Vec<AdoptedInline>,
+) -> io::Result<CompletedRecovery> {
     let (session, inspector, shared, state_parent) = {
         let mut owner = custody
             .lock()
@@ -212,8 +224,37 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
         owner.persist().await?;
         (bootstrap.id, owner.generation)
     };
+    let initial_inventory = inspector.inspect()?;
+    let claims = {
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        let claims = recovery_inline::claims(&initial_inventory, owner.preparation.layout())?;
+        let mut candidate = owner.state.clone();
+        candidate.residences = recovery_inline::residences(&claims);
+        candidate
+            .encoded_len(owner.preparation.config.state)
+            .map_err(io::Error::other)?;
+        owner.preparation.recheck()?;
+        check_charge(&owner)?;
+        claims
+    };
+    // No embedded lock crosses the RPC. Each actual receipt enters the physical
+    // registry before the next fallible operation, including a cancelled reply.
+    adopted_inline
+        .try_reserve(claims.len())
+        .map_err(io::Error::other)?;
+    for claim in claims {
+        let body = session.adopt_inline(claim).map_err(io::Error::other)?;
+        adopted_inline.push(Arc::new(body));
+    }
     let inventory = inspector.inspect()?;
-    require_empty_inventory(&inventory)?;
+    {
+        let owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        recovery_inline::check(&inventory, owner.preparation.layout(), adopted_inline)?;
+    }
     session
         .check_recovery_context(&context)
         .map_err(io::Error::other)?;
@@ -225,8 +266,11 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
         state_parent.check_current()?;
         inventory.check_current()?;
         recovery_state::check_bootstrap(&owner.preparation.config, &owner.state, &id)?;
+        let claims = recovery_inline::claims(&inventory, owner.preparation.layout())?;
+        owner.state.residences = recovery_inline::residences(&claims);
         owner.persist().await?;
-        let allocation = recovery_accounting::observe(&owner, &shared, &state_parent)?;
+        let allocation =
+            recovery_accounting::observe(&owner, &shared, &state_parent, adopted_inline)?;
         owner.snapshot_allocated_bytes = owner
             .snapshot
             .as_ref()
@@ -238,6 +282,14 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
         shared.check_current()?;
         state_parent.check_current()?;
         owner.check_current()?;
+        recovery_inline::check(&inventory, owner.preparation.layout(), adopted_inline)?;
+        let expected = recovery_inline::claims(&inventory, owner.preparation.layout())?;
+        recovery_state::check_reconciled(
+            &owner.preparation.config,
+            &owner.state,
+            &id,
+            &recovery_inline::residences(&expected),
+        )?;
         owner.recovery_id = Some(id);
         owner.recovery_required = false;
         owner.faulted = false;
@@ -274,19 +326,8 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
         allocation,
         charged_reserved_bytes,
         future_hold_bytes,
+        adopted_inline: adopted_inline.clone(),
     })
-}
-
-fn require_empty_inventory(inventory: &NativeRecoveryInspection) -> io::Result<()> {
-    if inventory.inventory_failure().is_some()
-        || inventory.namespace_failure().is_some()
-        || !inventory.candidates().is_empty()
-    {
-        return Err(unresolved(
-            "actual publisher inventory has unresolved names, bodies or failures",
-        ));
-    }
-    Ok(())
 }
 
 fn check_charge(owner: &Custody) -> io::Result<()> {
