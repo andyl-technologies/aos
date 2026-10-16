@@ -23,7 +23,7 @@ where
     pub(super) identity: ProductionVmNodeGeneration,
     pub(super) resources: AttemptResourceLimits,
     pub(super) cancellation: ExecutionCancellation,
-    pub(super) released: bool,
+    pub(super) retirement: WorldMemberRetirement,
     pub(super) process_contract: Option<QemuChildProcessContract>,
     pub(super) host_ram: Option<(
         crucible_qemu::ram_control::RamControlRegistration,
@@ -40,7 +40,7 @@ where
         formatter
             .debug_struct("QemuHotForkWorldNodeTarget")
             .field("identity", &self.identity)
-            .field("released", &self.released)
+            .field("retirement", &self.retirement)
             .finish_non_exhaustive()
     }
 }
@@ -78,7 +78,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.issued.contains(&self.identity)
+        {
             return Err(world_resource_error(
                 "hot-fork RAM target is not operational",
             ));
@@ -138,12 +141,12 @@ where
                 "hot-fork world no-child rollback lost its exact reservation",
             ));
         }
-        self.released = true;
+        self.retirement = WorldMemberRetirement::Returned;
         Ok(())
     }
 
     fn finish_node(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.released {
+        if self.retirement.already_returned()? {
             return Ok(());
         }
         let mut state = self
@@ -151,7 +154,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if state.released.contains(&self.identity) {
-            self.released = true;
+            self.retirement = WorldMemberRetirement::Returned;
             return Ok(());
         }
         if state.terminal || !state.issued.contains(&self.identity) {
@@ -171,7 +174,7 @@ where
                 .map_err(|error| world_resource_error(error.to_string()))?;
         }
         state.released.insert(self.identity.clone());
-        self.released = true;
+        self.retirement = WorldMemberRetirement::Returned;
         Ok(())
     }
 }
@@ -193,7 +196,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.issued.contains(&self.identity)
+        {
             return Err(world_resource_error(
                 "hot-fork node target is not operational",
             ));
@@ -206,7 +212,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.issued.contains(&self.identity)
+        {
             return Err(world_resource_error(
                 "hot-fork node target is not operational",
             ));
@@ -224,9 +233,9 @@ where
     }
 
     fn quarantine(&mut self) {
-        if !self.released {
+        if self.retirement == WorldMemberRetirement::Active {
             quarantine_world_state(&self.state);
-            self.released = true;
+            self.retirement = WorldMemberRetirement::Quarantined;
         }
     }
 }
@@ -243,7 +252,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.issued.contains(&self.identity)
+        {
             return Err(world_resource_error(
                 "native resource controller owner is not operational",
             ));
@@ -252,7 +264,7 @@ where
     }
 
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
-        if self.released {
+        if self.retirement != WorldMemberRetirement::Active {
             return Err(world_resource_error(
                 "hot-fork node launch target is already released",
             ));
@@ -270,7 +282,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.issued.contains(&self.identity)
+        {
             return Err(world_resource_error(
                 "hot-fork node launch target is not operational",
             ));
@@ -287,21 +302,21 @@ where
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
                 state.terminal = true;
-                state.terminal_failure = Some(String::from(
-                    "concurrent hot-fork node retained an unreaped launch child",
-                ));
+                state.terminal_failure.get_or_insert_with(|| {
+                    String::from("concurrent hot-fork node retained an unreaped launch child")
+                });
             }
             Err(poisoned) => {
                 let mut state = poisoned.into_inner();
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
                 state.terminal = true;
-                state.terminal_failure = Some(String::from(
-                    "concurrent hot-fork node resource registry was poisoned",
-                ));
+                state.terminal_failure.get_or_insert_with(|| {
+                    String::from("concurrent hot-fork node resource registry was poisoned")
+                });
             }
         }
-        self.released = true;
+        self.retirement = WorldMemberRetirement::Quarantined;
     }
 }
 
@@ -322,7 +337,10 @@ where
                 "hot-fork world resource registry is poisoned",
             )
         })?;
-        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.terminal
+            || !state.issued.contains(&self.identity)
+        {
             return Err(QemuNodeChannelError::new(
                 "retain concurrent hot-fork child",
                 "hot-fork node launch target is not operational",
@@ -337,7 +355,9 @@ where
     G: QemuAttemptResourceGuard,
 {
     fn drop(&mut self) {
-        if !self.released && !world_node_is_released(&self.state, &self.identity) {
+        if self.retirement == WorldMemberRetirement::Active
+            && !world_node_is_released(&self.state, &self.identity)
+        {
             quarantine_world_state(&self.state);
         }
     }

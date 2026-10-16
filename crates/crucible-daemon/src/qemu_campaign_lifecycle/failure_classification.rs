@@ -208,6 +208,24 @@ mod tests {
     }
 
     #[test]
+    fn retained_member_cleanup_stays_terminal_in_both_installation_paths() {
+        for begin in [false, true] {
+            let source = QemuVmRealizationError::CleanupRetained {
+                operation: "finish hot-fork World member",
+            };
+            let error = if begin {
+                QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(source.into())
+            } else {
+                QemuAttemptProductionVmLifecycleError::ResourceInstallation(source)
+            };
+            assert!(matches!(
+                production_lifecycle_failure_class(&error),
+                SchedulerOperationalFailureClass::Terminal
+            ));
+        }
+    }
+
+    #[test]
     fn source_resource_model_copy_stays_terminal_in_both_installation_paths() {
         for begin in [false, true] {
             let source = QemuVmRealizationError::ModelCopy {

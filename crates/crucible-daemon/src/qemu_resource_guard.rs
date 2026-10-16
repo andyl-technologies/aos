@@ -2483,7 +2483,8 @@ fn attempt_operational_error(
         QemuVmRealizationError::HostMemoryLimit { .. } => {
             SchedulerOperationalFailureClass::Terminal
         }
-        QemuVmRealizationError::ReapQuarantined { .. }
+        QemuVmRealizationError::CleanupRetained { .. }
+        | QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }
         | QemuVmRealizationError::Executor { .. }
         | QemuVmRealizationError::InvalidCheckpoint { .. }

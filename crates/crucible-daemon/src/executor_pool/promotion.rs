@@ -272,7 +272,8 @@ fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFail
         QemuVmRealizationError::Canceled { .. } => PromotionFailureClass::Canceled,
         #[cfg(target_os = "linux")]
         QemuVmRealizationError::HostMemoryLimit { .. } => PromotionFailureClass::Terminal,
-        QemuVmRealizationError::ReapQuarantined { .. }
+        QemuVmRealizationError::CleanupRetained { .. }
+        | QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }
         | QemuVmRealizationError::Executor { .. }
         | QemuVmRealizationError::InvalidCheckpoint { .. }
@@ -950,5 +951,21 @@ fn work_execution(work: &CheckpointPromotionRestartWork) -> ExecutionId {
     match work {
         CheckpointPromotionRestartWork::Paused(recovery) => recovery.execution(),
         CheckpointPromotionRestartWork::Staged(recovery) => recovery.execution(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_member_cleanup_cannot_become_promotion_cancellation_or_recovery() {
+        let error = QemuVmRealizationError::CleanupRetained {
+            operation: "finish hot-fork World member",
+        };
+        assert!(matches!(
+            classify_realization_failure(&error),
+            PromotionFailureClass::Terminal
+        ));
     }
 }
