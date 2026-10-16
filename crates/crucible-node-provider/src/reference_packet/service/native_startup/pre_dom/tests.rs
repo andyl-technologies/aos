@@ -47,7 +47,10 @@ fn private_exact_and_one_short_charge_the_independent_typed_launch_carry() -> Te
     let raw = br#"{"a":[{},"literal",1]}"#;
     let actual = raw
         .len()
-        .checked_add(super::super::storage::private_frame_work_data(raw_shape::extent(raw)?, 0)?)
+        .checked_add(super::super::storage::private_frame_work_data(
+            raw_shape::extent(raw)?,
+            0,
+        )?)
         .ok_or_else(exhausted)?;
     let carry = 4096;
     let exact = row(actual + carry);
@@ -73,7 +76,10 @@ fn original_reader_preserves_strict_errors_when_funded_and_stops_before_parse_wh
     let raw = br#"{"duplicate":0,"duplicate":1}"#;
     let maximum = row(raw
         .len()
-        .checked_add(super::super::storage::private_frame_work_data(raw_shape::extent(raw)?, 0)?)
+        .checked_add(super::super::storage::private_frame_work_data(
+            raw_shape::extent(raw)?,
+            0,
+        )?)
         .ok_or_else(exhausted)?);
     let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
         raw.len() + 4,
@@ -122,7 +128,10 @@ fn selected_hello_reader_keeps_the_same_attempt_and_original_journal_on_layout_r
     let raw = br#"{"duplicate":0,"duplicate":1}"#;
     let exact = raw
         .len()
-        .checked_add(super::super::storage::private_frame_work_data(raw_shape::extent(raw)?, 0)?)
+        .checked_add(super::super::storage::private_frame_work_data(
+            raw_shape::extent(raw)?,
+            0,
+        )?)
         .ok_or_else(exhausted)?;
     let short = row(exact - 1);
     let journal = crate::native_hello::OriginalNativeHelloJournal::reserve(raw.len(), 64)?;
@@ -216,44 +225,67 @@ fn selected_private_phase_keeps_two_dom_canonical_views_and_partial_native_slots
     let mut owners = MetadataObserver::new();
     owners.observe(&first)?;
     owners.observe(&independent)?;
-    let banks = canonical::canonical_json(&first)?.capacity()
+    let banks = canonical::canonical_json(&first)?
+        .capacity()
         .checked_add(canonical::canonical_json(&independent)?.capacity())
         .ok_or_else(exhausted)?;
     let actual = requested_metadata_backing_storage_data(&owners.finish())?
-        .checked_add(banks).ok_or_else(exhausted)?;
+        .checked_add(banks)
+        .ok_or_else(exhausted)?;
     assert!(phase >= actual);
     let old = row(raw.len() + one_pass);
-    assert!(OriginalNativeFramePreflight::private(&old, 0).admit(raw).is_err());
+    assert!(
+        OriginalNativeFramePreflight::private(&old, 0)
+            .admit(raw)
+            .is_err()
+    );
     let funded = row(raw.len() + phase);
     OriginalNativeFramePreflight::private(&funded, 0).admit(raw)?;
     Ok(())
 }
 
 #[test]
-fn legacy_byte_floor_refuses_the_same_smaller_budget_that_actual_shape_gate_enforces() -> TestResult {
+fn legacy_byte_floor_refuses_the_same_smaller_budget_that_actual_shape_gate_enforces() -> TestResult
+{
     let mut raw = vec![b' '; 64 * 1024];
     raw.extend_from_slice(br#"{"retained":[{},"literal"]}"#);
     let phase = super::super::storage::private_frame_work_data(raw_shape::extent(&raw)?, 0)?;
     let selected = row(raw.len().checked_add(phase).ok_or_else(exhausted)?);
-    let broad = crate::retained_metadata::serialization_storage::original_json_value_storage_extent_data(raw.len())?;
-    assert!(broad.canonical_pass_requested_bytes()? as u64 > selected.maximum_simultaneous_transient_bytes.get());
+    let broad =
+        crate::retained_metadata::serialization_storage::original_json_value_storage_extent_data(
+            raw.len(),
+        )?;
+    assert!(
+        broad.canonical_pass_requested_bytes()? as u64
+            > selected.maximum_simultaneous_transient_bytes.get()
+    );
 
     // This is the old binary's defining pre-parser comparison, not a mode
     // inferred from a smaller row. Only the current actual gate accepts it.
     let budget = OriginalNativeFramePreflight::private(&selected, 0);
     let mut reader = FrameReader::new(Cursor::new(wire(&raw)), raw.len())?;
-    let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(raw.len() + 4, 1)?));
+    let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
+        raw.len() + 4,
+        1,
+    )?));
     reader.install_originals(Rc::clone(&bank));
-    let actual = reader.read_original_native_preflight(raw.len(), &budget)?.ok_or_else(exhausted)?.value;
-    assert_eq!(actual, canonical::parse_json_with_depth(&raw, raw.len(), 64)?);
+    let actual = reader
+        .read_original_native_preflight(raw.len(), &budget)?
+        .ok_or_else(exhausted)?
+        .value;
+    assert_eq!(
+        actual,
+        canonical::parse_json_with_depth(&raw, raw.len(), 64)?
+    );
     assert_eq!(bank.borrow().frames().count(), 1);
     Ok(())
 }
 
 #[test]
-fn actual_borrowed_launch_partial_owners_fit_the_raw_preflight_before_deserialization() -> TestResult {
-    use serde::Deserialize;
+fn actual_borrowed_launch_partial_owners_fit_the_raw_preflight_before_deserialization() -> TestResult
+{
     use super::super::super::PacketNative5SourceLaunch;
+    use serde::Deserialize;
     let (_, _, selection, coordinator) =
         crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
     // A real DTO decode is deliberately not an admitted native installation.
@@ -267,7 +299,8 @@ fn actual_borrowed_launch_partial_owners_fit_the_raw_preflight_before_deserializ
         "storage":{"snapshot_bytes":"16384","control_snapshot_bytes":"8192","protocol_snapshot_bytes":"65536","frame_bank_bytes":"65536","frames_per_direction":"256","hello_bytes":"131080","settlement_bytes":"65536"},
         "effects":"/not-opened-by-raw-preflight-control"
     });
-    value["selection"]["provider"]["extensions"]["opaque"] = serde_json::json!({"a":[{},[],"literal"]});
+    value["selection"]["provider"]["extensions"]["opaque"] =
+        serde_json::json!({"a":[{},[],"literal"]});
     let raw = canonical::canonical_json(&value)?;
     let phase = super::super::storage::private_frame_work_data(raw_shape::extent(&raw)?, 0)?;
     let budget = row(raw.len().checked_add(phase).ok_or_else(exhausted)?);
@@ -278,6 +311,10 @@ fn actual_borrowed_launch_partial_owners_fit_the_raw_preflight_before_deserializ
     let backing = requested_metadata_backing_storage_data(&facts)?;
     assert!(phase >= backing + std::mem::size_of::<PacketNative5SourceLaunch>());
     let short = row(raw.len() + phase - 1);
-    assert!(OriginalNativeFramePreflight::private(&short, 0).admit(&raw).is_err());
+    assert!(
+        OriginalNativeFramePreflight::private(&short, 0)
+            .admit(&raw)
+            .is_err()
+    );
     Ok(())
 }

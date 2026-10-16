@@ -259,39 +259,54 @@ fn project_with_source(
         // charged alongside the full validator and carried typed launch/body.
         // Actual raw input must independently fit the two-pass gate BEFORE
         // either Value exists, including malformed partial DTO ownership.
-        let carry = sum(&[launch_data.typed_backing, input.encoded_launch.len()], maximum)?;
-        let construction = sum(&[
-            decode_phase,
-            source,
-            registration,
-            additions.requested_total()?,
-            fields.requested_total()?,
-            carry,
-        ], maximum)?;
-        let first = sum(&[
-            input.encoded_launch.len(),
-            super::private_frame_work_data(
-                super::super::pre_dom::raw_extent_data(input.encoded_launch)?, 0,
-            )?,
-        ], maximum)?;
-        construction.max(first).max(sum(&[maximum_boot_bytes, carry], maximum)?)
+        let carry = sum(
+            &[launch_data.typed_backing, input.encoded_launch.len()],
+            maximum,
+        )?;
+        let construction = sum(
+            &[
+                decode_phase,
+                source,
+                registration,
+                additions.requested_total()?,
+                fields.requested_total()?,
+                carry,
+            ],
+            maximum,
+        )?;
+        let first = sum(
+            &[
+                input.encoded_launch.len(),
+                super::private_frame_work_data(
+                    super::super::pre_dom::raw_extent_data(input.encoded_launch)?,
+                    0,
+                )?,
+            ],
+            maximum,
+        )?;
+        construction
+            .max(first)
+            .max(sum(&[maximum_boot_bytes, carry], maximum)?)
     } else {
-    let incoming = original_json_value_storage_extent_data(
-        input.encoded_launch.len().max(maximum_boot_bytes),
-    )?;
-    // The FIRST raw launch frame precedes its typed owner. The SECOND raw
-    // boot frame is parsed while self.launch retains that independent typed
-    // launch. Its actual maximum_boot_bytes is enforced before reading. Keep
-    // the original max(launch,boot) raw extent term unchanged as well.
-    let second_raw = original_json_value_storage_extent_data(maximum_boot_bytes)?;
-    let second_raw_phase = sum(
-        &[
-            second_raw.canonical_pass_requested_bytes()?,
-            launch_data.typed_backing,
-        ],
-        maximum,
-    )?;
-        incoming.canonical_pass_requested_bytes()?.max(second_raw_phase).max(decode_phase)
+        let incoming = original_json_value_storage_extent_data(
+            input.encoded_launch.len().max(maximum_boot_bytes),
+        )?;
+        // The FIRST raw launch frame precedes its typed owner. The SECOND raw
+        // boot frame is parsed while self.launch retains that independent typed
+        // launch. Its actual maximum_boot_bytes is enforced before reading. Keep
+        // the original max(launch,boot) raw extent term unchanged as well.
+        let second_raw = original_json_value_storage_extent_data(maximum_boot_bytes)?;
+        let second_raw_phase = sum(
+            &[
+                second_raw.canonical_pass_requested_bytes()?,
+                launch_data.typed_backing,
+            ],
+            maximum,
+        )?;
+        incoming
+            .canonical_pass_requested_bytes()?
+            .max(second_raw_phase)
+            .max(decode_phase)
     };
     // Original launch/source/registration/boot DOM children survive successful
     // service birth in the original private bootstrap holder. These independent

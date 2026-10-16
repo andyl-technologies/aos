@@ -179,7 +179,12 @@ pub fn original_native_birth_startup_storage_data(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum_requested_bytes: usize,
 ) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
-    birth_storage_with_source(input, maximum_requested_bytes, private_bootstrap::project, false)
+    birth_storage_with_source(
+        input,
+        maximum_requested_bytes,
+        private_bootstrap::project,
+        false,
+    )
 }
 
 /// Quotes original14 construction under the actual pre-DOM frame gates.
@@ -196,7 +201,12 @@ pub fn original_native_preflight_birth_startup_storage_data(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum_requested_bytes: usize,
 ) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
-    birth_storage_with_source(input, maximum_requested_bytes, private_bootstrap::project_preflight, true)
+    birth_storage_with_source(
+        input,
+        maximum_requested_bytes,
+        private_bootstrap::project_preflight,
+        true,
+    )
 }
 
 // Only the new actual inherited-channel claim uses this source-edition census.
@@ -399,7 +409,11 @@ fn birth_storage_with_source(
         .max(coordinator_decode)
         .max(source_decode)
         .max(registration_decode)
-        .max(if preflight { NATIVE_HELLO_BYTES } else { hello.transient });
+        .max(if preflight {
+            NATIVE_HELLO_BYTES
+        } else {
+            hello.transient
+        });
     let lifecycle_work = sum(
         &[
             lifecycle.transient,
@@ -632,18 +646,27 @@ pub(super) fn private_frame_work_data(
     carry: usize,
 ) -> Result<usize, ProviderError> {
     let slots = raw.maximum_value_nodes.checked_mul(4).ok_or_else(refused)?;
-    let typed = sum(&[
-        raw.value_dom_requested_bytes,
-        slots.checked_mul(native_element_slot()).ok_or_else(refused)?,
-        raw.maximum_decoded_string_bytes.checked_mul(8).ok_or_else(refused)?,
-        size_of::<PacketNative5SourceLaunch>().max(
-            super::super::ack_emitter::original_native_ack_boot_layout(),
-        ),
-    ], usize::MAX)?;
-    sum(&[
-        raw.canonical_pass_requested_bytes()?,
-        raw.canonical_pass_requested_bytes()?,
-        typed,
-        carry,
-    ], usize::MAX)
+    let typed = sum(
+        &[
+            raw.value_dom_requested_bytes,
+            slots
+                .checked_mul(native_element_slot())
+                .ok_or_else(refused)?,
+            raw.maximum_decoded_string_bytes
+                .checked_mul(8)
+                .ok_or_else(refused)?,
+            size_of::<PacketNative5SourceLaunch>()
+                .max(super::super::ack_emitter::original_native_ack_boot_layout()),
+        ],
+        usize::MAX,
+    )?;
+    sum(
+        &[
+            raw.canonical_pass_requested_bytes()?,
+            raw.canonical_pass_requested_bytes()?,
+            typed,
+            carry,
+        ],
+        usize::MAX,
+    )
 }

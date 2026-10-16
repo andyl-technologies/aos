@@ -181,12 +181,18 @@ enum NativeStartupQuoteKind {
 }
 
 impl NativeStartupQuoteKind {
-    fn quote(self, source: &Rc<PacketCompleteSemanticSource>, launch: &PacketNative5SourceLaunch, encoded: &[u8], maximum: usize)
-        -> Result<OriginalNativeStartupQuote, RuntimeError>
-    {
+    fn quote(
+        self,
+        source: &Rc<PacketCompleteSemanticSource>,
+        launch: &PacketNative5SourceLaunch,
+        encoded: &[u8],
+        maximum: usize,
+    ) -> Result<OriginalNativeStartupQuote, RuntimeError> {
         match self {
             Self::Broad => source.original_native_startup_quote_data(launch, encoded, maximum),
-            Self::Preflight => source.original_native_preflight_startup_quote_data(launch, encoded, maximum),
+            Self::Preflight => {
+                source.original_native_preflight_startup_quote_data(launch, encoded, maximum)
+            }
         }
     }
 }
@@ -248,7 +254,12 @@ impl InstalledConformancePlan {
         launches: &'a [PacketNative5SourceLaunch; 3],
         encoded_launches: &'a [Vec<u8>; 3],
     ) -> Result<CompleteOriginalNativeStartupAdmission<'a>, RuntimeError> {
-        self.reserve_original_native_startup_with_quote(sources, launches, encoded_launches, NativeStartupQuoteKind::Broad)
+        self.reserve_original_native_startup_with_quote(
+            sources,
+            launches,
+            encoded_launches,
+            NativeStartupQuoteKind::Broad,
+        )
     }
 
     /// Admits original14 startup with the current native's restrictive raw gates.
@@ -265,7 +276,12 @@ impl InstalledConformancePlan {
         launches: &'a [PacketNative5SourceLaunch; 3],
         encoded_launches: &'a [Vec<u8>; 3],
     ) -> Result<CompleteOriginalNativeStartupAdmission<'a>, RuntimeError> {
-        self.reserve_original_native_startup_with_quote(sources, launches, encoded_launches, NativeStartupQuoteKind::Preflight)
+        self.reserve_original_native_startup_with_quote(
+            sources,
+            launches,
+            encoded_launches,
+            NativeStartupQuoteKind::Preflight,
+        )
     }
 
     fn reserve_original_native_startup_with_quote<'a>(
@@ -332,7 +348,8 @@ impl InstalledConformancePlan {
                 policy.maximum_requested_bytes,
             )?;
             let quote = quote_kind.quote(
-                &sources[index], &launches[index],
+                &sources[index],
+                &launches[index],
                 &encoded_launches[index],
                 policy.maximum_requested_bytes,
             )?;
@@ -413,7 +430,8 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
         let source = &self.scope.sources[index];
         let quote = &self.quotes[index];
         let actual = self.quote_kind.quote(
-            source, &self.scope.launches[index],
+            source,
+            &self.scope.launches[index],
             &self.scope.encoded_launches[index],
             self.policy.maximum_requested_bytes,
         )?;

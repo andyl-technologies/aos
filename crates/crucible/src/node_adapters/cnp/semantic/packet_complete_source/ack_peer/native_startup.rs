@@ -311,7 +311,12 @@ impl PacketCompleteSemanticSource {
         encoded_launch: &[u8],
         maximum: usize,
     ) -> Result<OriginalNativeStartupQuote, RuntimeError> {
-        self.original_native_startup_quote_with_producer_data(launch, encoded_launch, maximum, false)
+        self.original_native_startup_quote_with_producer_data(
+            launch,
+            encoded_launch,
+            maximum,
+            false,
+        )
     }
 
     pub(crate) fn original_native_preflight_startup_quote_data(
@@ -360,7 +365,8 @@ impl PacketCompleteSemanticSource {
             original_native_preflight_birth_startup_storage_data(&input, maximum)
         } else {
             original_native_birth_startup_storage_data(&input, maximum)
-        }.map_err(|_| RuntimeError::ResourceLimit)?;
+        }
+        .map_err(|_| RuntimeError::ResourceLimit)?;
         let private_bootstrap = row(
             native.private_bootstrap_retained_requested_bytes(),
             native.private_bootstrap_maximum_simultaneous_transient_bytes(),

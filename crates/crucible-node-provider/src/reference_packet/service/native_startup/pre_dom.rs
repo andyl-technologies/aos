@@ -63,7 +63,9 @@ impl<'a> OriginalNativeFramePreflight<'a> {
     pub(crate) fn admit_raw_bank(&self, length: usize) -> Result<(), ProviderError> {
         self.row.requested_peak_data()?;
         let carry = match self.kind {
-            FrameKind::Private { typed_launch_backing } => typed_launch_backing,
+            FrameKind::Private {
+                typed_launch_backing,
+            } => typed_launch_backing,
             FrameKind::Hello { .. } => 0,
         };
         let body_and_carry = length.checked_add(carry).ok_or_else(exhausted)?;
@@ -108,7 +110,12 @@ impl<'a> OriginalNativeFramePreflight<'a> {
     }
 }
 
-pub(super) fn raw_extent_data(raw: &[u8]) -> Result<crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData, ProviderError> {
+pub(super) fn raw_extent_data(
+    raw: &[u8],
+) -> Result<
+    crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData,
+    ProviderError,
+> {
     raw_shape::extent(raw)
 }
 
