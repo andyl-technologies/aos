@@ -556,8 +556,9 @@ impl NativePublisher {
 
     /// Moves an independently rejected canonical entry to scoped quarantine.
     ///
-    /// The retained target directory must come from trusted configuration, not
-    /// a request pathname. Cache policy retains quarantine until scrub confirms
+    /// The canonical entry must still match the retained rejected inode. The
+    /// target directory comes from trusted configuration, not a request pathname.
+    /// Cache policy retains quarantine until scrub confirms
     /// another good copy or the configured retention expires.
     ///
     /// # Errors
@@ -566,6 +567,7 @@ impl NativePublisher {
     pub fn quarantine_rejected(
         &mut self,
         claim: &PublicationClaim,
+        rejected: &File,
         quarantine: &File,
     ) -> io::Result<()> {
         self.check_claim(claim)?;
@@ -578,6 +580,13 @@ impl NativePublisher {
         }
         let shard = self.shard(claim)?;
         let name = name(claim);
+        let canonical = File::from(fs::openat(
+            &shard,
+            name.as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        compare_inode(rejected, &canonical)?;
         fs::renameat_with(
             &shard,
             name.as_str(),
@@ -590,7 +599,6 @@ impl NativePublisher {
     }
 }
 
-#[cfg(feature = "tokio")]
 fn compare_inode(expected: &File, actual: &File) -> io::Result<()> {
     let expected = expected.metadata()?;
     let actual = actual.metadata()?;
@@ -753,6 +761,7 @@ impl PublicationKernel for NativePublisher {
     fn quarantine_adoption_failure(
         &mut self,
         claim: &PublicationClaim,
+        rejected: &Self::Handle,
         cause: &AdoptionFailure,
     ) -> io::Result<()> {
         let corrupt = match cause {
@@ -772,7 +781,7 @@ impl PublicationKernel for NativePublisher {
             return Ok(());
         }
         let quarantine = self.quarantine.try_clone()?;
-        self.quarantine_rejected(claim, &quarantine)
+        self.quarantine_rejected(claim, rejected, &quarantine)
     }
 }
 

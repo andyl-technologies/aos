@@ -180,7 +180,16 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
             original.ino()
         );
 
-        let (native, _) = publisher.into_parts();
+        let (mut native, _) = publisher.into_parts();
+        let quarantine = File::open(paths[0].parent().unwrap().join("quarantine")).unwrap();
+        let unrelated = File::open(root.join("input")).unwrap();
+        assert!(
+            native
+                .quarantine_rejected(&claim, &unrelated, &quarantine)
+                .is_err()
+        );
+        assert_eq!(fs::metadata(&canonical).unwrap().ino(), original.ino());
+
         let mut state = State::default();
         state.bindings.insert(
             claim.descriptor().digest().to_vec(),

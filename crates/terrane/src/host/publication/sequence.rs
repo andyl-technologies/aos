@@ -150,13 +150,17 @@ pub trait PublicationKernel {
     /// Returns inode synchronization failures.
     fn sync_handle(&mut self, handle: &Self::Handle) -> io::Result<()>;
 
-    /// Moves an independently rejected canonical entry into owned quarantine.
+    /// Moves the exact retained rejected canonical inode into owned quarantine.
+    ///
+    /// The adapter compares the current entry with `rejected` before mutation
+    /// and synchronizes both namespace parents before reporting success.
     ///
     /// # Errors
     /// Returns unsupported quarantine or actual namespace/durability failures.
     fn quarantine_adoption_failure(
         &mut self,
         _claim: &PublicationClaim,
+        _rejected: &Self::Handle,
         _cause: &AdoptionFailure,
     ) -> io::Result<()> {
         Err(io::Error::new(
@@ -263,10 +267,12 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
         let mut handle = self.kernel.open(claim)?;
         let binding = match self.kernel.measure(&handle) {
             Ok(binding) => binding,
-            Err(error) => return self.reject_adoption(claim, AdoptionFailure::KernelSeal(error)),
+            Err(error) => {
+                return self.reject_adoption(claim, &handle, AdoptionFailure::KernelSeal(error));
+            }
         };
         if let Err(error) = claim.verify_reader(&mut handle) {
-            return self.reject_adoption(claim, AdoptionFailure::Plaintext(error));
+            return self.reject_adoption(claim, &handle, AdoptionFailure::Plaintext(error));
         }
 
         if self
@@ -275,7 +281,7 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
             .await?
             .is_some_and(|existing| existing != binding)
         {
-            return self.reject_adoption(claim, AdoptionFailure::RecordedBindingMismatch);
+            return self.reject_adoption(claim, &handle, AdoptionFailure::RecordedBindingMismatch);
         }
 
         handle.seek(SeekFrom::Start(0))?;
@@ -289,9 +295,13 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
     fn reject_adoption<T>(
         &mut self,
         claim: &PublicationClaim,
+        rejected: &K::Handle,
         cause: AdoptionFailure,
     ) -> io::Result<T> {
-        if let Err(failure) = self.kernel.quarantine_adoption_failure(claim, &cause) {
+        if let Err(failure) = self
+            .kernel
+            .quarantine_adoption_failure(claim, rejected, &cause)
+        {
             return Err(io::Error::new(
                 failure.kind(),
                 AdoptionFailure::Quarantine {
