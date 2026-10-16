@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; twenty-two of twenty-two T1 tasks are complete.
+**Status:** Complete (2026-10-16); all twenty-two T1 tasks and exit gates pass.
 
 The qualified source checkpoint `1d7451dd75` has independently reviewed passing
 outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
@@ -135,12 +135,16 @@ two expected refusals using the current package. Strict native Clippy/rustdoc
 checks, all application test targets, local SDK/CLI workflows and the required
 formatter pair also pass. Source, tracked-file and protected SDK guards pass.
 
-The SDK history and ext4 guest dependency fix are integrated in `397acf5c4f`.
-The remaining original task histories and checkoffs are being merged after
-their owning checks, the full current gate set and formatter pair pass on each
-staged merge. T1 remains open until every task and exit gate is complete.
+All twenty-two T1 tasks and their original histories are merged and pushed
+through `561409fbce`. Owning checks, the full current gate set and the required
+formatter pair passed on every staged task merge. All source outside this plan
+remains identical to the qualified checkpoint. Identity domains, encodings,
+bucket keys and store traits are now frozen.
 
-Earlier qualification notes are retained below for provenance.
+Earlier provisional qualification and pending statements below record the
+implementation history. The checked tasks and current milestone status above
+record their final resolution; task requirements and assigned later work
+remain binding.
 
 The earlier 2026-10-15 qualification candidate `c4e44d6208` has independently
 reviewed passing outputs for 87 of the 89 current gates, including every store gate,
