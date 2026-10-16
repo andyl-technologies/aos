@@ -24,12 +24,9 @@ use rustix::{
     fs::chown,
     process::{Gid, Uid},
 };
-use terrane::{
-    domain::DomainBinding,
-    host::{
-        cache::DomainHostLayout,
-        publication::{PublicationClaim, PublicationRecipe},
-    },
+use terrane::host::{
+    cache::HostDomainLocation,
+    publication::{PublicationClaim, PublicationRecipe},
 };
 use terrane_core::{
     chunking::ChunkProfile,
@@ -587,14 +584,9 @@ fn check_authenticated_client(root: &Path, expected_inode: u64) {
     let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, PLAINTEXT).unwrap();
     let layout = Arc::new(
         NativeHostLayout::inspect(
-            DomainHostLayout::new(
+            HostDomainLocation::new(
                 root.join("public"),
-                DomainBinding {
-                    domain: "public".into(),
-                    reference: "fixture".into(),
-                    root: identity,
-                    path: b"/".to_vec(),
-                },
+                "public".into(),
                 ChunkProfile::cdc_1m([0; 32]),
             )
             .unwrap(),
@@ -643,6 +635,7 @@ fn check_authenticated_client(root: &Path, expected_inode: u64) {
     );
     assert_eq!(adopted.incarnation().len(), 32);
 
+    drop(probe);
     drop(client);
     drop(layout);
     // The receipt itself still owns the real root guard and measured inode.

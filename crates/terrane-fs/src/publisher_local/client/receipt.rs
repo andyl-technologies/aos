@@ -11,7 +11,10 @@ use std::{
 };
 
 use rustix::fs::{FileType, OFlags};
-use terrane::host::publication::{PublicationClaim, VerityBinding};
+use terrane::host::{
+    cache::{DomainHostLayout, HostReadLocation},
+    publication::{PublicationClaim, VerityBinding},
+};
 
 use super::super::{Error, socket::ReceivedPacket};
 use crate::host_cache::NativeHostLayout;
@@ -20,13 +23,13 @@ use crate::host_cache::NativeHostLayout;
 ///
 /// This proves kernel sealing on the retained root device. It does not grant
 /// canonical content or writable cache admission authority.
-pub struct PeerSealProbe {
+pub struct PeerSealProbe<L: HostReadLocation = DomainHostLayout> {
     file: File,
     binding: VerityBinding,
-    layout: Arc<NativeHostLayout>,
+    layout: Arc<NativeHostLayout<L>>,
 }
 
-impl PeerSealProbe {
+impl<L: HostReadLocation> PeerSealProbe<L> {
     /// Borrows the actual measured probe inode without releasing root custody.
     pub fn handle(&self) -> &File {
         &self.file
@@ -38,7 +41,7 @@ impl PeerSealProbe {
     }
 
     /// Borrows the retained inspected root and its live provisioning guard.
-    pub fn layout(&self) -> &Arc<NativeHostLayout> {
+    pub fn layout(&self) -> &Arc<NativeHostLayout<L>> {
         &self.layout
     }
 }
@@ -48,15 +51,15 @@ impl PeerSealProbe {
 /// The file, independently measured kernel seal, validated claim and retained
 /// root guard remain together. The publisher-issued token is a lifecycle name;
 /// it does not independently authorize content or another inode.
-pub struct PeerPublishedObject {
+pub struct PeerPublishedObject<L: HostReadLocation = DomainHostLayout> {
     file: File,
     binding: VerityBinding,
-    layout: Arc<NativeHostLayout>,
+    layout: Arc<NativeHostLayout<L>>,
     claim: PublicationClaim,
     incarnation: [u8; 32],
 }
 
-impl PeerPublishedObject {
+impl<L: HostReadLocation> PeerPublishedObject<L> {
     /// Borrows the verified inode while retaining its root guard and claim.
     pub fn handle(&self) -> &File {
         &self.file
@@ -73,7 +76,7 @@ impl PeerPublishedObject {
     }
 
     /// Borrows the retained inspected root and its live provisioning guard.
-    pub fn layout(&self) -> &Arc<NativeHostLayout> {
+    pub fn layout(&self) -> &Arc<NativeHostLayout<L>> {
         &self.layout
     }
 
@@ -83,11 +86,11 @@ impl PeerPublishedObject {
     }
 }
 
-pub(super) fn probe(
+pub(super) fn probe<L: HostReadLocation>(
     received: ReceivedPacket,
-    layout: Arc<NativeHostLayout>,
+    layout: Arc<NativeHostLayout<L>>,
     publisher_uid: u32,
-) -> Result<PeerSealProbe, Error> {
+) -> Result<PeerSealProbe<L>, Error> {
     let (file, binding, stat) = checked_file(received, &layout, publisher_uid)?;
     if stat.st_nlink != 0 || stat.st_size != 0 {
         return Err(Error::Invalid("probe must be empty and unlinked"));
@@ -99,12 +102,12 @@ pub(super) fn probe(
     })
 }
 
-pub(super) fn published(
+pub(super) fn published<L: HostReadLocation>(
     received: ReceivedPacket,
-    layout: Arc<NativeHostLayout>,
+    layout: Arc<NativeHostLayout<L>>,
     publisher_uid: u32,
     claim: PublicationClaim,
-) -> Result<PeerPublishedObject, Error> {
+) -> Result<PeerPublishedObject<L>, Error> {
     let incarnation: [u8; 32] = received
         .packet
         .body_incarnation
@@ -129,9 +132,9 @@ pub(super) fn published(
     })
 }
 
-fn checked_file(
+fn checked_file<L: HostReadLocation>(
     mut received: ReceivedPacket,
-    layout: &NativeHostLayout,
+    layout: &NativeHostLayout<L>,
     publisher_uid: u32,
 ) -> Result<(File, VerityBinding, rustix::fs::Stat), Error> {
     layout.recheck()?;

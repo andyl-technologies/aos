@@ -17,7 +17,10 @@ use std::{
     time::Duration,
 };
 
-use terrane::host::publication::{PublicationClaim, PublicationRecipe};
+use terrane::host::{
+    cache::{DomainHostLayout, HostReadLocation},
+    publication::{PublicationClaim, PublicationRecipe},
+};
 use terrane_core::identity::TERRANE_V1;
 
 use super::{
@@ -42,12 +45,15 @@ pub struct ClientConfig {
 
 /// A serialized concrete client retaining actual domain-root custody.
 ///
+/// Both repository-bound layouts and host-only locations use the sealed
+/// location interface; host-only clients require no repository routing facts.
+///
 /// This client exposes readonly probe and inline adoption. Manifest adoption,
 /// writable cache admission and resume require separate durable cache-owner
 /// authority and are deliberately unavailable here.
-pub struct Client {
+pub struct Client<L: HostReadLocation = DomainHostLayout> {
     config: ClientConfig,
-    layout: Arc<NativeHostLayout>,
+    layout: Arc<NativeHostLayout<L>>,
     cache_incarnation: [u8; 16],
     state: Mutex<State>,
 }
@@ -58,7 +64,7 @@ struct State {
     drained: bool,
 }
 
-impl Client {
+impl<L: HostReadLocation> Client<L> {
     /// Connects to the authenticated publisher while retaining the inspected root.
     ///
     /// No command is retried automatically. The caller must explicitly drain
@@ -69,7 +75,7 @@ impl Client {
     /// Rejects invalid resource policy, stale layout custody, unavailable kernel
     /// randomness, unsafe socket ancestors, wrong role identities and connect
     /// failures. Each kernel socket wait has a finite configured timeout.
-    pub fn connect(config: ClientConfig, layout: Arc<NativeHostLayout>) -> Result<Self, Error> {
+    pub fn connect(config: ClientConfig, layout: Arc<NativeHostLayout<L>>) -> Result<Self, Error> {
         if !(1..=300_000).contains(&config.wait_budget_ms) || config.chunk_profile_name.is_empty() {
             return Err(Error::Invalid("client configuration"));
         }
@@ -120,7 +126,7 @@ impl Client {
     ///
     /// Rejects missing drain custody, transport or publisher failures, stale
     /// root identity, wrong inode ownership/device and mismatched kernel seals.
-    pub fn probe(&self) -> Result<PeerSealProbe, Error> {
+    pub fn probe(&self) -> Result<PeerSealProbe<L>, Error> {
         let mut state = self.lock()?;
         self.require_drained(&state)?;
         let received = self.exchange(&mut state, Operation::Probe, None, None)?;
@@ -145,7 +151,7 @@ impl Client {
     /// Rejects manifest claims, another domain, profile-ineligible inline data,
     /// missing drain custody, uncertain exchanges, publisher failures and any
     /// file ownership, device, seal, size or plaintext identity mismatch.
-    pub fn adopt_inline(&self, claim: PublicationClaim) -> Result<PeerPublishedObject, Error> {
+    pub fn adopt_inline(&self, claim: PublicationClaim) -> Result<PeerPublishedObject<L>, Error> {
         let claim = self.inline_claim(claim)?;
         let descriptor = claim.descriptor().encode();
         let wire_claim = Claim {
@@ -176,9 +182,7 @@ impl Client {
 
     fn inline_claim(&self, claim: PublicationClaim) -> Result<PublicationClaim, Error> {
         self.layout.recheck()?;
-        if claim.domain() != self.layout.layout().domain_binding().domain
-            || claim.manifest().is_some()
-        {
+        if claim.domain() != self.layout.layout().domain() || claim.manifest().is_some() {
             return Err(Error::Invalid("inline claim domain or manifest"));
         }
         Ok(PublicationClaim::new(
@@ -219,7 +223,7 @@ impl Client {
             version: 1,
             request_id,
             operation: operation as i32,
-            domain: self.layout.layout().domain_binding().domain.clone(),
+            domain: self.layout.layout().domain().to_owned(),
             cache_incarnation: self.cache_incarnation.to_vec(),
             wait_budget_ms: self.config.wait_budget_ms,
             claim,
