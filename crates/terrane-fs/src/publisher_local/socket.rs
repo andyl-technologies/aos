@@ -21,7 +21,7 @@ use rustix::{
 
 use super::{
     Error,
-    validation::{MAX_PACKET, ValidationPolicy, decode_packet, validate_packet},
+    validation::{MAX_PACKET, ValidationPolicy, decode_envelope, validate_packet},
     wire::Packet,
 };
 
@@ -174,8 +174,30 @@ impl Connection {
     /// ancillary types, excess descriptors, writable/nonregular sources and
     /// any protocol validation failure. Rejected files are always closed.
     pub fn receive(&self, policy: &ValidationPolicy<'_>) -> Result<ReceivedPacket, Error> {
+        self.receive_selected(std::slice::from_ref(policy))
+    }
+
+    /// Receives a packet for exactly one configured domain, without fallback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unknown or duplicate domain policies, malformed packets and
+    /// invalid descriptors. Every rejected received descriptor closes before
+    /// any native command can be selected or executed.
+    pub fn receive_selected(
+        &self,
+        policies: &[ValidationPolicy<'_>],
+    ) -> Result<ReceivedPacket, Error> {
         let (bytes, descriptors) = receive_record(&self.descriptor)?;
-        let packet = decode_packet(&bytes, descriptors.len(), self.receives_responses, policy)?;
+        let packet = decode_envelope(&bytes)?;
+        let mut matching = policies
+            .iter()
+            .filter(|policy| policy.domain == packet.domain);
+        let policy = matching.next().ok_or(Error::Denied)?;
+        if matching.next().is_some() {
+            return Err(Error::Invalid("duplicate domain policy"));
+        }
+        validate_packet(&packet, descriptors.len(), self.receives_responses, policy)?;
         let mut files = Vec::with_capacity(descriptors.len());
         for descriptor in descriptors {
             validate_source(&descriptor)?;

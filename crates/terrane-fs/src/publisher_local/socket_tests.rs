@@ -193,3 +193,39 @@ fn ancillary_truncation_and_unregistered_credentials_are_rejected() {
     raw_send(&client, &packet().encode_to_vec(), &[]);
     assert!(server.receive(&policy()).is_err());
 }
+
+#[test]
+fn configured_domain_selection_has_no_fallback() {
+    let (client, server) = pair();
+    let other = ValidationPolicy {
+        domain: "other",
+        identity: &TERRANE_V1,
+        chunk_profile: "fixture",
+    };
+    let request = Packet {
+        domain: "other".into(),
+        ..packet()
+    };
+    client.send(&request, &[], &other).unwrap();
+    let policies = [policy(), other];
+    assert_eq!(
+        server.receive_selected(&policies).unwrap().packet.domain,
+        "other"
+    );
+
+    let denied = Packet {
+        request_id: 2,
+        domain: "unknown".into(),
+        ..packet()
+    };
+    let unknown = ValidationPolicy {
+        domain: "unknown",
+        identity: &TERRANE_V1,
+        chunk_profile: "fixture",
+    };
+    client.send(&denied, &[], &unknown).unwrap();
+    assert!(matches!(
+        server.receive_selected(&policies),
+        Err(Error::Denied)
+    ));
+}

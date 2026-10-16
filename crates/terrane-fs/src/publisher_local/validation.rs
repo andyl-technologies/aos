@@ -38,13 +38,18 @@ pub fn decode_packet(
     response: bool,
     policy: &ValidationPolicy<'_>,
 ) -> Result<Packet, Error> {
+    let packet = decode_envelope(bytes)?;
+    validate_packet(&packet, descriptors, response, policy)?;
+    Ok(packet)
+}
+
+/// Decodes the closed envelope before selecting an exact configured domain.
+pub(super) fn decode_envelope(bytes: &[u8]) -> Result<Packet, Error> {
     if bytes.is_empty() || bytes.len() > MAX_PACKET {
         return Err(Error::Invalid("packet length"));
     }
-
     let fields = preflight(bytes, Shape::Packet)?;
     let packet = Packet::decode(bytes).map_err(Error::Protobuf)?;
-    validate_packet(&packet, descriptors, response, policy)?;
     if fields & !allowed_fields(&packet)? != 0 {
         return Err(Error::Invalid("unexpected operation field"));
     }

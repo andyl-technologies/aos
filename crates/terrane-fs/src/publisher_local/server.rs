@@ -23,6 +23,7 @@ use terrane::host::publication::{PublicationClaim, PublicationRecipe};
 use terrane_core::{
     chunking::ChunkProfile,
     identity::{Descriptor, TERRANE_V1},
+    properties::Domain,
 };
 
 use super::{
@@ -42,21 +43,27 @@ pub struct ServerConfig {
     pub socket_path: PathBuf,
     /// The distinct configured request and publication role identities.
     pub identities: RoleIdentities,
+    /// The maximum concurrent authenticated connection owners (1 through 1024).
+    pub max_connections: usize,
+}
+
+/// Binds one configured domain and profile to its concrete native command owner.
+pub struct DomainPublisher {
     /// The configured physical disclosure domain.
     pub domain: String,
     /// The configured registered profile label carried in claims.
     pub chunk_profile_name: String,
     /// The actual chunking profile used to validate native publication claims.
     pub chunk_profile: ChunkProfile,
-    /// The maximum concurrent authenticated connection owners (1 through 1024).
-    pub max_connections: usize,
+    /// The actual independently owning native worker for this domain.
+    pub worker: NativePublicationWorker,
 }
 
 /// The concrete native publisher endpoint, without a caller callback surface.
 pub struct Server {
     listener: Listener,
     config: Arc<ServerConfig>,
-    worker: Arc<NativePublicationWorker>,
+    domains: Arc<BTreeMap<String, DomainPublisher>>,
 }
 
 impl Server {
@@ -65,19 +72,28 @@ impl Server {
     /// # Errors
     ///
     /// Rejects invalid resource policy, empty configured labels, unsafe socket
-    /// custody, the wrong role identity and kernel bind failures.
-    pub fn bind(config: ServerConfig, worker: NativePublicationWorker) -> Result<Self, Error> {
-        if !(1..=1024).contains(&config.max_connections)
-            || config.domain.is_empty()
-            || config.chunk_profile_name.is_empty()
-        {
+    /// custody, duplicate/noncanonical domain labels, the wrong role identity
+    /// and kernel bind failures. Unknown request domains never use a fallback.
+    pub fn bind(config: ServerConfig, domains: Vec<DomainPublisher>) -> Result<Self, Error> {
+        if !(1..=1024).contains(&config.max_connections) || domains.is_empty() {
             return Err(Error::Invalid("server configuration"));
+        }
+        let mut registered = BTreeMap::new();
+        for domain in domains {
+            Domain::parse(&domain.domain)
+                .map_err(|_| Error::Invalid("configured disclosure domain"))?;
+            if domain.chunk_profile_name.is_empty() {
+                return Err(Error::Invalid("configured chunk profile"));
+            }
+            if registered.insert(domain.domain.clone(), domain).is_some() {
+                return Err(Error::Invalid("duplicate configured domain"));
+            }
         }
         let listener = Listener::bind(&config.socket_path, config.identities)?;
         Ok(Self {
             listener,
             config: Arc::new(config),
-            worker: Arc::new(worker),
+            domains: Arc::new(registered),
         })
     }
 
@@ -108,14 +124,13 @@ impl Server {
                 continue;
             }
             let permit = ConnectionPermit(Arc::clone(&active));
-            let config = Arc::clone(&self.config);
-            let worker = Arc::clone(&self.worker);
+            let domains = Arc::clone(&self.domains);
             thread::Builder::new()
                 .name("publisher-local-owner".into())
                 .spawn(move || {
                     let _permit = permit;
                     // Connection failures close all retained packet/reply files.
-                    let _ = run_connection(connection, &config, &worker);
+                    let _ = run_connection(connection, &domains);
                 })?;
         }
     }
@@ -130,36 +145,45 @@ impl Drop for ConnectionPermit {
 }
 
 struct Cursor {
+    domain: String,
     incarnation: Vec<u8>,
     native: Vec<u8>,
 }
 
 fn run_connection(
     connection: Connection,
-    config: &ServerConfig,
-    worker: &NativePublicationWorker,
+    domains: &BTreeMap<String, DomainPublisher>,
 ) -> Result<(), Error> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let policy = ValidationPolicy {
-        domain: &config.domain,
-        identity: &TERRANE_V1,
-        chunk_profile: &config.chunk_profile_name,
-    };
+    let policies = domains
+        .values()
+        .map(|domain| ValidationPolicy {
+            domain: &domain.domain,
+            identity: &TERRANE_V1,
+            chunk_profile: &domain.chunk_profile_name,
+        })
+        .collect::<Vec<_>>();
     let mut cursors = BTreeMap::<Vec<u8>, Cursor>::new();
     loop {
-        let request = connection.receive(&policy)?;
+        let request = connection.receive_selected(&policies)?;
         let header = request.packet.clone();
+        let selected = domains.get(&header.domain).ok_or(Error::Denied)?;
+        let policy = ValidationPolicy {
+            domain: &selected.domain,
+            identity: &TERRANE_V1,
+            chunk_profile: &selected.chunk_profile_name,
+        };
         let context = NativeCommandContext {
-            domain: config.domain.clone(),
+            domain: selected.domain.clone(),
             cache_incarnation: header
                 .cache_incarnation
                 .as_slice()
                 .try_into()
                 .map_err(|_| Error::Invalid("cache incarnation"))?,
         };
-        let operation = match native_operation(request, config, &mut cursors) {
+        let operation = match native_operation(request, selected, &mut cursors) {
             Ok(operation) => operation,
             Err(error) => {
                 connection.send(&error_response(&header, error_code(&error)), &[], &policy)?;
@@ -167,7 +191,7 @@ fn run_connection(
             }
         };
         let outcome = runtime.block_on(async {
-            let execution = worker.execute(context, operation);
+            let execution = selected.worker.execute(context, operation);
             tokio::pin!(execution);
             match tokio::time::timeout(Duration::from_millis(header.wait_budget_ms), &mut execution)
                 .await
@@ -208,7 +232,7 @@ fn run_connection(
 
 fn native_operation(
     request: ReceivedPacket,
-    config: &ServerConfig,
+    config: &DomainPublisher,
     cursors: &mut BTreeMap<Vec<u8>, Cursor>,
 ) -> Result<NativeOperation, Error> {
     let ReceivedPacket { packet, files } = request;
@@ -270,7 +294,7 @@ fn native_operation(
             incarnation: token()?,
         },
         Operation::Drain => {
-            cursors.clear();
+            cursors.retain(|_, cursor| cursor.domain != packet.domain);
             NativeOperation::Drain
         }
         Operation::Inventory => {
@@ -280,7 +304,8 @@ fn native_operation(
                 let cursor = cursors
                     .remove(&packet.inventory_cursor)
                     .ok_or(Error::Invalid("unknown connection inventory cursor"))?;
-                if cursor.incarnation != packet.cache_incarnation {
+                if cursor.domain != packet.domain || cursor.incarnation != packet.cache_incarnation
+                {
                     return Err(Error::Invalid("cursor owner incarnation"));
                 }
                 Some(cursor.native)
@@ -288,7 +313,7 @@ fn native_operation(
             NativeOperation::Inventory { cursor }
         }
         Operation::Resume => {
-            cursors.clear();
+            cursors.retain(|_, cursor| cursor.domain != packet.domain);
             NativeOperation::Resume
         }
         Operation::InspectPending => {
@@ -377,10 +402,11 @@ fn native_response(
             if let Some(native) = next_cursor {
                 let mut opaque = vec![0u8; 32];
                 File::open("/dev/urandom")?.read_exact(&mut opaque)?;
-                cursors.clear();
+                cursors.retain(|_, cursor| cursor.domain != header.domain);
                 cursors.insert(
                     opaque.clone(),
                     Cursor {
+                        domain: header.domain.clone(),
                         incarnation: header.cache_incarnation.clone(),
                         native,
                     },

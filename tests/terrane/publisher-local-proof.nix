@@ -32,6 +32,7 @@
     expected = {
         "terrane_fs": {
             "kernel_peer_credentials_cannot_be_claimed_in_packet",
+            "configured_domain_selection_has_no_fallback",
             "real_seqpacket_roundtrip_requires_response_correlation",
             "duplicate_active_request_is_rejected_before_dispatch",
             "unsolicited_and_mismatched_responses_are_rejected",

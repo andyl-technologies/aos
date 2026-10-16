@@ -33,7 +33,7 @@ use terrane_core::{
 use terrane_fs::{
     publisher_io::{NativePublicationWorker, NativeWipePolicy},
     publisher_local::{
-        server::{Server, ServerConfig},
+        server::{DomainPublisher, Server, ServerConfig},
         socket::{Connection, ReceivedPacket, RoleIdentities},
         validation::ValidationPolicy,
         wire::{BodyKey, BodyKind, Claim, Operation, Packet},
@@ -225,12 +225,14 @@ fn publisher_local_native_role() {
                 ServerConfig {
                     socket_path: root.join("publisher.sock"),
                     identities: identities(),
+                    max_connections: 4,
+                },
+                vec![DomainPublisher {
                     domain: "public".into(),
                     chunk_profile_name: "cdc-1m".into(),
                     chunk_profile: ChunkProfile::cdc_1m([0; 32]),
-                    max_connections: 4,
-                },
-                worker,
+                    worker,
+                }],
             )
             .unwrap();
             let metadata = fs::metadata(root.join("publisher.sock")).unwrap();
