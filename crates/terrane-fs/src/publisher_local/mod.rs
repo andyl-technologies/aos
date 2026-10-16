@@ -8,6 +8,7 @@
 #[cfg(feature = "tokio")]
 pub mod server;
 
+pub mod client;
 pub mod socket;
 pub mod validation;
 pub mod wire;
@@ -21,6 +22,8 @@ pub enum Error {
     Invalid(&'static str),
     /// The connected kernel identity does not match the configured role.
     Denied,
+    /// The authenticated publisher returned a registered failure outcome.
+    Remote(wire::ResultCode),
     /// A kernel operation failed.
     Io(io::Error),
     /// A protobuf value could not be decoded.
@@ -31,6 +34,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(reason) => write!(f, "invalid publisher-local packet: {reason}"),
+            Self::Remote(code) => write!(f, "publisher-local outcome: {code:?}"),
             Self::Denied => f.write_str("publisher-local peer identity denied"),
             Self::Io(error) => write!(f, "publisher-local I/O: {error}"),
             Self::Protobuf(error) => write!(f, "publisher-local protobuf: {error}"),

@@ -11,6 +11,7 @@ use std::{
     os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
     path::{Component, Path},
     sync::Mutex,
+    time::Duration,
 };
 
 use prost::Message;
@@ -151,12 +152,43 @@ impl Connection {
     /// Rejects the wrong local identity, unsafe socket ancestors, a mismatched
     /// publisher peer and kernel connection failures.
     pub fn connect(path: &Path, identities: RoleIdentities) -> Result<Self, Error> {
+        Self::connect_with_timeout(path, identities, None)
+    }
+
+    pub(super) fn connect_timed(
+        path: &Path,
+        identities: RoleIdentities,
+        timeout: Duration,
+    ) -> Result<Self, Error> {
+        if timeout.is_zero() {
+            return Err(Error::Invalid("zero socket timeout"));
+        }
+        Self::connect_with_timeout(path, identities, Some(timeout))
+    }
+
+    fn connect_with_timeout(
+        path: &Path,
+        identities: RoleIdentities,
+        timeout: Option<Duration>,
+    ) -> Result<Self, Error> {
         identities.check()?;
         if rustix::process::geteuid().as_raw() != identities.serve_uid {
             return Err(Error::Denied);
         }
         let _directories = protect_parent(path, identities.publish_uid)?;
         let descriptor = new_socket()?;
+        if let Some(timeout) = timeout {
+            net::sockopt::set_socket_timeout(
+                &descriptor,
+                net::sockopt::Timeout::Recv,
+                Some(timeout),
+            )?;
+            net::sockopt::set_socket_timeout(
+                &descriptor,
+                net::sockopt::Timeout::Send,
+                Some(timeout),
+            )?;
+        }
         net::connect(&descriptor, &net::SocketAddrUnix::new(path)?)?;
         authenticate(&descriptor, identities.publish_uid)?;
         Ok(Self {

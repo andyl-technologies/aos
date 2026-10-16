@@ -15,6 +15,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command},
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -23,15 +24,24 @@ use rustix::{
     fs::chown,
     process::{Gid, Uid},
 };
+use terrane::{
+    domain::DomainBinding,
+    host::{
+        cache::DomainHostLayout,
+        publication::{PublicationClaim, PublicationRecipe},
+    },
+};
 use terrane_core::{
     chunking::ChunkProfile,
     identity::{Descriptor, IdentityKind, TERRANE_V1},
 };
 use terrane_fs::{
+    host_cache::NativeHostLayout,
     publisher_io::{
         NativePublicationWorker, NativePublisherConfig, NativeRetirementPolicy, NativeWipePolicy,
     },
     publisher_local::{
+        client::{Client, ClientConfig},
         server::{DomainPublisher, Server, ServerConfig},
         socket::{Connection, ReceivedPacket, RoleIdentities},
         validation::ValidationPolicy,
@@ -557,4 +567,87 @@ fn run_client(root: &Path) {
     let removed = exchange(&connection, &publication(Operation::Adopt, 200, 4), None);
     assert_eq!(removed.packet.result, 3);
     assert!(removed.files.is_empty());
+
+    complete(&connection, &packet(Operation::Resume, 201, 4));
+    let (recreated_inode, _) = backing(
+        exchange(
+            &connection,
+            &publication(Operation::Publish, 202, 4),
+            Some(&source),
+        ),
+        expected_device,
+    );
+    check_authenticated_client(root, recreated_inode);
+}
+
+fn check_authenticated_client(root: &Path, expected_inode: u64) {
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, PLAINTEXT)
+        .unwrap();
+    let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, PLAINTEXT).unwrap();
+    let layout = Arc::new(
+        NativeHostLayout::inspect(
+            DomainHostLayout::new(
+                root.join("public"),
+                DomainBinding {
+                    domain: "public".into(),
+                    reference: "fixture".into(),
+                    root: identity,
+                    path: b"/".to_vec(),
+                },
+                ChunkProfile::cdc_1m([0; 32]),
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let client = Client::connect(
+        ClientConfig {
+            socket_path: root.join("publisher.sock"),
+            identities: identities(),
+            chunk_profile_name: "cdc-1m".into(),
+            wait_budget_ms: 10_000,
+        },
+        layout.clone(),
+    )
+    .unwrap();
+    assert!(
+        client.probe().is_err(),
+        "a new client requires actual drain custody"
+    );
+    client.drain().unwrap();
+    let probe = client.probe().unwrap();
+    assert!(Arc::ptr_eq(probe.layout(), &layout));
+    assert_eq!(probe.handle().metadata().unwrap().nlink(), 0);
+    assert_eq!(probe.handle().metadata().unwrap().len(), 0);
+    assert_eq!(
+        verity::measure(probe.handle()).unwrap().digest,
+        probe.binding().digest
+    );
+
+    let claim = PublicationClaim::new(
+        "public".into(),
+        PublicationRecipe::Inline {
+            chunk: descriptor.clone(),
+        },
+        layout.layout().chunk_profile(),
+    )
+    .unwrap();
+    let adopted = client.adopt_inline(claim).unwrap();
+    assert!(Arc::ptr_eq(adopted.layout(), &layout));
+    assert_eq!(adopted.handle().metadata().unwrap().ino(), expected_inode);
+    assert_eq!(adopted.claim().descriptor(), &descriptor);
+    assert_eq!(
+        verity::measure(adopted.handle()).unwrap().digest,
+        adopted.binding().digest
+    );
+    assert_eq!(adopted.incarnation().len(), 32);
+
+    drop(client);
+    drop(layout);
+    // The receipt itself still owns the real root guard and measured inode.
+    adopted.layout().recheck().unwrap();
+    let mut plaintext = Vec::new();
+    (&*adopted.handle()).read_to_end(&mut plaintext).unwrap();
+    assert_eq!(plaintext, PLAINTEXT);
 }
