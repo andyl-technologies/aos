@@ -143,10 +143,12 @@ resource return or VM performance.
 All 31 Rust ABI, licensing, crate-layer and scheduler-boundary checks pass, as do
 26 gate-traceability checks, five engineering-hygiene controls, the two production
 effect-matrix checks, the schema-registry control and all three daemon doctests.
-The testing-standards suite has 22 passes and six failures: obsolete plugin-worker
-contracts, changed native-retirement/dispatcher contracts and missing exact
-operational classifications remain to be reconciled. Its live guard and custody
-requirements have not been waived. The Nix scheduler boundary now checks the
+The testing-standards suite has 22 passes and six failures: changed plugin
+admission, native-retirement/dispatcher contracts and missing exact operational
+classifications remain to be reconciled. The stale contract for the fully retired
+plugin worker has been removed; its two controls now reach admission-contract
+drift instead of a missing file. Live guard and custody requirements and negative
+mutation controls have not been waived. The Nix scheduler boundary now checks the
 production adapter in the daemon; its separate raw source scan still incorrectly
 includes CLI test-only delegation, while the Rust production-aware scan passes.
 

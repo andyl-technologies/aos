@@ -38,35 +38,6 @@ struct Contract {
 }
 
 const CONTRACTS: &[Contract] = &[
-    // Two deliberate idle intervals longer than unchanged 25 ms admission polling; one Hello
-    // record, physical stop/join/resume, same sequence continued by Status.
-    Contract {
-        package: "crucible-qemu-plugin",
-        target: "src/paged_ram/control/idle_timeout_tests",
-        required: &[
-            "fnactual_request_after_idle_retries_restores_polling_and_parent_sequence(",
-            "host.set_read_timeout(Some(Duration::from_secs(1))).unwrap();",
-            "PagerControlWorker::start(socket,[4;32],target,Arc::clone(&controller)).unwrap();",
-            "exchange(&muthost,1,target,RamControlRequest::Hello);",
-            "letpaused=worker.stop().unwrap().join().unwrap().unwrap();",
-            "assert_eq!(paused.sequence,1);",
-            "paused.stream.read_timeout().unwrap(),Some(Duration::from_millis(25))",
-            "letworker=PagerControlWorker::resume(paused,controller).unwrap();",
-            "exchange(&muthost,2,target,RamControlRequest::Status);",
-            "assert_eq!(paused.sequence,2);",
-        ],
-        expressions: &[("thread::sleep(Duration::from_millis(90));", 2)],
-        companions: &[Companion {
-            path: "crates/crucible-qemu-plugin/src/paged_ram/control.rs",
-            required: &[
-                "install(Duration::from_millis(25))?;",
-                "if!*installed{",
-                "record.operation.complete()?;",
-                "operation:controller.begin(SourceOperationClass::Cleanup)?,",
-            ],
-            counts: &[],
-        }],
-    },
     // Deliberate 120 ms blocked native export against one 80 ms original ControlSetup; refuse late
     // success while preserving earlier real native failure.
     Contract {
