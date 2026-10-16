@@ -32,12 +32,19 @@
     runtimeDeps ? [],
     nukeRefsKeep ? [],
     extraBuildDeps ? [],
+    preserveArtifactBytes ? false,
   }: name: script:
     pkgs.mkDerivation {
       pname = "terrane-gate-${name}";
       version = "0.1.0";
       src = pkgs.terrane.src;
       inherit runtimeDeps nukeRefsKeep;
+      # Proof images bind the retained ELF bytes to actual Cargo artifacts.
+      # Later stripping, RPATH rewriting or reference scrubbing would invalidate
+      # their recorded hashes. Ordinary checks keep the normal fixup policy.
+      dontStrip = preserveArtifactBytes;
+      dontPatchELF = preserveArtifactBytes;
+      dontNukeRefs = preserveArtifactBytes;
       buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3 pkgs.util-linux] ++ extraBuildDeps;
       phases = [
         {
