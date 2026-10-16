@@ -85,11 +85,7 @@ impl NativeOwnerExecutor {
                     "manifest recovery lacks an active durable bootstrap",
                 ));
             }
-            super::super::recovery_state::check_bootstrap(
-                &owner.preparation.config,
-                &owner.state,
-                &bootstrap_id,
-            )?;
+            owner.check_synchronized_bootstrap(&bootstrap_id)?;
             (owner.preparation.publisher_session(), owner.generation)
         };
         session

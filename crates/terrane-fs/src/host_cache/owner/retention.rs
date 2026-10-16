@@ -83,12 +83,32 @@ struct IndexRepairCustody {
     completed: Option<IndexWriteCompletion>,
 }
 
+/// Records only a completed physical snapshot write and its retained incarnation.
+///
+/// Cold loads never produce this provenance. It is cleared before every write
+/// attempt and recreated only after file/parent durability and currentness.
+struct SynchronizedState {
+    state: CacheState,
+    generation: u64,
+    device: u64,
+    inode: u64,
+}
+
+impl SynchronizedState {
+    fn matches_snapshot(&self, generation: u64, expected: &Metadata, actual: &Metadata) -> bool {
+        self.generation == generation
+            && (self.device, self.inode) == (expected.dev(), expected.ino())
+            && same_file(expected, actual)
+    }
+}
+
 /// Retains native proofs, exclusive state ownership and physical command resources.
 pub(super) struct Custody {
     pub(super) preparation: NativeCachePreparation,
     pub(super) directory: File,
     pub(super) state: CacheState,
     pub(super) snapshot: Option<(File, Metadata)>,
+    synchronized_state: Option<SynchronizedState>,
     sources: BTreeMap<[u8; 16], Arc<NativeManifestSource>>,
     index_repairs: BTreeMap<[u8; 16], IndexRepairCustody>,
     pub(super) faulted: bool,
@@ -546,6 +566,7 @@ impl Custody {
             directory,
             state: CacheState::default(),
             snapshot: None,
+            synchronized_state: None,
             sources: BTreeMap::new(),
             index_repairs: BTreeMap::new(),
             faulted: false,
@@ -649,6 +670,9 @@ impl Custody {
     /// # Errors
     /// Refuses failed snapshot/parent durability and missing or changed state.
     pub(super) async fn persist(&mut self) -> io::Result<()> {
+        // An old successful snapshot cannot certify the next in-memory state
+        // when this attempt fails or its future is cancelled before replacement.
+        self.synchronized_state = None;
         let path = self.preparation.config.location.root().join("state/cache");
         self.state
             .persist(&TokioLocalFs, &path, self.preparation.config.state)
@@ -675,7 +699,44 @@ impl Custody {
         if self.snapshot.is_none() {
             return Err(invalid("synchronized metadata pin snapshot is absent"));
         }
-        self.check_current()
+        self.check_current()?;
+        let metadata = &self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| invalid("synchronized snapshot absent"))?
+            .1;
+        self.synchronized_state = Some(SynchronizedState {
+            state: self.state.clone(),
+            generation: self.generation,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        });
+        Ok(())
+    }
+
+    /// Requires the actual producer's synchronized snapshot of this bootstrap.
+    ///
+    /// # Errors
+    /// Refuses cold/failed/abandoned writes, another generation or inode, and a
+    /// prior synchronized state that does not contain the exact required hold.
+    fn check_synchronized_bootstrap(&self, id: &[u8; 16]) -> io::Result<()> {
+        self.check_current()?;
+        let completed = self
+            .synchronized_state
+            .as_ref()
+            .ok_or_else(|| invalid("bootstrap snapshot has no completed native write"))?;
+        let (snapshot, metadata) = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| invalid("bootstrap snapshot is absent"))?;
+        let actual = snapshot.metadata()?;
+        if !completed.matches_snapshot(self.generation, metadata, &actual) {
+            return Err(invalid(
+                "bootstrap write provenance differs from retained snapshot",
+            ));
+        }
+        super::recovery_state::check_bootstrap(&self.preparation.config, &completed.state, id)?;
+        super::recovery_state::check_bootstrap(&self.preparation.config, &self.state, id)
     }
 
     /// Invalidates an older completion before any new durable command effects.
@@ -872,4 +933,39 @@ fn same_file(left: &Metadata, right: &Metadata) -> bool {
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(test)]
+mod snapshot_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn previous_write_cannot_certify_new_generation_or_another_inode() {
+        // Real ordinary files test identity only: no native preparation,
+        // confinement, quota or bootstrap receipt is fabricated here.
+        let path = std::env::temp_dir().join(format!(
+            "terrane-snapshot-provenance-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let first = File::create_new(path.join("first")).unwrap();
+        let second = File::create_new(path.join("second")).unwrap();
+        let observed = first.metadata().unwrap();
+        let provenance = SynchronizedState {
+            state: CacheState::default(),
+            generation: 3,
+            device: observed.dev(),
+            inode: observed.ino(),
+        };
+        assert!(provenance.matches_snapshot(3, &observed, &first.metadata().unwrap()));
+        assert!(!provenance.matches_snapshot(4, &observed, &first.metadata().unwrap()));
+        assert!(!provenance.matches_snapshot(3, &observed, &second.metadata().unwrap()));
+        drop(first);
+        drop(second);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }
