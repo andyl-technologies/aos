@@ -15,7 +15,9 @@
       python
       import gdb
 
-      # Threads parked in these waits are idle; their stacks are omitted.
+      # Threads parked in these waits are idle; their stacks are omitted. Only
+      # the two innermost frames are matched, so host functions whose names
+      # merely contain a marker, such as repoll loops, still count as busy.
       idle_markers = ("futex", "epoll", "poll", "nanosleep", "park", "wait4",
                       "waitid", "accept", "recvmsg", "__libc_read", "pthread_cond")
       busy = 0
@@ -26,7 +28,7 @@
           while frame is not None and len(names) < 48:
               names.append(frame.name() or "??")
               frame = frame.older()
-          if any(marker in name for name in names[:4] for marker in idle_markers):
+          if any(marker in name for name in names[:2] for marker in idle_markers):
               continue
           busy += 1
           print("host_stack_thread lwp=%d frames=%d" % (thread.ptid[1], len(names)))
@@ -42,8 +44,12 @@ in {
   # Starts a bounded background sampler for the service owned by this flight.
   start = flightBinary: ''
     (
+      # Sample through the whole flight: the slowest attempts run last, long
+      # after boot, and a sparse early window cannot attribute their cost.
       ${pkgs.coreutils}/bin/sleep 300
-      for host_stack_sample in 1 2 3 4 5 6 7 8 9 10; do
+      host_stack_sample=0
+      while [ "$host_stack_sample" -lt 180 ]; do
+        host_stack_sample=$((host_stack_sample + 1))
         host_stack_pid=
         for host_stack_proc in /proc/[0-9]*; do
           # The service is the flight's CLI binary running `serve`.
@@ -59,9 +65,9 @@ in {
             -iex 'set auto-load off' -iex 'set debuginfod enabled off' \
             -p "$host_stack_pid" -x ${commands}/share/crucible/host-stack-sample.gdb \
             2>&1 | ${pkgs.grep}/bin/grep -E '^(host_stack|  #)' \
-            | ${pkgs.coreutils}/bin/head -c 24576
+            | ${pkgs.coreutils}/bin/head -c 16384
         fi
-        ${pkgs.coreutils}/bin/sleep 25
+        ${pkgs.coreutils}/bin/sleep 10
       done
     ) > /tmp/crucible-host-stack-samples.txt 2>&1 &
   '';
@@ -105,8 +111,9 @@ in {
   '';
 
   report = ''
-    printf '%s\n' 'host-stack-samples-begin max_bytes=262144'
-    ${pkgs.coreutils}/bin/head -c 262144 /tmp/crucible-host-stack-samples.txt 2>/dev/null || true
+    # The newest samples cover the slowest, final attempts, so keep the tail.
+    printf '%s\n' 'host-stack-samples-begin max_bytes=1048576'
+    ${pkgs.coreutils}/bin/tail -c 1048576 /tmp/crucible-host-stack-samples.txt 2>/dev/null || true
     printf '%s\n' 'host-stack-samples-end'
     printf '%s\n' 'qemu-stall-stacks-begin max_bytes=262144'
     ${pkgs.coreutils}/bin/head -c 262144 /tmp/crucible-qemu-stall-stacks.txt 2>/dev/null || true
