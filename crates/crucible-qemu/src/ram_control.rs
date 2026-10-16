@@ -910,3 +910,5 @@ impl std::io::Write for DeadlineStream<'_> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::response as checkpoint_test_response;

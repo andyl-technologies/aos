@@ -128,6 +128,8 @@ mod tests {
     fn installed_issuer_cannot_follow_a_reused_original_generation() {
         let (_roster, binding, _supervisor) = roster();
         let old = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        assert!(old.close_vector().is_err());
+        old.cleanup().unwrap();
         old.close_vector().unwrap();
         let successor = binding.claim(1, 512 << 20, 1 << 30).unwrap();
 
@@ -175,10 +177,21 @@ mod tests {
         let held = attempt.roster.upgrade().unwrap();
         let state = held.lock().unwrap();
         let slot = &state.slots[attempt.index];
+        let binding_extent = crate::QemuProcessStageBinding::retained_control_bytes().unwrap();
+        let preparation_extent = slot
+            .credit
+            .as_ref()
+            .unwrap()
+            .normal_preparation_extent()
+            .unwrap();
+        let target_extent = fork_target::retained_control_extent().unwrap();
 
         assert_eq!(
             slot.process_binding_bytes,
-            crate::QemuProcessStageBinding::retained_control_bytes().unwrap()
+            binding_extent
+                .checked_add(preparation_extent)
+                .and_then(|bytes| bytes.checked_add(target_extent))
+                .unwrap()
         );
         assert_eq!(
             slot.launch_controls_bytes,

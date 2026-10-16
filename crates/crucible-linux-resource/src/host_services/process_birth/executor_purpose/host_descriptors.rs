@@ -374,7 +374,7 @@ mod tests {
         )
         .unwrap();
         let original = supervisor
-            .begin_work(crate::host_supervision::HostOperationClass::Preparation, 0)
+            .begin(crate::host_supervision::HostOperationClass::Preparation)
             .unwrap();
         let mut partition = HostDescriptorPartition::new(64, 24, None).unwrap();
         if case == "cancelled" {

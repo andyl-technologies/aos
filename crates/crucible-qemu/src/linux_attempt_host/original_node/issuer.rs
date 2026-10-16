@@ -5,6 +5,7 @@
 //! admission effects. Its node borrower and failure owners keep actual funding;
 //! this witness creates no descriptor, deadline or resource allowance.
 
+use super::super::InstalledProcessPurposeError;
 use super::*;
 
 /// Borrows one actual installed host's process-stage and original generation.
@@ -173,7 +174,7 @@ impl InstalledNodeLaunchIssuer {
             let guest_bytes = u64::from(config.memory_mib())
                 .checked_mul(1024 * 1024)
                 .ok_or(FreshLaunchCause::Purpose(
-                    super::InstalledProcessPurposeError::Capacity,
+                    InstalledProcessPurposeError::Capacity,
                 ))?;
             let setup_mapping = super::super::original_roster::SetupMappingRequest::for_config(
                 config.original_setup_region_config(),

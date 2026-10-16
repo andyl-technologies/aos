@@ -188,17 +188,28 @@ impl OriginalNativeAccountCredit {
     }
 
     #[cfg(test)]
+    pub(super) fn reserve_mechanism_pair(
+        resident: &HostServiceAllocator,
+        metadata: &HostServiceAllocator,
+    ) -> Result<HostServiceLeasePair, HostServiceError> {
+        // These test counters establish retention and refund behavior only;
+        // they cannot issue a configured native process purpose.
+        let first = resident.reserve_resources(69, 1056, 1536 << 20)?;
+        let second = metadata.reserve_resources(0, 0, 512 << 20)?;
+        Ok(HostServiceLeasePair::new(first, second))
+    }
+
+    #[cfg(test)]
     pub(super) fn mechanism_credit(
         preparation: Arc<HostOperationGuard>,
     ) -> Result<(Self, HostServiceAllocator, HostServiceAllocator), HostServiceError> {
         let resident = HostServiceAllocator::new(69, 1056, 1536 << 20)?;
         let metadata = HostServiceAllocator::new(1, 1, 512 << 20)?;
-        let (first, second) =
-            resident.reserve_native_pair(&metadata, 69, 1056, 1536 << 20, 512 << 20)?;
+        let pair = Self::reserve_mechanism_pair(&resident, &metadata)?;
         Ok((
             Self {
                 original: Some(RetainedNativeCredit {
-                    _pair: Some(HostServiceLeasePair::new(first, second)),
+                    _pair: Some(pair),
                     normal: None,
                     preparation,
                 }),

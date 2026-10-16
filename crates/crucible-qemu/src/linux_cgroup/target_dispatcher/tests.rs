@@ -4,6 +4,7 @@
 //! files model cgroup observations; no authenticated Target admission is minted.
 
 use super::*;
+use std::fs;
 use std::os::unix::fs::MetadataExt;
 
 fn mechanism_state(path: &Path) -> Result<Arc<DispatcherState>, LinuxQemuCgroupError> {

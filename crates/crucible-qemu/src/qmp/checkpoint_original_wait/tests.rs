@@ -209,15 +209,18 @@ fn amended_original_expiration_prevents_retry_without_new_start_or_write() {
         .update_budgets(revision, budgets)
         .unwrap();
 
-    for _ in 0..2 {
-        let refusal = client
-            .exchange_under_checkpoint_original(QmpCommand::QueryStatus, &original.guard)
-            .unwrap_err();
-        assert!(matches!(
-            refusal.source,
-            QmpError::CheckpointOriginal { .. }
-        ));
-    }
+    let first = client
+        .exchange_under_checkpoint_original(QmpCommand::QueryStatus, &original.guard)
+        .unwrap_err();
+    assert!(matches!(first.source, QmpError::CheckpointOriginal { .. }));
+    assert!(first.original_after.is_some());
+    assert!(client.poisoned);
+
+    let retry = client
+        .exchange_under_checkpoint_original(QmpCommand::QueryStatus, &original.guard)
+        .unwrap_err();
+    assert!(matches!(retry.source, QmpError::ConnectionPoisoned));
+    assert_eq!(retry.original_after, first.original_after);
 
     assert_eq!(client.stream.get_ref().written.len(), before);
     assert_eq!(original.guard.status().unwrap().operation_id, id);
@@ -227,7 +230,7 @@ fn amended_original_expiration_prevents_retry_without_new_start_or_write() {
 #[test]
 fn used_client_commands_borrow_one_original_without_new_operation_births() {
     let (_owner, loan, supervisor, _event, _account) =
-        crate::node::exact_snapshot::capture_original::loan_fixture();
+        crate::node::checkpoint_original_loan_fixture();
     let stream = Stream::new("{\"return\":{}}\n{\"return\":{}}\n");
     let mut client = QmpClient::connect(stream).unwrap();
     client.bind_checkpoint_original(loan).unwrap();
@@ -242,7 +245,7 @@ fn used_client_commands_borrow_one_original_without_new_operation_births() {
 #[test]
 fn used_client_keeps_command_rejection_before_independent_original_postcut() {
     let (_owner, loan, supervisor, event, _account) =
-        crate::node::exact_snapshot::capture_original::loan_fixture();
+        crate::node::checkpoint_original_loan_fixture();
     let mut stream =
         Stream::new("{\"error\":{\"class\":\"GenericError\",\"desc\":\"first cause\"}}\n");
     stream.cancel_on_error_newline = Some(&event);

@@ -42,6 +42,7 @@ fn same_slot_reuses_one_constructor_peak_across_account_generations() {
         assert!(slot.installed_process.is_none());
     }
 
+    first.cleanup().unwrap();
     first.close_vector().unwrap();
     let second = factory.claim(1, 512 << 20, 1 << 30).unwrap();
     assert_ne!(second.generation, first_generation);

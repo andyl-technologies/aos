@@ -97,7 +97,7 @@ fn selected() -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"CRUCSUP8");
     for field in [
-        7,
+        8,
         HEADER as u32,
         (HEADER + app.len() + selectable.len() + startup.len() + purpose.len()) as u32,
         app.len() as u32,
@@ -116,7 +116,7 @@ fn selected() -> Vec<u8> {
 }
 
 #[test]
-fn selected_parts_decode_only_matching_outer6_with_original_binding() {
+fn selected_parts_decode_only_matching_outer8_with_original_binding() {
     let bytes = selected();
     let (app, selectable) = decode_parts(&bytes).unwrap();
     assert_eq!(app, AppRandomBranchPlan::default());
@@ -129,11 +129,13 @@ fn selected_parts_decode_only_matching_outer6_with_original_binding() {
 
 #[test]
 fn selected_rejects_superseded_edition_and_changed_purpose_extent() {
-    let mut bytes = selected();
-    bytes[..8].copy_from_slice(b"CRUCSUP3");
-    bytes[8..12].copy_from_slice(&3_u32.to_be_bytes());
-    bytes[12..16].copy_from_slice(&36_u32.to_be_bytes());
-    assert!(decode_parts(&bytes).is_err());
+    for (magic, version, header) in [(b"CRUCSUP3", 3_u32, 36_u32), (b"CRUCSUP7", 7, 40)] {
+        let mut bytes = selected();
+        bytes[..8].copy_from_slice(magic);
+        bytes[8..12].copy_from_slice(&version.to_be_bytes());
+        bytes[12..16].copy_from_slice(&header.to_be_bytes());
+        assert!(decode_parts(&bytes).is_err());
+    }
     let mut bytes = selected();
     bytes[36..40].copy_from_slice(&496_u32.to_be_bytes());
     assert!(decode_parts(&bytes).is_err());

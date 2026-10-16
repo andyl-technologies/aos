@@ -108,7 +108,7 @@ fn original_cancellation_remains_typed_at_the_family_cut() {
         HostSupervisionError,
     };
     let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
-    let original = supervisor.begin(HostOperationClass::Read).unwrap();
+    let original = supervisor.begin(HostOperationClass::Preparation).unwrap();
     assert!(check_original(&original).is_ok());
 
     supervisor.cancel().unwrap();

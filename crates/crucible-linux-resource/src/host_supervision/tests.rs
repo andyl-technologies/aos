@@ -510,6 +510,22 @@ fn authenticated_service_interval_keeps_elapsed_birth_and_forbids_renewal() {
 }
 
 #[test]
+fn empty_work_refuses_before_creating_an_operation_record() {
+    let root = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+
+    assert!(matches!(
+        root.begin_work(HostOperationClass::Preparation, 0),
+        Err(HostSupervisionError::InvalidBudget)
+    ));
+
+    assert!(root.operation_statuses().unwrap().is_empty());
+    let guard = root.begin(HostOperationClass::Preparation).unwrap();
+    let status = guard.status().unwrap();
+    assert_eq!(status.completed_work_units, 0);
+    assert_eq!(status.outstanding_work_units, 1);
+}
+
+#[test]
 fn retained_completed_preparation_keeps_main_cancellation_without_fresh_work() {
     let now = kernel_monotonic_ns().unwrap() / 1000;
     let root = HostOperationSupervisor::from_service_interval(
@@ -518,7 +534,7 @@ fn retained_completed_preparation_keeps_main_cancellation_without_fresh_work() {
         now + 30_000_000,
     )
     .unwrap();
-    let guard = root.begin_work(HostOperationClass::Preparation, 0).unwrap();
+    let guard = root.begin(HostOperationClass::Preparation).unwrap();
     guard.verify_retained_phase().unwrap();
     guard.complete().unwrap();
 
@@ -540,7 +556,7 @@ fn failed_preparation_cannot_become_a_retained_healthy_main() {
         Some(Duration::from_secs(30)),
     )
     .unwrap();
-    let guard = root.begin_work(HostOperationClass::Preparation, 0).unwrap();
+    let guard = root.begin(HostOperationClass::Preparation).unwrap();
     root.lock()
         .unwrap()
         .operations

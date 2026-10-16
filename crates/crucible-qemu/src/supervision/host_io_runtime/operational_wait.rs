@@ -210,10 +210,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn checkpoint_ack_wait_borrows_one_original_and_keeps_subscriber_refusal() {
-        use crate::node::exact_snapshot::capture_original::loan_fixture;
+        use crate::node::checkpoint_original_loan_fixture;
         use crucible_linux_resource::host_supervision::HostOperationState;
 
-        let (_owner, original, supervisor, event, _account) = loan_fixture();
+        let (_owner, original, supervisor, event, _account) = checkpoint_original_loan_fixture();
         let budget = OperationPollBudget::borrow_checkpoint_original(
             original.guard(),
             "checkpoint acknowledgement",

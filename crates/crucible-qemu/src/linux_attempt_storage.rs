@@ -1225,6 +1225,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "private-measurement-domain")]
     fn parent_partial_storage_error_keeps_actual_directory_and_lease_after_unwind() {
         let root = must_succeed(tempfile::tempdir(), "Parent partial storage fixture");
         let path = root.path().join("partial");

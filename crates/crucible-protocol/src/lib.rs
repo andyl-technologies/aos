@@ -180,7 +180,8 @@ pub const CONTROL_PROTOCOL_VERSION: u32 = include!("control_protocol_version.in"
 #[cfg(unix)]
 const SETUP_DESCRIPTOR_RECV_CAPACITY: usize = SETUP_WORKSPACE_DESCRIPTOR_COUNT + 1;
 #[cfg(unix)]
-const ANCILLARY_STORAGE_HEADERS: usize = 8;
+// Each separately framed descriptor needs an aligned header and padded payload.
+const ANCILLARY_STORAGE_HEADERS: usize = 2 * SETUP_DESCRIPTOR_RECV_CAPACITY;
 #[cfg(all(
     unix,
     any(

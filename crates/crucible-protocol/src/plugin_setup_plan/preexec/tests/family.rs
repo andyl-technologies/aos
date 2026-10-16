@@ -26,7 +26,11 @@ fn literal_family_survives_current_encoder_with_both_execution_fields_zero() {
     let (plan, purpose) = issued_fixture_plan();
     let encoded = plan.encode_preexec(&purpose, None).unwrap();
 
-    assert_eq!(&encoded[encoded.len() - 256..], &FROZEN_FAMILY);
+    let purpose_start = encoded.len() - PURPOSE;
+    assert_eq!(
+        &encoded[purpose_start + 744..purpose_start + 1000],
+        &FROZEN_FAMILY
+    );
     assert_eq!(&FROZEN_FAMILY[112..120], &[0; 8]);
     assert_eq!(&FROZEN_FAMILY[208..216], &[0; 8]);
 }

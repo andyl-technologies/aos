@@ -6,6 +6,7 @@
 //! descriptors needed by later scheduler/runtime code. It intentionally stops
 //! before deterministic guest execution.
 
+use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 
@@ -29,7 +30,7 @@ use crucible_shmem::{
     MappedSetupRegionAccessError, RegionConfig, RegionLayoutError, RegionSetupValidationError,
     SetupRegionMapError, ValidatedSetupRegion, decode_fault_capability_manifest,
     dequeue_fault_result, enqueue_fault_command, fault_capability_manifest_digest,
-    mmap_setup_region, validate_setup_region_header,
+    mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -760,7 +761,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qemu_host_rejects_an_unsupported_plugin_abi() {
-        assert_eq!(ABI_VERSION, 31);
+        assert_eq!(ABI_VERSION, 32);
         let unsupported_abi = u32::MAX;
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
@@ -792,12 +793,20 @@ pub(crate) mod tests {
         prepare_test_preexec_setup(&mut resources, config)?;
         let plugin_peer = thread::spawn(move || plugin_peer_complete_setup(plugin_socket));
 
-        let mut setup = complete_qemu_host_plugin_setup(
+        let mut setup = match complete_qemu_host_plugin_setup(
             resources.into_setup_resources(),
             config,
             0,
             &QemuFaultCapabilityRequirement::abi_boundary_v1(),
-        )?;
+        ) {
+            Ok(setup) => setup,
+            Err(error) => {
+                let peer = plugin_peer
+                    .join()
+                    .map_err(|_| "plugin setup peer panicked")?;
+                return Err(format!("host setup failed: {error}; plugin peer: {peer:?}").into());
+            }
+        };
 
         assert_eq!(
             setup.control_state(),

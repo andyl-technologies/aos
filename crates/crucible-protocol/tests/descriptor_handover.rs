@@ -331,6 +331,27 @@ fn setup_handover_refuses_a_sixth_descriptor_when_workspace_is_absent() -> Resul
     Ok(())
 }
 
+#[test]
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn setup_handover_refuses_seven_descriptors_at_the_receive_capacity() -> Result<(), Box<dyn Error>>
+{
+    let (host, plugin) = UnixStream::pair()?;
+    let descriptor = File::open("/dev/null")?;
+    let frame = control_encode_host_msg(&HostMsg::Setup {
+        region_len: 4096,
+        process_generation: 1,
+        device_digest_workspace: None,
+    });
+
+    send_setup_with_split_descriptor_cmsgs(host.as_raw_fd(), &frame, [descriptor.as_raw_fd(); 7])?;
+
+    assert!(matches!(
+        recv_setup_with_descriptors(plugin.as_raw_fd()),
+        Err(DescriptorHandoverError::WrongDescriptorCount { count: 7 })
+    ));
+    Ok(())
+}
+
 #[cfg(any(target_os = "android", target_os = "linux"))]
 fn send_setup_with_split_descriptor_cmsgs<const N: usize>(
     socket_fd: RawFd,
@@ -344,14 +365,19 @@ fn send_setup_with_split_descriptor_cmsgs<const N: usize>(
     };
     let fd_payload_len = std::mem::size_of::<RawFd>();
     let cmsg_space = cmsg_space(fd_payload_len)?;
-    let mut storage: [libc::cmsghdr; 8] = std::array::from_fn(|_| empty_cmsghdr());
+    let mut storage: [libc::cmsghdr; 14] = std::array::from_fn(|_| empty_cmsghdr());
+    let control_len = cmsg_space
+        .checked_mul(fds.len())
+        .ok_or("split descriptor control extent overflows")?;
+    assert!(control_len <= std::mem::size_of_val(&storage));
+
     let message = libc::msghdr {
         msg_name: std::ptr::null_mut(),
         msg_namelen: 0,
         msg_iov: &mut iov,
         msg_iovlen: 1,
         msg_control: storage.as_mut_ptr().cast::<libc::c_void>(),
-        msg_controllen: (cmsg_space * fds.len()) as _,
+        msg_controllen: control_len as _,
         msg_flags: 0,
     };
 

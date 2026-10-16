@@ -21,9 +21,7 @@ pub(crate) use native_constructor::UserfaultfdConstructorRequest;
 #[cfg(target_os = "linux")]
 pub(crate) use installer_controls::installer_verifier_extent;
 
-pub use installer_controls::{
-    InstallerControlAllocation, InstallerControlIdentity, InstallerControlIdentityError,
-};
+pub use installer_controls::{InstallerControlIdentity, InstallerControlIdentityError};
 
 #[cfg(target_os = "linux")]
 pub(crate) use installer_controls::ControlledInstallerIdentityError;

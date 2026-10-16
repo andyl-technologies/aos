@@ -74,7 +74,7 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
         }
     }
 
-    fn poison_checkpoint_exchange(&mut self) {
+    pub(super) fn poison_checkpoint_exchange(&mut self) {
         self.poisoned = true;
         self.stream.get_mut().poison_qmp_stream();
     }

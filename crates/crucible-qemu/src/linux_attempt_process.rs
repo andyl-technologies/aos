@@ -250,7 +250,7 @@ impl LinuxQemuAttemptProcessFactory {
     pub(crate) fn verify_normal_family(
         &self,
         family: &crucible_linux_resource::host_services::process_birth::AuthenticatedServiceFamily,
-    ) -> Result<(), crucible_linux_resource::host_services::ServiceBirthError> {
+    ) -> Result<(), crucible_linux_resource::host_services::process_birth::ServiceBirthError> {
         self.root.verify_normal_family(family)
     }
 

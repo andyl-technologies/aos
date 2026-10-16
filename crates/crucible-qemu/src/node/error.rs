@@ -148,6 +148,15 @@ pub enum QemuNodeError {
         /// Deterministic failure detail.
         message: String,
     },
+    /// RAM source cleanup failed while its service remains retained.
+    #[error("{operation} failed: {source}")]
+    RamSourceCleanup {
+        /// Cleanup boundary that observed the original source failure.
+        operation: &'static str,
+        /// Same typed worker cause or direct cleanup refusal.
+        #[source]
+        source: crate::QemuAsyncDriverHealthError,
+    },
     /// The owned-child shutdown ladder failed.
     #[error("owned QEMU child shutdown failed: {source}")]
     Shutdown {
@@ -288,6 +297,18 @@ impl QemuNodeError {
         }
     }
 
+    /// Retains a source cleanup cause without replacing its worker allocation.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn from_ram_source_cleanup(
+        operation: &'static str,
+        source: crate::ram_source::QemuRamSourceError,
+    ) -> Self {
+        Self::RamSourceCleanup {
+            operation,
+            source: crate::QemuAsyncDriverHealthError::ram_source(source),
+        }
+    }
+
     /// Attaches scheduler-node context to a shutdown escalation error.
     #[must_use]
     pub const fn from_shutdown(source: QemuShutdownError) -> Self {
@@ -348,7 +369,8 @@ impl From<QemuNodeError> for BackendError {
         let error = match error {
             QemuNodeError::AsyncDriver {
                 source: QemuAsyncDriverError::OperationalHealth(source),
-            } => {
+            }
+            | QemuNodeError::RamSourceCleanup { source, .. } => {
                 return Self::RetainedOperationalFailure {
                     kind: source.operational_kind(),
                     source: source.into_backend_cause(),
@@ -400,7 +422,9 @@ fn operational_failure_kind(source: HostSupervisionError) -> BackendOperationalF
         HostSupervisionError::Terminal {
             state: HostOperationState::Expired,
         } => BackendOperationalFailureKind::Expired,
-        HostSupervisionError::Terminal { .. } => BackendOperationalFailureKind::Terminal,
+        HostSupervisionError::Terminal { .. } | HostSupervisionError::BorrowedOperation => {
+            BackendOperationalFailureKind::Terminal
+        }
         HostSupervisionError::InvalidBudget
         | HostSupervisionError::UnboundedInfrastructure { .. } => {
             BackendOperationalFailureKind::InvalidPolicy

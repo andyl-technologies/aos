@@ -7,7 +7,7 @@ use super::*;
 use crate::ram_control::{RamControlClient, RamControlRegistrar};
 use crucible_protocol::ram_control::*;
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, recvmsg};
-use std::io::{IoSliceMut, Read, Write};
+use std::io::{IoSliceMut, Read};
 use std::mem::MaybeUninit;
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
@@ -97,7 +97,11 @@ fn arm_sends_the_same_event_once_and_reuses_the_saved_receipt() {
     let (signal, trigger) = std::sync::mpsc::channel();
     let pager = std::thread::spawn(move || {
         let hello = read_ram_control(&mut worker).unwrap().unwrap();
-        write_ram_control(&mut worker, &crate::ram_control::tests::response(hello)).unwrap();
+        write_ram_control(
+            &mut worker,
+            &crate::ram_control::checkpoint_test_response(hello),
+        )
+        .unwrap();
         let (arm, alias) = receive_arm(&mut worker);
         reply(&mut worker, arm, false);
         worker
@@ -151,7 +155,11 @@ fn mismatched_arm_digest_poisoning_preserves_the_first_refusal() {
     let (host, mut worker) = UnixStream::pair().unwrap();
     let pager = std::thread::spawn(move || {
         let hello = read_ram_control(&mut worker).unwrap().unwrap();
-        write_ram_control(&mut worker, &crate::ram_control::tests::response(hello)).unwrap();
+        write_ram_control(
+            &mut worker,
+            &crate::ram_control::checkpoint_test_response(hello),
+        )
+        .unwrap();
         let (arm, _alias) = receive_arm(&mut worker);
         reply(&mut worker, arm, true);
     });
@@ -189,7 +197,11 @@ fn different_supervisor_is_refused_before_arm_bytes_or_descriptor() {
     let (host, mut worker) = UnixStream::pair().unwrap();
     let pager = std::thread::spawn(move || {
         let hello = read_ram_control(&mut worker).unwrap().unwrap();
-        write_ram_control(&mut worker, &crate::ram_control::tests::response(hello)).unwrap();
+        write_ram_control(
+            &mut worker,
+            &crate::ram_control::checkpoint_test_response(hello),
+        )
+        .unwrap();
         worker
             .set_read_timeout(Some(Duration::from_millis(100)))
             .unwrap();

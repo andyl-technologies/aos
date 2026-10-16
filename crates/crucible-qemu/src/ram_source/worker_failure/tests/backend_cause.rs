@@ -159,3 +159,79 @@ fn erased_worker_observer_retains_actual_file_until_original_control_closes() {
     assert!(FILE_CLOSED.load(Ordering::Acquire));
     verify_closed(&account);
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn cleanup_scheduler_reuses_worker_allocation_and_original_lease() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let account = HostServiceAllocator::new(1, 1, 4096).unwrap();
+    let error = QemuRamSourceError::RamBackingFailure {
+        kind: BackendOperationalFailureKind::Expired,
+        source: RamStoreError::Store(StoreError::Unavailable),
+        first: Some(super::super::super::QemuRamReadBoundaryError::Supervision(
+            HostSupervisionError::DeadlineExpired {
+                operation_id: 41,
+                class: HostOperationClass::PageIn,
+            },
+        )),
+    };
+    let (failure, target) = failure_with_error(&account, error);
+    let original = &failure.shared.source_ref().error as *const QemuRamSourceError;
+    let layout = Layout::from_size_align(
+        usize::try_from(QemuRamWorkerFailure::allocation_bytes().unwrap()).unwrap(),
+        8,
+    )
+    .unwrap();
+    let (scheduler, replacement, counts) =
+        TestAllocationObserver::capture_layout_and_count(layout, || {
+            let node = QemuNodeError::from_ram_source_cleanup(
+                "join retained RAM source",
+                QemuRamSourceError::WorkerFailed(failure),
+            );
+            SchedulerError::from(BackendError::from(node))
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(replacement, None);
+    assert!(matches!(
+        scheduler,
+        SchedulerError::Backend(BackendError::RetainedOperationalFailure {
+            kind: BackendOperationalFailureKind::Expired,
+            ..
+        })
+    ));
+    let source = scheduler
+        .source()
+        .and_then(Error::source)
+        .and_then(Error::source)
+        .and_then(|source| source.downcast_ref::<WorkerFailureBody>())
+        .and_then(Error::source)
+        .and_then(|source| source.downcast_ref::<QemuRamSourceError>())
+        .unwrap();
+    assert_eq!(source as *const QemuRamSourceError, original);
+    assert!(matches!(
+        source,
+        QemuRamSourceError::RamBackingFailure {
+            source: RamStoreError::Store(StoreError::Unavailable),
+            first: Some(super::super::super::QemuRamReadBoundaryError::Supervision(
+                HostSupervisionError::DeadlineExpired {
+                    operation_id: 41,
+                    class: HostOperationClass::PageIn
+                },
+            )),
+            ..
+        }
+    ));
+    assert!(matches!(
+        account.reserve_resources(0, 0, 1),
+        Err(HostServiceError::CapacityExhausted)
+    ));
+
+    let (_, report) =
+        TestAllocationObserver::observe_resident_after_free(&account, target, || drop(scheduler))
+            .unwrap();
+    verify_original_refusal(report);
+    verify_closed(&account);
+}

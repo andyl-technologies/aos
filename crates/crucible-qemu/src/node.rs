@@ -60,9 +60,13 @@ mod exact_snapshot;
 #[path = "node/host_policy.rs"]
 mod host_policy;
 mod network_output;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use exact_snapshot::capture_original::loan_fixture as checkpoint_original_loan_fixture;
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-pub use exact_snapshot::{CheckpointOriginalLoan, QemuCheckpointDeviceReader};
+pub use exact_snapshot::{
+    CheckpointArmLoan, CheckpointOriginalCause, CheckpointOriginalError, CheckpointOriginalLoan,
+    CheckpointTransportCause, QemuCheckpointDeviceReader,
+};
 
 pub use exact_snapshot::{
     CaptureReadError, QemuCapturedRamPage, QemuExactCheckpointCaptureAdmission,
@@ -428,7 +432,7 @@ impl QemuNodeChild {
         Ok(())
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn device_digest_workspace_setup_view(
         &self,
     ) -> Result<

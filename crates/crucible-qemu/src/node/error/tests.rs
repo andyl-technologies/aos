@@ -25,6 +25,10 @@ fn operational_failure_kind_survives_node_and_scheduler_conversion() {
             HostSupervisionError::Unavailable,
             BackendOperationalFailureKind::Unavailable,
         ),
+        (
+            HostSupervisionError::BorrowedOperation,
+            BackendOperationalFailureKind::Terminal,
+        ),
     ] {
         let runtime = QemuAsyncDriverRuntimeError::operational_supervision("page in", source);
         let node = QemuNodeError::from_async_driver(QemuAsyncDriverError::Runtime(runtime));
@@ -109,5 +113,54 @@ fn pending_source_failures_remain_typed_operational_scheduler_errors() {
             .and_then(|source| source.downcast_ref::<QemuAsyncDriverHealthError>())
             .unwrap_or_else(|| panic!("original source-health cause must remain downcastable"));
         assert_eq!(original, &observer);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn cleanup_refusals_keep_operational_category_and_typed_cause() {
+    use crate::ram_source::QemuRamSourceError;
+    use crucible::SchedulerOperationalFailureClass;
+
+    for (source, kind, class) in [
+        (
+            QemuRamSourceError::Canceled,
+            BackendOperationalFailureKind::Canceled,
+            SchedulerOperationalFailureClass::Canceled,
+        ),
+        (
+            QemuRamSourceError::Io(std::io::Error::other("original cleanup transport")),
+            BackendOperationalFailureKind::Unavailable,
+            SchedulerOperationalFailureClass::Retryable,
+        ),
+        (
+            QemuRamSourceError::Supervision(HostSupervisionError::DeadlineExpired {
+                operation_id: 41,
+                class: crucible_linux_resource::host_supervision::HostOperationClass::Cleanup,
+            }),
+            BackendOperationalFailureKind::Expired,
+            SchedulerOperationalFailureClass::Terminal,
+        ),
+    ] {
+        let node = QemuNodeError::from_ram_source_cleanup("join retained RAM source", source);
+        let QemuNodeError::RamSourceCleanup {
+            source: observer, ..
+        } = &node
+        else {
+            panic!("cleanup must expose its typed cause");
+        };
+        let observer = observer.clone();
+        let scheduler = SchedulerError::from(BackendError::from(node));
+
+        assert_eq!(scheduler.operational_failure_class(), Some(class));
+        assert!(matches!(scheduler, SchedulerError::Backend(ref backend)
+            if backend.operational_kind() == Some(kind)));
+        let retained = scheduler
+            .source()
+            .and_then(Error::source)
+            .and_then(Error::source)
+            .and_then(|source| source.downcast_ref::<crate::QemuAsyncDriverHealthError>())
+            .unwrap_or_else(|| panic!("original cleanup cause must remain downcastable"));
+        assert_eq!(retained, &observer);
     }
 }

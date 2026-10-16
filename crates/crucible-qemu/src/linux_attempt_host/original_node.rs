@@ -4,6 +4,7 @@
 //! observation borrows that same host, generation and actor decoder; no PID,
 //! caller-supplied flag, raw contract getter or replacement account grants it.
 
+#[cfg(feature = "private-measurement-domain")]
 use std::io;
 
 mod issuer;
