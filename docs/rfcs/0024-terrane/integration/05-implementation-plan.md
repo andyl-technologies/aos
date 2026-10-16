@@ -8796,6 +8796,16 @@ passes source review after fixing unknown state-parent sibling coverage;
 compilation, nonempty reconstruction, actual admission and native cache execution
 remain incomplete.
 
+Canonical inline recovery now passes source review for retained adoption handles,
+durable residence reconstruction and final quota reconciliation. Publisher source
+review also covers existing inline bindings and exact temporary-state cleanup.
+The new bounded portable reader reuses the complete bucket-copy validators and
+returns immutable selected metadata with no ref authority. Its source and seven
+test cases pass review; compilation and execution remain pending. It does not
+provide live content serving or final native custody. Manifest recovery, genuine
+fresh-bucket enrollment and native admission remain incomplete. No T2 task is
+accepted by these component reviews.
+
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
 `realize`, `publish`, and `gc` roles as systemd units. No FUSE yet.
@@ -9400,7 +9410,7 @@ the MVP conformance claim (PLAN-3) says so explicitly.
 | 34 observability | T3, B-ops | T-OBS-1, T-OBS-2, T-OBS-3 |
 | 35 performance | T6, B-ops | T-PERF-1, T-PERF-2 |
 | 36 testing | T1, T3, T6, B-topology | T-TEST-1, T-TEST-2, T-TEST-3, T-TEST-4, T-TEST-5 |
-| 37 crates | T0, T1 | T-PKG-1, T-CRATE-2, T-CRATE-1 |
+| 37 crates | T0, T1, T2, T4, T5, B-storage, B-surfaces-more, B-consistency | T-PKG-1, T-CRATE-2, T-CRATE-1; CRATE-28 component owners listed under T2 (AD-13) |
 | 38 edge | B-hub-edge | T-RISK-2, T-EDGE-1 |
 | 40 risks | T0, T3, T5, B-topology, B-bandwidth, B-hub-edge | T-RISK-3, T-RISK-1, T-RISK-4, T-RISK-5, T-PACK-3, T-RISK-2 |
 | integration 01 | T5 | T-SBX-1 to T-SBX-5 |
