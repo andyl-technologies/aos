@@ -76,19 +76,27 @@ impl ResumeFailure {
 }
 
 impl Client<HostDomainLocation> {
-    /// Inspects existing sealed inline bytes under the actual running executor turn.
+    /// Inspects and adopts sealed inline content under the actual running turn.
     ///
-    /// This readonly operation verifies the claim, kernel seal and plaintext;
-    /// it grants no new source-allocation, publication or retirement authority.
-    /// The exclusive turn spans the RPC and verification. Its constructor
-    /// remains with the cache's concrete physical command implementation.
+    /// Registered sealed InspectBody performs native adoption: it synchronizes
+    /// and records the binding, and rejection may quarantine content or forget
+    /// a conflicting binding. Neither a read-only returned descriptor nor the
+    /// exclusive turn makes this operation read-only or proves allocation custody.
+    ///
+    /// This remains inert without a concrete cache command and turn constructor.
+    /// Before activation that owner must retain genuine future holds across all
+    /// accepted physical work and reconcile native effects, durable state and
+    /// fresh quota before acknowledging its waiter, including on failure or
+    /// cancellation. The turn alone proves serialization, not those holds.
+    /// The transport verifies the claim, kernel seal and plaintext; it does not
+    /// implement that owner-side admission or reconciliation.
     ///
     /// # Errors
     /// Rejects foreign or stale owner/session/epoch/root custody, non-inline
     /// claims, unavailable canonical content, transport uncertainty and any
     /// descriptor, seal or plaintext mismatch. Failed exchanges or verification
     /// invalidate the client phase and require genuine recovery.
-    pub(crate) fn inspect_inline_running(
+    pub(crate) fn inspect_and_adopt_inline_running(
         &self,
         claim: PublicationClaim,
         context: &PublisherRunningContext,
@@ -139,6 +147,10 @@ impl Client<HostDomainLocation> {
     ///
     /// The concrete physical turn separately proves executor ownership before
     /// this lock. No old completed-recovery predicate is consulted here.
+    ///
+    /// # Errors
+    /// Rejects another actual session, root or incarnation, a changed running
+    /// epoch, a later Drain and an uncertain or non-running client phase.
     pub(super) fn require_running_context(
         &self,
         state: &State,
