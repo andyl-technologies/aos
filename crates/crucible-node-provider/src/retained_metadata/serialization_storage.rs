@@ -252,8 +252,7 @@ impl OriginalSerializationStorageData {
 /// Names the actual fixed visitor and result headers before Serialize runs.
 /// Compiler/recursive serializer frames and allocator overhead are separate.
 pub(crate) fn original_serialization_counter_scratch_data() -> usize {
-    size_of::<Credit>()
-        .saturating_add(size_of::<OriginalSerializationStorageData>())
+    size_of::<Credit>().saturating_add(size_of::<OriginalSerializationStorageData>())
 }
 
 /// Counts the existing Bytes/decimal formatter bank before invoking Serialize.
