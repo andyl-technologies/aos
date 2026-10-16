@@ -314,3 +314,51 @@ impl OriginalBindings {
         Ok(())
     }
 }
+
+impl OriginalBindings {
+    pub(super) fn reservation_requested_storage_data(
+        cases: usize, maximum: usize,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        if cases == 0 || cases > 128 { return Err(RuntimeError::UnsupportedFacet); }
+        cases.checked_mul(std::mem::size_of::<Option<Binding>>())
+            .filter(|bytes| *bytes <= maximum).ok_or(RuntimeError::ResourceLimit)
+    }
+
+    pub(super) fn empty_reservation_data(&self) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        let entries=self.entries.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        if entries.iter().any(Option::is_some) { return Err(RuntimeError::UnsupportedFacet); }
+        entries.capacity().checked_mul(std::mem::size_of::<Option<Binding>>())
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
+    pub(super) fn reservation_scratch_data() -> usize {
+        std::mem::size_of::<Vec<Option<Binding>>>()
+            + std::mem::size_of::<std::cell::Ref<'_, Vec<Option<Binding>>>>()
+            + std::mem::size_of::<Option<Binding>>()
+    }
+}
+
+#[cfg(test)]
+mod construction_controls {
+    use super::*;
+    use crucible::node_contract::RuntimeError;
+
+    #[test]
+    fn actual_original_binding_reservation_preserves_busy_owner_and_exact_boundary()
+    -> Result<(),Box<dyn std::error::Error>> {
+        let original=OriginalBindings::reserve(13)?;
+        let quote=OriginalBindings::reservation_requested_storage_data(13,usize::MAX)?;
+        assert_eq!(original.empty_reservation_data()?,quote);
+        assert_eq!(OriginalBindings::reservation_requested_storage_data(13,quote)?,quote);
+        assert!(OriginalBindings::reservation_requested_storage_data(13,quote-1).is_err());
+        let loan=original.entries.borrow_mut();
+        assert_eq!(original.empty_reservation_data(),Err(RuntimeError::OwnerBusy));
+        assert_eq!(loan.len(),13);
+        assert!(loan.iter().all(Option::is_none));
+        drop(loan);
+        assert_eq!(original.empty_reservation_data()?,quote);
+        Ok(())
+    }
+}

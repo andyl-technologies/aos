@@ -5,6 +5,7 @@
 //! cannot turn its schedule, a Refused audit or copied metadata into those tokens.
 
 mod retained;
+mod construction;
 
 use std::{cell::Cell, rc::Rc};
 

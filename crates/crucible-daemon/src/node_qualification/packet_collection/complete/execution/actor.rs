@@ -21,6 +21,8 @@ use crucible_node_contract::{Id, Position};
 use super::super::{PacketCompleteCaptureFactory, PacketCompleteWorldCapture};
 use super::{PacketCompleteExecutionScene, QualificationError, refused, schedule};
 
+mod construction;
+
 struct Grant {
     node: Id,
     operation: Id,

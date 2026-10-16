@@ -33,6 +33,7 @@ impl PacketCompleteNativeOracle {
         // The group is a fixed three-FD owner with no heap fields. Reader/group
         // aliases retain this same Rc backing; no descriptor is duplicated.
         counter.rc(&self.receiver_group)?;
+        counter.rc(&self.receiver_reader)?;
         counter.charge(&self.effect_paths)?;
         counter.charge(&self.schedule)?;
         counter.charge(&self.plan)?;
