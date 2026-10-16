@@ -163,7 +163,9 @@ pub(crate) fn measure_conformance_executable(path: &Path) -> Result<ContentRef, 
         ));
     }
     let measured = measure_bounded_stream::<CONFORMANCE_STREAM_BUFFER_BYTES>(
-        &mut file, before.len(), GrowthPolicy::ReadToBound,
+        &mut file,
+        before.len(),
+        GrowthPolicy::ReadToBound,
     )?;
     let after = file.metadata()?;
     if measured.length != before.len() {
@@ -213,8 +215,11 @@ fn measure_stream(
     reader: &mut impl Read,
     expected_length: u64,
 ) -> Result<ContentRef, ProviderError> {
-    let measured =
-        measure_bounded_stream::<STREAM_BUFFER_BYTES>(reader, expected_length, GrowthPolicy::RefuseImmediately)?;
+    let measured = measure_bounded_stream::<STREAM_BUFFER_BYTES>(
+        reader,
+        expected_length,
+        GrowthPolicy::RefuseImmediately,
+    )?;
     if measured.length != expected_length {
         return Err(ProviderError::Correlation(
             "executable changed during measurement",
@@ -350,8 +355,14 @@ mod tests {
     fn actual_read_slice_keeps_exact_cap_plus_one_boundary() -> TestResult {
         fn check<const BUFFER_BYTES: usize>() -> TestResult {
             assert_eq!(next_read_capacity::<BUFFER_BYTES>(0)?, BUFFER_BYTES);
-            assert_eq!(next_read_capacity::<BUFFER_BYTES>(MAXIMUM_EXECUTABLE_BYTES - 3)?, 4);
-            assert_eq!(next_read_capacity::<BUFFER_BYTES>(MAXIMUM_EXECUTABLE_BYTES)?, 1);
+            assert_eq!(
+                next_read_capacity::<BUFFER_BYTES>(MAXIMUM_EXECUTABLE_BYTES - 3)?,
+                4
+            );
+            assert_eq!(
+                next_read_capacity::<BUFFER_BYTES>(MAXIMUM_EXECUTABLE_BYTES)?,
+                1
+            );
             assert!(next_read_capacity::<BUFFER_BYTES>(MAXIMUM_EXECUTABLE_BYTES + 2).is_err());
             Ok(())
         }
@@ -459,7 +470,6 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     fn generic_and_prepare_banks_keep_distinct_slices_and_identical_content() -> TestResult {
         struct ObservedRead<'a> {
@@ -478,12 +488,20 @@ mod tests {
             .map(|index| (index % 251) as u8)
             .collect();
         let expected = canonical::content_ref(&bytes, "application/octet-stream")?;
-        let mut prepare = ObservedRead { input: Cursor::new(bytes.as_slice()), largest_slice: 0 };
-        let mut generic = ObservedRead { input: Cursor::new(bytes.as_slice()), largest_slice: 0 };
+        let mut prepare = ObservedRead {
+            input: Cursor::new(bytes.as_slice()),
+            largest_slice: 0,
+        };
+        let mut generic = ObservedRead {
+            input: Cursor::new(bytes.as_slice()),
+            largest_slice: 0,
+        };
 
         let selected = measure_stream(&mut prepare, expected.length.get())?;
         let measured = measure_bounded_stream::<CONFORMANCE_STREAM_BUFFER_BYTES>(
-            &mut generic, expected.length.get(), GrowthPolicy::ReadToBound,
+            &mut generic,
+            expected.length.get(),
+            GrowthPolicy::ReadToBound,
         )?;
         let ordinary = reference_from_stream(measured)?;
 
