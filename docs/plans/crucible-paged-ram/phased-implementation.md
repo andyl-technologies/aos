@@ -245,6 +245,31 @@ the extents above. These measurements establish neither whole-stack usage nor
 budget fit. The broader generic finish adapter still needs its typed leaf
 migration through the actual launcher, cleanup queue and scheduler boundary.
 
+Retained Service factories now copy only their six immutable admission-policy
+values and keep their explicit registry, actor and input custody. They no longer
+clone the full executor configuration. The actual factory measures 928 bytes,
+down from 2,200; its shared-Linux baked catalog factory and promotion worker
+measure 1,320 and 1,360 bytes, down from 2,592 and 2,632. These extents exclude
+removed deployment-map/path/string heap clones. Main and the measured Source
+bodies remain unchanged. The existing real Service/watchdog control checks frozen
+policy, factory clones, identity, budgets, watcher/quanta projection and four
+late missing-policy refusals without losing actor capacity.
+
+The existing neutral cleanup-owner, reservation and handoff traits now require
+an associated failure type. Every current implementation explicitly retains its
+existing scheduler-error type; owners, boxes, cells, receipts and cleanup effects
+are unchanged. This prepares the same transport for backend-typed history; it
+does not yet repair the generic guard's erased leaf. Exact declaration and
+forwarder controls include missing/default/foreign-type mutations and pass. The
+joined API and harness libraries have 119 and 18 passes. The daemon, QEMU,
+resource, boundary, traceability and hygiene results above also pass their
+previous successful controls, with exactly the previous runtime failed names
+and 28 source-classifier findings. Both default and private all-target workspace
+checks pass. The private workspace check exposed and fixed CLI error mapping
+when dependency feature unification enables Parent variants independently of
+CLI feature selection; IO/store typed routing and other error presentation stay
+the same. These compilation and component results do not qualify a VM.
+
 Dispatcher retirement now retains the first Cleanup admission result once and
 authenticates that exact saved operation without initializing another one.
 Terminal parents do not prevent same-owner worker joins; new work still requires
@@ -273,7 +298,23 @@ preserving diagnostics alone cannot repair that custody path. Promotion can carr
 closure and restore causes plus multiple cleanup phases. Its follow-up needs a
 finite nonrecursive history representation and an actual containing-body size
 query for the promotion body; the ordinary worker-cell query alone does not
-fund a separate promotion body. Resource ceilings remain unchanged.
+fund a separate promotion body. Its current builder constructs the promotion
+vector before the once-only worker debit. An unbuilt plan must join actual
+promotion/path/catalog geometry into that same existing debit before allocation.
+A shared immutable basis map can eliminate remaining per-factory deep clones;
+the initial Main-funded constructor and runtime decode-funded constructors need
+explicit existing payers. Capture size alone does not cover the standard
+library's private thread-control allocations. Resource ceilings remain unchanged.
+
+Prepared Service retention also needs an actual owning continuation before the
+World claim: assignment/window changes can precede the before-effects callback.
+Queue completion proves native-body destruction and containing-control closure,
+not final World/window return. The same Service must survive outside that native
+body until exact loan-backed World return, then watchdog join and discharge.
+Replay still lacks Source's fixed retained-owner continuation. The existing World
+queue role can support that design without a fourth cell, but these ownership
+and return-observation seams remain unimplemented; an empty node ledger is
+insufficient evidence.
 
 World and node returns now verify their exact saved Cleanup, retained family,
 kernel partition and ledger epoch rather than requiring a live preparation

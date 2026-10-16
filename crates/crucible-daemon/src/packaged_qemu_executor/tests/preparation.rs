@@ -379,12 +379,51 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
             .expect("actual complete resource availability")
     };
     let complete_before = all_available();
-    let interactive = RetainedTemplateServiceFactory::new(&prepared, &config)
+    let mut snapshot_config = config.clone();
+    let lifecycle = Arc::clone(&snapshot_config.lifecycle);
+    let lifecycle_aliases = Arc::strong_count(&lifecycle);
+    let services = RetainedTemplateServiceFactory::new(&prepared, &snapshot_config);
+    let services = services.clone();
+    assert_eq!(Arc::strong_count(&lifecycle), lifecycle_aliases);
+
+    snapshot_config.daemon_epoch = DaemonEpoch::from_bytes([0x62; 16]).expect("changed epoch");
+    snapshot_config.retained_template_resources = None;
+    snapshot_config.assignment_resources = None;
+    snapshot_config.assignment_limits = None;
+    snapshot_config.host_operation_budgets = None;
+
+    let interactive = services
         .start_for_interactive_session(
             &preparation_scenario(),
             crate::ExecutionCancellation::default(),
         )
         .expect("fresh interactive Service uses the same actual capacity actor");
+    assert_eq!(
+        interactive.context().host_daemon_epoch(),
+        crate::host_operational_registry::operational_identity(config.daemon_epoch.as_bytes()),
+    );
+    assert_eq!(
+        interactive
+            .context()
+            .host_operation_supervisor()
+            .expect("actual Service supervisor")
+            .budgets()
+            .expect("unchanged operation budgets")
+            .1,
+        config.host_operation_budgets().expect("authored budgets"),
+    );
+    assert_eq!(
+        interactive.context().resources().maximum_execution_quanta(),
+        config
+            .assignment_limits()
+            .expect("authored limits")
+            .maximum_execution_quanta(),
+    );
+    assert_eq!(
+        interactive.context().resources().maximum_resident_bytes()
+            + config.host.watcher_service_resident_bytes(),
+        service_resources.resident_peak_bytes,
+    );
     assert!(!interactive.context().host_ram_retained_template());
     assert!(!interactive.native_context().host_ram_retained_template());
     assert!(matches!(
@@ -412,6 +451,33 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
     // final Service owner to join its watcher before releasing the whole vector.
     drop(interactive);
     assert_eq!(all_available(), complete_before);
+
+    for missing in 0..4 {
+        let mut incomplete = config.clone();
+        match missing {
+            0 => incomplete.retained_template_resources = None,
+            1 => incomplete.assignment_resources = None,
+            2 => incomplete.assignment_limits = None,
+            3 => incomplete.host_operation_budgets = None,
+            _ => unreachable!(),
+        }
+        let incomplete_services = RetainedTemplateServiceFactory::new(&prepared, &incomplete);
+
+        let error = incomplete_services
+            .start_for_archive_authentication(
+                &preparation_scenario(),
+                crate::ExecutionCancellation::default(),
+            )
+            .err()
+            .expect("missing policy refuses at Service admission");
+        assert!(matches!(
+            error,
+            PackagedQemuExecutorError::HostOperational(
+                crucible_api::host_operational::HostOperationalError::Unavailable
+            ),
+        ));
+        assert_eq!(all_available(), complete_before);
+    }
 
     let mut authentication = RetainedTemplateServiceFactory::new(&prepared, &config)
         .start_for_archive_authentication(

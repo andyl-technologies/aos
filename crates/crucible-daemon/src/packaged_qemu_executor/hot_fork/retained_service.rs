@@ -3,6 +3,7 @@
 use super::*;
 use crate::supervision::AssignmentHostWatchdogGuard;
 use crucible_api::host_operational::{HostOperationalError, HostResourceVector};
+use crucible_campaign::{AttemptResourceLimits, DaemonEpoch};
 use crucible_linux_resource::host_supervision::HostOperationSupervisor;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,11 +22,37 @@ pub(crate) struct RetainedTemplateService {
 
 #[derive(Clone)]
 pub(crate) struct RetainedTemplateServiceFactory {
-    config: PackagedQemuExecutorConfig,
+    policy: RetainedTemplateServicePolicy,
     registry: crate::HostOperationalRegistry,
     preparation_custody: Arc<dyn Send + Sync>,
     input_retention: Option<Arc<dyn Send + Sync>>,
     outer_supervisor: Option<HostOperationSupervisor>,
+}
+
+/// Copies only the immutable values used by Service admission.
+///
+/// Missing options remain absent until admission performs its existing checks.
+#[derive(Clone, Copy)]
+struct RetainedTemplateServicePolicy {
+    daemon_epoch: DaemonEpoch,
+    retained_template_resources: Option<HostResourceVector>,
+    assignment_resources: Option<HostResourceVector>,
+    assignment_limits: Option<AttemptResourceLimits>,
+    host_operation_budgets: Option<crucible_api::host_operational::HostOperationBudgets>,
+    watcher_service_resident_bytes: u64,
+}
+
+impl RetainedTemplateServicePolicy {
+    fn from_config(config: &PackagedQemuExecutorConfig) -> Self {
+        Self {
+            daemon_epoch: config.daemon_epoch,
+            retained_template_resources: config.retained_template_resources(),
+            assignment_resources: config.assignment_resources(),
+            assignment_limits: config.assignment_limits(),
+            host_operation_budgets: config.host_operation_budgets(),
+            watcher_service_resident_bytes: config.host.watcher_service_resident_bytes(),
+        }
+    }
 }
 
 enum ServiceHeadroom {
@@ -76,7 +103,7 @@ impl RetainedTemplateServiceFactory {
         };
         if original.host_daemon_epoch()
             != crate::host_operational_registry::operational_identity(
-                self.config.daemon_epoch.as_bytes(),
+                self.policy.daemon_epoch.as_bytes(),
             )
         {
             return Err(HostOperationalError::Unavailable.into());
@@ -123,7 +150,7 @@ impl RetainedTemplateServiceFactory {
         config: &PackagedQemuExecutorConfig,
     ) -> Self {
         Self {
-            config: config.clone(),
+            policy: RetainedTemplateServicePolicy::from_config(config),
             registry,
             preparation_custody: custody,
             input_retention: None,
@@ -251,8 +278,8 @@ impl RetainedTemplateServiceFactory {
             PackagedQemuExecutorError::PreparationSupervisor(std::io::Error::other(source))
         })?;
         let ceiling = self
-            .config
-            .assignment_limits()
+            .policy
+            .assignment_limits
             .ok_or(HostOperationalError::Unavailable)?;
         if requested.maximum_vcpus() > ceiling.maximum_vcpus()
             || requested.maximum_resident_bytes() > ceiling.maximum_resident_bytes()
@@ -313,8 +340,8 @@ impl RetainedTemplateServiceFactory {
         }
         let requested = imported.resources();
         let ceiling = self
-            .config
-            .assignment_limits()
+            .policy
+            .assignment_limits
             .ok_or(HostOperationalError::Unavailable)?;
         if requested.maximum_vcpus() > ceiling.maximum_vcpus()
             || requested.maximum_resident_bytes() > ceiling.maximum_resident_bytes()
@@ -449,7 +476,7 @@ impl RetainedTemplateServiceFactory {
             return Err(HostOperationalError::Unavailable.into());
         };
         let daemon = crate::host_operational_registry::operational_identity(
-            self.config.daemon_epoch.as_bytes(),
+            self.policy.daemon_epoch.as_bytes(),
         );
         if original.host_daemon_epoch() != daemon {
             return Err(HostOperationalError::Unavailable.into());
@@ -482,20 +509,20 @@ impl RetainedTemplateService {
         purpose: ServicePurpose,
         cancellation: ExecutionCancellation,
     ) -> Result<Self, PackagedQemuExecutorError> {
-        let config = &factory.config;
-        let service = config
-            .retained_template_resources()
+        let policy = &factory.policy;
+        let service = policy
+            .retained_template_resources
             .ok_or(HostOperationalError::Unavailable)?;
-        let assignment = config
-            .assignment_resources()
+        let assignment = policy
+            .assignment_resources
             .ok_or(HostOperationalError::Unavailable)?;
-        let quanta = config
-            .assignment_limits()
+        let quanta = policy
+            .assignment_limits
             .ok_or(HostOperationalError::Unavailable)?
             .maximum_execution_quanta();
         // The watcher is outside every node partition. Its full stack remains
         // charged even while the source performs no operational work.
-        let service_resident = config.host.watcher_service_resident_bytes();
+        let service_resident = policy.watcher_service_resident_bytes;
         if service_resident <= crate::supervision::HOST_WATCHDOG_STACK_BYTES as u64 {
             return Err(HostOperationalError::Unavailable.into());
         }
@@ -522,8 +549,8 @@ impl RetainedTemplateService {
             service_resident,
         )?;
 
-        let budgets = config
-            .host_operation_budgets()
+        let budgets = policy
+            .host_operation_budgets
             .ok_or(HostOperationalError::Unavailable)?;
         let incarnation = HostOperationSupervisor::new(budgets, None).map_err(|error| {
             PackagedQemuExecutorError::PreparationSupervisor(std::io::Error::other(error))
@@ -536,7 +563,7 @@ impl RetainedTemplateService {
             None => incarnation,
         };
         let daemon =
-            crate::host_operational_registry::operational_identity(config.daemon_epoch.as_bytes());
+            crate::host_operational_registry::operational_identity(policy.daemon_epoch.as_bytes());
         let mut owner_digest = blake3::Hasher::new();
         owner_digest.update(b"crucible.host.retained-template-owner.v1\0");
         owner_digest.update(&daemon);
