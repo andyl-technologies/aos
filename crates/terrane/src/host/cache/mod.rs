@@ -16,7 +16,7 @@ pub use fetch::{FetchRequirement, fetch_verified};
 pub use kernel::{HostInspection, HostKernel, SealInspection};
 pub use layout::DomainHostLayout;
 pub use policy::{CacheEntry, CachePolicy, CircuitBreaker, PolicyConfig};
-pub use readonly::HostReadOnlyContent;
+pub use readonly::{HostReadLimits, HostReadOnlyContent};
 pub use reassembly::ReassemblyMode;
 pub use state::{
     CacheState, LeaseRecord, PinRecord, ReservationRecord, ResidenceRecord, StateLimits,

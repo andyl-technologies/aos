@@ -354,3 +354,29 @@ async fn host_cache_native_enumeration_refuses_foreign_pack_directory() {
     assert!(reader.list(&prefix).await.is_err());
     assert_eq!(std::fs::read_dir(&foreign.0).unwrap().count(), 0);
 }
+
+#[tokio::test]
+async fn host_cache_native_operator_budget_is_capacity_not_corruption() {
+    use super::HostReadLimits;
+    let scratch = Scratch::new();
+    let identity = scratch.chunk(b"valid content larger than selected budget");
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let reader = HostReadOnlyContent::open_existing_with_limits(
+        scratch.layout(),
+        TokioLocalFs,
+        MetadataValidator::new(profile),
+        HostReadLimits {
+            max_allocation_bytes: 4,
+        },
+    )
+    .await
+    .unwrap();
+
+    let error = reader.get(&identity, None).await.unwrap_err();
+
+    assert!(matches!(error.kind(), StoreErrorKind::Capacity));
+    assert_eq!(
+        scratch.reader().await.get(&identity, None).await.unwrap(),
+        b"\0valid content larger than selected budget"
+    );
+}

@@ -4,8 +4,6 @@
 //! manifest identities continue to address canonical manifest bytes.
 
 use super::DomainHostLayout;
-#[cfg(all(feature = "tokio", unix))]
-use crate::store::{NativeOrdinaryRead, OrdinaryReadOutcome};
 use crate::{
     bucket::BucketBinding,
     pack::{PackId, PackReader},
@@ -24,6 +22,24 @@ use terrane_core::{
     properties::Domain,
 };
 
+/// Bounds each host-reader allocation as operator resource policy.
+///
+/// This is not an encoded-format maximum. A valid larger object returns
+/// capacity and may be fetched through another tier or a larger configured budget.
+#[derive(Clone, Copy, Debug)]
+pub struct HostReadLimits {
+    /// Maximum bytes in any single encoded metadata, pack, index or range read.
+    pub max_allocation_bytes: usize,
+}
+
+impl Default for HostReadLimits {
+    fn default() -> Self {
+        Self {
+            max_allocation_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
 /// Provides domain-bound verified encoded reads over an existing host cache.
 ///
 /// Opening and reading never create, repair, probe, or publish filesystem data.
@@ -34,10 +50,14 @@ pub struct HostReadOnlyContent<F, V> {
     validator: V,
     capabilities: Capabilities,
     directory_identity: (u64, u64),
+    limits: HostReadLimits,
 }
 
 impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOnlyContent<F, V> {
-    /// Opens an existing domain layout without writable bucket probes.
+    /// Opens an existing layout with a 64 MiB per-allocation read budget.
+    ///
+    /// The budget is operator resource policy, not a format maximum. Larger
+    /// metadata can use `open_existing_with_limits`; excess returns capacity.
     ///
     /// # Errors
     /// Refuses private-domain shared caches, missing roots, symlinks, and I/O failures.
@@ -46,6 +66,23 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         fs: F,
         validator: V,
     ) -> Result<Self, StoreFailure> {
+        Self::open_existing_with_limits(layout, fs, validator, HostReadLimits::default()).await
+    }
+
+    /// Opens an existing layout with an explicit operator allocation budget.
+    ///
+    /// # Errors
+    /// Returns the same layout errors as `open_existing`, or capacity for zero
+    /// budget. Reads exceeding this budget return capacity without format rejection.
+    pub async fn open_existing_with_limits(
+        layout: DomainHostLayout,
+        fs: F,
+        validator: V,
+        limits: HostReadLimits,
+    ) -> Result<Self, StoreFailure> {
+        if limits.max_allocation_bytes == 0 {
+            return Err(resource());
+        }
         if matches!(
             Domain::parse(&layout.domain_binding().domain),
             Ok(Domain::Private(_))
@@ -77,6 +114,7 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             fs,
             validator,
             directory_identity,
+            limits,
             capabilities: Capabilities {
                 refs: RefCapability::None,
                 ranges: RangeCapability::Ranges,
@@ -101,17 +139,17 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         self.directory_identity
     }
 
-    async fn observe_parents(
+    async fn directory_chain(
         &self,
-        path: &Path,
-    ) -> Result<Vec<(PathBuf, std::fs::Metadata)>, StoreFailure> {
-        let relative = path
+        directory: &Path,
+    ) -> Result<Option<Vec<(PathBuf, std::fs::Metadata)>>, StoreFailure> {
+        let relative = directory
             .strip_prefix(self.layout.root())
             .map_err(|_| invalid())?;
-        let mut parent = self.layout.root().to_owned();
+        let mut current = self.layout.root().to_owned();
         let root = self
             .fs
-            .symlink_metadata(&parent)
+            .symlink_metadata(&current)
             .await
             .map_err(io_failure)?;
         if directory_identity(&root) != Some(self.directory_identity)
@@ -120,21 +158,31 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         {
             return Err(invalid());
         }
-        let mut observations = vec![(parent.clone(), root)];
-        let components: Vec<_> = relative.components().collect();
-        for component in components.iter().take(components.len().saturating_sub(1)) {
-            parent.push(component.as_os_str());
-            let metadata = self
-                .fs
-                .symlink_metadata(&parent)
-                .await
-                .map_err(io_failure)?;
+        let mut observations = vec![(current.clone(), root)];
+        for component in relative.components() {
+            current.push(component.as_os_str());
+            let metadata = match self.fs.symlink_metadata(&current).await {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.close_parents(observations).await?;
+                    return Ok(None);
+                }
+                Err(error) => return Err(io_failure(error)),
+            };
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
                 return Err(invalid());
             }
-            observations.push((parent.clone(), metadata));
+            observations.push((current.clone(), metadata));
         }
-        Ok(observations)
+        Ok(Some(observations))
+    }
+
+    async fn observe_parents(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<(PathBuf, std::fs::Metadata)>, StoreFailure> {
+        let parent = path.parent().ok_or_else(invalid)?;
+        self.directory_chain(parent).await?.ok_or_else(invalid)
     }
 
     async fn close_parents(
@@ -154,12 +202,39 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
     }
 
     async fn read_file(&self, path: &Path) -> Result<Vec<u8>, StoreFailure> {
+        self.read_file_checked(path, None).await
+    }
+
+    async fn read_file_checked(
+        &self,
+        path: &Path,
+        chunk: Option<(&Identity, usize)>,
+    ) -> Result<Vec<u8>, StoreFailure> {
         let parents = self.observe_parents(path).await?;
         let before = self.fs.symlink_metadata(path).await.map_err(io_failure)?;
         if !before.is_file() || before.file_type().is_symlink() {
             return Err(invalid());
         }
-        let bytes = self.read_leaf(path).await?;
+        if let Some((identity, bound)) = chunk {
+            if before.len() > bound as u64 {
+                return Err(corrupt(
+                    identity,
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "chunk exceeds existing encoded-size bound",
+                    ),
+                ));
+            }
+        }
+        let bytes = self
+            .read_range_checked(
+                path,
+                ByteRange {
+                    start: 0,
+                    length: before.len(),
+                },
+            )
+            .await?;
         let after = self.fs.symlink_metadata(path).await.map_err(io_failure)?;
         if !same_file(&before, &after) {
             return Err(invalid());
@@ -168,34 +243,40 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         Ok(bytes)
     }
 
-    async fn read_leaf(&self, path: &Path) -> Result<Vec<u8>, StoreFailure> {
-        #[cfg(all(feature = "tokio", unix))]
-        if let Some(record) = self
-            .fs
-            .read_ordinary_record(NativeOrdinaryRead::for_leaf(path))
-            .await
-            .map_err(io_failure)?
-        {
-            return match record.into_outcome() {
-                OrdinaryReadOutcome::Present(bytes, _) => Ok(bytes),
-                _ => Err(invalid()),
-            };
+    async fn read_range_checked(
+        &self,
+        path: &Path,
+        range: ByteRange,
+    ) -> Result<Vec<u8>, StoreFailure> {
+        if range.length > self.limits.max_allocation_bytes as u64 {
+            return Err(resource());
         }
-        self.fs.read_nofollow(path).await.map_err(io_failure)
+        range.start.checked_add(range.length).ok_or_else(resource)?;
+        let bytes = self.fs.read_range(path, range).await.map_err(io_failure)?;
+        if bytes.len() as u64 != range.length {
+            return Err(invalid());
+        }
+        Ok(bytes)
+    }
+
+    fn check_index_allocation(&self, bytes: &[u8]) -> Result<(), StoreFailure> {
+        use terrane_core::pack_format::{HEADER_SIZE, RECORD_SIZE, Record, index_count};
+        let index = bytes.get(HEADER_SIZE..).ok_or_else(invalid)?;
+        let count = index_count(index, RECORD_SIZE).map_err(|_| invalid())?;
+        if count
+            .checked_mul(std::mem::size_of::<Record>())
+            .ok_or_else(resource)?
+            > self.limits.max_allocation_bytes
+        {
+            return Err(resource());
+        }
+        Ok(())
     }
 
     async fn directory_entries(&self, directory: &Path) -> Result<Vec<PathBuf>, StoreFailure> {
-        match self.fs.symlink_metadata(directory).await {
-            Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
-                return Err(invalid());
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(io_failure(error)),
-        }
-        let parents = self
-            .observe_parents(&directory.join(".enumeration"))
-            .await?;
+        let Some(parents) = self.directory_chain(directory).await? else {
+            return Ok(Vec::new());
+        };
         let entries = self.fs.read_dir(directory).await.map_err(io_failure)?;
         self.close_parents(parents).await?;
         for path in &entries {
@@ -298,6 +379,7 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             }
             let index_path = path.with_extension("idx");
             let index_bytes = self.read_file(&index_path).await?;
+            self.check_index_allocation(&index_bytes)?;
             let (header, records) = terrane_core::pack_format::decode_detached_index(&index_bytes)
                 .map_err(|error| corrupt(identity, error))?;
             if self
@@ -315,6 +397,20 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             }) else {
                 continue;
             };
+            if identity.kind() == IdentityKind::Chunk
+                && (record.plaintext_len as usize > self.layout.chunk_profile().maximum()
+                    || record.body_len as usize
+                        > super::maximum_encoded_chunk_bytes(self.layout.chunk_profile())
+                            .map_err(|error| corrupt(identity, error))?)
+            {
+                return Err(corrupt(
+                    identity,
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "pack chunk declaration exceeds existing codec bounds",
+                    ),
+                ));
+            }
             let parents = self.observe_parents(&path).await?;
             let before = self.fs.symlink_metadata(&path).await.map_err(io_failure)?;
             if !before.is_file() || before.file_type().is_symlink() {
@@ -322,18 +418,22 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             }
             self.verify_pack_index(&path, before.len(), &index_bytes, &records)
                 .await
-                .map_err(|source| corrupt(identity, source))?;
+                .map_err(|source| {
+                    if matches!(source.kind(), StoreErrorKind::Capacity) {
+                        source
+                    } else {
+                        corrupt(identity, source)
+                    }
+                })?;
             let bytes = self
-                .fs
-                .read_range(
+                .read_range_checked(
                     &path,
                     ByteRange {
                         start: record.offset,
                         length: u64::from(record.body_len),
                     },
                 )
-                .await
-                .map_err(io_failure)?;
+                .await?;
             let after = self.fs.symlink_metadata(&path).await.map_err(io_failure)?;
             if !same_file(&before, &after) {
                 return Err(invalid());
@@ -379,15 +479,43 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
                     self.layout
                         .root()
                         .join(format!("chunks/{}/{}.{}", &hex[..2], hex, codec));
+                let Some(parents) = self
+                    .directory_chain(path.parent().ok_or_else(invalid)?)
+                    .await?
+                else {
+                    continue;
+                };
                 match self.fs.symlink_metadata(&path).await {
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        self.close_parents(parents).await?;
+                        continue;
+                    }
                     Err(error) => return Err(io_failure(error)),
                     Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
                         return Err(invalid());
                     }
-                    Ok(_) => {}
+                    Ok(metadata) => {
+                        if metadata.len()
+                            > super::maximum_encoded_chunk_bytes(self.layout.chunk_profile())
+                                .map_err(|error| corrupt(identity, error))?
+                                as u64
+                        {
+                            return Err(corrupt(
+                                identity,
+                                std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "standalone body exceeds existing codec bounds",
+                                ),
+                            ));
+                        }
+                    }
                 }
-                let bytes = self.read_file(&path).await?;
+                self.close_parents(parents).await?;
+                let bound = super::maximum_encoded_chunk_bytes(self.layout.chunk_profile())
+                    .map_err(|error| corrupt(identity, error))?;
+                let bytes = self
+                    .read_file_checked(&path, Some((identity, bound)))
+                    .await?;
                 if bytes.first() != Some(&codec) {
                     return Err(corrupt(
                         identity,
@@ -429,30 +557,26 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             .checked_sub(FOOTER_SIZE as u64)
             .ok_or_else(invalid)?;
         let header = self
-            .fs
-            .read_range(
+            .read_range_checked(
                 path,
                 ByteRange {
                     start: 0,
                     length: HEADER_SIZE as u64,
                 },
             )
-            .await
-            .map_err(io_failure)?;
+            .await?;
         if detached.get(..HEADER_SIZE) != Some(header.as_slice()) {
             return Err(invalid());
         }
         let footer = self
-            .fs
-            .read_range(
+            .read_range_checked(
                 path,
                 ByteRange {
                     start: footer_start,
                     length: FOOTER_SIZE as u64,
                 },
             )
-            .await
-            .map_err(io_failure)?;
+            .await?;
         if footer.len() != FOOTER_SIZE || footer.get(12..) != Some(b"TRPE".as_slice()) {
             return Err(invalid());
         }
@@ -490,16 +614,14 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             return Err(invalid());
         }
         let actual = self
-            .fs
-            .read_range(
+            .read_range_checked(
                 path,
                 ByteRange {
                     start: offset,
                     length: expected.len() as u64,
                 },
             )
-            .await
-            .map_err(io_failure)?;
+            .await?;
         if actual != expected {
             return Err(invalid());
         }
@@ -667,6 +789,10 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> ContentSto
         }
         Ok(verified)
     }
+}
+
+fn resource() -> StoreFailure {
+    StoreFailure::new(StoreErrorKind::Capacity)
 }
 
 fn invalid() -> StoreFailure {
