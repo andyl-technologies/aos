@@ -14,6 +14,7 @@ mod restoration_prebirth;
 mod restoration_source;
 pub use archive_code::PacketCompleteArchiveCodeFactory;
 pub use restoration_prebirth::PacketCompleteRestorationPrebirth;
+mod construction;
 mod restoration_storage;
 mod retained;
 

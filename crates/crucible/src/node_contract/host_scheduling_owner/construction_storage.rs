@@ -73,6 +73,9 @@ impl HostSchedulingSource {
             + size_of::<(&Rc<Self>, &ActivationRecord)>()
             + size_of::<(usize, usize, usize)>()
             + size_of::<HostCollectionNodeConstructionStorageData>()
+            + size_of::<HostCollectionNodeConstructionStorageData>()
+            + size_of::<Result<HostCollectionNodeConstructionStorageData, RuntimeError>>()
+            + size_of::<Result<(), RuntimeError>>()
             + size_of::<std::array::IntoIter<usize, 7>>()
             + size_of::<std::array::IntoIter<&String, 3>>()
             + size_of::<std::slice::Iter<'_, OwnerIdentity>>()
@@ -105,6 +108,47 @@ impl HostSchedulingSource {
         maximum: usize,
     ) -> Result<HostCollectionNodeConstructionStorageData, RuntimeError> {
         self.authenticate_original_report_startup_data()?;
+        let data = self.quote_collection_node_storage(activation, maximum)?;
+        self.authenticate_original_report_startup_data()?;
+        Ok(data)
+    }
+
+    pub(crate) fn original_archived_collection_node_construction_storage_data(
+        self: &Rc<Self>,
+        archive: &Rc<crate::node_state::CompleteOriginalSource>,
+        activation: &ActivationRecord,
+        maximum: usize,
+    ) -> Result<HostCollectionNodeConstructionStorageData, RuntimeError> {
+        self.authenticate_archive_report_startup_data(archive)?;
+        let mut data = self.quote_collection_node_storage(activation, maximum)?;
+        let mut total = Counter { bytes: 0, maximum };
+        data.declared_counter_scratch_bytes = data
+            .declared_counter_scratch_bytes
+            .checked_add(Self::original_archived_collection_node_counter_scratch_data())
+            .ok_or(RuntimeError::ResourceLimit)?;
+        total.add(data.retained_requested_bytes)?;
+        total.add(data.maximum_simultaneous_transient_bytes)?;
+        total.add(data.declared_counter_scratch_bytes)?;
+        self.authenticate_archive_report_startup_data(archive)?;
+        Ok(data)
+    }
+
+    pub(crate) fn original_archived_collection_node_counter_scratch_data() -> usize {
+        size_of::<&Rc<Self>>()
+            + size_of::<&Rc<crate::node_state::CompleteOriginalSource>>()
+            + size_of::<&ActivationRecord>()
+            + size_of::<HostCollectionNodeConstructionStorageData>()
+            + size_of::<Result<HostCollectionNodeConstructionStorageData, RuntimeError>>()
+            + size_of::<Result<(), RuntimeError>>()
+            + size_of::<Counter>()
+            + 2 * size_of::<usize>()
+    }
+
+    fn quote_collection_node_storage(
+        self: &Rc<Self>,
+        activation: &ActivationRecord,
+        maximum: usize,
+    ) -> Result<HostCollectionNodeConstructionStorageData, RuntimeError> {
         let selected = &self.selection;
         if activation.world_binding_hash != self.world
             || !activation.owners.iter().any(|owner| {
@@ -153,7 +197,6 @@ impl HostSchedulingSource {
         };
         total.add(transient)?;
         total.add(scratch)?;
-        self.authenticate_original_report_startup_data()?;
         Ok(HostCollectionNodeConstructionStorageData {
             retained_requested_bytes: retained.bytes,
             maximum_simultaneous_transient_bytes: transient,

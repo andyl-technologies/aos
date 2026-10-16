@@ -18,6 +18,7 @@ use crate::{
 use super::{CnpSemanticConformanceNode, refused, unknown};
 
 mod exact_inputs;
+mod restoration_inputs;
 
 pub use exact_inputs::{
     CnpSemanticExactConformanceWorldProvider, CnpSemanticExactWorldReservation,

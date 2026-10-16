@@ -12,6 +12,9 @@ use crate::node_state::{
 };
 use crucible_node_contract::Position;
 
+#[path = "complete_capture/construction.rs"]
+mod construction;
+
 /// Borrows complete capture inputs without exposing ordinary collection internals.
 ///
 /// Coordinates and requirements are data. Only this runtime's original plan and

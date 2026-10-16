@@ -593,3 +593,6 @@ mod installed;
 
 #[path = "restoration_prebirth/restored_suffix.rs"]
 mod restored_suffix;
+
+#[path = "restoration_prebirth/construction.rs"]
+mod construction;

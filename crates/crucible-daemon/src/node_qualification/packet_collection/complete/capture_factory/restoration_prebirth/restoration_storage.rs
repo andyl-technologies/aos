@@ -116,7 +116,10 @@ impl PacketCompleteRestorationPrebirth {
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
         counter
-            .add(fresh.original_unobserved_restoration_storage_data(counter.remaining())?)
+            .add(fresh.original_ticketed_unobserved_restoration_storage_data(
+                archive,
+                counter.remaining(),
+            )?)
             .map_err(storage_error)?;
         source.authenticate_same_original_source_data(archive)?;
         self.authenticate_restoration_storage_scope_data(
@@ -238,6 +241,7 @@ impl PacketCompleteRestorationPrebirth {
     pub(in crate::node_qualification::packet_collection::complete) fn restoration_holder_counter_scratch_data()
     -> usize {
         HostSchedulingSource::retained_restoration_metadata_counter_scratch_data()
+            + PacketCompleteCaptureFactory::original_ticketed_unobserved_counter_scratch_data()
             + size_of::<super::super::super::retained::Counter>()
             + size_of::<std::slice::Iter<'static, Option<CompleteOriginalNativeTicket>>>()
             + size_of::<
