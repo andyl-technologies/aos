@@ -507,7 +507,7 @@ fn main_dispatcher_revisits_exact_job_after_caller_facade_drop()
         failed: false,
         cleanup: None,
         phase: WorkerPhase::Running,
-        join_panicked: false,
+        worker_panic: Mutex::new(None),
         path: directory.path().to_owned(),
     };
 
@@ -556,7 +556,7 @@ fn abandoned_populated_node_cannot_starve_empty_peer_retirement()
         failed: false,
         cleanup: None,
         phase: WorkerPhase::Running,
-        join_panicked: false,
+        worker_panic: Mutex::new(None),
         path: directory.path().to_owned(),
     };
 
@@ -615,5 +615,63 @@ fn event_buffer_allocation_refusal_is_acknowledged_before_dispatch()
     assert_eq!(slots[0].phase, JobPhase::Idle);
     assert!(slots[0].control.is_none());
     assert!(state.running.lock().unwrap().iter().all(Option::is_none));
+    Ok(())
+}
+
+#[test]
+fn actual_join_panic_history_survives_repeated_reports_without_claiming_main_return()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn requires_send_sync<T: Send + Sync>() {}
+    requires_send_sync::<TargetDispatcher>();
+
+    let directory = tempfile::tempdir()?;
+    let file = fs::File::create(directory.path().join("panic-history"))?;
+    let descriptor = file.as_raw_fd();
+    let expected = file.metadata()?;
+    let worker = thread::spawn(move || std::panic::panic_any(file));
+    let payload = worker
+        .join()
+        .expect_err("worker really panics with its retained file");
+    let mut dispatcher = TargetDispatcher {
+        purpose: None,
+        capacity: 1,
+        state: None,
+        worker: None,
+        failed: true,
+        cleanup: None,
+        phase: WorkerPhase::Joined,
+        worker_panic: Mutex::new(Some(payload)),
+        path: directory.path().to_owned(),
+    };
+    let retained_file = dispatcher
+        .worker_panic()
+        .unwrap()
+        .downcast_ref::<fs::File>()
+        .unwrap();
+    assert_eq!(retained_file.as_raw_fd(), descriptor);
+
+    assert!(dispatcher.report_retirement_history().is_err());
+    assert!(
+        dispatcher.finish().is_err(),
+        "no authenticated purpose may be invented"
+    );
+    assert!(dispatcher.report_retirement_history().is_err());
+
+    let same_file = dispatcher
+        .worker_panic()
+        .unwrap()
+        .downcast_ref::<fs::File>()
+        .unwrap();
+    assert_eq!(same_file.as_raw_fd(), descriptor);
+    assert_eq!(
+        (same_file.metadata()?.dev(), same_file.metadata()?.ino()),
+        (expected.dev(), expected.ino())
+    );
+    assert!(
+        !dispatcher.is_physically_retired(),
+        "actual join alone is not a paid Main return"
+    );
+    drop(dispatcher);
+    assert_descriptor_closed(descriptor, &expected);
     Ok(())
 }

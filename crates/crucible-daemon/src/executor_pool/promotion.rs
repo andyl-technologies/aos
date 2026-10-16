@@ -252,6 +252,14 @@ fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFail
     match error {
         QemuVmRealizationError::ExecutorUnavailable { .. }
         | QemuVmRealizationError::ModelCopy { .. } => PromotionFailureClass::Retryable,
+        #[cfg(target_os = "linux")]
+        QemuVmRealizationError::TargetDispatcherRetirement { source } => {
+            if source.is_retryable() {
+                PromotionFailureClass::Retryable
+            } else {
+                PromotionFailureClass::Terminal
+            }
+        }
         QemuVmRealizationError::Canceled { .. } => PromotionFailureClass::Canceled,
         #[cfg(target_os = "linux")]
         QemuVmRealizationError::HostMemoryLimit { .. } => PromotionFailureClass::Terminal,

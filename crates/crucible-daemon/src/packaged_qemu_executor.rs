@@ -1145,8 +1145,11 @@ impl AttachedPackagedQemuExecutor {
                 // native dispatcher; every saved host still closes its actual
                 // dispatcher after all worker and Source owners have closed.
                 if let Some(host) = target_dispatcher_host.as_ref() {
-                    host.finish_target_dispatcher()
-                        .map_err(PackagedQemuExecutorJoinError::TargetDispatcher)?;
+                    let (work, physically_closed) = host.finish_target_dispatcher();
+                    work.map_err(PackagedQemuExecutorJoinError::TargetDispatcher)?;
+                    if !physically_closed {
+                        return Err(PackagedQemuExecutorJoinError::TargetDispatcherPending);
+                    }
                 }
                 Ok(report)
             })
@@ -1385,6 +1388,9 @@ pub enum PackagedQemuExecutorJoinError {
     /// The same concrete Main dispatcher refused physical retirement.
     #[error("packaged Main Target dispatcher retirement refused: {0}")]
     TargetDispatcher(#[source] QemuVmRealizationError),
+    /// The actual host returned without observed physical dispatcher closure.
+    #[error("packaged Target dispatcher physical closure remains pending")]
+    TargetDispatcherPending,
     /// The same Main queue retains unresolved lifecycle custody.
     #[error("packaged Main lifecycle cleanup refused: {0}")]
     LifecycleCleanup(#[source] crucible_api::LifecycleApiError),

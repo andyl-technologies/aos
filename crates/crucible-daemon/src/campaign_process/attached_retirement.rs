@@ -22,7 +22,6 @@ use crucible_linux_resource::host_supervision::HostOperationGuard;
 pub(super) struct AttachedRetirementHistory {
     first: OnceLock<PackagedQemuExecutorJoinError>,
     cleanup: PackagedQemuExecutorRetirementError,
-    post: OnceLock<crucible_linux_resource::host_supervision::HostSupervisionError>,
 }
 
 impl AttachedRetirementHistory {
@@ -30,7 +29,6 @@ impl AttachedRetirementHistory {
         Self {
             first: OnceLock::new(),
             cleanup: PackagedQemuExecutorRetirementError::new(),
-            post: OnceLock::new(),
         }
     }
 
@@ -42,24 +40,18 @@ impl AttachedRetirementHistory {
         self.cleanup.retain(cleanup);
     }
 
-    fn record_post(&self, post: crucible_linux_resource::host_supervision::HostSupervisionError) {
-        self.post.get_or_init(|| post);
-        self.cleanup
-            .retain(AttachedRetirementReport::from_post(post));
-    }
-
     fn report(&'static self) -> Option<PackagedQemuExecutorJoinError> {
         if let Some(first) = self.first.get() {
             Some(PackagedQemuExecutorJoinError::RetainedAttached {
                 first,
                 cleanup: self.cleanup.has_failure().then_some(&self.cleanup),
-                post: self.post.get().copied(),
+                post: self.cleanup.original_post(),
             })
         } else {
             self.cleanup.has_failure().then_some(
                 PackagedQemuExecutorJoinError::RetainedAttachedCleanup {
                     cleanup: &self.cleanup,
-                    post: self.post.get().copied(),
+                    post: self.cleanup.original_post(),
                 },
             )
         }
@@ -166,14 +158,19 @@ pub(crate) fn retry_attached_retirement_original(
     let Some(RetainedExecutorConstruction::Attached(body)) = slot.as_mut() else {
         return actor.attached_history.report().map_or(Ok(()), Err);
     };
-    match body.retry(main, original) {
-        Ok(()) | Err(AttachedRetirementFailure::Pending) => {}
-        Err(AttachedRetirementFailure::Report(report)) => {
-            actor.attached_history.record_cleanup(report)
+    let work = body.retry(main, original);
+    let first_post = body.post_refusal();
+    match work {
+        Err(AttachedRetirementFailure::Report(report)) => actor
+            .attached_history
+            .record_cleanup(report.with_first_post(first_post)),
+        Ok(()) | Err(AttachedRetirementFailure::Pending) => {
+            if let Some(post) = first_post {
+                actor
+                    .attached_history
+                    .record_cleanup(AttachedRetirementReport::from_post(post));
+            }
         }
-    }
-    if let Some(post) = body.post_refusal() {
-        actor.attached_history.record_post(post);
     }
     if !body.physically_retired() {
         return Err(retained_attached_report(main));

@@ -106,6 +106,9 @@ pub enum GuardedCampaignOwnerRetirementError {
     /// The same concrete native factory retains physical or uncertain custody.
     #[error("guarded Main native factory retirement refused: {0}")]
     Factory(#[source] QemuVmRealizationError),
+    /// Dispatcher effects returned without an observed physical closure.
+    #[error("guarded Main dispatcher physical closure remains pending")]
+    DispatcherPending,
     /// The same Main queue still retains physical or uncertain lifecycle custody.
     #[error("guarded Main lifecycle cleanup refused: {0}")]
     LifecycleCleanup(#[source] crucible_api::LifecycleApiError),
@@ -175,12 +178,16 @@ impl GuardedCampaignOwner {
                 .map_err(GuardedCampaignOwnerRetirementError::Actor)?;
             owner.retirement = GuardedRetirementState::Terminal;
         }
-        factory
-            .finish_target_dispatcher()
-            .map_err(GuardedCampaignOwnerRetirementError::Factory)?;
-        owner.retirement = GuardedRetirementState::Closed;
+        let work = factory.finish_target_dispatcher();
+        if factory.target_dispatcher_physically_retired() {
+            owner.retirement = GuardedRetirementState::Closed;
+        }
+        work.map_err(GuardedCampaignOwnerRetirementError::Factory)?;
         match controls {
             Some(error) => Err(GuardedCampaignOwnerRetirementError::Controls(error)),
+            None if owner.retirement != GuardedRetirementState::Closed => {
+                Err(GuardedCampaignOwnerRetirementError::DispatcherPending)
+            }
             None => Ok(()),
         }
     }

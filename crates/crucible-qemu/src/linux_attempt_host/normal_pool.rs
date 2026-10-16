@@ -232,6 +232,10 @@ impl NormalNativePool {
         Ok(())
     }
 
+    pub(super) fn is_physically_retired(&self) -> bool {
+        self.nodes.iter().all(Option::is_none) && self.worlds.iter().all(Option::is_none)
+    }
+
     pub(super) fn finish(&mut self) -> Result<(), OriginalActorAccountError> {
         self.verify_quiescent()?;
         self.sweep_retired()?;

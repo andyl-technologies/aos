@@ -126,11 +126,16 @@ impl RetainedAttachedRetirement {
             && lifecycle.is_none();
         let host = self.host.as_ref();
         let dispatch = retire_dispatcher(original, ready, &mut self.dispatcher_closed, || {
-            host.ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
-                operation: "retire attached Main Target dispatcher",
-                message: String::from("actual saved Linux host factory is absent"),
-            })
-            .and_then(SharedQemuAttemptHostResourceFactory::finish_target_dispatcher)
+            let Some(host) = host else {
+                return (
+                    Err(QemuVmRealizationError::ExecutorUnavailable {
+                        operation: "retire attached Main Target dispatcher",
+                        message: String::from("actual saved Linux host factory is absent"),
+                    }),
+                    false,
+                );
+            };
+            host.finish_target_dispatcher()
         });
         if let Some(post) = dispatch.post {
             self.post.get_or_insert(post);

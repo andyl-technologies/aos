@@ -243,6 +243,14 @@ impl AttachedRetirementReport {
         )
     }
 
+    /// Preserves the actual body's earliest post without changing phase order.
+    pub(crate) fn with_first_post(mut self, first: Option<HostSupervisionError>) -> Self {
+        if let Some(first) = first {
+            self.dispatch.post = Some(first);
+        }
+        self
+    }
+
     pub(super) fn has_failure(&self) -> bool {
         self.admission.is_some()
             || self.materializer.is_some()
@@ -270,22 +278,23 @@ pub(crate) struct DispatcherRetirement {
 
 /// Runs at most one dispatcher effect under the same borrowed Original.
 ///
-/// An actual successful effect updates the owner's closure latch before its
-/// independent post. Failed admission never invokes the effect or renews time.
+/// The effect returns its typed outcome and the actual owner's physical
+/// observation together. Closure is latched before the independent post, even
+/// beside a historical failure. Failed admission never invokes the effect or
+/// renews time, and only an observed closure prevents a later retry.
 pub(crate) fn retire_dispatcher(
     original: &HostOperationGuard,
     prerequisites_closed: bool,
     physically_closed: &mut bool,
-    attempt: impl FnOnce() -> Result<(), QemuVmRealizationError>,
+    attempt: impl FnOnce() -> (Result<(), QemuVmRealizationError>, bool),
 ) -> DispatcherRetirement {
     let mut result = DispatcherRetirement::default();
     if prerequisites_closed && !*physically_closed {
         result.before = original.wait_slice().err();
         if result.before.is_none() {
-            match attempt() {
-                Ok(()) => *physically_closed = true,
-                Err(first) => result.failure = Some(first),
-            }
+            let (work, observed_closed) = attempt();
+            *physically_closed = observed_closed;
+            result.failure = work.err();
         }
     }
     result.post = original.wait_slice().err();

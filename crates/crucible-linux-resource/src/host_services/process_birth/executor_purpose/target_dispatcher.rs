@@ -10,6 +10,71 @@ const STACK_REQUEST_BYTES: u64 = 2 * 1024 * 1024;
 // One actual shared epoll, wake eventfd and pinned namespace descriptor.
 const DESCRIPTOR_WINDOW: u64 = 3;
 
+type CleanupEntry = Result<Arc<HostOperationGuard>, crate::host_supervision::HostSupervisionError>;
+
+#[derive(Debug, Default)]
+struct RetainedDispatcherCleanup {
+    entered: std::sync::OnceLock<CleanupEntry>,
+    completed: bool,
+}
+
+impl RetainedDispatcherCleanup {
+    fn enter(
+        &self,
+        origin: &HostOperationGuard,
+    ) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
+        if self.completed {
+            return Err(ServiceBirthError::policy(
+                "Target dispatcher Cleanup already completed",
+            ));
+        }
+        let entered = self
+            .entered
+            .get_or_init(|| origin.begin_original_cleanup_control().map(Arc::new));
+        let cleanup = entered
+            .as_ref()
+            .map_err(|source| ServiceBirthError::from(*source))?;
+        cleanup.verify_operation_class(HostOperationClass::Cleanup)?;
+        Ok(Arc::clone(cleanup))
+    }
+
+    fn verify(&self, supplied: &Arc<HostOperationGuard>) -> Result<(), ServiceBirthError> {
+        let entered = self.entered.get().ok_or_else(|| {
+            ServiceBirthError::policy("Target dispatcher Cleanup has not been entered")
+        })?;
+        let saved = entered
+            .as_ref()
+            .map_err(|source| ServiceBirthError::from(*source))?;
+        if !Arc::ptr_eq(saved, supplied) {
+            return Err(ServiceBirthError::policy(
+                "Target dispatcher Cleanup operation is foreign",
+            ));
+        }
+        saved.verify_operation_class(HostOperationClass::Cleanup)?;
+        Ok(())
+    }
+
+    fn complete(&mut self, cleanup: &Arc<HostOperationGuard>) -> Result<(), ServiceBirthError> {
+        self.verify(cleanup)?;
+        cleanup.complete()?;
+        self.completed = true;
+        // Free this completed control record once the caller drops its alias.
+        // The monotonic latch prevents a second admission after removing it.
+        drop(self.entered.take());
+        Ok(())
+    }
+
+    fn control_bytes() -> Option<u64> {
+        let (layout, _) = std::alloc::Layout::new::<(
+            std::sync::atomic::AtomicUsize,
+            std::sync::atomic::AtomicUsize,
+        )>()
+        .extend(std::alloc::Layout::new::<HostOperationGuard>())
+        .ok()?;
+        layout.pad_to_align().size().try_into().ok()
+    }
+}
+
 /// Retains the actual Main payer of one permanent Target dispatcher.
 ///
 /// The process factory keeps this outside the dispatcher allocation through
@@ -25,6 +90,7 @@ pub struct AuthenticatedTargetDispatcherPurpose {
     worker: Option<std::thread::ThreadId>,
     birth_attempted: bool,
     startup_original: Option<Arc<HostOperationGuard>>,
+    cleanup: RetainedDispatcherCleanup,
 }
 
 impl AuthenticatedNativeSubdivision {
@@ -43,8 +109,12 @@ impl AuthenticatedNativeSubdivision {
     ) -> Result<AuthenticatedTargetDispatcherPurpose, super::NativePoolRefusal> {
         let result = (|| {
             self.verify_native_preparation(original)?;
+            let cleanup_bytes = RetainedDispatcherCleanup::control_bytes().ok_or_else(|| {
+                ServiceBirthError::policy("Target dispatcher Cleanup extent overflows")
+            })?;
             let extent = STACK_REQUEST_BYTES
-                .checked_add(control_peak)
+                .checked_add(cleanup_bytes)
+                .and_then(|bytes| bytes.checked_add(control_peak))
                 .and_then(|bytes| bytes.checked_add(3 * HostServiceLease::metadata_bytes()))
                 .filter(|bytes| control_peak != 0 && *bytes > STACK_REQUEST_BYTES)
                 .ok_or_else(|| ServiceBirthError::policy("Target dispatcher extent is invalid"))?;
@@ -79,6 +149,7 @@ impl AuthenticatedNativeSubdivision {
                 worker: None,
                 birth_attempted: false,
                 startup_original: Some(Arc::clone(original)),
+                cleanup: RetainedDispatcherCleanup::default(),
             };
             // Construct the nominal owner before the unconditional postcut.
             Ok(purpose)
@@ -172,15 +243,71 @@ impl AuthenticatedTargetDispatcherPurpose {
         Ok(())
     }
 
-    /// Starts once-entered cleanup in this same Main's retained supervisor.
+    /// Enters and retains this dispatcher's same Cleanup result once.
+    ///
+    /// The first admission refusal is permanent. Retry borrows the same guard,
+    /// never a fresh interval or the separately retained outer Main Cleanup.
     ///
     /// # Errors
-    /// Refuses unavailable or expired original Main cleanup policy.
-    pub fn begin_cleanup(&self) -> Result<HostOperationGuard, ServiceBirthError> {
+    /// Returns the saved admission failure or the same Cleanup's terminal state.
+    pub fn retained_cleanup(&self) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
+        self.cleanup.enter(&self.issuer.original)
+    }
+
+    /// Checks an already-entered exact Cleanup and retained physical custody.
+    ///
+    /// This never initializes the saved result. A different operation beneath
+    /// the same outer cap is not a substitute for this dispatcher's guard.
+    ///
+    /// # Errors
+    /// Refuses missing, foreign or terminal Cleanup, changed family pins, or
+    /// uncertain retained descriptor ownership. It does not admit new work.
+    pub fn verify_cleanup(
+        &self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        self.cleanup.verify(cleanup)?;
+        self.issuer.family.check_retained_custody()?;
         self.issuer
-            .original
-            .begin_original_cleanup_control()
-            .map_err(ServiceBirthError::from)
+            .host_descriptors
+            .lock()
+            .map_err(|_| ServiceBirthError::policy("Target descriptor custody is uncertain"))?
+            .as_ref()
+            .ok_or_else(|| ServiceBirthError::policy("Target descriptor owner is absent"))?
+            .check()?;
+        self.cleanup.verify(cleanup)
+    }
+
+    /// Completes only the saved Cleanup after actual worker and window return.
+    ///
+    /// Its completed record may then close; this purpose can never re-enter
+    /// Cleanup or become a new worker payer after successful completion.
+    ///
+    /// # Errors
+    /// Refuses surviving resources, a different saved operation or the same
+    /// Cleanup's independent postcheck/completion failure.
+    pub fn complete_cleanup(
+        &mut self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        if !self.is_physically_retired() {
+            return Err(ServiceBirthError::policy(
+                "Target dispatcher resources remain held",
+            ));
+        }
+        self.verify_cleanup(cleanup)?;
+        self.cleanup.complete(cleanup)
+    }
+
+    /// Borrows the first Cleanup admission refusal without retrying admission.
+    #[must_use]
+    pub fn cleanup_admission_failure(
+        &self,
+    ) -> Option<&crate::host_supervision::HostSupervisionError> {
+        self.cleanup
+            .entered
+            .get()
+            .and_then(|result| result.as_ref().err())
     }
 
     /// Reports factual closure of this worker's task and descriptor window.
@@ -233,6 +360,7 @@ impl AuthenticatedTargetDispatcherPurpose {
     pub fn try_join_worker<T>(
         &mut self,
         worker: std::thread::JoinHandle<T>,
+        cleanup: &Arc<HostOperationGuard>,
     ) -> Result<std::thread::Result<T>, (std::thread::JoinHandle<T>, ServiceBirthError)> {
         if self.worker != Some(worker.thread().id()) || !worker.is_finished() {
             return Err((
@@ -240,7 +368,16 @@ impl AuthenticatedTargetDispatcherPurpose {
                 ServiceBirthError::policy("Target dispatcher worker is foreign or still running"),
             ));
         }
-        if let Err(source) = self.check() {
+        if let Err(source) = self.verify_cleanup(cleanup).and_then(|()| {
+            self.issuer
+                .host_descriptors
+                .lock()
+                .map_err(|_| ServiceBirthError::policy("Target descriptor custody is uncertain"))?
+                .as_ref()
+                .ok_or_else(|| ServiceBirthError::policy("Target descriptor owner is absent"))?
+                .check_target_window(self.epoch)?;
+            self.cleanup.verify(cleanup)
+        }) {
             return Err((worker, source));
         }
         let joined = worker.join();
@@ -258,7 +395,11 @@ impl AuthenticatedTargetDispatcherPurpose {
     ///
     /// # Errors
     /// Refuses a surviving real worker, stale Main, or uncertain window close.
-    pub fn retire_worker_debits(&mut self) -> Result<(), ServiceBirthError> {
+    pub fn retire_worker_debits(
+        &mut self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        self.verify_cleanup(cleanup)?;
         if self.worker.is_some() {
             return Err(ServiceBirthError::policy(
                 "Target worker has not physically joined",
@@ -267,7 +408,6 @@ impl AuthenticatedTargetDispatcherPurpose {
         if self.is_physically_retired() {
             return Ok(());
         }
-        self.check()?;
         self.issuer
             .host_descriptors
             .lock()
@@ -295,3 +435,6 @@ impl Drop for AuthenticatedTargetDispatcherPurpose {
         std::mem::forget(self.metadata.take());
     }
 }
+
+#[cfg(test)]
+mod tests;
