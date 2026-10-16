@@ -32,12 +32,19 @@
     runtimeDeps ? [],
     nukeRefsKeep ? [],
     extraBuildDeps ? [],
+    preserveArtifactBytes ? false,
   }: name: script:
     pkgs.mkDerivation {
       pname = "terrane-gate-${name}";
       version = "0.1.0";
       src = pkgs.terrane.src;
       inherit runtimeDeps nukeRefsKeep;
+      # Proof images bind the retained ELF bytes to actual Cargo artifacts.
+      # Later stripping, RPATH rewriting or reference scrubbing would invalidate
+      # their recorded hashes. Ordinary checks keep the normal fixup policy.
+      dontStrip = preserveArtifactBytes;
+      dontPatchELF = preserveArtifactBytes;
+      dontNukeRefs = preserveArtifactBytes;
       buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3 pkgs.util-linux] ++ extraBuildDeps;
       phases = [
         {
@@ -59,6 +66,22 @@
           '';
         }
       ];
+    };
+
+  # Keep the native proof selectable while its implementation is isolated on
+  # the current task branch. Presence alone never qualifies the owning gate.
+  quotaConfinementProof =
+    if builtins.pathExists ./quota-confinement-proof.nix
+    then import ./quota-confinement-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    else {
+      image = pendingGate {
+        name = "native-quota-confinement-image";
+        requirements = "HOST-23 native confinement proof image";
+      };
+      native = pendingGate {
+        name = "native-quota-confinement";
+        requirements = "HOST-23 native confinement proof";
+      };
     };
 
   algebraFormatVectors = import ./algebra-models.nix {inherit sourceGate;};
@@ -224,7 +247,7 @@
           }
           // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "shared-dir.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
-          // lib.optionalAttrs (file == "host-publish.nix") {inherit sourceGateWithInputs;}
+          // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
       in
@@ -298,6 +321,8 @@ in {
   integration.collection-reference-generator = import ./collection-reference.nix {inherit pkgs;};
   integration.collection-format-vectors = import ./collection-vectors.nix {inherit sourceGate;};
   integration.foundation-reference-generator = import ./foundation-reference.nix {inherit sourceGate;};
+  integration.native-quota-confinement-image = quotaConfinementProof.image;
+  integration.native-quota-confinement = quotaConfinementProof.native;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
   integration.retirement-reference-models = import ./retirement-models.nix {inherit sourceGate;};

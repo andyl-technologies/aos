@@ -8696,7 +8696,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 Status: in progress (2026-10-16). T1's 22 tasks and 89 current gates are
 complete; its identity, encoding, bucket-key and Store-trait freeze applies.
-Five separate worktrees cover the five T2 tasks. Shared module declarations,
+Eight separate implementation worktrees cover the five T2 tasks, including
+dedicated publisher-transport, host-quota and native confinement components.
+Shared module declarations,
 dependency edges, kernel prerequisites and check wiring precede worker edits.
 No T2 task or gate is complete yet.
 
@@ -8711,10 +8713,17 @@ D-119 reconciles the native host command boundary with the frozen portable
 filesystem trait; D-120 distinguishes controllable access/modification times
 from native inode-change and birth times. The shared metadata executor uses
 the existing retained-effect method and requires an actual durability receipt.
-Its native library build passes; focused execution and task gates remain
-pending. The separate module branch has 33 passing declarative checks and 16
+Its native library build and five focused metadata executor tests pass. The
+surface branch's current source passes 28 integration tests, including five
+strict configured local-repository reopening cases. Its focused library checks
+remain in progress; an earlier source passes the metadata-only schema observer
+with a positive content-read control. The host-cache branch
+builds and passes 19 focused tests with unchanged source inputs. Native admission,
+sealed-residence reads, and complete task gates remain pending.
+The separate module branch has 81 passing declarative checks, 40 positive
 checks of actual rendered TOML through the built CLI across four roles and
-four configuration shapes. These establish syntax parsing, not backend or
+ten configuration shapes, and six negative parser cases. These establish
+syntax parsing, not backend or
 credential validation. Full trunk qualification and task acceptance remain
 pending. No worker branch is accepted by these preparation checks.
 Other T2 implementation continues. T3 and branch worklines remain unopened.
@@ -8734,6 +8743,20 @@ D-124 closes pending-inode token recovery and pack/index retirement naming
 without changing frozen key grammar. D-125 includes actual layout and
 administrative directory inodes in the quota observer's explicit custody.
 Their implementations and real gates remain pending.
+
+The native confinement proof now has separately selectable image and guest
+checks. Until its implementation is integrated, requests fail explicitly.
+The isolated publication proof executable likewise fails until its task
+supplies the real bootstrap. Its explicit test-fixture feature is excluded
+from deployed role defaults. These entry points do not qualify HOST-23 or
+complete either host task.
+D-126 closes a separate native project-quota bypass: inode ownership can
+permit changing project assignments without an administrative capability.
+Native writable admission remains stopped until actual writer confinement,
+alias coverage and service-identity isolation pass the quota gate. The quota
+helper's build and eight focused tests pass, as do twelve shared-directory
+and nineteen publisher-transport baseline tests; these do not establish
+native confinement, VM execution or T2 acceptance.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,

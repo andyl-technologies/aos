@@ -10,8 +10,10 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("terrane-fs requires Linux (CRATE-11)");
 
+pub mod configured;
 pub mod host_cache;
 pub mod host_quota;
 pub mod publisher_io;
 pub mod publisher_local;
+pub mod quota_confinement;
 pub mod verity;
