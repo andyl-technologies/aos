@@ -49,6 +49,16 @@ pub(super) fn quote(
     let mut strings = 0usize;
     let mut maps = 0usize;
     let mut slots = 0usize;
+    let sort_node = crate::retained_metadata::serialization_storage::original_serialization_tree_node_requested_bytes_data::<Vec<u16>, (&str, &Value)>()?;
+    // Final ordered tree plus independent collect-Vec growth and stable-sort
+    // heap coexist. A second pinned node dominates four input slots and one
+    // sort slot per entry; fixed4096-byte sort workspace stays separate below.
+    let sort_slot = size_of::<(Vec<u16>, (&str, &Value))>();
+    if size_of::<usize>() != 8
+        || sort_slot.checked_mul(5).ok_or_else(refused)? > sort_node
+    {
+        return Err(refused());
+    }
     let mut canonical = bytes.len().checked_mul(8).ok_or_else(refused)?;
     while let Some(&byte) = bytes.get(cursor) {
         if b" \t\r\n,:".contains(&byte) {
@@ -105,7 +115,7 @@ pub(super) fn quote(
                     maps = maps.checked_add(1).ok_or_else(refused)?;
                     canonical = sum(&[canonical,
                         encoded.checked_mul(8).ok_or_else(refused)?,
-                        crate::retained_metadata::serialization_storage::original_serialization_tree_node_requested_bytes_data::<Vec<u16>, (&str, &Value)>()?,
+                        sort_node.checked_mul(2).ok_or_else(refused)?,
                         16], maximum)?;
                 }
                 canonical = sum(
@@ -151,8 +161,16 @@ pub(super) fn quote(
     )?;
     // Container rebuilding from owned Value can coexist with the original
     // subtree. Keep both DOMs; canonical sorting/output is separate work.
+    // These are explicit standard-library local banks, not compiler frames.
+    // A single sort owns one aligned4096 workspace,66 one-word run records,
+    //66 desired-depth bytes, insertion temporary/CopyOnDrop and heap header.
+    let sort_alignment = align_of::<(Vec<u16>, (&str, &Value))>();
+    let sort_workspace = ((4096 + sort_alignment - 1) & !(sort_alignment - 1))
+        + size_of::<[usize; 66]>() + size_of::<[u8; 66]>()
+        + sort_slot + 3 * size_of::<usize>()
+        + size_of::<Vec<(Vec<u16>, (&str, &Value))>>();
     let work = sum(
-        &[value_backing, value_backing, typed_backing, canonical, 4096],
+        &[value_backing, value_backing, typed_backing, canonical, sort_workspace],
         maximum,
     )?;
     let result = DecodedStorage {
@@ -165,7 +183,17 @@ pub(super) fn quote(
 }
 
 pub(super) const fn counter_scratch_data() -> usize {
-    size_of::<[u8; 64]>() + size_of::<DecodedStorage>() + 12 * size_of::<usize>()
+    // Scanner totals/cursors, source/target widths, largest checked sum
+    // array, live result/backing locals, and the nested checked-sum views.
+    size_of::<[u8; 64]>()
+        + size_of::<DecodedStorage>()
+        + size_of::<[usize; 6]>()
+        + size_of::<[usize; 7]>()
+        + size_of::<[usize; 6]>()
+        + size_of::<[usize; 4]>()
+        + size_of::<&[u8]>()
+        + size_of::<&[usize]>()
+        + size_of::<std::slice::Iter<'static, usize>>()
 }
 
 #[cfg(test)]

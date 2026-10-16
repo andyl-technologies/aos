@@ -184,6 +184,7 @@ pub(super) fn project(
     let scratch = sum(
         &[
             size_of::<HelloStorage>(),
+            size_of::<crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData>(),
             size_of::<HelloRequest>(),
             size_of::<HelloResult>(),
             size_of::<Projection>(),
