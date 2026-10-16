@@ -6,9 +6,10 @@
 //! of those authorities.
 
 mod config;
+mod index_io;
 mod preparation;
 mod retention;
 
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
-pub use retention::{NativeMetadataOwner, RetainedManifest};
+pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};

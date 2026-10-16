@@ -1,13 +1,19 @@
-//! Serializes durable metadata pins in a retained physical native worker.
+//! Serializes durable metadata pins and index repair in a physical native worker.
 //!
 //! A reservation snapshot precedes metadata synchronization. A second snapshot
 //! records the actual manifest and whole-pack pins only after pack/index/parent
 //! synchronization succeeds. Holds and source descriptors remain owned after a
 //! cancelled request or late failure; recovery must reconcile them before reuse.
 
-use super::NativeCachePreparation;
+use super::{
+    NativeCachePreparation,
+    index_io::{IndexWriteCompletion, PendingIndexWrite, write_missing_index},
+};
 use crate::{
-    host_cache::{NativeHostLayout, NativeHostMetadataReader, NativeManifestSource},
+    host_cache::{
+        DerivedIndexRepair, DetachedIndexStatus, NativeHostLayout, NativeHostMetadataReader,
+        NativeManifestSource,
+    },
     host_quota::{NativeProject, synchronized_allocated_bytes},
     publisher_local::client::Client,
 };
@@ -29,7 +35,7 @@ use terrane::{
 use terrane_core::identity::{Identity, IdentityKind};
 use tokio::sync::oneshot;
 
-/// Retains the native command queue for durable reconstruction-metadata pins.
+/// Retains a native queue for durable metadata pins and missing-index repair.
 ///
 /// This recovery-only owner enables no publication, eviction, admission or
 /// Resume. Cold state containing records is refused until full native recovery
@@ -44,6 +50,16 @@ enum Command {
         identity: Identity,
         response: oneshot::Sender<io::Result<RetainedManifest>>,
     },
+    RepairIndex {
+        source: DerivedIndexRepair,
+        response: oneshot::Sender<io::Result<NativeIndexRepairReport>>,
+    },
+}
+
+struct IndexRepairCustody {
+    source: Arc<DerivedIndexRepair>,
+    pending: Option<PendingIndexWrite>,
+    completed: Option<IndexWriteCompletion>,
 }
 
 struct Custody {
@@ -52,9 +68,35 @@ struct Custody {
     state: CacheState,
     snapshot: Option<(File, Metadata)>,
     sources: BTreeMap<[u8; 16], Arc<NativeManifestSource>>,
+    index_repairs: BTreeMap<[u8; 16], IndexRepairCustody>,
     faulted: bool,
     snapshot_allocated_bytes: u64,
     directory_allocated_bytes: u64,
+}
+
+/// Reports an actual index repair without granting serving or recovery authority.
+///
+/// The owner retains the source, durable pack pin and future hold independently
+/// of this report. This describes one physical command, never complete inventory
+/// reconciliation, writable readiness or permission to Resume.
+pub struct NativeIndexRepairReport {
+    pack_id: terrane::pack::PackId,
+    synchronized_index_bytes: u64,
+}
+
+impl NativeIndexRepairReport {
+    /// Returns the existing pack identifier whose detached index was repaired.
+    pub fn pack_id(&self) -> terrane::pack::PackId {
+        self.pack_id
+    }
+
+    /// Returns measured synchronized allocation for the canonical index alone.
+    ///
+    /// This excludes source, state and directory allocation, kernel reservations
+    /// and logical future holds; it is not total tier charge.
+    pub fn synchronized_index_bytes(&self) -> u64 {
+        self.synchronized_index_bytes
+    }
 }
 
 /// Proves actual synchronized metadata retention under one native owner.
@@ -119,6 +161,12 @@ impl NativeMetadataOwner {
                             // durable pins, future hold or exclusive state custody.
                             let _ = response.send(result);
                         }
+                        Command::RepairIndex { source, response } => {
+                            let result = runtime.block_on(repair_index(&custody, source));
+                            // Actual source/temporary custody and durable holds
+                            // belong to the worker, never to this reply waiter.
+                            let _ = response.send(result);
+                        }
                     }
                 }
             })?;
@@ -164,6 +212,37 @@ impl NativeMetadataOwner {
         receive
             .await
             .map_err(|_| io::Error::other("metadata owner terminated before completion"))?
+    }
+
+    /// Repairs a missing index from genuine same-owner verified pack evidence.
+    ///
+    /// The bounded physical queue owns the source after enqueue. A cancelled
+    /// waiter cannot release its durable pack pin, future hold or failed scratch.
+    /// Existing mismatching indexes are never replaced. Successful repair does
+    /// not clear any other recovery issue or authorize publication or Resume.
+    ///
+    /// # Errors
+    /// Refuses disabled/unfunded repair, stale or foreign source custody, a full
+    /// queue, failed durability and unreconciled actual charges. Late failures
+    /// fault the owner while retaining physical resources and durable records.
+    pub async fn repair_missing_index(
+        &self,
+        source: DerivedIndexRepair,
+    ) -> io::Result<NativeIndexRepairReport> {
+        let (response, receive) = oneshot::channel();
+        self.commands
+            .as_ref()
+            .ok_or_else(|| io::Error::other("metadata owner stopped"))?
+            .try_send(Command::RepairIndex { source, response })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => {
+                    io::Error::new(io::ErrorKind::WouldBlock, "metadata owner queue is full")
+                }
+                mpsc::TrySendError::Disconnected(_) => io::Error::other("metadata owner stopped"),
+            })?;
+        receive
+            .await
+            .map_err(|_| io::Error::other("metadata owner terminated before index completion"))?
     }
 }
 
@@ -360,6 +439,7 @@ impl Custody {
             state: CacheState::default(),
             snapshot: None,
             sources: BTreeMap::new(),
+            index_repairs: BTreeMap::new(),
             faulted: false,
             snapshot_allocated_bytes: 0,
             directory_allocated_bytes: 0,
@@ -545,7 +625,8 @@ async fn retain(custody: &Arc<Mutex<Custody>>, identity: Identity) -> io::Result
     }
     let mut retention_id = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut retention_id)?;
-    if owner.sources.contains_key(&retention_id) {
+    if owner.sources.contains_key(&retention_id) || owner.index_repairs.contains_key(&retention_id)
+    {
         return Err(io::Error::other(
             "random metadata retention identifier collision",
         ));
@@ -634,6 +715,166 @@ async fn retain(custody: &Arc<Mutex<Custody>>, identity: Identity) -> io::Result
         session,
         synchronized_source_bytes,
     })
+}
+
+async fn repair_index(
+    custody: &Arc<Mutex<Custody>>,
+    source: DerivedIndexRepair,
+) -> io::Result<NativeIndexRepairReport> {
+    let mut owner = custody
+        .lock()
+        .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+    if owner.faulted {
+        return Err(io::Error::other(
+            "index repair requires failed-operation recovery",
+        ));
+    }
+    owner.check_current()?;
+    let hold = owner
+        .preparation
+        .config
+        .index_repair_hold(source.index_bytes().len())?;
+    if source.detached_index_status() != DetachedIndexStatus::Missing
+        || !source.matches_client(owner.preparation.publisher())
+        || !Arc::ptr_eq(source.layout(), owner.preparation.layout())
+    {
+        return Err(invalid(
+            "index repair has foreign or ineligible source evidence",
+        ));
+    }
+    source.check_pack_current()?;
+    for file in [source.pack_file(), source.parent_file()] {
+        if NativeProject::inspect(file)?.project_id != owner.preparation.config.project_id {
+            return Err(invalid(
+                "index repair source differs from the charged project",
+            ));
+        }
+    }
+
+    // InspectPending can itself reconcile publisher custody. Authenticate fresh
+    // actual charges here, even if inspection performed no local cache writes.
+    owner.preparation.recheck()?;
+    let future = owner
+        .state
+        .reservations
+        .iter()
+        .try_fold(hold, |total, reservation| {
+            total
+                .checked_add(reservation.bytes)
+                .ok_or_else(|| invalid("index repair future holds overflow"))
+        })?;
+    check_future_charge(&owner, future)?;
+    let mut id = [0; 16];
+    File::open("/dev/urandom")?.read_exact(&mut id)?;
+    let token = hex(&id);
+    if owner.sources.contains_key(&id)
+        || owner.index_repairs.contains_key(&id)
+        || owner
+            .state
+            .reservations
+            .iter()
+            .any(|record| record.id == token)
+    {
+        return Err(io::Error::other("random index repair identifier collision"));
+    }
+    let pin_owner = format!("index-repair:{token}");
+    let mut next = owner.state.clone();
+    next.reservations.push(ReservationRecord {
+        id: token,
+        owner: owner.preparation.config.quota_owner.clone(),
+        bytes: hold,
+    });
+    next.leases.push(LeaseRecord {
+        owner: pin_owner.clone(),
+        expires: u64::MAX,
+    });
+    next.pins.push(PinRecord {
+        owner: pin_owner,
+        hash: hex(source.pack_identity().digest()),
+        expires: u64::MAX,
+    });
+    next.encoded_len(owner.preparation.config.state)
+        .map_err(io::Error::other)?;
+
+    let source = Arc::new(source);
+    owner.index_repairs.insert(
+        id,
+        IndexRepairCustody {
+            source: Arc::clone(&source),
+            pending: None,
+            completed: None,
+        },
+    );
+    owner.state = next;
+    owner.faulted = true;
+    // No index allocation begins before the actual source pin and future hold
+    // survive state snapshot/parent synchronization. Every subsequent failure
+    // leaves those records and the source in the physical owner's registry.
+    owner.persist().await?;
+    source.pack_file().sync_all()?;
+    source.parent_file().sync_all()?;
+    source.check_pack_current()?;
+    let result = write_missing_index(&source);
+    let entry = owner
+        .index_repairs
+        .get_mut(&id)
+        .ok_or_else(|| invalid("registered index source custody is absent"))?;
+    let allocated_bytes = match result {
+        Ok(completion) => {
+            let bytes = completion.allocated_bytes;
+            entry.completed = Some(completion);
+            bytes
+        }
+        Err(failure) => {
+            entry.pending = Some(failure.pending);
+            return Err(failure.error);
+        }
+    };
+
+    // A second durable snapshot and fresh authenticated charge observation are
+    // part of command completion, not tasks detached from the caller's waiter.
+    owner.persist().await?;
+    owner.snapshot_allocated_bytes = owner
+        .snapshot
+        .as_ref()
+        .ok_or_else(|| invalid("index repair policy snapshot is absent"))
+        .and_then(|(file, _)| synchronized_allocated_bytes(file))?;
+    owner.directory_allocated_bytes = synchronized_allocated_bytes(&owner.directory)?;
+    owner.preparation.recheck()?;
+    check_future_charge(&owner, future)?;
+    let retained = owner
+        .index_repairs
+        .get(&id)
+        .ok_or_else(|| invalid("completed index source custody is absent"))?;
+    retained.source.check_pack_current()?;
+    let completed = retained
+        .completed
+        .as_ref()
+        .ok_or_else(|| invalid("completed canonical index custody is absent"))?;
+    completed.check_current(&retained.source)?;
+    owner.check_current()?;
+    owner.faulted = false;
+    Ok(NativeIndexRepairReport {
+        pack_id: source.pack_id(),
+        synchronized_index_bytes: allocated_bytes,
+    })
+}
+
+fn check_future_charge(owner: &Custody, future: u64) -> io::Result<()> {
+    if owner
+        .preparation
+        .quota()
+        .observation()
+        .charged_reserved_bytes
+        .checked_add(future)
+        .is_none_or(|total| total > owner.preparation.config.policy.capacity)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::StorageFull,
+            "actual charge and retained index repair holds exceed policy",
+        ));
+    }
+    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {

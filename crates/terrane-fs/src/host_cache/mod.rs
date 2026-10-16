@@ -25,13 +25,16 @@ pub use manifest_source::NativeManifestSource;
 pub use metadata::NativeHostMetadataReader;
 #[cfg(feature = "tokio")]
 pub use owner::{
-    IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation, NativeMetadataOwner,
-    RetainedManifest,
+    IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation, NativeIndexRepairReport,
+    NativeMetadataOwner, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
 #[cfg(feature = "tokio")]
-pub use recovery_inspection::NativeRecoveryInspector;
+pub use recovery_inspection::{
+    DerivedIndexRepair, DetachedIndexStatus, NativeRecoveryCandidate, NativeRecoveryInspection,
+    NativeRecoveryInspector, RecoveryIssue, VerifiedEncodedBody, VerifiedStandaloneChunk,
+};
 pub use residency::{NativeChunkSpan, NativeResidencePlan};
 pub use seal::NativeSealCapability;
 pub use source::NativeChunkSource;

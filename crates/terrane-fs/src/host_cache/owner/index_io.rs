@@ -30,6 +30,29 @@ pub(super) struct IndexWriteCompletion {
     pub(super) allocated_bytes: u64,
 }
 
+impl IndexWriteCompletion {
+    /// Rechecks exact bytes and canonical inode after the owner's state effects.
+    ///
+    /// # Errors
+    /// Refuses a replaced, modified or unavailable canonical detached index.
+    pub(super) fn check_current(&self, source: &DerivedIndexRepair) -> io::Result<()> {
+        let current = open_regular_at(source.parent_file(), &format!("{}.idx", source.pack_id()))?;
+        let expected = self.index.metadata()?;
+        if !same_file(&expected, &current.metadata()?) {
+            return Err(invalid("completed canonical index was replaced"));
+        }
+        verify_bytes(&self.index, source.index_bytes())?;
+        if !same_file(&expected, &self.index.metadata()?)
+            || !same_file(&expected, &current.metadata()?)
+        {
+            return Err(invalid(
+                "completed canonical index changed during verification",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Retains physical resources whose cleanup has not been acknowledged.
 pub(super) struct PendingIndexWrite {
     temporary: String,
