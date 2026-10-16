@@ -41,18 +41,23 @@ use tokio::sync::oneshot;
 /// Resume. Cold records remain untrusted candidates until recovery reconciles
 /// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
+    /// Bounded admission to physical work retained independently of reply waiters.
     pub(super) commands: Option<mpsc::SyncSender<Command>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    /// Runs actual recovery without enabling Resume or service readiness.
     Recover {
         response: oneshot::Sender<io::Result<super::CompletedRecovery>>,
     },
+    /// Synchronizes and pins independently verified reconstruction metadata.
     Retain {
         identity: Identity,
         response: oneshot::Sender<io::Result<RetainedManifest>>,
     },
+    /// Repairs one missing detached index under durable source custody.
     RepairIndex {
         source: DerivedIndexRepair,
         response: oneshot::Sender<io::Result<NativeIndexRepairReport>>,
@@ -65,6 +70,7 @@ struct IndexRepairCustody {
     completed: Option<IndexWriteCompletion>,
 }
 
+/// Retains native proofs, exclusive state ownership and physical command resources.
 pub(super) struct Custody {
     pub(super) preparation: NativeCachePreparation,
     pub(super) directory: File,
@@ -475,6 +481,11 @@ impl Custody {
         Ok(custody)
     }
 
+    /// Checks current confinement, retained state directory and snapshot incarnation.
+    ///
+    /// # Errors
+    /// Refuses stale native roots, replaced directories/snapshots and snapshots
+    /// created outside the physical owner.
     pub(super) fn check_current(&self) -> io::Result<()> {
         self.preparation.confinement.check_current()?;
         self.preparation.layout().recheck()?;
@@ -543,6 +554,10 @@ impl Custody {
         Ok(())
     }
 
+    /// Synchronizes the bounded snapshot and fixed ancestors before retaining it.
+    ///
+    /// # Errors
+    /// Refuses failed snapshot/parent durability and missing or changed state.
     pub(super) async fn persist(&mut self) -> io::Result<()> {
         let path = self.preparation.config.location.root().join("state/cache");
         self.state
@@ -574,6 +589,9 @@ impl Custody {
     }
 
     /// Invalidates an older completion before any new durable command effects.
+    ///
+    /// # Errors
+    /// Refuses exhaustion of the actual owner's monotonic command generation.
     pub(super) fn begin_mutation(&mut self) -> io::Result<()> {
         self.generation = self
             .generation

@@ -11,8 +11,11 @@ use super::{recovery_namespace::SharedNamespaceObservation, retention::Custody};
 use rustix::fs::{Mode, OFlags, openat, syncfs};
 use std::{collections::BTreeMap, fs::File, io, os::unix::fs::MetadataExt};
 
+/// Contains a deduplicated observation of the explicitly retained native inodes.
 pub(super) struct SynchronizedAllocation {
+    /// Synchronized inode blocks multiplied by the kernel's 512-byte unit.
     pub(super) retained_inode_bytes: u64,
+    /// Number of distinct device/inode pairs included in that scoped sum.
     pub(super) retained_inodes: usize,
 }
 

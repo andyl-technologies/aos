@@ -150,6 +150,12 @@ impl NativeMetadataOwner {
     }
 }
 
+/// Completes the actual empty case on the sole physical command executor.
+///
+/// # Errors
+/// Refuses every unresolved record/name/candidate, stale native or publisher
+/// custody, failed durability, unknown quota or excessive actual charge. After
+/// the first snapshot attempt, failures retain the owner's hold and fault state.
 pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRecovery> {
     let (session, inspector, shared) = {
         let mut owner = custody

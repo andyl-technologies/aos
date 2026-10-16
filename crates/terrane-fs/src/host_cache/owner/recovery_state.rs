@@ -12,8 +12,11 @@ use std::{
 };
 use terrane::host::cache::{CacheState, ReservationRecord};
 
+/// Contains policy data awaiting actual owner synchronization and reconciliation.
 pub(super) struct BootstrapState {
+    /// Actual native random identifier of the sole bootstrap future hold.
     pub(super) id: [u8; 16],
+    /// Bounded candidate snapshot; possession alone proves no durable write.
     pub(super) snapshot: CacheState,
 }
 
