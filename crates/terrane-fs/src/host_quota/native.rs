@@ -122,6 +122,51 @@ impl NativeProject {
     }
 }
 
+fn require_enforcement(file: &File) -> io::Result<()> {
+    let mut state = QuotaState {
+        version: 1,
+        ..QuotaState::default()
+    };
+    quota(file, Q_GETSTATE, 0, &mut state)?;
+    if state.flags & 0x30 != 0x30 {
+        return Err(io::Error::other(
+            "project accounting or enforcement disabled",
+        ));
+    }
+    Ok(())
+}
+
+/// Rejects initial adoption of an already configured or charged project number.
+///
+/// This privileged live check complements the durable host ownership ledger;
+/// project-zero roots do not prove a selected project is unused elsewhere.
+///
+/// # Errors
+/// Returns kernel privilege or support errors, disabled-enforcement errors, or
+/// an error when any previous limit, charge or quota timer exists for the ID.
+pub fn require_unused_project(file: &File, project_id: u32) -> io::Result<()> {
+    if project_id == 0 {
+        return Err(io::Error::other("zero project identifier"));
+    }
+    require_enforcement(file)?;
+    let mut value = Dqblk::default();
+    quota(file, Q_GETQUOTA, project_id, &mut value)?;
+    if value.block_hard != 0
+        || value.block_soft != 0
+        || value.current_space != 0
+        || value.inode_hard != 0
+        || value.inode_soft != 0
+        || value.current_inodes != 0
+        || value.block_time != 0
+        || value.inode_time != 0
+    {
+        return Err(io::Error::other(
+            "project number already has limits or charges",
+        ));
+    }
+    Ok(())
+}
+
 impl NativeQuota {
     /// Queries live project accounting and enforced limits as the current caller.
     ///
@@ -132,16 +177,7 @@ impl NativeQuota {
         if project_id == 0 {
             return Err(io::Error::other("zero project identifier"));
         }
-        let mut state = QuotaState {
-            version: 1,
-            ..QuotaState::default()
-        };
-        quota(file, Q_GETSTATE, 0, &mut state)?;
-        if state.flags & 0x30 != 0x30 {
-            return Err(io::Error::other(
-                "project accounting or enforcement disabled",
-            ));
-        }
+        require_enforcement(file)?;
         let mut value = Dqblk::default();
         quota(file, Q_GETQUOTA, project_id, &mut value)?;
         let hard_limit_bytes = value

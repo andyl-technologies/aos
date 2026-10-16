@@ -5,12 +5,20 @@
 //! socket = "/run/terrane-host/quota.sock"
 //! epoch = "00000000000000000000000000000001"
 //! tier_charge_budget_bytes = 1073741824
-//! # Each [[owners]] lists all seven [[owners.roots]] allocation classes.
+//! # Each [[owners]] lists layout-root and the seven allocation classes.
+//! ```
+//!
+//! The host ledger stores an explicit transition and original inode custody:
+//! ```toml
+//! version = 1
+//! epoch = "00000000000000000000000000000001"
+//! phase = "provisioning" # Becomes "ready" only after verified restoration.
+//! bindings = [] # Each binding records UUID, inode, domain, project and uid/gid/mode.
 //! ```
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -72,6 +80,17 @@ struct Binding {
     path: PathBuf,
     device: u64,
     inode: u64,
+    hard_limit_bytes: u64,
+    original_uid: u32,
+    original_gid: u32,
+    original_mode: u32,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ProvisioningPhase {
+    Provisioning,
+    Ready,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -79,6 +98,7 @@ struct Binding {
 struct Ledger {
     version: u32,
     epoch: String,
+    phase: ProvisioningPhase,
     bindings: Vec<Binding>,
 }
 
@@ -218,9 +238,8 @@ fn load(path: &Path) -> io::Result<HostConfig> {
     Ok(config)
 }
 
-fn retain(config: &HostConfig) -> io::Result<(Vec<ConfiguredOwner>, Vec<Binding>)> {
+fn retain(config: &HostConfig) -> io::Result<Vec<ConfiguredOwner>> {
     let mut owners = Vec::new();
-    let mut bindings = Vec::new();
     let mut root_identities = BTreeSet::new();
     for owner in &config.owners {
         let mut roots = Vec::new();
@@ -237,16 +256,6 @@ fn retain(config: &HostConfig) -> io::Result<(Vec<ConfiguredOwner>, Vec<Binding>
                 ));
             }
             owner_uuid = Some(uuid);
-            bindings.push(Binding {
-                owner_id: owner.owner_id.clone(),
-                domain: owner.domain.clone(),
-                filesystem_uuid: uuid,
-                project_id: owner.project_id,
-                role_directory: root.role_directory.clone(),
-                path: root.path.clone(),
-                device: actual.device,
-                inode: actual.inode,
-            });
             roots.push(ConfiguredRoot {
                 role_directory: root.role_directory.clone(),
                 directory,
@@ -262,58 +271,360 @@ fn retain(config: &HostConfig) -> io::Result<(Vec<ConfiguredOwner>, Vec<Binding>
             hard_limit_bytes: owner.hard_limit_bytes,
             allowed_client_uids: owner.allowed_client_uids.clone(),
             roots,
+            scaffolding: Vec::new(),
         });
     }
-    Ok((owners, bindings))
+    Ok(owners)
 }
 
-fn validate_initial_skeleton(config: &HostConfig) -> io::Result<()> {
-    let paths: BTreeSet<_> = config
+fn owner_for_path<'a>(config: &'a HostConfig, path: &Path) -> io::Result<&'a OwnerConfig> {
+    config
         .owners
         .iter()
-        .flat_map(|owner| &owner.roots)
-        .map(|root| root.path.as_path())
-        .collect();
-    for path in &paths {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() || !paths.contains(entry.path().as_path()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "initial provisioning permits only the exact configured directory skeleton",
+        .flat_map(|owner| {
+            owner
+                .roots
+                .iter()
+                .filter(|root| {
+                    root.role_directory == "layout-root"
+                        || root.role_directory == "administrative-root"
+                })
+                .map(move |root| (owner, root))
+        })
+        .filter(|(_, root)| path.starts_with(&root.path))
+        .max_by_key(|(_, root)| root.path.components().count())
+        .map(|(owner, _)| owner)
+        .ok_or_else(|| io::Error::other("ledger path is outside explicit configured roots"))
+}
+
+fn binding_for(config: &HostConfig, path: PathBuf, directory: &File) -> io::Result<Binding> {
+    let owner = owner_for_path(config, &path)?;
+    let metadata = directory.metadata()?;
+    let role = owner
+        .roots
+        .iter()
+        .find(|root| root.path == path)
+        .map(|root| root.role_directory.as_str())
+        .unwrap_or("scaffold");
+    Ok(Binding {
+        owner_id: owner.owner_id.clone(),
+        domain: owner.domain.clone(),
+        filesystem_uuid: filesystem_uuid(directory)?,
+        project_id: owner.project_id,
+        role_directory: role.into(),
+        path,
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        hard_limit_bytes: owner.hard_limit_bytes,
+        original_uid: metadata.uid(),
+        original_gid: metadata.gid(),
+        original_mode: metadata.mode() & 0o7777,
+    })
+}
+
+fn snapshot_skeleton(
+    config: &HostConfig,
+    owners: &[ConfiguredOwner],
+) -> io::Result<Vec<(Binding, File)>> {
+    let mut discovered: BTreeMap<PathBuf, (Binding, File)> = BTreeMap::new();
+    let mut stack = Vec::new();
+    for owner in owners {
+        for root in &owner.roots {
+            if root.role_directory == "layout-root" || root.role_directory == "administrative-root"
+            {
+                let path = config
+                    .owners
+                    .iter()
+                    .find(|item| item.owner_id == owner.owner_id && item.domain == owner.domain)
+                    .and_then(|item| {
+                        item.roots
+                            .iter()
+                            .find(|item| item.role_directory == root.role_directory)
+                    })
+                    .ok_or_else(|| io::Error::other("missing configured root"))?
+                    .path
+                    .clone();
+                stack.push((path, root.directory.try_clone()?, 0usize));
+            }
+        }
+    }
+    while let Some((path, directory, depth)) = stack.pop() {
+        if let Some((previous, _)) = discovered.get(&path) {
+            let actual = directory.metadata()?;
+            let previous: &Binding = previous;
+            if previous.device != actual.dev() || previous.inode != actual.ino() {
+                return Err(io::Error::other(
+                    "directory incarnation changed during skeleton walk",
                 ));
             }
+            continue;
+        }
+        if depth > 32 || discovered.len() >= 1024 {
+            return Err(io::Error::other("directory skeleton bound exceeded"));
+        }
+        for child in terrane_fs::host_quota::directory_children(&directory)? {
+            if discovered.len() + stack.len() >= 1024 {
+                return Err(io::Error::other(
+                    "pending directory skeleton bound exceeded",
+                ));
+            }
+            stack.push((path.join(child.name), child.directory, depth + 1));
+        }
+        discovered.insert(
+            path.clone(),
+            (binding_for(config, path, &directory)?, directory),
+        );
+    }
+    let mut identities = BTreeSet::new();
+    for (binding, _) in discovered.values() {
+        if !identities.insert((binding.device, binding.inode)) {
+            return Err(io::Error::other("aliased directory skeleton"));
+        }
+    }
+    Ok(discovered.into_values().collect())
+}
+
+fn stable_binding(left: &Binding, right: &Binding) -> bool {
+    left.owner_id == right.owner_id
+        && left.domain == right.domain
+        && left.filesystem_uuid == right.filesystem_uuid
+        && left.project_id == right.project_id
+        && left.role_directory == right.role_directory
+        && left.path == right.path
+        && left.device == right.device
+        && left.inode == right.inode
+        && left.hard_limit_bytes == right.hard_limit_bytes
+}
+
+fn read_ledger(path: &Path, config: &HostConfig) -> io::Result<Ledger> {
+    let ledger: Ledger = toml::from_str(&protected_text(path)?).map_err(parse_error)?;
+    if ledger.version != 1
+        || ledger.epoch != config.epoch
+        || ledger.bindings.len() > 1024
+        || !ledger
+            .bindings
+            .windows(2)
+            .all(|pair| pair[0].path < pair[1].path)
+    {
+        return Err(io::Error::other(
+            "host provisioning ledger version, epoch or bound mismatch",
+        ));
+    }
+    Ok(ledger)
+}
+
+fn open_binding(
+    config: &HostConfig,
+    owners: &[ConfiguredOwner],
+    binding: &Binding,
+) -> io::Result<File> {
+    let owner = owner_for_path(config, &binding.path)?;
+    let configured = owner
+        .roots
+        .iter()
+        .filter(|root| binding.path.starts_with(&root.path))
+        .max_by_key(|root| root.path.components().count())
+        .ok_or_else(|| io::Error::other("unbound ledger path"))?;
+    let retained = owners
+        .iter()
+        .find(|item| item.owner_id == owner.owner_id && item.domain == owner.domain)
+        .and_then(|item| {
+            item.roots
+                .iter()
+                .find(|item| item.role_directory == configured.role_directory)
+        })
+        .ok_or_else(|| io::Error::other("missing retained ledger root"))?;
+    let mut directory = retained.directory.try_clone()?;
+    for component in binding
+        .path
+        .strip_prefix(&configured.path)
+        .map_err(parse_error)?
+        .components()
+    {
+        let std::path::Component::Normal(name) = component else {
+            return Err(io::Error::other("invalid ledger component"));
+        };
+        directory = terrane_fs::host_quota::open_directory_child(&directory, name)?;
+    }
+    Ok(directory)
+}
+
+fn bind_ledger(
+    config: &HostConfig,
+    owners: &mut [ConfiguredOwner],
+    ledger: &Ledger,
+) -> io::Result<Vec<File>> {
+    let mut directories = Vec::new();
+    let mut parents: BTreeMap<PathBuf, File> = BTreeMap::new();
+    let mut paths = BTreeSet::new();
+    let mut identities = BTreeSet::new();
+    for binding in &ledger.bindings {
+        let directory = open_binding(config, owners, binding)?;
+        let actual = binding_for(config, binding.path.clone(), &directory)?;
+        if !stable_binding(binding, &actual)
+            || !paths.insert(binding.path.clone())
+            || !identities.insert((binding.device, binding.inode))
+        {
+            return Err(io::Error::other("host ledger immutable binding mismatch"));
+        }
+        let original = actual.original_uid == binding.original_uid
+            && actual.original_gid == binding.original_gid;
+        let custody = actual.original_uid == 0 && actual.original_gid == 0;
+        let known_mode =
+            actual.original_mode == binding.original_mode || actual.original_mode == 0o700;
+        if ledger.phase == ProvisioningPhase::Ready {
+            if !original || actual.original_mode != binding.original_mode {
+                return Err(io::Error::other("ready directory ownership mismatch"));
+            }
+        } else if !(original || custody) || !known_mode {
+            return Err(io::Error::other(
+                "unrecognized interrupted provisioning ownership",
+            ));
+        }
+        if binding.role_directory == "scaffold" {
+            let owner = owners
+                .iter_mut()
+                .find(|owner| owner.owner_id == binding.owner_id && owner.domain == binding.domain)
+                .ok_or_else(|| io::Error::other("unknown scaffold owner"))?;
+            owner
+                .scaffolding
+                .push(terrane_fs::host_quota::ConfiguredScaffold {
+                    directory: directory.try_clone()?,
+                    parent: parents
+                        .get(
+                            binding
+                                .path
+                                .parent()
+                                .ok_or_else(|| io::Error::other("scaffold has no parent"))?,
+                        )
+                        .ok_or_else(|| io::Error::other("scaffold parent missing from ledger"))?
+                        .try_clone()?,
+                    name: binding
+                        .path
+                        .file_name()
+                        .ok_or_else(|| io::Error::other("scaffold has no name"))?
+                        .to_os_string(),
+                    device: binding.device,
+                    inode: binding.inode,
+                });
+        }
+        parents.insert(binding.path.clone(), directory.try_clone()?);
+        directories.push(directory);
+    }
+    for binding in &ledger.bindings {
+        if let Some(parent) = binding.path.parent() {
+            if owner_for_path(config, parent).is_ok() && !paths.contains(parent) {
+                return Err(io::Error::other(
+                    "ledger omits an internal directory ancestor",
+                ));
+            }
+        }
+    }
+    for owner in &config.owners {
+        for root in &owner.roots {
+            if !paths.contains(&root.path) {
+                return Err(io::Error::other("configured root missing from host ledger"));
+            }
+        }
+    }
+    Ok(directories)
+}
+
+fn persist_ledger(path: &Path, ledger: &Ledger) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("ledger has no parent"))?;
+    let parent_fd = open_host_path(parent, true)?;
+    let metadata = parent_fd.metadata()?;
+    if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(io::Error::other("unsafe ledger parent"));
+    }
+    let serialized = toml::to_string(ledger).map_err(parse_error)?;
+    if serialized.len() > 1024 * 1024 {
+        return Err(io::Error::other("provisioning ledger exceeds read bound"));
+    }
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temporary = parent.join(format!(".terrane-ledger-{}-{sequence}", std::process::id()));
+    let mut created = false;
+    let result = (|| {
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        created = true;
+        output.write_all(serialized.as_bytes())?;
+        output.sync_all()?;
+        fs::rename(&temporary, path)?;
+        parent_fd.sync_all()
+    })();
+    if result.is_err() && created {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn verify_live(owners: &[ConfiguredOwner]) -> io::Result<()> {
+    for owner in owners {
+        for scaffold in &owner.scaffolding {
+            let named =
+                terrane_fs::host_quota::open_directory_child(&scaffold.parent, &scaffold.name)?
+                    .metadata()?;
+            if named.dev() != scaffold.device || named.ino() != scaffold.inode {
+                return Err(io::Error::other("scaffold pathname incarnation changed"));
+            }
+        }
+        for (directory, device, inode) in owner
+            .roots
+            .iter()
+            .map(|root| (&root.directory, root.device, root.inode))
+            .chain(
+                owner
+                    .scaffolding
+                    .iter()
+                    .map(|root| (&root.directory, root.device, root.inode)),
+            )
+        {
+            let actual = NativeProject::inspect(directory)?;
+            if actual.project_id != owner.project_id
+                || !actual.inherit
+                || actual.device != device
+                || actual.inode != inode
+                || filesystem_uuid(directory)? != owner.filesystem_uuid
+            {
+                return Err(io::Error::other("native ledger project binding mismatch"));
+            }
+        }
+        if NativeQuota::query(&owner.roots[0].directory, owner.project_id)?.hard_limit_bytes
+            != owner.hard_limit_bytes
+        {
+            return Err(io::Error::other("native hard limit mismatch"));
         }
     }
     Ok(())
 }
 
-fn verify_ledger(path: &Path, config: &HostConfig, bindings: &[Binding]) -> io::Result<()> {
-    let ledger: Ledger = toml::from_str(&protected_text(path)?).map_err(parse_error)?;
-    if ledger.version != 1 || ledger.epoch != config.epoch || ledger.bindings != bindings {
-        return Err(io::Error::other("host provisioning ledger mismatch"));
-    }
-    Ok(())
-}
-
-/// Provisions only the explicit administrator-selected partition.
+/// Provisions an explicit quiescent domain partition with durable ownership custody.
 ///
-/// A new ledger is synchronized before native mutations, preserving ownership
-/// even across interrupted provisioning. Existing bindings cannot be reassigned.
+/// Initial provisioning records every directory-only scaffold inode before taking
+/// root ownership. Interrupted attempts retain that original record and remain
+/// unavailable until an explicit retry restores it. Ready ledgers are verified
+/// read-only; this entry point never silently changes an existing hard limit.
 ///
 /// # Errors
-/// Returns configuration, ledger-conflict, privilege or filesystem errors.
+/// Returns configuration, active-factory, ledger, privilege or filesystem errors.
 pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     let config = load(config_path)?;
-    let (owners, bindings) = retain(&config)?;
-    let mut provisioning_guards = Vec::new();
+    let mut owners = retain(&config)?;
+    let mut guards = Vec::new();
     for owner in &owners {
         let layout = owner
             .roots
             .iter()
             .find(|root| root.role_directory == "layout-root")
             .ok_or_else(|| io::Error::other("missing explicit layout root"))?;
-        provisioning_guards.push(terrane_fs::host_quota::DomainProvisioningGuard::exclusive(
+        guards.push(terrane_fs::host_quota::DomainProvisioningGuard::exclusive(
             &layout.directory,
         )?);
     }
@@ -325,64 +636,83 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     {
         return Err(io::Error::other("ledger must be outside content roots"));
     }
-    match fs::symlink_metadata(ledger_path) {
-        Ok(_) => verify_ledger(ledger_path, &config, &bindings)?,
+    let ledger_parent = ledger_path
+        .parent()
+        .ok_or_else(|| io::Error::other("ledger has no parent"))?;
+    let ledger_directory = open_host_path(ledger_parent, true)?;
+    let metadata = ledger_directory.metadata()?;
+    if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(io::Error::other("unsafe ledger parent"));
+    }
+    // Serialize host administrators sharing a ledger directory as well as
+    // native factories sharing domain roots. This lock never assigns its parent
+    // to a quota project; the directory is outside the content layout.
+    let _ledger_guard =
+        terrane_fs::host_quota::DomainProvisioningGuard::exclusive(&ledger_directory)?;
+    let mut ledger = match fs::symlink_metadata(ledger_path) {
+        Ok(_) => read_ledger(ledger_path, &config)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            // A lost ledger cannot turn an existing native project into a new
-            // domain. Initial provisioning only adopts genuinely empty roots.
-            for owner in &owners {
-                for root in &owner.roots {
-                    if NativeProject::inspect(&root.directory)?.project_id != 0 {
-                        return Err(io::Error::other(
-                            "missing ledger for already assigned project root",
-                        ));
-                    }
+            let snapshot = snapshot_skeleton(&config, &owners)?;
+            for (_, directory) in &snapshot {
+                if NativeProject::inspect(directory)?.project_id != 0 {
+                    return Err(io::Error::other(
+                        "missing ledger for assigned project inode",
+                    ));
                 }
             }
-            validate_initial_skeleton(&config)?;
-            let parent = ledger_path
-                .parent()
-                .ok_or_else(|| io::Error::other("ledger has no parent"))?;
-            let directory = open_host_path(parent, true)?;
-            let metadata = directory.metadata()?;
-            if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-                return Err(io::Error::other("unsafe ledger parent"));
+            for owner in &owners {
+                terrane_fs::host_quota::require_unused_project(
+                    &owner.roots[0].directory,
+                    owner.project_id,
+                )?;
             }
-            if config
-                .owners
-                .iter()
-                .flat_map(|owner| &owner.roots)
-                .any(|root| ledger_path.starts_with(&root.path))
-            {
-                return Err(io::Error::other("ledger must be outside content roots"));
-            }
-            let serialized = toml::to_string(&Ledger {
+            let ledger = Ledger {
                 version: 1,
                 epoch: config.epoch.clone(),
-                bindings,
-            })
-            .map_err(parse_error)?;
-            let mut output = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(ledger_path)?;
-            output.write_all(serialized.as_bytes())?;
-            output.sync_all()?;
-            directory.sync_all()?;
+                phase: ProvisioningPhase::Provisioning,
+                bindings: snapshot.into_iter().map(|(binding, _)| binding).collect(),
+            };
+            persist_ledger(ledger_path, &ledger)?;
+            ledger
         }
         Err(error) => return Err(error),
+    };
+    let directories = bind_ledger(&config, &mut owners, &ledger)?;
+    if ledger.phase == ProvisioningPhase::Ready {
+        return verify_live(&owners);
     }
-    for owner in &owners {
-        for root in &owner.roots {
-            if NativeProject::inspect(&root.directory)?.project_id == 0 {
-                validate_initial_skeleton(&config)?;
-            }
-            provision_project(&root.directory, owner.project_id, owner.hard_limit_bytes)?;
-        }
-        NativeQuota::query(&owner.roots[0].directory, owner.project_id)?;
+    for directory in &directories {
+        terrane_fs::host_quota::set_directory_custody(directory, 0, 0, 0o700)?;
     }
-    Ok(())
+    // Re-enumeration under root custody closes creation and rename races from
+    // the initial snapshot, including creation through old directory FDs.
+    // Existing open file custody is excluded by quiescent native factory guards;
+    // changing directory ownership never revokes an already-open body FD.
+    let current = snapshot_skeleton(&config, &owners)?;
+    if current.len() != ledger.bindings.len()
+        || !current
+            .iter()
+            .zip(&ledger.bindings)
+            .all(|((actual, _), saved)| stable_binding(actual, saved))
+    {
+        return Err(io::Error::other(
+            "directory skeleton changed before exclusive ownership custody",
+        ));
+    }
+    for (binding, directory) in ledger.bindings.iter().zip(&directories) {
+        provision_project(directory, binding.project_id, binding.hard_limit_bytes)?;
+    }
+    for (binding, directory) in ledger.bindings.iter().zip(&directories) {
+        terrane_fs::host_quota::set_directory_custody(
+            directory,
+            binding.original_uid,
+            binding.original_gid,
+            binding.original_mode,
+        )?;
+    }
+    verify_live(&owners)?;
+    ledger.phase = ProvisioningPhase::Ready;
+    persist_ledger(ledger_path, &ledger)
 }
 
 /// Runs the read-only quota broker using the immutable host ledger.
@@ -391,8 +721,13 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
 /// Returns configuration, native verification or socket setup errors.
 pub fn serve(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     let config = load(config_path)?;
-    let (owners, bindings) = retain(&config)?;
-    verify_ledger(ledger_path, &config, &bindings)?;
+    let mut owners = retain(&config)?;
+    let ledger = read_ledger(ledger_path, &config)?;
+    if ledger.phase != ProvisioningPhase::Ready {
+        return Err(io::Error::other("host provisioning remains incomplete"));
+    }
+    bind_ledger(&config, &mut owners, &ledger)?;
+    verify_live(&owners)?;
     let parent = config
         .socket
         .parent()
@@ -412,7 +747,7 @@ pub fn serve(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     let mut workers = Vec::new();
     for _ in 0..16 {
         let broker = std::sync::Arc::clone(&broker);
-        workers.push(std::thread::spawn(move || {
+        workers.push(std::thread::spawn(move || -> () {
             loop {
                 // A malformed or disconnected client loses only its own connection.
                 let _ = broker.serve_connection();

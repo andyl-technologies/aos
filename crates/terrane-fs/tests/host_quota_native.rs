@@ -27,6 +27,10 @@ fn host_quota_vm_role() {
         .expect("child role")
         .as_str()
     {
+        "userns" => {
+            assert!(terrane_fs::host_quota::require_host_root_namespace_boundary().is_err());
+            assert!(HostQuotaClient::connect(&root.join("quota.sock"), 0, [1; 16]).is_err());
+        }
         "direct" => {
             let error =
                 NativeQuota::query(&File::open(root.join("chunks")).expect("open root"), 41001)
@@ -95,6 +99,7 @@ fn host_quota_native_privilege_and_helper_vm() {
     }
     let quota = NativeQuota::query(&roots[0].directory, 41001).expect("privileged actual query");
     assert_eq!(quota.hard_limit_bytes, 2 * 1024 * 1024);
+    assert!(terrane_fs::host_quota::require_unused_project(&roots[0].directory, 41001).is_err());
     let file = File::create(root.join("chunks/body")).expect("create body");
     file.set_len(1024 * 1024).expect("sparse logical length");
     assert!(synchronized_allocated_bytes(&file).expect("synchronized allocation") < 1024 * 1024);
@@ -127,6 +132,7 @@ fn host_quota_native_privilege_and_helper_vm() {
         hard_limit_bytes: 2 * 1024 * 1024,
         allowed_client_uids: BTreeSet::from([840]),
         roots,
+        scaffolding: Vec::new(),
     };
     let broker =
         HostQuotaBroker::bind(&socket, [1; 16], 4 * 1024 * 1024, vec![owner]).expect("bind broker");
