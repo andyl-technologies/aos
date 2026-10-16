@@ -465,6 +465,13 @@ where
         Ok(started)
     }
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.inner.try_retire_original(original)
+    }
+
     fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
         self.inner.recover(lifecycle)
     }

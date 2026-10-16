@@ -479,6 +479,20 @@ where
         }
     }
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        match self {
+            Self::HotFork(runner) => runner
+                .try_retire_original(original)
+                .map_err(PackagedQemuInitialExecutionRunnerError::HotFork),
+            Self::Fresh(runner) => runner
+                .try_retire_original(original)
+                .map_err(PackagedQemuInitialExecutionRunnerError::Fresh),
+        }
+    }
+
     fn quarantine_pending_execution(&mut self) {
         match self {
             Self::HotFork(runner) => runner.quarantine_pending_execution(),

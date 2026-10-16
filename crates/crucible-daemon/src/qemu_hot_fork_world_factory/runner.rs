@@ -351,6 +351,23 @@ where
         ))
     }
 
+    /// Retires the actual factory even when no execution tier became active.
+    ///
+    /// # Errors
+    /// Leaves its retained installation or unreconciled world owned on refusal.
+    pub fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuHotForkWorldExecutionRunnerError<F::Error, D::Error>> {
+        self.factory
+            .try_retire_original(original)
+            .map_err(QemuHotForkWorldExecutionRunnerError::Factory)?;
+        if self.pending.is_some() {
+            return Err(QemuHotForkWorldExecutionRunnerError::PriorReconciliationPending);
+        }
+        Ok(())
+    }
+
     /// Reconciles one bounded publication phase and recovers its source world.
     ///
     /// # Errors

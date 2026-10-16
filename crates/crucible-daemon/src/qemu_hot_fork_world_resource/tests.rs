@@ -277,6 +277,143 @@ fn aggregate_release_waits_for_every_exact_node_target() -> Result<(), QemuVmRea
 }
 
 #[test]
+fn release_readiness_keeps_exact_target_and_launcher_progress_retryable()
+-> Result<(), QemuVmRealizationError> {
+    let finishes = Arc::new(AtomicUsize::new(0));
+    let quarantines = Arc::new(AtomicUsize::new(0));
+    let mut owner = QemuHotForkWorldResourceOwner::new(
+        guard(Arc::clone(&finishes), Arc::clone(&quarantines))?,
+        1,
+    )?;
+    let exact = identity("node", 3)?;
+    let mut target = owner.reserve_node(exact.clone())?;
+    let mut launcher = owner.lifecycle_guard()?;
+
+    assert_eq!(
+        owner.release_readiness(),
+        Ok(QemuHotForkWorldReleaseReadiness::AwaitingTargets)
+    );
+    QemuAttemptResourceGuard::finish(&mut target)?;
+    for _ in 0..2 {
+        assert_eq!(
+            owner.release_readiness(),
+            Ok(QemuHotForkWorldReleaseReadiness::AwaitingLifecycleLauncher)
+        );
+    }
+    {
+        let state = owner.state.lock().unwrap();
+        assert!(!state.terminal);
+        assert_eq!(state.issued.len(), 1);
+        assert_eq!(state.released.len(), 1);
+        assert!(state.issued.contains(&exact));
+        assert!(state.released.contains(&exact));
+    }
+    assert_eq!(finishes.load(Ordering::Acquire), 0);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
+
+    QemuAttemptResourceGuard::finish(&mut launcher)?;
+    assert_eq!(
+        owner.release_readiness(),
+        Ok(QemuHotForkWorldReleaseReadiness::Ready)
+    );
+    assert_eq!(finishes.load(Ordering::Acquire), 0);
+    owner.finish()?;
+    assert_eq!(finishes.load(Ordering::Acquire), 1);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    assert_eq!(
+        owner.release_readiness(),
+        Err(QemuHotForkWorldReleaseReadinessError::Terminal)
+    );
+    Ok(())
+}
+
+#[test]
+fn release_readiness_waits_for_the_actual_auxiliary_owner() -> Result<(), QemuVmRealizationError> {
+    let finishes = Arc::new(AtomicUsize::new(0));
+    let quarantines = Arc::new(AtomicUsize::new(0));
+    let mut owner = QemuHotForkWorldResourceOwner::new(
+        guard(Arc::clone(&finishes), Arc::clone(&quarantines))?,
+        1,
+    )?;
+    finish_primary_lifecycle(&mut owner, "node")?;
+    let (_binding, mut factory) = bound_auxiliary_resources(&owner)?;
+    let mut auxiliary = begin_auxiliary_resources(&mut factory, &owner)?;
+
+    assert_eq!(
+        owner.release_readiness(),
+        Ok(QemuHotForkWorldReleaseReadiness::AwaitingAuxiliaryLifecycle)
+    );
+    assert_eq!(finishes.load(Ordering::Acquire), 0);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
+
+    QemuAttemptResourceGuard::finish(&mut auxiliary)?;
+    assert_eq!(
+        owner.release_readiness(),
+        Ok(QemuHotForkWorldReleaseReadiness::Ready)
+    );
+    owner.finish()?;
+    assert_eq!(finishes.load(Ordering::Acquire), 1);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    Ok(())
+}
+
+#[test]
+fn release_readiness_refuses_contention_and_the_existing_terminal_failure()
+-> Result<(), QemuVmRealizationError> {
+    let finishes = Arc::new(AtomicUsize::new(0));
+    let quarantines = Arc::new(AtomicUsize::new(0));
+    let mut owner = QemuHotForkWorldResourceOwner::new(
+        guard(Arc::clone(&finishes), Arc::clone(&quarantines))?,
+        1,
+    )?;
+    let target = owner.reserve_node(identity("node", 3)?)?;
+    {
+        let _borrow = owner.state.lock().unwrap();
+        assert_eq!(
+            owner.release_readiness(),
+            Err(QemuHotForkWorldReleaseReadinessError::Borrowed)
+        );
+    }
+    assert_eq!(finishes.load(Ordering::Acquire), 0);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
+
+    // Exercise the real existing fail-closed finish latch, not a prefilled flag.
+    assert!(owner.finish().is_err());
+    for _ in 0..2 {
+        assert_eq!(
+            owner.release_readiness(),
+            Err(QemuHotForkWorldReleaseReadinessError::Terminal)
+        );
+    }
+    assert_eq!(finishes.load(Ordering::Acquire), 0);
+    assert_eq!(quarantines.load(Ordering::Acquire), 1);
+    drop(target);
+    Ok(())
+}
+
+#[test]
+fn release_readiness_refuses_an_actually_poisoned_registry() -> Result<(), QemuVmRealizationError> {
+    let finishes = Arc::new(AtomicUsize::new(0));
+    let quarantines = Arc::new(AtomicUsize::new(0));
+    let owner = QemuHotForkWorldResourceOwner::new(
+        guard(Arc::clone(&finishes), Arc::clone(&quarantines))?,
+        1,
+    )?;
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _borrow = owner.state.lock().unwrap();
+        panic!("poison the actual resource registry");
+    }));
+    assert!(poisoned.is_err());
+    assert_eq!(
+        owner.release_readiness(),
+        Err(QemuHotForkWorldReleaseReadinessError::Poisoned)
+    );
+    assert_eq!(finishes.load(Ordering::Acquire), 0);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    Ok(())
+}
+
+#[test]
 fn unfinished_or_duplicate_node_fails_closed() -> Result<(), QemuVmRealizationError> {
     let finishes = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));

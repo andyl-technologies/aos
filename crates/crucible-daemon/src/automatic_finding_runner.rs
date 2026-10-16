@@ -1127,6 +1127,22 @@ where
             .map_err(map_main_failure)
     }
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        let main = self
+            .main
+            .try_retire_original(original)
+            .map_err(AutomaticFindingExecutionRunnerError::Main);
+        let replay = self
+            .replay
+            .try_retire_original(original)
+            .map_err(AutomaticFindingExecutionRunnerError::Replay);
+
+        main.and(replay)
+    }
+
     fn quarantine_pending_execution(&mut self) {
         self.main.quarantine_pending_execution();
         self.replay.quarantine_pending_execution();

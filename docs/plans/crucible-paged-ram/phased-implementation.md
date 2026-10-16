@@ -89,6 +89,23 @@ uses shared metadata. The storage cost controls cover tiny, mixed and dense pack
 and 32/512 MiB RAM traversals. Their integrity/resource results do not establish
 VM performance parity or authorize new resource ceilings.
 
+Execution runners now expose retirement through an existing supervised
+operation. Routers visit both contained runners even when neither became the
+active semantic route; one refusal does not suppress cleanup of its peer.
+Returned diagnostics leave operational ownership in the actual factory. The
+hot-fork runner also refuses retirement while it retains an unreconciled world.
+Aggregate release readiness is observed without finishing or quarantining a
+pending owner, so a launcher can finish before actual aggregate release.
+
+The local default-feature daemon library run has 1,145 passes, 21 failures and
+43 ignored tests. All five new retirement/readiness controls pass, including
+same-descriptor retries and genuine registry contention and poison. Every
+failing test name was already present in the earlier workspace failure set;
+these failures still require repair. Main worker custody, constructor carrier
+publication and successful-lifecycle return remain separate integration work.
+The required application-target build passes for the preceding storage/API
+snapshot; these runner changes still require its final rebuild.
+
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.
 

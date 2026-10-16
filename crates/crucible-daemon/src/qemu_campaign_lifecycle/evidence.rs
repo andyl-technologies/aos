@@ -526,6 +526,15 @@ where
             .map_err(map_terminal_evidence_inner_failure)
     }
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .try_retire_original(original)
+            .map_err(QemuTerminalEvidenceExecutionRunnerError::Inner)
+    }
+
     fn quarantine_pending_execution(&mut self) {
         self.inner.quarantine_pending_execution();
     }
