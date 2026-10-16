@@ -21,14 +21,18 @@ impl RecoveryManifestBackingRetention {
     ///
     /// Only the effect guard calls this after reconciliation or explicit failure.
     /// It accepts no ordinary receipt, raw descriptor, ID or caller-selected file.
-    pub(super) fn from_phase(
-        receipt: RecoveryRetainedManifest<'_, '_>,
+    pub(super) fn from_phase<'phase, 'executor>(
+        receipt: RecoveryRetainedManifest<'phase, 'executor>,
         measurement: Option<super::reconcile::EffectMeasurement>,
-    ) -> Self {
-        Self {
-            retained: receipt.retained,
-            measurement,
-        }
+    ) -> (Self, &'phase mut LiveManifestRecoveryContext<'executor>) {
+        let RecoveryRetainedManifest { retained, live } = receipt;
+        (
+            Self {
+                retained,
+                measurement,
+            },
+            live,
+        )
     }
 
     /// Returns scoped synchronized source/backing inode blocks after successful reconciliation.

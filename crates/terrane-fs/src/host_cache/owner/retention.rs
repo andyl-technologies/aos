@@ -42,7 +42,8 @@ use executor::NativeOwnerExecutor;
 pub(crate) use executor::{PublisherResumeTurn, PublisherRunningTurn};
 use manifest::retain;
 pub(crate) use recovery_manifest::{
-    LiveManifestRecoveryContext, RecoveryManifestBackingRetention, RecoveryManifestEffect,
+    AcceptedRecoveryManifestEffect, LiveManifestRecoveryContext, RecoveryManifestBackingRetention,
+    RecoveryManifestBodyFailure, RecoveryManifestBodyRetention, RecoveryManifestEffect,
     RecoveryManifestEffectFailure, RecoveryRetainedManifest,
 };
 

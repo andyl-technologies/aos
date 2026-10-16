@@ -24,15 +24,16 @@ pub use manifest_source::NativeManifestSource;
 #[cfg(feature = "tokio")]
 pub use metadata::NativeHostMetadataReader;
 #[cfg(feature = "tokio")]
+pub(crate) use owner::{
+    AcceptedRecoveryManifestEffect, LiveManifestRecoveryContext, PublisherResumeTurn,
+    PublisherRunningTurn, RecoveryManifestBackingRetention, RecoveryManifestBodyFailure,
+    RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
+    RecoveryRetainedManifest,
+};
+#[cfg(feature = "tokio")]
 pub use owner::{
     CompletedRecovery, IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation,
     NativeIndexRepairReport, NativeMetadataOwner, NativeResumeError, RetainedManifest,
-};
-#[cfg(feature = "tokio")]
-pub(crate) use owner::{
-    LiveManifestRecoveryContext, PublisherResumeTurn, PublisherRunningTurn,
-    RecoveryManifestBackingRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
-    RecoveryRetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;

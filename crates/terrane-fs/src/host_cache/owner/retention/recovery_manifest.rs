@@ -10,10 +10,14 @@ use crate::publisher_local::client::PublisherRecoveryContext;
 use std::{cell::Cell, rc::Rc};
 
 mod backing;
+mod body;
 mod effect;
 mod reconcile;
 pub(crate) use backing::RecoveryManifestBackingRetention;
-pub(crate) use effect::{RecoveryManifestEffect, RecoveryManifestEffectFailure};
+pub(crate) use body::{RecoveryManifestBodyFailure, RecoveryManifestBodyRetention};
+pub(crate) use effect::{
+    AcceptedRecoveryManifestEffect, RecoveryManifestEffect, RecoveryManifestEffectFailure,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RecoveryPhase {
@@ -251,7 +255,7 @@ impl<'executor> LiveManifestRecoveryContext<'executor> {
 /// It grants no completed recovery, serving, publication or Resume authority.
 pub(crate) struct RecoveryRetainedManifest<'phase, 'executor> {
     retained: RetainedManifest,
-    live: &'phase LiveManifestRecoveryContext<'executor>,
+    live: &'phase mut LiveManifestRecoveryContext<'executor>,
 }
 
 impl<'phase, 'executor> RecoveryRetainedManifest<'phase, 'executor> {
@@ -266,7 +270,7 @@ impl<'phase, 'executor> RecoveryRetainedManifest<'phase, 'executor> {
 
     /// Borrows the exact original live recovery turn for an atomic RPC check.
     pub(crate) fn live_context(&self) -> &LiveManifestRecoveryContext<'_> {
-        self.live
+        &*self.live
     }
 
     /// Borrows independently verified canonical manifest claim bytes.

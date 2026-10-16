@@ -24,8 +24,9 @@ pub use preparation::NativeCachePreparation;
 pub use recovery::CompletedRecovery;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{
-    LiveManifestRecoveryContext, PublisherResumeTurn, PublisherRunningTurn,
-    RecoveryManifestBackingRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
+    AcceptedRecoveryManifestEffect, LiveManifestRecoveryContext, PublisherResumeTurn,
+    PublisherRunningTurn, RecoveryManifestBackingRetention, RecoveryManifestBodyFailure,
+    RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
     RecoveryRetainedManifest,
 };
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};

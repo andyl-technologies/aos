@@ -37,15 +37,18 @@ impl<'phase, 'executor> RecoveryManifestEffect<'phase, 'executor> {
     /// # Errors
     /// Refuses changed original phase/session, source or durable pin custody.
     /// No new native RPC is submitted here; existing physical ownership remains.
-    pub(super) fn begin(receipt: RecoveryRetainedManifest<'phase, 'executor>) -> io::Result<Self> {
+    pub(super) fn begin(
+        mut receipt: RecoveryRetainedManifest<'phase, 'executor>,
+    ) -> io::Result<Self> {
         receipt.check_current()?;
+        receipt.live.executor.reserve_manifest_body_slots()?;
         let flight = InFlightRetention::begin_effect(&receipt.live.phase);
         Ok(Self { flight, receipt })
     }
 
     /// Borrows exact original recovery authority without acquiring a client lock.
     pub(crate) fn live_context(&self) -> &LiveManifestRecoveryContext<'executor> {
-        self.receipt.live
+        &*self.receipt.live
     }
 
     /// Borrows the actual retained canonical manifest witness for fixed wire IO.
@@ -88,33 +91,53 @@ impl<'phase, 'executor> RecoveryManifestEffect<'phase, 'executor> {
             .check_current_phase(RecoveryPhase::EffectInFlight)
     }
 
-    /// Transfers durable custody only after full RPC and native verification.
+    /// Registers an owned independently verified response body before final checks.
     ///
-    /// This must run after releasing the client mutex. It performs original
-    /// context and source/pin checks, synchronizes real retained backing/source
-    /// allocation and fresh authenticated quota/holds, then releases the phase.
-    /// The backing must be the genuine independently verified response receipt.
-    /// The consumer must bind its canonical inode/lifecycle to that same RPC
-    /// response and put the adopted body in the actual executor-owned registry
-    /// before any later fallible completion or cancellable reply. This method
-    /// checks claim/root and allocation, not same-response correlation. The
-    /// metadata source registry alone does not retain the adopted body.
-    ///
-    /// # Errors
-    /// Returns actual retained backing custody with a faulted phase when final
-    /// verification fails. No error reactivates the live recovery phase.
-    pub(crate) fn complete(
+    /// This ownership transition performs no fallible verification or IO. The
+    /// exclusive guard owns capacity reserved before the RPC. The downstream
+    /// consumer must transfer the body immediately after native verification,
+    /// before any later fallible correlation/completion step. Insertion alone
+    /// asserts no canonical correlation or serving authority.
+    pub(crate) fn accept_body(
+        mut self,
+        body: crate::publisher_local::client::PeerPublishedObject<HostDomainLocation>,
+    ) -> AcceptedRecoveryManifestEffect<'phase, 'executor> {
+        let body = Arc::new(body);
+        self.receipt
+            .live
+            .executor
+            .retain_adopted_manifest_body(Arc::clone(&body));
+        AcceptedRecoveryManifestEffect { effect: self, body }
+    }
+
+    fn complete_body(
         self,
-        body: &crate::publisher_local::client::PeerPublishedObject<HostDomainLocation>,
-    ) -> Result<RecoveryManifestBackingRetention, RecoveryManifestEffectFailure> {
-        let measurement = match super::reconcile::complete_effect(&self, body) {
+        body: Arc<crate::publisher_local::client::PeerPublishedObject<HostDomainLocation>>,
+    ) -> Result<RecoveryManifestBodyRetention, RecoveryManifestBodyFailure> {
+        let measurement = match super::reconcile::complete_effect(&self, &body) {
             Ok(measurement) => measurement,
-            Err(error) => return Err(self.fail(error)),
+            Err(error) => return Err(self.fail_body(error, body)),
         };
         let Self { receipt, flight } = self;
-        let backing = RecoveryManifestBackingRetention::from_phase(receipt, Some(measurement));
+        let (backing, live) =
+            RecoveryManifestBackingRetention::from_phase(receipt, Some(measurement));
+        let retained = RecoveryManifestBodyRetention::pair(body, backing);
+        live.executor.retain_manifest_backing(retained.clone());
         flight.complete();
-        Ok(backing)
+        Ok(retained)
+    }
+
+    fn fail_body(
+        self,
+        error: io::Error,
+        body: Arc<crate::publisher_local::client::PeerPublishedObject<HostDomainLocation>>,
+    ) -> RecoveryManifestBodyFailure {
+        let Self { receipt, flight } = self;
+        drop(flight);
+        let (backing, live) = RecoveryManifestBackingRetention::from_phase(receipt, None);
+        let retained = RecoveryManifestBodyRetention::pair(body, backing);
+        live.executor.retain_manifest_backing(retained.clone());
+        RecoveryManifestBodyFailure::new(error, retained)
     }
 
     /// Faults the live phase and retains durable custody for actual failure handling.
@@ -123,11 +146,53 @@ impl<'phase, 'executor> RecoveryManifestEffect<'phase, 'executor> {
         drop(flight);
         RecoveryManifestEffectFailure {
             error,
-            backing: RecoveryManifestBackingRetention::from_phase(receipt, None),
+            backing: RecoveryManifestBackingRetention::from_phase(receipt, None).0,
         }
     }
 
     fn receipt_ref(&self) -> &RecoveryRetainedManifest<'phase, 'executor> {
         &self.receipt
+    }
+}
+
+/// Retains an actual response body in the physical registry through final checks.
+///
+/// The body was inserted before this value exists. Dropping it faults the live
+/// phase while the executor keeps the accepted body and durable source/pins.
+pub(crate) struct AcceptedRecoveryManifestEffect<'phase, 'executor> {
+    effect: RecoveryManifestEffect<'phase, 'executor>,
+    body: Arc<crate::publisher_local::client::PeerPublishedObject<HostDomainLocation>>,
+}
+
+impl AcceptedRecoveryManifestEffect<'_, '_> {
+    /// Borrows the actual registered body for same-response lifecycle correlation.
+    pub(crate) fn body(
+        &self,
+    ) -> &crate::publisher_local::client::PeerPublishedObject<HostDomainLocation> {
+        &self.body
+    }
+
+    /// Borrows original exclusive recovery authority without acquiring a mutex.
+    pub(crate) fn live_context(&self) -> &LiveManifestRecoveryContext<'_> {
+        self.effect.live_context()
+    }
+
+    /// Reconciles registered backing and retains its typed pair before replying.
+    ///
+    /// Must run outside the Client mutex after same-response native verification.
+    /// Success supplies resource custody, not canonical lifecycle/serving proof.
+    ///
+    /// # Errors
+    /// Returns a faulted registered body/metadata pair for native/source/context,
+    /// synchronization, measurement or authenticated quota reconciliation errors.
+    pub(crate) fn complete(
+        self,
+    ) -> Result<RecoveryManifestBodyRetention, RecoveryManifestBodyFailure> {
+        self.effect.complete_body(self.body)
+    }
+
+    /// Faults the effect and retains its actual body/metadata pair on failure.
+    pub(crate) fn fail(self, error: io::Error) -> RecoveryManifestBodyFailure {
+        self.effect.fail_body(error, self.body)
     }
 }
