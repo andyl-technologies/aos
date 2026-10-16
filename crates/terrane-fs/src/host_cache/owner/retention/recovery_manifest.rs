@@ -7,12 +7,42 @@
 
 use super::{executor::NativeOwnerExecutor, *};
 use crate::publisher_local::client::PublisherRecoveryContext;
-use std::cell::Cell;
+use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RecoveryPhase {
     Active,
+    InFlight,
     Faulted,
+}
+
+/// Faults a live phase if physical retention is abandoned before reconciliation.
+struct InFlightRetention {
+    phase: Rc<Cell<RecoveryPhase>>,
+    reconciled: bool,
+}
+
+impl InFlightRetention {
+    fn begin(phase: &Rc<Cell<RecoveryPhase>>) -> Self {
+        phase.set(RecoveryPhase::InFlight);
+        Self {
+            phase: Rc::clone(phase),
+            reconciled: false,
+        }
+    }
+
+    fn complete(mut self) {
+        self.reconciled = true;
+        self.phase.set(RecoveryPhase::Active);
+    }
+}
+
+impl Drop for InFlightRetention {
+    fn drop(&mut self) {
+        if !self.reconciled {
+            self.phase.set(RecoveryPhase::Faulted);
+        }
+    }
 }
 
 /// Retains the original publisher barrier and exclusive physical recovery turn.
@@ -25,7 +55,7 @@ pub(crate) struct LiveManifestRecoveryContext<'executor> {
     original: PublisherRecoveryContext<HostDomainLocation>,
     bootstrap_id: [u8; 16],
     generation: Cell<u64>,
-    phase: Cell<RecoveryPhase>,
+    phase: Rc<Cell<RecoveryPhase>>,
 }
 
 impl NativeOwnerExecutor {
@@ -71,7 +101,7 @@ impl NativeOwnerExecutor {
             original,
             bootstrap_id,
             generation: Cell::new(generation),
-            phase: Cell::new(RecoveryPhase::Active),
+            phase: Rc::new(Cell::new(RecoveryPhase::Active)),
         })
     }
 }
@@ -96,6 +126,10 @@ impl<'executor> LiveManifestRecoveryContext<'executor> {
     /// Refuses changed process/root/owner/generation, absent durable hold or a
     /// changed original publisher session/barrier. It retains no state lock.
     pub(crate) fn check_current(&self) -> io::Result<()> {
+        self.check_current_phase(RecoveryPhase::Active)
+    }
+
+    fn check_current_phase(&self, expected: RecoveryPhase) -> io::Result<()> {
         self.executor.check_physical_worker()?;
         {
             let owner = self
@@ -103,7 +137,7 @@ impl<'executor> LiveManifestRecoveryContext<'executor> {
                 .custody()
                 .lock()
                 .map_err(|_| io::Error::other("metadata custody poisoned"))?;
-            self.check_owner(&owner)?;
+            self.check_owner_phase(&owner, expected)?;
         }
         self.session
             .check_recovery_context(&self.original)
@@ -115,8 +149,20 @@ impl<'executor> LiveManifestRecoveryContext<'executor> {
     /// # Errors
     /// Refuses failed operations or changed owner, reservation and generation.
     pub(super) fn check_owner(&self, owner: &Custody) -> io::Result<()> {
+        self.check_owner_phase(owner, RecoveryPhase::Active)
+    }
+
+    /// Checks only the accepted producer's current in-flight phase.
+    ///
+    /// # Errors
+    /// Refuses abandoned/completed work and changed actual owner custody.
+    pub(super) fn check_producer_owner(&self, owner: &Custody) -> io::Result<()> {
+        self.check_owner_phase(owner, RecoveryPhase::InFlight)
+    }
+
+    fn check_owner_phase(&self, owner: &Custody, expected: RecoveryPhase) -> io::Result<()> {
         owner.check_current()?;
-        if self.phase.get() != RecoveryPhase::Active
+        if self.phase.get() != expected
             || !owner.faulted
             || !owner.recovery_required
             || owner.snapshot.is_none()
@@ -162,6 +208,7 @@ impl<'executor> LiveManifestRecoveryContext<'executor> {
         identity: Identity,
     ) -> io::Result<RecoveryRetainedManifest<'_, 'executor>> {
         self.check_current()?;
+        let flight = InFlightRetention::begin(&self.phase);
         let custody = Arc::clone(self.executor.custody());
         let result = super::manifest::retain_recovery(&custody, identity, self).await;
         let retained = match result {
@@ -172,12 +219,13 @@ impl<'executor> LiveManifestRecoveryContext<'executor> {
             }
         };
         if let Err(error) = self
-            .check_current()
+            .check_current_phase(RecoveryPhase::InFlight)
             .and_then(|()| retained.source.recheck())
         {
             self.phase.set(RecoveryPhase::Faulted);
             return Err(error);
         }
+        flight.complete();
         Ok(RecoveryRetainedManifest {
             retained,
             live: self,
@@ -259,5 +307,38 @@ impl RecoveryRetainedManifest<'_, '_> {
         }
         self.live.check_owner(&owner)?;
         self.retained.check_registration(&owner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_in_flight_retention_never_reactivates_the_live_phase() {
+        let phase = Rc::new(Cell::new(RecoveryPhase::Active));
+        // This tests cancellation bookkeeping only, without native IO or a
+        // synthetic root, reservation, source or durable retention receipt.
+        let observed = Rc::clone(&phase);
+        let mut future = Box::pin(async move {
+            let flight = InFlightRetention::begin(&observed);
+            std::future::pending::<()>().await;
+            flight.complete();
+        });
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(future.as_mut(), &mut context).is_pending());
+        assert!(phase.get() == RecoveryPhase::InFlight);
+        assert!(phase.get() != RecoveryPhase::Active);
+        drop(future);
+        assert!(phase.get() == RecoveryPhase::Faulted);
+    }
+
+    #[test]
+    fn only_reconciled_retention_returns_to_active() {
+        let phase = Rc::new(Cell::new(RecoveryPhase::Active));
+        InFlightRetention::begin(&phase).complete();
+        assert!(phase.get() == RecoveryPhase::Active);
+        drop(InFlightRetention::begin(&phase));
+        assert!(phase.get() == RecoveryPhase::Faulted);
     }
 }

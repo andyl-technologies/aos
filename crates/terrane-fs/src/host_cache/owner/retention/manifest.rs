@@ -36,7 +36,7 @@ async fn retain_with_authority(
         .lock()
         .map_err(|_| io::Error::other("metadata custody poisoned"))?;
     if let Some(context) = live.as_ref() {
-        context.check_owner(&owner)?;
+        context.check_producer_owner(&owner)?;
     } else if owner.faulted || owner.recovery_required {
         return Err(io::Error::other(
             "metadata owner requires failed-operation recovery",
