@@ -7,9 +7,9 @@ use terrane_core::identity::TERRANE_V1;
 
 fn policy() -> ValidationPolicy<'static> {
     ValidationPolicy {
-        domain: "fixture",
+        domain: "public",
         identity: &TERRANE_V1,
-        chunk_profile: "fixture",
+        chunk_profile: "cdc-1m",
     }
 }
 
@@ -18,7 +18,7 @@ fn packet() -> Packet {
         version: 1,
         request_id: 1,
         operation: Operation::Drain as i32,
-        domain: "fixture".into(),
+        domain: "public".into(),
         cache_incarnation: vec![1; 16],
         wait_budget_ms: 100,
         ..Packet::default()
@@ -198,30 +198,30 @@ fn ancillary_truncation_and_unregistered_credentials_are_rejected() {
 fn configured_domain_selection_has_no_fallback() {
     let (client, server) = pair();
     let other = ValidationPolicy {
-        domain: "other",
+        domain: "private:other",
         identity: &TERRANE_V1,
-        chunk_profile: "fixture",
+        chunk_profile: "cdc-1m",
     };
     let request = Packet {
-        domain: "other".into(),
+        domain: "private:other".into(),
         ..packet()
     };
     client.send(&request, &[], &other).unwrap();
     let policies = [policy(), other];
     assert_eq!(
         server.receive_selected(&policies).unwrap().packet.domain,
-        "other"
+        "private:other"
     );
 
     let denied = Packet {
         request_id: 2,
-        domain: "unknown".into(),
+        domain: "private:unknown".into(),
         ..packet()
     };
     let unknown = ValidationPolicy {
-        domain: "unknown",
+        domain: "private:unknown",
         identity: &TERRANE_V1,
-        chunk_profile: "fixture",
+        chunk_profile: "cdc-1m",
     };
     client.send(&denied, &[], &unknown).unwrap();
     assert!(matches!(

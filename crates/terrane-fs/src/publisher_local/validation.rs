@@ -6,7 +6,10 @@
 //! ```
 
 use prost::Message;
-use terrane_core::identity::{Descriptor, IdentityKind, IdentityProfile};
+use terrane_core::{
+    identity::{Descriptor, IdentityKind, IdentityProfile},
+    properties::Domain,
+};
 
 use super::{
     Error,
@@ -44,6 +47,9 @@ pub fn decode_packet(
 }
 
 /// Decodes the closed envelope before selecting an exact configured domain.
+///
+/// # Errors
+/// Rejects oversized, malformed, unknown or inappropriate protobuf fields.
 pub(super) fn decode_envelope(bytes: &[u8]) -> Result<Packet, Error> {
     if bytes.is_empty() || bytes.len() > MAX_PACKET {
         return Err(Error::Invalid("packet length"));
@@ -74,6 +80,7 @@ pub fn validate_packet(
     if packet.version != 1
         || packet.request_id == 0
         || operation == Operation::Unspecified
+        || Domain::parse(&packet.domain).is_err()
         || packet.domain != policy.domain
         || packet.cache_incarnation.len() != 16
         || packet.response != response

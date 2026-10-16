@@ -38,9 +38,9 @@ fn identities() -> RoleIdentities {
 
 fn policy() -> ValidationPolicy<'static> {
     ValidationPolicy {
-        domain: "vm-fixture",
+        domain: "public",
         identity: &TERRANE_V1,
-        chunk_profile: "fixture",
+        chunk_profile: "cdc-1m",
     }
 }
 
@@ -49,7 +49,7 @@ fn request() -> Packet {
         version: 1,
         request_id: 1,
         operation: Operation::Drain as i32,
-        domain: "vm-fixture".into(),
+        domain: "public".into(),
         cache_incarnation: vec![1; 16],
         wait_budget_ms: 100,
         ..Packet::default()

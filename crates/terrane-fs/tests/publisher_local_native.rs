@@ -11,10 +11,7 @@ use std::{
     io::Read,
     os::{
         fd::AsFd,
-        unix::{
-            fs::{MetadataExt, PermissionsExt},
-            process::CommandExt,
-        },
+        unix::fs::{MetadataExt, PermissionsExt},
     },
     path::{Path, PathBuf},
     process::{Child, Command},
@@ -31,7 +28,9 @@ use terrane_core::{
     identity::{Descriptor, IdentityKind, TERRANE_V1},
 };
 use terrane_fs::{
-    publisher_io::{NativePublicationWorker, NativeWipePolicy},
+    publisher_io::{
+        NativePublicationWorker, NativePublisherConfig, NativeRetirementPolicy, NativeWipePolicy,
+    },
     publisher_local::{
         server::{DomainPublisher, Server, ServerConfig},
         socket::{Connection, ReceivedPacket, RoleIdentities},
@@ -49,14 +48,6 @@ fn identities() -> RoleIdentities {
     RoleIdentities {
         serve_uid: SERVE,
         publish_uid: PUBLISH,
-    }
-}
-
-fn policy() -> ValidationPolicy<'static> {
-    ValidationPolicy {
-        domain: "public",
-        identity: &TERRANE_V1,
-        chunk_profile: "cdc-1m",
     }
 }
 
@@ -97,8 +88,13 @@ fn publication(operation: Operation, request_id: u64, incarnation: u8) -> Packet
 
 fn exchange(connection: &Connection, request: &Packet, source: Option<&File>) -> ReceivedPacket {
     let files = source.iter().map(|file| file.as_fd()).collect::<Vec<_>>();
-    connection.send(request, &files, &policy()).unwrap();
-    connection.receive(&policy()).unwrap()
+    let selected = ValidationPolicy {
+        domain: &request.domain,
+        identity: &TERRANE_V1,
+        chunk_profile: "cdc-1m",
+    };
+    connection.send(request, &files, &selected).unwrap();
+    connection.receive(&selected).unwrap()
 }
 
 fn complete(connection: &Connection, request: &Packet) {
@@ -144,8 +140,17 @@ impl Drop for Running {
 }
 
 fn spawn(role: &str, uid: u32, root: &Path) -> Running {
+    // The VM supplies source-built util-linux. Set explicit supplementary
+    // groups without unsafe process hooks or changing the primary role group.
     Running(
-        Command::new(std::env::current_exe().unwrap())
+        Command::new("setpriv")
+            .args([
+                format!("--reuid={uid}"),
+                format!("--regid={uid}"),
+                format!("--groups={SERVE}"),
+                "--".into(),
+            ])
+            .arg(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "publisher_local_native_role",
@@ -154,11 +159,48 @@ fn spawn(role: &str, uid: u32, root: &Path) -> Running {
             ])
             .env("TERRANE_PUBLISHER_NATIVE_ROLE", role)
             .env("TERRANE_PUBLISHER_NATIVE_ROOT", root)
-            .uid(uid)
-            .gid(uid)
             .spawn()
             .unwrap(),
     )
+}
+
+fn create_layout(path: &Path) {
+    fs::create_dir(path).unwrap();
+    chown(
+        path,
+        Some(Uid::from_raw(PUBLISH)),
+        Some(Gid::from_raw(SERVE)),
+    )
+    .unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o2750)).unwrap();
+    for (name, shared) in [
+        ("state", false),
+        ("chunks", true),
+        ("objects", true),
+        ("quarantine", true),
+        ("sealed", false),
+        ("staging", false),
+        ("pending-delete", false),
+        ("state/publication", false),
+    ] {
+        let directory = path.join(name);
+        fs::create_dir(&directory).unwrap();
+        let uid = if shared { SERVE } else { PUBLISH };
+        chown(
+            &directory,
+            Some(Uid::from_raw(uid)),
+            Some(Gid::from_raw(SERVE)),
+        )
+        .unwrap();
+        let mode = if shared {
+            0o2770
+        } else if name == "state" {
+            0o750
+        } else {
+            0o700
+        };
+        fs::set_permissions(directory, fs::Permissions::from_mode(mode)).unwrap();
+    }
 }
 
 #[test]
@@ -176,17 +218,8 @@ fn publisher_local_native_lifecycle_vm() {
     )
     .unwrap();
     fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o2750)).unwrap();
-    for name in ["sealed", "staging", "pending", "state", "quarantine"] {
-        let path = scratch.0.join(name);
-        fs::create_dir(&path).unwrap();
-        chown(
-            &path,
-            Some(Uid::from_raw(PUBLISH)),
-            Some(Gid::from_raw(PUBLISH)),
-        )
-        .unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-    }
+    create_layout(&scratch.0.join("public"));
+    create_layout(&scratch.0.join("private"));
     fs::write(scratch.0.join("source"), PLAINTEXT).unwrap();
     fs::set_permissions(scratch.0.join("source"), fs::Permissions::from_mode(0o444)).unwrap();
 
@@ -212,27 +245,32 @@ fn publisher_local_native_role() {
         .as_str()
     {
         "publisher" => {
-            let worker = NativePublicationWorker::start(
-                "public".into(),
-                NativeWipePolicy::None,
-                &root.join("sealed"),
-                &root.join("staging"),
-                &root.join("pending"),
-                &root.join("state"),
-            )
-            .unwrap();
+            let mut domains = Vec::new();
+            for (name, label, seed) in [("public", "public", 0), ("private", "private:fixture", 1)]
+            {
+                let worker = NativePublicationWorker::start(NativePublisherConfig {
+                    domain: label.into(),
+                    layout_root: root.join(name),
+                    wipe: NativeWipePolicy::None,
+                    retirement: NativeRetirementPolicy::new(Duration::from_millis(100)).unwrap(),
+                    content_uid: SERVE,
+                    content_gid: SERVE,
+                })
+                .unwrap();
+                domains.push(DomainPublisher {
+                    domain: label.into(),
+                    chunk_profile_name: "cdc-1m".into(),
+                    chunk_profile: ChunkProfile::cdc_1m([seed; 32]),
+                    worker,
+                });
+            }
             let server = Server::bind(
                 ServerConfig {
                     socket_path: root.join("publisher.sock"),
                     identities: identities(),
                     max_connections: 4,
                 },
-                vec![DomainPublisher {
-                    domain: "public".into(),
-                    chunk_profile_name: "cdc-1m".into(),
-                    chunk_profile: ChunkProfile::cdc_1m([0; 32]),
-                    worker,
-                }],
+                domains,
             )
             .unwrap();
             let metadata = fs::metadata(root.join("publisher.sock")).unwrap();
@@ -244,6 +282,103 @@ fn publisher_local_native_role() {
         "serve" => run_client(&root),
         role => panic!("unknown native role {role}"),
     }
+}
+
+fn private_domain(mut packet: Packet) -> Packet {
+    packet.domain = "private:fixture".into();
+    packet
+}
+
+fn check_other_domain(
+    connection: &Connection,
+    source: &File,
+    device: u64,
+    public_inode: u64,
+    public_token: &[u8],
+) -> (u64, Vec<u8>) {
+    complete(
+        connection,
+        &private_domain(packet(Operation::Drain, 100, 1)),
+    );
+    let missing = exchange(
+        connection,
+        &private_domain(publication(Operation::Adopt, 101, 1)),
+        None,
+    );
+    assert_eq!(
+        missing.packet.result, 3,
+        "another domain must not supply fallback content"
+    );
+    complete(
+        connection,
+        &private_domain(packet(Operation::Resume, 102, 1)),
+    );
+    let published = backing(
+        exchange(
+            connection,
+            &private_domain(publication(Operation::Publish, 103, 1)),
+            Some(source),
+        ),
+        device,
+    );
+    assert_ne!(published.0, public_inode);
+    assert_ne!(published.1, public_token);
+    let wrong = private_domain(Packet {
+        body: publication(Operation::Publish, 1, 1).body,
+        body_incarnation: public_token.to_vec(),
+        ..packet(Operation::Retire, 104, 1)
+    });
+    assert_ne!(exchange(connection, &wrong, None).packet.result, 0);
+    assert_eq!(
+        backing(
+            exchange(
+                connection,
+                &private_domain(publication(Operation::Adopt, 105, 1)),
+                None
+            ),
+            device
+        ),
+        published
+    );
+    published
+}
+
+fn check_unknown_domain(root: &Path) {
+    let connection = Connection::connect(&root.join("publisher.sock"), identities()).unwrap();
+    let mut unknown = packet(Operation::Probe, 900, 1);
+    unknown.domain = "unknown".into();
+    let policy = ValidationPolicy {
+        domain: "unknown",
+        identity: &TERRANE_V1,
+        chunk_profile: "cdc-1m",
+    };
+    connection.send(&unknown, &[], &policy).unwrap();
+    assert!(
+        connection.receive(&policy).is_err(),
+        "unknown domain must never select a worker"
+    );
+}
+
+fn pending_token(
+    connection: &Connection,
+    body: Option<BodyKey>,
+    request_id: u64,
+    incarnation: u8,
+) -> Vec<u8> {
+    let response = exchange(
+        connection,
+        &Packet {
+            body,
+            ..packet(Operation::InspectPending, request_id, incarnation)
+        },
+        None,
+    );
+    assert_eq!(response.packet.result, 0);
+    assert!(response.files.is_empty());
+    assert_eq!(response.packet.verity_algorithm, 0);
+    assert!(response.packet.verity_digest.is_empty());
+    assert_eq!(response.packet.body_incarnation.len(), 32);
+    response.packet.body_incarnation
 }
 
 fn run_client(root: &Path) {
@@ -282,6 +417,9 @@ fn run_client(root: &Path) {
         (inode, token.clone())
     );
 
+    let private = check_other_domain(&connection, &source, expected_device, inode, &token);
+    check_unknown_domain(root);
+
     let body = first.body.clone();
     let wrong = Packet {
         body: body.clone(),
@@ -312,6 +450,18 @@ fn run_client(root: &Path) {
     );
 
     complete(&connection, &packet(Operation::Drain, 11, 2));
+    assert_eq!(
+        backing(
+            exchange(
+                &connection,
+                &private_domain(publication(Operation::Adopt, 106, 1)),
+                None
+            ),
+            expected_device
+        ),
+        private
+    );
+
     assert_ne!(
         exchange(&connection, &packet(Operation::Probe, 12, 1), None)
             .packet
@@ -345,15 +495,66 @@ fn run_client(root: &Path) {
             ..packet(Operation::Retire, 17, 2)
         },
     );
+    complete(&connection, &packet(Operation::Drain, 18, 3));
+    let absent = exchange(&connection, &publication(Operation::Adopt, 19, 3), None);
+    assert_eq!(absent.packet.result, 3);
+    assert!(absent.files.is_empty());
+    let stale_restore = Packet {
+        body: body.clone(),
+        body_incarnation: recovered.1,
+        ..packet(Operation::Restore, 20, 3)
+    };
+    assert_ne!(exchange(&connection, &stale_restore, None).packet.result, 0);
+    let pending = pending_token(&connection, body.clone(), 21, 3);
     complete(
         &connection,
         &Packet {
-            body,
-            body_incarnation: recovered.1,
-            ..packet(Operation::FinishRetirement, 18, 2)
+            body: body.clone(),
+            body_incarnation: pending.clone(),
+            ..packet(Operation::Restore, 22, 3)
         },
     );
-    let removed = exchange(&connection, &publication(Operation::Adopt, 19, 2), None);
-    assert_ne!(removed.packet.result, 0);
+    // Restored namespace custody alone gave no descriptor. Canonical adoption
+    // independently verifies plaintext and seal before returning this handle.
+    assert_eq!(
+        backing(
+            exchange(&connection, &publication(Operation::Adopt, 23, 3), None),
+            expected_device
+        ),
+        (inode, pending.clone())
+    );
+    complete(&connection, &packet(Operation::Resume, 24, 3));
+    complete(
+        &connection,
+        &Packet {
+            body: body.clone(),
+            body_incarnation: pending,
+            ..packet(Operation::Retire, 25, 3)
+        },
+    );
+    complete(&connection, &packet(Operation::Drain, 26, 4));
+    let pending = pending_token(&connection, body.clone(), 27, 4);
+    for attempt in 0..100 {
+        let response = exchange(
+            &connection,
+            &Packet {
+                body: body.clone(),
+                body_incarnation: pending.clone(),
+                ..packet(Operation::FinishRetirement, 28 + attempt, 4)
+            },
+            None,
+        );
+        if response.packet.result == 0 {
+            break;
+        }
+        assert_eq!(
+            response.packet.result, 7,
+            "only an actual unexpired lease may delay removal"
+        );
+        assert!(attempt < 99, "retirement lease did not expire");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let removed = exchange(&connection, &publication(Operation::Adopt, 200, 4), None);
+    assert_eq!(removed.packet.result, 3);
     assert!(removed.files.is_empty());
 }

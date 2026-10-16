@@ -316,13 +316,9 @@ fn native_operation(
             cursors.retain(|_, cursor| cursor.domain != packet.domain);
             NativeOperation::Resume
         }
-        Operation::InspectPending => {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "pending inspection awaits the concrete native custody command",
-            )
-            .into());
-        }
+        Operation::InspectPending => NativeOperation::InspectPending {
+            key: required_body()?,
+        },
         Operation::Unspecified => return Err(Error::Invalid("operation")),
     })
 }
@@ -395,6 +391,9 @@ fn native_response(
         NativeCommandResult::Inspected { body, incarnation } => {
             packet.body_incarnation = incarnation.bytes().to_vec();
             files.push(body.into_handle());
+        }
+        NativeCommandResult::Pending { incarnation } => {
+            packet.body_incarnation = incarnation.bytes().to_vec();
         }
         NativeCommandResult::Complete => {}
         NativeCommandResult::Inventory { keys, next_cursor } => {

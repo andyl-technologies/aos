@@ -9,9 +9,9 @@ use terrane_fs::publisher_local::{
 
 fn policy() -> ValidationPolicy<'static> {
     ValidationPolicy {
-        domain: "fixture",
+        domain: "public",
         identity: &TERRANE_V1,
-        chunk_profile: "fixture-profile",
+        chunk_profile: "cdc-1m",
     }
 }
 
@@ -20,7 +20,7 @@ fn probe() -> Packet {
         version: 1,
         request_id: 1,
         operation: Operation::Probe as i32,
-        domain: "fixture".into(),
+        domain: "public".into(),
         cache_incarnation: vec![7; 16],
         wait_budget_ms: 100,
         ..Packet::default()
@@ -46,7 +46,7 @@ fn publish(manifest: bool) -> Packet {
         operation: Operation::Publish as i32,
         claim: Some(Claim {
             descriptor: descriptor.clone(),
-            chunk_profile: "fixture-profile".into(),
+            chunk_profile: "cdc-1m".into(),
             plaintext_size: bytes.len() as u64,
             manifest_offset: 0,
             manifest_length: if manifest { bytes.len() as u64 } else { 0 },
@@ -284,7 +284,7 @@ fn header_direction_domain_version_and_budget_are_checked() {
             ..probe()
         },
         Packet {
-            domain: "other".into(),
+            domain: "private:other".into(),
             ..probe()
         },
         Packet {
