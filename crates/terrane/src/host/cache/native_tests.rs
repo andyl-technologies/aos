@@ -380,3 +380,27 @@ async fn host_cache_native_operator_budget_is_capacity_not_corruption() {
         b"\0valid content larger than selected budget"
     );
 }
+
+#[tokio::test]
+async fn host_cache_native_resident_chunk_survives_unrelated_overbudget_index() {
+    use super::HostReadLimits;
+    let scratch = Scratch::new();
+    let identity = scratch.chunk(b"x");
+    let id = PackId::from_random_bytes([21; 16]);
+    let path = scratch.0.join(id.pack_key());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"unrelated pack").unwrap();
+    std::fs::write(scratch.0.join(id.index_key()), b"unrelated oversized index").unwrap();
+    let reader = HostReadOnlyContent::open_existing_with_limits(
+        scratch.layout(),
+        TokioLocalFs,
+        MetadataValidator::new(ChunkProfile::cdc_1m([0; 32])),
+        HostReadLimits {
+            max_allocation_bytes: 4,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(reader.get(&identity, None).await.unwrap(), b"\0x");
+}

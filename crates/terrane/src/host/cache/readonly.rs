@@ -361,6 +361,13 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         if identity.profile() != TERRANE_V1.name() || identity.digest().len() != 32 {
             return Err(invalid());
         }
+        if identity.kind() == IdentityKind::Chunk {
+            match self.standalone(identity, allow_dictionary).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(error) if matches!(error.kind(), StoreErrorKind::Absent(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
         for path in self.pack_paths().await? {
             if identity.kind() == IdentityKind::Pack {
                 let bytes = self.read_file(&path).await?;
@@ -467,6 +474,14 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
             }
             return Ok(bytes);
         }
+        Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())))
+    }
+
+    async fn standalone(
+        &self,
+        identity: &Identity,
+        allow_dictionary: bool,
+    ) -> Result<Vec<u8>, StoreFailure> {
         // Standalone bodies retain exactly the same codec envelope as pack bodies.
         let hex: String = identity
             .digest()
