@@ -10,7 +10,9 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     os::unix::fs::MetadataExt,
 };
-use terrane::host::cache::{inspect_standalone_length, maximum_encoded_chunk_bytes};
+use terrane::host::cache::{
+    HostReadLocation, inspect_standalone_length, maximum_encoded_chunk_bytes,
+};
 use terrane_core::{
     chunking::ChunkProfile,
     codec::Codec,
@@ -40,8 +42,8 @@ impl NativeChunkSource {
     /// # Errors
     /// Refuses changed directories, absent/malformed/corrupt chunks, profile or
     /// boundary mismatch, oversized bodies and nested dictionary dependencies.
-    pub fn open(
-        layout: &NativeHostLayout,
+    pub fn open<L: HostReadLocation>(
+        layout: &NativeHostLayout<L>,
         identity: Identity,
         length: usize,
         final_chunk: bool,
@@ -49,8 +51,8 @@ impl NativeChunkSource {
         Self::open_inner(layout, identity, Some(length), final_chunk, true)
     }
 
-    fn open_inner(
-        layout: &NativeHostLayout,
+    fn open_inner<L: HostReadLocation>(
+        layout: &NativeHostLayout<L>,
         identity: Identity,
         length: Option<usize>,
         final_chunk: bool,
@@ -126,7 +128,7 @@ impl NativeChunkSource {
         };
         let mut source = Self {
             file,
-            domain: layout.layout.domain_binding().domain.clone(),
+            domain: layout.layout.domain().to_owned(),
             identity,
             length: declared,
             final_chunk,

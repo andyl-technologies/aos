@@ -12,14 +12,17 @@ use std::{
     os::fd::AsFd,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
 };
 
-use terrane::host::publication::{PublicationClaim, PublicationRecipe};
+use terrane::host::{
+    cache::HostReadLimits,
+    publication::{PublicationClaim, PublicationRecipe},
+};
 use terrane_core::{
     chunking::ChunkProfile,
     identity::{Descriptor, TERRANE_V1},
@@ -33,8 +36,8 @@ use super::{
     wire::{BodyKey, BodyKind, Operation, Packet, ResultCode},
 };
 use crate::publisher_io::{
-    NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeOperation,
-    NativePublicationWorker,
+    NativeBodyKey, NativeCommandContext, NativeCommandResult, NativeManifestWitness,
+    NativeOperation, NativePublicationWorker, ReceivedManifest,
 };
 
 /// Configured publisher-local endpoint policy and bounded connection resources.
@@ -65,6 +68,12 @@ pub struct Server {
     config: Arc<ServerConfig>,
     domains: Arc<BTreeMap<String, DomainPublisher>>,
     custody: Option<Arc<crate::configured::ConfiguredPublisherCustody>>,
+    metadata: Arc<MetadataVerification>,
+}
+
+struct MetadataVerification {
+    limits: HostReadLimits,
+    gate: Mutex<()>,
 }
 
 impl Server {
@@ -76,6 +85,28 @@ impl Server {
     /// custody, duplicate/noncanonical domain labels, the wrong role identity
     /// and kernel bind failures. Unknown request domains never use a fallback.
     pub fn bind(config: ServerConfig, domains: Vec<DomainPublisher>) -> Result<Self, Error> {
+        Self::bind_with_metadata_limits(config, domains, HostReadLimits::default())
+    }
+
+    /// Binds with a trusted per-allocation metadata verification budget.
+    ///
+    /// Only one full received-pack verification runs at a time across all
+    /// configured domains. The default constructor uses a 64 MiB per-allocation
+    /// budget. Encoded pack and decoded canonical payload allocations are
+    /// separately bounded; this is not a total heap or retained-row budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns the configuration, identity and kernel errors of `bind`, or an
+    /// invalid-resource-policy error for a zero allocation limit.
+    pub fn bind_with_metadata_limits(
+        config: ServerConfig,
+        domains: Vec<DomainPublisher>,
+        limits: HostReadLimits,
+    ) -> Result<Self, Error> {
+        if limits.max_allocation_bytes == 0 {
+            return Err(Error::Invalid("metadata allocation resource policy"));
+        }
         if !(1..=1024).contains(&config.max_connections) || domains.is_empty() {
             return Err(Error::Invalid("server configuration"));
         }
@@ -96,6 +127,10 @@ impl Server {
             config: Arc::new(config),
             domains: Arc::new(registered),
             custody: None,
+            metadata: Arc::new(MetadataVerification {
+                limits,
+                gate: Mutex::new(()),
+            }),
         })
     }
 
@@ -137,13 +172,14 @@ impl Server {
             let permit = ConnectionPermit(Arc::clone(&active));
             let domains = Arc::clone(&self.domains);
             let custody = self.custody.clone();
+            let metadata = Arc::clone(&self.metadata);
             thread::Builder::new()
                 .name("publisher-local-owner".into())
                 .spawn(move || {
                     let _permit = permit;
                     let _custody = custody;
                     // Connection failures close all retained packet/reply files.
-                    let _ = run_connection(connection, &domains);
+                    let _ = run_connection(connection, &domains, &metadata);
                 })?;
         }
     }
@@ -166,6 +202,7 @@ struct Cursor {
 fn run_connection(
     connection: Connection,
     domains: &BTreeMap<String, DomainPublisher>,
+    metadata: &MetadataVerification,
 ) -> Result<(), Error> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -196,7 +233,7 @@ fn run_connection(
                 .try_into()
                 .map_err(|_| Error::Invalid("cache incarnation"))?,
         };
-        let operation = match native_operation(request, selected, &mut cursors) {
+        let operation = match native_operation(request, selected, &mut cursors, metadata) {
             Ok(operation) => operation,
             Err(error) => {
                 connection.send(&error_response(&header, error_code(&error)), &[], &policy)?;
@@ -247,21 +284,21 @@ fn native_operation(
     request: ReceivedPacket,
     config: &DomainPublisher,
     cursors: &mut BTreeMap<Vec<u8>, Cursor>,
+    metadata: &MetadataVerification,
 ) -> Result<NativeOperation, Error> {
     let ReceivedPacket { packet, files } = request;
     let operation =
         Operation::try_from(packet.operation).map_err(|_| Error::Invalid("operation"))?;
     let mut files = files.into_iter();
+    if packet
+        .claim
+        .as_ref()
+        .is_some_and(|claim| claim.manifest_length != 0)
+    {
+        return manifest_operation(operation, packet, files, config, metadata);
+    }
     let claim = match packet.claim {
         Some(claim) => {
-            if claim.manifest_length != 0 {
-                // A wire retention ID cannot mint the cache owner's durable pin.
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "manifest publication requires native retention receipt composition",
-                )
-                .into());
-            }
             let chunk = Descriptor::decode(&TERRANE_V1, &claim.descriptor)
                 .map_err(|_| Error::Invalid("claim descriptor"))?;
             Some(PublicationClaim::new(
@@ -333,6 +370,66 @@ fn native_operation(
             key: required_body()?,
         },
         Operation::Unspecified => return Err(Error::Invalid("operation")),
+    })
+}
+
+fn manifest_operation(
+    operation: Operation,
+    packet: Packet,
+    mut files: std::vec::IntoIter<File>,
+    config: &DomainPublisher,
+    metadata: &MetadataVerification,
+) -> Result<NativeOperation, Error> {
+    let source = match operation {
+        Operation::Publish => Some(
+            files
+                .next()
+                .ok_or(Error::Invalid("missing plaintext source"))?,
+        ),
+        Operation::Adopt | Operation::InspectBody => None,
+        _ => return Err(Error::Invalid("manifest command")),
+    };
+    let pack = files
+        .next()
+        .ok_or(Error::Invalid("missing reconstruction metadata pack"))?;
+    if files.next().is_some() {
+        return Err(Error::Invalid("excess manifest descriptors"));
+    }
+    let claim = packet
+        .claim
+        .ok_or(Error::Invalid("missing manifest claim"))?;
+    let descriptor = Descriptor::decode(&TERRANE_V1, &claim.descriptor)
+        .map_err(|_| Error::Invalid("manifest descriptor"))?;
+    // This independently verifies the actual bounded pack/range and copies
+    // canonical metadata with positioned reads. A retention ID is not passed
+    // to the witness factory and never becomes native durable-pin authority.
+    let _permit = metadata
+        .gate
+        .lock()
+        .map_err(|_| Error::Invalid("poisoned metadata verification owner"))?;
+    let witness = NativeManifestWitness::verify_received(
+        ReceivedManifest {
+            domain: config.domain.clone(),
+            descriptor,
+            metadata_pack: pack,
+            offset: claim.manifest_offset,
+            length: claim.manifest_length,
+            plaintext_size: claim.plaintext_size,
+        },
+        &config.chunk_profile,
+        metadata.limits,
+    )?;
+    Ok(match operation {
+        Operation::Publish => NativeOperation::PublishManifest {
+            witness,
+            source: source.ok_or(Error::Invalid("missing plaintext source"))?,
+        },
+        Operation::Adopt => NativeOperation::AdoptManifest { witness },
+        Operation::InspectBody => NativeOperation::InspectManifest {
+            key: native_key(packet.body.ok_or(Error::Invalid("missing sealed key"))?)?,
+            witness,
+        },
+        _ => return Err(Error::Invalid("manifest command")),
     })
 }
 

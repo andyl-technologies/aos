@@ -5,6 +5,9 @@
 //! drain before another readonly operation. Drain acknowledges ordered publisher
 //! custody; it does not prove cache reconciliation or authorize resume.
 
+mod context;
+#[cfg(feature = "tokio")]
+mod manifest;
 mod receipt;
 mod recovery;
 
@@ -12,11 +15,16 @@ pub(crate) use recovery::{
     BodyIncarnationObservation, InventoryCursor, InventoryPage, RecoveryBody, UnverifiedBody,
 };
 
+pub(crate) use context::PublisherRecoveryContext;
+#[cfg(feature = "tokio")]
+pub use manifest::PeerManifestPublishedObject;
+
 pub use receipt::{PeerPublishedObject, PeerSealProbe};
 
 use std::{
     fs::File,
     io::Read,
+    os::fd::BorrowedFd,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
@@ -247,6 +255,16 @@ impl<L: HostReadLocation> Client<L> {
         operation: Operation,
         payload: RequestPayload,
     ) -> Result<ReceivedPacket, Error> {
+        self.exchange_payload_files(state, operation, payload, &[])
+    }
+
+    fn exchange_payload_files(
+        &self,
+        state: &mut State,
+        operation: Operation,
+        payload: RequestPayload,
+        files: &[BorrowedFd<'_>],
+    ) -> Result<ReceivedPacket, Error> {
         self.layout.recheck()?;
         let request_id = state.next_request_id;
         state.next_request_id = request_id
@@ -275,7 +293,7 @@ impl<L: HostReadLocation> Client<L> {
                 .connection
                 .as_ref()
                 .ok_or(Error::Invalid("publisher disconnected"))?;
-            connection.send(&packet, &[], &policy)?;
+            connection.send(&packet, files, &policy)?;
             connection.receive(&policy)
         })();
         let received = match result {

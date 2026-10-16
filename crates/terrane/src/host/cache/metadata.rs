@@ -7,7 +7,8 @@
 use super::{HostDomainLocation, HostReadLimits, HostReadOnlyContent};
 use crate::{
     bucket::BucketBinding,
-    store::{ContentStore, ContentValidator, LocalFs, StoreErrorKind, StoreFailure},
+    pack::PackId,
+    store::{ByteRange, ContentValidator, LocalFs, StoreErrorKind, StoreFailure},
 };
 use terrane_core::identity::{Identity, IdentityKind};
 
@@ -17,6 +18,20 @@ use terrane_core::identity::{Identity, IdentityKind};
 /// composition separately retains actual domain-root/charge-owner custody.
 pub struct HostMetadataReader<F, V> {
     inner: HostReadOnlyContent<F, V, HostDomainLocation>,
+}
+
+/// Describes freshly verified canonical metadata in an existing ordinary pack.
+///
+/// This is derived read data, not a retained native descriptor or durability,
+/// pin, quota or publication receipt. Native retention must independently open
+/// and verify the actual pack and index under its physical owner custody.
+pub struct HostMetadataEntry {
+    /// Exact canonical metadata bytes, verified against the requested identity.
+    pub canonical: Vec<u8>,
+    /// Existing-format pack identifier selected by verified index lookup.
+    pub pack_id: PackId,
+    /// Exact canonical body span within that pack.
+    pub range: ByteRange,
 }
 
 impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostMetadataReader<F, V> {
@@ -45,10 +60,30 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostMetada
     /// Returns unsupported for chunk/pack identities, absent for missing metadata,
     /// capacity for the operator budget, and malformed/corrupt/native I/O errors.
     pub async fn get(&self, identity: &Identity) -> Result<Vec<u8>, StoreFailure> {
+        Ok(self.get_entry(identity).await?.canonical)
+    }
+
+    /// Reads verified metadata and its existing pack-body location.
+    ///
+    /// The returned location is not native retention or durability proof. No
+    /// state record is written and no inode remains pinned by this operation.
+    ///
+    /// # Errors
+    /// Returns the same identity, capacity, absence, corruption and filesystem
+    /// failures as `get`; refuses any result lacking an ordinary pack location.
+    pub async fn get_entry(&self, identity: &Identity) -> Result<HostMetadataEntry, StoreFailure> {
         if matches!(identity.kind(), IdentityKind::Chunk | IdentityKind::Pack) {
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
-        self.inner.get(identity, None).await
+        let result = self.inner.read_encoded(identity, true).await?;
+        let (pack_id, range) = result
+            .pack
+            .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))?;
+        Ok(HostMetadataEntry {
+            canonical: result.bytes,
+            pack_id,
+            range,
+        })
     }
 
     /// Returns the physical root identity observed during opening.

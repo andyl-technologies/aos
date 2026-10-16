@@ -653,6 +653,12 @@ async fn host_cache_host_local_metadata_needs_no_repository_binding() {
     .await
     .unwrap();
     assert_eq!(metadata.get(&identity).await.unwrap(), canonical);
+    let located = metadata.get_entry(&identity).await.unwrap();
+    assert_eq!(located.pack_id, pack_id);
+    let start = usize::try_from(located.range.start).unwrap();
+    let length = usize::try_from(located.range.length).unwrap();
+    assert_eq!(&pack.bytes()[start..start + length], canonical.as_slice());
+    assert_eq!(located.canonical, canonical);
     assert!(matches!(
         metadata.get(&chunk).await.unwrap_err().kind(),
         StoreErrorKind::Unsupported

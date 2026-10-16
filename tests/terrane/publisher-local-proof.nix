@@ -46,8 +46,10 @@
       set -eu
       mkdir -p /var/lib/terrane-publisher-local /mnt/terrane-publisher-local
       truncate -s 96M /var/lib/terrane-publisher-local/verity.img
-      mkfs.ext4 -F -O verity /var/lib/terrane-publisher-local/verity.img
-      mount -t ext4 -o loop /var/lib/terrane-publisher-local/verity.img /mnt/terrane-publisher-local
+      # Inheriting finite projects are provisioned by the guest root supervisor.
+      # Linux requires the verity block size to fit the filesystem block size.
+      mkfs.ext4 -F -b 4096 -O project,quota,verity -E quotatype=prjquota /var/lib/terrane-publisher-local/verity.img
+      mount -t ext4 -o loop,prjquota /var/lib/terrane-publisher-local/verity.img /mnt/terrane-publisher-local
       trap 'umount /mnt/terrane-publisher-local; rm -f /var/lib/terrane-publisher-local/verity.img; rmdir /mnt/terrane-publisher-local /var/lib/terrane-publisher-local' EXIT
       export TERRANE_PUBLISHER_VM=1
       export TERRANE_PUBLISHER_EXT4_ROOT=/mnt/terrane-publisher-local
