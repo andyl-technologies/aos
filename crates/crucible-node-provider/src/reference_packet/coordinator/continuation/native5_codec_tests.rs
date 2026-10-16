@@ -85,7 +85,8 @@ pub(super) fn original_native5_controller_scope() -> (
     PacketControlSelection,
     InstalledContent,
 ) {
-    scope(true)
+    // The raw-census caller constructs a controller requiring negotiated evidence.
+    scope_named_with_limits_and_evidence(true, None, 0, None, true)
 }
 
 fn scope_named(
@@ -154,6 +155,21 @@ fn scope_named_with_limits(
     PacketControlSelection,
     InstalledContent,
 ) {
+    scope_named_with_limits_and_evidence(feature, suffix, participant, override_limits, false)
+}
+
+fn scope_named_with_limits_and_evidence(
+    feature: bool,
+    suffix: Option<&str>,
+    participant: usize,
+    override_limits: Option<Limits>,
+    control_evidence: bool,
+) -> (
+    Handshake,
+    ConnectionAuthority,
+    PacketControlSelection,
+    InstalledContent,
+) {
     let mut coordinator = five();
     if let Some(suffix) = suffix {
         let identities: Vec<_> = coordinator
@@ -208,6 +224,11 @@ fn scope_named_with_limits(
     ];
     if feature {
         features.push(id(contracts::PACKET_COMPLETE_LINEAGE_FEATURE));
+    }
+    if control_evidence {
+        let evidence = id("cnp.control-evidence/1");
+        assert!(selection.provider.extensions_supported.contains(&evidence));
+        features.push(evidence);
     }
     features.sort();
     let limits = override_limits.unwrap_or(Limits {
