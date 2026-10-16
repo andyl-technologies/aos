@@ -27,6 +27,18 @@ pub struct NativeCachePreparation {
 }
 
 impl NativeCachePreparation {
+    /// Retains actual readonly recovery inputs without issuing completion authority.
+    ///
+    /// # Errors
+    /// Refuses stale confinement or replaced native domain roots.
+    pub fn recovery_inspector(&self) -> io::Result<super::super::NativeRecoveryInspector> {
+        self.confinement.check_current()?;
+        self.layout.recheck()?;
+        Ok(super::super::NativeRecoveryInspector::from_preparation(
+            self,
+        ))
+    }
+
     /// Authenticates actual native custody without initializing writable state.
     ///
     /// The installed confinement receipt must originate from the current role
@@ -131,8 +143,18 @@ impl NativeCachePreparation {
     }
 
     /// Retains this actual authenticated session without reconnecting its incarnation.
-    pub(super) fn publisher_session(&self) -> Arc<Client<HostDomainLocation>> {
+    pub(in crate::host_cache) fn publisher_session(&self) -> Arc<Client<HostDomainLocation>> {
         Arc::clone(&self.publisher)
+    }
+
+    /// Borrows validated configuration for the fixed readonly inspection binding.
+    pub(in crate::host_cache) fn inspection_config(&self) -> &NativeCacheOwnerConfig {
+        &self.config
+    }
+
+    /// Borrows the actual installed process receipt for readonly inspection.
+    pub(in crate::host_cache) fn inspection_confinement(&self) -> &Arc<Installed> {
+        &self.confinement
     }
 }
 
