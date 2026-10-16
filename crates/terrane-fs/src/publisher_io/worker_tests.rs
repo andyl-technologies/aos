@@ -33,7 +33,14 @@ fn fixture(name: &str) -> [PathBuf; 4] {
         root.join("pending-delete"),
         root.join("state/publication"),
     ];
+    let project = crate::host_quota::NativeProject::inspect(&File::open(&root).unwrap()).unwrap();
+    assert!((64101..=64108).contains(&project.project_id));
+    assert!(project.inherit);
     for path in &paths {
+        let actual = crate::host_quota::NativeProject::inspect(&File::open(path).unwrap()).unwrap();
+        assert_eq!(actual.project_id, project.project_id);
+        assert_eq!(actual.device, project.device);
+        assert!(actual.inherit);
         let metadata = fs::metadata(path).unwrap();
         assert!(metadata.is_dir());
         assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
@@ -77,8 +84,10 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability(
     confinement: Arc<crate::quota_confinement::Installed>,
 ) {
     let paths = fixture("worker-cancellation");
-    let stale = paths[3].join(".binding-incomplete");
+    let stale = paths[3].join(format!(".binding-{}", "ab".repeat(16)));
     fs::write(&stale, b"unfinished metadata").unwrap();
+    let lease_scratch = paths[3].join(format!(".binding-retirement-{}", "cd".repeat(16)));
+    fs::write(&lease_scratch, b"incomplete lease").unwrap();
     let (arrived_sender, arrived) = mpsc::sync_channel(1);
     let (release, released) = mpsc::sync_channel(1);
     let gate = WorkerGate {
@@ -96,6 +105,7 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability(
         !stale.exists(),
         "successful start must finish actual state recovery"
     );
+    assert!(!lease_scratch.exists());
 
     let claim = claim();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -154,7 +164,12 @@ fn startup_reports_actual_private_state_recovery_failure(
     confinement: Arc<crate::quota_confinement::Installed>,
 ) {
     let paths = fixture("worker-startup-failure");
-    fs::create_dir(paths[3].join(".binding-invalid-directory")).unwrap();
+    let malformed = paths[3].join(".binding-not-a-generated-name");
+    let valid = paths[3].join(format!(".binding-{}", "ef".repeat(16)));
+    fs::write(&malformed, b"unknown must survive").unwrap();
+    fs::write(&valid, b"generated scratch must survive failed preflight").unwrap();
+    let invalid_directory = paths[3].join(".binding-invalid-directory");
+    fs::create_dir(&invalid_directory).unwrap();
     assert!(
         NativePublicationWorker::start(
             configuration(paths[0].parent().unwrap(), NativeWipePolicy::None),
@@ -162,6 +177,12 @@ fn startup_reports_actual_private_state_recovery_failure(
         )
         .is_err()
     );
+    assert_eq!(fs::read(malformed).unwrap(), b"unknown must survive");
+    assert_eq!(
+        fs::read(valid).unwrap(),
+        b"generated scratch must survive failed preflight"
+    );
+    assert!(invalid_directory.is_dir());
 }
 
 fn unsupported_wipe_policy_is_refused_before_directory_effects(
@@ -835,6 +856,56 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion(
             }]
         );
         assert!(next_cursor.is_none());
+
+        // An independently matched native binding is supported; unknown fields
+        // and physical orphans remain nonReady rather than becoming ignored
+        // state. These controlled writes are ordinary publisher-owned state,
+        // not writable handles to a sealed content inode.
+        let state = FsPublicationState::new(TokioLocalFs, paths[3].clone());
+        let record = state.binding_record_path(&expected);
+        let original = fs::read(&record).unwrap();
+        let mut malformed = original.clone();
+        malformed.extend_from_slice(b"\nunknown_fixture_field = 1\n");
+        fs::write(&record, malformed).unwrap();
+        File::open(&record).unwrap().sync_all().unwrap();
+        assert!(
+            worker
+                .execute(context.clone(), NativeOperation::Inventory { cursor: None })
+                .await
+                .is_err()
+        );
+        let conflicting = format!(
+            "version = 1\ndomain = \"public\"\ndescriptor = {:?}\nverity_algorithm = 1\nverity_digest = {:?}\n",
+            expected.descriptor().encode(),
+            vec![0u8; 32],
+        );
+        fs::write(&record, conflicting.as_bytes()).unwrap();
+        File::open(&record).unwrap().sync_all().unwrap();
+        assert!(
+            worker
+                .execute(context.clone(), NativeOperation::Inventory { cursor: None })
+                .await
+                .is_err()
+        );
+        assert_eq!(fs::read(&record).unwrap(), conflicting.as_bytes());
+        fs::write(&record, &original).unwrap();
+        File::open(&record).unwrap().sync_all().unwrap();
+        for name in [
+            "retirement-unknown.toml".to_owned(),
+            ".binding-incomplete".to_owned(),
+            format!("{}-{}.toml", "00".repeat(32), "11".repeat(32)),
+        ] {
+            let orphan = paths[3].join(name);
+            fs::write(&orphan, b"unreconciled").unwrap();
+            assert!(
+                worker
+                    .execute(context.clone(), NativeOperation::Inventory { cursor: None })
+                    .await
+                    .is_err()
+            );
+            fs::remove_file(orphan).unwrap();
+        }
+        File::open(&paths[3]).unwrap().sync_all().unwrap();
         assert!(
             worker
                 .execute(

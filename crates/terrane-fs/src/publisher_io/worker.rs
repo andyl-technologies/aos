@@ -454,10 +454,24 @@ impl NativePublicationWorker {
                         let _disconnected = ready_sender.send(Err(error));
                         return;
                     }
+                    let scratch = match inventory.startup_scratch() {
+                        Ok(scratch) => scratch,
+                        Err(error) => {
+                            let _disconnected = ready_sender.send(Err(error));
+                            return;
+                        }
+                    };
                     if let Err(error) = state.recover_temporary().await {
                         let _disconnected = ready_sender.send(Err(error));
                         return;
                     }
+                    if let Err(error) = scratch.verify_removed() {
+                        let _disconnected = ready_sender.send(Err(error));
+                        return;
+                    }
+                    // Close retained unlinked scratch before acknowledging
+                    // startup, so its allocation no longer burdens the tier.
+                    drop(scratch);
                     if ready_sender.send(Ok(())).is_err() {
                         return;
                     }
