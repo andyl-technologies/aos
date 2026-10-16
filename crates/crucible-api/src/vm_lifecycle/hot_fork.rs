@@ -12,6 +12,7 @@ use super::*;
 pub(super) mod disk_basis;
 mod native_disk_seal;
 mod resource_usage;
+mod resume_boundary_source;
 use disk_basis::ProductionVmHotForkDiskBasis;
 use native_disk_seal::ProductionVmHotForkDiskCustody;
 pub use resource_usage::ProductionVmHotForkSourceWorldResourceUsage;

@@ -392,6 +392,8 @@ fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
         SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker { .. })
     )));
 
+    let mut undrained = adapter.clone();
+    assert!(undrained.drain_final_boundary().is_err());
     let mut uncommitted = adapter.clone();
     let diagnostic = uncommitted
         .shutdown_backend_owner()
@@ -420,6 +422,21 @@ fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
     ));
     assert_eq!(appended[0].at(), VirtualTime { ticks: 10 });
     assert_eq!(appended[1].at(), VirtualTime { ticks: 10 });
+
+    // Settling without teardown publishes exactly what shutdown would, so a
+    // retained world and a torn-down one seal the same log.
+    let mut retained = adapter.clone();
+    let settled = retained
+        .drain_final_boundary()
+        .unwrap_or_else(|error| panic!("drain the committed boundary: {error}"))
+        .unwrap_or_else(|| panic!("an idle owner may settle without teardown"));
+    let after_settlement = retained
+        .shutdown_backend_owner()
+        .unwrap_or_else(|error| panic!("shut down the settled world: {error}"));
+    let direct = adapter
+        .shutdown_backend_owner()
+        .unwrap_or_else(|error| panic!("shut down the world: {error}"));
+    assert_eq!([settled, after_settlement].concat(), direct);
 }
 
 #[test]

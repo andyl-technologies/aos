@@ -273,7 +273,7 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
 }
 
 /// Debugger channel requested for one production QEMU lifecycle node.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ProductionVmDebugConfig {
     node: Option<String>,
     operator_listen: String,
@@ -1977,6 +1977,22 @@ pub trait ProductionVmNodeLauncher: Send {
         ))
     }
 
+    /// Detaches per-attempt bindings before the world becomes a retained source.
+    ///
+    /// A retained source outlives the attempt that launched it, so attempt
+    /// cancellation must no longer reach its processes. Implementations keep
+    /// process containment and reap authority; only the attempt's
+    /// cancellation and quantum-admission bindings are released. Launchers
+    /// without such bindings use the default no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the bindings cannot be released. The
+    /// lifecycle then remains attempt-owned and must be shut down normally.
+    fn release_execution_bindings(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
     /// Creates an independent authority for whole-world debugger replay.
     ///
     /// An attempt-scoped implementation may reject this operation when its
@@ -2139,6 +2155,7 @@ use process_owners::{
     ProductionLifecycleJournalPhase, ProductionRunManifest,
 };
 mod quantum_loop;
+mod retention_drain;
 mod runtime;
 mod search;
 mod storage_faults;

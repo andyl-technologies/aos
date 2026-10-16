@@ -524,6 +524,64 @@ impl ProductionVmLifecycleConfig {
     }
 }
 
+impl ProductionVmLifecycleConfig {
+    /// Reports whether `other` launches and drives guests exactly as `self` does.
+    ///
+    /// A retained source world keeps every process this configuration
+    /// launched, so a replacement may differ only in start-specific replay
+    /// inputs and host completion bounds. Shared stores and preemption flights
+    /// compare by identity because a copy would be a different authority.
+    pub(super) fn launch_basis_matches(&self, other: &Self) -> bool {
+        self.executable == other.executable
+            && self.plugin == other.plugin
+            && self.native_guest_architecture == other.native_guest_architecture
+            && self.guest_assets == other.guest_assets
+            && self.initrd == other.initrd
+            && self.kernel_cmdline_prefix == other.kernel_cmdline_prefix
+            && self.root_image_format == other.root_image_format
+            && self.run_state_root == other.run_state_root
+            && self.run_ceiling_ticks == other.run_ceiling_ticks
+            && self.quantum_budget == other.quantum_budget
+            && self.maximum_host_workers == other.maximum_host_workers
+            && self.rendezvous_interval_ticks == other.rendezvous_interval_ticks
+            && self.coverage == other.coverage
+            && self.rr_control_boundary_trace == other.rr_control_boundary_trace
+            && self.debug_gateway_executable == other.debug_gateway_executable
+            && self.debug == other.debug
+            && self.fault_replay == other.fault_replay
+            && same_store(
+                self.signal_artifacts.as_ref(),
+                other.signal_artifacts.as_ref(),
+            )
+            && same_store(
+                self.world_artifacts.as_ref(),
+                other.world_artifacts.as_ref(),
+            )
+            && match (
+                &self.bounded_scheduler_preemption,
+                &other.bounded_scheduler_preemption,
+            ) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(&left.pending, &right.pending),
+                _ => false,
+            }
+    }
+
+    /// Reports whether this configuration still schedules a branch boundary.
+    pub(super) fn has_pending_branch_boundary(&self) -> bool {
+        self.branch.is_some() || !self.continuation_branches.is_empty()
+    }
+}
+
+fn same_store(left: Option<&Arc<dyn DagStore>>, right: Option<&Arc<dyn DagStore>>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        // Compare data addresses only; vtable addresses are not unique.
+        (Some(left), Some(right)) => std::ptr::addr_eq(Arc::as_ptr(left), Arc::as_ptr(right)),
+        _ => false,
+    }
+}
+
 impl ProductionVmLifecycleLoop {
     /// Retains an external resource owner until this lifecycle is dropped.
     ///
