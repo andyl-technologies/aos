@@ -17,6 +17,8 @@ use serde::{Serialize, Serializer, ser::SerializeSeq};
 pub enum MetadataSharedKind {
     /// Names the independent once restored observation attempt allocation.
     NativeRestorationObservationAttempt,
+    /// Names a separately spent recurring Observe attempt under startup16.
+    NativeRestoredSuffixObservationAttempt,
     /// Names an original protocol-capture actor header.
     ProtocolOwner,
     /// Names the original registrar's epoch counter backing.
@@ -77,6 +79,9 @@ impl MetadataSharedKind {
     fn name(self) -> &'static str {
         match self {
             Self::NativeRestorationObservationAttempt => "native-restoration-observation-attempt",
+            Self::NativeRestoredSuffixObservationAttempt => {
+                "native-restored-suffix-observe-attempt"
+            }
             Self::ProtocolOwner => "protocol-owner",
             Self::RegistrarEpoch => "registrar-epoch",
             Self::RegistrarGate => "registrar-gate",

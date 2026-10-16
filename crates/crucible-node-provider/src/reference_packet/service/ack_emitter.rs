@@ -99,7 +99,7 @@ pub(crate) use native_boot::{
     OriginalRestorationActivationPermit, OriginalRestorationActivationRequirement,
     OriginalRestorationObservationPermit, OriginalRestorationObservationRead,
     OriginalRestorationReleaseState, OriginalRestorationReleased, OriginalRestorationUploadPermit,
-    OriginalRestoredSuffixPostObservation,
+    OriginalRestoredSuffixObserveRead, OriginalRestoredSuffixPostObservation,
     original_native_restoration_activation_attempt_backing_data,
     original_native_restoration_activation_counter_scratch_data,
     original_native_restoration_activation_ingress_row_data,

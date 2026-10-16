@@ -76,7 +76,7 @@ impl NativeAckBoot {
         let terminal = flight.terminal.as_ref().ok_or_else(refused)?;
         let mut matched = None;
         for (index, record) in records.iter().enumerate() {
-            if record.originals().last() == Some(terminal) {
+            if record.originals().contains(terminal) {
                 if matched.replace(index).is_some() {
                     return Err(refused());
                 }
@@ -198,7 +198,9 @@ impl OriginalRestorationReleased {
             &self.policy,
         )?;
         let record = records.get(self.record).ok_or_else(refused)?;
-        if record.sent() != record.originals().len() || record.originals().last() != Some(terminal)
+        if record.sent() != record.originals().len()
+            || crate::connection::original_restored_response_data(original, record.originals())?.1
+                != terminal
         {
             return Err(refused());
         }
@@ -215,7 +217,8 @@ impl OriginalRestorationReleased {
 }
 
 pub(super) fn counter_scratch_data() -> usize {
-    size_of::<OriginalRestorationReleased>()
+    crate::connection::original_restored_response_counter_scratch_data()
+        + size_of::<OriginalRestorationReleased>()
         + size_of::<OriginalRestorationReleaseState>()
         + size_of::<Result<OriginalRestorationReleaseState, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()

@@ -470,7 +470,8 @@ fn borrowed() -> ProviderError {
 
 /// Names native activation's actual fixed owner, borrowing and conversion views.
 pub(crate) fn original_native_restoration_activation_counter_scratch_data() -> usize {
-    size_of::<NativeRestorationActivationAttempt>()
+    crate::connection::original_restored_response_counter_scratch_data()
+        + size_of::<NativeRestorationActivationAttempt>()
         + size_of::<PacketRestorationActivationArtifact>() * 2
         + size_of::<PacketRestorationActivationContext>() * 2
         + size_of::<Result<PacketRestorationActivationArtifact, serde_json::Error>>()
@@ -656,7 +657,13 @@ impl OriginalRestorationActivationPermit {
         if !flight.verified || !flight.dispatched || flight.published {
             return Err(refused());
         }
-        let terminal = record.originals().last().ok_or_else(refused)?;
+        let (terminal_index, terminal) = {
+            let original = flight.original.as_ref().ok_or_else(refused)?;
+            crate::connection::original_restored_response_data(original, record.originals())?
+        };
+        // The actual prefix owns every response even if lookup refuses. Once
+        // selected, also retain this terminal before typed/held validation.
+        flight.terminal = Some(terminal.clone());
         let original = flight.original.as_ref().ok_or_else(refused)?;
         if terminal.message != crate::envelope::MessageKind::Response
             || terminal.method != original.method
@@ -680,7 +687,16 @@ impl OriginalRestorationActivationPermit {
         if held != (flight.phase == PacketRestorationActivationPhase::Arm) {
             return Err(refused());
         }
-        flight.terminal = Some(terminal.clone());
+        if record
+            .original_sent_frame(connection, terminal_index)?
+            .original()
+            != terminal
+        {
+            return Err(refused());
+        }
+        for index in 0..record.originals().len() {
+            record.original_sent_frame(connection, index)?;
+        }
         flight.published = true;
         Ok(())
     }

@@ -3,10 +3,15 @@
 //! This private witness carries the existing live released-world witness and
 //! the same MAC-verified once attempt. It grants no receive, model, input,
 //! execution or Capture permission. Future actions require separately admitted
-//! current proofs and a Source/Core issuer; the Endpoint remains closed here.
+//! current proofs and a Source/Core issuer. Only the paired recurring Observe
+//! route consumes its distinct reservation; other baseline actions stay closed.
 
 use super::*;
 use std::mem::size_of;
+
+fn exhausted() -> ProviderError {
+    ProviderError::ResourceExhausted("restored suffix16 observation reservation credit")
+}
 
 /// Retains exact native provenance after the first signed Observe is published.
 ///
@@ -138,7 +143,7 @@ impl NativeAckBoot {
         let terminal = flight.terminal.as_ref().ok_or_else(refused)?;
         let mut matched = None;
         for (index, record) in records.iter().enumerate() {
-            if record.originals().last() == Some(terminal) && matched.replace(index).is_some() {
+            if record.originals().contains(terminal) && matched.replace(index).is_some() {
                 return Err(refused());
             }
         }
@@ -238,7 +243,8 @@ fn authenticate_published_data<S: ProviderStream>(
         .authenticate_body_data(flight.body.as_ref().ok_or_else(refused)?)?;
     let exchange = records.get(record).ok_or_else(refused)?;
     if exchange.sent() != exchange.originals().len()
-        || exchange.originals().last() != Some(terminal)
+        || crate::connection::original_restored_response_data(original, exchange.originals())?.1
+            != terminal
     {
         return Err(refused());
     }
@@ -422,5 +428,189 @@ mod tests {
         );
         assert_eq!(attempt.original.as_ref(), Some(&original));
         assert!(attempt.artifact.is_none() && attempt.terminal.is_none());
+    }
+}
+
+impl OriginalRestoredSuffixPostObservation {
+    /// Spends distinct native ingress before a recurring Observe can be read.
+    ///
+    /// The returned scope must debit separately quoted current proof work before
+    /// dispatch. Its unfinished drop is terminal; raw or typed success alone
+    /// cannot reopen the reservation or the endpoint.
+    ///
+    /// # Errors
+    /// Refuses a foreign or stale witness, changed sealed frame ceiling,
+    /// exhausted reservation/count or failed retained-slot allocation.
+    pub(crate) fn retain_original_observe_ingress_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        control: &PacketControl,
+        records: &[ExchangeRecord],
+        frame: usize,
+    ) -> Result<
+        super::super::super::super::restored_suffix::OriginalRestoredSuffixObserveRead<'_>,
+        ProviderError,
+    > {
+        self.authenticate_current_data(connection, control, records)?;
+        // The limit must be the actual sealed startup's frame geometry, rather
+        // than a caller-selected smaller number used to manufacture a short row.
+        let owner = self.released.boot.try_borrow().map_err(|_| borrowed())?;
+        let state = owner
+            .startup
+            .as_ref()
+            .and_then(|startup| startup.restored_suffix.as_ref())
+            .ok_or_else(refused)?;
+        let actual =
+            usize::try_from(state.original_frame_bytes_data()?).map_err(|_| exhausted())?;
+        if frame != actual {
+            return Err(refused());
+        }
+        drop(owner);
+        super::super::super::super::restored_suffix::OriginalRestoredSuffixObserveRead::retain_data(
+            self,
+            &self.released.boot,
+            frame,
+        )
+    }
+
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn authenticate_observe_original_identity_data(
+        &self,
+        original: &Envelope,
+    ) -> Result<(), ProviderError> {
+        let first = self.attempt.try_borrow().map_err(|_| borrowed())?;
+        let admitted = first.original.as_ref().ok_or_else(refused)?;
+        authenticate_recurring_observe_original_identity_data(admitted, original)
+    }
+}
+
+fn authenticate_recurring_observe_original_identity_data(
+    admitted: &Envelope,
+    original: &Envelope,
+) -> Result<(), ProviderError> {
+    if original.request_id.0.is_none()
+        || original.request_id == admitted.request_id
+        || original.sequence <= admitted.sequence
+        || original.session_id != admitted.session_id
+        || original.incarnation_id != admitted.incarnation_id
+        || original.node_id != admitted.node_id
+        || original.execution_owner_id != admitted.execution_owner_id
+        || original.body.get("binding_hash") != admitted.body.get("binding_hash")
+        || original.body.get("owner_generation") != admitted.body.get("owner_generation")
+    {
+        return Err(refused());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod ingress_identity_tests {
+    use super::*;
+
+    #[test]
+    fn recurring_original_keeps_route_binding_and_cannot_renew_first_identity() {
+        // These actual Envelope owners test the defining correspondence only;
+        // no private boot, World or post-observation witness is fabricated.
+        let mut first = crate::envelope::tests::request();
+        first.method = crate::envelope::Method::Observe;
+        first.body.insert("binding_hash".into(), serde_json::json!({"algorithm":"blake3-256","domain":"cnp.owner-binding.v1","digest":"0".repeat(64)}));
+        first
+            .body
+            .insert("owner_generation".into(), serde_json::json!("1"));
+        let mut next = first.clone();
+        next.request_id = crate::envelope::Nullable(Some(Id::new("suffix/next-current").unwrap()));
+        next.sequence = U64::new(first.sequence.get() + 1);
+        assert!(authenticate_recurring_observe_original_identity_data(&first, &next).is_ok());
+
+        let mut changed = next.clone();
+        changed.request_id = first.request_id.clone();
+        assert!(authenticate_recurring_observe_original_identity_data(&first, &changed).is_err());
+        changed = next.clone();
+        changed.sequence = first.sequence;
+        assert!(authenticate_recurring_observe_original_identity_data(&first, &changed).is_err());
+        changed = next.clone();
+        changed.session_id =
+            crate::envelope::Nullable(Some(Id::new("suffix/foreign-session").unwrap()));
+        assert!(authenticate_recurring_observe_original_identity_data(&first, &changed).is_err());
+        changed = next.clone();
+        changed
+            .body
+            .insert("owner_generation".into(), serde_json::json!("2"));
+        assert!(authenticate_recurring_observe_original_identity_data(&first, &changed).is_err());
+        changed = next;
+        changed.body.insert("binding_hash".into(), serde_json::json!({"algorithm":"blake3-256","domain":"cnp.owner-binding.v1","digest":"1".repeat(64)}));
+        assert!(authenticate_recurring_observe_original_identity_data(&first, &changed).is_err());
+    }
+}
+
+impl OriginalRestoredSuffixPostObservation {
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn observation_row_data<
+        S: ProviderStream,
+    >(
+        &self,
+        connection: &Connection<S>,
+        observe: &crate::bodies::ObserveRequest,
+    ) -> Result<
+        crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
+        ProviderError,
+    > {
+        let owner = self.released.boot.try_borrow().map_err(|_| borrowed())?;
+        owner.authenticate_original_invocation_prepare_target_data()?;
+        let state = owner
+            .startup
+            .as_ref()
+            .and_then(|startup| startup.restored_suffix.as_ref())
+            .ok_or_else(refused)?;
+        let maximum = state.model_quote_maximum_data()?;
+        let commit = self.released.commit.try_borrow().map_err(|_| borrowed())?;
+        commit.ensure_origin()?;
+        let request = commit.request.as_ref().ok_or_else(refused)?;
+        let launch = commit.launch.as_ref().ok_or_else(refused)?;
+        let inputs = connection.original_complete_restore_input_state()?;
+        let selected = crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreSelectedOwnerInputs {
+            owner_state: inputs.original_input(3)?, journal: inputs.original_input(4)?,
+            control: inputs.original_input(1)?, anchor: inputs.original_input(2)?,
+            maximum_input_bytes: usize::try_from(request.prepare.allocation.maximum_input_bytes.get()).map_err(|_| exhausted())?,
+            maximum_before_bytes: usize::try_from(launch.capture_profile.native_before_bytes(&launch.storage).get()).map_err(|_| exhausted())?,
+            maximum_requested_bytes: maximum,
+        };
+        let model = crate::reference_packet::service::complete_restore::transfer::complete_restore_invocation_owner_construction_storage_data(&selected)?;
+        state.observation_row_data(launch, &owner.launch_body, &model, observe)
+    }
+
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn authenticate_observe_control_data(
+        &self,
+        original: &Envelope,
+        selection: &crate::reference_packet::control::PacketControlSelection,
+        control: &PacketControl,
+    ) -> Result<(), ProviderError> {
+        self.released
+            .policy
+            .authenticate_original_control_selection(selection)?;
+        self.authenticate_observe_original_identity_data(original)?;
+        let owner = self.released.boot.try_borrow().map_err(|_| borrowed())?;
+        owner.authenticate_original_invocation_prepare_target_data()?;
+        let state = owner
+            .startup
+            .as_ref()
+            .and_then(|startup| startup.restored_suffix.as_ref())
+            .ok_or_else(refused)?;
+        state.authenticate_observation_data(&self.attempt, self.record)?;
+        let first = self.attempt.try_borrow().map_err(|_| borrowed())?;
+        first.authenticate_published_suffix_milestones_data()?;
+        let world = self.released.world.try_borrow().map_err(|_| borrowed())?;
+        let commit = self.released.commit.try_borrow().map_err(|_| borrowed())?;
+        let scope = &first.artifact.as_ref().ok_or_else(refused)?.request.scope;
+        if scope != &world.artifact.as_ref().ok_or_else(refused)?.request.scope {
+            return Err(refused());
+        }
+        control.authenticate_original_restoration_released_control_data(
+            world.original.as_ref().ok_or_else(refused)?,
+            world.terminal.as_ref().ok_or_else(refused)?,
+            scope,
+            &self.released.boot,
+            &commit.mapping,
+            &self.released.hold,
+            &self.released.policy,
+        )
     }
 }

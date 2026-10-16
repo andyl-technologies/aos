@@ -382,3 +382,55 @@ fn push(
     frames.push(request);
     Ok(())
 }
+
+#[cfg(test)]
+mod restored_response_tests {
+    use super::*;
+    use crate::connection::original_restored_response_data;
+
+    #[test]
+    fn real_evidence_prefix_finds_response_before_blob_suffix_and_refuses_duplicates() {
+        let (_, short_authority) = crate::handshake::tests::authority();
+        let mut original = crate::envelope::tests::request();
+        original.method = Method::Observe;
+        original.extensions.clear();
+        original.session_id = Nullable(Some(short_authority.session_id().clone()));
+        original.incarnation_id = Nullable(Some(short_authority.incarnation_id().clone()));
+        let bytes = br#"{"model":"evidence fixture"}"#.to_vec();
+        let root =
+            crucible_node_contract::canonical::content_ref(&bytes, "application/json").unwrap();
+        let reply = PacketControlReply {
+            body: completed(serde_json::json!({"data_only": true})).unwrap(),
+            evidence: vec![(root, bytes)],
+        };
+        // The small general fixture negotiates two requests. A nonempty proof
+        // needs Begin, Chunk and Finish, so its unchanged limit must refuse.
+        assert!(matches!(
+            frames(10, &short_authority, &original, &reply),
+            Err(ProviderError::ResourceExhausted(
+                "packet proof simultaneous correlations"
+            ))
+        ));
+
+        // Use the existing real negotiation fixture with sixteen requests and
+        // bind the original to that same authority. Production limits stay intact.
+        let (_, authority) =
+            crate::handshake::tests::authority_with_scope("restored-response-prefix");
+        original.session_id = Nullable(Some(authority.session_id().clone()));
+        original.incarnation_id = Nullable(Some(authority.incarnation_id().clone()));
+        let (mut prefix, _, _) = frames(10, &authority, &original, &reply).unwrap();
+        assert_eq!(prefix.first().unwrap().message, MessageKind::Response);
+        assert_eq!(prefix.last().unwrap().method, Method::BlobFinish);
+        let (index, terminal) = original_restored_response_data(&original, &prefix).unwrap();
+        assert_eq!(index, 0);
+        assert_eq!(terminal, &prefix[0]);
+        let saved = terminal.clone();
+        prefix.push(saved);
+        assert!(original_restored_response_data(&original, &prefix).is_err());
+        prefix.pop();
+        prefix[0].method = Method::Poll;
+        assert!(original_restored_response_data(&original, &prefix).is_err());
+        prefix.remove(0);
+        assert!(original_restored_response_data(&original, &prefix).is_err());
+    }
+}

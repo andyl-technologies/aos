@@ -237,3 +237,14 @@ fn invalid() -> ProviderError {
 fn credit() -> ProviderError {
     ProviderError::ResourceExhausted("installed restoration observation requested storage")
 }
+
+// A sibling prospective producer uses the same closed wire/model projection;
+// the returned geometry carries no first-Observe credit or live permission.
+pub(crate) fn restoration_observe_repeated_projection_data(
+    maximum: usize,
+) -> Result<
+    [crate::retained_metadata::serialization_storage::OriginalSerializationStorageData; 5],
+    ProviderError,
+> {
+    projection::wire_projection_data(maximum)
+}

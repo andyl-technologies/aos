@@ -3,9 +3,13 @@
 //! Its constructor requires the same authenticated inherited prefix and complete
 //! Source15/boot7 correspondence. Cached archive geometry is unavailable at boot;
 //! it is sealed later from the actual signed restoration input banks. Numeric
-//! rows and this owner do not enable an Endpoint action or a Capture codec.
+//! rows alone enable neither an Endpoint action nor a Capture codec. The paired
+//! recurring Observe route additionally authenticates current custody and spends
+//! its independent action window before producing a new native proof.
 
 use super::*;
+use crate::connection::{Connection, ExchangeRecord, ProviderStream};
+use crate::reference_packet::control::PacketControl;
 use crate::reference_packet::service::native_startup::*;
 use crate::retained_metadata::MetadataObserver;
 use std::mem::size_of;
@@ -18,6 +22,7 @@ pub(in crate::reference_packet::service::ack_emitter::native_boot) struct Native
     preamble: [u8; ORIGINAL_NATIVE_RESTORED_SUFFIX_PREAMBLE_BYTES],
     reservation: PacketRestoredSuffixReservationData,
     ledger: OriginalRestoredSuffixBudget,
+    observe_attempts: Vec<Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>,
     raw7: [u8; 32],
     raw7_bytes: usize,
     raw5: [u8; 32],
@@ -29,6 +34,20 @@ pub(in crate::reference_packet::service::ack_emitter::native_boot) struct Native
 }
 
 impl NativeRestoredSuffixStartupOwner {
+    /// Borrows the exact frame bound sealed from the actual transferred inputs.
+    ///
+    /// # Errors
+    /// Refuses failed, foreign or unsealed native custody and integer overflow.
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn original_frame_bytes_data(
+        &self,
+    ) -> Result<u64, ProviderError> {
+        self.ensure_current()?;
+        Ok(
+            u64::try_from(self.sealed.as_ref().ok_or_else(refused)?.frame_bytes_data())
+                .map_err(|_| exhausted())?,
+        )
+    }
+
     /// Checks the actual process/thread and sticky native failure state.
     ///
     /// # Errors
@@ -62,8 +81,7 @@ impl NativeRestoredSuffixStartupOwner {
     /// Checks repeated initial-proof work against the independent new window.
     ///
     /// # Errors
-    /// Refuses failed or unsealed state, another first-Observe domain or any short
-    /// independently admitted axis. The request row remains demand DATA only.
+    /// Refuses failed or unsealed state and any short independent axis.
     pub(in crate::reference_packet::service::ack_emitter::native_boot) fn authenticate_witness_storage_data(
         &self,
         actual: &crate::reference_packet::service::complete_restore::restoration_observe::PacketRestorationObservationRequest,
@@ -81,6 +99,52 @@ impl NativeRestoredSuffixStartupOwner {
             &actual.schema,
             actual.maximum_items,
             &actual.native_allocation,
+        )
+    }
+
+    /// Bounds the same scanner and quote phase used when actual Commit sealed geometry.
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn model_quote_maximum_data(
+        &self,
+    ) -> Result<usize, ProviderError> {
+        self.ensure_current()?;
+        usize::try_from(self.reservation.requested_bytes_data()?)
+            .map_err(|_| exhausted())?
+            .checked_add(size_of::<PacketNativeRestoredSuffixStartupStorageData>())
+            .and_then(|n| {
+                n.checked_add(
+                    usize::try_from(
+                        self.reservation
+                            .ingress
+                            .declared_counter_scratch_bytes
+                            .get(),
+                    )
+                    .ok()?,
+                )
+            })
+            .ok_or_else(exhausted)
+    }
+
+    /// Requotes the same actual transferred geometry before debiting native action work.
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn observation_row_data(
+        &self,
+        launch: &PacketNative5SourceLaunch,
+        encoded6: &[u8],
+        model: &crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreOwnerValidationStorage,
+        observe: &crate::bodies::ObserveRequest,
+    ) -> Result<PacketNativeStartupAllocationRow, ProviderError> {
+        self.ensure_current()?;
+        let nested = nested_launch6_data(encoded6)?;
+        let maximum = self.model_quote_maximum_data()?;
+        let sealed = self.sealed.as_ref().ok_or_else(refused)?;
+        sealed.authenticate_same_inputs_data(
+            launch,
+            nested,
+            model,
+            usize::try_from(self.reservation.maximum_originals.get()).map_err(|_| exhausted())?,
+            maximum,
+        )?;
+        original_native_restored_suffix_observation_required_storage_data(
+            sealed, launch, nested, observe, maximum,
         )
     }
 
@@ -162,13 +226,15 @@ impl NativeRestoredSuffixStartupOwner {
         // Failed and partial owners remain measurable; readiness is not a
         // precondition for raw retained custody.
         // The Box root includes every fixed field, including the complete
-        // nonserializable ledger and optional cached model. It has no heap child.
+        // nonserializable ledger and optional cached model. Each dynamic
+        // recurring receive owner is observed independently below.
         let Self {
             creator: _,
             thread: _,
             preamble: _,
             reservation: _,
             ledger: _,
+            observe_attempts,
             raw7: _,
             raw7_bytes,
             raw5: _,
@@ -182,7 +248,18 @@ impl NativeRestoredSuffixStartupOwner {
         observer.observe(raw7_bytes)?;
         observer.observe(raw5_bytes)?;
         observer.observe(failed)?;
-        observer.observe(&post_record.is_some())
+        observer.observe(&post_record.is_some())?;
+        observer.vector::<Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>(
+            observe_attempts.capacity(),
+        )?;
+        for attempt in observe_attempts {
+            observer.shared_original(crate::retained_metadata::aliases::MetadataSharedKind::NativeRestoredSuffixObservationAttempt, attempt.as_ref())?;
+            attempt
+                .try_borrow()
+                .map_err(|_| borrowed())?
+                .observe_retained_data(observer)?;
+        }
+        Ok(())
     }
 }
 
@@ -201,6 +278,26 @@ impl NativeAckBoot {
             .startup
             .as_ref()
             .is_some_and(|startup| startup.restored_suffix.is_some()))
+    }
+
+    /// Selects recurring receive only after the actual signed first publication.
+    ///
+    /// # Errors
+    /// Refuses a foreign process/thread, conflicting loan or failed native owner.
+    pub(crate) fn original_restored_suffix_observation_ready_data(
+        boot: &Rc<RefCell<Self>>,
+    ) -> Result<bool, ProviderError> {
+        let owner = boot.try_borrow().map_err(|_| borrowed())?;
+        owner.ensure_origin()?;
+        let Some(state) = owner
+            .startup
+            .as_ref()
+            .and_then(|startup| startup.restored_suffix.as_ref())
+        else {
+            return Ok(false);
+        };
+        state.ensure_current()?;
+        Ok(state.post_record.is_some())
     }
 
     // Runs only after the actual Commit MAC and full transferred input roster
@@ -446,6 +543,7 @@ impl NativeAckBoot {
                 preamble: startup.preamble,
                 reservation: suffix,
                 ledger: OriginalRestoredSuffixBudget::new_data(suffix)?,
+                observe_attempts: Vec::new(),
                 raw7: expected.launch_digest,
                 raw7_bytes: raw7.len(),
                 raw5: *blake3::hash(nested).as_bytes(),
@@ -627,6 +725,58 @@ pub(crate) fn original_restored_suffix_native_counter_scratch_data() -> usize {
         + size_of::<&usize>();
 
     owner_loans
+        + original_native_restored_suffix_observation_counter_scratch_data()
+        + size_of::<Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>()
+        + size_of::<Option<&Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>>()
+        + size_of::<Result<&Rc<RefCell<NativeRestoredSuffixObserveAttempt>>, ProviderError>>()
+        + size_of::<std::cell::Ref<'static, NativeRestoredSuffixObserveAttempt>>()
+        + size_of::<std::cell::RefMut<'static, NativeRestoredSuffixObserveAttempt>>()
+        + size_of::<
+            Result<
+                std::cell::Ref<'static, NativeRestoredSuffixObserveAttempt>,
+                std::cell::BorrowError,
+            >,
+        >()
+        + size_of::<
+            Result<std::cell::Ref<'static, NativeRestoredSuffixObserveAttempt>, ProviderError>,
+        >()
+        + size_of::<
+            Result<
+                std::cell::RefMut<'static, NativeRestoredSuffixObserveAttempt>,
+                std::cell::BorrowMutError,
+            >,
+        >()
+        + size_of::<
+            Result<std::cell::RefMut<'static, NativeRestoredSuffixObserveAttempt>, ProviderError>,
+        >()
+        + size_of::<std::cell::Ref<'static, Envelope>>()
+        + size_of::<Result<std::cell::Ref<'static, Envelope>, ProviderError>>()
+        + size_of::<
+            Result<
+                std::cell::Ref<'static, Envelope>,
+                std::cell::Ref<'static, NativeRestoredSuffixObserveAttempt>,
+            >,
+        >()
+        + size_of::<std::cell::Cell<bool>>() * 3
+        + size_of::<std::cell::Cell<Option<usize>>>()
+        + size_of::<Result<PacketNativeStartupAllocationRow, ProviderError>>()
+        + original_restored_suffix_observe_custody_counter_scratch_data()
+        + size_of::<OriginalRestoredSuffixObserveRead<'static>>()
+        + size_of::<Result<OriginalRestoredSuffixObserveRead<'static>, ProviderError>>()
+        + size_of::<&OriginalRestoredSuffixObserveRead<'static>>()
+        + size_of::<&OriginalRestoredSuffixPostObservation>()
+        + size_of::<Option<&NativeRestoredSuffixObserveAttempt>>()
+        + size_of::<Option<&mut NativeRestoredSuffixObserveAttempt>>()
+        + size_of::<Result<&NativeRestoredSuffixObserveAttempt, ProviderError>>()
+        + size_of::<Result<&mut NativeRestoredSuffixObserveAttempt, ProviderError>>()
+        + size_of::<std::cell::Ref<'static, NativeAckBoot>>()
+        + size_of::<Result<std::cell::Ref<'static, NativeAckBoot>, std::cell::BorrowError>>()
+        + size_of::<Result<std::cell::Ref<'static, NativeAckBoot>, ProviderError>>()
+        + size_of::<Vec<Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>>()
+        + size_of::<std::slice::Iter<'static, Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>>()
+        + size_of::<&NativeRestoredSuffixObserveAttempt>()
+        + size_of::<std::collections::TryReserveError>()
+        + size_of::<Result<(), std::collections::TryReserveError>>()
         + input_loans
         + construction_views
         + allocation_and_return_views
@@ -643,6 +793,382 @@ fn nested_launch6_data(raw: &[u8]) -> Result<&[u8], ProviderError> {
     }
     fields.finish()?;
     Ok(nested)
+}
+
+/// Borrows a spent receive slot under the actual published-first witness.
+///
+/// Dropping an unfinished scope poisons the owner and budget. Only complete
+/// current proof, terminal and sent ACK publication reopen the ledger; raw or
+/// typed receive success alone cannot do so.
+pub(crate) struct OriginalRestoredSuffixObserveRead<'a> {
+    witness: &'a OriginalRestoredSuffixPostObservation,
+    boot: Rc<RefCell<NativeAckBoot>>,
+    index: usize,
+    frame: usize,
+    attempt: Rc<RefCell<NativeRestoredSuffixObserveAttempt>>,
+    receive_started: std::cell::Cell<bool>,
+    incoming_slot: std::cell::Cell<Option<usize>>,
+    action_started: std::cell::Cell<bool>,
+    completed: std::cell::Cell<bool>,
+}
+
+impl<'a> OriginalRestoredSuffixObserveRead<'a> {
+    /// Retains one irrevocably spent original under the actual received owner.
+    ///
+    /// # Errors
+    /// Refuses stale custody, a depleted axis/count or failed slot allocation.
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn retain_data(
+        witness: &'a OriginalRestoredSuffixPostObservation,
+        boot: &Rc<RefCell<NativeAckBoot>>,
+        frame: usize,
+    ) -> Result<Self, ProviderError> {
+        let ingress = original_restored_suffix_observe_ingress_row_data(frame)?;
+        let mut owner = boot.try_borrow_mut().map_err(|_| borrowed())?;
+        owner.authenticate_original_invocation_prepare_target_data()?;
+        let state = owner
+            .startup
+            .as_mut()
+            .and_then(|startup| startup.restored_suffix.as_mut())
+            .ok_or_else(refused)?;
+        state.ensure_current()?;
+        state.reservation_data()?;
+        // Spend first. A short row, failed allocation or later read cannot
+        // obtain another slot or refund this native original's debit.
+        state.failed = true;
+        let ordinal = state.ledger.begin_ingress_data(ingress)?;
+        state
+            .observe_attempts
+            .try_reserve_exact(1)
+            .map_err(|_| exhausted())?;
+        let index = state.observe_attempts.len();
+        let attempt = Rc::new(RefCell::new(NativeRestoredSuffixObserveAttempt::new_data(
+            ordinal,
+        )));
+        state.observe_attempts.push(Rc::clone(&attempt));
+        state.failed = false;
+        drop(owner);
+        Ok(Self {
+            witness,
+            boot: Rc::clone(boot),
+            index,
+            frame,
+            attempt,
+            receive_started: std::cell::Cell::new(false),
+            incoming_slot: std::cell::Cell::new(None),
+            action_started: std::cell::Cell::new(false),
+            completed: std::cell::Cell::new(false),
+        })
+    }
+
+    /// Starts one receive on the same actual admitted native connection.
+    ///
+    /// # Errors
+    /// Refuses repeated, completed, foreign or conflicting native custody.
+    pub(crate) fn begin_receive_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<(), ProviderError> {
+        if self.receive_started.replace(true) || self.completed.get() {
+            return Err(refused());
+        }
+        self.authenticate_receive_data(connection)
+    }
+
+    /// Checks the same retained attempt, boot and current negotiated authority.
+    ///
+    /// # Errors
+    /// Refuses missing, failed, foreign, completed or conflicting custody.
+    pub(crate) fn authenticate_receive_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<(), ProviderError> {
+        let admission = connection.original_native_owned11_admission()?;
+        admission.authenticate_current(connection)?;
+        if !Rc::ptr_eq(&self.boot, &admission.boot) {
+            return Err(refused());
+        }
+        let owner = self.boot.try_borrow().map_err(|_| borrowed())?;
+        owner.authenticate_original_invocation_prepare_target_data()?;
+        let state = owner
+            .startup
+            .as_ref()
+            .and_then(|startup| startup.restored_suffix.as_ref())
+            .ok_or_else(refused)?;
+        state.ensure_current()?;
+        if !self.receive_started.get()
+            || self.completed.get()
+            || state
+                .observe_attempts
+                .get(self.index)
+                .is_none_or(|attempt| !Rc::ptr_eq(attempt, &self.attempt))
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    /// Borrows the exact original retained before policy and typed checks.
+    ///
+    /// # Errors
+    /// Refuses missing, failed or conflicting attempt custody.
+    pub(crate) fn original_data(&self) -> Result<std::cell::Ref<'_, Envelope>, ProviderError> {
+        let attempt = self.attempt.try_borrow().map_err(|_| borrowed())?;
+        attempt.original_data()?;
+        std::cell::Ref::filter_map(attempt, |attempt| attempt.original_data().ok())
+            .map_err(|_| refused())
+    }
+
+    /// Completes receive only for the actual fully retained incoming literal.
+    ///
+    /// # Errors
+    /// Refuses repeated completion, stale custody or canonical frame mismatch.
+    pub(crate) fn complete_receive_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_receive_data(connection)?;
+        if self.incoming_slot.get().is_some() {
+            return Err(refused());
+        }
+        let original = self.original_data()?;
+        let slot = connection.original_restored_suffix_observation_literal_slot_data(&original)?;
+        self.incoming_slot.set(Some(slot));
+        Ok(())
+    }
+
+    /// Debits complete native proof and publication demand before dispatch.
+    ///
+    /// # Errors
+    /// Refuses another dispatch, changed current model/owners or any short axis.
+    pub(crate) fn begin_dispatch_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        control: &PacketControl,
+        records: &[ExchangeRecord],
+    ) -> Result<(), ProviderError> {
+        self.authenticate_receive_data(connection)?;
+        if self.action_started.replace(true) {
+            return Err(refused());
+        }
+        self.witness
+            .authenticate_current_data(connection, control, records)?;
+        {
+            let original = self.original_data()?;
+            connection.authenticate_original_restored_suffix_observation_literal_data(
+                &original,
+                self.incoming_slot.get().ok_or_else(refused)?,
+            )?;
+        }
+        let required = {
+            let attempt = self.attempt.try_borrow().map_err(|_| borrowed())?;
+            self.witness
+                .observation_row_data(connection, attempt.body_data()?)?
+        };
+        {
+            let mut owner = self.boot.try_borrow_mut().map_err(|_| borrowed())?;
+            let state = owner
+                .startup
+                .as_mut()
+                .and_then(|startup| startup.restored_suffix.as_mut())
+                .ok_or_else(refused)?;
+            state.ensure_current()?;
+            state.failed = true;
+            state.ledger.begin_action_data(required)?;
+            self.attempt
+                .try_borrow_mut()
+                .map_err(|_| borrowed())?
+                .begin_dispatch_data()?;
+            state.failed = false;
+        }
+        self.witness
+            .authenticate_current_data(connection, control, records)
+    }
+
+    /// Authenticates the actual dispatched original under the same live Control.
+    ///
+    /// # Errors
+    /// Refuses changed original identity, physical release, scope or live owners.
+    pub(crate) fn authenticate_control_request_data(
+        &self,
+        original: &Envelope,
+        selection: &crate::reference_packet::control::PacketControlSelection,
+        control: &PacketControl,
+    ) -> Result<(), ProviderError> {
+        if !self.action_started.get() || self.completed.get() {
+            return Err(refused());
+        }
+        let attempt = self.attempt.try_borrow().map_err(|_| borrowed())?;
+        if !std::ptr::eq(attempt.original_data()?, original) {
+            return Err(refused());
+        }
+        attempt.authenticate_dispatched_data()?;
+        self.witness
+            .authenticate_observe_control_data(original, selection, control)
+    }
+
+    /// Retains the real terminal before checking complete literal ACK publication.
+    ///
+    /// # Errors
+    /// Refuses another completion, changed terminal/proof/currency, unsent frames
+    /// or incomplete ACK publication. Every partial remains owned and spent.
+    pub(crate) fn complete_publication_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        control: &PacketControl,
+        records: &[ExchangeRecord],
+    ) -> Result<(), ProviderError> {
+        if !self.action_started.get() || self.completed.get() {
+            return Err(refused());
+        }
+        let record = records.last().ok_or_else(refused)?;
+        let (terminal_index, terminal) = {
+            let original = self.original_data()?;
+            crate::connection::original_restored_response_data(&original, record.originals())?
+        };
+        self.attempt
+            .try_borrow_mut()
+            .map_err(|_| borrowed())?
+            .retain_terminal_data(terminal)?;
+        {
+            let attempt = self.attempt.try_borrow().map_err(|_| borrowed())?;
+            control.authenticate_original_restoration_observation_terminal_data(
+                attempt.original_data()?,
+                terminal,
+            )?;
+            connection.authenticate_original_restored_suffix_observation_literal_data(
+                attempt.original_data()?,
+                self.incoming_slot.get().ok_or_else(refused)?,
+            )?;
+        }
+        if record.sent() != record.originals().len() {
+            return Err(refused());
+        }
+        if record
+            .original_sent_frame(connection, terminal_index)?
+            .original()
+            != terminal
+        {
+            return Err(refused());
+        }
+        for index in 0..record.originals().len() {
+            record.original_sent_frame(connection, index)?;
+        }
+        self.witness
+            .authenticate_current_data(connection, control, records)?;
+        self.authenticate_receive_data(connection)?;
+        let mut owner = self.boot.try_borrow_mut().map_err(|_| borrowed())?;
+        let state = owner
+            .startup
+            .as_mut()
+            .and_then(|startup| startup.restored_suffix.as_mut())
+            .ok_or_else(refused)?;
+        state.failed = true;
+        self.attempt
+            .try_borrow_mut()
+            .map_err(|_| borrowed())?
+            .complete_publication_data()?;
+        state.ledger.complete_publication_data()?;
+        state.failed = false;
+        self.completed.set(true);
+        Ok(())
+    }
+
+    /// Retains the actual raw original before route or typed decoding can fail.
+    ///
+    /// This stage performs no model callback, native proof encoding or send.
+    /// The same actual first-observation witness is rechecked around decoding;
+    /// future advanced inventory must use a distinct current-proof validator.
+    ///
+    /// # Errors
+    /// Refuses another route/frontier, raw or typed rejection, conflicting loans
+    /// and any actual first-witness/current Control failure.
+    pub(crate) fn retain_original_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        control: &PacketControl,
+        records: &[ExchangeRecord],
+        original: Envelope,
+    ) -> Result<(), ProviderError> {
+        {
+            let mut owner = self.boot.try_borrow_mut().map_err(|_| borrowed())?;
+            let state = owner
+                .startup
+                .as_mut()
+                .and_then(|startup| startup.restored_suffix.as_mut())
+                .ok_or_else(refused)?;
+            state.ensure_current()?;
+            state
+                .observe_attempts
+                .get(self.index)
+                .filter(|attempt| Rc::ptr_eq(attempt, &self.attempt))
+                .ok_or_else(refused)?
+                .try_borrow_mut()
+                .map_err(|_| borrowed())?
+                .retain_original_data(original)?;
+        }
+        // No boot RefMut crosses the witness's actual same-owner recheck.
+        self.witness
+            .authenticate_current_data(connection, control, records)?;
+        {
+            let owner = self.boot.try_borrow().map_err(|_| borrowed())?;
+            let state = owner
+                .startup
+                .as_ref()
+                .and_then(|startup| startup.restored_suffix.as_ref())
+                .ok_or_else(refused)?;
+            let original = state
+                .observe_attempts
+                .get(self.index)
+                .filter(|attempt| Rc::ptr_eq(attempt, &self.attempt))
+                .ok_or_else(refused)?
+                .try_borrow()
+                .map_err(|_| borrowed())?;
+            let original = original.original_data()?;
+            self.witness
+                .authenticate_observe_original_identity_data(original)?;
+        }
+        {
+            let mut owner = self.boot.try_borrow_mut().map_err(|_| borrowed())?;
+            let state = owner
+                .startup
+                .as_mut()
+                .and_then(|startup| startup.restored_suffix.as_mut())
+                .ok_or_else(refused)?;
+            state
+                .observe_attempts
+                .get(self.index)
+                .filter(|attempt| Rc::ptr_eq(attempt, &self.attempt))
+                .ok_or_else(refused)?
+                .try_borrow_mut()
+                .map_err(|_| borrowed())?
+                .decode_body_data(self.frame)?;
+            state.failed = false;
+        }
+        self.witness
+            .authenticate_current_data(connection, control, records)
+    }
+}
+
+impl Drop for OriginalRestoredSuffixObserveRead<'_> {
+    fn drop(&mut self) {
+        if self.completed.get() {
+            return;
+        }
+
+        if let Ok(mut owner) = self.boot.try_borrow_mut() {
+            if let Some(state) = owner
+                .startup
+                .as_mut()
+                .and_then(|startup| startup.restored_suffix.as_mut())
+            {
+                state.failed = true;
+                state.ledger.interrupt_data();
+                if let Ok(mut attempt) = self.attempt.try_borrow_mut() {
+                    attempt.interrupt_data();
+                }
+            }
+        }
+    }
 }
 
 // This projection is specific to the closed first-Observe demand. It never

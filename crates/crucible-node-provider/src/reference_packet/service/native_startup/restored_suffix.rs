@@ -196,3 +196,21 @@ pub use reservation::{
     original_native_restored_suffix_startup_counter_scratch_data,
     original_native_restored_suffix_startup_storage_data,
 };
+
+#[path = "restored_suffix/observe_custody.rs"]
+mod observe_custody;
+pub(crate) use observe_custody::{
+    NativeRestoredSuffixObserveAttempt,
+    original_restored_suffix_observe_custody_counter_scratch_data,
+    original_restored_suffix_observe_ingress_row_data,
+};
+
+#[path = "restored_suffix/observation.rs"]
+mod observation;
+pub use observation::{
+    PacketNativeRestoredSuffixObservationStorageData,
+    original_native_restored_suffix_observation_counter_scratch_data,
+    original_native_restored_suffix_observation_storage_data,
+};
+
+pub(crate) use observation::original_native_restored_suffix_observation_required_storage_data;

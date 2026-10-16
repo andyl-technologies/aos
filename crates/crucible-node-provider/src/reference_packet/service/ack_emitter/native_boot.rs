@@ -66,6 +66,6 @@ pub(crate) use bootstrap_suffix::{
 };
 
 pub(crate) use boot::{
-    original_restored_suffix_native_counter_scratch_data,
+    OriginalRestoredSuffixObserveRead, original_restored_suffix_native_counter_scratch_data,
     original_restored_suffix_native_header_data,
 };

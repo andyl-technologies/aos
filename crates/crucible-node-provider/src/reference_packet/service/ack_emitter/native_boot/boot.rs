@@ -672,6 +672,6 @@ pub use restore_prepare::{
 #[path = "restored_suffix.rs"]
 pub(super) mod restored_suffix;
 pub(crate) use restored_suffix::{
-    original_restored_suffix_native_counter_scratch_data,
+    OriginalRestoredSuffixObserveRead, original_restored_suffix_native_counter_scratch_data,
     original_restored_suffix_native_header_data,
 };

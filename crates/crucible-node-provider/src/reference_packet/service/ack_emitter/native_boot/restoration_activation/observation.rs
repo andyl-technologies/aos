@@ -366,7 +366,8 @@ pub(crate) fn original_native_restoration_observation_attempt_backing_data()
 /// canonical, typed and reply owners are independently charged on their rows.
 pub(crate) fn original_native_restoration_observation_counter_scratch_data() -> usize {
     use std::cell::{BorrowError, BorrowMutError, Ref, RefMut};
-    size_of::<NativeRestorationObservationAttempt>()
+    crate::connection::original_restored_response_counter_scratch_data()
+        + size_of::<NativeRestorationObservationAttempt>()
         + size_of::<OriginalRestorationObservationRead>()
         + size_of::<OriginalRestorationObservationPermit>()
         + size_of::<Result<OriginalRestorationObservationRead, ProviderError>>()
@@ -643,12 +644,15 @@ impl OriginalRestorationObservationPermit {
         if record.sent() != record.originals().len() {
             return Err(refused());
         }
-        let terminal = record.originals().last().ok_or_else(refused)?;
         let mut flight = self.read.attempt.try_borrow_mut().map_err(|_| borrowed())?;
         flight.ensure_origin()?;
         if !flight.verified || !flight.dispatched || flight.published || flight.terminal.is_some() {
             return Err(refused());
         }
+        let (terminal_index, terminal) = {
+            let original = flight.original.as_ref().ok_or_else(refused)?;
+            crate::connection::original_restored_response_data(original, record.originals())?
+        };
         // The actual terminal remains owned even if its closed success check
         // or subsequent literal/currentness check refuses.
         flight.terminal = Some(terminal.clone());
@@ -662,6 +666,13 @@ impl OriginalRestorationObservationPermit {
             return Err(refused());
         }
         control.authenticate_original_restoration_observation_terminal_data(original, terminal)?;
+        if record
+            .original_sent_frame(connection, terminal_index)?
+            .original()
+            != terminal
+        {
+            return Err(refused());
+        }
         for index in 0..record.originals().len() {
             record.original_sent_frame(connection, index)?;
         }

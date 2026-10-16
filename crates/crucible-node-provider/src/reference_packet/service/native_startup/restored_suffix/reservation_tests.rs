@@ -304,3 +304,89 @@ fn missing_duplicate_or_altered_full_suffix_schema_refuses_before_any_native_own
     );
     Ok(())
 }
+
+#[test]
+fn recurring_quote_recomputes_independent_axes_and_binds_raw_launch_and_closed_body() -> TestResult
+{
+    use super::super::observation::original_native_restored_suffix_observation_storage_data;
+    let launch = launch()?;
+    let raw = canonical::canonical_json(&serde_json::to_value(&launch)?)?;
+    let startup = original_native_restored_suffix_startup_storage_data(
+        &launch,
+        &raw,
+        &model(),
+        2,
+        usize::MAX,
+    )?;
+    let binding = &launch.selection.realization.bindings[0];
+    let observe = crate::bodies::ObserveRequest {
+        binding_hash: launch.selection.realization.owner_bindings[0].identity()?,
+        owner_generation: binding.authority.owner_generation,
+        after_observation_sequence: U64::new(0),
+        maximum_items: U64::new(1),
+        extensions: Default::default(),
+    };
+    let quote = original_native_restored_suffix_observation_storage_data(
+        &startup,
+        &launch,
+        &raw,
+        &observe,
+        usize::MAX,
+    )?;
+    let exact = original_native_restored_suffix_observation_storage_data(
+        &startup,
+        &launch,
+        &raw,
+        &observe,
+        quote.requested_bytes_data(),
+    )?;
+    exact.authenticate_same_quote_data(&quote)?;
+    assert!(
+        original_native_restored_suffix_observation_storage_data(
+            &startup,
+            &launch,
+            &raw,
+            &observe,
+            quote.requested_bytes_data() - 1
+        )
+        .is_err()
+    );
+    assert!(
+        original_native_restored_suffix_observation_storage_data(
+            &startup,
+            &launch,
+            b"{}",
+            &observe,
+            usize::MAX
+        )
+        .is_err()
+    );
+    let mut changed = observe.clone();
+    changed.maximum_items = U64::new(2);
+    assert!(
+        original_native_restored_suffix_observation_storage_data(
+            &startup,
+            &launch,
+            &raw,
+            &changed,
+            usize::MAX
+        )
+        .is_err()
+    );
+    assert_eq!(
+        startup
+            .reservation_data()
+            .actions
+            .retained_requested_bytes
+            .get(),
+        2 * quote
+            .native_allocation_data()
+            .retained_requested_bytes
+            .get()
+    );
+    assert!(quote.host_retained_requested_bytes_data() > 0);
+    assert!(quote.source_evidence_retained_requested_bytes_data() > 0);
+    assert!(quote.maximum_restored_record_bytes_data() > 0);
+    assert_eq!(quote.maximum_underlying_record_bytes_data(), 65_536);
+    Ok(())
+}

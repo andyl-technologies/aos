@@ -50,6 +50,7 @@ mod fresh_report;
 mod input;
 mod native5;
 mod restoration_activation;
+mod restored_suffix_observation;
 pub(crate) use native5::{
     authenticate_original_restoration_coordinator_data,
     original_restoration_coordinator_counter_scratch_data,
@@ -758,6 +759,7 @@ impl PacketControl {
             selected_observe,
             restoration_activation,
             None,
+            None,
         )
     }
 
@@ -775,6 +777,9 @@ impl PacketControl {
         restoration_observation: Option<
             &super::service::ack_emitter::OriginalRestorationObservationPermit,
         >,
+        suffix_observation: Option<
+            &super::service::ack_emitter::OriginalRestoredSuffixObserveRead<'_>,
+        >,
     ) -> Result<&PacketControlReply, ProviderError> {
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
@@ -788,6 +793,7 @@ impl PacketControl {
         }
         if selected_observe.is_none()
             && restoration_observation.is_none()
+            && suffix_observation.is_none()
             && request.method == Method::Observe
             && self.complete_capture_allocation_selection.is_some()
         {
@@ -800,6 +806,8 @@ impl PacketControl {
         }
         if let Some(permit) = restoration_observation {
             permit.authenticate_control_request_data(request, &self.selection, self)?;
+        } else if let Some(scope) = suffix_observation {
+            scope.authenticate_control_request_data(request, &self.selection, self)?;
         } else if self.restoration_activation_required && request.method == Method::Observe {
             return Err(ProviderError::Correlation(
                 "restored Observe private permit absent",
@@ -952,6 +960,24 @@ impl PacketControl {
                         .ok_or(ProviderError::Frame("packet original reservation absent"))?
                         .1);
                 }
+                if suffix_observation.is_some() {
+                    // Proof and typed result remain cached even if prefix construction
+                    // or publication fails. The held native scope cannot retry them.
+                    self.originals
+                        .get_mut(&id)
+                        .ok_or(ProviderError::Frame("recurring Observe reservation absent"))?
+                        .1 = reply;
+                    let reply = &self
+                        .originals
+                        .get(&id)
+                        .ok_or(ProviderError::Frame("recurring Observe result absent"))?
+                        .1;
+                    if let Err(error) = preparation.prepare(reply, &mut self.fenced) {
+                        self.fenced = true;
+                        return Err(error);
+                    }
+                    return Ok(reply);
+                }
                 if !preparation.attempted
                     && let Err(error) = preparation.prepare(&reply, &mut self.fenced)
                 {
@@ -967,6 +993,7 @@ impl PacketControl {
             }
             Err(error) => {
                 if selected_observe.is_some()
+                    || suffix_observation.is_some()
                     || self.native_effect_attempted
                     || preparation.attempted
                 {
@@ -1890,3 +1917,5 @@ pub(crate) use capture::{
 
 #[path = "control/birth_scope.rs"]
 mod birth_scope;
+
+pub(crate) use restored_suffix_observation::original_restored_suffix_observation_control_counter_scratch_data;

@@ -46,6 +46,7 @@ mod restoration_activation;
 mod restoration_observation;
 mod restore;
 mod restore_commit;
+mod restored_suffix_observation;
 pub(crate) use restore::PacketEndpointRestoreAllocation;
 
 pub(crate) const EXCHANGES: usize = 256;
@@ -418,6 +419,19 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 ));
             }
             return Ok(());
+        }
+        if let Some(witness) = self.prepare_original_restored_suffix_observation_receive()? {
+            if selected_restore.is_none() || service_context.is_none() {
+                return Err(ProviderError::Correlation(
+                    "recurring Observe concrete service absent",
+                ));
+            }
+            return self.receive_and_dispatch_original_restored_suffix_observation(
+                witness,
+                selected_deadline.ok_or(ProviderError::Correlation(
+                    "recurring Observe deadline absent",
+                ))?,
+            );
         }
         if let Some(read) = self.prepare_original_restoration_observation_receive()? {
             if selected_restore.is_none() || service_context.is_none() {
@@ -957,3 +971,5 @@ mod confirmation_startup;
 mod capture_invocation;
 
 pub(crate) use capture_quote::original_invocation_capture_report_additional_scratch_data;
+
+pub(crate) use restored_suffix_observation::original_restored_suffix_observation_endpoint_counter_scratch_data;

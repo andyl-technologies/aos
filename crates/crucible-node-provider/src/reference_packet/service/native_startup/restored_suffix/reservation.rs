@@ -6,9 +6,9 @@
 //! around this pure call, adds all axes independently under policy, and retains
 //! its opaque member before the distinct carrier can be written.
 //!
-//! Ingress covers raw/Envelope/error custody only. Typed action bodies, current
-//! model/proof and callback work require a fresh complete per-action quote and
-//! debit before allocation. The initial-model action window is finite; progress
+//! Ingress also covers the closed recurring-Observe typed receive owner. Other
+//! typed actions, current model/proof and callback work still require their own
+//! complete per-action quote and debit before allocation. The initial-model action window is finite; progress
 //! can exhaust it. No Endpoint, boot owner, action or capture is enabled here.
 
 use super::super::super::PacketNative5SourceLaunch;
@@ -42,6 +42,26 @@ pub struct PacketNativeRestoredSuffixStartupStorageData {
 }
 
 impl PacketNativeRestoredSuffixStartupStorageData {
+    pub(super) fn authenticate_observation_quote_inputs_data(
+        &self,
+        launch: &PacketNative5SourceLaunch,
+        canonical_launch5: &[u8],
+    ) -> Result<&PacketCompleteRestoreOwnerValidationStorage, ProviderError> {
+        self.authenticate_same_inputs_data(
+            launch,
+            canonical_launch5,
+            &self.model,
+            self.originals,
+            self.requested,
+        )?;
+        Ok(&self.model)
+    }
+
+    /// Borrows the exact frame ceiling sealed from the same startup launch.
+    pub(crate) const fn frame_bytes_data(&self) -> usize {
+        self.frame_bytes
+    }
+
     /// Copies the distinct complete ingress and initial-model action windows.
     pub const fn reservation_data(&self) -> PacketRestoredSuffixReservationData {
         self.reservation
@@ -141,36 +161,27 @@ pub fn original_native_restored_suffix_startup_storage_data(
     {
         return Err(invalid());
     }
-    let raw = original_json_value_storage_extent_data(frame_bytes)?;
+    let one_ingress = original_restored_suffix_observe_ingress_row_data(frame_bytes)?;
     let scratch = original_native_restored_suffix_startup_counter_scratch_data();
-    // Raw literal/DOM and one returned Envelope remain owned even when later
-    // method eligibility, typed decoding or proof construction refuses. No
-    // arbitrary typed action owner is inferred from a raw encoded byte count.
-    let one_ingress_retained = sum(&[
-        mul(3, raw.value_dom_requested_bytes)?,
-        growth(frame_bytes)?,
-        mul(9, size_of::<crate::envelope::Envelope>())?,
-        size_of::<crate::connection::ConnectionIncident>(),
-        size_of::<Option<crate::envelope::Envelope>>(),
-        size_of::<Option<crate::connection::ConnectionIncident>>(),
-    ])?;
+    // The new-only closed Observe receive owner is included independently.
+    // Later Begin/Input/retirement shapes remain unsupported until their own
+    // typed-body and current-model rows have been added before startup.
     let ingress = PacketNativeStartupAllocationRow {
-        retained_requested_bytes: u64_data(mul(originals, one_ingress_retained)?)?,
-        maximum_simultaneous_transient_bytes: u64_data(sum(&[
-            raw.canonical_pass_requested_bytes()?,
-            raw.value_dom_requested_bytes,
-            growth(frame_bytes)?,
+        retained_requested_bytes: u64_data(mul(
+            originals,
+            from_u64(one_ingress.retained_requested_bytes.get())?,
+        )?)?,
+        maximum_simultaneous_transient_bytes: one_ingress.maximum_simultaneous_transient_bytes,
+        declared_counter_scratch_bytes: u64_data(sum(&[
+            scratch,
+            from_u64(one_ingress.declared_counter_scratch_bytes.get())?,
         ])?)?,
-        declared_counter_scratch_bytes: u64_data(scratch)?,
     };
     // This is the original closed initial-model proof projection, evaluated
     // from the SAME cached geometry without its old credit or any raw decode.
     // It cannot stand in for an advanced model. A later actual current census
     // must fit remaining axes before constructing any new body/proof/callback.
-    let seed = restoration_observe::restoration_observe_cached_model_projection_data(
-        launch, model, maximum,
-    )?;
-    let native = seed.native_allocation_data();
+    let (_, native, _) = super::observation::native_cached_model_data(launch, model, maximum)?;
     let actions = PacketNativeStartupAllocationRow {
         retained_requested_bytes: u64_data(mul(
             originals,
@@ -378,8 +389,14 @@ fn exhausted() -> ProviderError {
 /// The Core member, 392-byte preamble, new wire/parser/native owner and all
 /// Source/Host callback owners remain independent external obligations.
 pub fn original_native_restored_suffix_startup_counter_scratch_data() -> usize {
-    crate::reference_packet::service::ack_emitter::original_restored_suffix_native_counter_scratch_data()
-        + size_of::<PacketNativeRestoredSuffixStartupStorageData>() * 2
+    projection_counter_scratch_data()
+        + crate::reference_packet::service::ack_emitter::original_restored_suffix_native_counter_scratch_data() * 2
+}
+
+// Repeated pure quotes pay these complete fixed projection views anew. Keeping
+// the live-owner counter outside this leaf also prevents a counter call cycle.
+pub(super) fn projection_counter_scratch_data() -> usize {
+    size_of::<PacketNativeRestoredSuffixStartupStorageData>() * 2
         + size_of::<Result<PacketNativeRestoredSuffixStartupStorageData, ProviderError>>()
         + size_of::<&PacketNativeRestoredSuffixStartupStorageData>() * 2
         + size_of::<PacketCompleteRestoreOwnerValidationStorage>()

@@ -1065,3 +1065,11 @@ pub(crate) use restoration_release::original_restoration_release_literal_counter
 // Receives only the separately prepaid, boot-owned restored observation.
 mod restoration_observation;
 pub(crate) use restoration_observation::original_native_restoration_observation_receive_counter_scratch_data;
+
+mod restored_suffix_observation;
+pub(crate) use restored_suffix_observation::original_restored_suffix_observation_receive_counter_scratch_data;
+
+mod restored_response;
+pub(crate) use restored_response::{
+    original_restored_response_counter_scratch_data, original_restored_response_data,
+};

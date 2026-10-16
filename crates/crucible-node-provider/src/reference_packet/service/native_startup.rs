@@ -325,3 +325,17 @@ pub use restored_suffix::{
 };
 
 pub(crate) use restored_suffix::OriginalRestoredSuffixBudget;
+
+pub(crate) use restored_suffix::{
+    NativeRestoredSuffixObserveAttempt,
+    original_restored_suffix_observe_custody_counter_scratch_data,
+    original_restored_suffix_observe_ingress_row_data,
+};
+
+pub use restored_suffix::{
+    PacketNativeRestoredSuffixObservationStorageData,
+    original_native_restored_suffix_observation_counter_scratch_data,
+    original_native_restored_suffix_observation_storage_data,
+};
+
+pub(crate) use restored_suffix::original_native_restored_suffix_observation_required_storage_data;
