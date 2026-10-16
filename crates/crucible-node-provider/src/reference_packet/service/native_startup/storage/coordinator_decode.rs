@@ -5,6 +5,8 @@
 //! counter grants no source, allocation, native birth or currentness rights.
 
 use super::*;
+
+mod typed_backing;
 use crate::protocol_snapshot::owned11::{
     OriginalOwned11Fields as Fields, original_owned11_plain_string as plain_string,
 };
@@ -58,7 +60,31 @@ pub(super) fn typed_slot() -> usize {
 
 /// Prices only the real permanent DTO; the old complete validator quote is
 /// separately retained as work, never multiplied as persistent DTO backing.
+/// The complete raw Value row retains every opaque subtree, string and tree;
+/// known typed vectors add only their actual element layouts. Unsupported raw
+/// shapes retain the original conservative bound and unchanged decoder grammar.
 pub(super) fn backing(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError> {
+    if bytes.is_empty() || bytes.len() > maximum {
+        return Err(refused());
+    }
+    match typed_backing::arrays(bytes, maximum) {
+        Ok(arrays) => sum(
+            &[
+                decoded::quote(bytes, size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing,
+                arrays,
+                size_of::<PacketNative5CoordinatorInstallation>(),
+                size_of::<PacketConnectedHostSelection>(),
+            ],
+            maximum,
+        ),
+        // New fields or shapes never receive a guessed smaller slot. Preserve
+        // the original conservative quote and let the unchanged DTO decoder
+        // determine accepted grammar after genuine construction admission.
+        Err(_) => conservative_backing(bytes, maximum),
+    }
+}
+
+fn conservative_backing(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError> {
     // The installation's template and host.initial_node remain Value. Only
     // participants and the four actual host DTO fields own typed Vec elements.
     // Price a complete independent Value row as well, conservatively covering
@@ -404,7 +430,8 @@ pub(super) fn quote(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError
 pub(super) fn counter_scratch_data() -> usize {
     // Actual compiled type census, raw field/array cursors, live quote totals,
     // borrowed result references and nested collection/projection observers.
-    size_of::<[usize; 29]>()
+    typed_backing::counter_scratch_data()
+        + size_of::<[usize; 29]>()
         + size_of::<[usize; 13]>()
         + size_of::<[&[u8]; 8]>()
         + 3 * size_of::<Fields<'_>>()

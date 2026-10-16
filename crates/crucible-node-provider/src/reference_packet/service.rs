@@ -236,6 +236,22 @@ impl PacketSourceService {
         ack_emitter::native_boot::accept_admitted(socket)
     }
 
+    /// Authenticates the explicit invocation-bound private bootstrap revision.
+    ///
+    /// Prefix15, launch6, boot7 and Source15 must agree with the same inherited
+    /// parent and private birth. The actual installed issuer selects invocation
+    /// provenance before Child; this entry supplies no public purpose argument.
+    /// Query, Prepare, activation and complete Capture rights remain separate.
+    ///
+    /// # Errors
+    /// Refuses wrong legacy/new editions, foreign parent or MAC, changed full
+    /// identities, expired original cut or any component above the same rows.
+    pub fn accept_original_native_invocation_bootstrap(
+        socket: &std::path::Path,
+    ) -> Result<Self, ProviderError> {
+        ack_emitter::native_boot::accept_invocation(socket)
+    }
+
     /// Installs a complete original native source after actual peer authentication.
     ///
     /// # Errors

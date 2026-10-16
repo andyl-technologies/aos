@@ -39,3 +39,5 @@ pub(crate) use typed::{
 };
 
 pub mod host_registry;
+
+mod retained_storage;

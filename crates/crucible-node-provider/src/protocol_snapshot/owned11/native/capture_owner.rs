@@ -422,3 +422,7 @@ mod tests {
         assert!(!same_original_header(&original, unknown.as_bytes()).unwrap());
     }
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(HistoricalNativeCaptureCurrency, creator, originals_before, cursor, control_group);
+super::super::retained_storage::fields!(HistoricalNativeCaptureAllocationOwner, creator, observe, sdk, currency, report, report_reference, encoded_report, capture);

@@ -103,11 +103,17 @@ fn value_end(bytes: &[u8], start: usize) -> Result<usize, ProviderError> {
 }
 
 fn fields(bytes: &[u8]) -> Result<[&[u8]; 9], ProviderError> {
+    fields_inner(bytes, false)
+}
+
+fn fields_inner(bytes: &[u8], invocation: bool) -> Result<[&[u8]; 9], ProviderError> {
     if bytes.first() != Some(&b'{') {
         return Err(refused());
     }
     let mut selected = [None; 9];
     let mut extras = [false; 9];
+    let mut saw_invocation = false;
+    let mut selected_schema = false;
     let mut cursor = 1usize;
     loop {
         if bytes.get(cursor) == Some(&b'}') {
@@ -142,7 +148,15 @@ fn fields(bytes: &[u8]) -> Result<[&[u8]; 9], ProviderError> {
             {
                 return Err(refused());
             }
+        } else if invocation && key == b"invocation" {
+            if std::mem::replace(&mut saw_invocation, true) {
+                return Err(refused());
+            }
         } else if let Some(index) = EXTRA.iter().position(|name| *name == key) {
+            if invocation && key == b"schema" {
+                selected_schema = bytes.get(value_start..end)
+                    == Some(b"\"source-owned.packet-canonical-ack-source-binding/15\"");
+            }
             if std::mem::replace(&mut extras[index], true) {
                 return Err(refused());
             }
@@ -155,6 +169,9 @@ fn fields(bytes: &[u8]) -> Result<[&[u8]; 9], ProviderError> {
             Some(b'}') => {}
             _ => return Err(refused()),
         }
+    }
+    if invocation && (!saw_invocation || !selected_schema || extras.iter().any(|seen| !seen)) {
+        return Err(refused());
     }
     let [a, b, c, d, e, f, g, h, i] = selected;
     Ok([
@@ -171,7 +188,22 @@ fn fields(bytes: &[u8]) -> Result<[&[u8]; 9], ProviderError> {
 }
 
 pub(super) fn project(bytes: &[u8], maximum: usize) -> Result<SourceBindingStorage, ProviderError> {
-    let values = fields(bytes)?;
+    project_values(fields(bytes)?, maximum)
+}
+
+// This data-only sibling preserves the legacy closed roster. Its caller must
+// authenticate the actual Source15 purpose and original private channel first.
+pub(super) fn project_invocation(
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<SourceBindingStorage, ProviderError> {
+    project_values(fields_inner(bytes, true)?, maximum)
+}
+
+fn project_values(
+    values: [&[u8]; 9],
+    maximum: usize,
+) -> Result<SourceBindingStorage, ProviderError> {
     // Each actual field retains its exact complete nested value occurrences.
     // Nine keys, colons, eight commas and the outer braces are separately named.
     let mut encoded = 2usize + 8 + 9;
@@ -210,4 +242,60 @@ pub(super) fn project(bytes: &[u8], maximum: usize) -> Result<SourceBindingStora
         base_decoded_bytes: decoded,
         base_value_backing_bytes: sum(&[backing, roots, size_of::<serde_json::Value>()], maximum)?,
     })
+}
+
+#[cfg(test)]
+mod invocation_tests {
+    use super::*;
+    use crucible_node_contract::canonical;
+    use serde_json::json;
+
+    // Closed inert field occurrences exercise the census, not a typed launch,
+    // Source member, parser authority or semantic binding.
+    fn source(schema: &str) -> serde_json::Value {
+        let mut value = serde_json::Map::new();
+        for name in BASE.into_iter().chain(EXTRA) {
+            value.insert(
+                std::str::from_utf8(name).unwrap().into(),
+                serde_json::Value::Null,
+            );
+        }
+        value.insert("schema".into(), json!(schema));
+        serde_json::Value::Object(value)
+    }
+
+    #[test]
+    fn invocation_source_census_keeps_legacy_roster_and_exact_unchanged_base() {
+        let old = source("source-owned.packet-canonical-ack-source-binding/14");
+        let old = canonical::canonical_json(&old).unwrap();
+        let legacy = project(&old, usize::MAX).unwrap();
+        assert!(project_invocation(&old, usize::MAX).is_err());
+
+        let mut current = source("source-owned.packet-canonical-ack-source-binding/15");
+        current["invocation"] = json!({"inert_occurrence":true});
+        let encoded = canonical::canonical_json(&current).unwrap();
+        let selected = project_invocation(&encoded, usize::MAX).unwrap();
+        assert_eq!(selected.base_encoded_bytes, legacy.base_encoded_bytes);
+        assert_eq!(selected.base_decoded_bytes, legacy.base_decoded_bytes);
+        assert_eq!(selected.base_value_backing_bytes, legacy.base_value_backing_bytes);
+        assert!(project(&encoded, usize::MAX).is_err());
+
+        for name in [
+            "invocation",
+            "schema",
+            "native_startup_allocation",
+            "selection",
+        ] {
+            let mut changed = current.clone();
+            changed.as_object_mut().unwrap().remove(name);
+            assert!(
+                project_invocation(&canonical::canonical_json(&changed).unwrap(), usize::MAX)
+                    .is_err()
+            );
+        }
+        current["foreign"] = json!(null);
+        assert!(
+            project_invocation(&canonical::canonical_json(&current).unwrap(), usize::MAX).is_err()
+        );
+    }
 }

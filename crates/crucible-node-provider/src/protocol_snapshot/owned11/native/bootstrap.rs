@@ -68,6 +68,8 @@ impl HistoricalNativeBootstrap {
         }
         match (&self.startup, &self.boot.startup) {
             (None, None) => {}
+            (Some(startup), Some(_)) if self.boot.invocation.is_some() =>
+                super::invocation::authenticate_bootstrap(startup, self)?,
             (Some(startup), Some(_)) => startup.authenticate(self)?,
             _ => return Err(invalid()),
         }
@@ -83,11 +85,13 @@ pub(super) fn read(
     boot_layout: usize,
 ) -> Result<Option<HistoricalNativeBootstrap>, ProviderError> {
     let startup_class = ledger.requires_startup_class()?;
+    let invocation_class = ledger.requires_invocation_class()?;
     let (input, startup_input) = if startup_class {
         let mut wrapper = Fields::array(input)?;
         tag(
             &mut wrapper,
-            "source-private.native-private-bootstrap-startup/14",
+            if invocation_class { "source-private.native-private-bootstrap-invocation/15" }
+            else { "source-private.native-private-bootstrap-startup/14" },
         )?;
         let base = next(&mut wrapper)?;
         let startup = next(&mut wrapper)?;
@@ -99,7 +103,9 @@ pub(super) fn read(
     let mut fields = Fields::array(input)?;
     tag(
         &mut fields,
-        if startup_class {
+        if invocation_class {
+            "source-private.native-private-bootstrap/15"
+        } else if startup_class {
             "source-private.native-private-bootstrap/14"
         } else {
             "source-private.native-private-bootstrap/11"
@@ -154,7 +160,8 @@ pub(super) fn read(
     let boot = ledger.boot(next(&mut fields)?, build, boot_layout)?;
     fields.finish()?;
     let startup = if let Some(input) = startup_input {
-        super::startup::read_bootstrap(input, ledger.ledger, build)?
+        if invocation_class { super::startup::read_invocation_bootstrap(input, ledger.ledger, build)? }
+        else { super::startup::read_bootstrap(input, ledger.ledger, build)? }
     } else {
         None
     };
@@ -171,3 +178,15 @@ pub(super) fn read(
         startup,
     }))
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(
+    HistoricalNativeBootstrap,
+    reader,
+    literals,
+    launch_value,
+    launch_bytes,
+    boot_value,
+    boot,
+    startup
+);

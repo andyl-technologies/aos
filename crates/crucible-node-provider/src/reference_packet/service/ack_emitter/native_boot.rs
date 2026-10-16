@@ -20,7 +20,7 @@ pub(crate) use boot::{
 pub(crate) use bootstrap::{
     OriginalNativeBootstrapOwned11, original_native_private_bootstrap_layout,
 };
-pub(in crate::reference_packet::service) use bootstrap::{accept, accept_admitted};
+pub(in crate::reference_packet::service) use bootstrap::{accept, accept_admitted, accept_invocation};
 
 pub(crate) use boot::{
     OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,

@@ -26,26 +26,36 @@ fn main() {
     }
 }
 
+// This private argument selects only a strict inherited-channel decoder. Every
+// route still obtains authority from actual peer/MAC/row checks, never the flag.
+#[derive(Clone, Copy)]
+enum PrivateBootstrap {
+    Canonical,
+    Startup14,
+    Invocation15,
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args_os().skip(1);
     let socket = PathBuf::from(arguments.next().ok_or("expected private packet socket")?);
     let original_boot = match arguments.next() {
         None => None,
-        Some(flag) if flag == "--original-canonical-ack-boot" => Some(false),
-        Some(flag) if flag == "--original-native-startup14" => Some(true),
+        Some(flag) if flag == "--original-canonical-ack-boot" => Some(PrivateBootstrap::Canonical),
+        Some(flag) if flag == "--original-native-startup14" => Some(PrivateBootstrap::Startup14),
+        Some(flag) if flag == "--original-native-startup15" => Some(PrivateBootstrap::Invocation15),
         Some(_) => return Err("unexpected private packet argument".into()),
     };
     if arguments.next().is_some() {
         return Err("unexpected private packet argument".into());
     }
-    if let Some(admitted) = original_boot {
-        if admitted && socket.as_os_str().len() > 4096 {
+    if let Some(edition) = original_boot {
+        if !matches!(edition, PrivateBootstrap::Canonical) && socket.as_os_str().len() > 4096 {
             return Err("native startup socket path exceeds fixed original bound".into());
         }
-        let mut service = if admitted {
-            PacketSourceService::accept_original_native_startup_bootstrap(&socket)?
-        } else {
-            PacketSourceService::accept_original_private_bootstrap(&socket, std::io::stdin())?
+        let mut service = match edition {
+            PrivateBootstrap::Canonical => PacketSourceService::accept_original_private_bootstrap(&socket, std::io::stdin())?,
+            PrivateBootstrap::Startup14 => PacketSourceService::accept_original_native_startup_bootstrap(&socket)?,
+            PrivateBootstrap::Invocation15 => PacketSourceService::accept_original_native_invocation_bootstrap(&socket)?,
         };
         return drive(&mut service);
     }

@@ -37,6 +37,7 @@ pub use runtime_construction::{
 };
 
 pub use native_startup::{
+    CompleteOriginalNativeInvocationAdmission,
     CompleteOriginalNativeStartupAdmission, OriginalNativeStartupMemberScope,
     OriginalNativeStartupPolicy, OriginalNativeStartupScope, OriginalNativeStartupStorage,
 };
@@ -227,6 +228,22 @@ pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
         _: &OriginalNativeStartupScope<'_>,
         _: &OriginalNativeStartupPolicy,
     ) -> Result<OriginalNativeStartupStorage, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Derives complete invocation DATA from the actual registered startup holder.
+    ///
+    /// The callback copies bounded inline fields only, after Core has admitted
+    /// its fixed scratch. Public DATA values cannot substitute a native member.
+    ///
+    /// # Errors
+    /// Defaults to refusal for unknown holders, missing original archive tickets,
+    /// changed Source/target identity or unavailable actual prebirth custody.
+    fn original_native_invocation_data(
+        &self,
+        _: &ConformancePlanEvidence<'_>,
+        _: &OriginalNativeStartupScope<'_>,
+    ) -> Result<[crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData; 3], crate::node_contract::RuntimeError> {
         Err(crate::node_contract::RuntimeError::UnsupportedFacet)
     }
 

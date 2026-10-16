@@ -157,6 +157,21 @@ pub(super) fn project(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum: usize,
 ) -> Result<PrivateBootstrapStorage, ProviderError> {
+    project_with_source(input, maximum, source_binding::project)
+}
+
+pub(super) fn project_invocation(
+    input: &PacketNativeBirthStartupInputs<'_>,
+    maximum: usize,
+) -> Result<PrivateBootstrapStorage, ProviderError> {
+    project_with_source(input, maximum, source_binding::project_invocation)
+}
+
+fn project_with_source(
+    input: &PacketNativeBirthStartupInputs<'_>,
+    maximum: usize,
+    source_project: fn(&[u8], usize) -> Result<source_binding::SourceBindingStorage, ProviderError>,
+) -> Result<PrivateBootstrapStorage, ProviderError> {
     let additions = source_additions(input, maximum)?;
     let fields = boot_fields(input, maximum)?;
     let added_encoded = additions
@@ -171,7 +186,7 @@ pub(super) fn project(
         .ok_or_else(refused)?;
     // Existing Source keys that the additions replace are conservatively
     // retained in this extent. No old object or numeric maximum is erased.
-    let base = source_binding::project(input.source_birth, maximum)?;
+    let base = source_project(input.source_birth, maximum)?;
     let maximum_boot_bytes = sum(
         &[
             base.base_encoded_bytes,

@@ -309,7 +309,7 @@ impl Connection<crate::client::DeadlineStream> {
         // Validate the complete supported current owner family before taking
         // service guards. This validation walk is not reported as unique facts.
         if context.requires_original_native_startup_codec(self, blobs)? {
-            self.observe_original_startup_connection_metadata(&mut MetadataObserver::new())?;
+            self.observe_original_current_connection_metadata(&mut MetadataObserver::new())?;
         } else {
             self.observe_original_restore_connection_metadata(&mut MetadataObserver::new())?;
         }

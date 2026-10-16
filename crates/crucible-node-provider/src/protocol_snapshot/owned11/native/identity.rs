@@ -124,3 +124,6 @@ pub(super) fn read(
         literal_digest,
     }))
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(HistoricalNativeAckIdentity, actor_group, authority, policy, frames, admit_id, admit_sequence, literal_index, literal_length, literal_digest);

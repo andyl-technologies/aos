@@ -461,7 +461,7 @@ pub(crate) fn test_fixture_reference_device(
 }
 
 pub use conformance::{
-    CompleteOriginalNativeStartupAdmission, OriginalNativeStartupMemberScope,
+    CompleteOriginalNativeInvocationAdmission, CompleteOriginalNativeStartupAdmission, OriginalNativeStartupMemberScope,
     OriginalNativeStartupPolicy, OriginalNativeStartupScope, OriginalNativeStartupStorage,
 };
 

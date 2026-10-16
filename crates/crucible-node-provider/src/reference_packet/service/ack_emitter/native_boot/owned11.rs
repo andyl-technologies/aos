@@ -98,6 +98,16 @@ impl NativeAckBoot {
         &self,
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
+        self.observe_base_admitted_boot_metadata_at_encoding(false, observer)
+    }
+
+    // The new invocation class explicitly represents canonical byte banks by
+    // capacity and initialized length. Old11/14 visit/row behavior stays exact.
+    fn observe_base_admitted_boot_metadata_at_encoding(
+        &self,
+        compact_byte_banks: bool,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
         self.authenticate_base_admitted_boot_state()?;
         let Self {
             creator,
@@ -136,19 +146,19 @@ impl NativeAckBoot {
         observer.observe(expected_host_registration)?;
         observer.observe(private_launch)?;
         observer.observe(host_executable)?;
-        observer.observe(launch_body)?;
+        observe_unique_boot_byte_bank(launch_body, compact_byte_banks, observer)?;
         let policy = policy
             .as_ref()
             .ok_or(ProviderError::Correlation("native policy absent"))?;
         observer.shared_original(MetadataSharedKind::NativePolicy, policy.as_ref())?;
         policy.observe_owned11_metadata(observer)?;
-        observer.observe(source_body)?;
-        observer.observe(host_body)?;
+        observe_unique_boot_byte_bank(source_body, compact_byte_banks, observer)?;
+        observe_unique_boot_byte_bank(host_body, compact_byte_banks, observer)?;
         for value in normalized {
             observer.observe(value)?;
         }
         for bank in banks {
-            observer.observe(bank)?;
+            observe_unique_boot_byte_bank(bank, compact_byte_banks, observer)?;
         }
         let PacketCanonicalAckAdmissionContext {
             schema,
@@ -482,7 +492,9 @@ impl NativeAckBoot {
         roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
-        if self.startup.is_some() {
+        if self.requires_invocation_codec_data()? {
+            self.authenticate_invocation_owned_data()?;
+        } else if self.startup.is_some() {
             self.authenticate_startup_owned_state()?;
         } else {
             self.authenticate_owned11_state()?;
@@ -595,6 +607,9 @@ impl NativeAckBoot {
         observer.observe(verified)?;
         if let Some(startup) = &self.startup {
             startup_codec::observe_owner(startup, observer)?;
+            if self.requires_invocation_codec_data()? {
+                self.observe_invocation_phase_metadata(observer)?;
+            }
         }
         Ok(())
     }
@@ -612,7 +627,11 @@ impl NativeAckBoot {
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
         self.authenticate_base_admitted_boot_state()?;
-        self.authenticate_original_native_baseline_data()?;
+        if self.requires_invocation_codec_data()? {
+            self.authenticate_original_invocation_prepare_target_data()?;
+        } else {
+            self.authenticate_original_native_baseline_data()?;
+        }
         let startup = self.startup.as_ref().ok_or(ProviderError::Correlation(
             "startup Prepare boot owner absent",
         ))?;
@@ -715,3 +734,9 @@ mod startup_byte_bank_tests {
         assert_eq!(actual.observed_nodes, bytes.len() + 1);
     }
 }
+
+#[path = "invocation_owned.rs"]
+mod invocation_data;
+
+#[path = "invocation_protocol.rs"]
+mod invocation_protocol;

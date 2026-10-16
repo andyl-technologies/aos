@@ -76,7 +76,12 @@ pub fn original_report_startup_storage_data(
     let data = match purpose {
         PacketNativeReportStartupPurpose::OriginalObserve12 => {
             let shapes = observe::project(launch, maximum)?;
-            original(launch, &shapes, receive.requested_bytes()?)?
+            original(
+                launch,
+                &shapes,
+                receive.requested_bytes()?,
+                crate::connection::OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)?,
+            )?
         }
         PacketNativeReportStartupPurpose::FreshCompletedAdmit13 => {
             let fresh =
@@ -111,6 +116,7 @@ fn original(
     launch: &PacketNative5SourceLaunch,
     shapes: &observe::OriginalObserveStartupShapes,
     initial_receive: usize,
+    typed_query_requested_bytes: usize,
 ) -> Result<PacketNativeReportStartupStorageData, ProviderError> {
     use crate::reference_packet::service::capture_allocation::*;
     let raw = shapes.raw.maximum_encoded_bytes.min(65_536);
@@ -139,6 +145,13 @@ fn original(
             maximum_requested_bytes: MAXIMUM_COMPILED_PROJECTION_BYTES,
         },
     )?;
+    // authenticate_tuple selected the actual OriginalObserve12 constructor.
+    // Its incoming query returns before reply/control/prefix construction. Keep
+    // every original/failed owner below; the complete old prefix peak is merely
+    // partitioned so returning work is not also described as permanent growth.
+    let prefix_lifetime = prefix
+        .exchange
+        .native_observe_lifetime_storage_data(MAXIMUM_COMPILED_PROJECTION_BYTES)?;
     let mut trees = MetadataObserver::new();
     // Independent content keys for raw, receipt5, wrapper12 and report12;
     // the immutable original cache owns one additional Id/hash/reply row.
@@ -203,7 +216,7 @@ fn original(
         )?,
     ])?;
     let retained = sum(&[
-        prefix.exchange.requested_bytes()?, // Includes temporary terms conservatively.
+        prefix_lifetime.retained_requested_bytes,
         prefix.source_owner_requested_bytes,
         content_bytes,
         content_references,
@@ -214,9 +227,16 @@ fn original(
         mul(2, size_of::<ContentRef>())?,
         mul(2, reference_children("application/json")?)?,
     ])?;
-    let transient = sum(&[
+    let encoding = sum(&[
+        // Endpoint::step holds the SAME returned Box<RequestBody> and its
+        // Observe hash/children until selected_report returns. This actual
+        // restricted query row, including the unchanged SDK observer's possible
+        // empty Extensions root, survives receive and overlaps all encoding;
+        // only its returning raw/parser work belongs in the other max arm.
+        typed_query_requested_bytes,
         binding_identity_transient,
-        initial_receive,
+        prefix_lifetime.work_requested_bytes()?,
+        prefix.declared_counter_scratch_bytes,
         shapes.original.requested_total()?,
         shapes.raw.requested_total()?,
         shapes.receipt.requested_total()?,
@@ -239,7 +259,12 @@ fn original(
     ])?;
     Ok(PacketNativeReportStartupStorageData {
         retained_growth_bytes: retained,
-        maximum_simultaneous_transient_bytes: transient,
+        // The full untrusted query is still funded at the negotiated raw cap.
+        // It cannot overlap later encoding: receive_original_report_query has
+        // returned before publish_original_capture_allocation_observe begins.
+        // Original/containment remain funded above; the returned typed Box and
+        // Observe children are explicitly carried in encoding, not maxed away.
+        maximum_simultaneous_transient_bytes: initial_receive.max(encoding),
         declared_counter_scratch_bytes: original_report_startup_counter_scratch_data(),
     })
 }
@@ -341,6 +366,7 @@ pub fn original_report_startup_counter_scratch_data() -> usize {
 
         crate::reference_packet::service::ack_emitter::original_native_report_startup_scope_layout_data(),
         crate::connection::original_packet_prefix_startup_counter_scratch_data(),
+        crate::connection::OriginalPacketPrefixStorageData::native_observe_lifetime_counter_scratch_data(),
         crate::connection::original_report_query_receive_counter_scratch_data(),
         super::super::fresh_restore_allocation::fresh_restore_allocation_startup_counter_scratch_data(),
         crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::requested_serialization_scratch_bytes(),

@@ -30,6 +30,19 @@ pub struct PacketNativePrepareStartupStorageData {
 }
 
 impl PacketNativePrepareStartupStorageData {
+    /// Names the additional borrowed invocation checks beside the legacy counter.
+    ///
+    /// The actual private boot selects this phase; this layout DATA grants no
+    /// Prepare scope and does not rebuild or re-encode the nested launch.
+    pub fn original_invocation_counter_scratch_data() -> usize {
+        original_native_prepare_startup_counter_scratch_data()
+            .checked_add(crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData::original_launch_literal_counter_scratch_data())
+            .and_then(|bytes| bytes.checked_add(
+                crate::reference_packet::service::OriginalNativeCaptureContext::invocation_additional_counter_scratch_data(),
+            ))
+            .unwrap_or(usize::MAX)
+    }
+
     /// Returns independent owners added by the Prepare construction.
     pub const fn retained_growth_bytes(&self) -> usize {
         self.retained_growth_bytes
@@ -413,13 +426,19 @@ impl VerifiedCanonicalAckAdmission {
         // Claim before counters, decoding, read or attempt allocation. Failure
         // leaves the original occurrence consumed even while transfer is None.
         let row = owner.claim_original_native_prepare_startup_row_data()?;
-        let scratch = u64::try_from(original_native_prepare_startup_counter_scratch_data())
-            .map_err(|_| refused())?;
+        let invocation = owner.data.schema == crate::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA;
+        let scratch = u64::try_from(if invocation {
+            PacketNativePrepareStartupStorageData::original_invocation_counter_scratch_data()
+        } else {
+            original_native_prepare_startup_counter_scratch_data()
+        })
+        .map_err(|_| refused())?;
         if scratch > row.declared_counter_scratch_bytes.get() {
             return Err(refused());
         }
+        let original_launch = owner.original_verified_launch_literal_data()?;
         let decode = selected_issuer_decode_storage_data(
-            &owner.launch_body,
+            original_launch,
             size_of::<PacketNative5SourceLaunch>(),
             1024 * 1024,
         )?;
@@ -431,7 +450,11 @@ impl VerifiedCanonicalAckAdmission {
         // The SAME grant independently covers this first immutable typed decode
         // before using that typed original to reconstruct the complete quote.
         let launch = decode_verified_prepare_launch(&owner)?;
-        let data = original_native_prepare_startup_storage_data(&launch, &owner.launch_body)?;
+        let mut data = original_native_prepare_startup_storage_data(&launch, original_launch)?;
+        if invocation {
+            data.declared_counter_scratch_bytes =
+                PacketNativePrepareStartupStorageData::original_invocation_counter_scratch_data();
+        }
         row.authenticate_actual_data(&data.row()?)?;
         let result = OriginalNativePrepareStartupAllocation {
             boot: Rc::clone(&self.boot),

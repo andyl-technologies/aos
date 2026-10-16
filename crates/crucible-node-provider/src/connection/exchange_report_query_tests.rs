@@ -169,3 +169,46 @@ fn query_storage_keeps_full_raw_receive_separate_from_original_clone() -> TestRe
     assert!(fresh.requested_bytes()? > active.requested_bytes()?);
     Ok(())
 }
+
+#[test]
+fn returned_observe_box_backing_fits_the_carried_typed_query_row() -> TestResult {
+    let (_handshake, authority, selection, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let query = selected_observe(&selection)?;
+    authenticate_original_report_query_header_data(&selection, Purpose::OriginalObserve12, &query)?;
+    let returned = Box::new(crate::bodies::decode_request(query.method, &query.body)?);
+    let RequestBody::Observe(observed) = returned.as_ref() else {
+        return Err("restricted typed Observe absent".into());
+    };
+    let mut fields = crate::retained_metadata::MetadataObserver::new();
+    fields.observe(&observed.binding_hash)?;
+    fields.observe(&observed.owner_generation)?;
+    fields.observe(&observed.after_observation_sequence)?;
+    fields.observe(&observed.maximum_items)?;
+    fields.observe(&observed.extensions)?;
+    let children =
+        crate::retained_metadata::requested_metadata_backing_storage_data(&fields.finish())?;
+    let actual = std::mem::size_of_val(returned.as_ref())
+        .checked_add(children)
+        .ok_or_else(query_error)?;
+    let receive =
+        query_receive_storage_from_limits(authority.limits(), Purpose::OriginalObserve12)?;
+
+    assert!(children > 0);
+    let carried = OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)?;
+    assert!(observed.extensions.is_empty());
+    // The live generic observer includes this possible root even for the
+    // freshly decoded empty map. The selected carry must dominate that SAME
+    // metric; the old typed/hash-only row does not cover it on this fixture.
+    assert!(actual > receive.typed_query_requested_bytes);
+    assert!(actual <= carried);
+    assert!(receive.requested_bytes()? > carried);
+    assert_eq!(
+        observed.binding_hash,
+        selection.realization.owner_bindings[0].identity()?
+    );
+    // Keep the actual decoded owner live through the metadata comparison; the
+    // Source encoding row carries its allowance after the receive phase ends.
+    assert!(matches!(returned.as_ref(), RequestBody::Observe(_)));
+    Ok(())
+}

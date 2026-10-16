@@ -62,9 +62,13 @@ impl NativeAckBoot {
     pub(in crate::reference_packet::service::ack_emitter::native_boot) fn original_native_prepare_startup_row_data(
         &self,
     ) -> Result<PacketNativeStartupAllocationRow, ProviderError> {
-        self.authenticate_native_startup_data()?
-            .allocation
-            .restore_prepare
+        let original = if self.data.schema == crate::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
+            self.authenticate_original_invocation_prepare_target_data()?;
+            self.startup.as_ref().ok_or(ProviderError::Correlation("native invocation origin absent"))?
+        } else {
+            self.authenticate_native_startup_data()?
+        };
+        original.allocation.restore_prepare
             .ok_or(ProviderError::Correlation(
                 "native Prepare startup not selected",
             ))

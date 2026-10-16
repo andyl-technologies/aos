@@ -1029,3 +1029,56 @@ fn read_restore_owner(
         },
     ))
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::retained_storage::fields!(HistoricalConnection, authority, correlations, codec, frames, reader, packet_schema, connected_packet_schema, fenced);
+super::retained_storage::fields!(HistoricalClientSession, connection, authority, sequence, peer_pid, peer_executable, hello);
+super::retained_storage::fields!(HistoricalClientCustody, maximum_requests, maximum_bytes, retained_bytes, controller, provider, content);
+super::retained_storage::fields!(HistoricalControllerState, node, execution_owner, budget_seconds, budget_nanoseconds, fenced, profile, session, custody, assigned, supervisor, complete_restore, restore_owner_covered);
+
+super::retained_storage::fields!(SealedHistoricalControllerState, reference, encoded, historical, complete);
+
+impl SealedHistoricalControllerState {
+    /// Observes this actual sealed historical owner's initialized retained graph.
+    ///
+    /// Includes partial decoder roots and actual encoded/typed capacities. This
+    /// raw data loan invokes no live callback, decoder, serializer, I/O or grant.
+    /// The enclosing original owner checks its own creator before this loan.
+    ///
+    /// # Errors
+    /// Refuses typed traversal limits or checked metadata/layout overflow.
+    pub fn original_retained_metadata_facts(&self)
+        -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, crate::ProviderError> {
+        super::retained_storage::facts(self)
+    }
+
+    /// Names the fixed explicit counter/views before the raw historical walk.
+    pub fn original_retained_metadata_counter_scratch_data() -> usize {
+        super::retained_storage::counter_scratch_data()
+    }
+}
+
+#[cfg(test)]
+mod retained_owner_tests {
+    use super::*;
+
+    #[test]
+    fn partial_sealed_owner_observes_actual_growth_without_completing_decode() {
+        let reference = crucible_node_contract::canonical::content_ref(b"[]", "application/json").unwrap();
+        let mut owner = SealedHistoricalControllerState {reference,
+            encoded: Vec::with_capacity(17), historical: None, complete: false};
+        owner.encoded.extend_from_slice(b"[");
+        let original_capacity = owner.encoded.capacity();
+
+        let before = owner.original_retained_metadata_facts().unwrap();
+        owner.encoded.try_reserve_exact(original_capacity + 1).unwrap();
+        let after = owner.original_retained_metadata_facts().unwrap();
+
+        assert_eq!(before.vector_capacity_bytes, original_capacity);
+        assert_eq!(after.vector_capacity_bytes, owner.encoded.capacity());
+        assert!(after.vector_capacity_bytes > before.vector_capacity_bytes);
+        assert_eq!(owner.encoded, b"[");
+        assert!(owner.historical().is_err());
+        assert!(!owner.complete);
+    }
+}

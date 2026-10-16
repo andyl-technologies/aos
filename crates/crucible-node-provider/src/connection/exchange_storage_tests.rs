@@ -427,5 +427,8 @@ fn changed_underquoted_inputs_refuse_before_the_owning_plan_is_constructed() -> 
     Ok(())
 }
 
+#[path = "exchange_observe_lifetime_tests.rs"]
+mod observe_lifetime;
+
 #[path = "exchange_packet_projection_tests.rs"]
 mod packet_projection;

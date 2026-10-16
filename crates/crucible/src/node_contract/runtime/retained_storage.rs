@@ -42,6 +42,46 @@ impl OriginalRuntimeStorageIdentity {
 }
 
 impl NodeRuntime {
+    pub(crate) fn authenticate_original_restoration_target_data(
+        &self,
+        source: &crate::node_state::CompleteOriginalRestorationSource,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        source.inner.authenticate_birth()?;
+        if self.activated
+            || !self.barrier.can_arm()
+            || !self.operations.is_empty()
+            || !self.input_batches.is_empty()
+            || self.terminal.is_some()
+            || self.condition_stop.is_some()
+            || !self.original_capture_attempts.is_empty()
+            || self.barrier.record() != activation
+            || activation.owners.len() != 4
+            || !self
+                .collecting
+                .as_ref()
+                .is_some_and(|graph| graph.plan().is_same_original_plan_data(plan))
+            || !source
+                .inner
+                .collecting_plan()?
+                .is_some_and(|original| original.is_same_original_plan_data(plan))
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.scheduler
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?
+            .authenticate(&self.authority, &activation.world_binding_hash)?;
+        if let Some(history) = &self.original_capture_history {
+            if !Rc::ptr_eq(history, &source.inner) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            source.inner.authenticate_target(&self.authority)?;
+        }
+        Ok(())
+    }
+
     /// Retains the original allocation identity for an internal storage budget.
     ///
     /// # Errors

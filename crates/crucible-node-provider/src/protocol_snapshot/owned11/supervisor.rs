@@ -116,3 +116,6 @@ impl HistoricalType for HistoricalOriginalSupervisor {
         }))
     }
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::retained_storage::fields!(HistoricalOriginalSupervisor, owner_layout, creator, inspection_in_progress, callback_in_progress, incidents);

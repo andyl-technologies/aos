@@ -180,3 +180,6 @@ impl HistoricalAssignedAdmit {
 fn invalid() -> ProviderError {
     ProviderError::Frame("historical assigned Admit data or capacity")
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::retained_storage::fields!(HistoricalAssignedAdmit, original, bytes, slot, response);

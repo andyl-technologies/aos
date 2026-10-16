@@ -119,6 +119,11 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
         &self,
     ) -> Result<&'static str, OperationFailure> {
         self.authenticate_startup_member()?;
+        if let Some(state) = &self.original.native_startup {
+            if state.original_invocation_data().map_err(|_| refused("native invocation Source binding"))?.is_some() {
+                return Ok(crucible_node_provider::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA);
+            }
+        }
         Ok(if self.original.native_startup.is_some() {
             crucible_node_provider::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA
         } else {
@@ -152,6 +157,9 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
             .native_startup
             .as_ref()
             .ok_or_else(|| refused("native startup allocation not finalized"))?;
+        if finalized.original_invocation_data().map_err(|_| refused("native invocation Source binding"))?.is_some() {
+            return Err(refused("invocation15 requires its original wire entry"));
+        }
         if !finalized.complete
             || blake3::hash(encoded_launch).as_bytes() != &finalized.member.launch_digest
         {
@@ -361,3 +369,8 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
         self.authenticate_original()
     }
 }
+
+#[path = "native_wire/invocation.rs"]
+mod invocation;
+
+pub(super) use invocation::counter_scratch_data as original_native_invocation_wire_counter_scratch_data;

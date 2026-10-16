@@ -371,6 +371,7 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
         }
         self.spent[index] = true;
         let member = OriginalNativeStartupMember {
+            edition: NativeStartupMemberEdition::Startup14,
             process: self.process,
             thread: self.thread,
             source: Rc::downgrade(source),
@@ -445,7 +446,16 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
     }
 }
 
+// Issued only by the two genuine once-spent member constructors. Neither a
+// decoded Source body nor the absence of a partial body can choose an edition.
+#[derive(Clone, Copy)]
+enum NativeStartupMemberEdition {
+    Startup14,
+    Invocation15,
+}
+
 pub(crate) struct OriginalNativeStartupMember {
+    edition: NativeStartupMemberEdition,
     process: u32,
     thread: ThreadId,
     source: Weak<PacketCompleteSemanticSource>,
@@ -464,6 +474,12 @@ pub(crate) struct OriginalNativeStartupMember {
 }
 
 impl OriginalNativeStartupMember {
+    pub(crate) fn requires_original_invocation_data(&self) -> Result<bool, RuntimeError> {
+        if self.process != std::process::id() { return Err(RuntimeError::ForeignAuthority); }
+        if self.thread != std::thread::current().id() { return Err(RuntimeError::ThreadAffinity); }
+        Ok(matches!(self.edition, NativeStartupMemberEdition::Invocation15))
+    }
+
     pub(crate) fn retained_shared_storage_data(&self) -> Result<usize, RuntimeError> {
         self.plan
             .retained_allocation_bytes()
@@ -519,3 +535,6 @@ fn sum(values: &[usize], maximum: usize) -> Result<usize, RuntimeError> {
         .iter()
         .try_fold(0, |total, value| add(total, *value, maximum))
 }
+
+mod invocation;
+pub use invocation::CompleteOriginalNativeInvocationAdmission;

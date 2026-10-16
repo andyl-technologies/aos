@@ -638,3 +638,10 @@ mod historical_prefix_tests {
         Ok(())
     }
 }
+
+impl DecodedCompactOriginalFrames {
+    pub(crate) fn observe_historical_retained_metadata(&self,
+        observer: &mut crate::retained_metadata::MetadataObserver) -> Result<(), ProviderError> {
+        self.bank.observe_owned11_metadata(observer)
+    }
+}

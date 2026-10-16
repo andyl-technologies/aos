@@ -49,9 +49,13 @@ impl NativeAckBoot {
         if startup.baseline_complete {
             return Ok(None);
         }
+        if owner.data.schema == crate::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
+            owner.authenticate_original_invocation_birth_data()?;
+        } else if owner.data.schema != PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA {
+            return Err(refused());
+        }
         if !owner.ready
             || !startup.native_birth_issued
-            || owner.data.schema != PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA
             || completed > 2
             || (owner.verified && !(publication && completed == 2))
         {
@@ -79,17 +83,15 @@ impl OriginalNativeBirthReadScope<'_> {
         let owner = self.boot.try_borrow().map_err(|_| refused())?;
         owner.ensure_origin()?;
         let startup = owner.startup.as_ref().ok_or_else(refused)?;
-        if !owner.ready
-            || !startup.native_birth_issued
-            || startup.baseline_complete
-            || owner.data.schema != PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA
-            || owner
-                .data
-                .source_birth
-                .get("schema")
-                .and_then(serde_json::Value::as_str)
+        if owner.data.schema == crate::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
+            owner.authenticate_original_invocation_birth_data()?;
+        } else if owner.data.schema != PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA
+            || owner.data.source_birth.get("schema").and_then(serde_json::Value::as_str)
                 != Some(PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA)
         {
+            return Err(refused());
+        }
+        if !owner.ready || !startup.native_birth_issued || startup.baseline_complete {
             return Err(refused());
         }
         let actual = owner.policy.as_ref().ok_or_else(refused)?;
@@ -358,6 +360,10 @@ impl NativeAckBoot {
             return Err(refused());
         }
         startup.baseline_complete = true;
-        owner.authenticate_original_native_baseline_data()
+        if owner.data.schema == crate::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
+            owner.authenticate_original_invocation_baseline_data()
+        } else {
+            owner.authenticate_original_native_baseline_data()
+        }
     }
 }

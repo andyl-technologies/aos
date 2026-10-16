@@ -38,6 +38,13 @@ pub const COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT: &str =
 /// Identifies the startup-aware complete service leaf.
 pub const COMPLETE_NATIVE_STARTUP_SERVICE_FORMAT: &str = "source-private.native-service/14";
 
+/// Identifies only the genuine original-purpose boot7/four-owner archive.
+pub const COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT: &str = "source-private.native-state/15";
+/// Identifies the complete purpose-aware connection leaf.
+pub const COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT: &str = "source-private.native-connection-complete-invocation/15";
+/// Identifies the complete purpose-aware service leaf.
+pub const COMPLETE_NATIVE_INVOCATION_SERVICE_FORMAT: &str = "source-private.native-service/15";
+
 /// Reports all known native requested backing and reconstruction temporary terms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeOwnedProtocol11AllocationDemand {
@@ -86,6 +93,9 @@ impl HistoricalNativeState {
             || connection.supervisor_group != self.service.supervisor_group
         {
             return Err(invalid());
+        }
+        if let Some(phase) = &connection.admission.boot.invocation {
+            phase.authenticate_connection(connection)?;
         }
         match (&self.capture_allocation, connection.policy.capture_allocation_selection) {
             (None, None) => {}
@@ -185,6 +195,7 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
         };
         read(data, &mut native, false)?;
         let startup_class = native.requires_startup_class()?;
+        let invocation_class = native.requires_invocation_class()?;
         let historical_payload_layout_bytes = native.historical_payload_layout_bytes;
         let correlation_capacity_span = native.correlation_capacity_span.ok_or_else(invalid)?;
         if ledger.rows.next().is_some() {
@@ -223,7 +234,9 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
                 native_group_lookup_bytes,
                 historical_payload_layout_bytes,
                 semantic_validation_stack_bytes: super::blob::PIN_IDENTITY_SCRATCH_BYTES
-                    .checked_add(if startup_class {
+                    .checked_add(if invocation_class {
+                        super::invocation::declared_scratch_bytes()
+                    } else if startup_class {
                         super::startup::declared_scratch_bytes()
                     } else {
                         0
@@ -295,6 +308,22 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
         ))
     }
 
+    /// Returns the explicit original-invocation class and exact complete leaves.
+    ///
+    /// This identifies validated historical data only. Full typed/alias owner
+    /// reconstruction and original literal correspondence remain mandatory.
+    ///
+    /// # Errors
+    /// Refuses every legacy/prototype class, wrong policy family or absent
+    /// genuine-original phase and actual Capture owner.
+    pub fn complete_native_invocation_capture_schema_identity(
+        &self,
+    ) -> Result<(&'static str, &'static str, &'static str), ProviderError> {
+        self.authenticate_class(NativeArchiveClass::InvocationCapture15)?;
+        Ok((COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT,
+            COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT, COMPLETE_NATIVE_INVOCATION_SERVICE_FORMAT))
+    }
+
     fn authenticate_class(&self, expected: NativeArchiveClass) -> Result<(), ProviderError> {
         let mut fields = Fields::array(self.data)?;
         if NativeArchiveClass::read(super::super::typed::plain_string(next(&mut fields)?)?)?
@@ -305,7 +334,9 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
         let mut connection = Fields::array(next(&mut fields)?)?;
         tag(
             &mut connection,
-            if expected.startup() {
+            if expected.invocation() {
+                COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT
+            } else if expected.startup() {
                 COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT
             } else {
                 COMPLETE_NATIVE_CONNECTION_FORMAT
@@ -318,19 +349,23 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
         tag(&mut codec, "source-private.native-codec/11")?;
         let mut policy = Fields::array(next(&mut codec)?)?;
         let policy_tag = super::super::typed::plain_string(next(&mut policy)?)?;
-        // A fresh-query owner requires its own future full class. Neither this
-        // three-root class nor the Capture owner implicitly owns that cache.
-        if policy_tag == "source-private.native5-policy-owned-fresh-restore-allocation/18"
+        // Invocation15 owns only genuine-original history with no Query or
+        // transfer cache. Legacy classes remain closed to fresh policy18.
+        if expected.invocation() {
+            if policy_tag != "source-private.native5-policy-owned-fresh-restore-allocation/18" {
+                return Err(invalid());
+            }
+        } else if policy_tag == "source-private.native5-policy-owned-fresh-restore-allocation/18"
             || (policy_tag == "source-private.native5-policy-owned-capture-allocation/17")
                 != expected.capture()
-        {
-            return Err(invalid());
-        }
+        { return Err(invalid()); }
         next(&mut fields)?;
         let mut service = Fields::array(next(&mut fields)?)?;
         tag(
             &mut service,
-            if expected.startup() {
+            if expected.invocation() {
+                COMPLETE_NATIVE_INVOCATION_SERVICE_FORMAT
+            } else if expected.startup() {
                 COMPLETE_NATIVE_STARTUP_SERVICE_FORMAT
             } else {
                 COMPLETE_NATIVE_SERVICE_FORMAT
@@ -351,6 +386,18 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
             owner.finish()?;
         }
         fields.finish()
+    }
+
+    /// Reconstructs the explicit original-invocation historical owning graph.
+    ///
+    /// # Errors
+    /// Refuses another class, foreign purpose/phase, incomplete graph or changed
+    /// aliases/literals. The owning output remains retained on later refusal.
+    pub fn reconstruct_native_invocation_capture_into(
+        &mut self, completed: &mut Option<HistoricalNativeState>,
+    ) -> Result<(), ProviderError> {
+        self.complete_native_invocation_capture_schema_identity()?;
+        self.reconstruct_after_class_check(completed)
     }
 
     /// Reconstructs only the explicit startup three-root historical class.
@@ -578,6 +625,20 @@ impl ValidatedNativeOwnedProtocol11<'_, '_> {
         )
     }
 
+    /// Seals only the complete original-invocation class in preowned byte storage.
+    ///
+    /// # Errors
+    /// Refuses changed full references, another class, occupied storage, capacity
+    /// overrun or any typed/alias/original correspondence failure. Partial owners
+    /// stay in the same output slot; inert data supplies no restoration rights.
+    pub fn reconstruct_native_invocation_capture_sealed_into(
+        &mut self, reference: &crucible_node_contract::ContentRef,
+        encoded_bank: &mut Option<Vec<u8>>, completed: &mut Option<SealedHistoricalNativeState>,
+    ) -> Result<(), ProviderError> {
+        self.complete_native_invocation_capture_schema_identity()?;
+        self.reconstruct_sealed_after_class_check(reference, encoded_bank, completed, NativeArchiveClass::InvocationCapture15)
+    }
+
     fn reconstruct_sealed_after_class_check(
         &mut self,
         reference: &crucible_node_contract::ContentRef,
@@ -658,6 +719,40 @@ mod startup_class_tests {
     use crate::protocol_snapshot::owned11::{json_value::HistoricalJsonLimits, typed::Ledger};
 
     #[test]
+    fn invocation_class_and_legacy_leaves_refuse_each_other_before_capacity_consumption() {
+        let records = ValidatedMetadataRecords::validate(b"[]", 8, 8192).unwrap();
+        let limits = HistoricalJsonLimits {
+            maximum_input_bytes: 8192,
+            maximum_nodes: 256,
+            maximum_depth: 32,
+            maximum_owned_backing_bytes: 8192,
+            maximum_tree_entries: 64,
+        };
+        // Incomplete parser banks exercise only the class/leaf boundary. They
+        // are neither native owners nor signed, reconstructible captures.
+        for (format, leaf) in [
+            (COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT, COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT),
+            (COMPLETE_NATIVE_STARTUP_CAPTURE_FORMAT, COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT),
+            (COMPLETE_NATIVE_STARTUP_FORMAT, COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT),
+        ] {
+            let encoded = serde_json::to_vec(&(format, (leaf,), (), ())).unwrap();
+            let mut ledger = Ledger::new(records.rows(), limits);
+            let mut native = NativeLedger {
+                class: None,
+                ledger: &mut ledger,
+                groups: None,
+                historical_payload_layout_bytes: 0,
+                correlation_capacity_span: None,
+            };
+
+            assert!(read(&encoded, &mut native, false).is_err());
+            assert_eq!(native.requires_invocation_class().unwrap(), format == COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT);
+            assert_eq!(native.historical_payload_layout_bytes, 0);
+            assert!(native.ledger.rows.next().is_none());
+        }
+    }
+
+    #[test]
     fn original_startup_class_rejects_legacy_connection_before_capacity_consumption() {
         let records = ValidatedMetadataRecords::validate(b"[]", 8, 8192).unwrap();
         let limits = HistoricalJsonLimits {
@@ -688,5 +783,44 @@ mod startup_class_tests {
             assert_eq!(native.historical_payload_layout_bytes, 0);
             assert!(native.ledger.rows.next().is_none());
         }
+    }
+}
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(
+    HistoricalNativeState,
+    connection,
+    blobs,
+    service,
+    capture_allocation
+);
+
+super::super::retained_storage::fields!(
+    SealedHistoricalNativeState,
+    reference,
+    encoded,
+    historical,
+    correlation_capacity_span,
+    complete
+);
+
+impl SealedHistoricalNativeState {
+    /// Observes this actual sealed historical owner's initialized retained graph.
+    ///
+    /// Includes partial decoder roots and actual encoded/typed capacities. This
+    /// raw data loan invokes no live callback, decoder, serializer, I/O or grant.
+    /// The enclosing original owner checks its own creator before this loan.
+    ///
+    /// # Errors
+    /// Refuses typed traversal limits or checked metadata/layout overflow.
+    pub fn original_retained_metadata_facts(
+        &self,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, crate::ProviderError> {
+        super::super::retained_storage::facts(self)
+    }
+
+    /// Names the fixed explicit counter/views before the raw historical walk.
+    pub fn original_retained_metadata_counter_scratch_data() -> usize {
+        super::super::retained_storage::counter_scratch_data()
     }
 }

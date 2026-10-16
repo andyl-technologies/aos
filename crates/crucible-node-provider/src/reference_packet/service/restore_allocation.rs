@@ -19,7 +19,7 @@ impl OriginalNativeCaptureContext<'_> {
         let mut roots = NativeCaptureMetadataRoots::new();
         let mut observer = MetadataObserver::new();
         connection
-            .observe_original_startup_connection_unique_metadata(&mut roots, &mut observer)?;
+            .observe_original_current_connection_unique_metadata(&mut roots, &mut observer)?;
         let token = connection.original_native_owned11_admission()?;
         blobs
             .borrowed_owned11_protocol_view(&token.authority)?
@@ -37,7 +37,7 @@ impl OriginalNativeCaptureContext<'_> {
             token.policy.as_ref(),
         )?;
         let cut = {
-            let loan = self.borrow_original_startup(connection, blobs)?;
+            let loan = self.borrow_current_original_protocol_data(connection, blobs)?;
             loan.observe_unique_capture_metadata(&mut roots, &mut observer)?;
             loan.original_cut()
         };

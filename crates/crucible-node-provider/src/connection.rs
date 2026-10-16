@@ -1035,3 +1035,10 @@ impl Connection<crate::client::DeadlineStream> {
 mod capture_allocation_original;
 
 pub(crate) use native_owned14::NativeOwned14AfterProtocolCapacityFacts;
+
+// Fixed headers for the selected invocation literal-history DATA predicate.
+pub(crate) use native_startup_protocol::invocation_history::counter_scratch_data as original_native_invocation_history_counter_scratch_data;
+pub(crate) use native_startup_protocol::invocation_history::authenticate_literal_data as authenticate_original_invocation_protocol_literal_data;
+
+#[path = "connection/native_owned15.rs"]
+mod native_owned15;

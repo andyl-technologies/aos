@@ -365,7 +365,7 @@ impl Connection<crate::client::DeadlineStream> {
     }
 }
 
-fn after_growth_data(
+pub(super) fn after_growth_data(
     quote: crate::protocol_snapshot::NativeProtocolMetadataQuote,
     literal: usize,
     descriptors: usize,

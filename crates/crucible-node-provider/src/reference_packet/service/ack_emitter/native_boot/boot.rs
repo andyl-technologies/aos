@@ -32,6 +32,8 @@ pub(crate) use report_startup::{
 
 #[path = "native_startup.rs"]
 pub(super) mod native_startup;
+#[path = "boot_invocation.rs"]
+mod invocation;
 pub(crate) use native_startup::OriginalNativeBirthReadScope;
 
 // Keep the prospective baseline producer tied to the exact constructor banks.
@@ -99,7 +101,7 @@ impl NativeAckBoot {
         crate::connection::serialized_credit(value, 512 * 1024)?;
         let data: BootData =
             BootData::deserialize(value).map_err(crucible_node_contract::ContractError::from)?;
-        Self::prepare_data_into(data, launch, original_launch_body, None, completed)
+        Self::prepare_data_into(data, launch, original_launch_body, None, None, completed)
     }
 
     // Only the actual selected inherited bootstrap owns the nonrenewing claim.
@@ -132,6 +134,7 @@ impl NativeAckBoot {
             launch,
             original_launch_body,
             Some(admitted),
+            None,
             completed,
         );
         if result.is_err() {
@@ -145,8 +148,20 @@ impl NativeAckBoot {
         launch: &PacketNative5SourceLaunch,
         original_launch_body: Vec<u8>,
         startup: Option<native_startup::OriginalNativeStartupBoot>,
+        invocation: Option<crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData>,
         completed: &mut Option<Rc<RefCell<Self>>>,
     ) -> Result<(), ProviderError> {
+        let original = Self::retain_boot_data_into(data, original_launch_body, startup, completed);
+        Self::prepare_retained_data(&original, launch, invocation)
+    }
+
+    // No fallible post-decode check precedes installation in the original slot.
+    fn retain_boot_data_into(
+        data: BootData,
+        original_launch_body: Vec<u8>,
+        startup: Option<native_startup::OriginalNativeStartupBoot>,
+        completed: &mut Option<Rc<RefCell<Self>>>,
+    ) -> Rc<RefCell<Self>> {
         let original = Rc::new(RefCell::new(Self {
             creator: std::process::id(),
             thread: std::thread::current().id(),
@@ -168,12 +183,22 @@ impl NativeAckBoot {
             startup,
         }));
         *completed = Some(Rc::clone(&original));
+        original
+    }
+
+    fn prepare_retained_data(
+        original: &Rc<RefCell<Self>>,
+        launch: &PacketNative5SourceLaunch,
+        invocation: Option<crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData>,
+    ) -> Result<(), ProviderError> {
         let mut owner = original
             .try_borrow_mut()
             .map_err(|_| ProviderError::Conflict("native ACK boot borrowed"))?;
         owner.ensure_origin()?;
         let startup_selected = owner.startup.is_some();
-        let boot_schema = if startup_selected {
+        let boot_schema = if invocation.is_some() {
+            crate::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA
+        } else if startup_selected {
             crate::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA
         } else {
             "source-owned.packet-canonical-ack-private-boot/5"
@@ -221,7 +246,12 @@ impl NativeAckBoot {
                 "capture_allocation_selection", "fresh_restore_allocation_selection",
                 "report_startup_allocation", "native_startup_allocation",
             ]);
-            crate::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA
+            if invocation.is_some() {
+                keys.push("invocation");
+                crate::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA
+            } else {
+                crate::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA
+            }
         } else if report_selected {
             keys.extend([
                 "native_codec_metadata_extent", "protocol_metadata_limits",
@@ -352,6 +382,15 @@ impl NativeAckBoot {
             expected_source["native_startup_allocation"] =
                 source["native_startup_allocation"].clone();
         }
+        if let Some(purpose) = invocation {
+            purpose.authenticate_target_data(launch)?;
+            if crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData::from_original_value_data(
+                source.get("invocation").ok_or(ProviderError::Correlation("native invocation Source purpose"))?,
+            )? != purpose {
+                return Err(ProviderError::Correlation("native invocation Source purpose differs"));
+            }
+            expected_source["invocation"] = serde_json::to_value(purpose).map_err(ContractError::from)?;
+        }
         if *source != expected_source {
             return Err(ProviderError::Correlation(
                 "native original source binding differs",
@@ -401,7 +440,7 @@ impl NativeAckBoot {
             ));
         }
         owner.attempted = true;
-        let launch = PacketNative5SourceLaunch::decode(&owner.launch_body, 1024 * 1024)?;
+        let launch = owner.decode_original_launch_data()?;
         owner.original = Some(original.clone());
         let proof_value = original
             .extensions

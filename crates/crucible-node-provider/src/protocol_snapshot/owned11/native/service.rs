@@ -47,7 +47,9 @@ pub(super) fn read(
     let mut fields = Fields::array(input)?;
     tag(
         &mut fields,
-        if ledger.requires_startup_class()? {
+        if ledger.requires_invocation_class()? {
+            super::outer::COMPLETE_NATIVE_INVOCATION_SERVICE_FORMAT
+        } else if ledger.requires_startup_class()? {
             "source-private.native-service/14"
         } else {
             super::outer::COMPLETE_NATIVE_SERVICE_FORMAT
@@ -142,3 +144,15 @@ pub(super) fn read(
         deadline_group,
     }))
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(
+    HistoricalNativeService,
+    negotiation,
+    bootstrap,
+    supervisor_group,
+    supervisor_banks,
+    endpoint_boot,
+    endpoint_policy,
+    deadline_group
+);

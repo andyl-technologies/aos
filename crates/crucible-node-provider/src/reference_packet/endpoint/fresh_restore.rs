@@ -93,6 +93,11 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         let selected = {
             let owner = boot.try_borrow().map_err(|_| refused())?;
             owner.ensure_origin()?;
+            if owner.permits_original_invocation_without_fresh_query_data()? {
+                // Original provenance skips only this mandatory-target selector.
+                // Control Arm/Observe/Capture retain their independent scopes.
+                return Ok(false);
+            }
             owner.policy.as_ref().is_some_and(|policy| {
                 policy.fresh_restore_allocation_selection()
                     == Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
@@ -330,7 +335,15 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
         attempt
             .startup
             .authenticate_complete_native_baseline(connection)?;
-        let scratch = original_fresh_current_counter_scratch_data();
+        let scratch = {
+            let boot = canonical_ack_boot.as_ref().ok_or_else(refused)?
+                .try_borrow().map_err(|_| refused())?;
+            if boot.requires_invocation_codec_data()? {
+                original_invocation_fresh_current_counter_scratch_data()
+            } else {
+                original_fresh_current_counter_scratch_data()
+            }
+        };
         attempt.startup.authenticate_compiled_headers(
             connection,
             scratch,
@@ -351,7 +364,7 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
         // Authenticate/walk Connection and scope owners before taking the
         // registrar loan. No token/currentness helper runs under that lock.
         connection
-            .observe_original_startup_connection_unique_metadata(&mut roots, &mut observer)?;
+            .observe_original_current_connection_unique_metadata(&mut roots, &mut observer)?;
         // Native284 preserves the real mutable authority/expiry containment
         // check. Only after that call may a token reference and blob/service
         // loans borrow this same Connection immutably.
@@ -387,7 +400,7 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
             .observe_unique_startup_metadata(connection, &mut roots, &mut observer)?;
         attempt.input.observe_retained_metadata(&mut observer)?;
         {
-            let service_owner = context.borrow_original_startup(connection, uploads)?;
+            let service_owner = context.borrow_current_original_protocol_data(connection, uploads)?;
             service_owner.observe_unique_capture_metadata(&mut roots, &mut observer)?;
         }
         let (shared_edges, shared_roots) = roots.finish()?;
@@ -455,3 +468,10 @@ fn refused() -> ProviderError {
 #[cfg(test)]
 #[path = "fresh_restore_tests.rs"]
 mod tests;
+
+/// Adds only the explicit invocation views; the old numeric getter stays exact.
+pub(crate) fn original_invocation_fresh_current_counter_scratch_data() -> usize {
+    original_fresh_current_counter_scratch_data().checked_add(
+        super::super::service::OriginalNativeCaptureContext::invocation_additional_counter_scratch_data(),
+    ).unwrap_or(usize::MAX)
+}

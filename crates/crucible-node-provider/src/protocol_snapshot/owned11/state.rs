@@ -314,3 +314,8 @@ pub(crate) fn tag(fields: &mut Fields<'_>, expected: &str) -> Result<(), Provide
 fn capacity() -> ProviderError {
     ProviderError::ResourceExhausted("historical typed backing")
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::retained_storage::fields!(HistoricalAuthority, connection, session, incarnation, epoch, limits, features, envelope_extensions, extensions);
+super::retained_storage::fields!(HistoricalCorrelations, session, incarnation, next_received, next_sent, maximum_requests, pending, received_requests, writing_responses, extensions, failed, continuation_installed);
+super::retained_storage::fields!(HistoricalWireSchema, node, execution_owner, owner_generation, input_epoch, binding_hash);

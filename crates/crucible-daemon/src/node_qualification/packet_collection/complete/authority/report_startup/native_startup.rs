@@ -45,15 +45,31 @@ impl PacketCompleteReportStartupHolder {
         let _loan = StartupLoan(&held.native_in_flight);
         // Keep the actual issued owner in place before any fallible Source
         // finalization. Its lifetime borrows these exact retained arrays.
-        let mut admission = held.plan.reserve_original_native_startup(
-            &held.authority.roster.sources,
-            &held.authority.original_launches,
-            &held.authority.private_launches,
-        )?;
-        let requested_peak = admission.requested_peak_data();
-        for member in 0..3 {
-            admission.finalize_original_source(member)?;
-        }
+        let invocation_selected = held.authority.original_launches.iter()
+            .any(|launch| launch.fresh_restore_allocation_selection.is_some());
+        let requested_peak = if invocation_selected {
+            let mut admission = held.plan.reserve_original_native_invocation(
+                &held.authority.roster.sources,
+                &held.authority.original_launches,
+                &held.authority.private_launches,
+            )?;
+            let requested_peak = admission.requested_peak_data();
+            for member in 0..3 {
+                admission.finalize_original_source(member)?;
+            }
+            requested_peak
+        } else {
+            let mut admission = held.plan.reserve_original_native_startup(
+                &held.authority.roster.sources,
+                &held.authority.original_launches,
+                &held.authority.private_launches,
+            )?;
+            let requested_peak = admission.requested_peak_data();
+            for member in 0..3 {
+                admission.finalize_original_source(member)?;
+            }
+            requested_peak
+        };
         held.authenticate_native_origin_data()?;
         held.graph_owner
             .authenticate_original_report_policy_data(&held.authority.graph_policy)
@@ -143,6 +159,29 @@ impl PacketCompleteReportStartupHolder {
                 bytes.checked_add(std::mem::size_of::<[ConformancePlanEvidence<'_>; 2]>())
             })
             .ok_or(RuntimeError::ResourceLimit)?;
+        let declared_observer_scratch_bytes = if self
+            .authority
+            .original_launches
+            .iter()
+            .any(|launch| launch.fresh_restore_allocation_selection.is_some())
+        {
+            declared_observer_scratch_bytes
+                .checked_add(
+                    InstalledConformancePlan::original_native_invocation_counter_scratch_data()?
+                        .checked_add(std::mem::size_of::<
+                            std::cell::Ref<'_, PacketCompleteReportStartupHolder>,
+                        >())
+                        .and_then(|bytes| {
+                            bytes.checked_add(std::mem::size_of::<
+                                std::cell::Ref<'_, PacketCompleteRestorationPrebirth>,
+                            >())
+                        })
+                        .ok_or(RuntimeError::ResourceLimit)?,
+                )
+                .ok_or(RuntimeError::ResourceLimit)?
+        } else {
+            declared_observer_scratch_bytes
+        };
         Ok(OriginalNativeStartupPolicy {
             maximum_requested_bytes: holder.maximum_requested_bytes,
             declared_observer_scratch_bytes,
@@ -302,3 +341,5 @@ mod tests {
         assert!(held.authority.roster.current_native().is_err());
     }
 }
+
+mod invocation;

@@ -595,3 +595,30 @@ mod tests {
         );
     }
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::retained_storage::fields!(HistoricalHostRegistryCreator, pid, thread, thread_length);
+super::retained_storage::fields!(HistoricalHostExtensionRegistry, negotiation, authority, selected, creator);
+
+super::retained_storage::fields!(SealedHistoricalHostExtensionRegistry,
+    reference, encoded, historical, complete);
+
+impl SealedHistoricalHostExtensionRegistry {
+    /// Observes actual initialized registry graph and encoded-bank capacities.
+    ///
+    /// Includes partial decoder owners and grants no registrar or currentness
+    /// authority. The enclosing original owner authenticates its own creator.
+    /// The enclosing concrete root header is counted separately by its owner.
+    ///
+    /// # Errors
+    /// Refuses checked typed traversal or metadata/layout overflow.
+    pub fn original_retained_metadata_facts(&self)
+        -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, crate::ProviderError> {
+        super::retained_storage::facts(self)
+    }
+
+    /// Names the actual fixed views before the raw historical graph walk.
+    pub fn original_retained_metadata_counter_scratch_data() -> usize {
+        super::retained_storage::counter_scratch_data()
+    }
+}

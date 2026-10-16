@@ -395,7 +395,7 @@ impl PacketEndpoint<DeadlineStream> {
         let boot = self.canonical_ack_boot.as_ref().ok_or_else(refused)?;
         let context = service.with_original_endpoint_roots(boot, &self.policy);
         {
-            let _current = context.borrow_original_startup(connection, &self.uploads)?;
+            let _current = context.borrow_current_original_protocol_data(connection, &self.uploads)?;
         }
         if !self.native.original_fresh_report_window_data()? {
             return Err(refused());

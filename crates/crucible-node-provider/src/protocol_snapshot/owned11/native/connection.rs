@@ -57,7 +57,9 @@ pub(super) fn codec(
     let policy_view = next(&mut fields)?;
     let mut selected = Fields::array(policy_view)?;
     let policy_tag = plain_string(next(&mut selected)?)?;
-    if !matches!(
+    if policy_tag == "source-private.native5-policy-owned-fresh-restore-allocation/18" {
+        if !ledger.requires_invocation_class()? { return Err(invalid()); }
+    } else if !matches!(
         policy_tag,
         "source-private.native5-policy-owned-selected/13"
             | "source-private.native5-policy-owned-complete-restore/14"
@@ -81,7 +83,9 @@ pub(super) fn read(
     let mut fields = Fields::array(input)?;
     tag(
         &mut fields,
-        if ledger.requires_startup_class()? {
+        if ledger.requires_invocation_class()? {
+            super::outer::COMPLETE_NATIVE_INVOCATION_CONNECTION_FORMAT
+        } else if ledger.requires_startup_class()? {
             super::outer::COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT
         } else {
             super::outer::COMPLETE_NATIVE_CONNECTION_FORMAT
@@ -176,3 +180,21 @@ pub(super) fn read(
         admission: admission.ok_or_else(invalid)?,
     }))
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(
+    HistoricalNativeConnection,
+    actor_group,
+    authority,
+    correlations,
+    codec_group,
+    policy,
+    frames,
+    reader,
+    blob_ledger,
+    supervisor_group,
+    packet_schema,
+    connected_packet_schema,
+    fenced,
+    admission
+);

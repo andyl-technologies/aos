@@ -17,6 +17,7 @@ impl PacketCompleteSemanticSource {
         native: &crate::node_adapters::cnp::semantic::CnpSemanticProcessCustody,
     ) -> Result<(), RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
+        self.authenticate_original_fresh_query_invocation_data()?;
         let expected = self
             .fresh_restore_allocation_selection
             .flatten()
@@ -102,6 +103,7 @@ impl PacketCompleteSemanticSource {
         final_currency: impl FnOnce() -> Result<(), RuntimeError>,
     ) -> Result<(), RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
+        self.authenticate_original_fresh_query_invocation_data()?;
         let association = self
             .ack_peer_association
             .try_borrow()

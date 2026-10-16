@@ -121,6 +121,34 @@ impl ConformanceRuntime {
         Ok(())
     }
 
+    pub(crate) fn authenticate_original_restoration_target_data(
+        &self,
+        source: &crate::node_state::CompleteOriginalRestorationSource,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        activation: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_complete_original_restoration_origin()?;
+        if self.activation.is_some() || !self.graph.plan().is_same_original_plan_data(plan) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.runtime
+            .authenticate_original_restoration_target_data(source, plan, activation)
+    }
+
+    /// Names fixed raw target/plan loan headers before original identity checks.
+    ///
+    /// This getter performs no callbacks or allocation and grants no restoration
+    /// permission. Counter/recursive compiler frames remain separate.
+    pub fn original_restoration_target_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<&crate::node_state::CompleteOriginalRestorationSource>()
+            + std::mem::size_of::<&crate::node_admission::InstalledConformancePlan>()
+            + std::mem::size_of::<&ActivationRecord>()
+            // authenticate_retained upgrades its actual original Weak authority.
+            + std::mem::size_of::<Rc<()>>()
+            + crate::node_state::CompleteOriginalSource::original_target_plan_counter_scratch_data()
+    }
+
     fn authenticate_initial_origin(&self) -> Result<(), RuntimeError> {
         if self.origin != CollectionOrigin::Initial {
             return Err(RuntimeError::ForeignAuthority);

@@ -186,7 +186,11 @@ impl OriginalNativeReportStartupAllocation {
     ) -> Result<(), ProviderError> {
         self.authenticate_current(connection)?;
         let boot = self.boot.try_borrow().map_err(|_| refused())?;
-        boot.authenticate_original_native_baseline_data()
+        if boot.data.schema == crate::reference_packet::service::native_startup::PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
+            boot.authenticate_original_invocation_report_purpose_data(self.purpose)
+        } else {
+            boot.authenticate_original_native_baseline_data()
+        }
     }
 
     pub(crate) fn maximum_requested_bytes(&self) -> Result<usize, ProviderError> {
@@ -307,6 +311,11 @@ impl NativeAckBoot {
                         "native_startup_allocation",
                     ],
                 )?;
+            }
+            Some("source-owned.packet-canonical-ack-source-binding/15") => {
+                // Actual private issuance, completed baseline and immutable full
+                // identities precede use of the purpose's existing report row.
+                self.authenticate_original_invocation_report_purpose_data(purpose)?;
             }
             _ => return Err(refused()),
         }

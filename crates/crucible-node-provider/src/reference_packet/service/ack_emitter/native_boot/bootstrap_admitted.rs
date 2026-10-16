@@ -370,3 +370,6 @@ mod requote_tests {
         Ok(())
     }
 }
+
+#[path = "bootstrap_invocation.rs"]
+mod invocation;

@@ -43,7 +43,7 @@ impl HistoricalType for HistoricalNativeBootData {
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
-        read_data(input, ledger, build, false)
+        read_data(input, ledger, build, false, false)
     }
 }
 
@@ -55,7 +55,19 @@ impl HistoricalType for HistoricalStartupBootData {
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
-        read_data(input, ledger, build, true).map(|data| data.map(Self))
+        read_data(input, ledger, build, true, false).map(|data| data.map(Self))
+    }
+}
+
+struct HistoricalInvocationBootData(HistoricalNativeBootData);
+
+impl HistoricalType for HistoricalInvocationBootData {
+    fn read(
+        input: &[u8],
+        ledger: &mut Ledger<'_, '_, '_>,
+        build: bool,
+    ) -> Result<Option<Self>, ProviderError> {
+        read_data(input, ledger, build, true, true).map(|data| data.map(Self))
     }
 }
 
@@ -64,11 +76,14 @@ fn read_data(
     ledger: &mut Ledger<'_, '_, '_>,
     build: bool,
     startup: bool,
+    invocation: bool,
 ) -> Result<Option<HistoricalNativeBootData>, ProviderError> {
     let mut fields = Fields::array(input)?;
     tag(
         &mut fields,
-        if startup {
+        if invocation {
+            "source-private.native-ack-boot-data/15"
+        } else if startup {
             "source-private.native-ack-boot-data/14"
         } else {
             "source-private.native-ack-boot-data/11"
@@ -76,7 +91,9 @@ fn read_data(
     )?;
     let raw_schema = next(&mut fields)?;
     if plain_string(raw_schema)?
-        != if startup {
+        != if invocation {
+            "source-owned.packet-canonical-ack-private-boot/7"
+        } else if startup {
             "source-owned.packet-canonical-ack-private-boot/6"
         } else {
             "source-owned.packet-canonical-ack-private-boot/5"
@@ -87,7 +104,11 @@ fn read_data(
     let schema = ledger.read::<String>(raw_schema, build)?;
     let private_key = bank(next(&mut fields)?, ledger, build, Some(32))?;
     let birth_id = bank(next(&mut fields)?, ledger, build, Some(32))?;
-    let source_birth = ledger.read::<Value>(next(&mut fields)?, build)?;
+    let raw_source = next(&mut fields)?;
+    if invocation {
+        super::invocation::authenticate_source_syntax(raw_source)?;
+    }
+    let source_birth = ledger.read::<Value>(raw_source, build)?;
     let expected_host_registration = ledger.read::<Value>(next(&mut fields)?, build)?;
     let private_launch = ledger.read::<Id>(next(&mut fields)?, build)?;
     let host_executable = ledger.read::<ContentRef>(next(&mut fields)?, build)?;
@@ -132,6 +153,9 @@ pub struct HistoricalNativeBoot {
     pub original: Envelope,
     /// Retains the distinct complete boot6 startup owner, never a live issuer.
     pub startup: Option<super::startup::HistoricalNativeStartupBoot>,
+    /// Retains only the explicit genuine-original phase in invocation class15.
+    /// Historical data never creates a private issuer, target or live gate.
+    pub invocation: Option<super::invocation::HistoricalNativeInvocationPhase>,
 }
 
 fn present<'a>(fields: &mut Fields<'a>) -> Result<&'a [u8], ProviderError> {
@@ -159,20 +183,35 @@ pub(super) fn read(
     build: bool,
 ) -> Result<Option<HistoricalNativeBoot>, ProviderError> {
     let startup_class = ledger.requires_startup_class()?;
-    let (input, startup_input) = if startup_class {
+    let invocation_class = ledger.requires_invocation_class()?;
+    let (input, startup_input, phase_input) = if startup_class {
         let mut wrapper = Fields::array(input)?;
-        tag(&mut wrapper, "source-private.native-ack-boot-startup/14")?;
+        tag(
+            &mut wrapper,
+            if invocation_class {
+                "source-private.native-ack-boot-invocation/15"
+            } else {
+                "source-private.native-ack-boot-startup/14"
+            },
+        )?;
         let base = next(&mut wrapper)?;
         let startup = next(&mut wrapper)?;
+        let phase = if invocation_class {
+            Some(next(&mut wrapper)?)
+        } else {
+            None
+        };
         wrapper.finish()?;
-        (base, Some(startup))
+        (base, Some(startup), phase)
     } else {
-        (input, None)
+        (input, None, None)
     };
     let mut fields = Fields::array(input)?;
     tag(
         &mut fields,
-        if startup_class {
+        if invocation_class {
+            "source-private.native-ack-boot/15"
+        } else if startup_class {
             "source-private.native-ack-boot/14"
         } else {
             "source-private.native-ack-boot/11"
@@ -181,7 +220,12 @@ pub(super) fn read(
     let creator = ledger.ledger.read::<u32>(next(&mut fields)?, build)?;
     tag(&mut fields, "same-original-thread")?;
     let raw_data = next(&mut fields)?;
-    let data = if startup_class {
+    let data = if invocation_class {
+        ledger
+            .ledger
+            .read::<HistoricalInvocationBootData>(raw_data, build)?
+            .map(|value| value.0)
+    } else if startup_class {
         ledger
             .ledger
             .read::<HistoricalStartupBootData>(raw_data, build)?
@@ -227,10 +271,20 @@ pub(super) fn read(
     }
     fields.finish()?;
     let startup = if let Some(input) = startup_input {
-        super::startup::read_boot(input, ledger.ledger, build)?
+        if invocation_class {
+            super::startup::read_invocation_boot(input, ledger.ledger, build)?
+        } else {
+            super::startup::read_boot(input, ledger.ledger, build)?
+        }
     } else {
         None
     };
+    let invocation = phase_input
+        .map(|input| {
+            super::invocation::read_phase(input, ledger.ledger.limits.maximum_input_bytes, build)
+        })
+        .transpose()?
+        .flatten();
     if !build {
         return Ok(None);
     }
@@ -247,9 +301,44 @@ pub(super) fn read(
         proof: proof.ok_or_else(invalid)?,
         original: original.ok_or_else(invalid)?,
         startup,
+        invocation,
     };
-    if let Some(startup) = &owner.startup {
-        startup.authenticate(&owner)?;
+    // New invocation semantic correspondence runs only after the outer
+    // reconstruction has retained the complete owning result. Its phase and
+    // Source syntax were checked before allocation; a later full target/hash
+    // mismatch must leave this owner in that caller's output slot.
+    if owner.invocation.is_none() {
+        if let Some(startup) = &owner.startup {
+            startup.authenticate(&owner)?;
+        }
     }
     Ok(Some(owner))
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(
+    HistoricalNativeBootData,
+    schema,
+    private_key,
+    birth_id,
+    source_birth,
+    expected_host_registration,
+    private_launch,
+    host_executable
+);
+super::super::retained_storage::fields!(
+    HistoricalNativeBoot,
+    creator,
+    data,
+    launch_body,
+    policy,
+    source_body,
+    host_body,
+    normalized,
+    banks,
+    context,
+    proof,
+    original,
+    startup,
+    invocation
+);

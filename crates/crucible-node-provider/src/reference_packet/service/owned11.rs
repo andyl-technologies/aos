@@ -72,6 +72,12 @@ impl OriginalNativeCaptureContext<'_> {
         .unwrap_or(usize::MAX)
     }
 
+    pub(crate) fn invocation_additional_counter_scratch_data() -> usize {
+        NativeAckBoot::invocation_wire_counter_scratch_data()
+            .checked_add(OriginalNativeBootstrapOwned11::invocation_wire_counter_scratch_data())
+            .unwrap_or(usize::MAX)
+    }
+
     pub(crate) fn authenticate_original<S: ProviderStream>(
         &self,
         connection: &Connection<S>,
@@ -97,7 +103,7 @@ impl OriginalNativeCaptureContext<'_> {
         connection: &'a Connection<DeadlineStream>,
         blobs: &BlobReceiver,
     ) -> Result<OriginalNativeServiceOwned11<'a>, ProviderError> {
-        self.borrow_at_edition(connection, blobs, false)
+        self.borrow_at_edition(connection, blobs, false, false)
     }
 
     pub(crate) fn requires_original_native_startup_codec<S: ProviderStream>(
@@ -119,7 +125,7 @@ impl OriginalNativeCaptureContext<'_> {
         connection: &'a Connection<DeadlineStream>,
         blobs: &BlobReceiver,
     ) -> Result<OriginalNativeServiceOwned11<'a>, ProviderError> {
-        self.borrow_at_edition(connection, blobs, true)
+        self.borrow_at_edition(connection, blobs, true, false)
     }
 
     pub(crate) fn borrow_current_original_protocol_data<'a>(
@@ -128,7 +134,13 @@ impl OriginalNativeCaptureContext<'_> {
         blobs: &BlobReceiver,
     ) -> Result<OriginalNativeServiceOwned11<'a>, ProviderError> {
         let startup = self.requires_original_native_startup_codec(connection, blobs)?;
-        self.borrow_at_edition(connection, blobs, startup)
+        let invocation = connection
+            .original_native_owned11_admission()?
+            .boot
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("invocation boot borrowed"))?
+            .requires_invocation_codec_data()?;
+        self.borrow_at_edition(connection, blobs, startup, invocation)
     }
 
     fn borrow_at_edition<'a>(
@@ -136,6 +148,7 @@ impl OriginalNativeCaptureContext<'_> {
         connection: &'a Connection<DeadlineStream>,
         blobs: &BlobReceiver,
         startup: bool,
+        invocation: bool,
     ) -> Result<OriginalNativeServiceOwned11<'a>, ProviderError> {
         self.authenticate_original(connection, blobs)?;
         if self.requires_original_native_startup_codec(connection, blobs)? != startup {
@@ -148,7 +161,9 @@ impl OriginalNativeCaptureContext<'_> {
         let retained = self.service.bootstrap.ok_or(ProviderError::Correlation(
             "native original bootstrap absent",
         ))?;
-        let bootstrap = if startup {
+        let bootstrap = if invocation {
+            OriginalNativeBootstrapOwned11::borrow_original_invocation(retained, token, connection)?
+        } else if startup {
             OriginalNativeBootstrapOwned11::borrow_original_startup(retained, token, connection)?
         } else {
             OriginalNativeBootstrapOwned11::borrow_original(retained, token, connection)?
@@ -174,6 +189,7 @@ impl OriginalNativeCaptureContext<'_> {
             creator: std::process::id(),
             thread: std::thread::current().id(),
             startup,
+            invocation,
             roots: self,
             bootstrap,
             supervisor,
@@ -185,6 +201,7 @@ impl OriginalNativeCaptureContext<'_> {
 
 pub(crate) struct OriginalNativeServiceOwned11<'a> {
     startup: bool,
+    invocation: bool,
     creator: u32,
     thread: std::thread::ThreadId,
     roots: &'a OriginalNativeCaptureContext<'a>,
@@ -199,7 +216,9 @@ pub(crate) struct OriginalNativeServiceOwned11<'a> {
 
 impl OriginalNativeServiceOwned11<'_> {
     pub(crate) const fn current_protocol_format_data(&self) -> &'static str {
-        if self.startup {
+        if self.invocation {
+            "source-private.native-state/15"
+        } else if self.startup {
             "source-private.native-state/13"
         } else {
             "source-private.native-state/11"
@@ -217,7 +236,7 @@ impl OriginalNativeServiceOwned11<'_> {
         &self,
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
-        if !self.startup {
+        if !self.startup || self.invocation {
             return Err(ProviderError::Correlation(
                 "native startup service edition absent",
             ));
@@ -262,7 +281,9 @@ impl OriginalNativeServiceOwned11<'_> {
     ) -> Result<(), ProviderError> {
         self.ensure_origin_and_cut()?;
         self.negotiation.observe_owned11_metadata(observer)?;
-        if self.startup {
+        if self.invocation {
+            self.bootstrap.observe_invocation_metadata(observer)?;
+        } else if self.startup {
             self.bootstrap.observe_startup_metadata(observer)?;
         } else {
             self.bootstrap.observe_owned11_metadata(observer)?;
@@ -279,7 +300,9 @@ impl OriginalNativeServiceOwned11<'_> {
                 .boot
                 .try_borrow()
                 .map_err(|_| ProviderError::Conflict("native endpoint boot borrowed"))?;
-            if self.startup {
+            if self.invocation {
+                boot.observe_invocation_metadata(observer)?;
+            } else if self.startup {
                 boot.observe_startup_metadata(observer)?;
             } else {
                 boot.observe_owned11_metadata(observer)?;
@@ -311,6 +334,15 @@ impl Serialize for OriginalNativeServiceOwned11<'_> {
             .boot
             .try_borrow()
             .map_err(|_| serde::ser::Error::custom("native endpoint boot borrowed"))?;
+        if self.invocation {
+            let boot_view = boot.borrowed_invocation_protocol_view().map_err(serde::ser::Error::custom)?;
+            let policy = boot.policy.as_ref().ok_or_else(|| serde::ser::Error::custom("invocation policy absent"))?;
+            return (
+                "source-private.native-service/15", &self.negotiation, &self.bootstrap,
+                "source-private.native-supervisor-owner/11", &self.supervisor, boot_view,
+                policy.borrowed_owned11_protocol_view(), "opaque-original-service-cut",
+            ).serialize(serializer);
+        }
         if self.startup {
             let boot_view = boot
                 .borrowed_startup_protocol_view()

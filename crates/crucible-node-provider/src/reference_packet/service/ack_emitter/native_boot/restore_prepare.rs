@@ -796,7 +796,7 @@ fn decode_verified_prepare_launch(
     {
         return Err(refused());
     }
-    let value = canonical::parse_json(&owner.launch_body, 1024 * 1024)?;
+    let value = canonical::parse_json(owner.original_verified_launch_literal_data()?, 1024 * 1024)?;
     PacketNative5SourceLaunch::deserialize(value)
         .map_err(ContractError::from)
         .map_err(Into::into)

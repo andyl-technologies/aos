@@ -11,6 +11,7 @@ use serde::{Serialize, Serializer};
 pub(crate) struct OriginalNativeBootstrapOwned11<'a> {
     original: &'a Bootstrap<std::io::Stdin>,
     startup: bool,
+    invocation: bool,
     reader: crate::transport::OriginalFrameReaderFacts,
     literals: std::cell::Ref<'a, OriginalFrameReservation>,
     boot: std::cell::Ref<'a, super::super::boot::NativeAckBoot>,
@@ -26,7 +27,7 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
         token: &super::super::boot::VerifiedCanonicalAckAdmission,
         connection: &crate::connection::Connection<S>,
     ) -> Result<Self, ProviderError> {
-        Self::borrow_with_startup(retained, token, connection, false)
+        Self::borrow_with_startup(retained, token, connection, false, false)
     }
 
     pub(in crate::reference_packet::service) fn borrow_original_startup<
@@ -36,7 +37,17 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
         token: &super::super::boot::VerifiedCanonicalAckAdmission,
         connection: &crate::connection::Connection<S>,
     ) -> Result<Self, ProviderError> {
-        Self::borrow_with_startup(retained, token, connection, true)
+        Self::borrow_with_startup(retained, token, connection, true, false)
+    }
+
+    pub(in crate::reference_packet::service) fn borrow_original_invocation<
+        S: crate::connection::ProviderStream,
+    >(
+        retained: &'a dyn std::any::Any,
+        token: &super::super::boot::VerifiedCanonicalAckAdmission,
+        connection: &crate::connection::Connection<S>,
+    ) -> Result<Self, ProviderError> {
+        Self::borrow_with_startup(retained, token, connection, true, true)
     }
 
     fn borrow_with_startup<S: crate::connection::ProviderStream>(
@@ -44,6 +55,7 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
         token: &super::super::boot::VerifiedCanonicalAckAdmission,
         connection: &crate::connection::Connection<S>,
         startup: bool,
+        invocation: bool,
     ) -> Result<Self, ProviderError> {
         token.authenticate_current(connection)?;
         let original = retained.downcast_ref::<Bootstrap<std::io::Stdin>>().ok_or(
@@ -66,12 +78,23 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
                 "private bootstrap codec edition differs",
             ));
         }
-        if startup {
+        if boot.requires_invocation_codec_data()? != invocation {
+            return Err(ProviderError::Correlation(
+                "private invocation edition differs",
+            ));
+        }
+        if invocation {
+            boot.authenticate_invocation_owned_data()?;
+        } else if startup {
             boot.borrowed_startup_protocol_view()?;
         } else {
             boot.borrowed_owned11_protocol_view()?;
         }
-        startup_codec::authenticate_original(original, &boot, startup)?;
+        if invocation {
+            invocation_data::authenticate_original(original, &boot)?;
+        } else {
+            startup_codec::authenticate_original(original, &boot, startup)?;
+        }
         if boot
             .policy
             .as_ref()
@@ -110,6 +133,7 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
         Ok(Self {
             original,
             startup,
+            invocation,
             reader,
             literals,
             boot,
@@ -132,12 +156,32 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
         &self,
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
-        if !self.startup {
+        if !self.startup || self.invocation {
             return Err(ProviderError::Correlation(
                 "bootstrap startup edition absent",
             ));
         }
         self.observe_metadata_at_edition(observer)
+    }
+
+    pub(crate) fn observe_invocation_metadata(
+        &self,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        if !self.invocation {
+            return Err(ProviderError::Correlation(
+                "bootstrap invocation edition absent",
+            ));
+        }
+        self.observe_metadata_at_edition(observer)
+    }
+
+    fn authenticate_data_edition(&self) -> Result<(), ProviderError> {
+        if self.invocation {
+            invocation_data::authenticate_original(self.original, &self.boot)
+        } else {
+            startup_codec::authenticate_original(self.original, &self.boot, self.startup)
+        }
     }
 
     fn observe_metadata_at_edition(
@@ -146,7 +190,7 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
     ) -> Result<(), ProviderError> {
         self.boot.ensure_origin()?;
         ensure_closed_original(self.original)?;
-        startup_codec::authenticate_original(self.original, &self.boot, self.startup)?;
+        self.authenticate_data_edition()?;
         let Bootstrap {
             reader: _,
             literals,
@@ -166,7 +210,11 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
         observer.shared_original(MetadataSharedKind::PrivateBootstrapBank, literals.as_ref())?;
         self.literals.observe_owned11_metadata(observer)?;
         observer.observe(launch_value)?;
-        observer.observe(launch_bytes)?;
+        if self.invocation {
+            invocation_data::observe_launch_bytes(launch_bytes, observer)?;
+        } else {
+            observer.observe(launch_bytes)?;
+        }
         // Success transferred the actual typed launch into the endpoint owner;
         // its historical slot remains exactly None and allocates no new value.
         if launch.is_some() {
@@ -179,7 +227,9 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
             .as_ref()
             .ok_or(ProviderError::Correlation("native private boot absent"))?;
         observer.shared_original(MetadataSharedKind::NativeBoot, boot.as_ref())?;
-        if self.startup {
+        if self.invocation {
+            self.boot.observe_invocation_metadata(observer)?;
+        } else if self.startup {
             self.boot.observe_startup_metadata(observer)?;
         } else {
             self.boot.observe_owned11_metadata(observer)?;
@@ -229,6 +279,9 @@ impl Serialize for OriginalNativeBootstrapOwned11<'_> {
             boot: _,
             startup: _,
         } = self.original;
+        if self.invocation {
+            return invocation_data::serialize_original(self, serializer);
+        }
         if self.startup {
             return startup_codec::serialize_original(self, serializer);
         }
@@ -267,7 +320,7 @@ impl OriginalNativeBootstrapOwned11<'_> {
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
         self.boot.ensure_origin()?;
-        startup_codec::authenticate_original(self.original, &self.boot, self.startup)?;
+        self.authenticate_data_edition()?;
         ensure_closed_original(self.original)?;
         let Bootstrap {
             reader: _,
@@ -299,7 +352,11 @@ impl OriginalNativeBootstrapOwned11<'_> {
             self.literals.observe_owned11_metadata(observer)?;
         }
         observer.observe(launch_value)?;
-        observer.observe(launch_bytes)?;
+        if self.invocation {
+            invocation_data::observe_launch_bytes(launch_bytes, observer)?;
+        } else {
+            observer.observe(launch_bytes)?;
+        }
         if launch.is_some() {
             return Err(ProviderError::Correlation(
                 "native private launch not transferred",
@@ -323,3 +380,12 @@ impl OriginalNativeBootstrapOwned11<'_> {
 
 #[path = "bootstrap_startup_owned.rs"]
 mod startup_codec;
+
+#[path = "bootstrap_invocation_owned.rs"]
+mod invocation_data;
+
+impl OriginalNativeBootstrapOwned11<'_> {
+    pub(in crate::reference_packet::service) fn invocation_wire_counter_scratch_data() -> usize {
+        invocation_data::wire_counter_scratch_data()
+    }
+}

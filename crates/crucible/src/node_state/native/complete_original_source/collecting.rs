@@ -99,6 +99,14 @@ impl CompleteOriginalSourcePurpose {
 }
 
 impl CompleteOriginalSource {
+    pub(crate) fn original_target_plan_counter_scratch_data() -> usize {
+        std::mem::size_of::<std::cell::Ref<'static, CollectingTargetPhase>>()
+            + std::mem::size_of::<Option<InstalledConformancePlan>>()
+            + std::mem::size_of::<InstalledConformancePlan>()
+            // An already-bound archive borrows the real same-runtime slot.
+            + std::mem::size_of::<std::cell::Ref<'static, Option<Rc<()>>>>()
+    }
+
     pub(super) fn authenticate_ticket_phase(&self) -> Result<(), RuntimeError> {
         self.authenticate_birth()?;
         match &self.purpose {

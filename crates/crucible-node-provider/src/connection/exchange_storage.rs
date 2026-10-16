@@ -18,6 +18,9 @@ use std::mem::{align_of, size_of};
 #[path = "exchange_ack_storage.rs"]
 mod acknowledgements;
 
+#[path = "exchange_observe_lifetime.rs"]
+mod native_observe_lifetime;
+
 #[path = "exchange_continuation_storage.rs"]
 mod continuation;
 pub(crate) use continuation::{

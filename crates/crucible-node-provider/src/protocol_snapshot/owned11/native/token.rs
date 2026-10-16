@@ -52,7 +52,9 @@ pub(super) fn read(
     let mut fields = Fields::array(input)?;
     tag(
         &mut fields,
-        if ledger.requires_startup_class()? {
+        if ledger.requires_invocation_class()? {
+            "source-private.native-ack-token/15"
+        } else if ledger.requires_startup_class()? {
             "source-private.native-ack-token/14"
         } else {
             "source-private.native-ack-token/11"
@@ -78,3 +80,13 @@ pub(super) fn read(
     };
     Ok(Some(token))
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(
+    HistoricalNativeAckToken,
+    identity,
+    boot,
+    policy,
+    authority,
+    original
+);

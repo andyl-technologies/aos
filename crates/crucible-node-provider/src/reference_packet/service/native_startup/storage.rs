@@ -161,6 +161,25 @@ pub fn original_native_birth_startup_storage_data(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum_requested_bytes: usize,
 ) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
+    birth_storage_with_source(input, maximum_requested_bytes, private_bootstrap::project)
+}
+
+// Only the new actual inherited-channel claim uses this source-edition census.
+// It counts the unchanged baseline and leaves the purpose/wrapper additions to
+// the independently named invocation producer, under the SAME admitted rows.
+pub(crate) fn original_native_invocation_baseline_storage_data(
+    input: &PacketNativeBirthStartupInputs<'_>,
+    maximum_requested_bytes: usize,
+) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
+    birth_storage_with_source(input, maximum_requested_bytes, private_bootstrap::project_invocation)
+}
+
+fn birth_storage_with_source(
+    input: &PacketNativeBirthStartupInputs<'_>,
+    maximum_requested_bytes: usize,
+    source_project: fn(&PacketNativeBirthStartupInputs<'_>, usize)
+        -> Result<private_bootstrap::PrivateBootstrapStorage, ProviderError>,
+) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
     if input.encoded_launch.is_empty()
         || input.encoded_launch.len() > PRIVATE_LAUNCH_BYTES
         || input.source_birth.is_empty()
@@ -229,7 +248,7 @@ pub fn original_native_birth_startup_storage_data(
         launch.initial_coordinator.bytes.as_slice(),
         maximum,
     )?;
-    let source_shape = private_bootstrap::project(input, maximum)?;
+    let source_shape = source_project(input, maximum)?;
     // The same nine immutable base Values and the closed Binding14 additions
     // determine this tree. Its encoded length is not a license to replace that
     // known structure with the worst possible arbitrary JSON of equal length.

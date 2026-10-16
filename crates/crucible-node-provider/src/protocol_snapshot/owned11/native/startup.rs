@@ -1,4 +1,4 @@
-//! Reconstructs complete boot6 startup history without live startup authority.
+//! Reconstructs explicit boot6 and invocation boot7 startup history as data.
 //!
 //! Fixed digests and the complete secret336-byte prefix remain inline owners.
 //! Their compact encoding has no independent Vec allocation or metadata row.
@@ -165,8 +165,19 @@ pub(super) fn read_boot(
     ledger: &mut Ledger<'_, '_, '_>,
     build: bool,
 ) -> Result<Option<HistoricalNativeStartupBoot>, ProviderError> {
+    read_boot_at_edition(input, ledger, build, false)
+}
+
+pub(super) fn read_invocation_boot(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool)
+    -> Result<Option<HistoricalNativeStartupBoot>, ProviderError> {
+    read_boot_at_edition(input, ledger, build, true)
+}
+
+fn read_boot_at_edition(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool, invocation: bool)
+    -> Result<Option<HistoricalNativeStartupBoot>, ProviderError> {
     let mut fields = Fields::array(input)?;
-    tag(&mut fields, "source-private.native-startup-owner/14")?;
+    tag(&mut fields, if invocation { "source-private.native-startup-owner/15" }
+        else { "source-private.native-startup-owner/14" })?;
     let allocation_input = next(&mut fields)?;
     let allocation = ledger.read::<PacketNativeStartupAllocation>(allocation_input, build)?;
     let source_digest = fixed::<32>(next(&mut fields)?, ledger.limits.maximum_input_bytes, build)?;
@@ -179,6 +190,7 @@ pub(super) fn read_boot(
         .read::<bool>(next(&mut fields)?, true)?
         .ok_or_else(invalid)?;
     fields.finish()?;
+    if invocation && prepare_startup_issued { return Err(invalid()); }
     if prepare_startup_issued {
         let mut allocation_fields = Fields::object(allocation_input)?;
         allocation_fields.named("schema")?;
@@ -212,11 +224,19 @@ pub(super) fn read_bootstrap(
     ledger: &mut Ledger<'_, '_, '_>,
     build: bool,
 ) -> Result<Option<HistoricalNativeStartupBootstrap>, ProviderError> {
+    read_bootstrap_at_edition(input, ledger, build, false)
+}
+
+pub(super) fn read_invocation_bootstrap(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool)
+    -> Result<Option<HistoricalNativeStartupBootstrap>, ProviderError> {
+    read_bootstrap_at_edition(input, ledger, build, true)
+}
+
+fn read_bootstrap_at_edition(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool, invocation: bool)
+    -> Result<Option<HistoricalNativeStartupBootstrap>, ProviderError> {
     let mut fields = Fields::array(input)?;
-    tag(
-        &mut fields,
-        "source-private.native-startup-bootstrap-owner/14",
-    )?;
+    tag(&mut fields, if invocation { "source-private.native-startup-bootstrap-owner/15" }
+        else { "source-private.native-startup-bootstrap-owner/14" })?;
     let creator = ledger.read::<u32>(next(&mut fields)?, build)?;
     tag(&mut fields, "same-original-thread")?;
     let preamble = fixed::<336>(next(&mut fields)?, ledger.limits.maximum_input_bytes, build)?;
@@ -512,3 +532,29 @@ mod tests {
         assert!(read_boot(&owner, &mut ledger, false).is_err());
     }
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(
+    HistoricalNativeStartupBoot,
+    allocation,
+    source_digest,
+    launch_digest,
+    birth_id,
+    native_birth_issued,
+    baseline_complete,
+    prepare_startup_issued
+);
+super::super::retained_storage::fields!(
+    HistoricalNativeStartupBootstrap,
+    creator,
+    preamble,
+    private_bootstrap,
+    native_birth,
+    restore_prepare,
+    expected_controller_pid,
+    expected_controller_uid,
+    maximum_launch_bytes,
+    maximum_boot_bytes,
+    native_issued,
+    failed
+);

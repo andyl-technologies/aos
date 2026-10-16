@@ -24,6 +24,7 @@ pub(super) enum NativeArchiveClass {
     Capture12,
     Startup13,
     StartupCapture14,
+    InvocationCapture15,
 }
 
 impl NativeArchiveClass {
@@ -33,14 +34,17 @@ impl NativeArchiveClass {
             "source-private.native-state/12" => Ok(Self::Capture12),
             "source-private.native-state/13" => Ok(Self::Startup13),
             "source-private.native-state/14" => Ok(Self::StartupCapture14),
+            "source-private.native-state/15" => Ok(Self::InvocationCapture15),
             _ => Err(invalid()),
         }
     }
     pub(super) fn startup(self) -> bool {
-        matches!(self, Self::Startup13 | Self::StartupCapture14)
+        matches!(self, Self::Startup13 | Self::StartupCapture14 | Self::InvocationCapture15)
     }
+    pub(super) fn invocation(self) -> bool { self == Self::InvocationCapture15 }
+
     pub(super) fn capture(self) -> bool {
-        matches!(self, Self::Capture12 | Self::StartupCapture14)
+        matches!(self, Self::Capture12 | Self::StartupCapture14 | Self::InvocationCapture15)
     }
 }
 
@@ -67,6 +71,10 @@ impl NativeLedger<'_, '_, '_, '_, '_> {
         self.class
             .map(NativeArchiveClass::startup)
             .ok_or_else(invalid)
+    }
+
+    pub(super) fn requires_invocation_class(&self) -> Result<bool, ProviderError> {
+        self.class.map(NativeArchiveClass::invocation).ok_or_else(invalid)
     }
 
     fn payload<T>(&mut self) -> Result<(), ProviderError> {

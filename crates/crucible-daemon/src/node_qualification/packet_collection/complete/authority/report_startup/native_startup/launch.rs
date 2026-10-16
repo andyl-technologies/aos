@@ -23,6 +23,9 @@ use std::{
 };
 
 const STARTUP_ARGUMENT: &str = "--original-native-startup14";
+// Same compiled argument extent preserves the old closed Command quote.
+const INVOCATION_ARGUMENT: &str = "--original-native-startup15";
+const _: () = assert!(STARTUP_ARGUMENT.len() == INVOCATION_ARGUMENT.len());
 const PATH_MAXIMUM: usize = 4096;
 const MAXIMUM_WRITE_WATCHDOG: Duration = Duration::from_secs(60);
 
@@ -390,15 +393,22 @@ impl PacketCompleteReportStartupHolder {
                     .begin_original_canonical_ack_private_boot()
                     .map_err(|_| RuntimeError::ForeignAuthority)?,
             );
-            materials[member]
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?
-                .prepare_original_native_startup_wire_into(
+            let material = materials[member].as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+            let invocation = material.requires_original_native_invocation_wire_data()
+                .map_err(|_| RuntimeError::ForeignAuthority)?;
+            if invocation {
+                material.prepare_original_native_invocation_wire_into(
                     &held.authority.original_launches[member],
                     &held.authority.private_launches[member],
                     &mut peer.wire,
                 )
-                .map_err(|_| RuntimeError::OwnerUnavailable)?;
+            } else {
+                material.prepare_original_native_startup_wire_into(
+                    &held.authority.original_launches[member],
+                    &held.authority.private_launches[member],
+                    &mut peer.wire,
+                )
+            }.map_err(|_| RuntimeError::OwnerUnavailable)?;
             materials[member]
                 .as_ref()
                 .ok_or(RuntimeError::OwnerUnavailable)?
@@ -429,7 +439,7 @@ impl PacketCompleteReportStartupHolder {
             command
                 .env_clear()
                 .arg(&inputs.socket)
-                .arg(STARTUP_ARGUMENT)
+                .arg(if invocation { INVOCATION_ARGUMENT } else { STARTUP_ARGUMENT })
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .process_group(0);

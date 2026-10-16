@@ -494,3 +494,15 @@ pub(crate) const fn original_native_supervisor_bank_layouts() -> (usize, usize) 
         std::mem::size_of::<BlobQuarantine>(),
     )
 }
+
+impl HistoricalNativeSupervisorBanks {
+    pub(crate) fn observe_historical_retained_metadata(&self,
+        observer: &mut crate::retained_metadata::MetadataObserver) -> Result<(), ProviderError> {
+        let Self {incidents, blobs} = self;
+        if !incidents.is_empty() || !blobs.is_empty() {
+            return Err(ProviderError::Correlation("historical empty supervisor bank changed"));
+        }
+        observer.vector::<ConnectionIncident>(incidents.capacity())?;
+        observer.vector::<BlobQuarantine>(blobs.capacity())
+    }
+}

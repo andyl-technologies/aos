@@ -186,6 +186,14 @@ impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthorit
         self.authenticate_original_native_startup_data(scope, policy)
     }
 
+    fn original_native_invocation_data(
+        &self,
+        _plan: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalNativeStartupScope<'_>,
+    ) -> Result<[crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData; 3], crucible::node_contract::RuntimeError> {
+        self.original_native_invocation_data(scope)
+    }
+
     fn authenticate_original_native_startup_member(
         &self,
         _plan: &ConformancePlanEvidence<'_>,

@@ -348,3 +348,6 @@ pub(super) fn requires_fresh_startup_class_data(input: &[u8]) -> Result<bool, Pr
     let mut fields = Fields::array(input)?;
     Ok(super::super::typed::plain_string(next(&mut fields)?)? == fresh::FRESH_POLICY_FORMAT)
 }
+
+// The closed owning walk fails to compile if a historical field is added.
+super::super::retained_storage::fields!(HistoricalNativePolicy, selection, coordinator_reference, coordinator_bytes, definition, connected, capture_profile, confirmation_selection, confirmation_definition, ack_emitter_selection, ack_emitter_definition, native_codec_metadata_extent, complete_restore_selection, complete_restore_definitions, complete_restore_transfer_definitions, restore_input_emitter_selection, restore_input_emitter_definition, capture_allocation_selection, capture_allocation_definitions, fresh_restore_allocation_selection, fresh_restore_allocation_definitions, protocol_metadata_limits);

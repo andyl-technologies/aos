@@ -40,9 +40,15 @@ impl NativeEndpointCaptureStateData<'_> {
             PacketNativeAfterConfirmationReceipt, PacketNativeAfterConfirmationRequest,
         };
         let receive = &self.sdk.sdk_data().future_capture_receive;
+        // This actual same-Source quote is entered only after the selected
+        // startup query has returned. Keep every source/control/candidate owner;
+        // partition only its known prefix's exact original storage components.
+        let observe_lifetime = self.observe_prefix_storage.exchange
+            .native_observe_lifetime_storage_data(self.counter_requested_limit)?;
         let observe_publication = sum(&[
             self.control_growth.publication_retained_bytes,
-            self.observe_prefix_storage.requested_bytes()?,
+            observe_lifetime.retained_requested_bytes,
+            self.observe_prefix_storage.source_owner_requested_bytes,
             self.candidate_owner.requested_observe_owner_fields_bytes,
         ])?;
         let capture_publication = sum(&[
@@ -123,7 +129,8 @@ impl NativeEndpointCaptureStateData<'_> {
                 .typed_receipt_requested_bytes,
             self.observe_publication_shapes
                 .binding_identity_requested_bytes,
-            self.observe_prefix_storage.requested_bytes()?,
+            observe_lifetime.work_requested_bytes()?,
+            self.observe_prefix_storage.declared_counter_scratch_bytes,
             self.candidate_owner.serialization_requested_bytes,
         ])?;
         let before_encoding = sum(&[
@@ -165,6 +172,7 @@ impl NativeEndpointCaptureStateData<'_> {
             size_of::<Self>(),
             crate::reference_packet::control::original_observe_dispatch_scratch_data(),
             size_of::<NativeCaptureReportObligationsData>(),
+            crate::connection::OriginalPacketPrefixStorageData::native_observe_lifetime_counter_scratch_data(),
             super::capture_startup::original_startup_capture_endpoint_counter_scratch_data(),
             crate::reference_packet::control::original_startup_capture_counter_scratch_data(),
             crate::reference_packet::service::native_snapshot::native_owned13_snapshot_schema_counter_scratch_data(),

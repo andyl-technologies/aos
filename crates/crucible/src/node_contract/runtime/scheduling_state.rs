@@ -459,6 +459,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn revoked_uninitialized_scheduler_retains_data_but_refuses_target_currency() {
+        let authority = Rc::new(());
+        let world = HashRef {
+            algorithm: "blake3-256".into(),
+            domain: "cnp.world-binding.v1".into(),
+            digest: "1".repeat(64),
+        };
+        let state = OriginalSchedulingState::new(&authority, world.clone());
+        assert!(!state.initialized().unwrap());
+        state.authenticate(&authority, &world).unwrap();
+
+        state.revoke();
+
+        state.authenticate_retained(&authority, &world).unwrap();
+        assert!(matches!(state.authenticate(&authority, &world),
+            Err(RuntimeError::OutstandingObligations)));
+        assert!(state.0.scheduler.borrow().is_none());
+        assert!(!state.0.live.get());
+        assert!(state.authenticate(&Rc::new(()), &world).is_err());
+    }
+
+    #[test]
     fn modeled_foreign_origin_refuses_before_busy_storage_and_dead_authority() {
         // PID erasure is modeled. The actual original slot and busy RefCell are
         // genuine; this is not an executed fork or native packet qualification.

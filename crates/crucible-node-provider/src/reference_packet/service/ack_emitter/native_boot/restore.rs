@@ -162,7 +162,7 @@ impl NativeAckBoot {
         let mut flight = attempt.try_borrow_mut().map_err(|_| borrowed())?;
         flight.original = Some(original.clone());
         flight.launch = Some(PacketNative5SourceLaunch::decode(
-            &owner.launch_body,
+            owner.original_verified_launch_literal_data()?,
             1024 * 1024,
         )?);
         let crate::connection::CompleteRestoreTransferProjection::Request {
@@ -582,7 +582,7 @@ fn quoted_commit_decode_storage(
         .max(std::mem::size_of::<PacketNative5SourceLaunch>());
     let retained = super::restore_prepare::known_backing_bytes(facts)?;
     let typed = facts.observed_nodes.checked_mul(slot).ok_or_else(refused)?;
-    let launch = selected_issuer_decode_storage_data(&owner.launch_body, slot, maximum)?;
+    let launch = selected_issuer_decode_storage_data(owner.original_verified_launch_literal_data()?, slot, maximum)?;
     let headers = std::mem::size_of::<NativeCompleteRestoreAttempt>()
         .checked_add(std::mem::size_of::<PacketPreparedCompleteModel>())
         .and_then(|bytes| {

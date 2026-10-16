@@ -255,3 +255,42 @@ pub(crate) use storage::{
     original_native_coordinator_decode_counter_scratch_data,
     original_native_coordinator_decode_storage_data,
 };
+
+#[path = "native_startup/invocation.rs"]
+mod invocation;
+pub use invocation::{
+    PacketNativeInvocationPurposeData, original_native_invocation_counter_scratch_data,
+};
+
+#[path = "native_startup/invocation_launch.rs"]
+mod invocation_launch;
+pub use invocation_launch::{PacketNative6InvocationLaunch, PacketNative6InvocationLaunchView};
+
+/// Names the purpose-aware Source binding; legacy binding14 stays exact.
+pub const PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA: &str =
+    "source-owned.packet-canonical-ack-source-binding/15";
+
+/// Names the purpose-aware private boot; legacy boot6 stays exact.
+pub const PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA: &str =
+    "source-owned.packet-canonical-ack-private-boot/7";
+
+#[path = "native_startup/invocation_preamble.rs"]
+mod invocation_preamble;
+pub use invocation_preamble::{
+    ORIGINAL_NATIVE_INVOCATION_PREAMBLE_BYTES, PacketNativeInvocationPreambleData,
+    authenticate_original_native_invocation_preamble_data,
+    decode_original_native_invocation_preamble_data,
+    encode_original_native_invocation_preamble_data,
+};
+
+pub use invocation::{
+    PacketNativeInvocationLaunchIdentityData, original_native_invocation_launch_identity_data,
+    write_original_native_invocation_launch_data,
+};
+
+pub use invocation::{
+    PacketNativeInvocationConstructionStorageData,
+    original_native_invocation_construction_storage_data,
+};
+
+pub(crate) use storage::original_native_invocation_baseline_storage_data;

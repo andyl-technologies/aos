@@ -114,6 +114,57 @@ pub(in crate::reference_packet::service) fn accept_admitted(
     }
 }
 
+// Distinct selected entry; the legacy admitted entry still reads prefix14 only.
+pub(in crate::reference_packet::service) fn accept_invocation(
+    socket: &Path,
+) -> Result<PacketSourceService, ProviderError> {
+    // rustix's safe std-enabled handle borrows fd0 without constructing std's
+    // global buffered Stdin owner before the private prefix admission.
+    let startup = admitted::OriginalNativeStartupBootstrap::read_invocation(&rustix::stdio::stdin())?;
+    let stdin = std::io::stdin();
+    let cut = OriginalNative5BirthCut::from_original_preparser_cut(startup.original_cut)?;
+    let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
+        1024 * 1024 + 512 * 1024 + 8,
+        2,
+    )?));
+    let stream = super::owned_read::OriginalPrivateBootstrapStream {
+        original: stdin,
+        cut: Some(cut),
+    };
+    let mut reader = FrameReader::with_limits(
+        stream,
+        startup.maximum_launch_bytes.max(startup.maximum_boot_bytes),
+        64,
+    )?;
+    reader.install_originals(Rc::clone(&bank));
+    let mut owner = Bootstrap {
+        reader,
+        literals: bank,
+        launch_value: None,
+        launch_bytes: Vec::new(),
+        launch: None,
+        boot_value: None,
+        boot: None,
+        startup: Some(startup),
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.prepare(socket)));
+    match result {
+        Ok(Ok(mut service)) => {
+            service._private_bootstrap = Some(Box::new(owner));
+            Ok(service)
+        }
+        failure => {
+            if let Some(startup) = owner.startup.as_mut() {
+                startup.failed = true;
+            }
+            loop {
+                std::hint::black_box((&owner, &failure));
+                std::thread::park();
+            }
+        }
+    }
+}
+
 impl<S: AsFd> Bootstrap<S> {
     fn prepare(&mut self, socket: &Path) -> Result<PacketSourceService, ProviderError> {
         self.launch_value = Some(
@@ -128,9 +179,13 @@ impl<S: AsFd> Bootstrap<S> {
         )?;
         self.launch = Some(if let Some(startup) = self.startup.as_ref() {
             startup.ensure_original()?;
-            let data = startup.data()?;
+            let digest = if startup.has_invocation_prefix()? {
+                startup.invocation_data()?.launch_digest
+            } else {
+                startup.data()?.launch_digest
+            };
             if self.launch_bytes.len() != startup.maximum_launch_bytes
-                || blake3::hash(&self.launch_bytes).as_bytes() != &data.launch_digest
+                || blake3::hash(&self.launch_bytes).as_bytes() != &digest
             {
                 return Err(ProviderError::Correlation(
                     "native startup launch literal differs",
@@ -138,11 +193,19 @@ impl<S: AsFd> Bootstrap<S> {
             }
             // Full policy validation constructs schema owners. It follows the
             // actual native row recount, rather than running in the pre-parser.
-            PacketNative5SourceLaunch::deserialize(
-                self.launch_value
-                    .as_ref()
-                    .ok_or(ProviderError::Frame("native startup launch value absent"))?,
-            )
+            let value = self.launch_value.as_ref()
+                .ok_or(ProviderError::Frame("native startup launch value absent"))?;
+            let value = if startup.has_invocation_prefix()? {
+                let fields = value.as_object().ok_or(ProviderError::Correlation("native invocation launch object"))?;
+                if fields.len() != 3
+                    || fields.get("schema_version").and_then(serde_json::Value::as_u64) != Some(6)
+                    || !fields.contains_key("invocation")
+                {
+                    return Err(ProviderError::Correlation("native invocation launch closed class"));
+                }
+                fields.get("launch").ok_or(ProviderError::Correlation("native invocation nested launch"))?
+            } else { value };
+            PacketNative5SourceLaunch::deserialize(value)
             .map_err(crucible_node_contract::ContractError::from)?
         } else {
             PacketNative5SourceLaunch::decode(&self.launch_bytes, 1024 * 1024)?
@@ -190,13 +253,21 @@ impl<S: AsFd> Bootstrap<S> {
             .as_ref()
             .ok_or(ProviderError::Frame("native boot slot absent"))?;
         if let Some(startup) = self.startup.as_mut() {
-            super::boot::NativeAckBoot::prepare_original_startup_into(
-                boot_value,
-                launch,
-                self.launch_bytes.clone(),
-                startup,
-                &mut self.boot,
-            )?;
+            if startup.has_invocation_prefix()? {
+                let purpose = crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData::from_original_value_data(
+                    self.launch_value.as_ref()
+                        .and_then(|value| value.get("invocation"))
+                        .ok_or(ProviderError::Correlation("native invocation purpose absent"))?,
+                )?;
+                purpose.authenticate_target_data(launch)?;
+                super::boot::NativeAckBoot::prepare_original_invocation_into(
+                    boot_value, launch, self.launch_bytes.clone(), purpose, startup, &mut self.boot,
+                )?;
+            } else {
+                super::boot::NativeAckBoot::prepare_original_startup_into(
+                    boot_value, launch, self.launch_bytes.clone(), startup, &mut self.boot,
+                )?;
+            }
             launch.validate()?;
             if admitted::measure_original_controller_executable(launch.controller_pid)?
                 != launch.controller_executable

@@ -384,6 +384,9 @@ impl PacketCompleteSemanticSource {
                 .as_ref()
                 .ok_or(RuntimeError::OwnerUnavailable)?;
             state.member.authenticate(self)?;
+            if state.member.requires_original_invocation_data()? {
+                return Err(RuntimeError::ForeignAuthority);
+            }
         }
         let mut slot = self
             .ack_peer_birth
@@ -553,3 +556,6 @@ impl Serialize for NativeAdditions<'_> {
         map.end()
     }
 }
+
+#[path = "native_startup/invocation.rs"]
+mod invocation;
