@@ -31,6 +31,8 @@ pub enum Operation {
     Inventory = 9,
     /// The Resume registry entry.
     Resume = 10,
+    /// Retains pending inode custody without returning backing access.
+    InspectPending = 11,
 }
 
 /// The registered bodykind discriminants.

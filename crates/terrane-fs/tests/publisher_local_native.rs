@@ -31,7 +31,7 @@ use terrane_core::{
     identity::{Descriptor, IdentityKind, TERRANE_V1},
 };
 use terrane_fs::{
-    publisher_io::NativePublicationWorker,
+    publisher_io::{NativePublicationWorker, NativeWipePolicy},
     publisher_local::{
         server::{Server, ServerConfig},
         socket::{Connection, ReceivedPacket, RoleIdentities},
@@ -214,6 +214,7 @@ fn publisher_local_native_role() {
         "publisher" => {
             let worker = NativePublicationWorker::start(
                 "public".into(),
+                NativeWipePolicy::None,
                 &root.join("sealed"),
                 &root.join("staging"),
                 &root.join("pending"),

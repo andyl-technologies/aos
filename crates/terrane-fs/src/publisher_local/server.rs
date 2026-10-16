@@ -291,6 +291,13 @@ fn native_operation(
             cursors.clear();
             NativeOperation::Resume
         }
+        Operation::InspectPending => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "pending inspection awaits the concrete native custody command",
+            )
+            .into());
+        }
         Operation::Unspecified => return Err(Error::Invalid("operation")),
     })
 }

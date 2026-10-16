@@ -171,6 +171,39 @@ fn claim_key_profile_and_retention_mismatches_fail() {
 
 #[test]
 fn recovery_and_retirement_field_matrix_is_closed() {
+    let pending = Packet {
+        body: Some(BodyKey {
+            kind: BodyKind::Pack as i32,
+            pack_id: vec![2; 16],
+            ..BodyKey::default()
+        }),
+        operation: Operation::InspectPending as i32,
+        ..probe()
+    };
+    assert!(validate_packet(&pending, 0, false, &policy()).is_ok());
+    assert!(validate_packet(&pending, 1, false, &policy()).is_err());
+    let response = Packet {
+        operation: Operation::InspectPending as i32,
+        response: true,
+        wait_budget_ms: 0,
+        body_incarnation: vec![3; 32],
+        ..probe()
+    };
+    assert!(validate_packet(&response, 0, true, &policy()).is_ok());
+    assert!(validate_packet(&response, 1, true, &policy()).is_err());
+    assert!(
+        validate_packet(
+            &Packet {
+                verity_algorithm: 1,
+                verity_digest: vec![1; 32],
+                ..response
+            },
+            0,
+            true,
+            &policy()
+        )
+        .is_err()
+    );
     for operation in [Operation::Drain, Operation::Resume, Operation::Inventory] {
         let packet = Packet {
             operation: operation as i32,

@@ -102,7 +102,10 @@ pub fn validate_packet(
         }
         let token = matches!(
             operation,
-            Operation::Publish | Operation::Adopt | Operation::InspectBody
+            Operation::Publish
+                | Operation::Adopt
+                | Operation::InspectBody
+                | Operation::InspectPending
         );
         if packet.body_incarnation.len() != if token { 32 } else { 0 } {
             return Err(Error::Invalid("response incarnation"));
@@ -155,6 +158,7 @@ pub fn validate_packet(
         || matches!(
             operation,
             Operation::InspectBody
+                | Operation::InspectPending
                 | Operation::Retire
                 | Operation::Restore
                 | Operation::FinishRetirement
@@ -250,6 +254,7 @@ fn allowed_fields(packet: &Packet) -> Result<u32, Error> {
                     fields |= bits(&[9, 12, 13])
                 }
                 Operation::Inventory => fields |= bits(&[14, 15]),
+                Operation::InspectPending => fields |= bits(&[9]),
                 _ => {}
             }
         }
@@ -263,6 +268,7 @@ fn allowed_fields(packet: &Packet) -> Result<u32, Error> {
                 fields |= bits(&[8, 9])
             }
             Operation::Inventory => fields |= bits(&[14]),
+            Operation::InspectPending => fields |= bits(&[8]),
             _ => {}
         }
     }
