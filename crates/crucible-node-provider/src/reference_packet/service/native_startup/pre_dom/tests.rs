@@ -45,7 +45,10 @@ fn actual_nested_and_escaped_values_fit_the_measured_raw_occurrence_extent() -> 
 #[test]
 fn private_exact_and_one_short_charge_the_independent_typed_launch_carry() -> TestResult {
     let raw = br#"{"a":[{},"literal",1]}"#;
-    let actual = raw.len().checked_add(raw_shape::extent(raw)?.canonical_pass_requested_bytes()?).ok_or_else(exhausted)?;
+    let actual = raw
+        .len()
+        .checked_add(raw_shape::extent(raw)?.canonical_pass_requested_bytes()?)
+        .ok_or_else(exhausted)?;
     let carry = 4096;
     let exact = row(actual + carry);
     OriginalNativeFramePreflight::private(&exact, carry).admit(raw)?;
@@ -68,7 +71,10 @@ fn private_exact_and_one_short_charge_the_independent_typed_launch_carry() -> Te
 fn original_reader_preserves_strict_errors_when_funded_and_stops_before_parse_when_short()
 -> TestResult {
     let raw = br#"{"duplicate":0,"duplicate":1}"#;
-    let maximum = row(raw.len().checked_add(raw_shape::extent(raw)?.canonical_pass_requested_bytes()?).ok_or_else(exhausted)?);
+    let maximum = row(raw
+        .len()
+        .checked_add(raw_shape::extent(raw)?.canonical_pass_requested_bytes()?)
+        .ok_or_else(exhausted)?);
     let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
         raw.len() + 4,
         1,
@@ -114,7 +120,10 @@ fn original_reader_preserves_strict_errors_when_funded_and_stops_before_parse_wh
 fn selected_hello_reader_keeps_the_same_attempt_and_original_journal_on_layout_refusal()
 -> TestResult {
     let raw = br#"{"duplicate":0,"duplicate":1}"#;
-    let exact = raw.len().checked_add(raw_shape::extent(raw)?.canonical_pass_requested_bytes()?).ok_or_else(exhausted)?;
+    let exact = raw
+        .len()
+        .checked_add(raw_shape::extent(raw)?.canonical_pass_requested_bytes()?)
+        .ok_or_else(exhausted)?;
     let short = row(exact - 1);
     let journal = crate::native_hello::OriginalNativeHelloJournal::reserve(raw.len(), 64)?;
     let original = journal.original_test_identity();
@@ -150,17 +159,31 @@ fn whitespace_heavy_reader_keeps_raw_body_and_dom_in_the_same_funded_phase() -> 
     let only_body = row(raw.len());
     let budget = OriginalNativeFramePreflight::private(&only_body, 0);
     budget.admit_raw_bank(raw.len())?;
-    let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(raw.len() + 4, 1)?));
+    let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
+        raw.len() + 4,
+        1,
+    )?));
     let mut reader = FrameReader::new(Cursor::new(wire(&raw)), raw.len())?;
     reader.install_originals(Rc::clone(&bank));
-    assert!(matches!(reader.read_original_native_preflight(raw.len(), &budget), Err(ProviderError::ResourceExhausted("native original frame layout window"))));
+    assert!(matches!(
+        reader.read_original_native_preflight(raw.len(), &budget),
+        Err(ProviderError::ResourceExhausted(
+            "native original frame layout window"
+        ))
+    ));
     assert_eq!(bank.borrow().frames().count(), 1);
 
     let full = row(raw.len().checked_add(layout).ok_or_else(exhausted)?);
     let exact = OriginalNativeFramePreflight::private(&full, 0);
     let mut funded = FrameReader::new(Cursor::new(wire(&raw)), raw.len())?;
-    funded.install_originals(Rc::new(RefCell::new(OriginalFrameReservation::reserve(raw.len() + 4, 1)?)));
-    let value = funded.read_original_native_preflight(raw.len(), &exact)?.ok_or_else(exhausted)?.value;
+    funded.install_originals(Rc::new(RefCell::new(OriginalFrameReservation::reserve(
+        raw.len() + 4,
+        1,
+    )?)));
+    let value = funded
+        .read_original_native_preflight(raw.len(), &exact)?
+        .ok_or_else(exhausted)?
+        .value;
     assert_eq!(value, serde_json::json!(0));
     Ok(())
 }
