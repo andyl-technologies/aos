@@ -500,7 +500,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             )
     }
 
-    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn original_initial_callback_transient_data(
+    pub(in crate::node_qualification::packet_collection::complete) fn original_initial_callback_transient_data(
         &self,
     ) -> Result<usize, RuntimeError> {
         // All source/current Host diagnostics are a Source row. This concrete
@@ -699,6 +699,9 @@ impl PacketCompleteReportStartupHolder {
             .ok_or(RuntimeError::ResourceLimit)?;
         total = total
             .checked_add(self.original_runtime_descriptor_views_data()?)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        total = total
+            .checked_add(self.fresh_runtime_descriptor_data()?)
             .ok_or(RuntimeError::ResourceLimit)?;
         Ok(total)
     }

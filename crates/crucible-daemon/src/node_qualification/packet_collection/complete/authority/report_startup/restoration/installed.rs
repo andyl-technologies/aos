@@ -41,6 +41,9 @@ impl PacketCompleteReportStartupHolder {
         {
             let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
             held.authenticate_native_origin_data()?;
+            if held.fresh_lifecycle.get().is_some() {
+                held.authenticate_completed_fresh_runtime_data()?;
+            }
             if held.restoration_attempted.get() || held.restoration_publication.get().is_some() {
                 return Err(RuntimeError::OutstandingObligations);
             }

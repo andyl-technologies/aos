@@ -7,7 +7,7 @@ use crucible::{
         AdmissionLimits, AdmissionRequest, FixedFourConformanceGraphConstructionInputs,
         admit_original_fixed_four_conformance_graph,
     },
-    node_contract::{HostSchedulingSource, SimulationNode},
+    node_contract::HostSchedulingSource,
 };
 use std::mem::{align_of, size_of};
 
@@ -32,12 +32,7 @@ pub(super) fn quote(
         .runtime_owners
         .try_borrow()
         .map_err(|_| RuntimeError::OwnerBusy)?;
-    let scene = held
-        .original_scene
-        .get()
-        .ok_or(RuntimeError::OwnerUnavailable)?
-        .try_borrow()
-        .map_err(|_| RuntimeError::OwnerBusy)?;
+    let scene = held.runtime_construction_owner_data()?;
     let schedule = owners
         .schedule
         .as_ref()
@@ -89,10 +84,7 @@ pub(super) fn quote(
         .try_borrow()
         .map_err(|_| RuntimeError::OwnerBusy)?
         .original_runtime_node_quote_data(&held.authority.roster.sources, max)?;
-    let host = held
-        .authority
-        .host_source()
-        .original_collection_node_construction_storage_data(&scene.inputs.activation, max)?;
+    let host = held.runtime_host_node_construction_data(scene.activation()?, max)?;
     let oracle = PacketCompleteNativeOracle::original_shared_construction_storage_data(
         held.authority.witness_plan(),
         schedule.cases.len(),
@@ -101,7 +93,7 @@ pub(super) fn quote(
     let execution = PacketCompleteExecutionScene::original_construction_storage_data(max)?;
     let actor = PacketCompleteExecutionActor::original_construction_storage_data(
         schedule,
-        &scene.inputs.activation,
+        scene.activation()?,
         max,
     )?;
     let mut extra = Counter::new(max);
@@ -123,10 +115,15 @@ pub(super) fn quote(
             .map_err(storage_error)?,
         )
         .map_err(storage_error)?;
+    if matches!(&held.purpose, StartupHolderPurpose::FreshRestoration(_)) {
+        extra
+            .add(held.fresh_graph_wrapper_construction_data(max)?)
+            .map_err(storage_error)?;
+    }
     let retained = [
         graph.retained_requested_bytes(),
         node.0,
-        host.retained_requested_bytes(),
+        host.0,
         oracle.retained_requested_bytes,
         execution.retained_requested_bytes,
         actor.retained_requested_bytes,
@@ -187,11 +184,11 @@ pub(super) fn quote(
         max,
     )?;
     transient = add(transient, node.1, max)?;
-    transient = add(transient, host.maximum_simultaneous_transient_bytes(), max)?;
+    transient = add(transient, host.1, max)?;
     let scratch = [
         graph.declared_counter_scratch_bytes(),
         node.2,
-        host.declared_counter_scratch_bytes(),
+        host.2,
         oracle.declared_counter_scratch_bytes,
         execution.declared_counter_scratch_bytes,
         actor.declared_counter_scratch_bytes,
@@ -274,25 +271,17 @@ pub(super) fn construct(held: &PacketCompleteReportStartupHolder) -> Result<(), 
         )
         .map_err(|_| RuntimeError::ForeignAuthority)?,
     );
-    let scene = held
-        .original_scene
-        .get()
-        .ok_or(RuntimeError::OwnerUnavailable)?
-        .try_borrow()
-        .map_err(|_| RuntimeError::OwnerBusy)?;
+    let scene = held.runtime_construction_owner_data()?;
     owners.actor = Some(
         owners
             .scene
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?
             .reserve_actor_with_original_supervision(
-                Rc::clone(&*scene.inputs.supervisor.shared_data()?),
-                &scene.inputs.activation,
-                scene.inputs.runtime_limits,
-                scene
-                    .runtime_slot
-                    .as_deref()
-                    .ok_or(RuntimeError::OwnerUnavailable)?,
+                Rc::clone(&*scene.shared_supervisor()?),
+                scene.activation()?,
+                scene.limits()?,
+                scene.runtime_slot()?,
             )
             .map_err(|_| RuntimeError::ForeignAuthority)?,
     );
@@ -363,17 +352,7 @@ pub(super) fn construct(held: &PacketCompleteReportStartupHolder) -> Result<(), 
             &mut unwinds[i],
         )?;
     }
-    owners.host = Some(
-        held.authority
-            .host_source()
-            .prepare_collection_node(
-                owners
-                    .graph
-                    .as_ref()
-                    .ok_or(RuntimeError::OwnerUnavailable)?,
-                &scene.inputs.activation,
-            )
-            .map_err(|_| RuntimeError::ForeignAuthority)?,
-    );
+    drop(preparations);
+    held.prepare_runtime_host_node_into(&mut owners, scene.activation()?)?;
     Ok(())
 }

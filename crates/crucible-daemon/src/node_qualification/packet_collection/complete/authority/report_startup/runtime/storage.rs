@@ -10,6 +10,8 @@ use std::mem::{size_of, size_of_val};
 pub(super) fn counter_scratch_data() -> Result<usize, RuntimeError> {
     let terms=[InstalledConformancePlan::original_runtime_construction_counter_scratch_data()?,
         super::content_limits::counter_scratch_data(),
+        super::family::counter_scratch_data(),
+        super::fresh::counter_scratch_data()?,
         ConformanceRuntime::original_fixed_four_inactive_observer_counter_scratch_data()?,
         super::super::super::super::construction_diagnostics::Scope::requested_bytes(),
         // Fixed observer work: actual selected producer Bytes base64 bank,
@@ -52,6 +54,15 @@ impl PacketCompleteReportStartupHolder {
                 .inputs
                 .supervisor
                 .charge_shared_root(c)?;
+        }
+        if let Some(fresh) = self.fresh_lifecycle.get() {
+            if let Some(inputs) = &fresh
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?
+                .inputs
+            {
+                inputs.supervisor.charge_shared_root(c)?;
+            }
         }
         let owners = self
             .runtime_owners

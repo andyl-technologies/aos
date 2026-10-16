@@ -73,6 +73,7 @@ pub struct PacketCompleteReportStartupHolder {
     preparations: RefCell<preparation::PreparationOwners>,
     original_scene: OnceCell<RefCell<scene::OriginalSceneOwners>>,
     fresh_lifecycle: OnceCell<RefCell<restoration::FreshLifecycleOwners>>,
+    fresh_runtime: OnceCell<runtime::FreshRuntimeOwners>,
     installed_host_owner: OnceCell<crucible::node_contract::HostSchedulingOwner>,
     original_scene_retired: Cell<bool>,
     restoration_attempted: Cell<bool>,
@@ -259,6 +260,7 @@ impl PacketCompleteReportStartupHolder {
             preparations: RefCell::new(preparation::PreparationOwners::new()),
             original_scene: OnceCell::new(),
             fresh_lifecycle: OnceCell::new(),
+            fresh_runtime: OnceCell::new(),
             installed_host_owner: OnceCell::new(),
             original_scene_retired: Cell::new(false),
             restoration_attempted: Cell::new(false),
@@ -358,10 +360,15 @@ impl PacketCompleteReportStartupHolder {
         let StartupHolderPurpose::FreshRestoration(capsule) = &self.purpose else {
             return Err(crucible::node_contract::RuntimeError::UnsupportedFacet);
         };
-        let bytes = capsule
+        let capsule = capsule
             .try_borrow()
-            .map_err(|_| crucible::node_contract::RuntimeError::OwnerBusy)?
-            .retained_fresh_host_archive_precredit_data(&authority.host, counter.remaining())?;
+            .map_err(|_| crucible::node_contract::RuntimeError::OwnerBusy)?;
+        let bytes = if self.fresh_runtime.get().is_some() {
+            capsule.retained_fresh_construction_source_data(&authority.host, counter.remaining())?
+        } else {
+            capsule
+                .retained_fresh_host_archive_precredit_data(&authority.host, counter.remaining())?
+        };
         counter
             .add(bytes)
             .map_err(|_| crucible::node_contract::RuntimeError::ResourceLimit)

@@ -35,17 +35,10 @@ impl PacketCompleteReportStartupHolder {
         scope: &OriginalRuntimeConstructionScope<'_>,
     ) -> Result<(), RuntimeError> {
         self.authenticate_runtime_member_data(authority, scope)?;
-        let scene = self
-            .original_scene
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .try_borrow()
-            .map_err(|_| RuntimeError::OwnerBusy)?;
-        if !scene.staged
-            || !scene.launched.get()
-            || !scene.initial_completed.iter().all(Cell::get)
-            || !std::ptr::eq(scope.activation(), &scene.inputs.activation)
-            || scope.limits() != scene.inputs.runtime_limits
+        let scene = self.runtime_construction_owner_data()?;
+        scene.authenticate_completed_lifecycle()?;
+        if !std::ptr::eq(scope.activation(), scene.activation()?)
+            || scope.limits() != scene.limits()?
         {
             return Err(RuntimeError::OutstandingObligations);
         }
@@ -114,6 +107,18 @@ impl PacketCompleteReportStartupHolder {
     pub fn prepare_original_scene_runtime(
         original: &Rc<RefCell<Self>>,
     ) -> Result<(), RuntimeError> {
+        {
+            let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+            if !matches!(&held.purpose, StartupHolderPurpose::OriginalScene) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+        }
+        Self::prepare_runtime_construction_data(original)
+    }
+
+    pub(super) fn prepare_runtime_construction_data(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<(), RuntimeError> {
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         held.authenticate_native_origin_data()?;
         for phase in [
@@ -134,12 +139,7 @@ impl PacketCompleteReportStartupHolder {
                 previous: None,
             };
             {
-                let scene = held
-                    .original_scene
-                    .get()
-                    .ok_or(RuntimeError::OwnerUnavailable)?
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
+                let scene = held.runtime_construction_owner_data()?;
                 let outputs = held
                     .host_sdk_outputs
                     .try_borrow()
@@ -152,8 +152,8 @@ impl PacketCompleteReportStartupHolder {
                     &held.authority.roster.sources,
                     &held.authority.original_launches,
                     [a?, b?, c?],
-                    &scene.inputs.activation,
-                    scene.inputs.runtime_limits,
+                    scene.activation()?,
+                    scene.limits()?,
                 )?;
                 held.runtime_members[i]
                     .set(member)
@@ -179,12 +179,7 @@ impl PacketCompleteReportStartupHolder {
                     .replace(true),
             };
             let _diagnostics = {
-                let scene = held
-                    .original_scene
-                    .get()
-                    .ok_or(RuntimeError::OwnerUnavailable)?
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
+                let scene = held.runtime_construction_owner_data()?;
                 let outputs = held
                     .host_sdk_outputs
                     .try_borrow()
@@ -198,8 +193,8 @@ impl PacketCompleteReportStartupHolder {
                     &held.authority.roster.sources,
                     &held.authority.original_launches,
                     [a?, b?, c?],
-                    &scene.inputs.activation,
-                    scene.inputs.runtime_limits,
+                    scene.activation()?,
+                    scene.limits()?,
                 )?
             };
             let _daemon_diagnostics =
@@ -207,14 +202,14 @@ impl PacketCompleteReportStartupHolder {
             match phase {
                 OriginalRuntimeConstructionPhase::InputOwners => inputs::construct(&held, member)?,
                 OriginalRuntimeConstructionPhase::CollectingGraph => graph::construct(&held)?,
-                OriginalRuntimeConstructionPhase::InactiveRuntime => inactive::construct(&held)?,
+                OriginalRuntimeConstructionPhase::InactiveRuntime => match &held.purpose {
+                    StartupHolderPurpose::OriginalScene => inactive::construct(&held)?,
+                    StartupHolderPurpose::FreshRestoration(_) => {
+                        held.construct_fresh_inactive_data()?
+                    }
+                },
             }
-            let scene = held
-                .original_scene
-                .get()
-                .ok_or(RuntimeError::OwnerUnavailable)?
-                .try_borrow()
-                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let scene = held.runtime_construction_owner_data()?;
             let outputs = held
                 .host_sdk_outputs
                 .try_borrow()
@@ -227,8 +222,8 @@ impl PacketCompleteReportStartupHolder {
                 &held.authority.roster.sources,
                 &held.authority.original_launches,
                 [a?, b?, c?],
-                &scene.inputs.activation,
-                scene.inputs.runtime_limits,
+                scene.activation()?,
+                scene.limits()?,
             )?;
         }
         held.runtime_owners
@@ -306,8 +301,8 @@ impl InstalledPacketCompleteCollectionAuthority {
             .checked_sub(policy.declared_observer_scratch_bytes)
             .ok_or(RuntimeError::ResourceLimit)?;
         let retained_holder_bytes =
-            PacketCompleteReportStartupHolder::original_initial_holder_storage_data(
-                &original, &held, maximum,
+            PacketCompleteReportStartupHolder::runtime_construction_holder_storage_data(
+                &original, &held, scope, maximum,
             )?;
         let construction = if scope.is_post_construction() {
             (0, 0, 0)
@@ -317,12 +312,25 @@ impl InstalledPacketCompleteCollectionAuthority {
                     (inputs::quote(&held, maximum)?, 0, 0)
                 }
                 OriginalRuntimeConstructionPhase::CollectingGraph => graph::quote(&held, maximum)?,
-                OriginalRuntimeConstructionPhase::InactiveRuntime => {
-                    inactive::quote(&held, maximum)?
-                }
+                OriginalRuntimeConstructionPhase::InactiveRuntime => match &held.purpose {
+                    StartupHolderPurpose::OriginalScene => inactive::quote(&held, maximum)?,
+                    StartupHolderPurpose::FreshRestoration(_) => {
+                        held.quote_fresh_inactive_data(maximum)?
+                    }
+                },
             }
         };
         let mut transient = self.original_initial_callback_transient_data()?;
+        if let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose {
+            transient = add(
+                transient,
+                capsule
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?
+                    .original_fresh_construction_callback_transient_data(maximum)?,
+                maximum,
+            )?;
+        }
         transient = add(
             transient,
             InstalledConformancePlan::original_runtime_constructor_serialization_storage_data(
@@ -398,13 +406,28 @@ impl PacketCompleteReportStartupHolder {
             .runtime_owners
             .try_borrow_mut()
             .map_err(|_| RuntimeError::OwnerBusy)?;
-        let scene = self
-            .original_scene
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .try_borrow()
-            .map_err(|_| RuntimeError::OwnerBusy)?;
-        let limits = scene.inputs.runtime_limits;
+        let limits = match &self.purpose {
+            StartupHolderPurpose::OriginalScene => {
+                self.original_scene
+                    .get()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?
+                    .inputs
+                    .runtime_limits
+            }
+            StartupHolderPurpose::FreshRestoration(_) => {
+                self.fresh_lifecycle
+                    .get()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?
+                    .inputs
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .runtime_limits
+            }
+        };
         if let Some(actor) = &mut owners.actor {
             actor.retire_original_inactive_construction()?;
         }

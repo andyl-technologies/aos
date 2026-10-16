@@ -62,6 +62,8 @@ pub(in crate::node_qualification::packet_collection::complete::authority::report
         [Cell<bool>; 3],
     pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) initial_completed:
         [Cell<bool>; 3],
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) host_completed:
+        [Cell<bool>; 3],
     pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) windows:
         [OnceCell<RefCell<CompleteOriginalHostInitialLifecycleWindow>>; 3],
 }
@@ -93,6 +95,7 @@ impl FreshLifecycleOwners {
             initial_in_flight: std::array::from_fn(|_| Cell::new(false)),
             initial_completed: std::array::from_fn(|_| Cell::new(false)),
             windows: std::array::from_fn(|_| OnceCell::new()),
+            host_completed: std::array::from_fn(|_| Cell::new(false)),
         }
     }
 
@@ -315,6 +318,19 @@ impl PacketCompleteReportStartupHolder {
         Self::complete_retained_host_initial_lifecycle(original)?;
         for selected in 0..3 {
             Self::call_original_fresh_restore_query(original, selected)?;
+            // This marks the actual HOST continuation only after its full
+            // response and owning post-census succeeded; baseline Admit alone
+            // cannot qualify the later node preparation move.
+            original
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?
+                .fresh_lifecycle
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?
+                .host_completed[selected]
+                .set(true);
         }
         Ok(())
     }

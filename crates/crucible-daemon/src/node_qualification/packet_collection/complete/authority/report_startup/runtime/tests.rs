@@ -142,3 +142,31 @@ fn missing_initial_owners_spend_runtime_entry_without_sharing_or_source_mutation
         before
     );
 }
+
+#[test]
+fn original_holder_refuses_fresh_runtime_and_cleanup_before_owner_changes() {
+    let (_scene, original) =
+        crate::node_qualification::packet_collection::complete::tests::report_startup_fixture();
+    assert!(matches!(
+        PacketCompleteReportStartupHolder::prepare_original_fresh_runtime(&original),
+        Err(RuntimeError::OutstandingObligations)
+    ));
+    assert!(matches!(
+        PacketCompleteReportStartupHolder::retire_original_fresh_restoration(&original),
+        Err(RuntimeError::ForeignAuthority)
+    ));
+    let held = original.borrow();
+    assert!(held.fresh_runtime.get().is_none());
+    assert!(
+        held.runtime_attempted
+            .iter()
+            .all(|attempted| !attempted.get())
+    );
+    assert!(
+        held.runtime_members
+            .iter()
+            .all(|member| member.get().is_none())
+    );
+    assert!(held.receiver_reader.shared_data().is_err());
+    assert!(!held.original_scene_retired.get());
+}

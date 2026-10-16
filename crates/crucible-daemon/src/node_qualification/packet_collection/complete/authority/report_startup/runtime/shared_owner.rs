@@ -86,6 +86,12 @@ impl<T> OriginalSharedOwner<T> {
             + std::mem::size_of::<RefMut<'_, OriginalOwnerSlots<T>>>()
             + std::mem::size_of::<Ref<'_, T>>()
             + std::mem::size_of::<Ref<'_, Rc<T>>>()
+            + std::mem::size_of::<Result<Ref<'_, OriginalOwnerSlots<T>>, std::cell::BorrowError>>()
+            + std::mem::size_of::<Result<Ref<'_, OriginalOwnerSlots<T>>, RuntimeError>>()
+            + std::mem::size_of::<Result<Ref<'_, T>, Ref<'_, OriginalOwnerSlots<T>>>>()
+            + std::mem::size_of::<Result<Ref<'_, T>, RuntimeError>>()
+            + std::mem::size_of::<Result<Ref<'_, Rc<T>>, Ref<'_, OriginalOwnerSlots<T>>>>()
+            + std::mem::size_of::<Result<Ref<'_, Rc<T>>, RuntimeError>>()
     }
 }
 

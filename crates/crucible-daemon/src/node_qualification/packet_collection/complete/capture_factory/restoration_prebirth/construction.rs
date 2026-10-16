@@ -12,7 +12,7 @@ use std::{
 };
 
 impl PacketCompleteRestorationPrebirth {
-    fn construction_origin_data(&self) -> Result<(), RuntimeError> {
+    pub(super) fn construction_origin_data(&self) -> Result<(), RuntimeError> {
         if self.process != std::process::id() {
             return Err(RuntimeError::ForeignAuthority);
         }

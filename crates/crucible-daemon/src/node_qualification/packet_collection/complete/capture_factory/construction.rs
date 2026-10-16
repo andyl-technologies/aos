@@ -36,11 +36,6 @@ impl PacketCompleteCaptureFactory {
                 .try_borrow()
                 .map_err(|_| RuntimeError::OwnerBusy)?
                 .is_some()
-            || self
-                .authority
-                .original_execution_scene_storage_data()
-                .map_err(|_| RuntimeError::ForeignAuthority)?
-                .is_some()
         {
             return Err(RuntimeError::OutstandingObligations);
         }
@@ -69,6 +64,17 @@ impl PacketCompleteCaptureFactory {
                         )?,
                 )
                 .map_err(storage_error)?;
+        }
+        if let Some(scene) = self
+            .authority
+            .original_execution_scene_storage_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?
+        {
+            if counter.rc(&scene).map_err(storage_error)? {
+                scene
+                    .charge_retained_storage(&mut counter)
+                    .map_err(storage_error)?;
+            }
         }
         Ok(counter.bytes())
     }

@@ -29,6 +29,7 @@ enum HolderStoragePhase<'a> {
     NativeStartup,
     InitialLifecycle,
     Restoration(&'a crucible::node_admission::OriginalRestorationConstructionScope<'a>),
+    RuntimeConstruction(&'a crucible::node_admission::OriginalRuntimeConstructionScope<'a>),
 }
 
 pub(super) struct PreparationOwners {
@@ -587,6 +588,25 @@ impl PacketCompleteReportStartupHolder {
         )
     }
 
+    pub(super) fn runtime_construction_holder_storage_data(
+        original: &Rc<RefCell<Self>>,
+        held: &Self,
+        scope: &crucible::node_admission::OriginalRuntimeConstructionScope<'_>,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        if matches!(&held.purpose, StartupHolderPurpose::OriginalScene) {
+            return Self::original_initial_holder_storage_data(original, held, maximum);
+        }
+        held.authenticate_fresh_runtime_flight_data()?;
+        Self::holder_storage_data(
+            original,
+            held,
+            None,
+            maximum,
+            HolderStoragePhase::RuntimeConstruction(scope),
+        )
+    }
+
     /// Observes the genuine inactive restoration holder after its preparation move.
     ///
     /// The capsule proves the actual same runtime/archive/plan/proposal before
@@ -659,7 +679,9 @@ impl PacketCompleteReportStartupHolder {
         let require_complete_preparations = matches!(phase, HolderStoragePhase::HostQuery);
         let live_original_scene = matches!(
             phase,
-            HolderStoragePhase::InitialLifecycle | HolderStoragePhase::Restoration(_)
+            HolderStoragePhase::InitialLifecycle
+                | HolderStoragePhase::Restoration(_)
+                | HolderStoragePhase::RuntimeConstruction(_)
         );
         held.authenticate_origin()
             .map_err(|_| RuntimeError::ForeignAuthority)?;
@@ -702,6 +724,12 @@ impl PacketCompleteReportStartupHolder {
                         Some(scope),
                     )?
                 }
+                HolderStoragePhase::RuntimeConstruction(scope) => capsule_data
+                    .retained_fresh_construction_holder_data(
+                        capsule,
+                        scope.activation(),
+                        counter.remaining(),
+                    )?,
                 _ => capsule_data
                     .retained_host_holder_precredit_data(capsule, counter.remaining())?,
             };
@@ -765,6 +793,14 @@ impl PacketCompleteReportStartupHolder {
                         )
                         .map_err(storage_failure)?;
                 }
+            } else if let HolderStoragePhase::RuntimeConstruction(scope) = phase {
+                if peer.registry.is_some()
+                    || peer.operational.is_some()
+                    || peer.supervisor.is_some()
+                {
+                    return Err(RuntimeError::OwnerUnavailable);
+                }
+                held.authenticate_fresh_preparation_destination_data(member, scope.activation())?;
             } else if require_complete_preparations
                 || peer.registry.is_some()
                 || (peer.ticket.get().is_some()

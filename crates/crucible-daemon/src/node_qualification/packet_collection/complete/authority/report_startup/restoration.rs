@@ -93,6 +93,9 @@ impl PacketCompleteReportStartupHolder {
         scope: &OriginalRestorationConstructionScope<'_>,
     ) -> Result<(), RuntimeError> {
         self.authenticate_native_origin_data()?;
+        if self.fresh_lifecycle.get().is_some() {
+            self.authenticate_completed_fresh_runtime_data()?;
+        }
         let inputs = scope.inputs();
         if self.original_scene_retired.get()
             || !std::ptr::eq(self.authority.as_ref(), authority)

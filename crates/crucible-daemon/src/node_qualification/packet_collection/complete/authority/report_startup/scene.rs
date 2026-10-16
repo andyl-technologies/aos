@@ -277,6 +277,7 @@ impl PacketCompleteReportStartupHolder {
         [
             std::mem::size_of::<Counter>() * 2,
             super::runtime::lifecycle_counter_scratch_data()?,
+            super::runtime::fresh_counter_scratch_data()?,
             std::mem::size_of::<std::cell::Ref<'_, OriginalSceneOwners>>(),
             std::mem::size_of::<std::cell::RefMut<'_, OriginalSceneOwners>>(),
             std::mem::size_of::<std::cell::Ref<'_, [Option<InstalledCnpConformanceRole>; 3]>>(),
@@ -309,6 +310,7 @@ impl PacketCompleteReportStartupHolder {
     ) -> Result<(), RuntimeError> {
         self.authenticate_native_origin_data()?;
         self.charge_fresh_lifecycle_storage_data(counter)?;
+        self.charge_fresh_runtime_storage_data(counter)?;
         if self.installed_host_owner.get().is_some() {
             // The installed actor's actual outer slot remains inline in its
             // catalog. Its input bank has moved here before this first walk;

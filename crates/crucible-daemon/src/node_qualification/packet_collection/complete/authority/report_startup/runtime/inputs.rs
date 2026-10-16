@@ -232,13 +232,8 @@ pub(super) fn construct(
 ) -> Result<(), RuntimeError> {
     // All corresponding roots are retained before any later validator callback.
     held.receiver_reader.share_original(member)?;
-    let scene = held
-        .original_scene
-        .get()
-        .ok_or(RuntimeError::OwnerUnavailable)?
-        .try_borrow()
-        .map_err(|_| RuntimeError::OwnerBusy)?;
-    scene.inputs.supervisor.share_original(member)?;
+    let scene = held.runtime_construction_owner_data()?;
+    scene.share_supervisor(member)?;
     drop(scene);
     let mut owners = held
         .runtime_owners
