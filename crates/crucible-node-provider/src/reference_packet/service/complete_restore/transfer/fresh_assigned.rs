@@ -7,8 +7,8 @@ use super::*;
 use crate::reference_packet::service::fresh_restore_allocation::{
     PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING, policy::validate_prepare_binding_value,
 };
-use std::mem::size_of;
 use serde_json::Value;
+use std::mem::size_of;
 
 /// Hashes selected Prepare with only its own proof removed.
 ///
@@ -27,7 +27,10 @@ pub fn complete_restore_fresh_prepare_assigned_request_digest(
     let RequestBody::Begin(begin) = decode_request(original.method, &original.body)? else {
         return Err(refused());
     };
-    if !matches!(begin.decoded_arguments()?, BeginArguments::PrepareRestore(_)) {
+    if !matches!(
+        begin.decoded_arguments()?,
+        BeginArguments::PrepareRestore(_)
+    ) {
         return Err(refused());
     }
     super::assigned_digest(
@@ -92,7 +95,9 @@ pub(crate) fn authenticate_fresh_prepare_shape(
         return Err(refused());
     }
     validate_prepare_binding_value(
-        original.extensions.get(PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
+        original
+            .extensions
+            .get(PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
             .ok_or_else(refused)?,
     )
 }

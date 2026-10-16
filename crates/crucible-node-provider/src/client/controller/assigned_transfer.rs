@@ -7,8 +7,7 @@
 use super::assigned_restore::{AssignedOriginalCompleteRestore, Phase};
 use super::*;
 use crate::reference_packet::service::fresh_restore_allocation::{
-    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
-    PacketNative5FreshRestoreAllocationSelection,
+    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING, PacketNative5FreshRestoreAllocationSelection,
     PacketNativeFreshRestoreAllocationPrepareBinding,
 };
 
@@ -249,15 +248,18 @@ impl CnpController {
             if phase != PacketCompleteRestoreTransferPhase::Prepare
                 || self.original_native5_fresh_restore_allocation_selection()?
                     != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
-                || !self.authority().envelope_extensions().contains(
-                    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
+                || !self
+                    .authority()
+                    .envelope_extensions()
+                    .contains(PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
             {
                 return Err(refused());
             }
             binding.validate_data()?;
             extensions.insert(
                 PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING.into(),
-                serde_json::to_value(binding).map_err(crucible_node_contract::ContractError::from)?,
+                serde_json::to_value(binding)
+                    .map_err(crucible_node_contract::ContractError::from)?,
             );
         }
         // This reset belongs only to creation of this previously absent phase.
@@ -468,10 +470,15 @@ impl PreparedOriginalCompleteRestoreTransfer<'_> {
         self.authenticate_original_emitter(emitter)?;
         proof.validate_data(self.phase)?;
         let selected_fresh = self.phase == PacketCompleteRestoreTransferPhase::Prepare
-            && self.state()?.original.extensions.contains_key(
-                PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING);
+            && self
+                .state()?
+                .original
+                .extensions
+                .contains_key(PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING);
         if selected_fresh {
-            if self.controller.original_native5_fresh_restore_allocation_selection()?
+            if self
+                .controller
+                .original_native5_fresh_restore_allocation_selection()?
                 != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
             {
                 return Err(refused());

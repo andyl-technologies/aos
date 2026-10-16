@@ -4,15 +4,15 @@ use super::*;
 
 #[path = "fresh_assigned.rs"]
 mod fresh;
+use crate::{
+    bodies::{BeginArguments, RequestBody, decode_request},
+    envelope::{Envelope, MessageKind, Method},
+};
 pub(crate) use fresh::authenticate_fresh_prepare_shape;
 pub use fresh::{
     complete_restore_fresh_prepare_assigned_request_digest,
     complete_restore_fresh_prepare_assigned_response_digest,
     complete_restore_fresh_prepare_digest_counter_scratch_data,
-};
-use crate::{
-    bodies::{BeginArguments, RequestBody, decode_request},
-    envelope::{Envelope, MessageKind, Method},
 };
 
 /// Hashes an actual assigned PrepareRestore request with only its proof removed.

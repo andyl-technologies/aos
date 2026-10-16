@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::reference_packet::service::fresh_restore_allocation::{
-    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
-    PacketNative5FreshRestoreAllocationSelection,
+    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING, PacketNative5FreshRestoreAllocationSelection,
 };
 
 use crate::reference_packet::service::complete_restore::*;
@@ -103,15 +102,20 @@ impl<S: ProviderStream> Connection<S> {
         };
         self.protocol_owner.ensure_current()?;
         self.authenticate_native5_source_codec()?;
-        let fresh_binding = original.extensions.contains_key(
-            PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
-        );
+        let fresh_binding = original
+            .extensions
+            .contains_key(PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING);
         if fresh_binding {
-            if self.native5_codec.as_ref().ok_or(ProviderError::Correlation("assigned fresh codec absent"))?
+            if self
+                .native5_codec
+                .as_ref()
+                .ok_or(ProviderError::Correlation("assigned fresh codec absent"))?
                 .fresh_restore_selection_data(&self.authority)?
                 != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
             {
-                return Err(ProviderError::Correlation("assigned fresh Prepare selection absent"));
+                return Err(ProviderError::Correlation(
+                    "assigned fresh Prepare selection absent",
+                ));
             }
             transfer::authenticate_fresh_prepare_shape(original, false)?;
         }

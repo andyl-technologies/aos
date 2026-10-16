@@ -33,8 +33,7 @@ pub(super) use prepare_target::authenticate_target;
 mod prepare_receipt;
 use crate::reference_packet::service::NativeRestoreServiceAllocationQuote;
 use crate::reference_packet::service::fresh_restore_allocation::{
-    PacketNative5FreshRestoreAllocationSelection,
-    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
+    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING, PacketNative5FreshRestoreAllocationSelection,
 };
 pub(crate) use input_admission::VerifiedCanonicalRestoreInputAdmission;
 
@@ -292,13 +291,16 @@ impl NativeAckBoot {
             assigned_prepare: Bytes::new(
                 if admitted.policy.fresh_restore_allocation_selection()
                     == Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
-            && original.extensions.contains_key(
-                PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
+                    && original
+                        .extensions
+                        .contains_key(PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
                 {
                     complete_restore_fresh_prepare_assigned_request_digest(original, maximum)?
                 } else {
                     complete_restore_transfer_assigned_request_digest(
-                        original, PacketCompleteRestoreTransferPhase::Prepare, maximum,
+                        original,
+                        PacketCompleteRestoreTransferPhase::Prepare,
+                        maximum,
                     )?
                 }
                 .to_vec(),

@@ -19,7 +19,8 @@ fn binding_projection_covers_actual_typed_binding_and_refuses_one_short() {
     let projected = binding_projection(&allocation, usize::MAX).unwrap();
     let mut observer = MetadataObserver::new();
     observer.observe(&binding).unwrap();
-    let actual = actual_serialization_storage_data(&binding, observer.finish(), usize::MAX).unwrap();
+    let actual =
+        actual_serialization_storage_data(&binding, observer.finish(), usize::MAX).unwrap();
     assert!(projected.requested_total().unwrap() >= actual.requested_total().unwrap());
 
     let exact = projected.requested_total().unwrap();
@@ -41,7 +42,11 @@ fn allocation_identity_commits_full_reference_including_media_and_extent() {
     changed.hash.domain.push('x');
     assert_ne!(identity, reference_identity(&changed));
     changed = original.clone();
-    let different = if changed.hash.digest.starts_with('0') { "1" } else { "0" };
+    let different = if changed.hash.digest.starts_with('0') {
+        "1"
+    } else {
+        "0"
+    };
     changed.hash.digest.replace_range(0..1, different);
     assert_ne!(identity, reference_identity(&changed));
 }
