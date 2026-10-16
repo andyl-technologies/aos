@@ -86,9 +86,10 @@ where
             );
         }
         if callback_enabled {
+            // The consumer was bound to this exact child when the fork transferred it.
             let summary = match &self.diagnostics {
-                Some(capture) => capture.control_diagnostics_summary(pid),
-                None => self.diagnostics_consumer.control_diagnostics_summary(pid),
+                Some(capture) => capture.control_diagnostics_summary(),
+                None => self.diagnostics_consumer.control_diagnostics_summary(),
             };
             // crucible-lint: allow direct-diagnostic -- bounded advisory rows expose an exact owned child capture without changing execution.
             let _report_result = writeln!(

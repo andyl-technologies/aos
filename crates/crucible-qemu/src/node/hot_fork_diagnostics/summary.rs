@@ -1,7 +1,19 @@
-//! Bounded advisory control rows from the exact child's private stderr capture.
+//! Bounded advisory control rows from the exact child's private stderr stream.
 //!
-//! Native log-file traces remain a separate artifact. A matching callback PID
-//! filters unrelated records but is not an execution or provenance receipt.
+//! [`ControlDiagnosticsFold`] consumes the stream incrementally as it is
+//! drained, so the summary never needs the complete stream. It keeps one
+//! partial row of at most 513 bytes, the accepted and rejected row counts, and
+//! the final 32 accepted rows of at most 512 bytes each. Native log-file traces
+//! remain a separate artifact. A matching callback PID filters unrelated
+//! records but is not an execution or provenance receipt.
+//!
+//! The rendered summary has this shape:
+//!
+//! ```text
+//! stream_bytes=<n> accepted_rows=<n> rejected_rows=<n> tail_rows=<n> omitted_rows=<n> incomplete_last_row=<bool>
+//! <accepted row>
+//! ...
+//! ```
 
 use std::collections::VecDeque;
 
@@ -20,68 +32,140 @@ mod native_stop_context;
 const MAXIMUM_ROWS: usize = 32;
 const MAXIMUM_ROW_BYTES: usize = 512;
 
-pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -> String {
-    let mut rows = VecDeque::with_capacity(MAXIMUM_ROWS);
-    let mut accepted = 0usize;
-    let mut rejected = 0usize;
-    let incomplete = !bytes.is_empty() && !bytes.ends_with(b"\n");
+/// Row prefixes that make a line a candidate control diagnostic.
+const CANDIDATE_PREFIXES: [&[u8]; 9] = [
+    b"CRUCIBLE-CHECKPOINT-STOP-V1 ",
+    b"CRUCIBLE-CONTROL-STAGE-V1 ",
+    b"CRUCIBLE-NATIVE-STOP-CONTEXT-V1 ",
+    b"CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ",
+    b"CRUCIBLE-CONTROL-CALLBACK-V1 ",
+    b"CRUCIBLE-CONTROL-LAST-V1 ",
+    b"CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ",
+    b"CRUCIBLE-CONTROL-PENDING-V1 ",
+    b"crucible_sim_rr_control_",
+];
 
-    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-        let Some(line) = line.strip_suffix(b"\n") else {
-            continue;
-        };
-        if !line.starts_with(b"CRUCIBLE-CHECKPOINT-STOP-V1 ")
-            && !line.starts_with(b"CRUCIBLE-CONTROL-STAGE-V1 ")
-            && !line.starts_with(b"CRUCIBLE-NATIVE-STOP-CONTEXT-V1 ")
-            && !line.starts_with(b"CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ")
-            && !line.starts_with(b"CRUCIBLE-CONTROL-CALLBACK-V1 ")
-            && !line.starts_with(b"CRUCIBLE-CONTROL-LAST-V1 ")
-            && !line.starts_with(b"CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ")
-            && !line.starts_with(b"CRUCIBLE-CONTROL-PENDING-V1 ")
-            && !line.starts_with(b"crucible_sim_rr_control_")
-        {
-            continue;
-        }
-        let row = std::str::from_utf8(line).ok().filter(|row| {
-            row.len() <= MAXIMUM_ROW_BYTES
-                && row
-                    .bytes()
-                    .all(|byte| byte == b' ' || byte.is_ascii_graphic())
-                && (checkpoint_stop::valid_row(row, child_process_id)
-                    || control_stage::valid_row(row, child_process_id)
-                    || native_stop_context::valid_row(row, child_process_id)
-                    || network_output_context::valid_row(row, child_process_id)
-                    || valid_callback_row(row, child_process_id)
-                    || valid_last_callback_row(row, child_process_id)
-                    || valid_settlement_row(row, child_process_id)
-                    || valid_pending_row(row, child_process_id)
-                    || crate::spawn::valid_rr_control_boundary_row(row)
-                    || (crate::spawn::valid_control_delivery_row(row)
-                        && row
-                            .split_ascii_whitespace()
-                            .next_back()
-                            .and_then(|field| field.strip_prefix("pid="))
-                            .and_then(|pid| pid.parse::<i64>().ok())
-                            == Some(i64::from(child_process_id))))
-        });
-        let Some(row) = row else {
-            rejected += 1;
-            continue;
-        };
-        accepted += 1;
-        if rows.len() == MAXIMUM_ROWS {
-            rows.pop_front();
-        }
-        rows.push_back(row.to_owned());
+/// Incremental row fold over one child's private diagnostics stream.
+///
+/// Rows are classified as they complete, so the child process identifier must
+/// be bound before the first drain. Rows completed while no identifier is
+/// bound can only match PID-free schemas; production binds the identifier
+/// when the successful fork transfers the consumer, before any child-owned
+/// drain.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct ControlDiagnosticsFold {
+    child_process_id: Option<u32>,
+    /// Leading bytes of the current incomplete row, capped one byte past the
+    /// row limit so an overlong candidate is still recognized and rejected.
+    pending: Vec<u8>,
+    accepted: usize,
+    rejected: usize,
+    rows: VecDeque<String>,
+}
+
+impl ControlDiagnosticsFold {
+    pub(super) fn bind_child_process_id(&mut self, child_process_id: u32) {
+        self.child_process_id = Some(child_process_id);
     }
 
-    format!(
-        "retained_bytes={} accepted_rows={accepted} rejected_rows={rejected} tail_rows={} omitted_rows={} incomplete_last_row={incomplete}\n{}",
-        bytes.len(),
-        rows.len(),
-        accepted - rows.len(),
-        rows.into_iter().collect::<Vec<_>>().join("\n")
-    )
+    /// Folds one drained chunk; rows may span chunk boundaries.
+    pub(super) fn ingest(&mut self, bytes: &[u8]) {
+        let mut remaining = bytes;
+        while let Some(newline) = remaining.iter().position(|byte| *byte == b'\n') {
+            self.extend_pending(&remaining[..newline]);
+            self.finish_row();
+            remaining = &remaining[newline + 1..];
+        }
+        self.extend_pending(remaining);
+    }
+
+    fn extend_pending(&mut self, bytes: &[u8]) {
+        let room = (MAXIMUM_ROW_BYTES + 1).saturating_sub(self.pending.len());
+        self.pending
+            .extend_from_slice(&bytes[..bytes.len().min(room)]);
+    }
+
+    fn finish_row(&mut self) {
+        let line = std::mem::take(&mut self.pending);
+        if !CANDIDATE_PREFIXES
+            .iter()
+            .any(|prefix| line.starts_with(prefix))
+        {
+            return;
+        }
+
+        // A capped line longer than the row limit fails the length check here.
+        let row = std::str::from_utf8(&line)
+            .ok()
+            .filter(|row| valid_row(row, self.child_process_id));
+        let Some(row) = row else {
+            self.rejected += 1;
+            return;
+        };
+        self.accepted += 1;
+        if self.rows.len() == MAXIMUM_ROWS {
+            self.rows.pop_front();
+        }
+        self.rows.push_back(row.to_owned());
+    }
+
+    /// Renders the summary for a stream of `stream_bytes` drained bytes.
+    pub(super) fn render(&self, stream_bytes: u64) -> String {
+        format!(
+            "stream_bytes={stream_bytes} accepted_rows={} rejected_rows={} tail_rows={} omitted_rows={} incomplete_last_row={}\n{}",
+            self.accepted,
+            self.rejected,
+            self.rows.len(),
+            self.accepted - self.rows.len(),
+            !self.pending.is_empty(),
+            self.rows
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    }
+}
+
+/// Applies the fixed row grammar; PID-bearing schemas need a bound child.
+fn valid_row(row: &str, child_process_id: Option<u32>) -> bool {
+    if row.len() > MAXIMUM_ROW_BYTES
+        || !row
+            .bytes()
+            .all(|byte| byte == b' ' || byte.is_ascii_graphic())
+    {
+        return false;
+    }
+    if crate::spawn::valid_rr_control_boundary_row(row) {
+        return true;
+    }
+    let Some(child_process_id) = child_process_id else {
+        return false;
+    };
+    checkpoint_stop::valid_row(row, child_process_id)
+        || control_stage::valid_row(row, child_process_id)
+        || native_stop_context::valid_row(row, child_process_id)
+        || network_output_context::valid_row(row, child_process_id)
+        || valid_callback_row(row, child_process_id)
+        || valid_last_callback_row(row, child_process_id)
+        || valid_settlement_row(row, child_process_id)
+        || valid_pending_row(row, child_process_id)
+        || (crate::spawn::valid_control_delivery_row(row)
+            && row
+                .split_ascii_whitespace()
+                .next_back()
+                .and_then(|field| field.strip_prefix("pid="))
+                .and_then(|pid| pid.parse::<i64>().ok())
+                == Some(i64::from(child_process_id)))
+}
+
+/// Summarizes one complete in-memory stream; the fold's test oracle.
+#[cfg(test)]
+pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -> String {
+    let mut fold = ControlDiagnosticsFold::default();
+    fold.bind_child_process_id(child_process_id);
+    fold.ingest(bytes);
+    fold.render(bytes.len() as u64)
 }
 
 fn value<'a>(fields: &mut std::str::SplitAsciiWhitespace<'a>, key: &str) -> Option<&'a str> {

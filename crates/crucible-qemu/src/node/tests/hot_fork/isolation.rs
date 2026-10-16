@@ -136,7 +136,7 @@ fn gate_hot_fork_isolation_keeps_two_resource_generations_physically_private()
     assert_eq!(recorded(&second_log), second_log_before);
     let first_drain = first_diagnostics.drain_available()?;
     assert_eq!(first_drain.bytes_read(), 26);
-    assert!(second_diagnostics.retained().is_empty());
+    assert!(second_diagnostics.retained_tail().is_empty());
     let second_drain = second_diagnostics.drain_available()?;
     assert_eq!(second_drain.bytes_read(), 26);
 

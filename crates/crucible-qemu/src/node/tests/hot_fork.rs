@@ -137,7 +137,7 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     assert_eq!(diagnostics.template_generation(), 1);
     let drain = diagnostics.drain_available()?;
     assert_eq!(drain.bytes_read(), 26);
-    assert_eq!(drain.total_retained(), 26);
+    assert_eq!(drain.stream_bytes(), 26);
     assert!(!drain.eof());
     assert!(continuation.node_state().has_no_native_console());
     assert!(node.native_console.is_none());
@@ -146,7 +146,7 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     node.release_hot_fork_plugin_endpoints()?;
     node.release_hot_fork_child_qmp()?;
     let capture = node.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
-    assert_eq!(capture.bytes(), b"scripted child diagnostics");
+    assert_eq!(capture.tail(), b"scripted child diagnostics");
     drop(node.release_hot_fork_private_ring_mapping()?);
     node.shutdown_child()?;
     Ok(())

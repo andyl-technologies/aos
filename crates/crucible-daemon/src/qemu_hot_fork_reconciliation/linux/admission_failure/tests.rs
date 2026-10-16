@@ -67,7 +67,7 @@ impl QemuHotForkReconciliationBackend for FailedQmpBackend {
 
     fn quarantine(&mut self) {
         assert_eq!(self.order.swap(2, Ordering::SeqCst), 1);
-        assert!(self.consumer.retained().starts_with(b"child failed:"));
+        assert!(self.consumer.retained_tail().starts_with(b"child failed:"));
     }
 
     fn terminate_child(&mut self) -> Result<(), Self::Error> {
@@ -167,7 +167,7 @@ fn failed_qmp_greeting_preserves_private_evidence_before_quarantine() -> TestRes
         .as_mut()
         .ok_or("failed owner lost its backend")?;
     assert_eq!(
-        backend.consumer.retained(),
+        backend.consumer.retained_tail(),
         b"child failed: step 11 detail 2 result -5\n"
     );
 
@@ -177,7 +177,7 @@ fn failed_qmp_greeting_preserves_private_evidence_before_quarantine() -> TestRes
     assert!(
         backend
             .consumer
-            .retained()
+            .retained_tail()
             .ends_with(b"still owned before quarantine\n")
     );
     Ok(())
@@ -193,7 +193,7 @@ fn admission_evidence_bounds_and_escapes_arbitrary_private_bytes() -> TestResult
     let report = capture(&mut consumer, modeled_basis(), &modeled_identity(), || {
         Ok(false)
     });
-    assert_eq!(report.retained_bytes, prefix.len() + 5);
+    assert_eq!(report.stderr_bytes, prefix.len() as u64 + 5);
     assert_eq!(report.stderr_tail.len(), MAX_REPORTED_STDERR_BYTES);
     let described = report.to_string();
     assert!(described.contains("omitted_prefix_bytes=5"));
@@ -205,23 +205,21 @@ fn admission_evidence_bounds_and_escapes_arbitrary_private_bytes() -> TestResult
 
 #[test]
 fn drain_failure_keeps_retained_prefix_and_original_admission_cause() -> TestResult {
-    let (mut consumer, mut writer) = private_stream()?;
+    let (reader, mut writer) = UnixStream::pair()?;
+    let mut reader_peer = reader.try_clone()?;
+    let mut consumer = QemuHotForkChildDiagnosticConsumer::from_unvalidated_test_stream(
+        reader,
+        crucible_qemu::QmpDescriptorName::new("modeled-branch-private-stderr")?,
+        0x1234,
+        4,
+    )?;
     writer.write_all(b"private prefix before read loss\n")?;
     consumer.drain_available()?;
-    // Reading after local shutdown deterministically yields EOF, not an I/O
-    // error. Capacity loss instead uses the real cumulative production guard.
-    let chunk = vec![b'x'; 64 * 1024];
-    while consumer.retained().len() + chunk.len()
-        <= crucible_qemu::MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES
-    {
-        writer.write_all(&chunk)?;
-        consumer.drain_available()?;
-    }
-    let remaining =
-        crucible_qemu::MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES - consumer.retained().len();
-    writer.write_all(&vec![b'y'; remaining])?;
-    consumer.drain_available()?;
-    writer.write_all(b"one byte beyond the capture ceiling")?;
+
+    // Closing a Unix stream peer that holds unread bytes resets the
+    // connection, so the next drain fails with a real read error.
+    reader_peer.write_all(b"unread by the modeled child")?;
+    drop(writer);
     let report = capture(&mut consumer, modeled_basis(), &modeled_identity(), || {
         Err(QemuVmRealizationError::ExecutorUnavailable {
             operation: "modeled interrupted pidfd observation",
@@ -230,14 +228,10 @@ fn drain_failure_keeps_retained_prefix_and_original_admission_cause() -> TestRes
     });
     assert!(report.drain.is_err());
     assert!(report.terminal_readiness.is_err());
+    assert_eq!(report.stderr_bytes, 32);
     assert_eq!(
-        report.retained_bytes,
-        crucible_qemu::MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES
-    );
-    assert!(
-        consumer
-            .retained()
-            .starts_with(b"private prefix before read loss\n")
+        consumer.retained_tail(),
+        b"private prefix before read loss\n"
     );
     let error = LinuxQemuHotForkReconciliationError::ChildAdmission {
         source: QemuNodeChannelError::new("original child QMP", "original broken pipe"),

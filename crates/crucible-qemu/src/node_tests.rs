@@ -1451,7 +1451,7 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
         diagnostic_capture.template_generation(),
         diagnostics.template_generation()
     );
-    assert_eq!(diagnostic_capture.bytes(), b"scripted child diagnostics");
+    assert_eq!(diagnostic_capture.tail(), b"scripted child diagnostics");
     node.release_hot_fork_private_ring_mapping()?;
     let calls = recorded(&log);
     assert!(calls.iter().any(|call| {

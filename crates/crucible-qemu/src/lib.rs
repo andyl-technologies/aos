@@ -195,7 +195,7 @@ pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHo
 pub(crate) use node::QemuQmpMachineControlChannel;
 #[cfg(target_os = "linux")]
 pub use node::{
-    MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuExactCheckpointCaptureAdmission,
+    MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES, QemuExactCheckpointCaptureAdmission,
     QemuExactCheckpointCaptureBoundary, QemuExactCheckpointCaptureOutputs,
     QemuExactCheckpointCaptureResult, QemuHotForkChildDiagnosticCapture,
     QemuHotForkChildDiagnosticConsumer, QemuHotForkChildDiagnosticDrain,

@@ -20,7 +20,7 @@ pub struct ChildAdmissionFailureReport {
     descriptor_name: crucible_qemu::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
-    retained_bytes: usize,
+    stderr_bytes: u64,
     stderr_tail: Vec<u8>,
     drain: Result<crucible_qemu::QemuHotForkChildDiagnosticDrain, BoundedErrorText>,
     terminal_readiness: Result<bool, BoundedErrorText>,
@@ -33,7 +33,7 @@ impl fmt::Display for ChildAdmissionFailureReport {
             "source_pid={} child_pid={} process_start_ticks={} request={:?} \
              descriptor={:?} socket_cookie={} template_generation={} \
              pidfd_terminal_readiness={:?} exit_code=unobserved drain={:?} \
-             retained_bytes={} omitted_prefix_bytes={} executable=\"",
+             stderr_bytes={} omitted_prefix_bytes={} executable=\"",
             self.basis.source_process_id(),
             self.basis.child_process_id(),
             self.identity.start_time_ticks,
@@ -43,8 +43,9 @@ impl fmt::Display for ChildAdmissionFailureReport {
             self.template_generation,
             self.terminal_readiness,
             self.drain,
-            self.retained_bytes,
-            self.retained_bytes - self.stderr_tail.len(),
+            self.stderr_bytes,
+            self.stderr_bytes
+                .saturating_sub(u64::try_from(self.stderr_tail.len()).unwrap_or(u64::MAX)),
         )?;
         let executable = self.identity.executable.as_os_str().as_bytes();
         write_escaped(
@@ -107,10 +108,10 @@ pub(super) fn capture(
     identity: &QemuProcessIdentity,
     observe_terminal: impl FnOnce() -> Result<bool, QemuVmRealizationError>,
 ) -> ChildAdmissionFailureReport {
-    // A drain error remains visible while every prefix byte already retained
-    // stays owned by the consumer. No finalization or EOF wait is attempted.
+    // A drain error remains visible while the bytes already retained stay
+    // owned by the consumer. No finalization or EOF wait is attempted.
     let drain = consumer.drain_available().map_err(bounded_error);
-    let bytes = consumer.retained();
+    let bytes = consumer.retained_tail();
     let tail_start = bytes.len().saturating_sub(MAX_REPORTED_STDERR_BYTES);
     ChildAdmissionFailureReport {
         basis,
@@ -118,7 +119,7 @@ pub(super) fn capture(
         descriptor_name: consumer.descriptor_name().clone(),
         socket_cookie: consumer.socket_cookie(),
         template_generation: consumer.template_generation(),
-        retained_bytes: bytes.len(),
+        stderr_bytes: consumer.stream_bytes(),
         stderr_tail: bytes[tail_start..].to_vec(),
         drain,
         terminal_readiness: observe_terminal().map_err(bounded_error),

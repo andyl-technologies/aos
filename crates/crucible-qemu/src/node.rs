@@ -119,7 +119,7 @@ pub use hot_fork_child_qmp::{
 use hot_fork_diagnostics::QemuHotForkChildDiagnosticStage;
 #[cfg(target_os = "linux")]
 pub use hot_fork_diagnostics::{
-    MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuHotForkChildDiagnosticCapture,
+    MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES, QemuHotForkChildDiagnosticCapture,
     QemuHotForkChildDiagnosticConsumer, QemuHotForkChildDiagnosticDrain,
     QemuHotForkChildDiagnosticStageError, QemuHotForkChildDiagnosticStageProof,
     QemuHotForkChildDiagnosticStageState,

@@ -513,7 +513,7 @@ impl QemuNode {
                 }
             })?;
         let diagnostics = self
-            .take_hot_fork_child_diagnostic_consumer()
+            .take_hot_fork_child_diagnostic_consumer(child_process_id)
             .map_err(|source| {
                 self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
                 QemuHotForkLaunchError::EndpointTransfer {
