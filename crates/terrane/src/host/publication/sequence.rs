@@ -164,6 +164,28 @@ pub trait PublicationKernel {
     /// Returns missing seal, invalid measurement or kernel failures.
     fn measure(&mut self, handle: &Self::Handle) -> io::Result<VerityBinding>;
 
+    /// Retains a read-only private inode before canonical publication begins.
+    ///
+    /// # Errors
+    /// Returns unsupported retention or actual descriptor-duplication errors.
+    fn retain_staged(&mut self, _staged: &Self::Staged) -> io::Result<Self::Handle> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "staged descriptor retention unavailable",
+        ))
+    }
+
+    /// Duplicates an actual read-only canonical handle before adoption effects.
+    ///
+    /// # Errors
+    /// Returns unsupported retention or actual descriptor-duplication errors.
+    fn duplicate_handle(&mut self, _handle: &Self::Handle) -> io::Result<Self::Handle> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "canonical descriptor retention unavailable",
+        ))
+    }
+
     /// Synchronizes the retained canonical inode during adoption.
     ///
     /// # Errors
@@ -213,6 +235,60 @@ impl<H> PublishedObject<H> {
     }
 }
 
+/// Owns a verified result and its descriptor retained before publication effects.
+pub struct RetainedPublishedObject<H> {
+    object: PublishedObject<H>,
+    retained: H,
+}
+
+impl<H> RetainedPublishedObject<H> {
+    /// Transfers both actual handles without further allocation or native I/O.
+    pub fn into_parts(self) -> (PublishedObject<H>, H) {
+        (self.object, self.retained)
+    }
+}
+
+// Completion policies are private fixed operations, never caller callbacks.
+// Their only fallible work precedes canonical insertion or adoption state writes.
+trait Completion<K: PublicationKernel> {
+    type Prepared;
+    type Output;
+    fn staged(kernel: &mut K, staged: &K::Staged) -> io::Result<Self::Prepared>;
+    fn existing(kernel: &mut K, handle: &K::Handle) -> io::Result<Self::Prepared>;
+    fn finish(object: PublishedObject<K::Handle>, prepared: Self::Prepared) -> Self::Output;
+}
+
+struct Direct;
+struct Retained;
+
+impl<K: PublicationKernel> Completion<K> for Direct {
+    type Prepared = ();
+    type Output = PublishedObject<K::Handle>;
+    fn staged(_: &mut K, _: &K::Staged) -> io::Result<()> {
+        Ok(())
+    }
+    fn existing(_: &mut K, _: &K::Handle) -> io::Result<()> {
+        Ok(())
+    }
+    fn finish(object: PublishedObject<K::Handle>, _: ()) -> Self::Output {
+        object
+    }
+}
+
+impl<K: PublicationKernel> Completion<K> for Retained {
+    type Prepared = K::Handle;
+    type Output = RetainedPublishedObject<K::Handle>;
+    fn staged(kernel: &mut K, staged: &K::Staged) -> io::Result<Self::Prepared> {
+        kernel.retain_staged(staged)
+    }
+    fn existing(kernel: &mut K, handle: &K::Handle) -> io::Result<Self::Prepared> {
+        kernel.duplicate_handle(handle)
+    }
+    fn finish(object: PublishedObject<K::Handle>, retained: Self::Prepared) -> Self::Output {
+        RetainedPublishedObject { object, retained }
+    }
+}
+
 /// Coordinates a sole-writer adapter and durable binding state.
 pub struct Publisher<K, S> {
     kernel: K,
@@ -238,15 +314,37 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
         claim: &PublicationClaim,
         source: K::Source,
     ) -> io::Result<PublishedObject<K::Handle>> {
+        self.publish_as::<Direct>(claim, source).await
+    }
+
+    /// Publishes while retaining actual read-only custody before canonical insertion.
+    ///
+    /// # Errors
+    /// Returns verification, retention, publication or durability failures. Failed
+    /// prepublication retention cannot create a canonical name.
+    pub async fn publish_retained(
+        &mut self,
+        claim: &PublicationClaim,
+        source: K::Source,
+    ) -> io::Result<RetainedPublishedObject<K::Handle>> {
+        self.publish_as::<Retained>(claim, source).await
+    }
+
+    async fn publish_as<C: Completion<K>>(
+        &mut self,
+        claim: &PublicationClaim,
+        source: K::Source,
+    ) -> io::Result<C::Output> {
         let mut staged = self.kernel.stage(claim, source)?;
         claim.verify_reader(&mut staged)?;
 
         self.kernel.close_writers(&mut staged)?;
         let binding = self.kernel.seal(&staged)?;
         self.kernel.sync_staged(&staged)?;
+        let prepared = C::staged(&mut self.kernel, &staged)?;
 
         if !self.kernel.insert(claim, &staged)? {
-            return self.adopt(claim).await;
+            return self.adopt_as::<C>(claim).await;
         }
 
         let finish = async {
@@ -261,7 +359,7 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
                 ));
             }
 
-            Ok(PublishedObject { handle, binding })
+            Ok(C::finish(PublishedObject { handle, binding }, prepared))
         }
         .await;
 
@@ -284,6 +382,24 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
         &mut self,
         claim: &PublicationClaim,
     ) -> io::Result<PublishedObject<K::Handle>> {
+        self.adopt_as::<Direct>(claim).await
+    }
+
+    /// Adopts while retaining actual read-only custody before durable-state effects.
+    ///
+    /// # Errors
+    /// Returns unsafe inode, verification, retention or durability failures.
+    pub async fn adopt_retained(
+        &mut self,
+        claim: &PublicationClaim,
+    ) -> io::Result<RetainedPublishedObject<K::Handle>> {
+        self.adopt_as::<Retained>(claim).await
+    }
+
+    async fn adopt_as<C: Completion<K>>(
+        &mut self,
+        claim: &PublicationClaim,
+    ) -> io::Result<C::Output> {
         let mut handle = self.kernel.open(claim)?;
         let binding = match self.kernel.measure(&handle) {
             Ok(binding) => binding,
@@ -305,11 +421,12 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
         }
 
         handle.seek(SeekFrom::Start(0))?;
+        let prepared = C::existing(&mut self.kernel, &handle)?;
         self.kernel.sync_handle(&handle)?;
         self.kernel.sync_parent(claim)?;
         self.state.record(claim, &binding).await?;
 
-        Ok(PublishedObject { handle, binding })
+        Ok(C::finish(PublishedObject { handle, binding }, prepared))
     }
 
     fn reject_adoption<T>(

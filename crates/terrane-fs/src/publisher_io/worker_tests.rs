@@ -688,7 +688,11 @@ fn failed_second_unlink_recovers_orphan_index_without_pack_authority(
         "failure retains publisher custody"
     );
     fs::remove_dir(&index_pending).unwrap();
-    fs::hard_link(&survivor, &index_pending).unwrap();
+    // The supervisor supplied the retained real index before confinement.
+    // Moving that existing link needs directory authority, not CAP_FOWNER or
+    // a forbidden non-owner hardlink operation in the publisher process.
+    fs::rename(&survivor, &index_pending).unwrap();
+    File::open(root).unwrap().sync_all().unwrap();
     File::open(&paths[2]).unwrap().sync_all().unwrap();
     drop(worker);
     owner.join().unwrap();
@@ -743,7 +747,7 @@ fn failed_second_unlink_recovers_orphan_index_without_pack_authority(
     assert!(!pack.exists() && !index.exists() && !index_pending.exists());
     drop(worker);
     owner.join().unwrap();
-    fs::remove_file(survivor).unwrap();
+    assert!(!survivor.exists());
 }
 
 fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion(

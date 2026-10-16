@@ -1,7 +1,10 @@
 //! Runs explicit non-production native publication fixtures in a fresh process.
 //!
 //! The guest supervisor provisions fixed disk-backed roots and encoded inputs
-//! before starting UID 841/GID 845 with empty capabilities. This executable
+//! before starting the selector's fixed test identity with empty capabilities.
+//! Publication uses UID 841/GID 845; transport uses its separate 6100x identities.
+//! These fixtures do not establish deployment-role or quota-admission conformance.
+//! This executable
 //! installs the actual confinement policy before creating runtimes, threads or
 //! mutable publisher handles. A selector is never a content-validity receipt.
 
@@ -86,24 +89,50 @@ fn run() -> io::Result<()> {
         for selector in SELECTORS {
             println!("{selector}");
         }
+        for selector in terrane_fs::publisher_local::native_fixture_selectors() {
+            println!("transport:{selector}");
+        }
         return Ok(());
     }
-    if !SELECTORS.contains(&selector.as_str()) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "unknown publication fixture",
-        ));
-    }
-    if rustix::process::geteuid().as_raw() != 841 || rustix::process::getegid().as_raw() != 845 {
+    let transport = selector.strip_prefix("transport:");
+    let (expected_uid, expected_gid) = match transport {
+        Some("native-publisher") => (61002, 61002),
+        Some("native-client") => (61001, 61001),
+        Some(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown transport fixture",
+            ));
+        }
+        None if SELECTORS.contains(&selector.as_str()) => (841, 845),
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown publication fixture",
+            ));
+        }
+    };
+    let groups = rustix::process::getgroups()?;
+    let groups_match = if transport.is_some() {
+        groups.len() == 1 && groups[0].as_raw() == 61001
+    } else {
+        groups.is_empty()
+    };
+    if rustix::process::geteuid().as_raw() != expected_uid
+        || rustix::process::getegid().as_raw() != expected_gid
+        || !groups_match
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "native fixture requires supervised publisher UID 841/GID 845",
+            "native fixture requires its fixed supervised credentials",
         ));
     }
 
     let confinement = Arc::new(terrane_fs::quota_confinement::install()?);
     confinement.check_current()?;
-    if selector == SELECTORS[0] {
+    if let Some(transport) = transport {
+        terrane_fs::publisher_local::run_native_fixture(transport, confinement)?;
+    } else if selector == SELECTORS[0] {
         kernel_fixture::run(confinement)?;
     } else {
         terrane_fs::publisher_io::run_native_fixture(selector, confinement)?;

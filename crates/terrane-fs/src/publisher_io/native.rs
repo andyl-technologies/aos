@@ -431,6 +431,43 @@ impl NativePublisher {
         child_directory(&self.sealed, &name(claim)[..2])
     }
 
+    pub(super) fn existing_canonical_identity(
+        &self,
+        claim: &PublicationClaim,
+    ) -> io::Result<Option<(u64, u64)>> {
+        self.check_claim(claim)?;
+        let key = name(claim);
+        let shard = match fs::openat(
+            &self.sealed,
+            &key[..2],
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(shard) => File::from(shard),
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        check_directory(&shard)?;
+        if shard.metadata()?.dev() != self.sealed.metadata()?.dev() {
+            return Err(invalid("canonical retention shard changed filesystem"));
+        }
+        let file = match fs::openat(
+            &shard,
+            key.as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(file) => File::from(file),
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.dev() != self.sealed.metadata()?.dev() {
+            return Err(invalid("unsafe canonical retention preflight inode"));
+        }
+        Ok(Some((metadata.dev(), metadata.ino())))
+    }
+
     /// Renames a sealed inode into bounded two-phase deletion storage.
     ///
     /// The caller must re-extract live chunk ranges and durably record the
@@ -795,6 +832,16 @@ impl PublicationKernel for NativePublisher {
     fn measure(&mut self, handle: &File) -> io::Result<VerityBinding> {
         self.confinement.check_current()?;
         verity::measure(handle)
+    }
+
+    fn retain_staged(&mut self, staged: &StagedFile) -> io::Result<File> {
+        self.confinement.check_current()?;
+        staged.reader.try_clone()
+    }
+
+    fn duplicate_handle(&mut self, handle: &File) -> io::Result<File> {
+        self.confinement.check_current()?;
+        handle.try_clone()
     }
 
     fn sync_handle(&mut self, handle: &File) -> io::Result<()> {

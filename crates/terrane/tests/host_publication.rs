@@ -146,6 +146,16 @@ impl PublicationKernel for Kernel {
         Ok(binding())
     }
 
+    fn retain_staged(&mut self, staged: &Self::Staged) -> io::Result<Self::Handle> {
+        self.event("retain-staged")?;
+        Ok(staged.clone())
+    }
+
+    fn duplicate_handle(&mut self, handle: &Self::Handle) -> io::Result<Self::Handle> {
+        self.event("retain-existing")?;
+        Ok(handle.clone())
+    }
+
     fn sync_handle(&mut self, _: &Self::Handle) -> io::Result<()> {
         self.event("adopt-file-sync")
     }
@@ -342,4 +352,29 @@ fn manifest_and_claim_domain_are_checked_before_plaintext() {
     assert!(PublicationClaim::new("public".into(), recipe, &profile).is_err());
     let (recipe, profile) = manifest_recipe(&bytes, &[40]);
     assert!(PublicationClaim::new("unknown".into(), recipe, &profile).is_err());
+}
+
+#[test]
+fn retained_descriptor_failure_precedes_canonical_publication() {
+    let (mut publisher, events) = publisher(Some("retain-staged"), false);
+    assert!(run(publisher.publish_retained(&claim(b"hello"), b"hello".to_vec())).is_err());
+    assert!(!events.lock().unwrap().contains(&"insert"));
+    assert!(!events.lock().unwrap().contains(&"state"));
+    assert!(!publisher.into_parts().0.exists);
+}
+
+#[test]
+fn retained_descriptor_failure_precedes_adoption_state_effects() {
+    let (publisher, events) = publisher(Some("retain-existing"), false);
+    let (mut kernel, state) = publisher.into_parts();
+    kernel.bytes = b"hello".to_vec();
+    kernel.exists = true;
+    kernel.sealed = true;
+    let mut publisher = Publisher::new(kernel, state);
+
+    assert!(run(publisher.adopt_retained(&claim(b"hello"))).is_err());
+    assert!(!events.lock().unwrap().contains(&"state"));
+    let (kernel, state) = publisher.into_parts();
+    assert!(kernel.exists);
+    assert!(state.recorded.is_none());
 }
