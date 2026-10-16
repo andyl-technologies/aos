@@ -182,7 +182,7 @@ impl CacheState {
             .read_range(
                 &path,
                 ByteRange {
-                    offset: 0,
+                    start: 0,
                     length: metadata.len(),
                 },
             )
