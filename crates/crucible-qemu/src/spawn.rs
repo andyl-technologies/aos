@@ -82,6 +82,9 @@ pub struct QemuChildProcessContract {
     /// Attempt-wide sticky cancellation that mints per-node eventfds; absent
     /// only for unvalidated test contracts.
     cancellation_fanout: Option<Arc<crate::cancellation_fanout::QemuCancellationFanout>>,
+    /// Fan-out slot of a concurrent-node eventfd minted for this contract.
+    /// Duplicates never inherit it, so exactly one owner can retire the slot.
+    cancellation_membership: Option<crate::cancellation_fanout::QemuCancellationFanoutMembership>,
     maximum_vcpus: u32,
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
@@ -280,6 +283,7 @@ impl QemuChildProcessContract {
             cgroup_procs,
             cancellation_event,
             cancellation_fanout: self.cancellation_fanout.clone(),
+            cancellation_membership: None,
             maximum_vcpus: self.maximum_vcpus,
             maximum_resident_bytes: self.maximum_resident_bytes,
             maximum_writable_bytes: self.maximum_writable_bytes,
@@ -299,6 +303,11 @@ impl QemuChildProcessContract {
     /// several QEMU processes that each validate it. Unvalidated test
     /// contracts have no attempt cancellation and keep a shared duplicate.
     ///
+    /// The attempt retains the minted eventfd so that its cancellation keeps
+    /// reaching the node until the node's owner calls
+    /// [`Self::retire_concurrent_node_cancellation_after_reap`]. An attempt
+    /// may hold only a bounded number of such eventfds at once.
+    ///
     /// # Errors
     ///
     /// Returns [`QemuSpawnError::Io`] when a descriptor cannot be duplicated
@@ -306,12 +315,29 @@ impl QemuChildProcessContract {
     pub fn try_clone_for_concurrent_node(&self) -> Result<Self, QemuSpawnError> {
         let mut contract = self.try_clone_for_attempt_generation()?;
         if let Some(fanout) = &self.cancellation_fanout {
-            contract.cancellation_event = fanout.mint().map_err(|source| QemuSpawnError::Io {
+            let (event, membership) = fanout.mint().map_err(|source| QemuSpawnError::Io {
                 operation: "mint concurrent node cancellation eventfd",
                 source,
             })?;
+            contract.cancellation_event = event;
+            contract.cancellation_membership = Some(membership);
         }
         Ok(contract)
+    }
+
+    /// Retires this concurrent node's cancellation eventfd from the attempt.
+    ///
+    /// Call this only after every QEMU process launched with this contract,
+    /// including a hot-fork child that received its eventfd, has been reaped;
+    /// the attempt stops signaling the eventfd afterwards. Dropping a
+    /// concurrent-node contract without retiring it keeps the eventfd
+    /// signaled for the rest of the attempt and occupies one of its bounded
+    /// node-eventfd slots. Contracts not produced by
+    /// [`Self::try_clone_for_concurrent_node`] have nothing to retire.
+    pub fn retire_concurrent_node_cancellation_after_reap(self) {
+        if let Some(membership) = self.cancellation_membership {
+            membership.retire_after_reap();
+        }
     }
 
     /// Derives a contract for a newly authenticated repository checkpoint.
@@ -364,6 +390,7 @@ impl QemuChildProcessContract {
             cgroup_procs,
             cancellation_event,
             cancellation_fanout: None,
+            cancellation_membership: None,
             maximum_vcpus: cgroup_limits.maximum_vcpus(),
             maximum_resident_bytes: cgroup_limits.maximum_resident_bytes(),
             maximum_writable_bytes,
@@ -470,6 +497,7 @@ impl QemuChildProcessContract {
             cgroup_procs,
             cancellation_event,
             cancellation_fanout: None,
+            cancellation_membership: None,
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,
@@ -500,6 +528,7 @@ impl QemuChildProcessContract {
             cgroup_procs,
             cancellation_event,
             cancellation_fanout: None,
+            cancellation_membership: None,
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,

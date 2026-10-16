@@ -42,9 +42,9 @@ fn eventfd_id(event: BorrowedFd<'_>) -> String {
 fn members_are_distinct_nonblocking_eventfds_signaled_together() {
     use std::os::fd::AsFd as _;
 
-    let fanout = QemuCancellationFanout::default();
-    let first = fanout.mint().expect("first member");
-    let second = fanout.mint().expect("second member");
+    let fanout = Arc::new(QemuCancellationFanout::default());
+    let first = fanout.mint().expect("first member").0;
+    let second = fanout.mint().expect("second member").0;
 
     assert!(nonblocking(first.as_fd()) && nonblocking(second.as_fd()));
     assert_ne!(eventfd_id(first.as_fd()), eventfd_id(second.as_fd()));
@@ -59,10 +59,10 @@ fn members_are_distinct_nonblocking_eventfds_signaled_together() {
 fn members_minted_after_cancellation_start_readable() {
     use std::os::fd::AsFd as _;
 
-    let fanout = QemuCancellationFanout::default();
+    let fanout = Arc::new(QemuCancellationFanout::default());
     fanout.signal().expect("signal empty fan-out");
 
-    let late = fanout.mint().expect("late member");
+    let late = fanout.mint().expect("late member").0;
 
     assert!(readable(late.as_fd()));
 }
@@ -71,9 +71,9 @@ fn members_minted_after_cancellation_start_readable() {
 fn one_member_flag_change_does_not_reach_another_member() {
     use std::os::fd::AsFd as _;
 
-    let fanout = QemuCancellationFanout::default();
-    let first = fanout.mint().expect("first member");
-    let second = fanout.mint().expect("second member");
+    let fanout = Arc::new(QemuCancellationFanout::default());
+    let first = fanout.mint().expect("first member").0;
+    let second = fanout.mint().expect("second member").0;
 
     // Model QEMU's SCM_RIGHTS receive, which clears O_NONBLOCK on the open
     // file description of the descriptor it received.
@@ -88,14 +88,65 @@ fn one_member_flag_change_does_not_reach_another_member() {
 }
 
 #[test]
-fn minting_fails_closed_at_the_member_limit() {
-    let fanout = QemuCancellationFanout::default();
-    for _ in 0..MAX_CANCELLATION_FANOUT_MEMBERS {
+fn retired_members_stop_receiving_cancellation_while_live_members_still_do() {
+    use std::os::fd::AsFd as _;
+
+    let fanout = Arc::new(QemuCancellationFanout::default());
+    let (retired, retired_membership) = fanout.mint().expect("retired member");
+    let (live, _live_membership) = fanout.mint().expect("live member");
+
+    retired_membership.retire_after_reap();
+    fanout.signal().expect("signal members");
+
+    assert!(!readable(retired.as_fd()));
+    assert!(readable(live.as_fd()));
+}
+
+#[test]
+fn dropped_unretired_members_stay_signaled() {
+    use std::os::fd::AsFd as _;
+
+    let fanout = Arc::new(QemuCancellationFanout::default());
+    let (event, membership) = fanout.mint().expect("member");
+
+    drop(membership);
+    fanout.signal().expect("signal members");
+
+    assert!(readable(event.as_fd()));
+}
+
+#[test]
+fn minting_fails_closed_at_the_live_member_limit() {
+    let fanout = Arc::new(QemuCancellationFanout::default());
+    let mut memberships = Vec::new();
+    for _ in 0..MAX_LIVE_CANCELLATION_FANOUT_MEMBERS {
         // Only the fan-out's retained duplicate stays open.
-        drop(fanout.mint().expect("member within the limit"));
+        let (event, membership) = fanout.mint().expect("member within the limit");
+        drop(event);
+        memberships.push(membership);
     }
 
-    let exhausted = fanout.mint().expect_err("member limit");
-
+    let exhausted = fanout.mint().expect_err("live member limit");
     assert_eq!(exhausted.kind(), std::io::ErrorKind::OutOfMemory);
+
+    memberships
+        .pop()
+        .expect("one live membership")
+        .retire_after_reap();
+    drop(fanout.mint().expect("member after one retirement"));
+}
+
+#[test]
+fn retired_slots_let_an_attempt_mint_beyond_the_live_member_limit() {
+    let fanout = Arc::new(QemuCancellationFanout::default());
+
+    for _ in 0..MAX_LIVE_CANCELLATION_FANOUT_MEMBERS * 4 {
+        let (event, membership) = fanout.mint().expect("member of a reaped node");
+        drop(event);
+        membership.retire_after_reap();
+    }
+
+    let state = fanout.state.lock().expect("fan-out state");
+    assert_eq!(state.live_members(), 0);
+    assert_eq!(state.slots.len(), 1);
 }

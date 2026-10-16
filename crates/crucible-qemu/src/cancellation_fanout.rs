@@ -7,19 +7,27 @@
 //! receive can clear the flag while another validates its staged
 //! nonblocking-eventfd contract. Each concurrent node therefore receives a
 //! distinct eventfd minted here, and the attempt's terminal signal writes
-//! every minted eventfd after the primary one.
+//! every live minted eventfd after the primary one.
+//!
+//! Every mint also returns a [`QemuCancellationFanoutMembership`]. The fan-out
+//! keeps its own duplicate of the minted eventfd in a slot until that
+//! membership is explicitly retired after the QEMU process that received the
+//! eventfd has been reaped. Retired slots are reused, so the member ceiling
+//! bounds concurrently live node processes rather than every node a long
+//! attempt has ever launched.
 
 use std::io;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-/// Most per-node eventfds one attempt cgroup may mint.
+/// Most simultaneously retained per-node eventfds in one attempt cgroup.
 ///
-/// The fan-out retains one descriptor per minted eventfd for the attempt's
-/// lifetime, because a QEMU process may still poll it after the host contract
-/// that minted it is gone. The bound keeps repeated world assembly within one
-/// attempt from exhausting the supervisor's descriptor table.
-const MAX_CANCELLATION_FANOUT_MEMBERS: usize = 256;
+/// A slot stays retained from mint until its membership is retired after the
+/// owning QEMU process is reaped, because that process may still poll the
+/// eventfd after the host contract that minted it is gone. The bound counts
+/// live node processes and keeps the supervisor's descriptor table finite even
+/// when a retirement is missed.
+const MAX_LIVE_CANCELLATION_FANOUT_MEMBERS: usize = 256;
 
 /// Sticky cancellation state shared by every duplicate of one attempt cgroup.
 #[derive(Debug, Default)]
@@ -30,28 +38,83 @@ pub(crate) struct QemuCancellationFanout {
 #[derive(Debug, Default)]
 struct FanoutState {
     signaled: bool,
-    members: Vec<OwnedFd>,
+    /// Retained member duplicates; `None` marks a retired, reusable slot.
+    slots: Vec<Option<OwnedFd>>,
+    /// Indices of retired slots, reused before the slot table grows.
+    free_slots: Vec<usize>,
+}
+
+impl FanoutState {
+    fn live_members(&self) -> usize {
+        self.slots.len() - self.free_slots.len()
+    }
+
+    /// Stores one retained duplicate, preferring a retired slot.
+    fn occupy_slot(&mut self, retained: OwnedFd) -> usize {
+        if let Some(slot) = self.free_slots.pop()
+            && let Some(free) = self.slots.get_mut(slot)
+        {
+            *free = Some(retained);
+            return slot;
+        }
+        self.slots.push(Some(retained));
+        self.slots.len() - 1
+    }
+}
+
+/// Linear claim on one retained fan-out slot.
+///
+/// Dropping a membership without [`Self::retire_after_reap`] keeps its eventfd
+/// retained and signaled for the rest of the attempt. A missed retirement
+/// therefore costs one descriptor, never a lost cancellation.
+#[derive(Debug)]
+#[must_use = "retire the cancellation membership after its QEMU process is reaped"]
+pub(crate) struct QemuCancellationFanoutMembership {
+    fanout: Arc<QemuCancellationFanout>,
+    slot: usize,
+}
+
+impl QemuCancellationFanoutMembership {
+    /// Releases the fan-out's duplicate once no process can poll the eventfd.
+    ///
+    /// The caller must already have reaped every QEMU process that received
+    /// this membership's eventfd. A poisoned fan-out keeps the slot retained,
+    /// which preserves the sticky-cancellation postcondition.
+    pub(crate) fn retire_after_reap(self) {
+        let Ok(mut state) = self.fanout.state.lock() else {
+            return;
+        };
+        if let Some(member) = state.slots.get_mut(self.slot)
+            && member.take().is_some()
+        {
+            state.free_slots.push(self.slot);
+        }
+    }
 }
 
 impl QemuCancellationFanout {
     /// Mints one nonblocking eventfd that observes this attempt's cancellation.
     ///
     /// An eventfd minted after cancellation is readable before it is returned,
-    /// so a late child contract cannot miss the sticky terminal event.
+    /// so a late child contract cannot miss the sticky terminal event. The
+    /// returned membership keeps the fan-out's duplicate until it is retired.
     ///
     /// # Errors
     ///
-    /// Returns [`io::Error`] when the fan-out is exhausted or poisoned, or the
-    /// eventfd cannot be created, retained, or signaled.
-    pub(crate) fn mint(&self) -> io::Result<OwnedFd> {
+    /// Returns [`io::Error`] when the live-member ceiling is reached, the
+    /// fan-out is poisoned, or the eventfd cannot be created, retained, or
+    /// signaled.
+    pub(crate) fn mint(
+        self: &Arc<Self>,
+    ) -> io::Result<(OwnedFd, QemuCancellationFanoutMembership)> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| io::Error::other("cancellation fan-out is poisoned"))?;
-        if state.members.len() >= MAX_CANCELLATION_FANOUT_MEMBERS {
+        if state.live_members() >= MAX_LIVE_CANCELLATION_FANOUT_MEMBERS {
             return Err(io::Error::new(
                 io::ErrorKind::OutOfMemory,
-                "cancellation fan-out member limit is exhausted",
+                "cancellation fan-out live member limit is exhausted",
             ));
         }
 
@@ -59,11 +122,16 @@ impl QemuCancellationFanout {
         if state.signaled {
             write_eventfd(event.as_raw_fd(), 1)?;
         }
-        state.members.push(event.try_clone()?);
-        Ok(event)
+        let slot = state.occupy_slot(event.try_clone()?);
+
+        let membership = QemuCancellationFanoutMembership {
+            fanout: Arc::clone(self),
+            slot,
+        };
+        Ok((event, membership))
     }
 
-    /// Makes every minted and future member eventfd readable.
+    /// Makes every live and future member eventfd readable.
     ///
     /// Every member is attempted even after a failure, and the first failure
     /// is returned.
@@ -80,7 +148,7 @@ impl QemuCancellationFanout {
         state.signaled = true;
 
         let mut first_failure = None;
-        for member in &state.members {
+        for member in state.slots.iter().flatten() {
             if let Err(source) = write_eventfd(member.as_raw_fd(), 1) {
                 first_failure.get_or_insert(source);
             }

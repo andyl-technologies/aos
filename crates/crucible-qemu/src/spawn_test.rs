@@ -1119,6 +1119,40 @@ fn concurrent_node_contracts_receive_distinct_cancellation_descriptions()
 }
 
 #[test]
+fn retired_concurrent_node_contract_leaves_live_nodes_cancellable() -> Result<(), Box<dyn Error>> {
+    let readable = |event: &OwnedFd| {
+        let mut poll = libc::pollfd {
+            fd: event.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe {
+            // SAFETY: `poll` is one initialized pollfd value.
+            libc::poll(&mut poll, 1, 0)
+        };
+        ready == 1 && poll.revents & libc::POLLIN != 0
+    };
+    let fanout = Arc::new(crate::cancellation_fanout::QemuCancellationFanout::default());
+    let (_, cgroup) = pipe_pair()?;
+    let attempt = QemuChildProcessContract::for_test(
+        cgroup,
+        event_fd_for_test()?,
+        current_file_size_limit()?,
+    )
+    .with_cancellation_fanout(Arc::clone(&fanout));
+
+    let reaped_node = attempt.try_clone_for_concurrent_node()?;
+    let live_node = attempt.try_clone_for_concurrent_node()?;
+    let reaped_event = reaped_node.try_clone_cancellation_event()?;
+    reaped_node.retire_concurrent_node_cancellation_after_reap();
+    fanout.signal()?;
+
+    assert!(!readable(&reaped_event));
+    assert!(readable(&live_node.cancellation_event));
+    Ok(())
+}
+
+#[test]
 fn guarded_credentials_reject_root_and_supervisor_identity() -> Result<(), Box<dyn Error>> {
     let supervisor = current_supervisor_credentials()?;
     let distinct_user_id = distinct_nonzero_id(&supervisor.user_ids);
