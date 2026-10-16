@@ -1,6 +1,8 @@
 //! Exercises the concrete native owner through authenticated role-process sockets.
 //!
-//! Requires a dedicated disk-backed, verity-enabled ext4 VM mount. These tests
+//! Requires a dedicated disk-backed ext4 VM mount with project quotas and
+//! verity enabled. The root supervisor provisions real finite inheriting
+//! projects before either confined actor starts. These tests
 //! establish local native effects; service network and capability policy have
 //! separate qualification.
 
@@ -8,10 +10,10 @@
 
 use std::{
     fs::{self, File},
-    io::Read,
+    io::{Read, Write},
     os::{
         fd::AsFd,
-        unix::fs::{MetadataExt, PermissionsExt},
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
     process::{Child, Command},
@@ -22,6 +24,10 @@ use std::{
 
 use crate::{
     host_cache::NativeHostLayout,
+    host_quota::{
+        DomainProvisioningGuard, NativeProject, NativeQuota, provision_project,
+        require_unused_project,
+    },
     publisher_io::{
         NativePublicationWorker, NativePublisherConfig, NativeRetirementPolicy, NativeWipePolicy,
     },
@@ -49,6 +55,7 @@ use terrane_core::{
 
 const SERVE: u32 = 61001;
 const PUBLISH: u32 = 61002;
+const PROJECT_LIMIT: u64 = 32 * 1024 * 1024;
 const PLAINTEXT: &[u8] = b"native publisher-local immutable fixture";
 
 fn identities() -> RoleIdentities {
@@ -172,8 +179,77 @@ fn spawn(role: &str, uid: u32, root: &Path) -> Running {
     )
 }
 
-fn create_layout(path: &Path) {
+struct FixtureProjectLedger(PathBuf);
+
+impl Drop for FixtureProjectLedger {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn assert_project(directory: &File, project_id: u32, device: u64) {
+    let actual = NativeProject::inspect(directory).unwrap();
+    assert_eq!(actual.device, device);
+    assert_eq!(actual.project_id, project_id);
+    assert!(
+        actual.inherit,
+        "fixture directories require actual project inheritance"
+    );
+}
+
+fn create_layout(
+    path: &Path,
+    domain: &str,
+    project_id: u32,
+    ledger_parent: &Path,
+) -> FixtureProjectLedger {
     fs::create_dir(path).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    let root = File::open(path).unwrap();
+    root.sync_all().unwrap();
+    File::open(path.parent().unwrap())
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    let _provisioning = DomainProvisioningGuard::exclusive(&root).unwrap();
+    assert_eq!(fs::read_dir(path).unwrap().count(), 0);
+    assert_eq!(NativeProject::inspect(&root).unwrap().project_id, 0);
+    require_unused_project(&root, project_id).unwrap();
+
+    // This fresh guest's root supervisor binds the empty root before setting
+    // its finite project. The protected ledger survives through both actors;
+    // it is fixture administration, not a native admission or pin receipt.
+    let metadata = root.metadata().unwrap();
+    let administrative = File::open(ledger_parent).unwrap();
+    let administrative_metadata = administrative.metadata().unwrap();
+    assert_eq!(administrative_metadata.uid(), 0);
+    assert_eq!(administrative_metadata.mode() & 0o022, 0);
+    let ledger_path = ledger_parent.join(format!(".publisher-local-project-{project_id}"));
+    let mut ledger = File::options()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&ledger_path)
+        .unwrap();
+    let ledger_owner = FixtureProjectLedger(ledger_path);
+    writeln!(
+        ledger,
+        "domain={domain} publisher_uid={PUBLISH} content_uid={SERVE} device={} inode={} project={project_id} limit={PROJECT_LIMIT}",
+        metadata.dev(),
+        metadata.ino()
+    )
+    .unwrap();
+    ledger.sync_all().unwrap();
+    administrative.sync_all().unwrap();
+    provision_project(&root, project_id, PROJECT_LIMIT).unwrap();
+    assert_project(&root, project_id, metadata.dev());
+    assert_eq!(
+        NativeQuota::query(&root, project_id)
+            .unwrap()
+            .hard_limit_bytes,
+        PROJECT_LIMIT
+    );
+
     chown(
         path,
         Some(Uid::from_raw(PUBLISH)),
@@ -207,8 +283,13 @@ fn create_layout(path: &Path) {
         } else {
             0o700
         };
-        fs::set_permissions(directory, fs::Permissions::from_mode(mode)).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(mode)).unwrap();
+        let retained = File::open(directory).unwrap();
+        assert_project(&retained, project_id, metadata.dev());
+        retained.sync_all().unwrap();
     }
+    root.sync_all().unwrap();
+    ledger_owner
 }
 
 /// Supervises isolated native role processes on an explicitly provisioned VM disk.
@@ -232,8 +313,9 @@ pub fn supervise_native_fixture() {
     )
     .unwrap();
     fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o2750)).unwrap();
-    create_layout(&scratch.0.join("public"));
-    create_layout(&scratch.0.join("private"));
+    let _public_project = create_layout(&scratch.0.join("public"), "public", 61011, &base);
+    let _private_project =
+        create_layout(&scratch.0.join("private"), "private:fixture", 61012, &base);
     fs::write(scratch.0.join("source"), PLAINTEXT).unwrap();
     fs::set_permissions(scratch.0.join("source"), fs::Permissions::from_mode(0o444)).unwrap();
 
