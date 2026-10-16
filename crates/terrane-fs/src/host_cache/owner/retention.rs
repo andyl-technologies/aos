@@ -9,6 +9,7 @@ use super::NativeCachePreparation;
 use crate::{
     host_cache::{NativeHostLayout, NativeHostMetadataReader, NativeManifestSource},
     host_quota::{NativeProject, synchronized_allocated_bytes},
+    publisher_local::client::Client,
 };
 use rustix::fs::{FlockOperation, Mode, OFlags, flock, openat};
 use std::{
@@ -69,6 +70,7 @@ pub struct RetainedManifest {
     custody: Arc<Mutex<Custody>>,
     retention_id: [u8; 16],
     cache_incarnation: [u8; 16],
+    session: Arc<Client<HostDomainLocation>>,
     synchronized_source_bytes: u64,
 }
 
@@ -176,6 +178,16 @@ impl Drop for NativeMetadataOwner {
 }
 
 impl RetainedManifest {
+    /// Retains the actual producer's session without acquiring its state mutex.
+    pub(crate) fn publisher_session(&self) -> Arc<Client<HostDomainLocation>> {
+        Arc::clone(&self.session)
+    }
+
+    /// Checks native session object identity; it does not mint retention authority.
+    pub(crate) fn matches_client(&self, client: &Client<HostDomainLocation>) -> bool {
+        std::ptr::eq(self.session.as_ref(), client)
+    }
+
     /// Borrows the exact canonical manifest claim bound to the durable pin.
     pub fn claim(&self) -> &PublicationClaim {
         self.source.claim()
@@ -263,7 +275,8 @@ impl RetainedManifest {
             .lock()
             .map_err(|_| io::Error::other("metadata custody poisoned"))?;
         custody.check_current()?;
-        if custody.faulted
+        if !Arc::ptr_eq(&self.session, &custody.preparation.publisher_session())
+            || custody.faulted
             || custody.snapshot.is_none()
             || !custody
                 .sources
@@ -612,11 +625,13 @@ async fn retain(custody: &Arc<Mutex<Custody>>, identity: Identity) -> io::Result
     // destruction never does. Allocation and kernel charge remain separate.
     owner.faulted = false;
     let cache_incarnation = *owner.preparation.publisher().cache_incarnation();
+    let session = owner.preparation.publisher_session();
     Ok(RetainedManifest {
         source,
         custody: Arc::clone(custody),
         retention_id,
         cache_incarnation,
+        session,
         synchronized_source_bytes,
     })
 }

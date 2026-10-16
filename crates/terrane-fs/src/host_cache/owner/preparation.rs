@@ -22,7 +22,7 @@ pub struct NativeCachePreparation {
     layout: Arc<NativeHostLayout<HostDomainLocation>>,
     quota_client: HostQuotaClient,
     observation: VerifiedQuotaObservation,
-    publisher: Client<HostDomainLocation>,
+    publisher: Arc<Client<HostDomainLocation>>,
     seal: NativeSealCapability<HostDomainLocation>,
 }
 
@@ -88,7 +88,7 @@ impl NativeCachePreparation {
             layout,
             quota_client,
             observation,
-            publisher,
+            publisher: Arc::new(publisher),
             seal,
         })
     }
@@ -128,6 +128,11 @@ impl NativeCachePreparation {
     /// This exposes no resume or writable-admission authority.
     pub fn publisher(&self) -> &Client<HostDomainLocation> {
         &self.publisher
+    }
+
+    /// Retains this actual authenticated session without reconnecting its incarnation.
+    pub(super) fn publisher_session(&self) -> Arc<Client<HostDomainLocation>> {
+        Arc::clone(&self.publisher)
     }
 }
 
