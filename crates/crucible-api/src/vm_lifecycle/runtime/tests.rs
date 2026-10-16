@@ -550,6 +550,14 @@ fn mismatched_generation_lease_fails_closed_without_release() {
 
     assert!(error.to_string().contains("mismatched generation lease"));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(lifecycle.node_leases.contains_key(&node));
+
+    lifecycle.node_generations.insert(node.clone(), 3);
+    lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap_or_else(|error| panic!("retained exact lease should finish: {error}"));
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(!lifecycle.node_leases.contains_key(&node));
 }
 
@@ -596,8 +604,17 @@ fn generation_lease_cleanup_continues_after_an_earlier_mismatch() {
     assert!(error.to_string().contains("mismatched generation lease"));
     assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert!(!lifecycle.node_leases.contains_key(&first));
+    assert!(lifecycle.node_leases.contains_key(&first));
     assert!(!lifecycle.node_leases.contains_key(&second));
+
+    lifecycle.node_generations.insert(first.clone(), 1);
+    lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&first))
+        .unwrap_or_else(|error| panic!("retained first lease should finish: {error}"));
+
+    assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!lifecycle.node_leases.contains_key(&first));
 }
 
 fn initially_violated_scenario() -> ScenarioDefForm {
@@ -1919,12 +1936,21 @@ fn lifecycle_retains_aggregate_launcher_after_generation_lease_failure() {
     let repeated = QuantumLoop::shutdown(&mut lifecycle)
         .err()
         .unwrap_or_else(|| panic!("repeated shutdown must retain quarantine failure"));
-    assert!(repeated.to_string().contains("remains owned by quarantine"));
+    assert!(
+        repeated
+            .to_string()
+            .contains("test node lease retained quarantine")
+    );
+    assert_eq!(
+        lease_finish_calls.load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+    assert_eq!(lifecycle.node_leases.len(), 1);
     assert_eq!(
         *order
             .lock()
             .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
-        vec!["lease"]
+        vec!["lease", "lease"]
     );
     assert_eq!(lifecycle.retained_resource_owners.len(), 1);
     assert_eq!(lifecycle.retained_hot_fork_disk_owners.len(), 1);
