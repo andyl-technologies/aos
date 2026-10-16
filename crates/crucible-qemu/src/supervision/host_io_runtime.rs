@@ -46,7 +46,7 @@ use crate::{
     QemuAdvanceCompletionFence, QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome,
     QemuHostIoCheckpoint, QemuHostIoRuntime,
 };
-use deadline::{AdvanceWaitDeadline, DEFAULT_POLL_INTERVAL};
+use deadline::{AdvanceWaitDeadline, DEFAULT_POLL_INTERVAL, MINIMUM_PUBLICATION_POLL};
 
 mod boundary;
 mod control;
@@ -411,7 +411,12 @@ impl QemuLiveHostIoRuntime {
                 "poll slice deadline overflow",
             ));
         }
-        let attempts = bounded_poll_attempts(poll_budget, self.poll_interval);
+        // Waits end early when the plugin publishes, so the loop is bounded by
+        // its deadlines rather than by a count of full poll intervals.
+        let attempts = bounded_poll_attempts(poll_budget, MINIMUM_PUBLICATION_POLL);
+        // Counts waits that elapsed a full interval with no new publication;
+        // only those pace the periodic wake re-signal below.
+        let mut unchanged_polls = 0_u64;
         for attempt in 0..attempts {
             let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
                 QemuAsyncDriverRuntimeError::new(
@@ -441,7 +446,7 @@ impl QemuLiveHostIoRuntime {
                 let poll_remaining = slice_deadline
                     .remaining()
                     .map_or(remaining, |slice| slice.min(remaining));
-                self.wait_for_poll_interval(poll_remaining);
+                self.wait_for_poll_interval_capped(poll_remaining, MINIMUM_PUBLICATION_POLL);
                 continue;
             };
             if self.initial_advance_wake_pending {
@@ -465,7 +470,7 @@ impl QemuLiveHostIoRuntime {
                 }
                 self.initial_advance_wake_pending = false;
                 let Some(after_wake) = self.try_node_snapshot()? else {
-                    self.wait_for_poll_interval(remaining);
+                    self.wait_for_poll_interval_capped(remaining, MINIMUM_PUBLICATION_POLL);
                     continue;
                 };
                 snapshot = after_wake;
@@ -565,7 +570,7 @@ impl QemuLiveHostIoRuntime {
                     {
                         return Ok(QemuAsyncWaitOutcome::Pending);
                     }
-                    if self.device_wake_publish_generation.is_none() && attempt % 16 == 15 {
+                    if self.device_wake_publish_generation.is_none() && unchanged_polls % 16 == 15 {
                         if checkpoint_idle_unreleased && !self.native_console_run_report_pending() {
                             let _request = self.signal_wake(None)?;
                         } else {
@@ -589,7 +594,9 @@ impl QemuLiveHostIoRuntime {
                 let poll_remaining = slice_deadline
                     .remaining()
                     .map_or(remaining, |slice| slice.min(remaining));
-                self.wait_for_poll_interval(poll_remaining);
+                if !self.wait_for_publication_change(&snapshot, poll_remaining)? {
+                    unchanged_polls = unchanged_polls.saturating_add(1);
+                }
             }
         }
         if self.advance_completion_poll_slice.is_some()

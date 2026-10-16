@@ -8,6 +8,11 @@ use std::time::{Duration, Instant};
 /// guest coordinate or canonical scheduler state.
 pub(super) const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+/// First probe step while awaiting a new node publication.
+///
+/// Like [`DEFAULT_POLL_INTERVAL`], it bounds host latency only.
+pub(super) const MINIMUM_PUBLICATION_POLL: Duration = Duration::from_micros(20);
+
 /// Retains the original host deadline across shared-memory report retries.
 #[derive(Debug, Default)]
 pub(super) struct AdvanceWaitDeadline {

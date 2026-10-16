@@ -25,6 +25,40 @@ impl QemuLiveHostIoRuntime {
         }
     }
 
+    /// Waits up to one poll interval for the node slot to publish again.
+    ///
+    /// The plugin does not wake the host when it publishes a boundary, so a
+    /// fixed sleep makes every RUN pay a whole interval after the guest has
+    /// already stopped. Probing at doubling steps from
+    /// [`MINIMUM_PUBLICATION_POLL`] returns within a few microseconds of a new
+    /// publication, while an unchanged slot still waits the full interval.
+    /// Returns whether the publication changed.
+    pub(super) fn wait_for_publication_change(
+        &mut self,
+        observed: &crucible_shmem::NodeSlotSnapshot,
+        remaining: Duration,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        let budget = self.poll_interval.min(remaining);
+        let mut waited = Duration::ZERO;
+        let mut step = MINIMUM_PUBLICATION_POLL;
+        while waited < budget {
+            let pause = step.min(budget.saturating_sub(waited));
+            self.wait_for_poll_interval_capped(pause, pause);
+            waited = waited.saturating_add(pause);
+            step = step.saturating_mul(2);
+
+            // A contended read means a publication is in progress.
+            let changed = self.try_node_snapshot()?.is_none_or(|current| {
+                current.publish_gen != observed.publish_gen
+                    || current.control_boundary_ack != observed.control_boundary_ack
+            });
+            if changed {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Retries only under a caller's already-existing control deadline.
     pub(super) fn wait_node_snapshot(
         &mut self,
