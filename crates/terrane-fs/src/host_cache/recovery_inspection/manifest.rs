@@ -26,7 +26,7 @@ use std::{
 };
 use terrane::{
     host::{
-        cache::HostDomainLocation,
+        cache::{HostDomainLocation, ResidenceRecord},
         publication::{PublicationClaim, PublicationRecipe},
     },
     pack::{EntryKind, HEADER_SIZE, NativeBodyDecoder, PackClass, PackId},
@@ -49,6 +49,24 @@ pub(in crate::host_cache) struct VerifiedRecoveryManifest {
 }
 
 impl VerifiedRecoveryManifest {
+    /// Borrows the canonical claim independently verified against actual metadata and plaintext.
+    pub(in crate::host_cache) fn claim(&self) -> &PublicationClaim {
+        self.body.retained().backing().claim()
+    }
+
+    /// Derives bounded ordered chunk ranges for the actual adopted whole file.
+    ///
+    /// These are candidate policy records, not persisted residence or pin state.
+    /// Repeated chunk occurrences remain visible. The owner must choose one
+    /// residence per chunk across its complete inventory before persisting state.
+    ///
+    /// # Errors
+    /// Refuses record payloads exceeding the configured allocation budget,
+    /// unavailable allocation or an inconsistent manifest range sum.
+    pub(in crate::host_cache) fn residences(&self) -> io::Result<Vec<ResidenceRecord>> {
+        manifest_residences(self.claim(), self.context.reads.max_allocation_bytes)
+    }
+
     /// Borrows the original candidate, including every unresolved pending observation.
     pub(in crate::host_cache) fn candidate(&self) -> &NativeRecoveryCandidate {
         &self.candidate
@@ -160,7 +178,9 @@ impl NativeRecoveryInspector {
     /// never a fresh drain snapshot. The IPC producer has already reserved,
     /// adopted, registered and reconciled the actual body/metadata pair. This
     /// operation adds bounded independent metadata/plaintext verification only.
-    /// Pending observations and other candidate issues remain owner work.
+    /// The owner must retain its accepted live turn and separately recheck its
+    /// durable holds. Pending observations and other candidate issues remain
+    /// owner work; this result never completes those decisions.
     ///
     /// # Errors
     /// Returns the original candidate and body pair on stale custody, another
@@ -370,6 +390,59 @@ pub(super) fn verify_file_plaintext(
     budget: usize,
 ) -> io::Result<()> {
     verify_plaintext(claim, &mut PositionedReader { file, offset: 0 }, budget)
+}
+
+pub(super) fn manifest_residences(
+    claim: &PublicationClaim,
+    budget: usize,
+) -> io::Result<Vec<ResidenceRecord>> {
+    let manifest = claim
+        .manifest()
+        .ok_or_else(|| invalid("residence reconstruction requires a manifest"))?;
+    // Bound the derived record payload before allocation. This does not claim
+    // to predict allocator overhead, native allocation or future quota charge.
+    let per_record = std::mem::size_of::<ResidenceRecord>() + 128;
+    if manifest
+        .chunks
+        .len()
+        .checked_mul(per_record)
+        .is_none_or(|bytes| bytes > budget)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "manifest residences exceed recovery allocation budget",
+        ));
+    }
+    let object: String = claim
+        .descriptor()
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let mut records = Vec::new();
+    records
+        .try_reserve_exact(manifest.chunks.len())
+        .map_err(invalid)?;
+    let mut offset = 0_u64;
+    for chunk in &manifest.chunks {
+        records.push(ResidenceRecord {
+            chunk: chunk
+                .digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            object: object.clone(),
+            offset,
+            length: chunk.length,
+        });
+        offset = offset
+            .checked_add(chunk.length)
+            .ok_or_else(|| invalid("manifest residence range overflow"))?;
+    }
+    if offset != claim.plaintext_size() {
+        return Err(invalid("manifest residences do not cover the adopted body"));
+    }
+    Ok(records)
 }
 
 fn check_project(context: &NativeRecoveryInspector, file: &File) -> io::Result<NativeProject> {

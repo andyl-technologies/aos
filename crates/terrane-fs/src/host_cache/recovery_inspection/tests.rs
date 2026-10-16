@@ -7,7 +7,9 @@
 use super::{
     ContentCustody,
     files::{invalid, read_bounded, same_file, verify_read_hash},
-    manifest::{check_key, manifest_from_pack, verify_file_plaintext, verify_plaintext},
+    manifest::{
+        check_key, manifest_from_pack, manifest_residences, verify_file_plaintext, verify_plaintext,
+    },
     verification::{bounded_pack, bounded_standalone_length, dictionary_from_pack},
 };
 use crate::publisher_local::wire::{BodyKey, BodyKind};
@@ -227,6 +229,43 @@ fn retained_manifest_plaintext_uses_positioned_reads_without_changing_shared_cur
     verify_file_plaintext(&claim, &scratch.file, plaintext.len())?;
 
     assert_eq!(writer.stream_position()?, 17);
+    Ok(())
+}
+
+#[test]
+fn retained_manifest_residences_preserve_order_offsets_and_manifest_identity() -> TestResult {
+    let (profile, plaintext, claim) = manifest_claim()?;
+    let records = manifest_residences(&claim, 4096)?;
+
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        (records[0].offset, records[0].length),
+        (0, profile.minimum() as u64)
+    );
+    assert_eq!(
+        (records[1].offset, records[1].length),
+        (profile.minimum() as u64, 37)
+    );
+    assert_eq!(records[0].object, records[1].object);
+    let object: String = claim
+        .descriptor()
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(records[0].object, object);
+    assert_ne!(records[0].chunk, records[1].chunk);
+    assert_eq!(
+        records[1].offset + records[1].length,
+        plaintext.len() as u64
+    );
+    assert_eq!(
+        manifest_residences(&claim, 1)
+            .err()
+            .ok_or("over-budget residences accepted")?
+            .kind(),
+        io::ErrorKind::OutOfMemory
+    );
     Ok(())
 }
 
