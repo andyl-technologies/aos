@@ -1,9 +1,10 @@
 //! Dispatches local repository commands and one configured Terrane process role.
 //!
 //! Arguments and file loading live here; configuration semantics and role
-//! behavior live in the `terrane` library (CRATE-16). [`local`] calls the T1
+//! behavior live in library crates (CRATE-16). [`local`] calls the T1
 //! repository SDK and registered checkout surface (CRATE-22 to CRATE-24).
-//! Configured roles support syntax checking and report unavailable runtimes.
+//! Linux configured SDK snapshots and publisher startup run through `terrane-fs`;
+//! other configured runtimes remain unavailable. Syntax checking starts no runtime.
 //! Roles follow specifications 03 and 37, and TOML follows 11 and 26.
 
 #![forbid(unsafe_code)]
@@ -69,6 +70,43 @@ fn run(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
             "configuration syntax valid for role {}; backend, token, and schema checks are pending",
             role
         );
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    if let (Role::Publish, Some(host)) = (role, config.host_tier()) {
+        // Pass only host-tier inputs: this role must not open repository
+        // authority or resolve exposure credentials before native startup.
+        terrane_fs::configured::run_configured_publisher(host)?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    if role == Role::Serve && !config.exposures().is_empty() {
+        use std::io::Write;
+
+        // The library performs whole-config preflight and installs confinement
+        // before its executor. Keep completion custody through status reporting.
+        let completed = terrane_fs::configured_sdk::run(&config, role)?;
+        let mut output = std::io::stdout().lock();
+        for snapshot in completed.snapshots()? {
+            let status = snapshot.status();
+            write!(
+                output,
+                "completed SDK snapshot {:?}: commit ",
+                snapshot.id()
+            )?;
+            for byte in status.commit {
+                write!(output, "{byte:02x}")?;
+            }
+            writeln!(
+                output,
+                ", state {:?}, endpoint {:?}",
+                status.state,
+                snapshot.endpoint()
+            )?;
+        }
+        output.flush()?;
         return Ok(());
     }
 

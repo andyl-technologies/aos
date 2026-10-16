@@ -36,7 +36,7 @@ pub struct Publisher {
     pub serve_uid: u32,
     /// Required identity of the local publishing process.
     pub publish_uid: u32,
-    /// Owner of published content directories and files.
+    /// Owner of encoded cache content directories and files.
     pub content_uid: u32,
     /// Shared content group selected by the operator.
     pub content_gid: u32,
@@ -144,7 +144,8 @@ where
     }
 
     let mut bytes = [0; N];
-    for (output, pair) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+    let (pairs, _) = text.as_bytes().as_chunks::<2>();
+    for (output, pair) in bytes.iter_mut().zip(pairs) {
         let digit = |byte: u8| {
             if byte <= b'9' {
                 byte - b'0'
