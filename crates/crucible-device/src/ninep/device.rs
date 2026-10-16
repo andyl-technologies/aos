@@ -35,7 +35,7 @@ use crate::subnode::{IoCore, IoCoreSnapshot, IoSubNode, ShmemDeliveryResult, Shm
 use super::codec::{self, GetattrReply, Message, Qid, QidType, TMessage};
 use super::fault::{
     NinepObjectVersion, NinepRequestIdentity, NinepResultDirective, NinepVisibilityLookup,
-    NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityState,
+    NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityState, NinepVisibilityUpdateKey,
     ResolvedNinepRequestDirective,
 };
 use super::server::{MAX_MSIZE, MIN_MSIZE, NinepServer, NinepServerSnapshot};
@@ -121,6 +121,8 @@ pub enum NinepVirtualFid {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NinepFaultResourceUsage {
     /// Distinct retained visibility sessions, including the current session.
+    ///
+    /// A version negotiation retires the previous session, so this is one.
     pub sessions: u64,
     /// Distinct live fid identities in the current session.
     pub fids: u64,

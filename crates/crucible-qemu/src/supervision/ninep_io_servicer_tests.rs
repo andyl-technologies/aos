@@ -48,7 +48,11 @@ fn host_private_transaction_rollback_restores_exact_state() {
         .unwrap_or_else(|error| panic!("capture transaction: {error}"));
     servicer
         .commit_visibility_update(
-            [7; 32],
+            crucible_device::NinepVisibilityUpdateKey {
+                slot: [7; 32],
+                update_id: [7; 32],
+                generation: 0,
+            },
             NinepObjectVersion {
                 path: String::from("/created"),
                 version: 1,

@@ -63,7 +63,11 @@ pub(super) fn device() -> NinepDevice {
 pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
     let mut device = device();
     ok(device.commit_visibility_update(
-        [7; 32],
+        NinepVisibilityUpdateKey {
+            slot: [7; 32],
+            update_id: [8; 32],
+            generation: 3,
+        },
         NinepObjectVersion {
             path: "/alpha".to_string(),
             version: 2,
@@ -106,7 +110,7 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
 
     let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.ninep-snapshot.v".len();
-    assert_eq!(unsupported_version[version_index], b'4');
+    assert_eq!(unsupported_version[version_index], b'5');
     unsupported_version[version_index] = b'?';
     assert_eq!(
         NinepSnapshot::from_canonical_bytes(&unsupported_version),
@@ -114,7 +118,7 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
     );
 
     let mut prior_version = bytes.clone();
-    prior_version[version_index] = b'3';
+    prior_version[version_index] = b'4';
     assert_eq!(
         NinepSnapshot::from_canonical_bytes(&prior_version),
         Err(NinepSnapshotCodecError::Version)

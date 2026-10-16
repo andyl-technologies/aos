@@ -35,7 +35,7 @@ use crucible_device::block::{
 use crucible_device::{
     FsTree, NinepLatency, NinepObjectVersion, NinepOperation, NinepRequestOpportunity,
     NinepResultDirective, NinepVisibilityLookup, NinepVisibilityPolicy, NinepVisibilityRelease,
-    NinepVisibilityScope, NinepVisibilityState, NinepVisibilityUpdate,
+    NinepVisibilityScope, NinepVisibilityState, NinepVisibilityUpdate, NinepVisibilityUpdateKey,
     ResolvedNinepRequestDirective,
 };
 use crucible_qemu::{
@@ -2109,11 +2109,12 @@ impl ProductionNinepFaultCoordinator {
                     update.as_str()
                 ),
             );
+            let key = ninep_visibility_update_key(action, update, update_id);
             let object = self.object(update)?;
             let policy = self.visibility_policy(visibility_policy)?;
             let data_lag_nanos = self.visibility_data_lag(visibility_policy)?;
             let usage = self.admit_fault_resource_usage(servicer)?;
-            let requested = u64::from(!servicer.contains_visibility_update(&update_id.bytes));
+            let requested = u64::from(!servicer.contains_visibility_update(&key));
             reserve_storage_resource(
                 "ninep_object_versions",
                 usage.object_versions,
@@ -2121,13 +2122,7 @@ impl ProductionNinepFaultCoordinator {
                 self.resource_limits,
             )?;
             let sequence = servicer
-                .commit_visibility_update(
-                    update_id.bytes,
-                    object.clone(),
-                    policy,
-                    release,
-                    data_lag_nanos,
-                )
+                .commit_visibility_update(key, object.clone(), policy, release, data_lag_nanos)
                 .map_err(|error| storage_error("apply 9p visibility", error))?;
             observations.push(FaultObservation {
                 semantic_version: FAULT_RUNTIME_STATE_VERSION,
@@ -2194,17 +2189,19 @@ impl ProductionNinepFaultCoordinator {
         if before == after {
             return Ok(());
         }
-        let mut sequences = std::collections::BTreeSet::new();
-        sequences.extend(before.0..after.0);
-        sequences.extend(before.1..after.1);
-        let updates = sequences
-            .into_iter()
-            .flat_map(|sequence| {
-                servicer
-                    .visibility_state()
-                    .updates_between(sequence, sequence.saturating_add(1))
-            })
-            .collect::<Vec<_>>();
+        // Updates below the compaction floor survive only as lookup residue.
+        // A newly negotiated session passes them as one jump to the floor,
+        // which the evidence records instead of enumerating them.
+        let state = servicer.visibility_state();
+        let floor = state.compacted_frontier();
+        let mut updates = BTreeMap::new();
+        for (start, end) in [(before.0, after.0), (before.1, after.1)] {
+            let advanced = state
+                .updates_between(start.max(floor), end)
+                .map_err(|error| storage_error("advance 9p visibility", error))?;
+            updates.extend(advanced.into_iter().map(|update| (update.sequence, update)));
+        }
+        let updates = updates.into_values().collect::<Vec<_>>();
         let evidence = ninep_visibility_advance_evidence(
             session,
             before,
@@ -2380,13 +2377,10 @@ impl ProductionNinepFaultCoordinator {
                 &selected,
                 NinepResultDirective::Stale(_) | NinepResultDirective::Misdirected(_)
             );
+            // A version negotiation retires the previous session, so the
+            // retained session count never grows past the current session that
+            // `admit_fault_resource_usage` already charged.
             let usage = self.admit_fault_resource_usage(servicer)?;
-            reserve_storage_resource(
-                "ninep_sessions_per_device",
-                usage.sessions,
-                servicer.potential_session_growth(&pin.opportunity.frame),
-                self.resource_limits,
-            )?;
             reserve_storage_resource(
                 "ninep_fids_per_session",
                 usage.fids,

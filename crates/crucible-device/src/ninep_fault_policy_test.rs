@@ -74,6 +74,14 @@ fn stale_read_uses_exact_object_bytes_and_survives_restore_before_consumption() 
     assert!(restored.snapshot().directives.is_empty());
 }
 
+fn visibility_key(byte: u8) -> NinepVisibilityUpdateKey {
+    NinepVisibilityUpdateKey {
+        slot: [byte; 32],
+        update_id: [byte; 32],
+        generation: 0,
+    }
+}
+
 fn atomic_visibility(retain_deleted_objects: bool) -> NinepVisibilityPolicy {
     NinepVisibilityPolicy {
         scope: NinepVisibilityScope::Global,
@@ -100,7 +108,7 @@ fn visible_deletion_hides_base_tree_and_already_walked_fids() {
         deleted: true,
     };
     ok(dev.commit_visibility_update(
-        [7; 32],
+        visibility_key(7),
         deletion,
         atomic_visibility(true),
         NinepVisibilityRelease::AtNanos(0),
@@ -126,7 +134,7 @@ fn visible_creation_is_discoverable_by_normal_walk_and_tracks_updates() {
     );
     round_trip(&mut dev, 1, &tattach(2, 1));
     ok(dev.commit_visibility_update(
-        [1; 32],
+        visibility_key(1),
         file_object("/new", 1, b"first"),
         atomic_visibility(false),
         NinepVisibilityRelease::AtNanos(0),
@@ -139,7 +147,7 @@ fn visible_creation_is_discoverable_by_normal_walk_and_tracks_updates() {
     assert_eq!(&first[11..], b"first");
 
     ok(dev.commit_visibility_update(
-        [2; 32],
+        visibility_key(2),
         file_object("/new", 2, b"second"),
         atomic_visibility(false),
         NinepVisibilityRelease::AtNanos(0),
@@ -160,11 +168,11 @@ fn visible_walk_never_traverses_through_a_regular_object() {
     );
     round_trip(&mut dev, 1, &tattach(2, 1));
     for (identity, object) in [
-        ([3; 32], file_object("/a", 1, b"regular")),
-        ([4; 32], file_object("/a/b", 1, b"unreachable")),
+        (3, file_object("/a", 1, b"regular")),
+        (4, file_object("/a/b", 1, b"unreachable")),
     ] {
         ok(dev.commit_visibility_update(
-            identity,
+            visibility_key(identity),
             object,
             atomic_visibility(false),
             NinepVisibilityRelease::AtNanos(0),
@@ -214,7 +222,7 @@ fn fault_resource_usage_tracks_sessions_fids_and_object_versions() {
     round_trip(&mut dev, 1, &attach);
     assert_eq!(dev.potential_fid_growth(&attach, false), 0);
 
-    let update_id = [9; 32];
+    let update_id = visibility_key(9);
     ok(dev.commit_visibility_update(
         update_id,
         file_object("/retained", 1, b"version-one"),
@@ -233,7 +241,6 @@ fn fault_resource_usage_tracks_sessions_fids_and_object_versions() {
     );
 
     let next_session = tversion(3, MAX_MSIZE, codec::PROTOCOL_VERSION);
-    assert_eq!(dev.potential_session_growth(&next_session), 1);
     let stale_read = tread(4, 55, 0, 4);
     install_result(
         &mut dev,
@@ -250,14 +257,22 @@ fn fault_resource_usage_tracks_sessions_fids_and_object_versions() {
         }
     );
 
+    // The negotiation retires the previous session instead of retaining it.
+    let previous_session = dev.session_epoch();
+    assert!(dev.visibility_state().contains_session(previous_session));
     round_trip(&mut dev, 3, &next_session);
-    assert_eq!(dev.potential_session_growth(&next_session), 0);
+    assert!(!dev.visibility_state().contains_session(previous_session));
+    assert_eq!(dev.visibility_state().session_count(), 0);
     assert_eq!(
         ok(dev.fault_resource_usage()),
         NinepFaultResourceUsage {
-            sessions: 2,
+            sessions: 1,
             fids: 0,
             object_versions: 2,
         }
     );
+
+    let snapshot = dev.snapshot();
+    let bytes = ok(snapshot.to_canonical_bytes());
+    assert_eq!(ok(NinepSnapshot::from_canonical_bytes(&bytes)), snapshot);
 }

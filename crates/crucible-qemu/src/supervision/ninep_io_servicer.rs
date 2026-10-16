@@ -23,8 +23,8 @@ use crucible::model::ContentHash;
 use crucible_device::{
     DeviceError, FsTree, IoCore, NinepDevice, NinepLatency, NinepObjectVersion,
     NinepRequestIdentity, NinepRequestOpportunity, NinepSnapshot, NinepVisibilityPolicy,
-    NinepVisibilityRelease, NinepVisibilityState, Node, Request, ResolvedNinepRequestDirective,
-    ResponseStatus,
+    NinepVisibilityRelease, NinepVisibilityState, NinepVisibilityUpdateKey, Node, Request,
+    ResolvedNinepRequestDirective, ResponseStatus,
 };
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
@@ -281,14 +281,14 @@ impl QemuLive9pIoServicer {
     /// update state.
     pub fn commit_visibility_update(
         &mut self,
-        update_id: [u8; 32],
+        key: NinepVisibilityUpdateKey,
         object: NinepObjectVersion,
         policy: NinepVisibilityPolicy,
         release: NinepVisibilityRelease,
         data_lag_nanos: u64,
     ) -> Result<u64, QemuLive9pIoServicerError> {
         self.device
-            .commit_visibility_update(update_id, object, policy, release, data_lag_nanos)
+            .commit_visibility_update(key, object, policy, release, data_lag_nanos)
             .map_err(|source| QemuLive9pIoServicerError::Device { source })
     }
 
@@ -335,20 +335,14 @@ impl QemuLive9pIoServicer {
 
     /// Returns whether a visibility update already owns a retained version.
     #[must_use]
-    pub fn contains_visibility_update(&self, update_id: &[u8; 32]) -> bool {
-        self.device.contains_visibility_update(update_id)
+    pub fn contains_visibility_update(&self, key: &NinepVisibilityUpdateKey) -> bool {
+        self.device.contains_visibility_update(key)
     }
 
     /// Returns the maximum fid growth one request can commit.
     #[must_use]
     pub fn potential_fid_growth(&self, frame: &[u8], object_result: bool) -> u64 {
         self.device.potential_fid_growth(frame, object_result)
-    }
-
-    /// Returns the retained-session growth one request can commit.
-    #[must_use]
-    pub fn potential_session_growth(&self, frame: &[u8]) -> u64 {
-        self.device.potential_session_growth(frame)
     }
 
     /// Captures host-private state touched before one shared-ring commit.

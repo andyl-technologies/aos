@@ -140,6 +140,13 @@ ring beyond the obsolete 64 MiB boundary.
 | `ninep_fids_per_session` | 65,536 | 262,144 |
 | `ninep_object_versions` | 1,048,576 | 4,194,304 |
 
+`ninep_object_versions` counts every live visibility update at or above the
+compaction floor, the compacted per-path residue (one or two versions per
+path), stale or misdirected directive objects, and exact virtual fids. It is
+therefore bounded by distinct authored paths plus unreleased updates rather
+than by run length. `ninep_sessions_per_device` is always one, because a
+`Tversion` retires the previous session.
+
 Large media/flash state uses sparse interval/counter structures; declaring
 geometry does not allocate one object per healthy block. Worst-case sparse
 entries remain bounded by media-interval and state-byte limits.
@@ -246,7 +253,7 @@ durably removes abandoned transaction staging before another capture.
 
 The raised
 resource policy is carried only by the versioned node-v7, host-I/O-v4,
-block-snapshot-v3, block-fault-state-v2, 9p-snapshot-v2, I/O-core-v2,
+block-snapshot-v3, block-fault-state-v2, 9p-snapshot-v5, I/O-core-v2,
 production-runtime-v6, and VM-snapshot-v4 formats; production runtime identity
 uses the v9 domain and VM snapshot identity uses the
 `exact-snapshot.v7` domain, so old policy identities cannot alias new artifacts.

@@ -61,8 +61,8 @@ impl NinepDevice {
 
     /// Returns whether a visibility update identity already owns a version.
     #[must_use]
-    pub fn contains_visibility_update(&self, update_id: &[u8; 32]) -> bool {
-        self.visibility.contains_update(update_id)
+    pub fn contains_visibility_update(&self, key: &NinepVisibilityUpdateKey) -> bool {
+        self.visibility.contains_update(key)
     }
 
     /// Returns the maximum fid growth one request can commit.
@@ -83,19 +83,6 @@ impl NinepDevice {
         u64::from(candidate.is_some_and(|fid| {
             !self.server.fids().contains_key(&fid) && !self.virtual_fids.contains_key(&fid)
         }))
-    }
-
-    /// Returns the retained-session growth one request can commit.
-    ///
-    /// A version negotiation advances the session epoch. The old session only
-    /// remains separately owned when it already has visibility state; otherwise
-    /// the counted current-session placeholder moves to the new epoch at net
-    /// zero growth.
-    #[must_use]
-    pub fn potential_session_growth(&self, frame: &[u8]) -> u64 {
-        let begins_session = Message::decode(frame)
-            .is_ok_and(|message| matches!(message.body, TMessage::Version { .. }));
-        u64::from(begins_session && self.visibility.contains_session(self.session_epoch))
     }
 
     /// Builds a 9p device over `tree` with the given core and latency model.
@@ -179,14 +166,14 @@ impl NinepDevice {
     /// bounded-state overflow.
     pub fn commit_visibility_update(
         &mut self,
-        update_id: [u8; 32],
+        key: NinepVisibilityUpdateKey,
         object: NinepObjectVersion,
         policy: NinepVisibilityPolicy,
         release: NinepVisibilityRelease,
         data_lag_nanos: u64,
     ) -> Result<u64, DeviceError> {
         self.visibility.commit(
-            update_id,
+            key,
             object,
             policy,
             release,
@@ -249,7 +236,7 @@ impl NinepDevice {
             .map_err(|rejected| rejected.source)?;
         // Borrow split: process_inbox needs `&mut self.core` and `&mut server`
         // simultaneously, so serve through a detached server view.
-        Self::process_pending(
+        let result = Self::process_pending(
             &mut self.core,
             &mut self.server,
             &self.latency,
@@ -258,7 +245,8 @@ impl NinepDevice {
             &self.visibility,
             &mut self.virtual_fids,
             &mut self.session_epoch,
-        )
+        );
+        self.retire_ended_sessions(result)
     }
 
     /// Drains raw 9p request frames from a shared-memory inbox ring.
@@ -288,8 +276,10 @@ impl NinepDevice {
             virtual_fids: &mut self.virtual_fids,
             session_epoch: &mut self.session_epoch,
         };
-        self.core
-            .process_shmem_inbox(&mut node, inbox, inbox_entries, producer_slot)
+        let result = self
+            .core
+            .process_shmem_inbox(&mut node, inbox, inbox_entries, producer_slot);
+        self.retire_ended_sessions(result)
     }
 
     /// Dequeues and computes at most one shared-memory 9p request.
@@ -313,8 +303,10 @@ impl NinepDevice {
             virtual_fids: &mut self.virtual_fids,
             session_epoch: &mut self.session_epoch,
         };
-        self.core
-            .process_one_shmem_request(&mut node, inbox, inbox_entries, producer_slot)
+        let result =
+            self.core
+                .process_one_shmem_request(&mut node, inbox, inbox_entries, producer_slot);
+        self.retire_ended_sessions(result)
     }
 
     /// Computes and schedules one already-decoded request without touching a
@@ -337,7 +329,19 @@ impl NinepDevice {
             virtual_fids: &mut self.virtual_fids,
             session_epoch: &mut self.session_epoch,
         };
-        self.core.compute_request(&mut node, request)
+        let result = self.core.compute_request(&mut node, request);
+        self.retire_ended_sessions(result)
+    }
+
+    /// Retires visibility frontiers of a session that a version negotiation
+    /// ended, then passes `result` through.
+    ///
+    /// Request computation borrows the visibility state immutably, so the
+    /// retirement runs once the compute step has released it. Only the current
+    /// epoch is ever queried, which keeps at most one session retained.
+    fn retire_ended_sessions<T>(&mut self, result: T) -> T {
+        self.visibility.retire_sessions_except(self.session_epoch);
+        result
     }
 
     /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).
@@ -537,6 +541,13 @@ impl NinepDevice {
     /// Returns any [`DeviceError`] [`IoCore::restore`] raises.
     pub fn restore(snapshot: &NinepSnapshot, tree: FsTree) -> Result<Self, DeviceError> {
         snapshot.visibility.validate()?;
+        if snapshot.visibility.session_count() > 0
+            && !snapshot.visibility.contains_session(snapshot.session_epoch)
+        {
+            return Err(DeviceError::InvalidNinepFaultDirective {
+                reason: "9p checkpoint retains a session other than the current epoch",
+            });
+        }
         for (identity, directive) in &snapshot.directives {
             if identity != &directive.identity {
                 return Err(DeviceError::InvalidNinepFaultDirective {

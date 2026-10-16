@@ -276,6 +276,36 @@ pub(super) fn ninep_visibility_evidence(
     )
 }
 
+/// Derives the authored identity under which one visibility action commits.
+///
+/// The slot names the installing binding, phase, effect, target, and update
+/// object, which matches the key of an installed host action. A different
+/// installing action for one slot always follows a binding transition, so the
+/// binding transition sequence is a monotone generation and a superseded
+/// action never recurs.
+pub(super) fn ninep_visibility_update_key(
+    action: &ResolvedBindingAction,
+    update: &FaultObjectId,
+    update_id: ContentHash,
+) -> NinepVisibilityUpdateKey {
+    let slot = ContentHash::from_canonical_material(
+        "crucible.ninep.visibility-slot.v1",
+        &format!(
+            "binding={}\nphase={}\neffect={}\nupdate={}\ntarget={}",
+            action.binding.as_str(),
+            action.phase.as_str(),
+            action.effect.kind().as_str(),
+            update.as_str(),
+            action.target.canonical_material(),
+        ),
+    );
+    NinepVisibilityUpdateKey {
+        slot: slot.bytes,
+        update_id: update_id.bytes,
+        generation: action.transition_sequence,
+    }
+}
+
 pub(super) fn ninep_visibility_lookup_evidence(lookup: NinepVisibilityLookup) -> String {
     match lookup {
         NinepVisibilityLookup::Base => String::from("base"),
@@ -324,10 +354,14 @@ pub(super) fn ninep_visibility_advance_evidence(
         .collect::<Vec<_>>()
         .join("|");
     ContentHash::from_canonical_material(
-        "crucible.ninep-visibility-advance-evidence.v2",
+        "crucible.ninep-visibility-advance-evidence.v3",
         &format!(
-            "session={session}\nobserved_ticks={observed_ticks}\nmetadata_before={}\nmetadata_after={}\ndata_before={}\ndata_after={}\nupdates={updates}",
-            before.0, after.0, before.1, after.1,
+            "session={session}\nobserved_ticks={observed_ticks}\nmetadata_before={}\nmetadata_after={}\ndata_before={}\ndata_after={}\ncompacted_frontier={}\nupdates={updates}",
+            before.0,
+            after.0,
+            before.1,
+            after.1,
+            state.compacted_frontier(),
         ),
     )
 }

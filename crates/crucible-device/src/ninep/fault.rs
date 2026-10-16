@@ -315,6 +315,14 @@ mod tests {
         }
     }
 
+    fn key(byte: u8) -> NinepVisibilityUpdateKey {
+        NinepVisibilityUpdateKey {
+            slot: [byte; 32],
+            update_id: [byte; 32],
+            generation: 0,
+        }
+    }
+
     fn atomic(scope: NinepVisibilityScope, retain_deleted_objects: bool) -> NinepVisibilityPolicy {
         NinepVisibilityPolicy {
             scope,
@@ -339,7 +347,7 @@ mod tests {
         let mut state = NinepVisibilityState::default();
         state
             .commit(
-                [1; 32],
+                key(1),
                 object("/a", 1, b"one"),
                 atomic(NinepVisibilityScope::Global, false),
                 NinepVisibilityRelease::AtNanos(10),
@@ -349,7 +357,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("commit: {error}"));
         state
             .commit(
-                [2; 32],
+                key(2),
                 object("/b", 1, b"two"),
                 atomic(NinepVisibilityScope::Global, false),
                 NinepVisibilityRelease::OnEvent([9; 32]),
@@ -384,7 +392,7 @@ mod tests {
         let mut state = NinepVisibilityState::default();
         state
             .commit(
-                [1; 32],
+                key(1),
                 object("/a", 1, b"old"),
                 atomic(NinepVisibilityScope::Global, false),
                 NinepVisibilityRelease::AtNanos(0),
@@ -394,7 +402,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("commit: {error}"));
         state
             .commit(
-                [2; 32],
+                key(2),
                 object("/a", 2, b"new"),
                 NinepVisibilityPolicy {
                     scope: NinepVisibilityScope::Global,
@@ -432,7 +440,7 @@ mod tests {
         let mut state = NinepVisibilityState::default();
         state
             .commit(
-                [1; 32],
+                key(1),
                 object("/a", 1, b"new"),
                 NinepVisibilityPolicy {
                     scope: NinepVisibilityScope::Global,
@@ -455,7 +463,7 @@ mod tests {
         let mut state = NinepVisibilityState::default();
         state
             .commit(
-                [1; 32],
+                key(1),
                 object("/a", 1, b"new"),
                 atomic(NinepVisibilityScope::Global, false),
                 NinepVisibilityRelease::AtNanos(2),
@@ -481,7 +489,7 @@ mod tests {
         let release_tick = action_tick + crucible_shmem::TICKS_PER_NS;
         state
             .commit(
-                [1; 32],
+                key(1),
                 object("/a", 1, b"new"),
                 atomic(NinepVisibilityScope::Global, false),
                 NinepVisibilityRelease::AtTicks(release_tick),
@@ -505,7 +513,7 @@ mod tests {
         let mut state = NinepVisibilityState::default();
         state
             .commit(
-                [1; 32],
+                key(1),
                 object("/a", 1, b"old"),
                 atomic(NinepVisibilityScope::Global, true),
                 NinepVisibilityRelease::AtNanos(0),
@@ -521,7 +529,7 @@ mod tests {
         deletion.deleted = true;
         state
             .commit(
-                [2; 32],
+                key(2),
                 deletion,
                 atomic(NinepVisibilityScope::WriterImmediate, true),
                 NinepVisibilityRelease::AtNanos(100),
@@ -551,7 +559,7 @@ mod tests {
         let mut state = NinepVisibilityState::default();
         state
             .commit(
-                [1; 32],
+                key(1),
                 object("/a", 1, b"new"),
                 NinepVisibilityPolicy {
                     scope: NinepVisibilityScope::Global,

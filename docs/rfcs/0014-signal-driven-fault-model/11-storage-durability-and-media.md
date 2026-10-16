@@ -473,7 +473,13 @@ policy, release condition, writer session, and data lag. Re-evaluating one
 persistent action consequently produces the same ID and byte-identical commit,
 while distinct impulses or opportunities cannot collide merely because they
 reference the same object artifact. Repeating the same ID with byte-identical
-content is idempotent; reusing it with any differing field fails. Release is
+content is idempotent; reusing it with any differing field fails. Each update
+also names its authored slot (binding, phase, effect, target, and update
+object) and a generation equal to the binding transition sequence. A new
+installing action for one slot always follows a binding transition, so the
+device retains only the newest identity per slot: recommitting that identity
+stays idempotent after its update is compacted, and an identity whose
+generation does not exceed the slot's newest one fails closed. Release is
 exactly one absolute virtual-time deadline derived once from the resolved
 action's original coordinate and binding delay, or one observed signal-event
 identity; a later host poll never moves that deadline.
@@ -493,9 +499,26 @@ epoch and clears virtual fids.
 
 A visible deletion hides the object. Before release,
 `retain_deleted_objects = true` preserves the prior visible version, whereas
-`false` hides the object as soon as the deletion commits. The object-version
-table, identity index, per-session metadata/data frontiers, virtual fids, and
-session epoch are authenticated checkpoint continuation.
+`false` hides the object as soon as the deletion commits.
+
+Only the current session epoch is ever queried, so a `Tversion` retires the
+previous session's frontiers and the device retains at most one session. The
+compaction floor is the smaller of that session's data frontier and the longest
+committed prefix that every present and future session would pass at the
+current tick by release alone, ignoring writer-immediate visibility. An
+event-released update with a data lag never joins that prefix, because a
+re-emitted event can move its observed coordinate and therefore its data
+deadline later. Each advance first folds the updates below the floor into a
+per-path residue: the newest version, plus the newest earlier non-deleted
+version when the newest is a deletion. Lookups consult the live window through
+a per-path index and fall back to that residue, which reproduces the
+uncompacted newest-deletion, metadata, and data results exactly. A session
+that has not advanced sees no residue; its first advance starts at the floor,
+because every folded update is released for it. Advancing with a tick earlier
+than the one that proved the floor fails closed. Callers supply non-decreasing
+ticks and never remove an observed event. The live window, compacted residue,
+slot identity index, retained session frontiers, virtual fids, and session
+epoch are authenticated checkpoint continuation (`crucible.ninep-snapshot.v5`).
 
 ## 11.15 Completion duplication and protocol validity
 
