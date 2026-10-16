@@ -1077,4 +1077,4 @@ mod continuation;
 pub use continuation::OriginalRestorationNodeContinuationInspection;
 
 #[path = "window/observation.rs"]
-mod observation;
+pub(super) mod observation;
