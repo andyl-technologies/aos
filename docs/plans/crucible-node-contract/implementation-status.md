@@ -410,6 +410,39 @@ without a recorded cap violation. The current refusing numeric row remains under
 investigation. These results establish neither successful construction nor
 native Capture or restoration; earlier failed results remain recorded.
 
+### Invocation Capture and restoration inputs
+
+Commit `241370cb01`, with formatting separately in `2a9e92673d`, adds invocation
+snapshot framing and declarations, archive/report correspondence, restoration
+mapping and SDK upload construction. Existing legacy refusal guards remain in
+place. These interfaces do not yet complete the installed restoration action.
+
+Normal six-crate, all-feature/all-target checking passes over the exact
+6,149-file source capture and 916 selected roles. Three fresh normal library-test
+executables compile. Independent review checks their complete source/dependency
+correspondence and preservation of the original dependency cache.
+
+The selected runtime controls report 83 passed and two failed, with none
+ignored. The passing controls include the corrected empty-map publication
+assertion and the previously unrun cold-data and daemon groups. Both constructor
+controls fail during fixture native-startup finalization with `ResourceLimit`,
+before their intended budget assertions. No execution cap is exceeded. The
+aggregate result remains a failure; these results establish neither native
+Capture nor complete restoration.
+
+A separate diagnostic on the preceding invocation checkpoint identifies a
+requested aggregate of 892,017,380 bytes against its unchanged 805,306,368-byte
+policy while adding the second Source publication allowance. The third Source
+is not reached. These are requested storage allowances, not measured RSS, and
+the numeric probe has not been rerun on the Capture checkpoint.
+
+A prospective combination with the subsequent gem5 additions also passes normal
+six-crate, all-feature/all-target checking over 6,238 files and 1,013 selected
+roles. That check covers changed Rust and included JSON compiler inputs; its
+Python and Nix additions have source review only. This combination is not yet
+committed, linked-test qualified or native qualified. Its result does not resolve
+the constructor failures or complete the production restoration path.
+
 ## Work in progress
 
 Packet startup/report, capture and restoration storage accounting is committed
