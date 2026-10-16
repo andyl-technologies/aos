@@ -171,17 +171,23 @@ pub struct StagedFile {
     // A staged writer can outlive its adapter. Keep the root flock until that
     // writer and reader close, so restart cleanup cannot race the live inode.
     _staging_root: Arc<File>,
+    confinement: Arc<crate::quota_confinement::Installed>,
     name: String,
 }
 
 impl Read for StagedFile {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.confinement.check_current()?;
         self.reader.read(bytes)
     }
 }
 
 impl Drop for StagedFile {
     fn drop(&mut self) {
+        // An inherited child cannot exercise the parent's mutable receipt.
+        if self.confinement.check_current().is_err() {
+            return;
+        }
         // Unserved scratch files are safe to clean on restart if unlink fails.
         let _result = fs::unlinkat(
             self.directory.as_ref(),
@@ -193,6 +199,7 @@ impl Drop for StagedFile {
 
 /// Owns one disclosure domain's sealed, staging and pending-delete directories.
 pub struct NativePublisher {
+    confinement: Arc<crate::quota_confinement::Installed>,
     domain: String,
     sealed: File,
     staging_root: Arc<File>,
@@ -212,6 +219,7 @@ impl NativePublisher {
     /// # Errors
     /// Returns private creation, writer close, genuine seal, sync or open errors.
     pub fn probe_seal(&mut self) -> io::Result<File> {
+        self.confinement.check_current()?;
         let staging = Arc::clone(self.private_staging()?);
         loop {
             self.next_staging = self
@@ -250,24 +258,37 @@ impl NativePublisher {
     /// Opens existing publisher-owned native directories without symlinks.
     ///
     /// The caller must provision distinct filesystem roots for distinct
-    /// disclosure domains. The exclusive sealed-directory lock prevents
+    /// disclosure domains. The receipt must come from actual single-threaded
+    /// confinement installation before any mutable role resources are opened.
+    /// It remains retained through native and staged-inode ownership. The
+    /// exclusive sealed-directory lock prevents
     /// concurrent publisher processes from racing identity-checked mutations.
     ///
     /// # Errors
     /// Rejects unsafe ownership, permissions, filesystem types, cross-device
-    /// paths, symlinks and an already-running publisher for this directory.
-    pub fn open(domain: String, sealed: &Path, staging: &Path, pending: &Path) -> io::Result<Self> {
-        let mut publisher = Self::open_unrecovered(domain, sealed, staging, pending)?;
-        publisher.initialize_staging()?;
-        Ok(publisher)
-    }
-
-    pub(super) fn open_unrecovered(
+    /// paths, symlinks, changed confinement and an already-running publisher
+    /// for this directory.
+    pub fn open(
+        confinement: Arc<crate::quota_confinement::Installed>,
         domain: String,
         sealed: &Path,
         staging: &Path,
         pending: &Path,
     ) -> io::Result<Self> {
+        confinement.check_current()?;
+        let mut publisher = Self::open_unrecovered(confinement, domain, sealed, staging, pending)?;
+        publisher.initialize_staging()?;
+        Ok(publisher)
+    }
+
+    pub(super) fn open_unrecovered(
+        confinement: Arc<crate::quota_confinement::Installed>,
+        domain: String,
+        sealed: &Path,
+        staging: &Path,
+        pending: &Path,
+    ) -> io::Result<Self> {
+        confinement.check_current()?;
         Domain::parse(&domain)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let quarantine_path = sealed
@@ -309,6 +330,7 @@ impl NativePublisher {
         fs::flock(&staging, fs::FlockOperation::NonBlockingLockExclusive)?;
         fs::flock(&pending, fs::FlockOperation::NonBlockingLockExclusive)?;
         Ok(Self {
+            confinement,
             domain,
             sealed,
             staging_root: Arc::new(staging),
@@ -320,12 +342,14 @@ impl NativePublisher {
     }
 
     fn private_staging(&self) -> io::Result<&Arc<File>> {
+        self.confinement.check_current()?;
         self.staging
             .as_ref()
             .ok_or_else(|| io::Error::other("publisher staging is not initialized"))
     }
 
     pub(super) fn initialize_staging(&mut self) -> io::Result<()> {
+        self.confinement.check_current()?;
         let entries = fs::Dir::read_from(self.staging_root.as_ref())?;
         for entry in entries {
             let entry = entry?;
@@ -394,6 +418,7 @@ impl NativePublisher {
     }
 
     fn check_claim(&self, claim: &PublicationClaim) -> io::Result<()> {
+        self.confinement.check_current()?;
         if claim.domain() != self.domain {
             return Err(invalid("publisher disclosure domain mismatch"));
         }
@@ -401,6 +426,7 @@ impl NativePublisher {
     }
 
     fn shard(&self, claim: &PublicationClaim) -> io::Result<File> {
+        self.confinement.check_current()?;
         self.check_claim(claim)?;
         child_directory(&self.sealed, &name(claim)[..2])
     }
@@ -413,6 +439,7 @@ impl NativePublisher {
     /// # Errors
     /// Returns domain, missing inode, conflicting pending name or sync failures.
     pub fn retire(&mut self, claim: &PublicationClaim) -> io::Result<()> {
+        self.confinement.check_current()?;
         let shard = self.shard(claim)?;
         let name = name(claim);
         fs::renameat_with(
@@ -433,6 +460,7 @@ impl NativePublisher {
     /// # Errors
     /// Returns missing pending data, canonical conflict or synchronization errors.
     pub fn restore(&mut self, claim: &PublicationClaim) -> io::Result<()> {
+        self.confinement.check_current()?;
         let shard = self.shard(claim)?;
         let name = name(claim);
         fs::renameat_with(
@@ -452,6 +480,7 @@ impl NativePublisher {
         claim: &PublicationClaim,
         expected: &File,
     ) -> io::Result<()> {
+        self.confinement.check_current()?;
         let current = self.open(claim)?;
         compare_inode(expected, &current)?;
         self.retire(claim)
@@ -461,6 +490,7 @@ impl NativePublisher {
     // A pending sealed entry may be corrupt and still need safe retirement.
     #[cfg(feature = "tokio")]
     pub(super) fn inspect_pending_sealed(&self, descriptor: &Descriptor) -> io::Result<File> {
+        self.confinement.check_current()?;
         let name: String = descriptor
             .digest()
             .iter()
@@ -506,6 +536,7 @@ impl NativePublisher {
         descriptor: &Descriptor,
         expected: &File,
     ) -> io::Result<()> {
+        self.confinement.check_current()?;
         let current = self.inspect_pending_sealed(descriptor)?;
         compare_inode(expected, &current)?;
         let name: String = descriptor
@@ -531,6 +562,7 @@ impl NativePublisher {
         descriptor: &Descriptor,
         expected: &File,
     ) -> io::Result<()> {
+        self.confinement.check_current()?;
         let current = self.inspect_pending_sealed(descriptor)?;
         compare_inode(expected, &current)?;
         let name: String = descriptor
@@ -549,6 +581,7 @@ impl NativePublisher {
     /// # Errors
     /// Returns domain, unlink or synchronization errors.
     pub fn complete_unlink_none(&mut self, claim: &PublicationClaim) -> io::Result<()> {
+        self.confinement.check_current()?;
         self.check_claim(claim)?;
         fs::unlinkat(&self.pending, name(claim).as_str(), AtFlags::empty())?;
         self.pending.sync_all()
@@ -570,6 +603,7 @@ impl NativePublisher {
         rejected: &File,
         quarantine: &File,
     ) -> io::Result<()> {
+        self.confinement.check_current()?;
         self.check_claim(claim)?;
         let target = quarantine.metadata()?;
         if !target.is_dir()
@@ -616,6 +650,7 @@ impl PublicationKernel for NativePublisher {
     type Handle = File;
 
     fn stage(&mut self, claim: &PublicationClaim, mut source: File) -> io::Result<StagedFile> {
+        self.confinement.check_current()?;
         self.check_claim(claim)?;
         let staging = Arc::clone(self.private_staging()?);
         let source_metadata = source.metadata()?;
@@ -677,12 +712,14 @@ impl PublicationKernel for NativePublisher {
                 writer: Some(writer),
                 directory: Arc::clone(&staging),
                 _staging_root: Arc::clone(&self.staging_root),
+                confinement: Arc::clone(&self.confinement),
                 name: temporary,
             });
         }
     }
 
     fn close_writers(&mut self, staged: &mut StagedFile) -> io::Result<()> {
+        self.confinement.check_current()?;
         if let Some(writer) = staged.writer.take() {
             close_writer(writer)?;
         }
@@ -690,6 +727,7 @@ impl PublicationKernel for NativePublisher {
     }
 
     fn seal(&mut self, staged: &StagedFile) -> io::Result<VerityBinding> {
+        self.confinement.check_current()?;
         if staged.writer.is_some() {
             return Err(invalid("private inode still has a writer"));
         }
@@ -697,10 +735,12 @@ impl PublicationKernel for NativePublisher {
     }
 
     fn sync_staged(&mut self, staged: &StagedFile) -> io::Result<()> {
+        self.confinement.check_current()?;
         staged.reader.sync_all()
     }
 
     fn insert(&mut self, claim: &PublicationClaim, staged: &StagedFile) -> io::Result<bool> {
+        self.confinement.check_current()?;
         let shard = self.shard(claim)?;
         match fs::linkat(
             staged.directory.as_ref(),
@@ -716,10 +756,12 @@ impl PublicationKernel for NativePublisher {
     }
 
     fn sync_parent(&mut self, claim: &PublicationClaim) -> io::Result<()> {
+        self.confinement.check_current()?;
         self.shard(claim)?.sync_all()
     }
 
     fn rollback(&mut self, claim: &PublicationClaim, staged: &StagedFile) -> io::Result<()> {
+        self.confinement.check_current()?;
         let current = self.open(claim)?;
         let expected = staged.reader.metadata()?;
         let actual = current.metadata()?;
@@ -751,10 +793,12 @@ impl PublicationKernel for NativePublisher {
     }
 
     fn measure(&mut self, handle: &File) -> io::Result<VerityBinding> {
+        self.confinement.check_current()?;
         verity::measure(handle)
     }
 
     fn sync_handle(&mut self, handle: &File) -> io::Result<()> {
+        self.confinement.check_current()?;
         handle.sync_all()
     }
 
@@ -764,6 +808,7 @@ impl PublicationKernel for NativePublisher {
         rejected: &Self::Handle,
         cause: &AdoptionFailure,
     ) -> io::Result<()> {
+        self.confinement.check_current()?;
         let corrupt = match cause {
             AdoptionFailure::RecordedBindingMismatch => true,
             AdoptionFailure::KernelSeal(error) => matches!(

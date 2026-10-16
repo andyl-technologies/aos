@@ -223,6 +223,7 @@ struct RetainedBody {
 }
 
 pub(super) struct CommandOwner {
+    confinement: std::sync::Arc<crate::quota_confinement::Installed>,
     domain: String,
     publisher: Option<Publisher<NativePublisher, WorkerState>>,
     cache: Option<[u8; 16]>,
@@ -244,8 +245,10 @@ impl CommandOwner {
         body_io: BodyIo,
         profile: ChunkProfile,
         inventory: super::inventory::NativeInventory,
+        confinement: std::sync::Arc<crate::quota_confinement::Installed>,
     ) -> Self {
         Self {
+            confinement,
             domain,
             publisher: Some(publisher),
             cache: None,
@@ -266,6 +269,7 @@ impl CommandOwner {
     }
 
     pub(super) fn validate_claim(&self, claim: &PublicationClaim) -> io::Result<()> {
+        self.confinement.check_current()?;
         if claim.domain() != self.domain {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -352,6 +356,7 @@ impl CommandOwner {
         context: NativeCommandContext,
         operation: NativeOperation,
     ) -> io::Result<NativeCommandResult> {
+        self.confinement.check_current()?;
         if context.domain != self.domain {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,

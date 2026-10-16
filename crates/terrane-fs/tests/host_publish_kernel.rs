@@ -8,6 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use terrane::host::publication::{
     FsPublicationState, PublicationClaim, PublicationRecipe, PublicationState, Publisher,
@@ -72,8 +73,19 @@ fn directories(root: &Path, name: &str) -> [PathBuf; 3] {
     paths
 }
 
-fn adapter(domain: &str, paths: &[PathBuf; 3]) -> NativePublisher {
-    NativePublisher::open(domain.into(), &paths[0], &paths[1], &paths[2]).unwrap()
+fn adapter(
+    confinement: &Arc<terrane_fs::quota_confinement::Installed>,
+    domain: &str,
+    paths: &[PathBuf; 3],
+) -> NativePublisher {
+    NativePublisher::open(
+        Arc::clone(confinement),
+        domain.into(),
+        &paths[0],
+        &paths[1],
+        &paths[2],
+    )
+    .unwrap()
 }
 
 fn assert_empty_private_staging(root: &Path) {
@@ -95,9 +107,15 @@ fn source(root: &Path, bytes: &[u8]) -> File {
     File::open(path).unwrap()
 }
 
-#[test]
-#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
-fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
+/// Runs the non-production genuine-kernel publication sequence fixture.
+///
+/// # Errors
+/// Rejects a receipt belonging to a different process or changed confinement.
+///
+/// # Panics
+/// Panics when actual sealing, durability, adoption or isolation assertions fail.
+pub fn run(confinement: Arc<terrane_fs::quota_confinement::Installed>) -> io::Result<()> {
+    confinement.check_current()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -111,7 +129,7 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
         fs::create_dir(&state_path).unwrap();
         fs::set_permissions(&state_path, fs::Permissions::from_mode(0o700)).unwrap();
         let mut publisher = Publisher::new(
-            adapter("public", &paths),
+            adapter(&confinement, "public", &paths),
             FsPublicationState::new(terrane::store::TokioLocalFs, state_path.clone()),
         );
         let published = publisher
@@ -153,7 +171,7 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
         fs::create_dir(&state_path).unwrap();
         fs::set_permissions(&state_path, fs::Permissions::from_mode(0o700)).unwrap();
         let mut publisher = Publisher::new(
-            adapter("public", &paths),
+            adapter(&confinement, "public", &paths),
             FsPublicationState::new(terrane::store::TokioLocalFs, state_path.clone()),
         );
         let adopted = publisher.adopt(&claim).await.unwrap();
@@ -213,7 +231,10 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
 
         let other_paths = directories(&root, "private");
         let other_claim = crate::claim("private:other", b"immutable content");
-        let mut other = Publisher::new(adapter("private:other", &other_paths), State::default());
+        let mut other = Publisher::new(
+            adapter(&confinement, "private:other", &other_paths),
+            State::default(),
+        );
         let private = other
             .publish(&other_claim, source(&root, b"immutable content"))
             .await
@@ -224,7 +245,7 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
 
         let failure_paths = directories(&root, "failure");
         let mut failure = Publisher::new(
-            adapter("public", &failure_paths),
+            adapter(&confinement, "public", &failure_paths),
             State {
                 fail: true,
                 ..State::default()
@@ -244,8 +265,10 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
         let unsealed = unsealed_paths[0].join(&hex[..2]).join(&hex);
         fs::write(&unsealed, b"immutable content").unwrap();
         fs::set_permissions(&unsealed, fs::Permissions::from_mode(0o400)).unwrap();
-        let mut unsealed_publisher =
-            Publisher::new(adapter("public", &unsealed_paths), State::default());
+        let mut unsealed_publisher = Publisher::new(
+            adapter(&confinement, "public", &unsealed_paths),
+            State::default(),
+        );
         let rejected_inode = fs::metadata(&unsealed).unwrap().ino();
         assert!(
             unsealed_publisher
@@ -290,4 +313,5 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
             "bad request metadata must not quarantine a valid canonical inode"
         );
     });
+    Ok(())
 }

@@ -18,3 +18,6 @@ pub use worker::{
     NativePublisherConfig, NativePublisherPrepared, NativeRetirementPolicy, NativeSealProbe,
     NativeWipePolicy,
 };
+
+#[cfg(feature = "native-test-fixtures")]
+pub use worker::run_native_fixture;
