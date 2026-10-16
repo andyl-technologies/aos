@@ -374,10 +374,10 @@ fn native_response(
     let mut packet = error_response(header, ResultCode::Ok);
     let mut files = Vec::new();
     match result {
-        NativeCommandResult::Probe { file, binding } => {
-            packet.verity_algorithm = u32::from(binding.algorithm);
-            packet.verity_digest = binding.digest;
-            files.push(file);
+        NativeCommandResult::Probe { probe } => {
+            packet.verity_algorithm = u32::from(probe.binding().algorithm);
+            packet.verity_digest = probe.binding().digest.clone();
+            files.push(probe.into_handle());
         }
         NativeCommandResult::Published {
             object,
