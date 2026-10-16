@@ -141,6 +141,9 @@ impl NativePublisher {
         let sealed = open_directory(sealed)?;
         let staging = open_directory(staging)?;
         let pending = open_directory(pending)?;
+        if staging.metadata()?.mode() & 0o777 != 0o700 {
+            return Err(invalid("publisher staging directory must be private mode 0700"));
+        }
         let device = sealed.metadata()?.dev();
         if staging.metadata()?.dev() != device || pending.metadata()?.dev() != device {
             return Err(invalid("publisher directories must share one filesystem"));

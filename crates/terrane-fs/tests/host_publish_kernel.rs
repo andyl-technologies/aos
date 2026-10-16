@@ -43,6 +43,7 @@ fn directories(root: &Path, name: &str) -> [PathBuf; 3] {
     fs::create_dir(&base).unwrap();
     let paths = [base.join("sealed"), base.join("staging"), base.join("pending")];
     for path in &paths { fs::create_dir(path).unwrap(); }
+    fs::set_permissions(&paths[1], fs::Permissions::from_mode(0o700)).unwrap();
     paths
 }
 
