@@ -2267,6 +2267,9 @@ fn launch_production_node_generation(
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod node_lease_cleanup_tests;
+
 fn finish_reaped_node_lease_map(
     node_generations: &BTreeMap<NodeId, u64>,
     node_leases: &mut BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
@@ -2283,7 +2286,7 @@ fn finish_reaped_node_lease_map(
             }
             continue;
         };
-        let Some(mut lease) = node_leases.remove(node) else {
+        let Some(lease) = node_leases.get_mut(node) else {
             if first_error.is_none() {
                 first_error = Some(format!(
                     "reaped QEMU node `{}` has no generation lease",
@@ -2301,14 +2304,18 @@ fn finish_reaped_node_lease_map(
             }
             continue;
         }
-        if let Err(error) = lease.finish()
-            && first_error.is_none()
-        {
-            first_error = Some(format!(
-                "finish reaped QEMU node `{}` generation {generation}: {error}",
-                node.name
-            ));
+        if let Err(error) = lease.finish() {
+            if first_error.is_none() {
+                first_error = Some(format!(
+                    "finish reaped QEMU node `{}` generation {generation}: {error}",
+                    node.name
+                ));
+            }
+            continue;
         }
+        // A refusal leaves this exact owner available for the same cleanup.
+        // Only successful retirement permits destruction of the lease body.
+        node_leases.remove(node);
     }
     first_error.map_or(Ok(()), |message| {
         Err(SchedulerError::BoundaryViolation { message })
