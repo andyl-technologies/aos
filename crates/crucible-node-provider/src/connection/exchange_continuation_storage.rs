@@ -748,6 +748,7 @@ fn within_clone(
     bound: &OriginalSerializationStorageData,
 ) -> Result<(), ProviderError> {
     if actual.dom_and_canonical_scratch_bytes > bound.dom_and_canonical_scratch_bytes
+        || actual.retained_value_backing_bytes > bound.retained_value_backing_bytes
         || actual.sequence_elements > bound.sequence_elements
         || actual.sequence_containers > bound.sequence_containers
     {
@@ -764,6 +765,10 @@ pub(super) fn within(
         (
             actual.dom_and_canonical_scratch_bytes,
             bound.dom_and_canonical_scratch_bytes,
+        ),
+        (
+            actual.retained_value_backing_bytes,
+            bound.retained_value_backing_bytes,
         ),
         (
             actual.projected_parser_requested_bytes,

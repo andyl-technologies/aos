@@ -59,6 +59,10 @@ pub(crate) fn encode_original_precharged_serialization_into(
             admitted.dom_and_canonical_scratch_bytes,
         ),
         (
+            actual.retained_value_backing_bytes,
+            admitted.retained_value_backing_bytes,
+        ),
+        (
             actual.projected_parser_requested_bytes,
             admitted.projected_parser_requested_bytes,
         ),
@@ -176,6 +180,15 @@ pub(crate) fn closed_event_serialization_storage_data(
     ])?;
     let result = NativeSerializationStorageData {
         dom_and_canonical_scratch_bytes,
+        // Each actual object root is a backing-bearing serialized event.
+        // The independently proved capacity-record count bounds those roots,
+        // including empty maps. Parser children and the Value root remain
+        // separate; canonical/sort/output work is never used as backing.
+        retained_value_backing_bytes: sum(&[
+            projected_parser_requested_bytes,
+            multiply(serialized_capacity_records, dom_tree)?,
+            size_of::<Value>(),
+        ])?,
         projected_parser_requested_bytes,
         canonical_output_requested_bytes: add(multiply(4, maximum_encoded_bytes)?, 256)?,
         serializer_temporary_requested_bytes,
@@ -205,6 +218,8 @@ pub(crate) fn sum_serialization_storage_data(
     let add = |left: usize, right: usize| left.checked_add(right).ok_or_else(fail);
     let mut result = NativeSerializationStorageData {
         dom_and_canonical_scratch_bytes: 0,
+        // This accumulator contains no child until the checked loop below.
+        retained_value_backing_bytes: 0,
         projected_parser_requested_bytes: 0,
         canonical_output_requested_bytes: 0,
         serializer_temporary_requested_bytes: 0,
@@ -222,6 +237,7 @@ pub(crate) fn sum_serialization_storage_data(
             };
         }
         component!(dom_and_canonical_scratch_bytes);
+        component!(retained_value_backing_bytes);
         component!(projected_parser_requested_bytes);
         component!(canonical_output_requested_bytes);
         component!(serializer_temporary_requested_bytes);

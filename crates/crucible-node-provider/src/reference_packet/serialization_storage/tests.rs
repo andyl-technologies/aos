@@ -132,6 +132,7 @@ fn actual_native_model_quote_accepts_exact_total_and_refuses_one_short() {
 #[test]
 fn closed_event_layout_dominates_actual_serde_dom_parser_and_utf16_key_phases() {
     let values = [
+        serde_json::json!({}),
         serde_json::json!({"unicode\"\n":"\u{10000}\u{e000}", "nested":[{}, [], "", 0, 1.0, null]}),
         serde_json::json!({"canonical":[[vec![255u8; 127], 257]], "records":[["native_policy", 81, 1, 1]]}),
     ];
@@ -148,6 +149,12 @@ fn closed_event_layout_dominates_actual_serde_dom_parser_and_utf16_key_phases() 
         .unwrap();
 
         assert!(actual.dom_and_canonical_scratch_bytes <= bound.dom_and_canonical_scratch_bytes);
+        assert!(actual.retained_value_backing_bytes <= bound.retained_value_backing_bytes);
+        let combined = sum_serialization_storage_data(&[&actual, &bound], usize::MAX).unwrap();
+        assert_eq!(
+            combined.retained_value_backing_bytes,
+            actual.retained_value_backing_bytes + bound.retained_value_backing_bytes
+        );
         assert!(actual.projected_parser_requested_bytes <= bound.projected_parser_requested_bytes);
         assert!(actual.canonical_output_requested_bytes <= bound.canonical_output_requested_bytes);
         assert!(actual.requested_total().unwrap() <= bound.requested_total().unwrap());
@@ -185,6 +192,16 @@ fn precharged_existing_bank_checks_logical_events_before_materialization() {
         actual_serialization_storage_data(&value, Default::default(), 16 * 1024 * 1024).unwrap();
     one_short.serialized_capacity_records -= 1;
     assert!(encode_original_precharged_serialization_into(&value, &one_short, &mut bank,).is_err());
+    assert!(bank.is_empty());
+    assert_eq!(before, (bank.as_ptr(), bank.capacity()));
+
+    let mut backing_one_short =
+        actual_serialization_storage_data(&value, Default::default(), 16 * 1024 * 1024).unwrap();
+    backing_one_short.retained_value_backing_bytes -= 1;
+    assert!(
+        encode_original_precharged_serialization_into(&value, &backing_one_short, &mut bank)
+            .is_err()
+    );
     assert!(bank.is_empty());
     assert_eq!(before, (bank.as_ptr(), bank.capacity()));
 }

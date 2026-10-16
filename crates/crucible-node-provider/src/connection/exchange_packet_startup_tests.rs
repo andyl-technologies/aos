@@ -216,10 +216,11 @@ fn native_retained_prefix_counts_real_independent_dom_copies_without_replacing_l
         observer.observe(value)?;
         owned = add(owned, requested_facts(&observer.finish())?)?;
     }
-    let objects = [OriginalContinuationContentExtent {
-        maximum_payload_bytes: 128,
-        media_type: "application/json",
-    }; 2];
+    let objects: [OriginalContinuationContentExtent<'_>; 2] =
+        std::array::from_fn(|_| OriginalContinuationContentExtent {
+            maximum_payload_bytes: 128,
+            media_type: "application/json",
+        });
     let quote = |baseline| {
         quote_startup_parts(
             (authority.session_id(), authority.incarnation_id()),
@@ -253,5 +254,12 @@ fn native_retained_prefix_counts_real_independent_dom_copies_without_replacing_l
     );
     assert!(native.native_source_backing_bytes.is_some());
     assert!(legacy.native_source_backing_bytes.is_none());
+
+    let mut backing_one_short = continuation::copy_storage(&shape);
+    backing_one_short.retained_value_backing_bytes = shape
+        .retained_value_backing_bytes
+        .checked_sub(1)
+        .ok_or_else(credit)?;
+    assert!(continuation::within(&shape, &backing_one_short).is_err());
     Ok(())
 }
