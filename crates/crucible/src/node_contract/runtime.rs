@@ -36,6 +36,11 @@ mod retained_storage;
 
 pub(crate) use retained_storage::OriginalRuntimeStorageIdentity;
 
+#[path = "runtime/construction_storage.rs"]
+mod construction_storage;
+
+pub use construction_storage::OriginalFixedFourRuntimeConstructionStorageData;
+
 pub(crate) use continuation::capture_ticket::owned::OwnedStorage as RuntimeOwnedStorage;
 pub(crate) use continuation::capture_ticket::owned::opaque_owner_counter_scratch_data;
 pub use continuation::capture_ticket::owned::{

@@ -41,6 +41,36 @@ struct OriginalLineageSchedulingIdentity {
 pub(in super::super) struct OriginalSchedulingState(Rc<Original>);
 
 impl OriginalSchedulingState {
+    /// Names the real scheduler constructor's fixed owned-value and Rc views.
+    pub(super) fn construction_counter_scratch_data() -> usize {
+        std::mem::size_of::<Original>()
+            + std::mem::size_of::<HashRef>()
+            + std::mem::size_of::<Rc<Original>>()
+            + std::mem::size_of::<Rc<()>>()
+    }
+
+    /// Counts this real uninitialized scheduler allocation and cloned world key.
+    ///
+    /// The caller separately includes its inline Rc handle and fixed counter
+    /// views. This DATA quote constructs no Rc or weak authority alias.
+    ///
+    /// # Errors
+    /// Refuses unsupported owned data, arithmetic overflow or the bound.
+    pub(super) fn construction_storage_data(
+        world: &HashRef,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        use super::RuntimeOwnedStorage;
+        let header = super::NodeRuntime::capture_protocol_shared_header_storage(
+            1, std::mem::align_of::<Original>(), maximum,
+        )?;
+        let world = world.owned_storage()?;
+        header.checked_add(std::mem::size_of::<Original>())
+            .and_then(|bytes| bytes.checked_add(world))
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
     pub(in super::super) fn charge_original_retained_storage(
         &self,
         counter: &mut super::super::runtime_owned_counter::RetainedRuntimeCounter,
