@@ -42,6 +42,10 @@ impl NativeOwnerExecutor {
     }
 
     /// Retains the complete acknowledged or failed handoff before any reply.
+    ///
+    /// # Errors
+    /// Refuses repeated handoffs, stale completion, failed or uncertain RPCs,
+    /// and poisoned custody while retaining the accepted physical outcome.
     pub(super) fn resume(&mut self, completed: CompletedRecovery) -> io::Result<()> {
         if self.running.is_some() || self.failed_resume.is_some() {
             return Err(io::Error::other("owner already retained a Resume outcome"));
@@ -71,6 +75,9 @@ impl NativeOwnerExecutor {
     }
 
     /// Refuses recovery-only commands after a physical Resume outcome.
+    ///
+    /// # Errors
+    /// Returns an error after any retained acknowledged or failed Resume handoff.
     pub(super) fn check_recovery_phase(&self) -> io::Result<()> {
         if self.running.is_some() || self.failed_resume.is_some() {
             return Err(io::Error::other(
