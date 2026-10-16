@@ -44,11 +44,19 @@ impl NativeCachePreparation {
     ) -> io::Result<Self> {
         config.validate()?;
         confinement.check_current()?;
-        // SAFETY: geteuid has no pointer arguments or mutable memory effects.
-        if unsafe { libc::geteuid() } != config.content_uid {
+        if rustix::process::geteuid().as_raw() != config.content_uid {
             return Err(invalid(
                 "cache process does not have the configured content UID",
             ));
+        }
+        let primary_group = rustix::process::getegid().as_raw();
+        let groups = rustix::process::getgroups()?;
+        for required in [config.content_gid, config.state_gid] {
+            if primary_group != required && !groups.iter().any(|group| group.as_raw() == required) {
+                return Err(invalid(
+                    "cache role lacks configured content or state group",
+                ));
+            }
         }
         let layout = Arc::new(NativeHostLayout::inspect_with_administrative_root(
             config.location.clone(),
