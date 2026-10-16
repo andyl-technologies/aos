@@ -11,7 +11,7 @@ use super::*;
 use crucible_linux_resource::host_services::process_birth::{
     AuthenticatedNativePoolPurpose, AuthenticatedNativeWorldClaim,
     AuthenticatedNativeWorldCleanupLoan, NativeNodeReservation, NativeWorldIdentity,
-    ServiceBirthError,
+    NativeWorldReturn, ServiceBirthError,
 };
 use crucible_linux_resource::host_supervision::HostOperationGuard;
 use crucible_linux_resource::ram_policy::HostResourceVector;
@@ -221,7 +221,11 @@ impl NormalNativePool {
                 continue;
             }
             if let Some(claim) = world.as_mut() {
-                claim.finish_after_members_returned()?;
+                if claim.try_finish_after_members_returned()? == NativeWorldReturn::PendingBody {
+                    // Its actual carrier can outlive member closure. Retain the
+                    // same World/debt and continue unrelated eligible returns.
+                    continue;
+                }
             }
             *world = None;
         }
@@ -522,15 +526,31 @@ impl LinuxQemuAttemptHostFactory {
             .normal_pool
             .take()
             .ok_or_else(|| missing_authority("retain normal node pool"))?;
+        let mut proven_unassigned = false;
         let result = (|| {
             pool.sweep_retired()
                 .map_err(original_roster::original_error)?;
+            if pool.worlds.iter().all(Option::is_some) {
+                // No callback, operation or new assignment has run. Retained
+                // bodies still consume real capacity without poisoning Main.
+                proven_unassigned = true;
+                return Err(missing_authority("normal World capacity is occupied"));
+            }
             let original = pool
                 .begin_preparation()
                 .map_err(original_roster::original_error)?;
-            let world = pool
-                .claim_world(identity, consumer_control_bytes, &original, populate)
-                .map_err(original_roster::original_error)?;
+            let world =
+                match pool.claim_world(identity, consumer_control_bytes, &original, populate) {
+                    Ok(world) => world,
+                    Err(source) => {
+                        proven_unassigned = matches!(
+                            &source,
+                            OriginalActorAccountError::NativePool(refusal)
+                                if refusal.world_assignment_was_refused()
+                        );
+                        return Err(original_roster::original_error(source));
+                    }
+                };
             // This is the first physical-birth cut. The nonempty logical
             // assignment already occupies its actual family rows. The caller
             // moves these exact holders into the prepaid pending owner/cell.
@@ -588,7 +608,7 @@ impl LinuxQemuAttemptHostFactory {
             Ok(owners)
         })();
         self.normal_pool = Some(pool);
-        if result.is_ok() {
+        if (result.is_ok() || proven_unassigned) && !self.process.is_poisoned() {
             self.poisoned = false;
         }
         result

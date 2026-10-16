@@ -36,6 +36,19 @@ pub(super) struct PreparedNodeReturn {
     used: HostResourceVector,
 }
 
+/// Distinguishes real retained body custody from an invalid return attempt.
+/// Ready is consumed only while the same caller still holds the ledger lock.
+#[derive(Debug)]
+pub(super) enum WorldReturnPreparation {
+    PendingBody,
+    Ready {
+        index: usize,
+        used: HostResourceVector,
+        peak: u64,
+        tables: u64,
+    },
+}
+
 pub(super) struct PoolLedger {
     ceiling: HostResourceVector,
     used: HostResourceVector,
@@ -145,6 +158,13 @@ impl PoolLedger {
             )
             .ok_or_else(|| ServiceBirthError::policy("native node epoch exhausted"))?;
 
+        let tables = requests
+            .iter()
+            .try_fold(0_u64, |sum, node| {
+                sum.checked_add(node.resources.file_descriptors)
+            })
+            .ok_or_else(|| ServiceBirthError::policy("native table aggregate overflows"))?;
+
         // All dimensions, cells and epochs are checked before publication.
         self.used = used;
         self.next_world = epoch;
@@ -177,12 +197,6 @@ impl PoolLedger {
                 windows_closed: [false; 2],
             });
         }
-        let tables = requests
-            .iter()
-            .try_fold(0_u64, |sum, node| {
-                sum.checked_add(node.resources.file_descriptors)
-            })
-            .ok_or_else(|| ServiceBirthError::policy("native table aggregate overflows"))?;
         Ok((epoch, peak, tables))
     }
 
@@ -443,7 +457,7 @@ impl PoolLedger {
     pub(super) fn prepare_world_return(
         &self,
         epoch: u64,
-    ) -> Result<(usize, HostResourceVector, u64, u64), ServiceBirthError> {
+    ) -> Result<WorldReturnPreparation, ServiceBirthError> {
         let world = self
             .worlds
             .iter()
@@ -452,9 +466,28 @@ impl PoolLedger {
         let containing = self.worlds[world]
             .as_ref()
             .ok_or_else(|| ServiceBirthError::policy("native World custody is absent"))?;
-        if !containing.consumer_closed {
+        if self
+            .worlds
+            .iter()
+            .flatten()
+            .filter(|world| world.epoch == epoch)
+            .count()
+            != 1
+            || containing.window.is_none()
+            || (!containing.node_constructor_entered
+                && !self
+                    .nodes
+                    .iter()
+                    .flatten()
+                    .any(|node| node.world_epoch == epoch))
+            || (containing.consumer_control_bytes == 0
+                && (!containing.consumer_closed || containing.consumer_issued))
+            || (containing.consumer_control_bytes != 0
+                && containing.consumer_closed
+                && !containing.consumer_issued)
+        {
             return Err(ServiceBirthError::policy(
-                "native World still retains containing-body custody",
+                "native World return custody is inconsistent",
             ));
         }
         let consumer_control_bytes = containing.consumer_control_bytes;
@@ -470,9 +503,10 @@ impl PoolLedger {
             .flatten()
             .filter(|node| node.world_epoch == epoch)
         {
-            if node.issued {
+            if node.issued || node.windows_issued != [false; 2] || node.windows_closed != [false; 2]
+            {
                 return Err(ServiceBirthError::policy(
-                    "native World has an issued member not physically returned",
+                    "native World has an issued or inconsistent member not physically returned",
                 ));
             }
             returned =
@@ -489,7 +523,16 @@ impl PoolLedger {
             .file_descriptors
             .checked_add(peak)
             .ok_or_else(|| ServiceBirthError::policy("native return descriptor sum overflows"))?;
-        Ok((world, subtract(self.used, returned)?, peak, tables))
+        let used = subtract(self.used, returned)?;
+        if !containing.consumer_closed {
+            return Ok(WorldReturnPreparation::PendingBody);
+        }
+        Ok(WorldReturnPreparation::Ready {
+            index: world,
+            used,
+            peak,
+            tables,
+        })
     }
 
     pub(super) fn commit_world_return(

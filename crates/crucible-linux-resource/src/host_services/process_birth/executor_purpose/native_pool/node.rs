@@ -47,11 +47,13 @@ impl AuthenticatedNativeNodeClaim {
         let after = postcut(held.as_ref(), original);
         match (result, after) {
             (Ok(()), None) => born.ok_or_else(|| NativePoolRefusal {
+                world_assignment_refused: false,
                 cause: ServiceBirthError::policy("native node issuer is absent"),
                 after: None,
                 _retained: None,
             }),
             (result, after) => Err(NativePoolRefusal {
+                world_assignment_refused: false,
                 cause: result.err().unwrap_or_else(|| {
                     ServiceBirthError::policy("native node issuer postcut refused")
                 }),
@@ -88,6 +90,7 @@ impl AuthenticatedNativeNodeClaim {
         match (result, after) {
             (Ok(()), None) => Ok(()),
             (result, after) => Err(NativePoolRefusal {
+                world_assignment_refused: false,
                 cause: result
                     .err()
                     .unwrap_or_else(|| ServiceBirthError::policy("Target landing postcut refused")),
@@ -198,11 +201,13 @@ impl AuthenticatedNativeNodeClaim {
         match (result, after) {
             (Ok(window), None) => Ok(window),
             (Err(cause), after) => Err(NativePoolRefusal {
+                world_assignment_refused: false,
                 cause,
                 after,
                 _retained: None,
             }),
             (Ok(window), Some(after)) => Err(NativePoolRefusal {
+                world_assignment_refused: false,
                 cause: ServiceBirthError::policy("native window postcut refused"),
                 after: Some(after),
                 _retained: Some(RetainedClaim::window(window)),
