@@ -17,6 +17,18 @@
     "one_chunk_above_inline_threshold_retains_manifest_identity"
     "manifest_and_claim_domain_are_checked_before_plaintext"
   ];
+  nativeNames = [
+    "disk_ext4_seal_noreplace_recovery_and_domain_isolation"
+    "canceled_waiter_retains_owner_through_actual_binding_durability"
+    "startup_reports_actual_private_state_recovery_failure"
+    "unsupported_wipe_policy_is_refused_before_directory_effects"
+    "pending_restart_rebuilds_lease_and_requires_canonical_adoption"
+    "pack_pair_reconciles_actual_partial_rename_without_replacing_collision"
+    "failed_second_unlink_recovers_orphan_index_without_pack_authority"
+    "prepared_roots_defer_staging_effects_and_retain_actual_exclusion"
+    "staged_writer_retains_root_exclusion_after_adapter_drop"
+    "actual_binding_path_failure_rolls_back_before_backing_acknowledgment"
+  ];
   sourceGate = sourceGateWithInputs {
     runtimeDeps = [pkgs.rust pkgs.rust.dev] ++ (pkgs.rust.runtimeDeps or []);
     extraBuildDeps = [pkgs.coreutils];
@@ -35,12 +47,10 @@
   '';
   image = sourceGate "host-publication-kernel-image" ''
     cd crates
-    cargo test --frozen --offline -p terrane-fs --features tokio --test host_publish_kernel \
-      --no-run --message-format=json > "$TMPDIR/publication-build.jsonl"
-    cargo test --frozen --offline -p terrane-fs --features tokio --lib \
-      --no-run --message-format=json >> "$TMPDIR/publication-build.jsonl"
+    cargo build --frozen --offline -p terrane-fs --features native-test-fixtures \
+      --example publication_fixture --message-format=json > "$TMPDIR/publication-build.jsonl"
     rustc --print target-libdir > "$TMPDIR/publication-rust-libdir"
-    python3 - "$TMPDIR/publication-build.jsonl" "$TMPDIR/publication-rust-libdir" "$out" <<'PY'
+    python3 - "$TMPDIR/publication-build.jsonl" "$TMPDIR/publication-rust-libdir" "$out" <<'PYBUILD'
     import json
     import pathlib
     import shutil
@@ -50,25 +60,51 @@
     output = pathlib.Path(sys.argv[3])
     (output / "bin").mkdir()
     (output / "lib").mkdir()
-    directories = {pathlib.Path(pathlib.Path(sys.argv[2]).read_text().strip())}
-    for target, installed in [
-            ("host_publish_kernel", "terrane-publication-kernel-tests"),
-            ("terrane_fs", "terrane-publication-worker-tests")]:
-        binaries = {item["executable"] for item in artifacts
-                    if item.get("reason") == "compiler-artifact"
-                    and item.get("target", {}).get("name") == target
-                    and item.get("profile", {}).get("test") is True
-                    and item.get("executable")}
-        if len(binaries) != 1:
-            raise SystemExit(f"expected exactly one {target} test executable")
-        binary = pathlib.Path(next(iter(binaries)))
-        shutil.copy2(binary, output / "bin" / installed)
-        directories.add(binary.parent)
+    binaries = {item["executable"] for item in artifacts
+                if item.get("reason") == "compiler-artifact"
+                and item.get("target", {}).get("name") == "publication_fixture"
+                and "example" in item.get("target", {}).get("kind", [])
+                and item.get("executable")}
+    if len(binaries) != 1:
+        raise SystemExit("expected exactly one fresh-process publication example")
+    binary = pathlib.Path(next(iter(binaries)))
+    shutil.copy2(binary, output / "bin" / "terrane-publication-fixture")
+    directories = {binary.parent, binary.parent.parent / "deps",
+                   pathlib.Path(pathlib.Path(sys.argv[2]).read_text().strip())}
     for directory in directories:
         for library in directory.glob("*.so*"):
             if library.is_file():
                 shutil.copy2(library, output / "lib" / library.name)
-    PY
+    PYBUILD
+    export LD_LIBRARY_PATH="$out/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    "$out/bin/terrane-publication-fixture" --list > "$out/selectors.txt"
+    "$out/bin/terrane-publication-fixture" --fixture-inputs > "$TMPDIR/publication-inputs.txt"
+    python3 - "$out" "$TMPDIR/publication-inputs.txt" '${builtins.toJSON nativeNames}' <<'PYASSETS'
+    import json
+    import pathlib
+    import sys
+
+    output = pathlib.Path(sys.argv[1])
+    if (output / "selectors.txt").read_text().splitlines() != json.loads(sys.argv[3]):
+        raise SystemExit("native publication selector inventory changed")
+    expected = {f"{root}/objects/pack/{byte}/{byte * 16}.{extension}"
+                for root, byte in [("worker-pack-partial-rename", "31"),
+                                   ("worker-pack-partial-unlink", "42")]
+                for extension in ["pack", "idx"]}
+    seen = set()
+    for record in pathlib.Path(sys.argv[2]).read_text().splitlines():
+        relative, encoded = record.split("\t")
+        if relative not in expected or relative in seen:
+            raise SystemExit("unexpected or duplicate fixture asset")
+        if len(encoded) > 2097152 or len(encoded) % 2 or any(c not in "0123456789abcdef" for c in encoded):
+            raise SystemExit("invalid bounded canonical fixture hex")
+        destination = output / "fixtures" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(bytes.fromhex(encoded))
+        seen.add(relative)
+    if seen != expected:
+        raise SystemExit("missing native fixture asset")
+    PYASSETS
   '';
   testing = import ../../../lib/testing {inherit pkgs lib;};
   native = testing.mkVMTest {
@@ -80,47 +116,59 @@
       # The loop image lives on the guest's persistent root disk, never /tmp.
       truncate -s 96M /var/lib/terrane-publication/verity.img
       mkfs.ext4 -F -O verity /var/lib/terrane-publication/verity.img
+      trap 'umount /mnt/terrane-publication || true; rm -f /var/lib/terrane-publication/verity.img' EXIT
+      umask 077
       mount -t ext4 -o loop /var/lib/terrane-publication/verity.img /mnt/terrane-publication
-      export TERRANE_PUBLISH_VM_ROOT=/mnt/terrane-publication
-      export LD_LIBRARY_PATH="${image}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-      ${image}/bin/terrane-publication-kernel-tests --list \
-        > /var/lib/terrane-publication/inventory.log
-      grep -Fx 'disk_ext4_seal_noreplace_recovery_and_domain_isolation: test' \
-        /var/lib/terrane-publication/inventory.log
-      if ! ${image}/bin/terrane-publication-kernel-tests \
-        --ignored --exact disk_ext4_seal_noreplace_recovery_and_domain_isolation \
-        --test-threads=1 --nocapture > /var/lib/terrane-publication/result.log 2>&1; then
-        cat /var/lib/terrane-publication/result.log
-        exit 1
-      fi
-      cat /var/lib/terrane-publication/result.log
-      grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' \
-        /var/lib/terrane-publication/result.log
-      ${image}/bin/terrane-publication-worker-tests --list \
-        > /var/lib/terrane-publication/worker-inventory.log
-      for worker_case in \
-        canceled_waiter_retains_owner_through_actual_binding_durability \
-        startup_reports_actual_private_state_recovery_failure \
-        pending_restart_rebuilds_lease_and_requires_canonical_adoption \
-        pack_pair_reconciles_actual_partial_rename_without_replacing_collision \
-        failed_second_unlink_recovers_orphan_index_without_pack_authority \
-        prepared_roots_defer_staging_effects_and_retain_actual_exclusion \
-        staged_writer_retains_root_exclusion_after_adapter_drop \
-        actual_binding_path_failure_rolls_back_before_backing_acknowledgment; do
-        worker_selector="publisher_io::worker::tests::$worker_case"
-        grep -Fx "$worker_selector: test" /var/lib/terrane-publication/worker-inventory.log
-        if ! ${image}/bin/terrane-publication-worker-tests --ignored --exact \
-          "$worker_selector" --test-threads=1 --nocapture \
-          > /var/lib/terrane-publication/worker-result.log 2>&1; then
-          cat /var/lib/terrane-publication/worker-result.log
+      # All ownership and encoded fixture inputs are installed by the external
+      # supervisor before the fresh publisher process drops credentials/caps.
+      chown 841:845 /mnt/terrane-publication
+      chmod 0700 /mnt/terrane-publication
+      for fixture_root in \
+        worker-cancellation worker-startup-failure worker-pending-restart \
+        worker-pack-partial-rename worker-pack-partial-unlink \
+        worker-prepared-roots worker-staged-root-retention worker-binding-path-failure; do
+        root="/mnt/terrane-publication/$fixture_root"
+        mkdir -p "$root/state/publication" "$root/sealed" "$root/staging" "$root/pending-delete" \
+          "$root/chunks" "$root/objects" "$root/quarantine"
+        chown 841:845 "$root" "$root/state" "$root/state/publication" \
+          "$root/sealed" "$root/staging" "$root/pending-delete"
+        chmod 0700 "$root" "$root/state/publication" "$root/sealed" "$root/staging" "$root/pending-delete"
+        chmod 0755 "$root/state"
+        chown 840:845 "$root/chunks" "$root/objects" "$root/quarantine"
+        chmod 2770 "$root/chunks" "$root/objects" "$root/quarantine"
+      done
+      cp -R ${image}/fixtures/. /mnt/terrane-publication/
+      for fixture_root in worker-pack-partial-rename worker-pack-partial-unlink; do
+        case "$fixture_root" in
+          worker-pack-partial-rename) byte=31 ;;
+          worker-pack-partial-unlink) byte=42 ;;
+        esac
+        root="/mnt/terrane-publication/$fixture_root"
+        pack_id="$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte"
+        chown 840:845 "$root/objects/pack" "$root/objects/pack/$byte" \
+          "$root/objects/pack/$byte/$pack_id.pack" "$root/objects/pack/$byte/$pack_id.idx"
+        chmod 2770 "$root/objects/pack" "$root/objects/pack/$byte"
+        chmod 0640 "$root/objects/pack/$byte/$pack_id.pack" "$root/objects/pack/$byte/$pack_id.idx"
+      done
+      ln /mnt/terrane-publication/worker-pack-partial-unlink/objects/pack/42/42424242424242424242424242424242.idx \
+        /mnt/terrane-publication/worker-pack-partial-unlink/index-survivor
+      # Each selector is a separate exec before Installed exists. The example
+      # then installs the real fixed filter before creating its first runtime.
+      while IFS= read -r selector; do
+        if ! setpriv --reuid=841 --regid=845 --clear-groups \
+          --inh-caps=-all --ambient-caps=-all --bounding-set=-all \
+          ${pkgs.coreutils}/bin/env TERRANE_PUBLISH_VM_ROOT=/mnt/terrane-publication \
+          LD_LIBRARY_PATH="${image}/lib" ${image}/bin/terrane-publication-fixture "$selector" \
+          > /var/lib/terrane-publication/result.log 2>&1; then
+          cat /var/lib/terrane-publication/result.log
           exit 1
         fi
-        cat /var/lib/terrane-publication/worker-result.log
-        grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' \
-          /var/lib/terrane-publication/worker-result.log
-      done
+        cat /var/lib/terrane-publication/result.log
+        grep -Fx "PASS native-publication $selector" /var/lib/terrane-publication/result.log
+      done < ${image}/selectors.txt
       umount /mnt/terrane-publication
       rm /var/lib/terrane-publication/verity.img
+      trap - EXIT
     '';
   };
   combined = name:
