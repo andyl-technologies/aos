@@ -62,6 +62,55 @@ pub(crate) struct ConfiguredPublisherCustody {
     _socket_ancestors: Vec<OwnedFd>,
 }
 
+impl ConfiguredPublisherCustody {
+    /// Rechecks the actual quota partition and process for a prepared root.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another confinement receipt, a changed process, an uncovered
+    /// domain or any live root/project/UUID mismatch.
+    pub(crate) fn check_domain(
+        &self,
+        domain: &str,
+        root: &File,
+        confinement: &Arc<crate::quota_confinement::Installed>,
+    ) -> io::Result<()> {
+        if !Arc::ptr_eq(&self.confinement, confinement) {
+            return Err(invalid("prepared owner uses another confinement receipt"));
+        }
+        self.confinement.check_current()?;
+        let checked = self
+            .quotas
+            .iter()
+            .find(|checked| checked.observation.observation().domain == domain)
+            .ok_or_else(|| invalid("prepared domain lacks authenticated quota custody"))?;
+        let observation = checked.observation.observation();
+        let expected_root = observation
+            .roots
+            .iter()
+            .find(|root| root.role_directory == "layout-root")
+            .ok_or_else(|| invalid("quota domain root missing"))?;
+        let actual_root = NativeProject::inspect(root)?;
+        if actual_root.device != expected_root.device || actual_root.inode != expected_root.inode {
+            return Err(invalid(
+                "prepared root differs from authenticated quota root",
+            ));
+        }
+        for (file, expected) in checked.roots.iter().zip(&observation.roots) {
+            let actual = NativeProject::inspect(file)?;
+            if actual.device != expected.device
+                || actual.inode != expected.inode
+                || actual.project_id != observation.project_id
+                || !actual.inherit
+                || filesystem_uuid(file)?.as_slice() != observation.filesystem_uuid
+            {
+                return Err(invalid("retained quota root assignment changed"));
+            }
+        }
+        Ok(())
+    }
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
