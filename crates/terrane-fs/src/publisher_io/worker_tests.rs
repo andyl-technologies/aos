@@ -17,7 +17,7 @@ use terrane::store::TokioLocalFs;
 use terrane_core::chunking::ChunkProfile;
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
-use super::{NativePublicationWorker, NativePublisher, WorkerGate};
+use super::{NativePublicationWorker, NativePublisher, NativeWipePolicy, WorkerGate};
 
 fn fixture(name: &str) -> [PathBuf; 4] {
     let root =
@@ -71,6 +71,7 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability() {
     };
     let (worker, owner) = NativePublicationWorker::start_thread(
         "public".into(),
+        NativeWipePolicy::None,
         &paths[0],
         &paths[1],
         &paths[2],
@@ -128,7 +129,36 @@ fn startup_reports_actual_private_state_recovery_failure() {
     let paths = fixture("worker-startup-failure");
     fs::create_dir(paths[3].join(".binding-invalid-directory")).unwrap();
     assert!(
-        NativePublicationWorker::start("public".into(), &paths[0], &paths[1], &paths[2], &paths[3])
-            .is_err()
+        NativePublicationWorker::start(
+            "public".into(),
+            NativeWipePolicy::None,
+            &paths[0],
+            &paths[1],
+            &paths[2],
+            &paths[3]
+        )
+        .is_err()
     );
+}
+
+#[test]
+fn unsupported_wipe_policy_is_refused_before_directory_effects() {
+    let missing = Path::new("/unprovisioned-terrane-publisher");
+    for policy in [
+        NativeWipePolicy::Zero,
+        NativeWipePolicy::Discard,
+        NativeWipePolicy::Volatile,
+    ] {
+        let error = NativePublicationWorker::start(
+            "public".into(),
+            policy,
+            missing,
+            missing,
+            missing,
+            missing,
+        )
+        .err()
+        .expect("unsupported policy must refuse");
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    }
 }

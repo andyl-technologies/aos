@@ -103,6 +103,19 @@ impl WorkerGate {
     }
 }
 
+/// Selects the registered wipe policy explicitly at native publisher startup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeWipePolicy {
+    /// Permits ordinary retirement without an erasure guarantee.
+    None,
+    /// Requires overwriting blocks before removal; incompatible with this seal.
+    Zero,
+    /// Requires extent discard before removal; not implemented by this owner.
+    Discard,
+    /// Requires a suitable memory-backed seal primitive; not implemented here.
+    Volatile,
+}
+
 /// Submits fixed publication commands to an independently owned native worker.
 ///
 /// Cancellation drops only the response waiter. Once accepted, a command owns
@@ -121,18 +134,29 @@ impl NativePublicationWorker {
     ///
     /// # Errors
     /// Returns unsafe directory custody, incompatible filesystem, duplicate
-    /// publisher, runtime creation or thread creation errors before commands.
+    /// publisher, runtime creation, state recovery or thread creation errors.
+    /// Returns `Unsupported` for zero, discard or volatile policies before
+    /// creating any sealed or staging inode; no policy silently becomes unlink.
     pub fn start(
         domain: String,
+        wipe: NativeWipePolicy,
         sealed: &Path,
         staging: &Path,
         pending: &Path,
         state_directory: &Path,
     ) -> io::Result<Self> {
         #[cfg(test)]
-        let started = Self::start_thread(domain, sealed, staging, pending, state_directory, None);
+        let started = Self::start_thread(
+            domain,
+            wipe,
+            sealed,
+            staging,
+            pending,
+            state_directory,
+            None,
+        );
         #[cfg(not(test))]
-        let started = Self::start_thread(domain, sealed, staging, pending, state_directory);
+        let started = Self::start_thread(domain, wipe, sealed, staging, pending, state_directory);
         let (worker, thread) = started?;
         drop(thread);
         Ok(worker)
@@ -140,12 +164,20 @@ impl NativePublicationWorker {
 
     fn start_thread(
         domain: String,
+        wipe: NativeWipePolicy,
         sealed: &Path,
         staging: &Path,
         pending: &Path,
         state_directory: &Path,
         #[cfg(test)] before_record: Option<WorkerGate>,
     ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
+        if wipe != NativeWipePolicy::None {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native fs-verity publisher supports only explicitly configured wipe=none",
+            ));
+        }
+
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
