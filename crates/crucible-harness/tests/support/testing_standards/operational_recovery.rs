@@ -4,7 +4,7 @@
 //! custody assertion or adding another attempt leaves the retry token visible.
 //! These local controls establish no live native Source or lifecycle authority.
 
-use super::{compact_code, mask_identifier};
+use super::{compact_code, identifier_count, mask_identifier, source_pattern};
 
 struct Contract {
     package: &'static str,
@@ -259,7 +259,7 @@ fn mask_contract(contract: &Contract, code: &str) -> String {
     if !contract
         .required
         .iter()
-        .all(|part| compact.contains(&pattern(part)))
+        .all(|part| compact.contains(&source_pattern(part)))
         || !contract
             .identifiers
             .iter()
@@ -273,24 +273,6 @@ fn mask_contract(contract: &Contract, code: &str) -> String {
         masked = mask_identifier(&masked, name);
     }
     masked
-}
-
-fn identifier_count(code: &str, name: &str) -> usize {
-    let is_identifier = |character: char| character.is_ascii_alphanumeric() || character == '_';
-    code.match_indices(name)
-        .filter(|(start, _)| {
-            let end = *start + name.len();
-            code[..*start]
-                .chars()
-                .next_back()
-                .is_none_or(|c| !is_identifier(c))
-                && code[end..].chars().next().is_none_or(|c| !is_identifier(c))
-        })
-        .count()
-}
-
-fn pattern(source: &str) -> String {
-    compact_code(&super::super::scrub_comments_and_strings(source))
 }
 
 // Keep surrounding lexical boundaries when removing a multiline obligation.
@@ -344,7 +326,7 @@ fn recovery_names_require_custody_and_reject_additional_attempts()
         );
 
         for requirement in contract.required {
-            let obligation = pattern(requirement);
+            let obligation = source_pattern(requirement);
             assert!(compact.contains(&obligation));
             let changed = remove_obligation(&code, &obligation);
             assert!(
