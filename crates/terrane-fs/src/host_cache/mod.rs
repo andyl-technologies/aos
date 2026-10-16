@@ -15,6 +15,7 @@ pub use source::NativeChunkSource;
 
 use std::{
     collections::BTreeMap,
+    fs::File,
     io,
     os::fd::OwnedFd,
     path::{Component, Path, PathBuf},
@@ -25,6 +26,7 @@ use terrane::host::cache::DomainHostLayout;
 pub struct NativeHostLayout {
     layout: DomainHostLayout,
     root: OwnedFd,
+    provisioning: crate::host_quota::DomainProvisioningGuard,
     directories: BTreeMap<&'static str, OwnedFd>,
     administrative_root: Option<(PathBuf, OwnedFd)>,
 }
@@ -58,7 +60,18 @@ impl NativeHostLayout {
         administrative_root: Option<&Path>,
     ) -> io::Result<Self> {
         let root = open_directory_chain(layout.root())?;
+        // Provisioning takes the exclusive lock on this exact inode. The guard
+        // opens its own read-only description so O_PATH duplication cannot
+        // accidentally convert or release another actor's flock.
+        let provisioning =
+            crate::host_quota::DomainProvisioningGuard::shared(&File::from(root.try_clone()?))?;
         let root_stat = fstat(&root)?;
+        if provisioning.identity()? != (root_stat.st_dev, root_stat.st_ino) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "provisioning guard differs from inspected domain root",
+            ));
+        }
         let mut directories = BTreeMap::new();
         for name in [
             "chunks",
@@ -106,6 +119,7 @@ impl NativeHostLayout {
         Ok(Self {
             layout,
             root,
+            provisioning,
             directories,
             administrative_root,
         })
@@ -147,7 +161,9 @@ impl NativeHostLayout {
         let current_root = open_directory_chain(self.layout.root())?;
         let expected_root = fstat(&self.root)?;
         let actual_root = fstat(&current_root)?;
-        if expected_root.st_dev != actual_root.st_dev || expected_root.st_ino != actual_root.st_ino
+        if self.provisioning.identity()? != (expected_root.st_dev, expected_root.st_ino)
+            || expected_root.st_dev != actual_root.st_dev
+            || expected_root.st_ino != actual_root.st_ino
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
