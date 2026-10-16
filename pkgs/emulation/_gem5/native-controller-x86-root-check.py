@@ -18,6 +18,21 @@ import subprocess
 import sys
 
 
+# The first UART may follow several successful event-budget receipts. This is
+# one total search allowance, not a renewed allowance for each stopped grant.
+FIRST_UART_EVENT_ALLOWANCE = 10_000_000
+FIRST_UART_GRANT_EVENTS = 262_144
+FIRST_UART_MAXIMUM_GRANTS = (
+    FIRST_UART_EVENT_ALLOWANCE + FIRST_UART_GRANT_EVENTS - 1
+) // FIRST_UART_GRANT_EVENTS
+MAXIMUM_WITNESS_ORIGINALS = 1 + FIRST_UART_MAXIMUM_GRANTS + 8
+# An additional accepted-receipt bound leaves the controller's next-frame
+# reserve intact. Parsing and native allocation still have their own guards.
+MAXIMUM_ACCEPTED_RECEIPT_BYTES = (
+    16 * 1024 * 1024 - 4 * 1024 * 1024
+) // MAXIMUM_WITNESS_ORIGINALS
+
+
 native, source_directory, output_directory, configs, kernel, initrd = sys.argv[1:7]
 process_tools = sys.argv[7:]
 if len(process_tools) != 2:
@@ -133,6 +148,65 @@ def first_receipt_diagnostic(receipt):
             + "\nnative.log tail: " + native_log_diagnostic_tail(resource / "native.log"))
 
 
+def accepted_receipt_extent(receipt):
+    """Checks retained evidence after receipt, without substituting native credit."""
+    encoded = json.dumps(receipt, sort_keys=True, allow_nan=False).encode()
+    assert len(encoded) <= MAXIMUM_ACCEPTED_RECEIPT_BYTES
+
+
+def unsigned_decimal(value):
+    """Reads one canonical finite counter from the actual native receipt."""
+    assert type(value) is str and value.isascii() and value.isdecimal()
+    assert len(value) <= 20 and str(int(value)) == value
+    result = int(value)
+    assert result <= (1 << 64) - 1
+    return result
+
+
+def logical_coordinate(value):
+    """Orders the exact returned cursor, including same-tick phase and microstep."""
+    assert type(value) is dict and set(value) == {"time_ps", "microstep", "phase"}
+    phase = value["phase"]
+    assert type(phase) is int and 0 <= phase <= 3
+    return (unsigned_decimal(value["time_ps"]),
+            unsigned_decimal(value["microstep"]), phase)
+
+
+def authenticate_search_receipt(receipt, request, previous):
+    """Authenticates bounded genuine progress before any continuation or ACK."""
+    accepted_receipt_extent(receipt)
+    assert receipt["kind"] == "completed"
+    assert receipt["operation"] == request["operation"] and receipt["original"] == request
+    assert receipt["before"] == previous
+    processed = unsigned_decimal(receipt["processed_events"])
+    assert 0 < processed <= unsigned_decimal(request["maximum_events"])
+    after = receipt["after"]
+    assert unsigned_decimal(after["ordinal"]) == unsigned_decimal(previous["ordinal"]) + processed
+    assert unsigned_decimal(after["tick"]) >= unsigned_decimal(previous["tick"])
+    assert unsigned_decimal(after["tick"]) == unsigned_decimal(after["logical_position"]["time_ps"])
+    assert unsigned_decimal(after["tick_ordinal"]) > 0
+    assert (logical_coordinate(previous["logical_position"])
+            < logical_coordinate(after["logical_position"])
+            <= logical_coordinate(request["exact_range"]["limit"]))
+    assert receipt["exit_cause"] is None and receipt["exit_code"] is None
+    if receipt["reason"] == "event_budget":
+        assert processed == unsigned_decimal(request["maximum_events"])
+        assert receipt["output"] == [] and receipt["publications"] == []
+        assert after["has_next_event"] is True
+        assert (unsigned_decimal(after["tick"]) <= unsigned_decimal(after["next_tick"])
+                < unsigned_decimal(request["exclusive_tick"]))
+    else:
+        assert receipt["reason"] == "output"
+    return processed
+
+
+def authenticate_retained_progress(stream, checkpoints):
+    """Rechecks actual cached originals without granting any further callbacks."""
+    for request, saved in checkpoints:
+        assert exchange(stream, request) == saved
+        assert exchange(stream, {"kind": "recover", "operation": request["operation"]}) == saved
+
+
 command = [native, "--listener-mode=off", f"--outdir={resource / 'output'}",
            str(resource / "native-controller-x86-root.py")]
 environment = os.environ.copy()
@@ -176,16 +250,41 @@ try:
     assert excluded["kind"] == "completed" and excluded["reason"] == "horizon"
     assert excluded["processed_events"] == "0" and excluded["after"]["ordinal"] == "0"
     assert excluded["publications"] == []
+    accepted_receipt_extent(excluded)
     assert exchange(control, {"kind": "acknowledge", "operation": blocked["operation"]})["kind"] == "acknowledged"
 
-    first = grant("first-original-linux-uart-birth", excluded["after"]["logical_position"], position(100000000000, 0, 3))
-    first["maximum_events"] = "262144"
-    receipt = exchange(control, first)
-    try:
-        assert receipt["reason"] == "output" and int(receipt["processed_events"]) > 0
-    except (AssertionError, KeyError, TypeError, ValueError, OverflowError) as error:
-        error.add_note(first_receipt_diagnostic(receipt))
-        raise
+    previous = excluded["after"]
+    pre_output_checkpoints = []
+    processed_before_output = 0
+    for attempt in range(FIRST_UART_MAXIMUM_GRANTS):
+        remaining = FIRST_UART_EVENT_ALLOWANCE - processed_before_output
+        assert remaining > 0
+        operation = ("first-original-linux-uart-birth" if attempt == 0
+                     else f"first-original-linux-uart-birth/{attempt}")
+        first = grant(operation, previous["logical_position"], position(100000000000, 0, 3))
+        first["maximum_events"] = str(min(FIRST_UART_GRANT_EVENTS, remaining))
+        receipt = exchange(control, first)
+        try:
+            processed_before_output += authenticate_search_receipt(receipt, first, previous)
+            assert processed_before_output <= FIRST_UART_EVENT_ALLOWANCE
+            assert exchange(control, first) == receipt
+            assert exchange(control, {"kind": "recover", "operation": operation}) == receipt
+            assert exchange(control, {"kind": "observe"})["boundary"] == receipt["after"]
+            if receipt["reason"] == "output":
+                # Keep this actual publication pending through the original capture.
+                break
+            acknowledgement = {"kind": "acknowledge", "operation": operation}
+            assert exchange(control, acknowledgement) == {
+                "kind": "acknowledged", "operation": operation,
+            }
+        except (AssertionError, KeyError, TypeError, ValueError, OverflowError) as error:
+            error.add_note(first_receipt_diagnostic(receipt))
+            raise
+        pre_output_checkpoints.append((first, receipt))
+        previous = receipt["after"]
+    else:
+        raise AssertionError("first native UART exhausted its total callback allowance: "
+                             + first_receipt_diagnostic(receipt))
     assert len(receipt["output"]) == 1 and len(receipt["publications"]) == 1
     assert type(receipt["output"][0]) is int and 0 <= receipt["output"][0] <= 255
     publication = receipt["publications"][0]
@@ -237,6 +336,7 @@ try:
                               previous["logical_position"], position(100000000000, 0, 3))
             following["maximum_events"] = "5000"
             result = exchange(stream, following)
+            accepted_receipt_extent(result)
             assert result["reason"] == "output" and result["output"]
             assert int(result["publications"][0]["event_ordinal"]) > int(previous["ordinal"])
             assert result["publications"][0]["output_id"] == str(index + 2)
@@ -335,6 +435,7 @@ try:
                     current = receive(fresh)
                     assert current["continuation"] == "captured"
                     assert current["boundary"] == receipt["after"]
+                    authenticate_retained_progress(fresh, pre_output_checkpoints)
                     current_images = list(fresh_images.glob("*.dmtcp"))
                     assert len(current_images) == 1
                     image_check.audit(exchange, fresh, restored, root, branch, current_images[0],
