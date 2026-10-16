@@ -82,7 +82,7 @@ pub(in crate::node_qualification::packet_collection::complete) fn row(
 }
 
 /// Checks the retained oracle's actual model and full original schedule.
-pub(super) fn authenticate(
+pub(in crate::node_qualification::packet_collection::complete) fn authenticate(
     oracle: &PacketCompleteNativeOracle,
     world: &crucible_node_contract::WorldBinding,
 ) -> Result<(), QualificationError> {

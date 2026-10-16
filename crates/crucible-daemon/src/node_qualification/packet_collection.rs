@@ -401,6 +401,7 @@ pub use complete::{
     InstalledPacketCompleteCollectionAuthority, InstalledPacketCompleteGraphPolicy,
     PacketCompleteCollectionRequest, PacketCompleteGraphOwner, PacketCompleteGraphRequest,
     PacketCompleteNativeOracle, PacketCompleteOracleRequest, PacketCompletePopulationRequest,
-    PacketCompleteRoster, PacketCompleteWitnessPopulation,
-    packet_complete_independent_graph_contract, packet_complete_measured_graph_proof,
+    PacketCompletePublicationRequest, PacketCompleteRoster, PacketCompleteWitnessPopulation,
+    StoredPacketCompleteResultPublisher, packet_complete_independent_graph_contract,
+    packet_complete_measured_graph_proof,
 };

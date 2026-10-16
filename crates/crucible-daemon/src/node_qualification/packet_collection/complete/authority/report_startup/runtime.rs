@@ -8,10 +8,13 @@ mod shared_owner;
 pub(super) use shared_owner::OriginalSharedOwner;
 pub use shared_owner::PacketCompleteOriginalSceneSupervisor;
 mod inputs;
+mod content_limits;
 mod graph;
 mod inactive;
 mod storage;
 mod action;
+mod lifecycle;
+pub(super) use lifecycle::counter_scratch_data as lifecycle_counter_scratch_data;
 
 use super::*;
 use crate::node_qualification::packet_collection::{

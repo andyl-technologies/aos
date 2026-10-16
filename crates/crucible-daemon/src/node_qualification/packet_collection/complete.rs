@@ -21,6 +21,8 @@ pub use execution::{
 mod graph;
 mod installed;
 mod population;
+mod publication;
+pub use publication::{PacketCompletePublicationRequest, StoredPacketCompleteResultPublisher};
 mod records;
 pub(crate) mod retained;
 mod roster;

@@ -81,6 +81,26 @@ impl PacketCompleteExecutionScene {
         Ok(original)
     }
 
+    // These loans preserve the exact scene/authority/plan association. They do
+    // not expose a runtime, install a report or authorize native execution.
+    pub(super) fn authenticate_publication_owner(
+        &self,
+        authority: &Rc<InstalledPacketCompleteCollectionAuthority>,
+        plan: &Rc<InstalledConformancePlan>,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.current()
+            .map_err(|_| crucible::node_contract::RuntimeError::ForeignAuthority)?;
+        if !Rc::ptr_eq(authority, &self.authority) || !Rc::ptr_eq(plan, &self.plan) {
+            return Err(crucible::node_contract::RuntimeError::ForeignAuthority);
+        }
+        self.current()
+            .map_err(|_| crucible::node_contract::RuntimeError::ForeignAuthority)
+    }
+
+    pub(super) fn publication_oracle(&self) -> &Rc<PacketCompleteNativeOracle> {
+        &self.oracle
+    }
+
     pub(super) fn has_authority(
         &self,
         authority: &InstalledPacketCompleteCollectionAuthority,

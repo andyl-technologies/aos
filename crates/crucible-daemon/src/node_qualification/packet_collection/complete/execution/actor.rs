@@ -420,6 +420,43 @@ impl PacketCompleteExecutionActor {
         Ok(())
     }
 
+    /// Collects and durably publishes this scene's real completion before ACK.
+    ///
+    /// The concrete publisher enrolls the actual original runtime witness with
+    /// the scene's independent native oracle. It retains every report and store
+    /// partial; publication alone never supplies scheduling or native authority.
+    ///
+    /// # Errors
+    /// Holds the same token and publisher after report, placement or ACK failure.
+    pub fn acknowledge_stored(
+        &mut self,
+        publisher: &mut super::super::StoredPacketCompleteResultPublisher,
+    ) -> Result<(), PacketCompleteExecutionError> {
+        self.require(Phase::Completed)?;
+        self.phase = Phase::Held;
+        let token = self
+            .grants
+            .get(self.next)
+            .and_then(|grant| grant.token.as_ref())
+            .ok_or(PacketCompleteExecutionError::Phase)?;
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or(PacketCompleteExecutionError::Phase)?;
+        {
+            let mut witness = runtime.original_witness().map_err(failure)?;
+            publisher
+                .collect_original(&mut witness, token)
+                .map_err(failure)?;
+        }
+        runtime
+            .publish_and_acknowledge(token, publisher)
+            .map_err(failure)?;
+        self.next += 1;
+        self.phase = Phase::Active;
+        Ok(())
+    }
+
     /// Captures between original grants through the same retained Core runtime.
     ///
     /// # Errors

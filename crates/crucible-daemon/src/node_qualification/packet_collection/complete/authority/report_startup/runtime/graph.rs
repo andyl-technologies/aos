@@ -53,6 +53,7 @@ pub(super) fn quote(
         .requirements
         .as_ref()
         .ok_or(RuntimeError::OwnerUnavailable)?;
+    let content = super::content_limits::OriginalCompleteContentLimits::for_holder(held)?;
     let graph = ConformanceGraph::original_fixed_four_construction_storage_data(
         FixedFourConformanceGraphConstructionInputs {
             world: held.authority.world(),
@@ -75,7 +76,7 @@ pub(super) fn quote(
                 &host.owner,
             ],
             requirements,
-            limits: limits(),
+            limits: content.admission,
             content: [
                 &held.authority.population.bodies,
                 held.authority.graph_policy.original_runtime_content_data(),
@@ -157,6 +158,10 @@ pub(super) fn quote(
     // Oracle validation canonicalizes exact real programme/schedule/plan inputs.
     // Each serializer is a known compiled DTO, never a delegated Serialize.
     let mut transient = add(graph.maximum_simultaneous_transient_bytes(), 44, max)?;
+    // The Core projector visits the small retained content maps. Measured file
+    // leaves are positional reads outside those maps, one returning Vec at a
+    // time. Keep their actual largest read independently funded before admission.
+    transient = add(transient, content.external_fetch_bytes, max)?;
     for program in owners.programmes.iter().flatten() {
         transient = add(
             transient,
@@ -216,6 +221,7 @@ pub(super) fn construct(held: &PacketCompleteReportStartupHolder) -> Result<(), 
         .runtime_owners
         .try_borrow_mut()
         .map_err(|_| RuntimeError::OwnerBusy)?;
+    let content = super::content_limits::OriginalCompleteContentLimits::for_holder(held)?;
     let programmes = std::array::from_fn(|i| owners.programmes[i].as_ref().map(clone_program));
     let [a, b, c] = programmes;
     let paths = std::array::from_fn(|i| owners.paths[i].clone());
@@ -251,7 +257,7 @@ pub(super) fn construct(held: &PacketCompleteReportStartupHolder) -> Result<(), 
         PacketCompleteCaptureFactory::install(
             Rc::clone(&held.authority),
             Rc::clone(&held.plan),
-            crucible::node_state::NativeArchiveLimits::default(),
+            content.archive,
         )
         .map_err(|_| RuntimeError::ForeignAuthority)?,
     );
@@ -332,7 +338,7 @@ pub(super) fn construct(held: &PacketCompleteReportStartupHolder) -> Result<(), 
                     .ok_or(RuntimeError::OwnerUnavailable)?,
             },
             &held.plan,
-            limits(),
+            content.admission,
         )
         .map_err(|_| RuntimeError::ForeignAuthority)?,
     );

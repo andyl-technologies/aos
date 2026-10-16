@@ -31,6 +31,7 @@ mod exact_input_collection;
 mod fixture_audit;
 mod protocol;
 mod protocol_witness;
+pub(crate) mod publication;
 mod quantized;
 mod reservations;
 mod runtime_reports;

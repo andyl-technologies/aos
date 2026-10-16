@@ -267,6 +267,7 @@ impl PacketCompleteReportStartupHolder {
         }
         [
             std::mem::size_of::<Counter>() * 2,
+            super::runtime::lifecycle_counter_scratch_data()?,
             std::mem::size_of::<std::cell::Ref<'_, OriginalSceneOwners>>(),
             std::mem::size_of::<std::cell::RefMut<'_, OriginalSceneOwners>>(),
             std::mem::size_of::<std::cell::Ref<'_, [Option<InstalledCnpConformanceRole>; 3]>>(),
