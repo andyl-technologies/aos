@@ -103,6 +103,7 @@ mod fault_signal;
 mod material;
 mod materialized;
 mod measurement;
+mod persistent_set;
 mod plan_properties;
 mod reproduction;
 mod runtime;

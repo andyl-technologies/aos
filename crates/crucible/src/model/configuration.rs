@@ -3,6 +3,7 @@
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
+use super::persistent_set::PersistentSet;
 use super::*;
 
 /// A fully materialized scenario definition form for storage and exchange.
@@ -383,6 +384,7 @@ impl Configuration {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SelectionDecision {
     canonical_selection: Vec<u8>,
+    opportunity: crucible_campaign::ChoiceOpportunityId,
     app_random_model_sample: bool,
     campaign_branch: bool,
     preemption_config: Option<Box<PreemptionBranchConfig>>,
@@ -394,6 +396,7 @@ impl SelectionDecision {
     pub fn new(selection: &crucible_campaign::Selection) -> Self {
         Self {
             canonical_selection: selection.canonical_bytes(),
+            opportunity: selection.opportunity(),
             app_random_model_sample: crate::decision::is_app_random_model_selection(selection),
             campaign_branch: matches!(
                 selection.origin(),
@@ -439,6 +442,15 @@ impl SelectionDecision {
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical_selection
+    }
+
+    /// Returns the choice opportunity this decision selects.
+    ///
+    /// The identity is derived from the canonical selection bytes and is not
+    /// a separate serialized field.
+    #[must_use]
+    pub const fn opportunity(&self) -> crucible_campaign::ChoiceOpportunityId {
+        self.opportunity
     }
 
     /// Returns whether this decision uses the standardized app-random model.
@@ -578,6 +590,9 @@ pub struct Schedule {
     // Running digest of `decisions` in order, also maintained on append, so
     // per-quantum admission binds the exact schedule without rehashing it.
     decision_chain: ContentHash,
+    // Opportunities chosen by selection decisions among `decisions`, also
+    // maintained on append, so stop checks never rescan the history.
+    selected_opportunities: PersistentSet<crucible_campaign::ChoiceOpportunityId>,
     // Contiguous copy of `decisions` for slice readers. Clones share it until
     // one of them appends, which discards its own handle.
     contiguous: Arc<OnceLock<Vec<Decision>>>,
@@ -599,8 +614,8 @@ struct ConfigurationIdMemo {
 }
 
 // Equality, hashing, and debug output cover the decisions alone; the count,
-// the decision chain, the contiguous copy, and the memoized configuration id
-// are derived from them.
+// the decision chain, the selected opportunities, the contiguous copy, and
+// the memoized configuration id are derived from them.
 impl PartialEq for Schedule {
     fn eq(&self, other: &Self) -> bool {
         self.decisions == other.decisions
@@ -683,6 +698,16 @@ impl Schedule {
         self.decision_chain
     }
 
+    /// Returns whether a recorded selection decision chose `opportunity`.
+    ///
+    /// The schedule maintains its selected opportunities on append, so the
+    /// lookup costs time logarithmic in the number of recorded selections
+    /// instead of decoding the history.
+    #[must_use]
+    pub fn has_selected(&self, opportunity: crucible_campaign::ChoiceOpportunityId) -> bool {
+        self.selected_opportunities.contains(&opportunity)
+    }
+
     /// Returns the number of standardized app-random selections recorded.
     pub(crate) fn app_random_decisions(&self) -> u64 {
         self.app_random_decisions
@@ -761,6 +786,9 @@ impl Schedule {
             self.app_random_decisions = self.app_random_decisions.saturating_add(1);
         }
         self.decision_chain = canonical::decision_chain_step(&self.decision_chain, &decision);
+        if let Decision::Selection(selection) = &decision {
+            self.selected_opportunities.insert(selection.opportunity());
+        }
         self.decisions.push(decision);
 
         // Derived caches no longer match the decisions.

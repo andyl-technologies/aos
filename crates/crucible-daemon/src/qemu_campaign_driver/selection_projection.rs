@@ -37,28 +37,17 @@ pub(super) fn produced_selections_after_start(
     Ok(selections)
 }
 
+/// Returns whether any of `discoveries` lacks a selection in `configuration`.
+///
+/// The stop check runs every quantum, so it asks the schedule's maintained
+/// selected-opportunity set instead of decoding the recorded history.
 pub(super) fn has_unselected_discovery<'a>(
     configuration: &Configuration,
     discoveries: impl IntoIterator<Item = &'a ChoiceDiscovery>,
 ) -> Result<bool, QemuFreshModeledDriverError> {
-    let selected = configuration
-        .schedule
-        .decision_history()
-        .iter()
-        .filter_map(|decision| match decision {
-            Decision::Selection(selection) => Some(selection),
-            _ => None,
-        })
-        .map(|decision| {
-            decision
-                .selection()
-                .map(|selection| selection.opportunity())
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
-
     for discovery in discoveries {
         let opportunity = discovery.opportunity().id()?;
-        if !selected.contains(&opportunity) {
+        if !configuration.schedule.has_selected(opportunity) {
             return Ok(true);
         }
     }
