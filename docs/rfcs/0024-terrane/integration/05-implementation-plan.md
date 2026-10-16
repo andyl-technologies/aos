@@ -8759,8 +8759,12 @@ and nineteen publisher-transport baseline tests; these do not establish
 native confinement, VM execution or T2 acceptance.
 
 The source-bound confinement proof image builds with identical Cargo and
-installed executable hashes. Its guest check is still building the AOS Linux
-dependency; no guest execution is credited yet. Source review corrected a
+installed executable hashes. Its guest check boots and reaches actual setter,
+thread/fork inheritance and finite-quota assertions, then fails its fs-verity
+positive control. The fixture used an invalid zero Merkle block size and a
+filesystem block size smaller than the native 4096-byte profile. Corrections
+are committed on the task branch; a fresh guest run remains required. Later
+startup and alternate-ABI scenarios were not reached. Source review corrected a
 publisher fixture helper reference and quota fixture synchronization races.
 The quota claim implementation now permanently binds each filesystem/project
 pair before ledger publication or native mutation; full process-crash and
