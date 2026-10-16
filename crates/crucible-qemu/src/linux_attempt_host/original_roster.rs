@@ -868,8 +868,13 @@ impl std::error::Error for NativeAccountBoundaryError {
 }
 
 pub(super) fn original_error(original: OriginalActorAccountError) -> QemuVmRealizationError {
-    QemuVmRealizationError::ModelCopy {
-        source: Box::new(original),
+    match original {
+        OriginalActorAccountError::NativeReturn(source) => {
+            QemuVmRealizationError::NativePoolReturn { source }
+        }
+        original => QemuVmRealizationError::ModelCopy {
+            source: Box::new(original),
+        },
     }
 }
 

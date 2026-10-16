@@ -28,6 +28,11 @@ pub enum OriginalActorAccountError {
     /// The same authenticated normal main refused its checked subdivision.
     #[error("normal native purpose refused: {0}")]
     NativePurpose(#[from] ServiceBirthError),
+    /// Preserves physical node/World return and its independent Cleanup post.
+    #[error("normal native return refused: {0}")]
+    NativeReturn(
+        #[from] crucible_linux_resource::host_services::process_birth::NativePoolReturnError,
+    ),
     /// Preserves node/window birth custody and the independent Original postcut.
     #[error("normal native pool refused: {0}")]
     NativePool(#[from] NativePoolRefusal),
@@ -158,12 +163,54 @@ impl OriginalNativeAccountCredit {
     /// # Errors
     /// Preserves the same preparation's original refusal before pair release.
     pub(super) fn retire_after_control_free(&mut self) -> Result<(), OriginalActorAccountError> {
-        self.require_original()?;
-        if let Some(normal) = self.original.as_mut().and_then(|held| held.normal.as_mut()) {
-            normal.retire_after_control_free()?;
+        let Some(retained) = self.original.as_ref() else {
+            return Ok(());
+        };
+        if let Some(normal) = retained.normal.as_ref() {
+            let cleanup = normal.retained_world_cleanup()?;
+            let normal = self
+                .original
+                .as_mut()
+                .and_then(|retained| retained.normal.as_mut())
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            let result = normal.retire_after_control_free(&cleanup);
+            if normal.is_physically_returned() {
+                drop(self.original.take());
+            }
+            return result.map_err(Into::into);
         }
+        // Existing private/component pairs have no World claim. They retain
+        // their original Preparation policy; this path issues no Main Cleanup.
+        self.require_original()?;
         drop(self.original.take());
         Ok(())
+    }
+
+    pub(super) fn verify_quiescent_custody(&self) -> Result<(), OriginalActorAccountError> {
+        match self.original.as_ref() {
+            Some(retained) if retained.normal.is_none() => self.require_original(),
+            // Normal custody was authentically moved into this credit before
+            // birth; closed-slot observation neither returns it nor admits work.
+            _ => Ok(()),
+        }
+    }
+
+    pub(super) fn require_return_phase(&self) -> Result<(), OriginalActorAccountError> {
+        match self.original.as_ref() {
+            Some(retained) => match retained.normal.as_ref() {
+                Some(normal) => {
+                    let cleanup = normal.retained_world_cleanup()?;
+                    normal.verify_world_cleanup(&cleanup)?;
+                    Ok(())
+                }
+                None => self.require_original(),
+            },
+            None => Ok(()),
+        }
+    }
+
+    pub(super) fn is_physically_returned(&self) -> bool {
+        self.original.is_none()
     }
 
     pub(super) fn verify_preparation(

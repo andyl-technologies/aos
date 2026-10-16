@@ -2440,6 +2440,10 @@ fn attempt_operational_error(
                 SchedulerOperationalFailureClass::Terminal
             }
         }
+        #[cfg(target_os = "linux")]
+        QemuVmRealizationError::NativePoolReturn { .. } => {
+            SchedulerOperationalFailureClass::Retryable
+        }
         QemuVmRealizationError::Canceled { .. } => SchedulerOperationalFailureClass::Canceled,
         #[cfg(target_os = "linux")]
         QemuVmRealizationError::HostMemoryLimit { .. } => {

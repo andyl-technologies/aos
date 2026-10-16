@@ -267,6 +267,8 @@ fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFail
                 PromotionFailureClass::Terminal
             }
         }
+        #[cfg(target_os = "linux")]
+        QemuVmRealizationError::NativePoolReturn { .. } => PromotionFailureClass::Retryable,
         QemuVmRealizationError::Canceled { .. } => PromotionFailureClass::Canceled,
         #[cfg(target_os = "linux")]
         QemuVmRealizationError::HostMemoryLimit { .. } => PromotionFailureClass::Terminal,

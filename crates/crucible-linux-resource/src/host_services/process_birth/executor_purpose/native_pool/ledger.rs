@@ -406,7 +406,7 @@ impl PoolLedger {
         Ok(())
     }
 
-    pub(super) fn retained_cleanup(
+    pub(super) fn enter_cleanup(
         &self,
         epoch: u64,
     ) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
@@ -416,17 +416,113 @@ impl PoolLedger {
             .flatten()
             .find(|world| world.epoch == epoch)
             .ok_or_else(|| ServiceBirthError::policy("native World Cleanup is stale"))?;
-        let entered = world.cleanup.get_or_init(|| {
+        let _ = world.cleanup.get_or_init(|| {
             world
                 ._original
                 .begin_original_cleanup_control()
                 .map(Arc::new)
         });
-        let cleanup = entered
+        self.saved_cleanup(epoch)
+    }
+
+    pub(super) fn saved_cleanup(
+        &self,
+        epoch: u64,
+    ) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
+        let world = self
+            .worlds
+            .iter()
+            .flatten()
+            .find(|world| world.epoch == epoch)
+            .ok_or_else(|| ServiceBirthError::policy("native World Cleanup is stale"))?;
+        let entered = world.cleanup.get().ok_or_else(|| {
+            ServiceBirthError::policy("native World Cleanup has not been entered")
+        })?;
+        entered
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(|source| ServiceBirthError::from(*source))
+    }
+
+    pub(super) fn retained_cleanup(
+        &self,
+        epoch: u64,
+    ) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
+        let cleanup = self.enter_cleanup(epoch)?;
+        cleanup.verify_operation_class(crate::host_supervision::HostOperationClass::Cleanup)?;
+        Ok(cleanup)
+    }
+
+    pub(super) fn verify_cleanup(
+        &self,
+        epoch: u64,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        let world = self
+            .worlds
+            .iter()
+            .flatten()
+            .find(|world| world.epoch == epoch)
+            .ok_or_else(|| ServiceBirthError::policy("native World Cleanup is stale"))?;
+        let entered = world.cleanup.get().ok_or_else(|| {
+            ServiceBirthError::policy("native World Cleanup has not been entered")
+        })?;
+        let saved = entered
             .as_ref()
             .map_err(|source| ServiceBirthError::from(*source))?;
-        cleanup.wait_slice()?;
-        Ok(Arc::clone(cleanup))
+        if !Arc::ptr_eq(saved, cleanup) {
+            return Err(ServiceBirthError::policy(
+                "native World Cleanup operation is foreign",
+            ));
+        }
+        saved.verify_operation_class(crate::host_supervision::HostOperationClass::Cleanup)?;
+        Ok(())
+    }
+
+    // A genuine preexisting loan supplies its epoch through the containing
+    // pool's identity check. Only commit_world_return removes a published row;
+    // assignment epochs never reset or wrap, and replacement needs an empty row.
+    pub(super) fn observe_world_returned(&self, epoch: u64) -> Result<bool, ServiceBirthError> {
+        if epoch == 0 || epoch > self.next_world {
+            return Err(ServiceBirthError::policy(
+                "native World was never published",
+            ));
+        }
+        let absent = !self
+            .worlds
+            .iter()
+            .flatten()
+            .any(|world| world.epoch == epoch);
+        if absent
+            && self
+                .nodes
+                .iter()
+                .flatten()
+                .any(|node| node.world_epoch == epoch)
+        {
+            return Err(ServiceBirthError::policy(
+                "native returned World retains a member",
+            ));
+        }
+        Ok(absent)
+    }
+
+    pub(super) fn verify_world_original(
+        &self,
+        epoch: u64,
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        if !self
+            .worlds
+            .iter()
+            .flatten()
+            .any(|world| world.epoch == epoch && Arc::ptr_eq(&world._original, original))
+        {
+            return Err(ServiceBirthError::policy(
+                "native World original is foreign or stale",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn take_consumer(&mut self, epoch: u64) -> Result<(), ServiceBirthError> {

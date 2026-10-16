@@ -148,28 +148,50 @@ impl HostDescriptorPartition {
         &mut self,
         peak: u64,
         tables: u64,
-    ) -> Result<(), ServiceBirthError> {
-        self.check()?;
-        let windows = self.pool_window_peak.checked_sub(peak).ok_or_else(|| {
-            ServiceBirthError::policy("landing return exceeds its actual reservation")
-        })?;
-        let tables = self.native_tables.checked_sub(tables).ok_or_else(|| {
-            ServiceBirthError::policy("native table return exceeds physical assignment")
-        })?;
-        let host = self
-            .original
-            .checked_sub(tables)
-            .ok_or_else(|| ServiceBirthError::policy("native table return overflows"))?;
+    ) -> (Result<(), ServiceBirthError>, bool) {
+        self.close_pool_assignment_after_write(peak, tables, || {})
+    }
 
-        // Validate both counters before either changes. A failed kernel update
-        // seals the same partition; retry cannot subtract either return again.
-        self.ready = false;
-        self.pool_window_peak = windows;
-        self.native_tables = tables;
-        self.host = host;
-        self.write_soft_limit()?;
-        self.ready = true;
-        self.check()
+    // The observer changes no production check. It lets the isolated kernel
+    // control perturb the real table after the real write and before readback.
+    fn close_pool_assignment_after_write(
+        &mut self,
+        peak: u64,
+        tables: u64,
+        after_write: impl FnOnce(),
+    ) -> (Result<(), ServiceBirthError>, bool) {
+        let mut consumed = false;
+        let result = (|| {
+            self.check()?;
+            let windows = self.pool_window_peak.checked_sub(peak).ok_or_else(|| {
+                ServiceBirthError::policy("landing return exceeds its actual reservation")
+            })?;
+            let tables = self.native_tables.checked_sub(tables).ok_or_else(|| {
+                ServiceBirthError::policy("native table return exceeds physical assignment")
+            })?;
+            let host = self
+                .original
+                .checked_sub(tables)
+                .ok_or_else(|| ServiceBirthError::policy("native table return overflows"))?;
+            self.ready = false;
+            self.pool_window_peak = windows;
+            self.native_tables = tables;
+            self.host = host;
+            self.apply_soft_limit()?;
+            // Record the syscall's irreversible success before any readback.
+            // Failure below cannot keep this exact assignment outstanding or
+            // authorize spending the uncertain resulting partition again.
+            consumed = true;
+            after_write();
+            self.check_limits()?;
+            self.ready = true;
+            if let Err(error) = self.check() {
+                self.ready = false;
+                return Err(error);
+            }
+            Ok(())
+        })();
+        (result, consumed)
     }
 
     pub(super) fn check_target_window(&self, epoch: u64) -> Result<(), ServiceBirthError> {
@@ -239,6 +261,11 @@ impl HostDescriptorPartition {
     }
 
     fn write_soft_limit(&self) -> Result<(), ServiceBirthError> {
+        self.apply_soft_limit()?;
+        self.check_limits()
+    }
+
+    fn apply_soft_limit(&self) -> Result<(), ServiceBirthError> {
         let limits = libc::rlimit {
             rlim_cur: self.host,
             rlim_max: self.original,
@@ -248,7 +275,7 @@ impl HostDescriptorPartition {
         if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limits) } != 0 {
             return Err(kernel_error("apply conserved Main/native descriptor split"));
         }
-        self.check_limits()
+        Ok(())
     }
 
     fn check_limits(&self) -> Result<(), ServiceBirthError> {
@@ -466,9 +493,52 @@ mod tests {
         } else {
             let _pool_controls = result.unwrap();
             partition.check().unwrap();
+            if case == "return-readback" {
+                let (returned, consumed) =
+                    partition.close_pool_assignment_after_write(8, 48, || {
+                        // This observes real success, then changes only this
+                        // isolated process's soft limit. No syscall or check is
+                        // replaced with a synthetic success/failure result.
+                        let written = limits().unwrap();
+                        assert_eq!((written.rlim_cur, written.rlim_max), (64, 64));
+                        let changed = libc::rlimit {
+                            rlim_cur: 63,
+                            rlim_max: 64,
+                        };
+                        // SAFETY: the isolated helper owns this initialized limit;
+                        // lowering soft within unchanged hard affects no peer.
+                        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &changed) }, 0);
+                    });
+                assert!(matches!(returned, Err(ServiceBirthError::Policy(message))
+                    if message == "Main original descriptor partition changed"));
+                assert!(consumed);
+                assert_eq!(
+                    (partition.pool_window_peak, partition.native_tables),
+                    (0, 0)
+                );
+                assert_eq!(limits().unwrap().rlim_cur, 63);
+                assert!(!partition.ready);
+                assert!(partition.check().is_err());
+                let (repeated, consumed) = partition.close_pool_assignment(8, 48);
+                assert!(repeated.is_err());
+                assert!(!consumed);
+                assert!(partition.reserve_pool_windows(8, 48, &original).is_err());
+                assert_eq!(
+                    (partition.pool_window_peak, partition.native_tables),
+                    (0, 0)
+                );
+                // Rejected retry/admission did not apply the assignment again.
+                let unchanged = limits().unwrap();
+                assert_eq!((unchanged.rlim_cur, unchanged.rlim_max), (63, 64));
+                return;
+            }
             if case == "paired-return" {
-                assert!(partition.close_pool_assignment(9, 48).is_err());
-                assert!(partition.close_pool_assignment(8, 49).is_err());
+                let (underflow, consumed) = partition.close_pool_assignment(9, 48);
+                assert!(underflow.is_err());
+                assert!(!consumed);
+                let (underflow, consumed) = partition.close_pool_assignment(8, 49);
+                assert!(underflow.is_err());
+                assert!(!consumed);
                 assert_eq!(
                     (partition.pool_window_peak, partition.native_tables),
                     (8, 48)
@@ -476,13 +546,17 @@ mod tests {
                 assert_eq!(limits().unwrap().rlim_cur, 16);
                 partition.check().unwrap();
 
-                partition.close_pool_assignment(8, 48).unwrap();
+                let (returned, consumed) = partition.close_pool_assignment(8, 48);
+                assert!(consumed);
+                returned.unwrap();
                 assert_eq!(
                     (partition.pool_window_peak, partition.native_tables),
                     (0, 0)
                 );
                 assert_eq!(limits().unwrap().rlim_cur, 64);
-                assert!(partition.close_pool_assignment(8, 48).is_err());
+                let (repeated, consumed) = partition.close_pool_assignment(8, 48);
+                assert!(repeated.is_err());
+                assert!(!consumed);
                 partition.check().unwrap();
                 return;
             }
@@ -515,6 +589,7 @@ mod tests {
             "cancelled",
             "dispatcher-terminal",
             "paired-return",
+            "return-readback",
         ] {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", HELPER, "--test-threads=1"])

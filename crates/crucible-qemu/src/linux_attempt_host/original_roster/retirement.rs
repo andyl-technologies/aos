@@ -23,12 +23,12 @@ impl OriginalNativeAccountRoster {
             for slot in &state.slots {
                 verify_closed_slot(slot)?;
                 if let Some(credit) = slot.credit.as_ref() {
-                    credit.require_original()?;
+                    credit.verify_quiescent_custody()?;
                 }
             }
         }
         for credit in self.retiring_credits.iter().flatten() {
-            credit.require_original()?;
+            credit.verify_quiescent_custody()?;
         }
         Ok(())
     }
@@ -62,7 +62,7 @@ impl OriginalNativeAccountRoster {
             for slot in &state.slots {
                 verify_closed_slot(slot)?;
                 if let Some(credit) = &slot.credit {
-                    credit.require_original()?;
+                    credit.require_return_phase()?;
                 }
             }
 
@@ -76,11 +76,19 @@ impl OriginalNativeAccountRoster {
 
         for retained in &mut self.retiring_credits {
             if let Some(credit) = retained {
-                credit.retire_after_control_free()?;
+                let result = credit.retire_after_control_free();
+                if credit.is_physically_returned() {
+                    *retained = None;
+                }
+                result?;
             }
             *retained = None;
         }
         Ok(())
+    }
+
+    pub(in crate::linux_attempt_host) fn is_physically_returned(&self) -> bool {
+        self.held.is_none() && self.retiring_credits.iter().all(Option::is_none)
     }
 }
 

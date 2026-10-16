@@ -212,8 +212,17 @@ impl NormalNativePool {
             // No Source/Target is live. Remove this factory's real Weak alias
             // before exclusive close; any other alias still prevents Arc free.
             drop(node.binding.take());
-            if node.roster.try_close().is_ok() {
+            let closed = node.roster.try_close();
+            let returned = node.roster.is_physically_returned();
+            if returned {
                 *entry = None;
+            }
+            match closed {
+                Ok(()) => {}
+                // Existing competing aliases remain pending without starving
+                // independent rows. A typed phase/post refusal remains visible.
+                Err(OriginalActorAccountError::Unavailable) if !returned => {}
+                Err(error) => return Err(error),
             }
         }
         for (index, world) in self.worlds.iter_mut().enumerate() {
@@ -221,9 +230,12 @@ impl NormalNativePool {
                 continue;
             }
             if let Some(claim) = world.as_mut() {
-                if claim.try_finish_after_members_returned()? == NativeWorldReturn::PendingBody {
-                    // Its actual carrier can outlive member closure. Retain the
-                    // same World/debt and continue unrelated eligible returns.
+                let result = claim.try_finish_after_members_returned();
+                let returned = claim.is_physically_returned();
+                if returned {
+                    *world = None;
+                }
+                if result? == NativeWorldReturn::PendingBody {
                     continue;
                 }
             }
@@ -233,6 +245,8 @@ impl NormalNativePool {
     }
 
     pub(super) fn is_physically_retired(&self) -> bool {
+        // Returned credit alone does not destroy its containing facade or
+        // retained aliases. Every owning entry must be removed before closure.
         self.nodes.iter().all(Option::is_none) && self.worlds.iter().all(Option::is_none)
     }
 
@@ -418,12 +432,22 @@ impl LinuxQemuAttemptHostFactory {
         &mut self,
         loan: &AuthenticatedNativeWorldCleanupLoan,
     ) -> Result<(), QemuVmRealizationError> {
-        loan.verify_never_born()
-            .map_err(|source| original_roster::original_error(source.into()))?;
         let pool = self
             .normal_pool
             .as_mut()
             .ok_or_else(|| missing_authority("retain unborn native World"))?;
+        if pool
+            .purpose
+            .as_ref()
+            .ok_or_else(|| missing_authority("retain unborn World pool identity"))?
+            .observe_world_returned(loan)
+            .map_err(|source| original_roster::original_error(source.into()))?
+        {
+            // A preexisting exact loan can outlive the canonical facade after
+            // a completed return's post-refusal. This observation grants no
+            // never-born assertion or new work, and clears no factory intent.
+            return Ok(());
+        }
         let index = pool
             .worlds
             .iter()
@@ -433,6 +457,8 @@ impl LinuxQemuAttemptHostFactory {
                     .is_some_and(|world| world.matches_cleanup_loan(loan))
             })
             .ok_or_else(|| missing_authority("match unborn native World"))?;
+        loan.verify_never_born()
+            .map_err(|source| original_roster::original_error(source.into()))?;
         if pool.nodes.iter().flatten().any(|node| node.world == index) {
             return Err(missing_authority("unborn World has a canonical node owner"));
         }
