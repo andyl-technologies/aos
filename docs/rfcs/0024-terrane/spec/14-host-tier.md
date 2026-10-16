@@ -223,10 +223,31 @@ admits.
   acknowledged; decrements MAY be deferred, since a lost decrement only
   over-protects. *Gate:* `gate:host-pin-durable`.
 - **[HOST-23]** Reservations and quotas on a host tier MUST be exact: the
-  tier MUST know the physical bytes it holds at all times and MUST enforce a
-  per-owner quota where one is set, using filesystem project quotas where
-  the filesystem provides them. This is the one place in the system where
-  exact quota enforcement is a requirement rather than a goal
+  tier MUST distinguish synchronized allocated inode blocks, kernel charged
+  and reserved quota usage, and admission holds for future allocation. It
+  MUST NOT present a logical length, policy hold or kernel reservation as
+  measured physical allocation. The native owner MUST measure allocation
+  after synchronization at serialized admission, completion and recovery
+  boundaries, retaining custody of in-flight allocation between them. Each
+  inode MUST have one stable charge owner and be counted once regardless of
+  links or pins. An unlinked inode retained by an operation remains charged
+  until actual descriptor closure and confirmed cleanup.
+
+  The tier MUST enforce a per-owner quota where one is set, using filesystem
+  project quotas where the filesystem provides them. A privileged host
+  provisions finite project hard limits and inheriting roots, including
+  scratch, publication, seal metadata, state, quarantine and recovery
+  allocations. Their sum MUST NOT exceed the configured tier quota-charge
+  budget; project quotas MUST NOT be assumed to supply hierarchical limits.
+  Project assignments MUST preserve an inode's charge owner across required
+  link and rename operations, including publication, quarantine and recovery;
+  changing its owner is not a recovery mechanism.
+  Where kernel queries require privilege, unprivileged roles MUST verify
+  actual enforcement and usage through PROTO-60. Unknown coverage, ownership,
+  domain binding or enforcement MUST fail admission closed. A reservation
+  MUST cover the simultaneous source, assembly and publisher-copy lifetime;
+  it is not a guarantee that allocation or sealing will succeed. This is the
+  one place where exact quota enforcement is a requirement rather than a goal
   ([`08-properties.md`](08-properties.md)).
   *Gate:* `gate:host-quota-exact`.
 - **[HOST-24]** A pin whose owner's lease has expired MUST be released by a

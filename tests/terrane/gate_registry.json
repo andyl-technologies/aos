@@ -372,7 +372,7 @@
   {
     "name": "host-quota-exact",
     "owner": "14",
-    "requirements": "HOST-23"
+    "requirements": "HOST-23, PROTO-60"
   },
   {
     "name": "host-reassembly-heuristic",

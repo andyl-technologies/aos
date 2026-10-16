@@ -195,8 +195,12 @@ content: copy into private staging and verify the destination, or establish
 HOST-8's genuine source immutability before reflinking.
 
 The publisher derives all body paths from trusted roots and registered keys.
-InspectBody verifies the actual key and inode before issuing its token;
-sealed bodies also pass adoption. Retire, Restore and FinishRetirement
+InspectBody verifies the canonical key-to-inode namespace binding, retained
+regular inode, configured domain and native custody before issuing its token.
+For an unsealed chunk or pack this is an incarnation observation, not content
+identity verification or authority to serve its bytes; the cache independently
+performs HOST-14 verification, including dictionary resolution. Sealed bodies
+also pass full adoption. Retire, Restore and FinishRetirement
 compare their retained inode incarnation before mutation. The cache retains
 pin, reservation, grace and recovery exclusion until the actual namespace
 effect and coordinated state are durable. No retirement method silently
@@ -219,6 +223,115 @@ resolved by inspection/adoption and durable recovery, never assumed success
 or rollback. A publisher restart invalidates all tokens and requires the
 same recovery before new work. The channel conveys no capability tokens and
 cannot bypass repository authorization performed by `serve`.
+
+## `host-quota-local-v1`
+
+This registered transport implements PROTO-60 only. A host-supplied helper
+with kernel quota-query privilege serves configured Terrane role identities
+over Linux `AF_UNIX/SOCK_SEQPACKET`. It is not a Terrane role and performs
+no content, ref, publisher or quota-configuration mutation. Terrane roles
+retain no capabilities. Socket parent custody and both peers' `SO_PEERCRED`
+checks follow the host's explicit helper and client identity configuration.
+The helper accepts only its protected host configuration, never a
+client-selected filesystem, project number or quota command.
+
+One packet is one protobuf message below, at most 16,384 bytes, with no
+descriptors or ancillary data. Truncation, unknown fields, duplicate singular
+fields, wrong wire types, zero request IDs, bad lengths and unexpected
+ancillary data are rejected. Every received descriptor is closed on rejection.
+The client permits one outstanding request per connection; the server sends
+exactly one correlated response. Unknown versions are rejected, not guessed.
+
+```protobuf
+syntax = "proto3";
+package terrane.host.quota.v1;
+
+message QuotaQuery {
+  uint32 version = 1;          // exactly 1
+  uint64 request_id = 2;       // nonzero
+  bytes configuration_epoch = 3; // exactly 16 bytes, supplied by host
+  string owner_id = 4;         // 1..256 UTF-8 bytes, configured identifier
+  string domain = 5;           // canonical configured disclosure domain
+}
+
+enum QuotaResult {
+  QUOTA_OK = 0;
+  QUOTA_INVALID = 1;
+  QUOTA_DENIED = 2;
+  QUOTA_UNSUPPORTED = 3;
+  QUOTA_UNAVAILABLE = 4;
+  QUOTA_STALE = 5;
+}
+
+message QuotaRoot {
+  string role_directory = 1;   // host-layout label from the list below
+  uint64 device = 2;           // currently retained native descriptor's st_dev
+  uint64 inode = 3;            // currently retained native descriptor's st_ino
+  bool project_inherit = 4;    // actual native inheritance flag
+}
+
+message QuotaObservation {
+  uint32 version = 1;
+  uint64 request_id = 2;
+  bytes configuration_epoch = 3;
+  string owner_id = 4;
+  string domain = 5;
+  uint64 query_sequence = 6;   // strictly increasing per connection/epoch
+  QuotaResult result = 7;
+  bytes filesystem_uuid = 8;   // 16 bytes, verified against provisioned ledger
+  uint32 project_id = 9;       // actual host-configured nonzero project
+  bool accounting = 10;
+  bool enforcement = 11;
+  uint64 hard_limit_bytes = 12;
+  uint64 charged_reserved_bytes = 13;
+  uint64 hard_inode_limit = 14; // zero means no inode-specific limit
+  uint64 charged_inodes = 15;
+  repeated QuotaRoot roots = 16; // complete configured owner roots, at most 32
+  uint64 tier_charge_budget_bytes = 17;
+  uint64 configured_limit_sum_bytes = 18;
+}
+```
+
+All query fields are required. The server verifies the authenticated client's
+configured owner/domain authorization, exact configuration epoch and actual
+native root/project binding before querying the kernel. Successful replies
+echo the request correlation fields and report freshly queried accounting,
+enforcement, limits and usage. The helper verifies the complete configured
+project partition, including its checked hard-limit sum, rather than trusting
+an amount supplied by the client. A finite nonzero hard byte limit and a
+complete root set with matching project identity and inheritance are required
+for admission. Each reply's complete root set means every root assigned to
+that configured owner by the host ledger. The root labels are `chunks`,
+`objects`, `sealed`, `staging`,
+`quarantine`, `pending-delete` and `state`; labels select configured roots,
+not caller paths. If a host splits these classes across projects, every
+project is a separately configured owner included in the same finite budget.
+The helper checks complete allocation-class coverage over the entire
+configured partition; admission checks observations for every owner whose
+allocation it will increase. Project partitioning preserves the immutable
+charge owner of inodes across required link and rename operations: staging,
+sealed insertion, quarantine, pending-delete and restoration destinations
+for one inode must have compatible project assignments. Duplicate labels
+within an owner, missing allocation classes in the partition, unsupported
+project quotas, disabled enforcement, unlimited required limits, overflow or an
+excessive sum prevent successful verification.
+
+Errors carry only version, request ID, epoch, owner, domain, query sequence
+and result; quota observations and roots are absent. Stale epochs produce
+QUOTA_STALE. Clients reject unsolicited or mismatched replies and sequence
+replay on the authenticated connection. A sequence number is correlation,
+not proof of freshness: every success requires an actual query. A query
+does not atomically snapshot concurrent filesystem writers; serialized native
+admission custody and kernel hard-limit enforcement remain necessary.
+
+The host provisions a durable root/domain/charge-owner ledger outside the
+content layout, preserving assignments across helper and tier restart. The
+helper checks filesystem UUID, actual roots, project IDs and configuration
+epoch against this ledger. Missing or conflicting assignments fail closed;
+reusing a path for another disclosure domain is not a new empty cache.
+Provisioning is a host administrative operation, not a protocol method.
+A privileged-opened descriptor or static provisioning record does not grant
+unprivileged kernel query permission or replace live quota observations.
 
 ## Common types
 

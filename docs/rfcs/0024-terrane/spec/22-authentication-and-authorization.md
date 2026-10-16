@@ -18,7 +18,8 @@ way natural to it, and each is normalized at the edge into the same
 edge sees only tokens.
 
 This describes access to stores and repositories. The registered host-local
-publisher transport (PROTO-56 to PROTO-59) authenticates role custody with
+publisher transport (PROTO-56 to PROTO-59) and host quota inspector (PROTO-60)
+authenticate role custody with
 kernel peer credentials instead. It grants no store or repository authority
 and cannot substitute for the token checks on the request being served.
 
@@ -72,7 +73,8 @@ holds them and a realized mount is itself the capability.
   client certificate, or a surface-specific credential.
 
   AUTH-4 and AUTH-5 apply to service access to stores and repositories; the
-  host-local publisher role channel uses PROTO-57's kernel authentication.
+  host-local publisher and quota channels use PROTO-57/60's kernel
+  authentication.
   No such exception applies to an intertier request or a surface request.
 - **[AUTH-6]** A protocol surface that accepts a foreign credential (for
   example a Nix `netrc` entry, a Remote Execution API header, or a cache

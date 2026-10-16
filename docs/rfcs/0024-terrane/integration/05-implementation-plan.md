@@ -8725,6 +8725,11 @@ T-HOST-2, jointly coordinating native completion and retirement with
 T-HOST-1. This is not Distribution protocol implementation or T3 acceptance.
 D-122 defines schema path syntax and literal-existence versus collection
 constraints before T2's interface freeze; SDK's empty schema is unaffected.
+D-123 distinguishes measured allocation, kernel quota charge and future
+admission holds, and registers the host-supplied privileged read-only query
+boundary. Direct unprivileged project queries cannot establish enforcement;
+T-HOST-1 remains unaccepted until the actual helper, native custody and quota
+gate are qualified. No capability is added to Terrane roles.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
@@ -8745,7 +8750,7 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
   `discard` and `volatile` wipe modes are T-HOST-3 on B-consistency. —
   satisfies OBJ-5 jointly with T-BKT-1, HOST-1 to HOST-5, HOST-11 to
   HOST-25, HOST-27 to HOST-36,
-  BKT-15; `checks.terrane.gates.host-layout`,
+  BKT-15, PROTO-60; `checks.terrane.gates.host-layout`,
   `checks.terrane.gates.host-eviction-s3fifo`,
   `checks.terrane.gates.host-verify-before-admit`,
   `checks.terrane.gates.host-crash-recovery`.
@@ -9287,7 +9292,7 @@ the MVP conformance claim (PLAN-3) says so explicitly.
 | 15 redundancy | B-redundancy | T-RED-1 |
 | 16 block-device backend | B-redundancy | T-BLK-1 |
 | 17 garbage collection | T1, B-jobs, B-topology | T-GC-1, T-GC-2, T-TOPO-2 |
-| 18 protocol | T2, T3 | T-HOST-2 (PROTO-56 to PROTO-59), T-PROTO-1 (PROTO-1 to PROTO-55) |
+| 18 protocol | T2, T3 | T-HOST-1 (PROTO-60), T-HOST-2 (PROTO-56 to PROTO-59), T-PROTO-1 (PROTO-1 to PROTO-55) |
 | 19 tiering and topology | T3, B-topology | T-TOPO-1, T-TOPO-2 |
 | 20 consistency | T3, T5, B-consistency | T-CONS-1, T-FUSE-3, T-CONS-2, T-FUSE-4 |
 | 21 bandwidth | T3, B-bandwidth | T-BW-1, T-BW-2 |

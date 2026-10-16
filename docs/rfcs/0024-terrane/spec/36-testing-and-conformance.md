@@ -235,7 +235,7 @@ here is a conformance error of this document.
 | `gate:host-publish-sequence` | 14 | HOST-7, PROTO-59 |
 | `gate:host-publisher-sole-writer` | 14 | HOST-6, PROTO-57 |
 | `gate:host-quarantine` | 14 | HOST-15 |
-| `gate:host-quota-exact` | 14 | HOST-23 |
+| `gate:host-quota-exact` | 14 | HOST-23, PROTO-60 |
 | `gate:host-reassembly-heuristic` | 14 | HOST-10 |
 | `gate:host-reassembly-verify` | 14 | HOST-13 |
 | `gate:host-reserve-then-evict` | 14 | HOST-19 |

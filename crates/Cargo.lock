@@ -822,7 +822,10 @@ dependencies = [
 name = "aos-terrane"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "terrane",
+ "terrane-fs",
+ "toml 0.8.23",
 ]
 
 [[package]]

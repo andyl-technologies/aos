@@ -41,6 +41,8 @@ PROTO-1 through PROTO-55 apply to Distribution services, including their HTTP
 transport, versioning, metadata and error rules. The narrowly scoped
 publisher-role transport below is a registered part of this protocol, not an
 alternative transport for those services; PROTO-56 to PROTO-59 govern it.
+The host-supplied quota inspector has its own registered local-only scope
+under PROTO-60; it cannot perform publisher or Distribution operations.
 
 - **[PROTO-1]** The protocol MUST be served as ConnectRPC over HTTP/2, with
   the Connect, gRPC, and gRPC-Web wire encodings all accepted. *Gate:*
@@ -94,6 +96,21 @@ alternative transport for those services; PROTO-56 to PROTO-59 govern it.
   after HOST-7 or independently verified adoption has completed. Retirement
   MUST compare the publisher-issued inode incarnation and MUST NOT remove a
   replacement inode. *Gate:* `gate:host-publish-sequence`.
+
+### Host-local quota inspection
+
+- **[PROTO-60]** A host-supplied privileged quota inspector MUST use the
+  registered `host-quota-local-v1` transport in
+  [`reference/protocol.md`](reference/protocol.md#host-quota-local-v1).
+  Its only operation is read-only inspection of a host-configured quota
+  owner/domain at a configuration epoch. It MUST NOT accept caller paths,
+  filesystem descriptors, project numbers, mutable quota commands or
+  intertier requests. Both peers MUST authenticate kernel credentials;
+  request correlation, epoch and configured root/project binding MUST be
+  checked. The helper MUST query actual kernel state for every successful
+  reply. An unavailable, unauthorized, stale, mismatched or unsupported
+  observation MUST NOT authorize admission. Terrane roles MUST NOT gain
+  capabilities to replace this host service. *Gate:* `gate:host-quota-exact`.
 
 ## Services
 

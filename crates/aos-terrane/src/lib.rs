@@ -1,8 +1,11 @@
 //! Owns AOS adapters for the standalone Terrane SDK.
 //!
-//! This foundation establishes the glue boundary in CRATE-18 and integration
-//! PKG-1. Service-manager, mount-broker, identity, and sandbox adapters belong
-//! here as their integration tasks land. The standalone Terrane crates never
-//! depend on this crate. There are no adapters or public modules in T0.
+//! Host integration belongs here; standalone Terrane crates never depend on
+//! this crate. The host module supplies the integration boundary for privileged
+//! host services without granting privilege to Terrane roles. Service-manager,
+//! mount-broker and sandbox adapters are added by their implementation tasks.
 
 #![forbid(unsafe_code)]
+
+#[cfg(target_os = "linux")]
+pub mod host;

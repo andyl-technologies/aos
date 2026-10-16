@@ -2629,6 +2629,51 @@ is added rather than editing history.
     a separate normative resolution before those surfaces can be claimed.
   - **Affects:** SURF-13/14/15 and the surface schema interface.
 
+- **[D-123] Separate allocated blocks, quota charges and admission holds.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Measure synchronized per-inode allocation at serialized
+    native boundaries, distinguish it from kernel charged/reserved usage,
+    and retain separate future admission holds. Each physical inode has one
+    stable charge owner; shared pins and links do not duplicate its charge.
+    Native owners retain reservations and physical custody through actual
+    completion or confirmed cleanup, including after cancellation.
+
+    A privileged host provisions finite inheriting project quotas covering
+    every allocation class, with hard-limit sum within the tier's charge
+    budget. Unprivileged roles verify actual configuration and live usage
+    through a host-supplied read-only inspector over the registered
+    `host-quota-local-v1` transport. The helper owns its configured kernel
+    descriptors and accepts no caller paths, project IDs or mutable commands.
+    Stable root/domain/owner assignments survive restart in a host-owned
+    provisioning ledger outside the content layout.
+  - **Rationale:** Length omits holes, preallocation, temporary copies and
+    seal metadata. During delayed allocation, block reports can include
+    reservations; quota usage also includes kernel reservations. Neither is
+    continuous measurement of physical allocation. Linux checks the current
+    caller's privilege for project quota queries, even with a descriptor
+    opened by a privileged process. Project quotas are not hierarchical.
+    Explicit native custody, externally bounded project coverage and actual
+    host queries make enforcement implementable without giving capabilities
+    to Terrane roles or changing the frozen portable filesystem trait.
+  - **Alternatives considered:** Call estimates measured allocation
+    (rejected: conflates future holds with physical facts); query through a
+    privileged-opened descriptor (rejected: does not delegate the required
+    capability); use raw quota files (rejected: not live kernel state);
+    assume hierarchical project quotas (rejected: no such guarantee);
+    charge shared inodes to every pin owner (rejected: duplicates physical
+    charges); invent an unregistered helper protocol (rejected: ARCH-5).
+  - **Compatibility:** Adds one registered host-local query package in
+    specification 1.1-draft-1. Existing identity domains, content encodings,
+    bucket keys, Store/LocalFs signatures, message packages, requirement IDs
+    and gate names remain unchanged. The external provisioning ledger is
+    not a bucket key. Static partitioning can strand unused capacity; dynamic
+    pooling requires a separately coordinated host configuration change.
+    This correction does not implement a helper, pass a gate or resolve zero
+    wiping. Capability-free direct-query admission remains unsupported until
+    a genuine helper and native custody are qualified.
+  - **Affects:** HOST-19/20/22/23/27, DOM-12, CRATE-7/10, ARCH-5,
+    AUTH-4/5 and new PROTO-60.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
