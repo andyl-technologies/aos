@@ -19,6 +19,22 @@ pub(super) struct PrivateBootstrapStorage {
     pub(super) source_value_backing_bytes: usize,
 }
 
+impl PrivateBootstrapStorage {
+    // These are precisely the three owners also named in retained_copies.
+    // The typed native launch and this private launch Value remain distinct.
+    pub(super) fn shared_retained_owner_data(&self,
+        input: &PacketNativeBirthStartupInputs<'_>, maximum: usize,
+    ) -> Result<[usize; 3], ProviderError> {
+        let launch = sum(&[input.encoded_launch.len(),
+            canonical_launch_spare_data(input.encoded_launch.len(), maximum)?], maximum)?;
+        // Same original and same defining Value walk as this row's retained
+        // registration term; no arbitrary encoded-byte heap multiplier.
+        let registration = decoded::quote(input.host_registration,
+            size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing;
+        Ok([launch, self.source_value_backing_bytes, registration])
+    }
+}
+
 fn object(p: &mut Projection, keys: &[&str]) -> Result<(), ProviderError> {
     p.add_object()?;
     for key in keys {

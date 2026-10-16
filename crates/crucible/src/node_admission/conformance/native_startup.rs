@@ -127,25 +127,32 @@ pub(crate) struct NativeStartupRows {
     pub(crate) private_bootstrap: PacketNativeStartupAllocationRow,
     pub(crate) native_birth: PacketNativeStartupAllocationRow,
     pub(crate) restore_prepare: Option<PacketNativeStartupAllocationRow>,
+    // Non-wire same-input intersection; absent facts retain the full sum.
+    pub(crate) retained_overlap: Option<crucible_node_provider::reference_packet::service::native_startup::PacketNativeBirthRetainedOverlapData>,
 }
 
 impl NativeStartupRows {
     fn peak(self, maximum: usize) -> Result<usize, RuntimeError> {
         let mut retained = 0;
         let mut phase = 0;
-        for row in [
-            Some(self.private_bootstrap),
-            Some(self.native_birth),
-            self.restore_prepare,
-        ]
-        .into_iter()
-        .flatten()
-        {
+        let native_retained = match self.retained_overlap {
+            Some(overlap) => overlap.additional_native_retained_requested_bytes_data(
+                extent(self.private_bootstrap.retained_requested_bytes.get())?,
+                extent(self.native_birth.retained_requested_bytes.get())?)
+                .map_err(|_| RuntimeError::ForeignAuthority)?,
+            None => extent(self.native_birth.retained_requested_bytes.get())?,
+        };
+        for (row, retained_override) in [
+            (Some(self.private_bootstrap), None),
+            (Some(self.native_birth), Some(native_retained)),
+            (self.restore_prepare, None),
+        ] {
+            let Some(row) = row else { continue; };
             row.requested_peak_data()
                 .map_err(|_| RuntimeError::ResourceLimit)?;
             retained = add(
                 retained,
-                extent(row.retained_requested_bytes.get())?,
+                retained_override.unwrap_or(extent(row.retained_requested_bytes.get())?),
                 maximum,
             )?;
             phase = phase.max(add(
@@ -226,6 +233,10 @@ impl InstalledConformancePlan {
             &[
                 size_of::<CompleteOriginalNativeStartupAdmission<'_>>(),
                 size_of::<NativeStartupQuoteKind>(),
+                size_of::<std::array::IntoIter<(Option<PacketNativeStartupAllocationRow>, Option<usize>), 3>>(),
+                size_of::<[(Option<PacketNativeStartupAllocationRow>, Option<usize>); 3]>(),
+                size_of::<Option<usize>>(),
+                size_of::<Result<usize, crucible_node_provider::ProviderError>>(),
                 size_of::<OriginalNativeStartupScope<'_>>(),
                 size_of::<OriginalNativeStartupMemberScope<'_>>(),
                 size_of::<[OriginalNativeStartupQuote; 3]>(),
@@ -702,3 +713,26 @@ fn sum(values: &[usize], maximum: usize) -> Result<usize, RuntimeError> {
 
 mod invocation;
 pub use invocation::CompleteOriginalNativeInvocationAdmission;
+
+
+#[cfg(test)]
+mod retained_overlap_tests {
+    use super::*;
+
+    #[test]
+    fn missing_joint_metadata_keeps_full_retained_sum_and_original_phase_bound() {
+        let row = |retained, transient, scratch| PacketNativeStartupAllocationRow {
+            retained_requested_bytes: crucible_node_contract::U64::new(retained),
+            maximum_simultaneous_transient_bytes: crucible_node_contract::U64::new(transient),
+            declared_counter_scratch_bytes: crucible_node_contract::U64::new(scratch),
+        };
+        let rows = NativeStartupRows {
+            private_bootstrap: row(10, 3, 2), native_birth: row(20, 6, 2),
+            restore_prepare: Some(row(5, 2, 1)), retained_overlap: None,
+        };
+        assert_eq!(rows.peak(43).unwrap(), 43);
+        assert!(rows.peak(42).is_err());
+        assert_eq!(rows.private_bootstrap.retained_requested_bytes.get(), 10);
+        assert_eq!(rows.native_birth.retained_requested_bytes.get(), 20);
+    }
+}

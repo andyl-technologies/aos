@@ -183,6 +183,7 @@ fn invalid() -> ProviderError {
 
 mod storage;
 pub use storage::{
+    PacketNativeBirthRetainedOverlapData,
     PacketNativeBirthStartupInputs, PacketNativeBirthStartupStorageData,
     original_native_birth_startup_counter_scratch_data, original_native_birth_startup_storage_data,
     original_native_preflight_birth_startup_storage_data,

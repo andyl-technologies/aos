@@ -23,6 +23,8 @@ mod hello;
 mod initial;
 mod launch_decode;
 mod private_bootstrap;
+mod retained_overlap;
+pub use retained_overlap::PacketNativeBirthRetainedOverlapData;
 mod schemas;
 mod source_binding;
 
@@ -74,9 +76,21 @@ pub struct PacketNativeBirthStartupStorageData {
     maximum_simultaneous_transient_bytes: usize,
     declared_counter_scratch_bytes: usize,
     private_bootstrap: private_bootstrap::PrivateBootstrapStorage,
+    retained_overlap: PacketNativeBirthRetainedOverlapData,
 }
 
 impl PacketNativeBirthStartupStorageData {
+    /// Authenticates non-wire common-owner facts against these exact inputs.
+    ///
+    /// # Errors
+    /// Refuses another creator, typed launch/private identity or complete raw
+    /// original. This DATA grants no rights and never discounts another Source.
+    pub fn authenticated_retained_overlap_data(&self, input: &PacketNativeBirthStartupInputs<'_>)
+        -> Result<PacketNativeBirthRetainedOverlapData, ProviderError> {
+        self.retained_overlap.authenticate_inputs_data(input)?;
+        Ok(self.retained_overlap)
+    }
+
     /// Returns the independently counted private pre-parser/raw-bank owners.
     pub const fn private_bootstrap_retained_requested_bytes(&self) -> usize {
         self.private_bootstrap.retained
@@ -117,6 +131,7 @@ impl PacketNativeBirthStartupStorageData {
 pub fn original_native_birth_startup_counter_scratch_data() -> usize {
     size_of::<crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'static>>()
         + super::data_equality::counter_scratch_data()
+        + retained_overlap::counter_scratch_data()
         + coordinator_decode::counter_scratch_data()
         + decoded::counter_scratch_data()
         + launch_validation_counter_scratch_data()
@@ -440,11 +455,18 @@ fn birth_storage_with_source(
         &[retained, maximum_simultaneous_transient_bytes, scratch],
         maximum,
     )?;
+    // Both standalone rows stay complete. Only their proven intersection is
+    // carried separately to the host's joint census; no wire row is rewritten.
+    let shared_private = private.shared_retained_owner_data(input, maximum)?;
+    let retained_overlap = PacketNativeBirthRetainedOverlapData::new(input, shared_private,
+        [input.encoded_launch.len(), source_backing, registration_backing],
+        private.retained, retained, maximum)?;
     Ok(PacketNativeBirthStartupStorageData {
         retained_requested_bytes: retained,
         maximum_simultaneous_transient_bytes,
         declared_counter_scratch_bytes: scratch,
         private_bootstrap: private,
+        retained_overlap,
     })
 }
 
