@@ -7,12 +7,14 @@
 
 use std::sync::Arc;
 
-use terrane::host::cache::HostDomainLocation;
+use terrane::host::{cache::HostDomainLocation, publication::PublicationClaim};
 
-use super::{Client, Error, Phase, invalidate};
+use super::{
+    Client, Error, PeerPublishedObject, Phase, RequestPayload, State, invalidate, receipt,
+};
 use crate::{
-    host_cache::{CompletedRecovery, PublisherResumeTurn},
-    publisher_local::wire::Operation,
+    host_cache::{CompletedRecovery, PublisherResumeTurn, PublisherRunningTurn},
+    publisher_local::wire::{BodyKey, BodyKind, Claim, Operation},
 };
 
 /// Retains acknowledged running custody without exposing a construction bypass.
@@ -42,9 +44,7 @@ impl PublisherRunningContext {
     /// uncertainty or a poisoned actual client mutex.
     pub(crate) fn check_current(&self) -> Result<(), Error> {
         let state = self.session.lock()?;
-        if state.phase != Phase::Running || state.recovery_epoch != self.epoch {
-            return Err(Error::Invalid("publisher running context is stale"));
-        }
+        self.session.require_running_context(&state, self)?;
         self.session.layout.recheck()?;
         Ok(())
     }
@@ -76,6 +76,87 @@ impl ResumeFailure {
 }
 
 impl Client<HostDomainLocation> {
+    /// Inspects existing sealed inline bytes under the actual running executor turn.
+    ///
+    /// This readonly operation verifies the claim, kernel seal and plaintext;
+    /// it grants no new source-allocation, publication or retirement authority.
+    /// The exclusive turn spans the RPC and verification. Its constructor
+    /// remains with the cache's concrete physical command implementation.
+    ///
+    /// # Errors
+    /// Rejects foreign or stale owner/session/epoch/root custody, non-inline
+    /// claims, unavailable canonical content, transport uncertainty and any
+    /// descriptor, seal or plaintext mismatch. Failed exchanges or verification
+    /// invalidate the client phase and require genuine recovery.
+    pub(crate) fn inspect_inline_running(
+        &self,
+        claim: PublicationClaim,
+        context: &PublisherRunningContext,
+        turn: &mut PublisherRunningTurn<'_>,
+    ) -> Result<PeerPublishedObject<HostDomainLocation>, Error> {
+        // This can consult embedded native custody, so it must run before the
+        // client mutex. The turn retains exclusive dispatch after it returns.
+        turn.check_context(context)?;
+        let claim = self.inline_claim(claim)?;
+        let descriptor = claim.descriptor().encode();
+        let payload = RequestPayload {
+            claim: Some(Claim {
+                descriptor: descriptor.clone(),
+                chunk_profile: self.config.chunk_profile_name.clone(),
+                plaintext_size: claim.plaintext_size(),
+                ..Default::default()
+            }),
+            body: Some(BodyKey {
+                kind: BodyKind::Sealed as i32,
+                descriptor,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut state = self.lock()?;
+        self.require_running_context(&state, context)?;
+        let received = match self.exchange_payload(&mut state, Operation::InspectBody, payload) {
+            Ok(received) => received,
+            Err(error) => {
+                invalidate(&mut state);
+                return Err(error);
+            }
+        };
+        let result = receipt::published(
+            received,
+            Arc::clone(&self.layout),
+            self.config.identities.publish_uid,
+            claim,
+        );
+        if result.is_err() {
+            invalidate(&mut state);
+        }
+        result
+    }
+
+    /// Checks running identity atomically with the caller's actual RPC lock.
+    ///
+    /// The concrete physical turn separately proves executor ownership before
+    /// this lock. No old completed-recovery predicate is consulted here.
+    pub(super) fn require_running_context(
+        &self,
+        state: &State,
+        context: &PublisherRunningContext,
+    ) -> Result<(), Error> {
+        if state.phase != Phase::Running
+            || state.recovery_epoch != context.epoch
+            || !std::ptr::eq(self, context.session.as_ref())
+            || self.cache_incarnation != context.session.cache_incarnation
+            || !Arc::ptr_eq(&self.layout, &context.session.layout)
+        {
+            return Err(Error::Invalid(
+                "publisher running context is stale or foreign",
+            ));
+        }
+        Ok(())
+    }
+
     /// Submits Resume only inside the genuine producer's exclusive physical turn.
     ///
     /// Producer checks precede the client mutex. The mutable executor borrow
