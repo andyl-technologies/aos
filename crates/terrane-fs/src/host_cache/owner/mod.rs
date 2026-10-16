@@ -9,6 +9,6 @@ mod config;
 mod preparation;
 mod retention;
 
-pub use config::NativeCacheOwnerConfig;
+pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
 pub use retention::{NativeMetadataOwner, RetainedManifest};

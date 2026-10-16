@@ -7,6 +7,40 @@ use terrane::host::cache::{
 };
 use terrane_core::chunking::ChunkProfile;
 
+/// Bounds the payload and logical future hold of one native index repair.
+///
+/// This policy grants no write permission or allocation guarantee. The physical
+/// owner must additionally retain a verified pack, durable source pin and hold,
+/// and authenticate actual quota charges before and after the complete command.
+#[derive(Clone, Copy, Debug)]
+pub struct IndexRepairPolicy {
+    /// Maximum exact derived detached-index payload accepted by one command.
+    pub max_index_bytes: usize,
+    /// Future policy hold retained through physical completion and cleanup.
+    ///
+    /// This must cover the maximum index payload plus the configured metadata
+    /// synchronization hold. That floor describes payload overlap, not native
+    /// allocation rounding, directory growth or filesystem metadata overhead.
+    /// Actual excess charge faults the command without releasing its custody.
+    pub future_hold_bytes: u64,
+}
+
+impl IndexRepairPolicy {
+    fn validate(self, snapshot_hold: u64, capacity: u64) -> io::Result<()> {
+        let payload = u64::try_from(self.max_index_bytes)
+            .map_err(|_| invalid("index repair payload budget exceeds native accounting"))?;
+        let floor = snapshot_hold
+            .checked_add(payload)
+            .ok_or_else(|| invalid("index repair payload overlap overflows accounting"))?;
+        if payload == 0 || self.future_hold_bytes < floor || self.future_hold_bytes > capacity {
+            return Err(invalid(
+                "index repair requires a finite funded payload overlap",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Supplies fixed host configuration for one physical cache command owner.
 ///
 /// These settings are not quota, seal, recovery or confinement receipts. Native
@@ -60,6 +94,12 @@ pub struct NativeCacheOwnerConfig {
     /// charge faults the operation while retaining its hold and source custody.
     /// The hold is neither measured allocation nor an allocation guarantee.
     pub metadata_sync_hold_bytes: u64,
+    /// Optional finite index-repair policy; absence disables index writes.
+    ///
+    /// Enabling this setting alone cannot authorize repair. Source inspection,
+    /// durable pack pinning, actual owner exclusion and fresh authenticated
+    /// charge reconciliation remain mandatory. No default repair hold is guessed.
+    pub index_repair: Option<IndexRepairPolicy>,
 }
 
 impl NativeCacheOwnerConfig {
@@ -138,7 +178,34 @@ impl NativeCacheOwnerConfig {
         }
         CachePolicy::new(self.policy)
             .map_err(|_| invalid("inconsistent native eviction policy"))?;
+        if let Some(repair) = self.index_repair {
+            repair.validate(self.metadata_sync_hold_bytes, self.policy.capacity)?;
+        }
         Ok(())
+    }
+
+    /// Selects the configured logical hold for an exact verified index payload.
+    ///
+    /// This performs no IO and grants no native write or retention authority.
+    ///
+    /// # Errors
+    /// Refuses disabled repair, inconsistent policy, empty derived indexes and
+    /// payloads exceeding the operator's finite per-command limit.
+    pub(super) fn index_repair_hold(&self, index_bytes: usize) -> io::Result<u64> {
+        let repair = self.index_repair.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native index repair is disabled",
+            )
+        })?;
+        repair.validate(self.metadata_sync_hold_bytes, self.policy.capacity)?;
+        if index_bytes == 0 || index_bytes > repair.max_index_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "derived index exceeds configured repair payload policy",
+            ));
+        }
+        Ok(repair.future_hold_bytes)
     }
 }
 
@@ -210,6 +277,7 @@ mod tests {
             inventory_entries: 128,
             queued_commands: 4,
             metadata_sync_hold_bytes: 16384,
+            index_repair: None,
         }
     }
 
@@ -258,5 +326,35 @@ mod tests {
             config.quota_socket = path.into();
             assert!(config.validate().is_err(), "accepted {path}");
         }
+    }
+
+    #[test]
+    fn native_index_repair_policy_defaults_closed_and_funds_payload_overlap() {
+        let mut config = configuration();
+        assert_eq!(
+            config.index_repair_hold(1024).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+
+        config.index_repair = Some(IndexRepairPolicy {
+            max_index_bytes: 8192,
+            future_hold_bytes: config.metadata_sync_hold_bytes + 8192,
+        });
+        config.validate().unwrap();
+        assert_eq!(config.index_repair_hold(8192).unwrap(), 24576);
+        assert_eq!(
+            config.index_repair_hold(8193).unwrap_err().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+        assert!(config.index_repair_hold(0).is_err());
+
+        config.index_repair.as_mut().unwrap().future_hold_bytes -= 1;
+        assert!(config.validate().is_err());
+
+        config.index_repair = Some(IndexRepairPolicy {
+            max_index_bytes: usize::MAX,
+            future_hold_bytes: u64::MAX,
+        });
+        assert!(config.validate().is_err());
     }
 }
