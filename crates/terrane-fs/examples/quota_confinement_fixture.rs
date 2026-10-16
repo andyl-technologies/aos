@@ -1,8 +1,8 @@
-//! Standalone VM witness compiled explicitly by quota-confinement-proof.nix.
+//! Cargo example used only by the explicit quota-confinement-proof VM.
 //!
 //! Cargo's ordinary libtest harness is intentionally not used: the actual
 //! installation must execute before a test worker creates a second thread.
-#![cfg(not(test))]
+#![allow(clippy::expect_used, reason = "VM proof assertions must fail closed")]
 
 use std::{
     fs::{self, File},
@@ -24,6 +24,37 @@ struct Attributes {
     project: u32,
     cow: u32,
     padding: [u8; 8],
+}
+
+/// Linux 7.2.3 include/uapi/linux/fs.h file_attr, version zero (24 bytes).
+#[repr(C)]
+#[derive(Default)]
+struct FileAttributes {
+    flags: u64,
+    extent: u32,
+    nextents: u32,
+    project: u32,
+    cow: u32,
+}
+
+fn file_setattr(
+    file: &File,
+    name: &std::ffi::CStr,
+    flags: i32,
+    attributes: &FileAttributes,
+) -> libc::c_long {
+    // SAFETY: the initialized version-zero file_attr buffer and NUL-terminated
+    // path stay live; AT_EMPTY_PATH selects the retained descriptor form.
+    unsafe {
+        libc::syscall(
+            469,
+            file.as_raw_fd(),
+            name.as_ptr(),
+            attributes,
+            24usize,
+            flags,
+        )
+    }
 }
 
 #[repr(C)]
@@ -76,7 +107,47 @@ fn child(root: &Path, confined: bool) {
         directory_attributes.flags &= !0x200;
         assert_eq!(setter(&directory, 0x401c5820, &directory_attributes), 0);
         assert_eq!(attributes(&directory).flags & 0x200, 0);
+        directory_attributes.flags |= 0x200;
+        assert_eq!(setter(&directory, 0x401c5820, &directory_attributes), 0);
+        let mut native_flags = 0u32;
+        // SAFETY: GETFLAGS writes the initialized Linux inode flag word.
+        assert_eq!(
+            unsafe { libc::ioctl(directory.as_raw_fd(), 0x80086601u64, &mut native_flags) },
+            0
+        );
+        assert_ne!(native_flags & 0x2000_0000, 0);
+        native_flags &= !0x2000_0000;
+        // SAFETY: SETFLAGS reads the initialized native inode flag word.
+        assert_eq!(
+            unsafe { libc::ioctl(directory.as_raw_fd(), 0x40086602u64, &native_flags) },
+            0
+        );
+        assert_eq!(attributes(&directory).flags & 0x200, 0);
         fs::remove_dir(subdirectory).expect("remove inheritance escape witness");
+        let alternative =
+            File::create(root.join("file-setattr-body")).expect("file_setattr baseline inode");
+        assert_eq!(
+            file_setattr(
+                &alternative,
+                c"",
+                libc::AT_EMPTY_PATH,
+                &FileAttributes::default()
+            ),
+            0
+        );
+        assert_eq!(attributes(&alternative).project, 0);
+        let reset = Attributes {
+            project: 41009,
+            ..Attributes::default()
+        };
+        assert_eq!(setter(&alternative, 0x401c5820, &reset), 0);
+        let parent = File::open(root).expect("path setter parent");
+        assert_eq!(
+            file_setattr(&parent, c"file-setattr-body", 0, &FileAttributes::default()),
+            0
+        );
+        assert_eq!(attributes(&alternative).project, 0);
+        fs::remove_file(root.join("file-setattr-body")).expect("cleanup alternate setter witness");
         assert_eq!(setter(&file, 0x401c5820, &changed), 0);
         assert_eq!(attributes(&file).project, 0);
         (&file)
@@ -94,6 +165,18 @@ fn child(root: &Path, confined: bool) {
         denied(setter(&file, command | (0xdead_beefu64 << 32), &changed));
     }
     let directory = File::open(root).expect("open inheriting directory");
+    denied(file_setattr(
+        &file,
+        c"",
+        libc::AT_EMPTY_PATH,
+        &FileAttributes::default(),
+    ));
+    denied(file_setattr(
+        &directory,
+        c"body",
+        0,
+        &FileAttributes::default(),
+    ));
     let mut flags = attributes(&directory);
     assert_ne!(flags.flags & 0x200, 0);
     flags.flags &= !0x200;
@@ -198,6 +281,26 @@ fn child(root: &Path, confined: bool) {
         0
     );
     assert_ne!(attributes(&file).flags & 0x20000, 0);
+    #[repr(C)]
+    struct Digest {
+        algorithm: u16,
+        size: u16,
+        bytes: [u8; 32],
+    }
+    // Linux 7.2.3 fsverity_digest has a four-byte header and flexible digest.
+    // MEASURE uses the header size in its command, not the caller buffer size.
+    let mut digest = Digest {
+        algorithm: 0,
+        size: 32,
+        bytes: [0; 32],
+    };
+    // SAFETY: kernel can write the header and the advertised 32-byte capacity.
+    assert_eq!(
+        unsafe { libc::ioctl(file.as_raw_fd(), 0xc0046686u64, &mut digest) },
+        0
+    );
+    assert_eq!(digest.algorithm, 1);
+    assert_eq!(digest.size, 32);
     fs::remove_file(path).expect("retire verity positive");
     receipt.check_current().expect("persistent non-dumpability");
     println!("confined setters denied; GET, EDQUOT, verity, thread and child witnesses passed");
