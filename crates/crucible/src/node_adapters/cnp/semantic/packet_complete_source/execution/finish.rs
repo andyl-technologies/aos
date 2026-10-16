@@ -124,6 +124,16 @@ impl PacketCompleteSemanticSource {
             execution.host_protocol = Some(InputPayload { reference, bytes });
             banks.protocol_detached = true;
         }
+        let snapshot_class = self.selected_complete_native_snapshot_class()?;
+        if snapshot_class.has_allocation() != execution.allocation_selected {
+            return Err(refused("original Report output class changed after reservation"));
+        }
+        if execution.allocation_selected {
+            let snapshot = payload(&banks.native_objects[0])?;
+            let plan = snapshot_class.validate_snapshot(&snapshot.bytes, limits.maximum_record_bytes,
+                usize::try_from(self.selected_capture_profile()?.native_before_bytes(&self.selected_storage_selection()?.storage).get()).map_err(unknown)?).map_err(unknown)?;
+            execution.retain_original_allocation_report(plan.allocation().ok_or_else(|| refused("original Report marker absent"))?, &realized, limits.maximum_total_record_bytes)?;
+        }
         let host = payload(&execution.host_protocol)?;
         let backend = payload(&execution.backend)?;
         let ancestry = payload(&banks.ancestry_record)?;
@@ -138,7 +148,7 @@ impl PacketCompleteSemanticSource {
                 .get(),
         )
         .map_err(unknown)?;
-        let native_plan = crucible_node_provider::reference_packet::service::native_snapshot::PacketNativeOwned11SnapshotPlan::validate(
+        let native_plan = snapshot_class.validate_snapshot(
             &snapshot.bytes, limits.maximum_record_bytes, before_capacity,
         ).map_err(unknown)?;
         if native_plan.control_bytes() != control.bytes {
@@ -188,10 +198,18 @@ impl PacketCompleteSemanticSource {
             &mut execution.born,
             OriginalBornRole::NativeSnapshot,
             snapshot,
-            [&control.reference].into_iter(),
+            [&control.reference].into_iter().chain(execution.allocation.as_ref().map(|body| &body.reference)),
             objects,
             maximum,
         )?;
+        // Report12 owns scalar/hash data and no ContentRef children. Register
+        // this intrinsic leaf only from the actual authenticated SDK loan.
+        if let Some(report) = &execution.allocation {
+            OriginalCompleteCaptureExecution::record_born(
+                &mut execution.born, OriginalBornRole::NativeAllocationReport,
+                report, std::iter::empty(), objects, maximum,
+            )?;
+        }
         OriginalCompleteCaptureExecution::record_born(
             &mut execution.born,
             OriginalBornRole::NativeControl,

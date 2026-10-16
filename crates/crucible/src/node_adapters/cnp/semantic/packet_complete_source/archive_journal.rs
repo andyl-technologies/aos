@@ -226,7 +226,15 @@ impl PacketCompleteSettledJournal {
         content: &VerifiedStateContent,
     ) -> Result<(), OperationFailure> {
         let value = if self.schema == PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA {
-            Self::backend_registry_identity_data(installed, key)
+            if key.schema.id.as_str() == "source-owned.packet-native-continuation/13" {
+                if self.backend_implementation.media_type != "application/vnd.source-owned.packet-complete-archive-backend.v16+json"
+                    || key.schema != super::archive_owner::CompleteNativeSnapshotClass::StartupCapture14.schema()? {
+                    return Err(refused("complete startup backend schema differs"));
+                }
+                serde_json::to_value(Self::backend_registry_identity_view_for_class_data(installed, key, super::archive_owner::CompleteNativeSnapshotClass::StartupCapture14)).map_err(unknown)?
+            } else {
+                Self::backend_registry_identity_data(installed, key)
+            }
         } else {
             Self::backend_identity_data(installed, key)
         };
@@ -277,13 +285,14 @@ impl PacketCompleteSettledJournal {
             .ok_or_else(|| refused("complete journal registry reference absent"))
     }
 
-    /// Borrows the exact registry-bearing backend tuple without materializing JSON.
+    /// Borrows the exact selected registry-bearing backend tuple without JSON copies.
     ///
-    /// This is the allocation-quoted producer view. The public backend value
-    /// remains the identical historical grammar used by the archive verifier.
-    pub(super) fn backend_registry_identity_view_data<'a>(
+    /// Legacy11 retains the byte-identical v15 grammar; startup Capture14 uses
+    /// the explicit v16 tuple and complete native14 connection/service classes.
+    pub(super) fn backend_registry_identity_view_for_class_data<'a>(
         installed: &'a ImplementationIdentity,
         key: &'a NativeStateKey,
+        class: super::archive_owner::CompleteNativeSnapshotClass,
     ) -> impl serde::Serialize + 'a {
         #[derive(serde::Serialize)]
         struct Backend<'a> {
@@ -301,8 +310,8 @@ impl PacketCompleteSettledJournal {
             native_service_class: &'static str,
         }
         Backend {
-            schema: "source-owned.packet-complete-archive-backend-before/15",
-            native_snapshot_class: "source-owned.packet-native-continuation/11",
+            schema: if class.has_allocation() { "source-owned.packet-complete-archive-backend-before/16" } else { "source-owned.packet-complete-archive-backend-before/15" },
+            native_snapshot_class: class.schema_id(),
             implementation: installed,
             native_key: key,
             journal: PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA,
@@ -312,8 +321,8 @@ impl PacketCompleteSettledJournal {
             connection_class: COMPLETE_CONNECTION_FORMAT,
             host_extension_registry_class:
                 crucible_node_provider::handshake::ORIGINAL_HOST_EXTENSION_REGISTRY_FORMAT,
-            native_connection_class: COMPLETE_NATIVE_CONNECTION_FORMAT,
-            native_service_class: COMPLETE_NATIVE_SERVICE_FORMAT,
+            native_connection_class: if class.has_allocation() { crucible_node_provider::protocol_snapshot::owned11::native::outer::COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT } else { COMPLETE_NATIVE_CONNECTION_FORMAT },
+            native_service_class: if class.has_allocation() { crucible_node_provider::protocol_snapshot::owned11::native::outer::COMPLETE_NATIVE_STARTUP_SERVICE_FORMAT } else { COMPLETE_NATIVE_SERVICE_FORMAT },
         }
     }
 
@@ -564,3 +573,34 @@ impl PacketCompleteSemanticSource {
 #[allow(clippy::unwrap_used)]
 #[path = "archive_journal/registry_tests.rs"]
 mod registry_tests;
+
+#[cfg(test)]
+mod selected_startup_backend_tests {
+    use super::*;
+    use crate::node_adapters::cnp::semantic::packet_complete_source::{
+        archive_owner::CompleteNativeSnapshotClass, tests::{coordinator, installation},
+    };
+
+    #[test]
+    fn startup_backend_names_full14_without_relabeling_legacy_backend() -> Result<(), OperationFailure> {
+        let installed = coordinator();
+        let installation = installation(&installed, 0);
+        let implementation = &installation.provider.implementation;
+        let mut key = NativeStateKey {
+            implementation: implementation.implementation_id.clone(),
+            profile: Id::new("source-owned.packet-complete-original-lineage/5").map_err(unknown)?,
+            schema: CompleteNativeSnapshotClass::Legacy11.schema()?,
+        };
+        let old = serde_json::to_value(PacketCompleteSettledJournal::backend_registry_identity_view_for_class_data(implementation, &key, CompleteNativeSnapshotClass::Legacy11)).map_err(unknown)?;
+        assert_eq!(old, PacketCompleteSettledJournal::backend_registry_identity_data(implementation, &key));
+        key.schema = CompleteNativeSnapshotClass::StartupCapture14.schema()?;
+        let selected = serde_json::to_value(PacketCompleteSettledJournal::backend_registry_identity_view_for_class_data(implementation, &key, CompleteNativeSnapshotClass::StartupCapture14)).map_err(unknown)?;
+        assert_eq!(selected["schema"], "source-owned.packet-complete-archive-backend-before/16");
+        assert_eq!(selected["native_snapshot_class"], "source-owned.packet-native-continuation/13");
+        assert_eq!(selected["native_connection_class"], "source-private.native-connection-complete-startup/14");
+        assert_eq!(selected["native_service_class"], "source-private.native-service/14");
+        assert_eq!(old["native_snapshot_class"], "source-owned.packet-native-continuation/11");
+        assert_ne!(selected, old);
+        Ok(())
+    }
+}

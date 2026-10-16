@@ -13,7 +13,8 @@ impl PacketCompleteSemanticSource {
     ) -> Result<(), OperationFailure> {
         if completed.is_some()
             || !execution.evidence.is_empty()
-            || execution.evidence.capacity() < COMPLETE_EVIDENCE_ROLES
+            || execution.evidence.capacity() < execution.evidence_roles()
+            || execution.allocation_selected != execution.allocation.is_some()
         {
             return Err(refused("original complete move destination differs"));
         }
@@ -57,6 +58,9 @@ impl PacketCompleteSemanticSource {
                 execution.evidence.push(host);
                 execution.evidence.push(registry_body);
                 execution.evidence.push(backend);
+                if let Some(report) = execution.allocation.take() {
+                    execution.evidence.push(report);
+                }
                 *completed = Some(InstalledOriginalLineageCapture {
                     native: InstalledNativeCapture {
                         owner,

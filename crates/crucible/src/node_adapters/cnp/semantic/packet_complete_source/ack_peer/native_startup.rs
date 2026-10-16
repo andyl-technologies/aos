@@ -379,6 +379,17 @@ impl PacketCompleteSemanticSource {
 }
 
 impl OriginalAckPeerBirth {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source::ack_peer) fn authenticate_selected_native_startup(
+        &self,
+        source: &PacketCompleteSemanticSource,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_original()?;
+        if self.native_startup.is_none() {
+            return Err(refused("selected startup snapshot has no original startup member"));
+        }
+        self.authenticate_native_startup_before_boot(source)
+    }
+
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source::ack_peer) fn authenticate_native_startup_before_boot(
         &self,
         source: &PacketCompleteSemanticSource,

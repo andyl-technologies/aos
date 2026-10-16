@@ -28,7 +28,10 @@ const MAXIMUM_WHOLE_BYTES: usize = 512 * 1024 * 1024;
 
 #[path = "archive_owner/registry.rs"]
 mod registry;
+#[path = "archive_owner/snapshot.rs"]
+mod snapshot;
 use crucible_node_provider::protocol_snapshot::owned11::host_registry::SealedHistoricalHostExtensionRegistry;
+pub(super) use snapshot::CompleteNativeSnapshotClass;
 
 /// Retains one bounded owner linked to the actual immutable archive closure.
 ///
@@ -40,6 +43,7 @@ pub struct PacketCompleteArchivedOwnerData<'a> {
     process: u32,
     thread: ThreadId,
     source: &'a PacketCompleteSemanticSource,
+    snapshot_class: CompleteNativeSnapshotClass,
     owner: &'a NativeOwnerState,
     content: &'a VerifiedStateContent,
     journal_reference: &'a ContentRef,
@@ -102,15 +106,20 @@ impl PacketCompleteSemanticSource {
         }
         let installation = self.installation();
         let profile = self.selected_capture_profile()?;
+        let snapshot_class = self.selected_complete_native_snapshot_class()?;
         if owner.owner != installation.owner.owner.id
             || owner.participants != installation.owner.owner.participant_ids
             || owner.key.implementation != installation.provider.implementation.implementation_id
             || owner.key.profile.as_str() != "source-owned.packet-complete-original-lineage/5"
-            || owner.key.schema != crucible_node_provider::reference_packet::service::native_owned11_snapshot_schema().map_err(unknown)?
+            || owner.key.schema != snapshot_class.schema()?
+            || snapshot_class.has_allocation() && (!installation.provider.implementation.formats.contains(&owner.key.schema)
+                || !installation.binding.compatibility.implementation.formats.contains(&owner.key.schema))
             || !matches!(profile, PacketNative5CaptureProfile::OwnedProtocol11 { .. })
             || !owner.evidence.contains(journal_reference)
         {
-            return Err(refused("cold archive owner differs from installed complete source"));
+            return Err(refused(
+                "cold archive owner differs from installed complete source",
+            ));
         }
         let metadata = self
             .selected_protocol_metadata_limits()?
@@ -209,6 +218,7 @@ impl PacketCompleteSemanticSource {
             process: std::process::id(),
             thread: std::thread::current().id(),
             source: self,
+            snapshot_class,
             owner,
             content,
             journal_reference,
@@ -285,7 +295,7 @@ impl PacketCompleteSemanticSource {
                     "cold protocol body exceeds installed encoded selection",
                 ));
             }
-            let parser_layout = snapshot_parser_known_storage(maximum)?;
+            let parser_layout = snapshot_parser_known_storage_for_class(snapshot_class, maximum)?;
             state.journal_storage = state
                 .journal_storage
                 .checked_add(parser_layout)
@@ -301,11 +311,13 @@ impl PacketCompleteSemanticSource {
             let snapshot_bytes = content
                 .get(&journal.native_snapshot)
                 .ok_or_else(|| refused("cold native snapshot input absent"))?;
-            let snapshot = crucible_node_provider::reference_packet::service::native_snapshot::PacketNativeOwned11SnapshotPlan::validate(
-                snapshot_bytes,
-                limits.state.maximum_content_bytes,
-                before_limits.json.maximum_input_bytes,
-            ).map_err(unknown)?;
+            let snapshot = snapshot_class
+                .validate_snapshot(
+                    snapshot_bytes,
+                    limits.state.maximum_content_bytes,
+                    before_limits.json.maximum_input_bytes,
+                )
+                .map_err(unknown)?;
             let before = snapshot.before();
             // The source stores this full reference in its slot, independent of
             // the complete SDK sealed owner constructed later. Its decoder's
@@ -679,7 +691,7 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 &mut self.before_aliases,
             )
             .map_err(unknown)?;
-            before.complete_schema_identity().map_err(unknown)?;
+            self.snapshot_class.authenticate_native(&before)?;
             let demand = before.allocation_demand();
             total = checked_sum(
                 [
@@ -701,7 +713,7 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 &mut self.native_aliases,
             )
             .map_err(unknown)?;
-            native.complete_schema_identity().map_err(unknown)?;
+            self.snapshot_class.authenticate_native(&native)?;
             let demand = native.allocation_demand();
             total = checked_sum(
                 [
@@ -737,15 +749,14 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 &mut self.before_aliases,
             )
             .map_err(unknown)?;
-            before
-                .reconstruct_sealed_into(
-                    self.before_reference
-                        .as_ref()
-                        .ok_or_else(|| refused("cold before reference lost"))?,
-                    &mut self.before_encoded,
-                    &mut self.before,
-                )
-                .map_err(unknown)?;
+            self.snapshot_class.reconstruct(
+                &mut before,
+                self.before_reference
+                    .as_ref()
+                    .ok_or_else(|| refused("cold before reference lost"))?,
+                &mut self.before_encoded,
+                &mut self.before,
+            )?;
             let mut host = ValidatedOwnedProtocol11::validate(
                 self.content
                     .get(&journal.host_protocol)
@@ -768,13 +779,12 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 &mut self.native_aliases,
             )
             .map_err(unknown)?;
-            native
-                .reconstruct_sealed_into(
-                    &journal.native_after_protocol,
-                    &mut self.native_encoded,
-                    &mut self.native,
-                )
-                .map_err(unknown)?;
+            self.snapshot_class.reconstruct(
+                &mut native,
+                &journal.native_after_protocol,
+                &mut self.native_encoded,
+                &mut self.native,
+            )?;
         }
         self.reconstruct_registry_data()?;
         let journal = self
@@ -819,6 +829,7 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 ],
             )
             .map_err(unknown)?;
+        self.authenticate_snapshot_report_data()?;
         self.ensure_origin()
     }
 
@@ -889,8 +900,16 @@ impl PacketCompleteArchivedOwnerData<'_> {
 // These named wrappers/declared arrays are known requested layout, not a bound
 // for compiler frames or the entire thread stack. The root plan contains both
 // child plans (and the compact plan), so their diagnostic sizes are not added.
+#[cfg(test)]
 fn snapshot_parser_known_storage(maximum: usize) -> Result<usize, OperationFailure> {
-    let layouts = crucible_node_provider::reference_packet::service::native_snapshot::packet_native_owned11_snapshot_validation_layouts();
+    snapshot_parser_known_storage_for_class(CompleteNativeSnapshotClass::Legacy11, maximum)
+}
+
+pub(super) fn snapshot_parser_known_storage_for_class(
+    class: CompleteNativeSnapshotClass,
+    maximum: usize,
+) -> Result<usize, OperationFailure> {
+    let layouts = class.parser_layouts();
     let cursors = layouts
         .field_cursor_bytes
         .checked_mul(layouts.maximum_simultaneous_field_cursors)

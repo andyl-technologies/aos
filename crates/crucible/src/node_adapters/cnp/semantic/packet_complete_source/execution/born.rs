@@ -12,6 +12,7 @@ use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::node_adapters::cnp::semantic) enum OriginalBornRole {
     NativeSnapshot,
+    NativeAllocationReport,
     NativeControl,
     NativeAnchor,
     NativeAfter,

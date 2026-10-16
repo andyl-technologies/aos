@@ -26,6 +26,7 @@ impl PacketCompleteSemanticSource {
         if self.capture_allocation_selection.is_some()
             || self.complete_bytes_launch_reserved.get()
             || self.capture_banks.get_mut().is_some()
+            || selection.is_some() && self.capture_execution.get_mut().is_some()
             || self.registry_capture.get_mut().is_some()
             || self.preconstruction.get_mut().is_some()
             || self.ack_birth_attempted

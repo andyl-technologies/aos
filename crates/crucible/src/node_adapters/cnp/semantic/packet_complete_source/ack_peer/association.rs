@@ -962,9 +962,8 @@ impl PacketCompleteSemanticSource {
         {
             return Err(refused("complete owning mechanism selection absent"));
         }
-        let schema =
-            crucible_node_provider::reference_packet::service::native_owned11_snapshot_schema()
-                .map_err(unknown)?;
+        let snapshot_class = self.selected_complete_native_snapshot_class()?;
+        let schema = snapshot_class.schema()?;
         let installation = self.installation();
         if !installation
             .provider
@@ -1016,10 +1015,13 @@ impl PacketCompleteSemanticSource {
             .ack_peer_birth
             .try_borrow()
             .map_err(|_| refused("complete original private birth busy"))?;
-        birth
+        let birth = birth
             .as_ref()
-            .ok_or_else(|| refused("complete original private birth absent"))?
-            .authenticate_original()?;
+            .ok_or_else(|| refused("complete original private birth absent"))?;
+        birth.authenticate_original()?;
+        if snapshot_class == super::super::archive_owner::CompleteNativeSnapshotClass::StartupCapture14 {
+            birth.authenticate_selected_native_startup(self)?;
+        }
         self.original_extension_registry_storage_data(512 * 1024 * 1024)?;
         self.authenticate_original_effect_receiver_source_binding()?;
         self.original_capture_bank_facts()?;
@@ -1161,3 +1163,37 @@ impl OriginalAckPeerAssociation {
 #[cfg(test)]
 #[path = "association/prebirth_storage_tests.rs"]
 mod prebirth_storage_tests;
+
+impl PacketCompleteSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn selected_complete_native_snapshot_class(
+        &self,
+    ) -> Result<super::super::archive_owner::CompleteNativeSnapshotClass, OperationFailure> {
+        use crucible_node_provider::reference_packet::service::{
+            capture_allocation::PacketNative5CaptureAllocationSelection,
+            complete_restore::{PacketNative5CompleteRestoreSelection, PacketNative5RestoreInputEmitterSelection},
+        };
+        use super::super::archive_owner::CompleteNativeSnapshotClass;
+
+        self.ensure_origin()?;
+        match self.selected_capture_allocation_selection()? {
+            None => Ok(CompleteNativeSnapshotClass::Legacy11),
+            Some(PacketNative5CaptureAllocationSelection::OriginalObserve12) => {
+                if self.selected_complete_restore_selection()?
+                    != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+                    || self.selected_restore_input_emitter_selection()?
+                        != Some(PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12)
+                    || !matches!(self.selected_capture_profile()?, PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+                    || self.selected_protocol_metadata_limits()?.is_none()
+                    || self.selected_ack_emitter_selection()?
+                        != Some(crucible_node_provider::reference_packet::service::PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
+                    || self.selected_native_ack_codec_metadata_extent()?
+                        != Some(crucible_node_provider::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
+                    || self.selected_fresh_restore_allocation_selection()?.is_some()
+                {
+                    return Err(refused("startup Capture snapshot selection is incomplete or unsupported"));
+                }
+                Ok(CompleteNativeSnapshotClass::StartupCapture14)
+            }
+        }
+    }
+}

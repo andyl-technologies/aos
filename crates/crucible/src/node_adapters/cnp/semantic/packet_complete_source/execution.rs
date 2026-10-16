@@ -20,16 +20,22 @@ mod dispatch;
 mod finish;
 #[path = "execution/move_output.rs"]
 mod move_output;
+#[path = "execution/allocation_report.rs"]
+mod allocation_report;
 
 const COMPLETE_EVIDENCE_ROLES: usize = 8;
 const COMPLETE_BORN_ROLES: usize = 10;
 // The pinned CNP decimal_integer serializer owns at most twenty formatter bytes.
 const NUMERIC_SERIALIZER_SCRATCH: usize = 20;
 const BACKEND_MEDIA: &str = "application/vnd.source-owned.packet-complete-archive-backend.v15+json";
+const STARTUP_BACKEND_MEDIA: &str = "application/vnd.source-owned.packet-complete-archive-backend.v16+json";
 
 pub(super) struct OriginalCompleteCaptureExecution {
     backend_bank: Option<CnpSemanticSnapshotReservation>,
     backend: Option<InputPayload>,
+    allocation_selected: bool,
+    allocation_bank: Vec<u8>,
+    allocation: Option<InputPayload>,
     evidence: Vec<InputPayload>,
     born: Vec<born::OriginalBornObject>,
     dependency_plan: Option<dependency_credit::OriginalDependencyPlan>,
@@ -71,6 +77,11 @@ impl OriginalCompleteCaptureExecution {
             [
                 bank,
                 references,
+                self.allocation_bank.capacity(),
+                self.allocation.as_ref().map_or(0, |body| body.bytes.capacity()),
+                self.allocation.as_ref()
+                    .map(|body| NodeRuntime::capture_reference_storage(&body.reference).map_err(E::unknown))
+                    .transpose()?.unwrap_or(0),
                 self.evidence
                     .capacity()
                     .checked_mul(size_of::<InputPayload>())
@@ -178,7 +189,7 @@ impl OriginalCompleteCaptureExecution {
 }
 
 impl PacketCompleteSemanticSource {
-    /// Reserves the backend and final evidence slots before the original Child.
+    /// Reserves backend, selected Report and final evidence banks before Child.
     ///
     /// These allocations belong to this Source and survive partial failure.
     /// Their independent finite bound grants no whole-world memory admission,
@@ -223,23 +234,14 @@ impl PacketCompleteSemanticSource {
             )
             .map_err(unknown)?,
         );
-        let requested = maximum_backend_bytes
-            .checked_add(
-                COMPLETE_EVIDENCE_ROLES
-                    .checked_mul(size_of::<InputPayload>())
-                    .ok_or_else(|| refused("original output slots overflow"))?,
-            )
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    COMPLETE_BORN_ROLES.checked_mul(size_of::<born::OriginalBornObject>())?,
-                )
-            })
-            .filter(|requested| maximum_backend_bytes != 0 && *requested <= admitted)
-            .ok_or_else(|| refused("original output bank admission is insufficient"))?;
-        let _ = requested;
+        let allocation_selected = self.selected_capture_allocation_selection()?.is_some();
+        execution_reservation_requested_bytes(maximum_backend_bytes, allocation_selected, admitted)?;
         *self.capture_execution.get_mut() = Some(OriginalCompleteCaptureExecution {
             backend_bank: None,
             backend: None,
+            allocation_selected,
+            allocation_bank: Vec::new(),
+            allocation: None,
             evidence: Vec::new(),
             born: Vec::new(),
             dependency_plan: None,
@@ -265,13 +267,16 @@ impl PacketCompleteSemanticSource {
                 maximum_backend_bytes,
                 admitted,
             )?);
+            if allocation_selected {
+                execution.allocation_bank.try_reserve_exact(allocation_report_capacity()).map_err(unknown)?;
+            }
             execution
                 .evidence
-                .try_reserve_exact(COMPLETE_EVIDENCE_ROLES)
+                .try_reserve_exact(execution.evidence_roles())
                 .map_err(unknown)?;
             execution
                 .born
-                .try_reserve_exact(COMPLETE_BORN_ROLES)
+                .try_reserve_exact(execution.born_roles())
                 .map_err(unknown)?;
             execution.retained_storage(admitted)?;
             Ok(())
@@ -301,6 +306,10 @@ impl PacketCompleteSemanticSource {
         }
         let result: Result<(), OperationFailure> = (|| {
             let installed = self.installation();
+            let snapshot_class = self.selected_complete_native_snapshot_class()?;
+            if execution.allocation_selected != snapshot_class.has_allocation() {
+                return Err(refused("original Report reservation differs from installed snapshot class"));
+            }
             if execution.key.is_none() {
                 let mut formats =
                     installed
@@ -309,13 +318,14 @@ impl PacketCompleteSemanticSource {
                         .formats
                         .iter()
                         .filter(|schema| {
-                            schema.id.as_str() == "source-owned.packet-native-continuation/11"
-                                && schema.version == 11
+                            schema.id.as_str() == snapshot_class.schema_id()
+                                && schema.version == snapshot_class.schema_version()
                         });
                 let schema = formats
                     .next()
                     .ok_or_else(|| refused("original native complete schema absent"))?;
-                if formats.next().is_some()
+                if schema != &snapshot_class.schema()?
+                    || formats.next().is_some()
                     || !installed
                         .binding
                         .compatibility
@@ -373,9 +383,10 @@ impl PacketCompleteSemanticSource {
                     .key
                     .as_ref()
                     .ok_or_else(|| refused("original output key absent"))?;
-                let view = PacketCompleteSettledJournal::backend_registry_identity_view_data(
+                let view = PacketCompleteSettledJournal::backend_registry_identity_view_for_class_data(
                     &installed.binding.compatibility.implementation,
                     key,
+                    snapshot_class,
                 );
                 retained_values::sum(
                     [
@@ -416,7 +427,7 @@ impl PacketCompleteSemanticSource {
                     )?;
                     execution.backend = Some(super::super::semantic_snapshot::take_component(
                         &mut execution.backend_bank,
-                        BACKEND_MEDIA,
+                        if snapshot_class.has_allocation() { STARTUP_BACKEND_MEDIA } else { BACKEND_MEDIA },
                     )?);
                 }
             }
@@ -459,3 +470,42 @@ impl PacketCompleteSemanticSource {
 #[cfg(test)]
 #[path = "execution/prebirth_tests.rs"]
 mod prebirth_tests;
+
+fn allocation_report_capacity() -> usize {
+    crucible_node_provider::reference_packet::service::capture_allocation::MAXIMUM_NATIVE_CAPTURE_ALLOCATION_REPORT_BYTES
+}
+
+fn execution_reservation_requested_bytes(
+    backend: usize, allocation_selected: bool, admitted: usize,
+) -> Result<usize, OperationFailure> {
+    let extra = usize::from(allocation_selected);
+    let requested = backend.checked_add(if allocation_selected { allocation_report_capacity() } else { 0 })
+        .and_then(|n| n.checked_add((COMPLETE_EVIDENCE_ROLES + extra).checked_mul(size_of::<InputPayload>())?))
+        .and_then(|n| n.checked_add((COMPLETE_BORN_ROLES + extra).checked_mul(size_of::<born::OriginalBornObject>())?))
+        .filter(|n| backend != 0 && *n <= admitted)
+        .ok_or_else(|| refused("original output bank admission is insufficient"))?;
+    Ok(requested)
+}
+
+impl OriginalCompleteCaptureExecution {
+    fn evidence_roles(&self) -> usize { COMPLETE_EVIDENCE_ROLES + usize::from(self.allocation_selected) }
+    fn born_roles(&self) -> usize { COMPLETE_BORN_ROLES + usize::from(self.allocation_selected) }
+}
+
+impl PacketCompleteSemanticSource {
+    /// Reports pre-Child backend, Report and output-slot requested storage.
+    ///
+    /// The same immutable selection drives the reservation. Inline Source and
+    /// execution headers belong to the enclosing Source owner; this reports
+    /// additional dynamic banks only and creates no admission or native right.
+    ///
+    /// # Errors
+    /// Refuses foreign creator custody, a zero backend bound or layout overflow.
+    pub fn original_complete_capture_execution_reservation_requested_data(
+        &self, maximum_backend_bytes: usize,
+    ) -> Result<usize, OperationFailure> {
+        self.ensure_origin()?;
+        execution_reservation_requested_bytes(maximum_backend_bytes,
+            self.selected_capture_allocation_selection()?.is_some(), usize::MAX)
+    }
+}

@@ -94,11 +94,13 @@ fn generated_reference_bytes(role: born::OriginalBornRole) -> usize {
         NativeSnapshot | NativeControl | NativeAnchor | NativeAfter => {
             return generated_hash_bytes() + 128;
         }
+        NativeAllocationReport => crucible_node_provider::reference_packet::service::capture_allocation::PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA,
         HostProtocol => "application/vnd.source-owned.packet-host-protocol.v11+json",
         HostExtensionRegistry => registry_capture::HOST_REGISTRY_MEDIA,
         Semantic => "application/vnd.source-owned.packet-semantic-custody.v5+json",
         Ancestry => "application/vnd.source-owned.packet-original-ancestry.v12+json",
-        Backend => BACKEND_MEDIA,
+        // The explicit v15/v16 media have the same closed encoded extent.
+        Backend => STARTUP_BACKEND_MEDIA,
         Journal => "application/vnd.source-owned.packet-native-settled-journal.v12+json",
     };
     generated_hash_bytes() + media.len()
@@ -223,17 +225,15 @@ impl PacketCompleteSemanticSource {
         let lineages = self.original_reference_ancestry_lineages(scope)?;
         use born::OriginalBornRole::*;
         let mut plan = PlanQuote::new(maximum);
-        for (role, dependency) in [
-            (NativeSnapshot, NativeControl),
-            (NativeControl, Backend),
-            (NativeAnchor, NativeControl),
-        ] {
-            let mut row = RowQuote::new(maximum);
-            row.generated(dependency)?;
-            plan.finish_row(role, row)?;
-        }
-        for role in [NativeAfter, HostProtocol, HostExtensionRegistry] {
-            plan.finish_row(role, RowQuote::new(maximum))?;
+        plan.quote_native_rows(execution.allocation_selected)?;
+        if execution.allocation_selected {
+            // The independent Report InputPayload fullref is constructed in
+            // addition to the born-row reference and its returned Core clones.
+            plan.data.source_born_growth = retained_values::sum([
+                plan.data.source_born_growth, generated_reference_bytes(NativeAllocationReport),
+            ], maximum)?;
+            plan.data.maximum_lookup_scratch = plan.data.maximum_lookup_scratch.max(
+                allocation_report::allocation_reference_phase_storage_data(maximum)?);
         }
         let mut semantic = RowQuote::new(maximum);
         semantic.existing(&runtime_object.reference)?;
@@ -277,7 +277,7 @@ impl PacketCompleteSemanticSource {
             journal.generated(role)?;
         }
         plan.finish_row(Journal, journal)?;
-        if plan.rows != COMPLETE_BORN_ROLES {
+        if plan.rows != execution.born_roles() {
             return Err(refused("original dependency role roster differs"));
         }
         retained_values::sum(
@@ -402,7 +402,7 @@ impl OriginalCompleteCaptureExecution {
             .as_ref()
             .filter(|plan| &plan.runtime == runtime)
             .ok_or_else(|| refused("original dependency storage plan has another Runtime7"))?;
-        if self.born.len() != COMPLETE_BORN_ROLES {
+        if self.born.len() != self.born_roles() {
             return Err(refused(
                 "original dependency storage has an incomplete born roster",
             ));
@@ -495,5 +495,58 @@ mod tests {
         );
         assert!(actual.lookup_storage_data(0).is_err());
         Ok(())
+    }
+}
+
+impl PlanQuote {
+    fn quote_native_rows(&mut self, allocation_selected: bool) -> Result<(), OperationFailure> {
+        use born::OriginalBornRole::*;
+        for (role, dependency) in [
+            (NativeSnapshot, NativeControl),
+            (NativeControl, Backend),
+            (NativeAnchor, NativeControl),
+        ] {
+            let mut row = RowQuote::new(self.maximum);
+            row.generated(dependency)?;
+            if role == NativeSnapshot && allocation_selected {
+                row.generated(NativeAllocationReport)?;
+            }
+            self.finish_row(role, row)?;
+        }
+        for role in [NativeAfter, HostProtocol, HostExtensionRegistry] {
+            self.finish_row(role, RowQuote::new(self.maximum))?;
+        }
+        if allocation_selected {
+            self.finish_row(NativeAllocationReport, RowQuote::new(self.maximum))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod selected_report_tests {
+    use super::*;
+
+    #[test]
+    fn original_snapshot_dependency_quote_includes_report_edge_and_intrinsic_leaf() {
+        let mut ordinary = PlanQuote::new(usize::MAX);
+        ordinary.quote_native_rows(false).unwrap();
+        let mut selected = PlanQuote::new(usize::MAX);
+        selected.quote_native_rows(true).unwrap();
+        assert_eq!(ordinary.rows, 6);
+        assert_eq!(selected.rows, 7);
+        assert_eq!(ordinary.data.maximum_dependency_count, 1);
+        assert_eq!(selected.data.maximum_dependency_count, 2);
+        assert!(selected.data.source_born_growth > ordinary.data.source_born_growth);
+        assert!(selected.data.returned_row_growth > ordinary.data.returned_row_growth);
+        assert!(selected.data.maximum_lookup_scratch > ordinary.data.maximum_lookup_scratch);
+        let mut short = PlanQuote::new(selected.data.source_born_growth - 1);
+        assert!(short.quote_native_rows(true).is_err());
+    }
+}
+
+impl OriginalDependencyPlan {
+    pub(super) fn maximum_lookup_scratch_data(&self) -> usize {
+        self.data.maximum_lookup_scratch
     }
 }

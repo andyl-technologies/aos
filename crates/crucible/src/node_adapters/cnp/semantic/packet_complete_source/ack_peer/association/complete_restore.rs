@@ -217,6 +217,8 @@ impl PacketCompleteSemanticSource {
         if self.selected_complete_restore_selection()?
             != Some(PacketNative5CompleteRestoreSelection::SourceSignedOwned11)
         {
+            // Full outer13 decoding does not issue the distinct Prepare/Commit
+            // transaction required by Transfer12. Keep this signer edition11.
             return Err(refused(
                 "single-request restore requires explicit selected11",
             ));
