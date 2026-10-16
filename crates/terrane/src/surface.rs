@@ -9,7 +9,7 @@ pub use terrane_core::surface::{
     ViewTarget, WriterMode,
 };
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "surface-sdk", unix))]
 pub(crate) mod presentation;
 
 #[cfg(feature = "std")]

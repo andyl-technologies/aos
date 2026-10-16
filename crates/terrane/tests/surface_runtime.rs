@@ -1,6 +1,10 @@
 //! Exercises actual authorized preparation and registered SDK lifecycle.
 #![cfg(all(feature = "tokio", feature = "surface-sdk", unix))]
 
+#[allow(
+    dead_code,
+    reason = "Shared SDK fixtures also provide reopen and inventory helpers for other integration targets."
+)]
 #[path = "local_sdk/fixture.rs"]
 mod fixture;
 

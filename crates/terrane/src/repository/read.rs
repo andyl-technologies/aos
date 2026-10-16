@@ -44,6 +44,13 @@ pub(crate) struct ReadView {
 /// Retains repository-owned authority and metadata until exact-snapshot presentation.
 ///
 /// Surfaces cannot inspect history, credentials or storage witnesses through it.
+#[cfg_attr(
+    not(all(feature = "surface-sdk", unix)),
+    allow(
+        dead_code,
+        reason = "Targets without the native SDK cannot consume opaque presentation preparations."
+    )
+)]
 pub(crate) struct PreparedView {
     snapshot: AuthorizedSnapshot,
     entries: Vec<ReadEntry>,

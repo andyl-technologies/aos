@@ -11,6 +11,7 @@ use terrane::{
     surface::{self, TreeSchema, ViewMetadata},
 };
 
+#[cfg(all(feature = "surface-sdk", unix))]
 fn exposure(id: &str, endpoint: &str, extra: &str) -> String {
     format!(
         "[[expose]]\nid='{id}'\nview='refs/heads/main'\nsurface='sdk'\nat='{endpoint}'\ntoken='file:/etc/terrane/token'\n{extra}\n"
