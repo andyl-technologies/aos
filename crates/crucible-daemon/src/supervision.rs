@@ -85,7 +85,7 @@ impl AssignmentHostWatchdog {
     }
 }
 
-/// Cancels a live QEMU child when the whole assignment exceeds its host budget.
+/// Requests cancellation when the whole assignment exceeds its host budget.
 pub(super) struct AssignmentHostWatchdogGuard {
     completion: mpsc::Sender<()>,
     watcher: Option<JoinHandle<()>>,

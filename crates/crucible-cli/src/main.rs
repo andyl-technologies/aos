@@ -1066,7 +1066,7 @@ enum CampaignLineageCommand {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignLineageCompileArgs {
-    /// Strict version-one campaign lineage TOML.
+    /// Read version-one TOML with backend_build_identity (legacy qemu_build accepted).
     #[arg(value_name = "INPUT")]
     input: PathBuf,
     /// New file that will receive the canonical binary lineage record.

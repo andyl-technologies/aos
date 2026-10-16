@@ -262,7 +262,7 @@ pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed 
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         finding: &FindingReproductionArtifact,
-        replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+        replay_closure: &crate::campaign_replay_closure::GuardedCampaignReplayClosure,
         target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>>;
@@ -395,7 +395,7 @@ where
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         finding: &FindingReproductionArtifact,
-        replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+        replay_closure: &crate::campaign_replay_closure::GuardedCampaignReplayClosure,
         target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
@@ -516,7 +516,7 @@ fn capture_qemu_finding_replay_material(
     >,
     finding: &FindingReproductionArtifact,
     finding_kind: FindingKind,
-    replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+    replay_closure: &crate::campaign_replay_closure::GuardedCampaignReplayClosure,
 ) -> Result<
     Option<crate::FindingProductionReplayMaterialOutcome>,
     crate::FindingProductionReplayCaptureError,
@@ -902,7 +902,7 @@ where
     Artifact(#[source] CrucibleArtifactError),
     /// A candidate's authenticated campaign choice closure was invalid.
     #[error("automatic finding replay closure failed: {0}")]
-    ReplayClosure(#[source] crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosureError),
+    ReplayClosure(#[source] crate::campaign_replay_closure::GuardedCampaignReplayClosureError),
     /// The deterministic minimization or final finding attachment failed.
     #[error("automatic finding preparation failed: {0}")]
     Preparation(#[source] AutomaticFindingPreparationError),
@@ -1181,7 +1181,7 @@ where
         .map_err(CandidateReplayFailure::Campaign)?;
     let replay_context = context.for_origin_replay();
     let replay_closure =
-        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_resolved_selections(
+        crate::campaign_replay_closure::GuardedCampaignReplayClosure::from_resolved_selections(
             candidate.artifact.scenario_form(),
             candidate.artifact.schedule(),
             &starting_selections,
@@ -1248,7 +1248,7 @@ pub(crate) enum CandidateReplayFailure<R> {
     Operational(AttemptWorkerFailure<R>),
     Campaign(CampaignCodecError),
     Artifact(CrucibleArtifactError),
-    ReplayClosure(crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosureError),
+    ReplayClosure(crate::campaign_replay_closure::GuardedCampaignReplayClosureError),
 }
 
 fn private_replay_unwind_error() -> EngineError {
