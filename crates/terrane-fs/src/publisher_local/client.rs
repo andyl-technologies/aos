@@ -12,6 +12,8 @@ mod manifest;
 mod receipt;
 mod recovery;
 #[cfg(feature = "tokio")]
+pub(crate) mod recovery_manifest;
+#[cfg(feature = "tokio")]
 mod running;
 
 pub(crate) use recovery::{BodyIncarnationObservation, RecoveryBody};
