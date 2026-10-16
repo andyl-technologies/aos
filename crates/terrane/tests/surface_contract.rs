@@ -341,6 +341,7 @@ fn native_host_configuration_rejects_missing_or_ambiguous_operator_inputs() {
     let valid = native_host_configuration();
     for (from, to) in [
         ("serve_uid = 1001", "serve_uid = 1002"),
+        ("content_uid = 1001", "content_uid = 1002"),
         ("content_gid = 1003", "content_gid = 4294967295"),
         ("max_connections = 32", "max_connections = 0"),
         ("max_connections = 32", "max_connections = 1025"),

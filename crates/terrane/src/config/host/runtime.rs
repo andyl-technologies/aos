@@ -79,6 +79,7 @@ impl Publisher {
         if !socket_path(&self.socket_path)
             || identities.contains(&u32::MAX)
             || self.serve_uid == self.publish_uid
+            || self.content_uid == self.publish_uid
             || !(1..=1024).contains(&self.max_connections)
         {
             return Err(ConfigError::Invalid(
