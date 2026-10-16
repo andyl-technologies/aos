@@ -90,6 +90,7 @@ impl ArmedWakeFd {
             // A malformed provider cannot make the empty-counter check block.
             // SAFETY: these queries inspect the still-native-owned descriptor.
             let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+            // SAFETY: the same native owner keeps this descriptor live for inspection.
             let descriptor_flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
             if flags < 0
                 || descriptor_flags < 0
@@ -490,8 +491,12 @@ impl PluginSetupCompletion {
         unsafe { self.original_startup()?.transfer_setup_mapping() }
     }
 
-    // Called only by the exclusive retained Runtime destructor after the actual
-    // callback/worker last-use guards have cleared. Native checks its own debts.
+    /// Returns the mapping only after the retained Runtime's last users close.
+    ///
+    /// # Safety
+    /// The exclusive Runtime destructor has ended every callback, worker and
+    /// detached view use. A true result forbids subsequent mapping access;
+    /// refusal retains the pinned Runtime and its canonical mapping field.
     pub(crate) unsafe fn return_setup_mapping(&self) -> bool {
         match self.startup_source.as_ref() {
             // SAFETY: the caller's final-use contract is forwarded unchanged.

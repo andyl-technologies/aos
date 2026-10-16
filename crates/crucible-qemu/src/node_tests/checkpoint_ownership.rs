@@ -1,5 +1,7 @@
 //! Component controls for actual local checkpoint ownership and wire ordering.
 
+#![cfg(test)]
+
 use super::*;
 pub(super) use crate::node::test_support::checkpoint_ownership::Ownership;
 

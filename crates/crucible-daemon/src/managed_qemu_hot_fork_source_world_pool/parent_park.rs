@@ -13,15 +13,15 @@ use std::sync::{OnceLock, TryLockError};
 
 use crucible_api::ProductionVmParentParkDrainRefusal as Refusal;
 use crucible_linux_resource::host_supervision::HostSupervisionError;
-use crucible_qemu::{QmpParentParkDrainReceipt, QmpParentParkDrainState};
+use crucible_qemu::QmpParentParkResult;
 use crucible_ram::ResourceLoan;
 
 use super::*;
 use crate::private_original_capture::OriginalPackagedParkCaller;
 
-const ACQUIRING: u8 = 0;
-const HELD: u8 = 1;
-const RELINQUISHED: u8 = 2;
+const BEGINNING: u8 = 0;
+const PENDING: u8 = 1;
+const RETURNED: u8 = 2;
 const TERMINAL: u8 = 3;
 
 struct ManagedParentParkState {
@@ -142,7 +142,7 @@ impl ManagedParentParkGate {
                 provider,
                 lease: sequence,
                 template: lease.template,
-                state: AtomicU8::new(ACQUIRING),
+                state: AtomicU8::new(BEGINNING),
                 first: OnceLock::new(),
                 original_after: OnceLock::new(),
             }),
@@ -163,11 +163,10 @@ impl ManagedParentParkGate {
 
     fn step(
         &self,
-        invoke: impl FnOnce(
-            &mut ProductionVmHotForkSourceWorld,
-        ) -> Result<QmpParentParkDrainReceipt, Refusal>,
-    ) -> Result<QmpParentParkDrainReceipt, ManagedParentParkError> {
-        if let Err(first) = self.body.caller.verify_original() {
+        cleanup: bool,
+        invoke: impl FnOnce(&mut ProductionVmHotForkSourceWorld) -> Result<QmpParentParkResult, Refusal>,
+    ) -> Result<QmpParentParkResult, ManagedParentParkError> {
+        if !cleanup && let Err(first) = self.body.caller.verify_original() {
             return Err(self.refuse(first.into()));
         }
         let mut source = match self.body.source.try_lock() {
@@ -197,46 +196,37 @@ impl ManagedParentParkGate {
 impl ManagedParentParkSession {
     fn run(&mut self) -> Result<(), ManagedParentParkError> {
         let body = &self.gate.body;
-        let acquired = self.gate.step(|source| {
+        let begun = self.gate.step(false, |source| {
             body.caller
-                .acquire_retained_world(source, &body.node, body.lease)
-        })?;
-        if acquired.state != QmpParentParkDrainState::Held || !acquired.retained {
-            return Err(self
-                .gate
-                .refuse(Refusal::Unavailable("native acquire did not retain parent")));
+                .begin_retained_world(source, &body.node, body.lease)
+        });
+        if begun.is_ok() {
+            body.state.store(PENDING, Ordering::Release);
         }
-        body.state.store(HELD, Ordering::Release);
-        let queried = self
-            .gate
-            .step(|source| source.query_parent_park_retained(&body.node))?;
-        if queried.state != QmpParentParkDrainState::Held
-            || !queried.retained
-            || queried.generation != acquired.generation
+        // Even a negative begin may have born or uncertain native custody.
+        // The launcher uses its actual original Cleanup owner, not this
+        // caller's cancelled Quiescence, and keeps any first cause sticky.
+        let returned = self.gate.step(true, |source| {
+            source.return_parent_park_retained(&body.node)
+        });
+        begun?;
+        let returned = returned?;
+        if returned.closed_request.is_none()
+            || !returned.host_memberships_returned
+            || returned.has_operation_failure()
         {
-            return Err(self
-                .gate
-                .refuse(Refusal::Unavailable("native held owner changed")));
+            return Err(self.gate.refuse(Refusal::Unavailable(
+                "parent Park physical disposition remains retained",
+            )));
         }
-        let released = self
-            .gate
-            .step(|source| source.relinquish_parent_park_retained(&body.node))?;
-        if released.state != QmpParentParkDrainState::Relinquished
-            || released.retained
-            || released.generation != acquired.generation
-        {
-            return Err(self
-                .gate
-                .refuse(Refusal::Unavailable("native disposition remains uncertain")));
-        }
-        body.state.store(RELINQUISHED, Ordering::Release);
+        body.state.store(RETURNED, Ordering::Release);
         Ok(())
     }
 }
 
 impl Drop for ManagedParentParkSession {
     fn drop(&mut self) {
-        if self.gate.body.state.load(Ordering::Acquire) != RELINQUISHED {
+        if self.gate.body.state.load(Ordering::Acquire) != RETURNED {
             self.gate.body.state.store(TERMINAL, Ordering::Release);
             if let Ok(mut source) = self.gate.body.source.try_lock() {
                 let _ = source.contain_parent_park_retained();
@@ -365,7 +355,7 @@ where
         lease: &QemuHotForkSourceWorldLease,
         gate: &ManagedParentParkGate,
     ) -> Result<(), ManagedParentParkError> {
-        if gate.body.state.load(Ordering::Acquire) != RELINQUISHED
+        if gate.body.state.load(Ordering::Acquire) != RETURNED
             || gate.body.provider != provider
             || Some(gate.body.lease) != lease.managed_lease
             || gate.body.template != lease.template

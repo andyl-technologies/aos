@@ -1,7 +1,7 @@
 //! Stores the fixed later original phase inside the real boxed launcher.
 //!
 //! The factory-issued stage and actor Quiescence exist before Pause, imports or
-//! native acquisition. Every failure is moved into one preadmitted body. The
+//! native begin. Every failure is moved into one preadmitted body. The
 //! outer facade retains the complete source lifecycle through disposition.
 
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervis
 use crucible_qemu::{
     OriginalActorParkImportError, OriginalActorParkImports, OriginalActorParkQuiescence,
     OriginalActorParkQuiescenceError, OriginalParkSourceError, QemuNodeSetPreparedHotForkSource,
-    QmpParentParkDrainReceipt, QmpParentParkDrainState,
+    QmpParentParkResult,
 };
 
 use super::QemuAttemptProductionVmNodeLauncher;
@@ -41,8 +41,10 @@ enum PhaseCause {
     Original(#[from] HostSupervisionError),
     #[error(transparent)]
     Attempt(#[from] LifecycleApiError),
+    #[error(transparent)]
+    Cleanup(#[from] crucible_qemu::QemuVmRealizationError),
     #[error("native park refused: {0:?}")]
-    Native(QmpParentParkDrainReceipt),
+    Native(QmpParentParkResult),
 }
 
 impl PhaseCause {
@@ -58,6 +60,7 @@ impl PhaseCause {
             Self::Original(first) => Cause::Original(first),
             Self::Attempt(first) => Cause::Attempt(first),
             Self::Native(first) => Cause::Native(first),
+            Self::Cleanup(first) => Cause::Cleanup(first),
         }
     }
 }
@@ -69,7 +72,10 @@ struct PhaseBody {
     actor: Option<OriginalActorParkQuiescence>,
     imports: Option<OriginalActorParkImports>,
     source_binding: Option<crucible_qemu::OriginalParkSourceReborrowBinding>,
-    receipt: Option<QmpParentParkDrainReceipt>,
+    receipt: Option<QmpParentParkResult>,
+    cleanup: Option<crucible_qemu::OriginalParentParkCleanup>,
+    cleanup_after: Option<HostSupervisionError>,
+    host_return_after: Option<HostSupervisionError>,
     first: Option<PhaseCause>,
     actor_original_after: Option<HostSupervisionError>,
     actor_after: Option<HostSupervisionError>,
@@ -84,7 +90,7 @@ pub(super) struct OriginalParkDrainPhase {
     _name_credit: DecodeScratch,
 }
 
-/// Retains the same paid phase after actual native relinquishment.
+/// Retains the same paid phase after actual native local closure.
 ///
 /// This move-only disposition owns the original phase body, both entered
 /// guards and the existing stage facade. It grants no new stage or deadline.
@@ -100,13 +106,9 @@ impl OriginalParkDrainDisposition {
             return Err(Refusal::Retained);
         }
         let receipt = self.phase.body.receipt.ok_or(Refusal::Retained)?;
-        if receipt.state != QmpParentParkDrainState::Relinquished
-            || receipt.retained
-            || receipt.first_status != 0
-            || receipt.post_status != 0
-        {
+        if receipt.closed_request.is_none() || receipt.has_operation_failure() {
             self.phase.body.first.get_or_insert(PhaseCause::Invariant(
-                "disposition lacks actual native relinquishment",
+                "disposition lacks actual native local closure",
             ));
             return Err(Refusal::Retained);
         }
@@ -178,6 +180,8 @@ impl OriginalParkDrainPhase {
         let first = self.body.first.as_ref().map(PhaseCause::failure);
         crucible_api::ProductionVmParentParkDrainFailure {
             first,
+            cleanup_after: self.body.cleanup_after.as_ref(),
+            host_return_after: self.body.host_return_after.as_ref(),
             actor_original_after: self.body.actor_original_after.as_ref(),
             actor_after: self.body.actor_after.as_ref(),
             family_after: self.body.family_after.as_ref(),
@@ -187,8 +191,8 @@ impl OriginalParkDrainPhase {
 
     fn record(
         &mut self,
-        outcome: Result<QmpParentParkDrainReceipt, PhaseCause>,
-    ) -> Result<QmpParentParkDrainReceipt, Refusal> {
+        outcome: Result<QmpParentParkResult, PhaseCause>,
+    ) -> Result<QmpParentParkResult, Refusal> {
         // Preserve each independent cut even when work already refused.
         self.body.actor_original_after =
             self.body
@@ -208,41 +212,40 @@ impl OriginalParkDrainPhase {
             self.body.family_after = self.body.family_after.or(phase);
             self.body.family_original_after = self.body.family_original_after.or(outer);
         }
-        match outcome {
-            Ok(receipt)
-                if self.body.actor_after.is_none()
-                    && self.body.actor_original_after.is_none()
-                    && self.body.family_after.is_none()
-                    && self.body.family_original_after.is_none() =>
-            {
-                self.body.receipt = Some(receipt);
-                if receipt.first_status == 0
-                    && receipt.post_status == 0
-                    && receipt.state != QmpParentParkDrainState::TerminalRetained
-                {
-                    Ok(receipt)
-                } else {
-                    self.body.first.get_or_insert(PhaseCause::Native(receipt));
-                    Err(Refusal::Retained)
-                }
-            }
-            Ok(receipt) => {
-                self.body.receipt = Some(receipt);
-                if let Some(first) = self
-                    .body
-                    .actor_after
-                    .or(self.body.actor_original_after)
-                    .or(self.body.family_after)
-                    .or(self.body.family_original_after)
-                {
-                    self.body.first.get_or_insert(PhaseCause::Original(first));
-                }
-                Err(Refusal::Retained)
-            }
+        let receipt = match outcome {
+            Ok(receipt) => receipt,
             Err(first) => {
                 self.body.first.get_or_insert(first);
-                Err(Refusal::Retained)
+                return Err(Refusal::Retained);
             }
+        };
+        self.body.receipt = Some(receipt);
+        self.body.cleanup_after = self.body.cleanup_after.or(receipt.cleanup_after);
+        self.body.host_return_after = self.body.host_return_after.or(receipt.host_return_after);
+
+        // A returned native first cause remains primary even if the separate
+        // Original or Cleanup observation subsequently refuses.
+        let mut native = receipt;
+        native.cleanup_after = None;
+        native.host_return_after = None;
+        if native.has_operation_failure() {
+            self.body.first.get_or_insert(PhaseCause::Native(receipt));
+        }
+        if let Some(first) = self
+            .body
+            .actor_after
+            .or(self.body.actor_original_after)
+            .or(self.body.family_after)
+            .or(self.body.family_original_after)
+            .or(self.body.cleanup_after)
+            .or(self.body.host_return_after)
+        {
+            self.body.first.get_or_insert(PhaseCause::Original(first));
+        }
+        if self.body.first.is_some() {
+            Err(Refusal::Retained)
+        } else {
+            Ok(receipt)
         }
     }
 
@@ -331,17 +334,17 @@ impl std::error::Error for OriginalParkDrainPhase {
 }
 
 impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> {
-    fn reacquire_parent_park_drain(
+    fn begin_next_parent_park_drain(
         &mut self,
         source: &mut QemuNodeSetPreparedHotForkSource<'_>,
         original: &Arc<HostOperationGuard>,
         decoder: &crucible_qemu::OriginalActorParkCaller,
         correlation: u64,
-    ) -> Result<QmpParentParkDrainReceipt, Refusal> {
+    ) -> Result<QmpParentParkResult, Refusal> {
         let mut disposition = self
             .parent_park_disposition
             .take()
-            .ok_or(Refusal::Unavailable("relinquished disposition absent"))?;
+            .ok_or(Refusal::Unavailable("closed disposition absent"))?;
         let preflight = (|| {
             if !Arc::ptr_eq(original, &disposition.phase.body.original)
                 || source.node() != &disposition.phase.body.node
@@ -396,7 +399,7 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> 
         // same entered originals and the sealed first pair, with no renewed end.
         self.parent_park_phase = Some(disposition.phase);
         let phase = self.parent_park_phase.as_mut().ok_or(Refusal::Retained)?;
-        let acquire = (|| {
+        let begin = (|| {
             phase
                 .body
                 .stage
@@ -412,8 +415,8 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> 
                 .imports
                 .as_ref()
                 .ok_or(PhaseCause::Invariant("imports absent"))?;
-            let acquired = phase.paired(|actor, family| {
-                Ok(source.acquire_parent_park_under_originals(
+            let begun = phase.paired(|actor, family| {
+                Ok(source.begin_parent_park_under_originals(
                     imports,
                     correlation,
                     stopped,
@@ -421,18 +424,18 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> 
                     family,
                 )?)
             });
-            phase.retain_pair(acquired)
+            phase.retain_pair(begun)
         })();
-        phase.record(acquire)
+        phase.record(begin)
     }
 
     pub(super) fn invoke_parent_park_drain(
         &mut self,
         source: &mut QemuNodeSetPreparedHotForkSource<'_>,
         request: Request<'_>,
-    ) -> Result<QmpParentParkDrainReceipt, Refusal> {
+    ) -> Result<QmpParentParkResult, Refusal> {
         match request {
-            Request::Acquire {
+            Request::Begin {
                 original,
                 decoder,
                 correlation,
@@ -441,7 +444,7 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> 
                     return Err(Refusal::Unavailable("launcher phase already entered"));
                 }
                 if self.parent_park_disposition.is_some() {
-                    return self.reacquire_parent_park_drain(
+                    return self.begin_next_parent_park_drain(
                         source,
                         original,
                         decoder,
@@ -466,6 +469,9 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> 
                         imports: None,
                         source_binding: None,
                         receipt: None,
+                        cleanup: None,
+                        cleanup_after: None,
+                        host_return_after: None,
                         first: None,
                         actor_original_after: None,
                         actor_after: None,
@@ -475,7 +481,7 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> 
                     _body_credit: body_credit,
                     _name_credit: name_credit,
                 });
-                let acquire = (|| {
+                let begin = (|| {
                     self.owner
                         .check_operational_boundary()
                         .map_err(PhaseCause::Attempt)?;
@@ -528,8 +534,8 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> 
                         .imports
                         .as_ref()
                         .ok_or(PhaseCause::Invariant("park imports absent"))?;
-                    let acquired = phase.paired(|actor, family| {
-                        Ok(source.acquire_parent_park_under_originals(
+                    let begun = phase.paired(|actor, family| {
+                        Ok(source.begin_parent_park_under_originals(
                             imports,
                             correlation,
                             stopped,
@@ -537,49 +543,104 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> 
                             family,
                         )?)
                     });
-                    phase.retain_pair(acquired)
+                    phase.retain_pair(begun)
                 })();
                 self.parent_park_phase
                     .as_mut()
                     .ok_or(Refusal::Unavailable("phase owner lost"))?
-                    .record(acquire)
+                    .record(begin)
             }
-            Request::Query | Request::Relinquish => {
-                let relinquish = matches!(request, Request::Relinquish);
-                let boundary = self
-                    .owner
-                    .check_operational_boundary()
-                    .map_err(PhaseCause::Attempt);
+            Request::Return => {
+                // Cancellation forbids new work, not physical cleanup by the
+                // original paid owner. Retain its one finite phase lazily.
                 let phase = self
                     .parent_park_phase
                     .as_mut()
                     .ok_or(Refusal::Unavailable("launcher phase absent"))?;
-                if let Err(first) = boundary {
-                    return phase.record(Err(first));
-                }
-                if phase.body.first.is_some() || source.node() != &phase.body.node {
+                if source.node() != &phase.body.node {
                     return Err(Refusal::Retained);
                 }
-                let retained = phase.body.receipt.ok_or(Refusal::Retained)?;
-                let outcome = phase.paired(|actor, family| {
-                    if relinquish {
-                        Ok(source
-                            .relinquish_parent_park_under_originals(&retained, actor, family)?)
-                    } else {
-                        Ok(source.query_parent_park_under_originals(&retained, actor, family)?)
-                    }
-                });
-                let outcome = phase.retain_pair(outcome);
-                let receipt = phase.record(outcome)?;
-                if relinquish
-                    && receipt.state == QmpParentParkDrainState::Relinquished
-                    && !receipt.retained
-                {
-                    // Only the actual healthy receipt and all four independent
-                    // postcuts mint this owning disposition. No new phase is born.
-                    let phase = self.parent_park_phase.take().ok_or(Refusal::Retained)?;
-                    self.parent_park_disposition = Some(OriginalParkDrainDisposition { phase });
+                if let Some(receipt) = phase.body.receipt.filter(|receipt| {
+                    receipt.closed_request.is_some() && receipt.host_memberships_returned
+                }) {
+                    return phase.record(Ok(receipt));
                 }
+                // Healthy progress borrows the same two entered operations.
+                // Cleanup's finite clock starts only after an actual refusal.
+                if phase.body.cleanup.is_none() {
+                    loop {
+                        let observed = phase.paired(|actor, family| {
+                            Ok(source.return_parent_park_under_originals(actor, family)?)
+                        });
+                        if let Ok(receipt) = observed.outcome.as_ref() {
+                            phase.body.receipt = Some(*receipt);
+                        }
+                        let receipt = match phase.retain_pair(observed) {
+                            Ok(receipt) => receipt,
+                            Err(first) => {
+                                phase.body.first.get_or_insert(first);
+                                break;
+                            }
+                        };
+                        if receipt.host_return_after.is_some() {
+                            let _ = phase.record(Ok(receipt));
+                            break;
+                        }
+                        if receipt.closed_request.is_some() && receipt.host_memberships_returned {
+                            let receipt = phase.record(Ok(receipt))?;
+                            let phase = self.parent_park_phase.take().ok_or(Refusal::Retained)?;
+                            self.parent_park_disposition =
+                                Some(OriginalParkDrainDisposition { phase });
+                            return Ok(receipt);
+                        }
+                        let waited = phase.paired(|actor, family| {
+                            Ok(actor.wait_for_quiescence_change_with(family)?)
+                        });
+                        if let Err(first) = phase.retain_pair(waited) {
+                            phase.body.first.get_or_insert(first);
+                            break;
+                        }
+                    }
+                    // A physical return decoded before a failed post remains
+                    // consumed; it needs no second transport or Cleanup entry.
+                    if let Some(receipt) = phase.body.receipt.filter(|receipt| {
+                        receipt.closed_request.is_some() && receipt.host_memberships_returned
+                    }) {
+                        return phase.record(Ok(receipt));
+                    }
+                }
+                if phase.body.cleanup.is_none() {
+                    match self.owner.retain_parent_park_cleanup() {
+                        Ok(cleanup) => phase.body.cleanup = Some(cleanup),
+                        Err(first) => return phase.record(Err(first.into())),
+                    }
+                }
+                // Keep the non-Clone phase in the body throughout disposition.
+                let cleanup = phase.body.cleanup.as_ref().ok_or(Refusal::Retained)?;
+                let outcome = (|| {
+                    loop {
+                        let receipt = source.return_parent_park_under_cleanup(&cleanup)?;
+                        // Keep actual physical evidence before inspecting any
+                        // semantic status or independent original postcut.
+                        phase.body.receipt = Some(receipt);
+                        if receipt.closed_request.is_some() && receipt.host_memberships_returned {
+                            return Ok(receipt);
+                        }
+                        if let Some(first) = receipt.host_return_after {
+                            return Err(PhaseCause::Original(first));
+                        }
+                        if let Some(first) = receipt.cleanup_after {
+                            return Err(PhaseCause::Original(first));
+                        }
+                        cleanup.wait_for_change()?;
+                    }
+                })();
+                let receipt = phase.record(outcome)?;
+                if receipt.closed_request.is_none() {
+                    return Err(Refusal::Retained);
+                }
+                let phase = self.parent_park_phase.take().ok_or(Refusal::Retained)?;
+                self.parent_park_disposition = Some(OriginalParkDrainDisposition { phase });
                 Ok(receipt)
             }
         }
@@ -602,25 +663,24 @@ mod failure_tests {
         };
         assert!(std::ptr::eq(borrowed, retained));
 
-        let cap = [1_u8; 32];
-        let reservation = [2_u8; 32];
-        let receipt: QmpParentParkDrainReceipt = serde_json::from_value(serde_json::json!({
-            "schema-version": 2,
-            "source-action": {
-                "cap": cap, "reservation": reservation,
-                "account-generation": 1, "process-generation": 1,
-                "loan-sequence": 2, "frontier": 7,
-            },
-            "action": "acquire",
-            "request-correlation": 7,
-            "generation": 11,
-            "stopped-generation": 13,
-            "state": "terminal-retained",
-            "first-status": -5,
-            "post-status": -6,
-            "retained": true,
-        }))
-        .unwrap();
+        let receipt = QmpParentParkResult {
+            status: -5,
+            post_status: -6,
+            return_status: -5,
+            received: true,
+            entered: false,
+            pending: false,
+            native_returned: false,
+            terminal_published: false,
+            mapped_metadata_bytes: 4096,
+            completed_requests: 0,
+            lifetime_first_status: -5,
+            lifetime_post_status: -6,
+            closed_request: None,
+            host_memberships_returned: false,
+            host_return_after: None,
+            cleanup_after: None,
+        };
         let native = PhaseCause::Native(receipt);
         let Cause::Native(borrowed) = native.failure() else {
             panic!("native receipt lost its typed variant");
@@ -629,7 +689,7 @@ mod failure_tests {
             unreachable!()
         };
         assert!(std::ptr::eq(borrowed, retained));
-        assert_eq!(borrowed.first_status, -5);
+        assert_eq!(borrowed.status, -5);
         assert_eq!(borrowed.post_status, -6);
     }
 }

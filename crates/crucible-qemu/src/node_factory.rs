@@ -47,6 +47,20 @@ impl<S> QemuQmpExactSnapshotControlChannel<S> {
     }
 }
 
+impl QemuQmpExactSnapshotControlChannel<std::os::unix::net::UnixStream> {
+    /// Returns this installed channel's requested host storage before birth.
+    ///
+    /// The original process purpose retains this same outside-process amount.
+    /// The inline client/session is counted once in its actual boxed wrapper;
+    /// its BufReader and later reusable Park codec storage are separate bodies.
+    pub(crate) fn host_allocation_extent() -> Option<u64> {
+        let bytes = std::mem::size_of::<Self>().checked_add(crate::qmp::QMP_READ_BUFFER_BYTES)?;
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        let bytes = bytes.checked_add(crate::qmp::parent_park_drain::decoder_extent()?)?;
+        u64::try_from(bytes).ok()
+    }
+}
+
 impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
@@ -77,13 +91,45 @@ where
     }
 
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    fn parent_park_command(
+    fn prepare_parent_park_begin(
         &mut self,
-        request: crate::qmp::parent_park_drain::ParentParkDrainRequest<'_>,
+        binding: crucible_protocol::boundary_action::ActionBinding,
+        stopped: u64,
         actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
         family: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    ) -> Result<crate::qmp::parent_park_drain::QmpParentParkDrainReceipt, crate::QmpError> {
-        self.vmstate.parent_park_command(request, actor, family)
+    ) -> Result<(), crate::QmpError> {
+        self.vmstate
+            .prepare_parent_park_begin(binding, stopped, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_begin(
+        &mut self,
+        request: crate::qmp::parent_park_drain::ParentParkRequest<'_>,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::parent_park_drain::QmpParentParkResult, crate::QmpError> {
+        self.vmstate.parent_park_begin(request, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_return_under_originals(
+        &mut self,
+        binding: crucible_protocol::boundary_action::ActionBinding,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        self.vmstate
+            .parent_park_return_under_originals(binding, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_return(
+        &mut self,
+        binding: crucible_protocol::boundary_action::ActionBinding,
+        cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        self.vmstate.parent_park_return(binding, cleanup)
     }
 
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]

@@ -4,7 +4,7 @@
 //! inputs. A grant describes a requested campaign command; only the retained
 //! service policy may authorize it. No deadline or polling clock is created.
 //!
-//! ```json
+//! ```text
 //! {
 //!   "planner": {"exhaustive": {"search": "breadthFirst"}},
 //!   "planningBudget": {

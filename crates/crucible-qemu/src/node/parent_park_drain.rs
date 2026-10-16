@@ -106,15 +106,15 @@ impl QemuNode {
         decoder.prepare_park_imports(original, actor, family, host.process_contract()?)
     }
 
-    pub(crate) fn acquire_parent_park(
+    pub(crate) fn begin_parent_park(
         &mut self,
         imports: &crate::OriginalActorParkImports,
         correlation: u64,
         stopped: u64,
         actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
         family: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    ) -> Result<crate::QmpParentParkDrainReceipt, crate::QmpError> {
-        use crate::qmp::parent_park_drain::ParentParkDrainRequest;
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        use crate::qmp::parent_park_drain::ParentParkRequest;
         let source_action = self
             .host_io_runtime
             .begin_parent_park_action(correlation, actor, family)
@@ -122,6 +122,9 @@ impl QemuNode {
                 operation: "retain canonical parent Park request",
                 message: error.to_string(),
             })?;
+        self.channels
+            .qmp_machine_control
+            .prepare_parent_park_begin(source_action, stopped, actor, family)?;
         self.channels
             .qmp_machine_control
             .parent_park_import(imports, actor, family)?;
@@ -137,10 +140,9 @@ impl QemuNode {
                 operation: "parent Park canonical request changed during imports",
             });
         }
-        self.channels.qmp_machine_control.parent_park_command(
-            ParentParkDrainRequest::Acquire {
-                source_action,
-                correlation,
+        self.channels.qmp_machine_control.parent_park_begin(
+            ParentParkRequest::Begin {
+                binding: source_action,
                 stopped,
                 basis: &imports.basis_name,
                 cancellation: &imports.cancellation_name,
@@ -150,75 +152,60 @@ impl QemuNode {
         )
     }
 
-    pub(crate) fn retained_parent_park(
+    pub(crate) fn return_parent_park(
         &mut self,
-        retained: &crate::QmpParentParkDrainReceipt,
-        relinquish: bool,
-        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
-        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    ) -> Result<crate::QmpParentParkDrainReceipt, crate::QmpError> {
-        use crate::qmp::parent_park_drain::ParentParkDrainRequest;
-        let source_action = self
-            .host_io_runtime
-            .current_parent_park_action()
-            .map_err(|error| crate::QmpError::OperationalSupervision {
-                operation: "observe canonical parent Park request",
-                message: error.to_string(),
+        cleanup: &crate::OriginalParentParkCleanup,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        let native_binding =
+            self.original_native_binding
+                .as_ref()
+                .ok_or(crate::QmpError::InvalidBound {
+                    operation: "parent Park Cleanup lacks actual Node binding",
+                })?;
+        cleanup
+            .verify_node(native_binding)
+            .map_err(|_| crate::QmpError::InvalidBound {
+                operation: "parent Park Cleanup belongs to another original account",
             })?;
-        let request = if relinquish {
-            ParentParkDrainRequest::Relinquish {
-                source_action,
-                correlation: retained.request_correlation,
-                stopped: retained.stopped_generation,
-                generation: retained.generation,
-            }
-        } else {
-            ParentParkDrainRequest::Query {
-                source_action,
-                correlation: retained.request_correlation,
-                stopped: retained.stopped_generation,
-                generation: retained.generation,
-            }
-        };
+        // Read the retained selector by identity. Cancellation may prohibit new
+        // work, but cannot substitute another request or prevent owned cleanup.
+        let binding = self.host_io_runtime.retained_parent_park_action().ok_or(
+            crate::QmpError::InvalidBound {
+                operation: "parent Park retained selector absent",
+            },
+        )?;
         let receipt = self
             .channels
             .qmp_machine_control
-            .parent_park_command(request, actor, family)?;
-        if relinquish
-            && receipt.state == crate::QmpParentParkDrainState::Relinquished
-            && !receipt.retained
-        {
-            // A QMP reply or callback-local release is not physical return.
-            // Consume only this Source's actual mapped Park journal; both
-            // entered originals and all native borrower debt remain held here.
-            loop {
-                // Physical identity-only settlement is safe after cancellation;
-                // it starts no work and cannot renew either original. The
-                // enclosing phase still records both independent raw posts.
-                if self
-                    .host_io_runtime
-                    .finish_parent_park_action()
-                    .map_err(|error| crate::QmpError::OperationalSupervision {
-                        operation: "return canonical parent Park request",
-                        message: error.to_string(),
-                    })?
-                {
-                    break;
-                }
-                let actor_before = actor.check_original_quiescence_cancellation();
-                let family_before = family.check_original_quiescence_cancellation();
-                actor_before.and(family_before).map_err(|error| {
-                    crate::QmpError::OperationalSupervision {
-                        operation: "return canonical parent Park request",
-                        message: error.to_string(),
-                    }
-                })?;
-                actor
-                    .wait_for_quiescence_change_with(family)
-                    .map_err(|error| crate::QmpError::OperationalSupervision {
-                        operation: "wait for parent Park physical return",
-                        message: error.to_string(),
-                    })?;
+            .parent_park_return(binding, cleanup.guard())?;
+        self.settle_parent_park_receipt(receipt)
+    }
+
+    pub(crate) fn return_parent_park_under_originals(
+        &mut self,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        let binding = self.host_io_runtime.retained_parent_park_action().ok_or(
+            crate::QmpError::InvalidBound {
+                operation: "parent Park retained selector absent",
+            },
+        )?;
+        let receipt = self
+            .channels
+            .qmp_machine_control
+            .parent_park_return_under_originals(binding, actor, family)?;
+        self.settle_parent_park_receipt(receipt)
+    }
+
+    fn settle_parent_park_receipt(
+        &mut self,
+        mut receipt: crate::QmpParentParkResult,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        if let Some(closed) = receipt.closed_request {
+            match self.host_io_runtime.finish_parent_park_action(&closed) {
+                Ok(returned) => receipt.host_memberships_returned = returned,
+                Err(first) => receipt.host_return_after = Some(first),
             }
         }
         Ok(receipt)

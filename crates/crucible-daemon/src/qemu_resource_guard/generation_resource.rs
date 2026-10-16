@@ -551,6 +551,16 @@ impl Drop for QemuAttemptGenerationLease {
 
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 impl<G: QemuAttemptProcessResourceGuard> QemuAttemptGenerationResourceOwner<G> {
+    /// Retains the same account's Cleanup for physical Park disposition.
+    ///
+    /// # Errors
+    /// Refuses unavailable original custody or the retained Cleanup policy.
+    pub(crate) fn retain_parent_park_cleanup(
+        &self,
+    ) -> Result<crucible_qemu::OriginalParentParkCleanup, QemuVmRealizationError> {
+        self.guard.retain_parent_park_cleanup()
+    }
+
     /// Checks actual Node, host and Preparation custody before publication.
     ///
     /// # Errors

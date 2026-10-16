@@ -22,6 +22,11 @@ fn crucible_features_resolve_for_declared_powersets() -> Result<(), Box<dyn Erro
 
     for case in feature_cases() {
         let mut command = Command::new(env!("CARGO"));
+        // Cargo records its real executable, so repeat the outer AOS wrapper's
+        // verified vendor configuration for this independent target directory.
+        if let Some(config) = std::env::var_os("AOS_CARGO_SOURCE_CONFIG") {
+            command.arg("--config").arg(config);
+        }
         command
             .arg("check")
             .arg("--manifest-path")
@@ -76,7 +81,6 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
                 &[
                     "crucible-linux-resource/private-measurement-domain",
                     "crucible-cas/private-measurement-domain",
-                    "rustix/thread",
                 ][..],
             ),
             (

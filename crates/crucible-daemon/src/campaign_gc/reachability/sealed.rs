@@ -400,19 +400,12 @@ impl<E: fmt::Display> fmt::Display for CloseFailure<E> {
 
 impl<E: Error + 'static> Error for CloseFailure<E> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.primary
-            .as_ref()
-            .map(|error| error as &(dyn Error + 'static))
-            .or_else(|| {
-                self.close
-                    .as_ref()
-                    .map(|error| error as &(dyn Error + 'static))
-            })
-            .or_else(|| {
-                self.post
-                    .as_ref()
-                    .map(|error| error as &(dyn Error + 'static))
-            })
+        match (&self.primary, &self.close, &self.post) {
+            (Some(error), _, _) => Some(error),
+            (_, Some(error), _) => Some(error),
+            (_, _, Some(error)) => Some(error),
+            (None, None, None) => None,
+        }
     }
 }
 

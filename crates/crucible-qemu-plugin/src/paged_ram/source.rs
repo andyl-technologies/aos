@@ -785,10 +785,11 @@ impl<const BORROWED: bool> DeadlineTransport<'_, BORROWED> {
             ];
             // Preserve sub-millisecond supervision slices instead of rounding
             // them up. Readiness and interruptions still recheck the same operation.
-            // SAFETY: Both descriptors remain owned for the call. The array has
-            // two initialized entries, the timeout is valid, and no mask is supplied.
-            let result =
-                unsafe { libc::ppoll(descriptors.as_mut_ptr(), 2, &timeout, std::ptr::null()) };
+            let result = unsafe {
+                // SAFETY: Both descriptors remain owned for the call. The array has
+                // two initialized entries, the timeout is valid, and no mask is supplied.
+                libc::ppoll(descriptors.as_mut_ptr(), 2, &timeout, std::ptr::null())
+            };
             if result < 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {

@@ -574,14 +574,50 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     }
 
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    fn parent_park_command(
+    fn prepare_parent_park_begin(
         &mut self,
-        _request: crate::qmp::parent_park_drain::ParentParkDrainRequest<'_>,
+        _binding: crucible_protocol::boundary_action::ActionBinding,
+        _stopped: u64,
         _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
         _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    ) -> Result<crate::qmp::parent_park_drain::QmpParentParkDrainReceipt, crate::QmpError> {
+    ) -> Result<(), crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "retained parent Park preparation unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_begin(
+        &mut self,
+        _request: crate::qmp::parent_park_drain::ParentParkRequest<'_>,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::parent_park_drain::QmpParentParkResult, crate::QmpError> {
         Err(crate::QmpError::InvalidBound {
             operation: "paired park channel unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_return_under_originals(
+        &mut self,
+        _binding: crucible_protocol::boundary_action::ActionBinding,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "original parent Park return channel unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_return(
+        &mut self,
+        _binding: crucible_protocol::boundary_action::ActionBinding,
+        _cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "retained parent Park return channel unavailable",
         })
     }
 

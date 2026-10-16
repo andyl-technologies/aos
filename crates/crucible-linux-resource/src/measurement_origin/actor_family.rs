@@ -63,7 +63,7 @@ impl CertifiedNativeRoleEvidence {
     ) -> Result<AuthenticatedActorFamily, MeasurementOriginError> {
         check_original(&original)?;
         let extent = AuthenticatedActorFamily::control_extent();
-        if self.generation == 0
+        if self.generation() == 0
             || resident.file_descriptors() < AuthenticatedActorFamily::descriptor_peak()
             || resident.resident_bytes() < extent
             || metadata.resident_bytes() < extent
@@ -80,8 +80,8 @@ impl CertifiedNativeRoleEvidence {
             guardian,
             workload,
             original,
-            generation: self.generation,
-            kernel_measurement: matches!(self.mode, CertifiedMeasurementMode::KernelMeasurement),
+            generation: self.generation(),
+            kernel_measurement: matches!(self.mode(), CertifiedMeasurementMode::KernelMeasurement),
             _controls: controls,
         };
         owner.check_host_membership()?;

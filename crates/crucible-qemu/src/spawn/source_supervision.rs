@@ -22,6 +22,7 @@ use rustix::fs::{MemfdFlags, OFlags, SealFlags};
 use crate::linux_attempt_host::{InstalledSourceAdmission, InstalledSourceSubject};
 
 mod action;
+mod parent_park_return;
 
 pub(crate) const SOURCE_PUBLICATION_BYTES: usize = 1504;
 pub(crate) const SOURCE_PAYLOAD_BYTES: usize = 1496;
@@ -71,6 +72,7 @@ struct PublicationState {
     latest: Option<SourceSupervisionSnapshot>,
     action: Option<action::PendingAction>,
     last_action_return: Option<crucible_protocol::boundary_action::ActionReturn>,
+    last_parent_park_return: Option<parent_park_return::VerifiedParkReturn>,
 }
 
 #[derive(Debug)]
@@ -231,6 +233,7 @@ fn construct_source_publication(
             latest: None,
             action: None,
             last_action_return: None,
+            last_parent_park_return: None,
         }),
         subject: admission.subject(),
         artifact: admission.artifact_digest(),

@@ -198,6 +198,8 @@ pub use launch::{
 ))]
 #[doc(hidden)]
 pub use linux_attempt_host::ControlledOriginalActorParkFixture;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use linux_attempt_host::OriginalParentParkCleanup;
 #[cfg(target_os = "linux")]
 pub use linux_attempt_host::{
     AdmittedHostConfigurationError, InstalledNodeLaunchIssuer, LinuxQemuAttemptHostConfig,
@@ -303,7 +305,7 @@ pub use node_set::QemuNodeSetPreparedHotForkSource;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub use node_set::parent_park_drain::{OriginalParkSourceError, OriginalParkSourceReborrowBinding};
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-pub use qmp::{QmpParentParkDrainReceipt, QmpParentParkDrainState};
+pub use qmp::{QmpParentParkClosedRequest, QmpParentParkResult};
 
 pub use node_set::{
     QemuCampaignMarkerBoundaryDiagnostic, QemuHostParallelismEvidence,

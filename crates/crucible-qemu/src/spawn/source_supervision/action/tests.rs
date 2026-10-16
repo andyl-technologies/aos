@@ -30,6 +30,8 @@ fn current() -> PendingAction {
         clearing: false,
         refused: false,
         verified_return: None,
+        verified_park_return: None,
+        park_members_returned_mask: 0,
     }
 }
 

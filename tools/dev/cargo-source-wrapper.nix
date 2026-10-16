@@ -12,6 +12,9 @@
     '';
 in
   pkgs.writeShellScriptBin "cargo" ''
+    # Nested Cargo commands retain this same verified source selection even when
+    # Cargo exposes its unwrapped executable path to the compiled test.
+    export AOS_CARGO_SOURCE_CONFIG=${config}/config.toml
     arguments=("$@")
     # Cargo's external Clippy delegation omits global --config options.
     # Pass the same source selection in its forwarded subcommand arguments.

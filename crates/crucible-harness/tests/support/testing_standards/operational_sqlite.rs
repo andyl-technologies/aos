@@ -218,7 +218,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
             let backend = inner.backend;
             let mut original = || check(backend, account, boundary);
             original()?;
-            if ids.len() > MAX_BATCH_OBJECTS {
+            if ids.len() > 64 {
                 return Err(StoreError::Quota);
             }
             let credit = account

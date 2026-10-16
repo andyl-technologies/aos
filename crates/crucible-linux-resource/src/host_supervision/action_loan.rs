@@ -9,6 +9,7 @@
 use super::*;
 use crate::host_services::process_birth::{AuthenticatedSourceHostPurpose, SourceHostControlLease};
 use crucible_protocol::boundary_action::{ActionBinding, ActionParent, ActionReturn};
+use crucible_protocol::parent_park_return::ParentParkReturn;
 
 /// Publishes a real lender without recursively consulting its supervisor.
 pub trait HostActionPublisher: std::fmt::Debug + Send + Sync {
@@ -56,6 +57,22 @@ pub trait HostActionPublisher: std::fmt::Debug + Send + Sync {
     /// # Errors
     /// Refuses absent, mismatched or uncertain physical-return observations.
     fn action_return(&self, binding: ActionBinding) -> Result<ActionReturn, HostSupervisionError>;
+
+    /// Observes this actual row after its publisher corroborates Park closure.
+    ///
+    /// The publisher must authenticate the same request's checked transport
+    /// closure and mapped terminal record independently of received-view bits.
+    /// This returns no standing Source owner and completes no operation.
+    ///
+    /// # Errors
+    /// Refuses absent closure, another row/request or unsupported publishers.
+    fn parent_park_return(
+        &self,
+        _binding: ActionBinding,
+        _row: u32,
+    ) -> Result<ParentParkReturn, HostSupervisionError> {
+        Err(HostSupervisionError::Unavailable)
+    }
 
     /// Revokes semantic continuation while retaining physical owner debt.
     fn invalidate_action(&self, binding: ActionBinding);
@@ -107,6 +124,19 @@ pub struct HostActionReturnReceipt {
     publisher: Arc<dyn HostActionPublisher>,
 }
 
+/// Authenticates one Host membership after the same request physically closed.
+///
+/// Only the actual loan can construct this private selector by consulting its
+/// registered publisher. Pair-view masks cannot construct it or select a row.
+#[derive(Debug)]
+pub struct HostParentParkReturnReceipt {
+    shared: Arc<Shared>,
+    journal: ParentParkReturn,
+    operation: u64,
+    row: u32,
+    publisher: Arc<dyn HostActionPublisher>,
+}
+
 impl HostActionLoan {
     /// Reports the complete two-node allocation before actual borrower birth.
     pub const fn metadata_bytes() -> u64 {
@@ -122,7 +152,9 @@ impl HostActionLoan {
             + std::mem::size_of::<[Option<MutexGuard<'static, Option<HostActionLoan>>>; 4]>()
             + 2 * std::mem::size_of::<[ActionParent; 4]>()
             + std::mem::size_of::<HostActionReturnReceipt>()
+            + std::mem::size_of::<HostParentParkReturnReceipt>()
             + std::mem::size_of::<ActionReturn>()
+            + std::mem::size_of::<ParentParkReturn>()
             + std::mem::size_of::<ActionParent>()
             + std::mem::size_of::<HostOuterCapBinding>()) as u64
     }
@@ -157,6 +189,47 @@ impl HostActionLoan {
             return Err(HostSupervisionError::Unavailable);
         }
         Ok(HostActionReturnReceipt {
+            shared: Arc::clone(&self.supervisor.shared),
+            journal,
+            operation: self.operation,
+            row: self.row,
+            publisher,
+        })
+    }
+
+    /// Observes Park closure through this loan's actual registered publisher.
+    ///
+    /// # Errors
+    /// Refuses absent membership, changed identity or missing corroborated
+    /// closure. A decoded terminal record alone supplies no such observation.
+    pub fn observe_parent_park_return(
+        &self,
+    ) -> Result<HostParentParkReturnReceipt, HostSupervisionError> {
+        if self.binding.park_request.is_none() || self.returned {
+            return Err(HostSupervisionError::Unavailable);
+        }
+        let publisher = {
+            let state = self.supervisor.lock()?;
+            let mut cursor = state
+                .operations
+                .get(&self.operation)
+                .and_then(|operation| operation.action_subscribers.as_deref());
+            loop {
+                let subscriber = cursor.ok_or(HostSupervisionError::Unavailable)?;
+                if subscriber.binding == self.binding && subscriber.row == self.row {
+                    break Arc::clone(&subscriber.publisher);
+                }
+                cursor = subscriber.next.as_deref();
+            }
+        };
+        let journal = publisher.parent_park_return(self.binding, self.row)?;
+        journal
+            .encode()
+            .map_err(|_| HostSupervisionError::InvalidBudget)?;
+        if journal.binding != self.binding {
+            return Err(HostSupervisionError::Unavailable);
+        }
+        Ok(HostParentParkReturnReceipt {
             shared: Arc::clone(&self.supervisor.shared),
             journal,
             operation: self.operation,
@@ -362,16 +435,58 @@ impl HostActionLoan {
         journal
             .encode()
             .map_err(|_| HostSupervisionError::InvalidBudget)?;
-        if !Arc::ptr_eq(&receipt.shared, &self.supervisor.shared)
-            || receipt.operation != self.operation
-            || receipt.row != self.row
-            || journal.binding != self.binding
+        if journal.binding != self.binding
             || journal.physical_state != 1
             || journal.returned_mask & (1 << self.row) == 0
         {
             return Err(HostSupervisionError::Unavailable);
         }
-        if self.returned {
+        self.return_registered_membership(
+            &receipt.shared,
+            receipt.operation,
+            receipt.row,
+            &receipt.publisher,
+        )
+    }
+
+    /// Returns this Host subscriber after its actual publisher verifies closure.
+    ///
+    /// This identity-only cleanup neither retires the standing Source nor
+    /// completes a producing operation. Negative semantics do not erase debt.
+    ///
+    /// # Errors
+    /// Refuses foreign, duplicate, missing or uncertain membership selectors.
+    pub fn return_parent_park_physical(
+        &mut self,
+        receipt: &HostParentParkReturnReceipt,
+    ) -> Result<(), HostSupervisionError> {
+        receipt
+            .journal
+            .encode()
+            .map_err(|_| HostSupervisionError::InvalidBudget)?;
+        if self.binding.park_request.is_none() || receipt.journal.binding != self.binding {
+            return Err(HostSupervisionError::Unavailable);
+        }
+        self.return_registered_membership(
+            &receipt.shared,
+            receipt.operation,
+            receipt.row,
+            &receipt.publisher,
+        )
+    }
+
+    fn return_registered_membership(
+        &mut self,
+        shared: &Arc<Shared>,
+        operation_id: u64,
+        row: u32,
+        publisher: &Arc<dyn HostActionPublisher>,
+    ) -> Result<(), HostSupervisionError> {
+        if !Arc::ptr_eq(shared, &self.supervisor.shared)
+            || operation_id != self.operation
+            || row != self.row
+            || self.returned
+        {
             return Err(HostSupervisionError::Unavailable);
         }
         let mut state = self.supervisor.lock()?;
@@ -394,7 +509,7 @@ impl HostActionLoan {
             }
             cursor = subscriber.next.as_deref();
         };
-        if !Arc::ptr_eq(actual_publisher, &receipt.publisher) {
+        if !Arc::ptr_eq(actual_publisher, publisher) {
             return Err(HostSupervisionError::Unavailable);
         }
 

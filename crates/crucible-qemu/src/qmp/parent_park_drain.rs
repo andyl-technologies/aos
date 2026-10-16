@@ -1,293 +1,303 @@
-//! Typed later-operation park/drain requests on the existing QMP connection.
+//! Retains one paired Park request on its original QMP connection.
 //!
-//! These request fields correlate a retained owner; they do not issue one. The
-//! closed daemon provider retains both actual Quiescence operations, the same
-//! process event and complete exclusive world before import or acquisition.
-//!
-//! ```text
-//! command: crucible-parent-park-drain
-//! schema-version: 2; action: acquire | query | relinquish
-//! all actions: source-action binding to the actual retained canonical Park cohort
-//! acquire: request-correlation, stopped-generation, basis-fdname, cancellation-fdname
-//! query/relinquish: request-correlation, stopped-generation, generation
-//! sealed basis: CRUCPDR1 + BE schema/length + actor CRUCPAU1/80 + family CRUCPAU1/80
-//! ```
-//!
-//! The wrapped body is exactly 176 bytes. Receipt retention describes actual
-//! native cleanup custody; it does not assert that disposed plugin gates remain
-//! held. The accepting native command and authentic plugin owner are separate
-//! source-qualified counterparts.
-
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+//! Begin schedules actual native work; it grants no held state. Return reports
+//! physical closure independently of semantic success. The first selector and
+//! stopped coordinate remain retained across every uncertain transport result.
 
 use super::{QmpClient, QmpCommandKind, QmpDescriptorName, QmpError, QmpTimeoutStream};
-use crucible_linux_resource::host_supervision::HostOperationGuard;
+use crucible_linux_resource::host_supervision::{HostOperationClass, HostOperationGuard};
 use crucible_protocol::boundary_action::ActionBinding;
+use serde::Serialize;
 
-/// Corroborates the canonical Source request; these copied facts issue no loan.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct ParentParkSourceAction {
-    cap: [u8; 32],
-    reservation: [u8; 32],
-    account_generation: u64,
-    process_generation: u64,
-    loan_sequence: u64,
-    frontier: u64,
-}
+mod receipt;
+mod transport;
+pub(super) use receipt::ParentParkSession;
+use receipt::RetainedRequest;
+use receipt::WireBinding;
+pub use receipt::{QmpParentParkClosedRequest, QmpParentParkResult};
+pub(crate) use transport::decoder_extent;
 
-impl From<ActionBinding> for ParentParkSourceAction {
-    fn from(binding: ActionBinding) -> Self {
-        Self {
-            cap: binding.cap,
-            reservation: binding.reservation,
-            account_generation: binding.account_generation,
-            process_generation: binding.process_generation,
-            loan_sequence: binding.loan_sequence,
-            frontier: binding.frontier,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum ParentParkDrainAction {
-    Acquire,
-    Query,
-    Relinquish,
-}
-
-impl ParentParkDrainAction {
-    const fn wire_name(self) -> &'static str {
-        match self {
-            Self::Acquire => "acquire",
-            Self::Query => "query",
-            Self::Relinquish => "relinquish",
-        }
-    }
-}
-
-/// Reports the native owner's actual retention state after one bounded action.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum QmpParentParkDrainState {
-    /// The actual native hold remains acquired.
-    Held,
-    /// A refusal retained native custody for physical containment.
-    TerminalRetained,
-    /// Native relinquishment physically closed this phase's hold.
-    Relinquished,
-}
-
-/// Retains native first and independent post statuses without implying a grant.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-pub struct QmpParentParkDrainReceipt {
-    /// Exact park/drain receipt encoding version.
-    pub schema_version: u32,
-    action: ParentParkDrainAction,
-    /// Correlation retained by the same acquisition across subsequent actions.
-    pub request_correlation: u64,
-    /// Actual native owner incarnation, independent of the stop coordinate.
-    pub generation: u64,
-    /// The ordinary stopped coordinate revalidated by the action.
-    pub stopped_generation: u64,
-    /// Actual native retention state.
-    pub state: QmpParentParkDrainState,
-    /// First native refusal, or zero on acceptance.
-    pub first_status: i32,
-    /// Independent native original refusal, or zero.
-    pub post_status: i32,
-    /// Whether native still retains the phase owner.
-    pub retained: bool,
-    source_action: ParentParkSourceAction,
-}
-
-pub(crate) enum ParentParkDrainRequest<'a> {
-    Acquire {
-        source_action: ActionBinding,
-        correlation: u64,
+pub(crate) enum ParentParkRequest<'a> {
+    Begin {
+        binding: ActionBinding,
         stopped: u64,
         basis: &'a QmpDescriptorName,
         cancellation: &'a QmpDescriptorName,
     },
-    Query {
-        source_action: ActionBinding,
-        correlation: u64,
-        stopped: u64,
-        generation: u64,
-    },
-    Relinquish {
-        source_action: ActionBinding,
-        correlation: u64,
-        stopped: u64,
-        generation: u64,
+    Return {
+        binding: ActionBinding,
     },
 }
 
-impl ParentParkDrainRequest<'_> {
-    fn source_action(&self) -> ActionBinding {
+impl ParentParkRequest<'_> {
+    pub(super) const fn kind(&self) -> QmpCommandKind {
         match self {
-            Self::Acquire { source_action, .. }
-            | Self::Query { source_action, .. }
-            | Self::Relinquish { source_action, .. } => *source_action,
+            Self::Begin { .. } => QmpCommandKind::ParentParkBegin,
+            Self::Return { .. } => QmpCommandKind::ParentParkReturn,
         }
     }
 
-    fn identity(&self) -> (ParentParkDrainAction, u64, u64, Option<u64>) {
+    fn binding(&self) -> ActionBinding {
         match self {
-            Self::Acquire {
-                correlation,
-                stopped,
-                ..
-            } => (ParentParkDrainAction::Acquire, *correlation, *stopped, None),
-            Self::Query {
-                correlation,
-                stopped,
-                generation,
-                ..
-            } => (
-                ParentParkDrainAction::Query,
-                *correlation,
-                *stopped,
-                Some(*generation),
-            ),
-            Self::Relinquish {
-                correlation,
-                stopped,
-                generation,
-                ..
-            } => (
-                ParentParkDrainAction::Relinquish,
-                *correlation,
-                *stopped,
-                Some(*generation),
-            ),
+            Self::Begin { binding, .. } | Self::Return { binding } => *binding,
         }
     }
 
-    pub(super) fn request(&self) -> Value {
-        let (action, correlation, stopped, generation) = self.identity();
-        let mut arguments = json!({
-            "schema-version": 2,
-            "source-action": ParentParkSourceAction::from(self.source_action()),
-            "action": action.wire_name(),
-            "request-correlation": correlation,
-            "stopped-generation": stopped,
-        });
-        if let Some(generation) = generation {
-            arguments["generation"] = json!(generation);
+    fn encode(&self, output: &mut [u8]) -> Result<usize, QmpError> {
+        #[derive(Serialize)]
+        struct Envelope<T> {
+            execute: &'static str,
+            arguments: T,
         }
-        if let Self::Acquire {
-            basis,
-            cancellation,
-            ..
-        } = self
-        {
-            arguments["basis-fdname"] = json!(basis.as_str());
-            arguments["cancellation-fdname"] = json!(cancellation.as_str());
+        #[derive(Serialize)]
+        #[serde(rename_all = "kebab-case")]
+        struct Begin<'a> {
+            binding: WireBinding,
+            stopped_generation: u64,
+            basis_fdname: &'a str,
+            cancellation_fdname: &'a str,
         }
-        json!({"execute":"crucible-parent-park-drain", "arguments":arguments})
+        #[derive(Serialize)]
+        struct Return {
+            binding: WireBinding,
+        }
+        let mut writer = std::io::Cursor::new(output);
+        let result = match self {
+            Self::Begin {
+                binding,
+                stopped,
+                basis,
+                cancellation,
+            } => serde_json::to_writer(
+                &mut writer,
+                &Envelope {
+                    execute: self.kind().wire_name(),
+                    arguments: Begin {
+                        binding: WireBinding::new(*binding),
+                        stopped_generation: *stopped,
+                        basis_fdname: basis.as_str(),
+                        cancellation_fdname: cancellation.as_str(),
+                    },
+                },
+            ),
+            Self::Return { binding } => serde_json::to_writer(
+                &mut writer,
+                &Envelope {
+                    execute: self.kind().wire_name(),
+                    arguments: Return {
+                        binding: WireBinding::new(*binding),
+                    },
+                },
+            ),
+        };
+        result.map_err(|_| QmpError::InvalidBound {
+            operation: "parent Park fixed request encoding",
+        })?;
+        usize::try_from(writer.position()).map_err(|_| QmpError::InvalidBound {
+            operation: "parent Park encoded request length",
+        })
     }
 
     fn validate(&self) -> Result<(), QmpError> {
-        let (_, correlation, stopped, generation) = self.identity();
-        let source = self.source_action();
-        if correlation == 0
-            || stopped == 0
-            || stopped == u64::MAX
-            || generation.is_some_and(|value| value == 0 || value == u64::MAX)
-            || source.park_request != Some(correlation)
-            || source.token != 0
-            || source.capture.is_some()
-            || source.cap == [0; 32]
-            || source.reservation == [0; 32]
-            || source.account_generation == 0
-            || source.process_generation == 0
-            || source.loan_sequence == 0
-            || source.loan_sequence & 1 != 0
-            || source.loan_sequence == u64::MAX
+        let binding = self.binding();
+        if binding.cap == [0; 32]
+            || binding.reservation == [0; 32]
+            || binding.account_generation == 0
+            || binding.process_generation == 0
+            || binding
+                .park_request
+                .is_none_or(|correlation| correlation == 0 || correlation == u64::MAX)
+            || binding.token != 0
+            || binding.capture.is_some()
+            || binding.loan_sequence == 0
+            || binding.loan_sequence == u64::MAX
+            || binding.loan_sequence & 1 != 0
         {
             return Err(QmpError::InvalidBound {
-                operation: "parent park/drain identity",
+                operation: "parent Park binding",
             });
         }
-        if let Self::Acquire {
+        if let Self::Begin {
+            stopped,
             basis,
             cancellation,
             ..
         } = self
-            && basis.as_str() == cancellation.as_str()
+            && (*stopped == 0 || *stopped == u64::MAX || basis.as_str() == cancellation.as_str())
         {
             return Err(QmpError::InvalidBound {
-                operation: "parent park/drain imports must be distinct",
+                operation: "parent Park stopped coordinate/imports",
             });
         }
         Ok(())
     }
-
-    fn receipt(&self, value: &Value) -> Result<QmpParentParkDrainReceipt, QmpError> {
-        let invalid = || QmpError::UnexpectedResponse {
-            command: QmpCommandKind::ParentParkDrain,
-            response: value.to_string(),
-        };
-        let receipt: QmpParentParkDrainReceipt =
-            serde_json::from_value(value.clone()).map_err(|_| invalid())?;
-        let (action, correlation, stopped, generation) = self.identity();
-        if receipt.schema_version != 2
-            || receipt.source_action != ParentParkSourceAction::from(self.source_action())
-            || receipt.action != action
-            || receipt.request_correlation != correlation
-            || receipt.stopped_generation != stopped
-            || receipt.generation == 0
-            || receipt.generation == u64::MAX
-            || generation.is_some_and(|expected| receipt.generation != expected)
-            || receipt.first_status > 0
-            || receipt.post_status > 0
-        {
-            return Err(invalid());
-        }
-        let refused = receipt.first_status < 0 || receipt.post_status < 0;
-        let consistent = match receipt.state {
-            QmpParentParkDrainState::Held => {
-                receipt.retained && !refused && action != ParentParkDrainAction::Relinquish
-            }
-            QmpParentParkDrainState::TerminalRetained => receipt.retained && refused,
-            QmpParentParkDrainState::Relinquished => {
-                !receipt.retained && !refused && action == ParentParkDrainAction::Relinquish
-            }
-        };
-        if !consistent {
-            return Err(invalid());
-        }
-        Ok(receipt)
-    }
 }
 
 impl<S: QmpTimeoutStream> QmpClient<S> {
-    pub(crate) fn parent_park_drain_under_originals(
+    pub(crate) fn prepare_parent_park_begin(
         &mut self,
-        request: &ParentParkDrainRequest<'_>,
+        binding: ActionBinding,
+        stopped: u64,
         actor: &HostOperationGuard,
         family: &HostOperationGuard,
-    ) -> Result<QmpParentParkDrainReceipt, QmpError> {
-        request.validate()?;
-        let response = self.exchange_under_pair(
-            super::command::QmpCommand::ParentParkDrain { request },
-            actor,
-            family,
-        )?;
-        match request.receipt(&response.value) {
-            Ok(receipt) => Ok(receipt),
-            Err(first) => {
-                // A malformed accepted shape may follow a real acquisition or
-                // release. Retain custody and prevent a second command.
-                self.poisoned = true;
-                self.stream.get_mut().poison_qmp_stream();
-                Err(first)
-            }
+    ) -> Result<(), QmpError> {
+        self.ensure_usable()?;
+        ParentParkRequest::Return { binding }.validate()?;
+        if stopped == 0 || stopped == u64::MAX {
+            return Err(QmpError::InvalidBound {
+                operation: "parent Park stopped coordinate",
+            });
         }
+        self.pair_deadline(actor, family)
+            .remaining("retain parent Park request before descriptor import")?;
+        let (previous_completed, connection_epoch) = match &self.parent_park_session {
+            None => (0, None),
+            Some(previous) => {
+                let closed = previous
+                    .state
+                    .closed
+                    .as_ref()
+                    .ok_or(QmpError::InvalidBound {
+                        operation: "prior parent Park request remains owned",
+                    })?;
+                if binding.loan_sequence <= previous.state.binding.loan_sequence
+                    || binding.park_request <= previous.state.binding.park_request
+                {
+                    return Err(QmpError::InvalidBound {
+                        operation: "parent Park replay/nonadvancing selector",
+                    });
+                }
+                (closed.completed_requests(), previous.state.connection_epoch)
+            }
+        };
+        // This same client owns the selector before the first possible byte.
+        // A failed write cannot be retried as a fresh begin.
+        let frame = if let Some(previous) = self.parent_park_session.as_mut() {
+            std::mem::take(&mut previous.frame)
+        } else {
+            let mut frame = Vec::new();
+            frame
+                .try_reserve_exact(super::QMP_MAX_LINE_BYTES)
+                .map_err(|_| QmpError::InvalidBound {
+                    operation: "parent Park paid buffer allocation",
+                })?;
+            frame.resize(super::QMP_MAX_LINE_BYTES, 0);
+            frame
+        };
+        self.parent_park_session = Some(ParentParkSession {
+            frame,
+            state: RetainedRequest {
+                binding,
+                stopped,
+                previous_completed,
+                closed: None,
+                begin_attempted: false,
+                connection_epoch,
+            },
+        });
+        Ok(())
+    }
+
+    pub(crate) fn parent_park_begin_under_originals(
+        &mut self,
+        request: &ParentParkRequest<'_>,
+        actor: &HostOperationGuard,
+        family: &HostOperationGuard,
+    ) -> Result<QmpParentParkResult, QmpError> {
+        request.validate()?;
+        let ParentParkRequest::Begin {
+            binding, stopped, ..
+        } = request
+        else {
+            return Err(QmpError::InvalidBound {
+                operation: "parent Park begin request",
+            });
+        };
+        if !self.parent_park_session.as_ref().is_some_and(|saved| {
+            saved.state.binding == *binding
+                && saved.state.stopped == *stopped
+                && !saved.state.begin_attempted
+        }) {
+            self.prepare_parent_park_begin(*binding, *stopped, actor, family)?;
+        }
+        // The prepared selector already preceded getfd. Begin itself also has
+        // a one-way attempted cut before any byte may enter the stream.
+        self.parent_park_session
+            .as_mut()
+            .ok_or(QmpError::InvalidBound {
+                operation: "parent Park prepared selector",
+            })?
+            .state
+            .begin_attempted = true;
+        let deadline = self.pair_deadline(actor, family);
+        let result = self.exchange_parent_park(request, &deadline)?;
+        if let Err(first) = deadline.complete(request.kind().wire_name()) {
+            self.poison_parent_park_drain();
+            return Err(first);
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn parent_park_return_under_originals(
+        &mut self,
+        binding: ActionBinding,
+        actor: &HostOperationGuard,
+        family: &HostOperationGuard,
+    ) -> Result<QmpParentParkResult, QmpError> {
+        let request = ParentParkRequest::Return { binding };
+        request.validate()?;
+        if !self
+            .parent_park_session
+            .as_ref()
+            .is_some_and(|session| session.state.binding == binding)
+        {
+            return Err(QmpError::InvalidBound {
+                operation: "parent Park return requires same connection selector",
+            });
+        }
+        let deadline = self.pair_deadline(actor, family);
+        // The caller preserves both independent posts after retaining the
+        // decoded receipt. A late Original refusal cannot erase local closure.
+        self.exchange_parent_park(&request, &deadline)
+    }
+
+    pub(crate) fn parent_park_return_under_cleanup(
+        &mut self,
+        binding: ActionBinding,
+        cleanup: &HostOperationGuard,
+    ) -> Result<QmpParentParkResult, QmpError> {
+        let request = ParentParkRequest::Return { binding };
+        request.validate()?;
+        self.ensure_usable()?;
+        cleanup
+            .verify_operation_class(HostOperationClass::Cleanup)
+            .map_err(|error| QmpError::OperationalSupervision {
+                operation: "parent Park retained Cleanup",
+                message: error.to_string(),
+            })?;
+        if !self
+            .parent_park_session
+            .as_ref()
+            .is_some_and(|session| session.state.binding == binding)
+        {
+            return Err(QmpError::InvalidBound {
+                operation: "parent Park return requires same connection selector",
+            });
+        }
+        let deadline = super::QmpOperationDeadline {
+            supervision: None,
+            timeout: self.io_timeout_policy.command_timeout,
+            shared: None,
+            checkpoint_original: None,
+            checkpoint_loan: None,
+            borrowed: Some(cleanup),
+            paired: None,
+            _lifetime: std::marker::PhantomData,
+        };
+        let mut result = self.exchange_parent_park(&request, &deadline)?;
+        // Physical evidence is stored before observing the independent post.
+        result.cleanup_after = cleanup.wait_slice().err();
+        Ok(result)
     }
 }
 
@@ -461,316 +471,4 @@ pub(crate) fn encode_parent_park_drain_basis(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::io::{self, Cursor, Read, Write};
-    use std::os::fd::OwnedFd;
-    use std::time::Duration;
-
-    use crucible_linux_resource::host_services::HostServiceAllocator;
-    use crucible_linux_resource::host_supervision::{
-        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
-    };
-
-    use super::*;
-
-    // These real guard/subscriber fixtures qualify the host protocol cuts.
-    // Scripted receipts do not supply a native parked owner or deployed phase.
-    struct Pair {
-        actor: HostOperationGuard,
-        family: HostOperationGuard,
-        actor_event: OwnedFd,
-        family_event: OwnedFd,
-        _actor_owner: HostOperationSupervisor,
-        _family_owner: HostOperationSupervisor,
-        _account: HostServiceAllocator,
-    }
-
-    impl Pair {
-        fn new() -> Self {
-            let actor_owner = HostOperationSupervisor::new(HostOperationBudgets::default(), None)
-                .expect("actor fixture supervisor");
-            let family_owner = HostOperationSupervisor::new(HostOperationBudgets::default(), None)
-                .expect("family fixture supervisor");
-            let actor = actor_owner
-                .begin(HostOperationClass::Quiescence)
-                .expect("entered actor fixture");
-            let family = family_owner
-                .begin(HostOperationClass::Quiescence)
-                .expect("entered family fixture");
-            let account =
-                HostServiceAllocator::new(1, 2, 8192).expect("subscriber fixture account");
-            let subscribe = |guard: &HostOperationGuard| {
-                let event = rustix::event::eventfd(
-                    0,
-                    rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
-                )
-                .expect("actual nonblocking event");
-                let credit = account
-                    .reserve_resources(
-                        0,
-                        1,
-                        HostOperationGuard::original_quiescence_cancellation_bytes(),
-                    )
-                    .expect("subscriber precharge");
-                let alias = rustix::io::fcntl_dupfd_cloexec(&event, 3).expect("same event alias");
-                guard
-                    .retain_original_quiescence_cancellation(alias, credit)
-                    .expect("retain entered subscriber");
-                event
-            };
-            let actor_event = subscribe(&actor);
-            let family_event = subscribe(&family);
-            Self {
-                actor,
-                family,
-                actor_event,
-                family_event,
-                _actor_owner: actor_owner,
-                _family_owner: family_owner,
-                _account: account,
-            }
-        }
-    }
-
-    struct Stream<'event> {
-        input: Cursor<Vec<u8>>,
-        written: Vec<u8>,
-        cancel_on_park_write: Option<&'event OwnedFd>,
-    }
-
-    impl<'event> Stream<'event> {
-        fn new(receipt: Value, cancellation: Option<&'event OwnedFd>) -> Self {
-            let response = json!({"return": receipt});
-            Self {
-                input: Cursor::new(
-                    format!("{{\"QMP\":{{\"version\":{{}},\"capabilities\":[]}}}}\n{{\"return\":{{}}}}\n{response}\n")
-                        .into_bytes(),
-                ),
-                written: Vec::new(),
-                cancel_on_park_write: cancellation,
-            }
-        }
-    }
-
-    impl Read for Stream<'_> {
-        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            self.input.read(buffer)
-        }
-    }
-
-    impl Write for Stream<'_> {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.written.extend_from_slice(bytes);
-            if self
-                .written
-                .windows(26)
-                .any(|bytes| bytes == b"crucible-parent-park-drain")
-                && let Some(event) = self.cancel_on_park_write.take()
-            {
-                rustix::io::write(event, &1_u64.to_ne_bytes())?;
-            }
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl QmpTimeoutStream for Stream<'_> {
-        fn set_qmp_read_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn set_qmp_write_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn held_receipt() -> Value {
-        json!({
-            "schema-version":2, "action":"query", "request-correlation":9,
-            "source-action": ParentParkSourceAction::from(request_binding()),
-            "generation":7, "stopped-generation":11, "state":"held",
-            "first-status":0, "post-status":0, "retained":true,
-        })
-    }
-
-    // Factual wire fixture only; no Source publisher or lender is constructed.
-    fn request_binding() -> ActionBinding {
-        ActionBinding {
-            cap: [1; 32],
-            reservation: [2; 32],
-            account_generation: 1,
-            process_generation: 1,
-            loan_sequence: 2,
-            token: 0,
-            capture: None,
-            park_request: Some(9),
-            frontier: 7,
-        }
-    }
-
-    fn query() -> ParentParkDrainRequest<'static> {
-        ParentParkDrainRequest::Query {
-            source_action: request_binding(),
-            correlation: 9,
-            stopped: 11,
-            generation: 7,
-        }
-    }
-
-    #[test]
-    fn same_process_event_alias_revokes_both_real_subscribers_without_consumption() {
-        let actor_owner =
-            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
-        let family_owner =
-            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
-        let actor = actor_owner.begin(HostOperationClass::Quiescence).unwrap();
-        let family = family_owner.begin(HostOperationClass::Quiescence).unwrap();
-        let event = rustix::event::eventfd(
-            0,
-            rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
-        )
-        .unwrap();
-        let account = HostServiceAllocator::new(1, 2, 8192).unwrap();
-        for guard in [&actor, &family] {
-            let credit = account
-                .reserve_resources(
-                    0,
-                    1,
-                    HostOperationGuard::original_quiescence_cancellation_bytes(),
-                )
-                .unwrap();
-            let alias = rustix::io::fcntl_dupfd_cloexec(&event, 3).unwrap();
-            guard
-                .retain_original_quiescence_cancellation(alias, credit)
-                .unwrap();
-        }
-        let mut client = QmpClient::connect(Stream::new(held_receipt(), None)).unwrap();
-        let before = client.stream.get_ref().written.len();
-
-        rustix::io::write(&event, &1_u64.to_ne_bytes()).unwrap();
-        let outcome = client.parent_park_drain_under_originals(&query(), &actor, &family);
-
-        assert!(outcome.is_err());
-        assert!(actor.check_original_quiescence_cancellation().is_err());
-        assert!(family.check_original_quiescence_cancellation().is_err());
-        assert_eq!(client.stream.get_ref().written.len(), before);
-        let mut bytes = [0; 8];
-        assert_eq!(rustix::io::read(&event, &mut bytes).unwrap(), 8);
-        assert_eq!(u64::from_ne_bytes(bytes), 1);
-        assert!(
-            rustix::fs::fcntl_getfl(&event)
-                .unwrap()
-                .contains(rustix::fs::OFlags::NONBLOCK)
-        );
-    }
-
-    #[test]
-    fn pair_wrapper_keeps_each_entered_identity_literal() {
-        let pair = Pair::new();
-        let actor = pair.actor.serialize_original_quiescence_basis().unwrap();
-        let family = pair.family.serialize_original_quiescence_basis().unwrap();
-
-        let encoded = encode_parent_park_drain_basis(&pair.actor, &pair.family).unwrap();
-
-        assert_eq!(&encoded[..8], b"CRUCPDR1");
-        assert_eq!(&encoded[8..16], &[0, 0, 0, 1, 0, 0, 0, 176]);
-        assert_eq!(&encoded[16..96], &actor);
-        assert_eq!(&encoded[96..176], &family);
-        assert_ne!(&encoded[32..64], &encoded[112..144]);
-    }
-
-    #[test]
-    fn either_original_revocation_refuses_before_another_write() {
-        for revoke_actor in [false, true] {
-            let pair = Pair::new();
-            let event = if revoke_actor {
-                &pair.actor_event
-            } else {
-                &pair.family_event
-            };
-            let mut client = QmpClient::connect(Stream::new(held_receipt(), None)).unwrap();
-            let before = client.stream.get_ref().written.len();
-            rustix::io::write(event, &1_u64.to_ne_bytes()).unwrap();
-
-            let error =
-                client.parent_park_drain_under_originals(&query(), &pair.actor, &pair.family);
-
-            assert!(matches!(
-                error,
-                Err(QmpError::OperationalSupervision { .. })
-            ));
-            assert_eq!(client.stream.get_ref().written.len(), before);
-        }
-    }
-
-    #[test]
-    fn family_revocation_during_command_keeps_uncertainty_sticky() {
-        let pair = Pair::new();
-        let mut client =
-            QmpClient::connect(Stream::new(held_receipt(), Some(&pair.family_event))).unwrap();
-
-        let first = client.parent_park_drain_under_originals(&query(), &pair.actor, &pair.family);
-        let written = client.stream.get_ref().written.len();
-        let second = client.parent_park_drain_under_originals(&query(), &pair.actor, &pair.family);
-
-        assert!(matches!(
-            first,
-            Err(QmpError::OperationalSupervision { .. })
-        ));
-        assert!(client.poisoned);
-        assert!(second.is_err());
-        assert_eq!(client.stream.get_ref().written.len(), written);
-    }
-
-    #[test]
-    fn typed_receipt_acceptance_and_shape_refusal_use_actual_routing() {
-        let pair = Pair::new();
-        let mut accepted = QmpClient::connect(Stream::new(held_receipt(), None)).unwrap();
-        let receipt = accepted
-            .parent_park_drain_under_originals(&query(), &pair.actor, &pair.family)
-            .unwrap();
-        assert_eq!(receipt.state, QmpParentParkDrainState::Held);
-        assert_eq!(receipt.generation, 7);
-        assert!(!accepted.poisoned);
-        assert_eq!(pair.actor.status().unwrap().completed_work_units, 0);
-        assert_eq!(pair.family.status().unwrap().completed_work_units, 0);
-
-        let mut malformed = held_receipt();
-        malformed["retained"] = json!(false);
-        let mut refused = QmpClient::connect(Stream::new(malformed, None)).unwrap();
-        let first = refused.parent_park_drain_under_originals(&query(), &pair.actor, &pair.family);
-        let written = refused.stream.get_ref().written.len();
-        let second = refused.parent_park_drain_under_originals(&query(), &pair.actor, &pair.family);
-
-        assert!(matches!(first, Err(QmpError::UnexpectedResponse { .. })));
-        assert!(refused.poisoned);
-        assert!(second.is_err());
-        assert_eq!(refused.stream.get_ref().written.len(), written);
-    }
-
-    #[test]
-    fn old_or_foreign_canonical_binding_refuses_without_retiring_the_pair() {
-        for old_schema in [false, true] {
-            let pair = Pair::new();
-            let mut malformed = held_receipt();
-            if old_schema {
-                malformed["schema-version"] = json!(1);
-            } else {
-                malformed["source-action"]["loan-sequence"] = json!(4);
-            }
-            let mut client = QmpClient::connect(Stream::new(malformed, None)).unwrap();
-
-            assert!(
-                client
-                    .parent_park_drain_under_originals(&query(), &pair.actor, &pair.family,)
-                    .is_err()
-            );
-            assert!(client.poisoned);
-            assert!(pair.actor.check_original_quiescence_cancellation().is_ok());
-            assert!(pair.family.check_original_quiescence_cancellation().is_ok());
-        }
-    }
-}
+mod tests;

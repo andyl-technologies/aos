@@ -133,11 +133,12 @@ fn borrowed_channel_transfers_without_mutating_flags_or_closing_owner() {
     assert_eq!(reply, *b"ack");
     drop(view);
 
-    // SAFETY: dropping the view leaves the actual owner and OFD intact.
     assert_eq!(
+        // SAFETY: dropping the view leaves the actual owner and OFD intact.
         unsafe { libc::fcntl(owner.as_raw_fd(), libc::F_GETFL) },
         flags
     );
+    // SAFETY: the same retained owner still keeps the descriptor open.
     assert!(unsafe { libc::fcntl(owner.as_raw_fd(), libc::F_GETFD) } >= 0);
 }
 

@@ -48,7 +48,7 @@ mod kernel_swap_residency;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub(crate) mod parent_park_drain;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-pub use parent_park_drain::{QmpParentParkDrainReceipt, QmpParentParkDrainState};
+pub use parent_park_drain::{QmpParentParkClosedRequest, QmpParentParkResult};
 mod paused_cpu;
 #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
 pub(crate) mod readonly_backing_stream;
@@ -222,6 +222,9 @@ pub const QMP_GREETING_TIMEOUT: Duration = Duration::from_secs(5);
 pub const QMP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 /// Default maximum bytes in one QMP JSON line.
 pub const QMP_MAX_LINE_BYTES: usize = 1024 * 1024;
+
+// Explicit capacity keeps the real BufReader allocation in its host request.
+pub(crate) const QMP_READ_BUFFER_BYTES: usize = 8 * 1024;
 /// Default maximum asynchronous QMP event objects skipped while awaiting a command.
 pub const QMP_MAX_ASYNC_EVENTS_PER_COMMAND: usize = 1024;
 
@@ -390,6 +393,8 @@ pub struct QmpClient<S> {
     selectable_reset_observation: u64,
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     readonly_backing_correlation: u64,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    parent_park_session: Option<parent_park_drain::ParentParkSession>,
 }
 
 impl<S> QmpClient<S>
@@ -454,7 +459,7 @@ where
     ) -> Result<Self, QmpError> {
         io_timeout_policy.validate()?;
         let mut client = Self {
-            stream: BufReader::new(stream),
+            stream: BufReader::with_capacity(QMP_READ_BUFFER_BYTES, stream),
             greeting: QmpGreeting {
                 version_present: false,
                 capabilities_present: false,
@@ -474,6 +479,8 @@ where
             selectable_reset_observation: 0,
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
             readonly_backing_correlation: 0,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            parent_park_session: None,
         };
         client.greeting = client.read_greeting()?;
         client.send_command(QmpCommand::Capabilities)?;
@@ -1975,9 +1982,12 @@ pub enum QmpCommandKind {
     /// Correlated physical reset of an exact stopped selectable request.
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
     SelectableReset,
-    /// Retained later-operation parent park/drain ownership.
+    /// Begins one authenticated retained paired Park request.
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    ParentParkDrain,
+    ParentParkBegin,
+    /// Observes physical return on that request's original connection.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    ParentParkReturn,
     /// Authenticated terminal lifecycle completion.
     CompleteTerminalLifecycle,
     /// QEMU-owned sealed plugin-resource inventory query.
@@ -2066,7 +2076,9 @@ impl QmpCommandKind {
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
             Self::SelectableReset => "crucible-selectable-reset-v1",
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-            Self::ParentParkDrain => "crucible-parent-park-drain",
+            Self::ParentParkBegin => "crucible-parent-park-begin",
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::ParentParkReturn => "crucible-parent-park-return",
             Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
             Self::QueryHotForkPluginResourceInventory => {
                 QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND

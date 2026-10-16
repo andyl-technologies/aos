@@ -991,6 +991,11 @@ impl Drop for InstalledProcessPurposeLoan {
 }
 
 fn startup_and_transport_extent() -> Result<u64, InstalledProcessPurposeError> {
+    let qmp_extent = crate::QemuQmpExactSnapshotControlChannel::<
+        std::os::unix::net::UnixStream,
+    >::host_allocation_extent()
+    .ok_or(InstalledProcessPurposeError::Capacity)?;
+
     crate::spawn::OriginalPluginStartup::host_allocation_extent()
         .map_err(|_| InstalledProcessPurposeError::Capacity)?
         .checked_add(
@@ -1000,6 +1005,7 @@ fn startup_and_transport_extent() -> Result<u64, InstalledProcessPurposeError> {
         .and_then(|bytes| {
             bytes.checked_add(crate::launch_cleanup::LaunchCleanup::retained_control_bytes()?)
         })
+        .and_then(|bytes| bytes.checked_add(qmp_extent))
         .and_then(|bytes| {
             bytes.checked_add(u64::try_from(std::mem::size_of::<crate::QemuNodeChild>()).ok()?)
         })

@@ -229,7 +229,38 @@ const MESSAGE_PIECES: &[&str] = &[
     "18446744073709551615",
 ];
 
+/// Returns the pinned slice-JSON diagnostic peak for a bounded input schema.
+///
+/// The caller supplies its actual generated field/type labels and fixed custom
+/// errors. This pure geometry query reserves no resource and issues no decode
+/// permission. It shares the same message, capacity and ErrorImpl calculation
+/// as the closed owned decoder.
+///
+/// Returns `None` on checked overflow or outside the configured x86_64 Linux
+/// layout whose Serde error allocation was qualified.
+#[must_use]
+pub fn bounded_json_diagnostic_extent(maximum_input_bytes: usize, labels: &[&str]) -> Option<u64> {
+    if !cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_pointer_width = "64"
+    )) {
+        return None;
+    }
+    let maximum = u64::try_from(maximum_input_bytes).ok()?;
+    // escape_debug emits at most six bytes per source UTF-8 byte. Each
+    // additional recognized \uXXXX sequence occupies six nonoverlapping
+    // input bytes and contributes at most the existing ten-byte scalar bound.
+    let raw_debug = maximum.checked_mul(6)?.checked_add(2)?;
+    let decoded_escapes = (maximum / 6).checked_mul("\\u{10ffff}".len() as u64)?;
+    message_extent(raw_debug.checked_add(decoded_escapes)?, labels)
+}
+
 pub(super) fn diagnostic_extent(bytes: &[u8], labels: &[&str]) -> Option<u64> {
+    message_extent(input_debug_bytes(bytes)?, labels)
+}
+
+fn message_extent(input_debug: u64, labels: &[&str]) -> Option<u64> {
     let literals = MESSAGE_PIECES
         .iter()
         .try_fold(0_u64, |total, piece| total.checked_add(piece.len() as u64))?;
@@ -240,9 +271,7 @@ pub(super) fn diagnostic_extent(bytes: &[u8], labels: &[&str]) -> Option<u64> {
     // A floating Unexpected can appear even when the expected field is an
     // integer. The pinned formatter's complete scalar output fits its actual
     // 24-byte zmij::Buffer; this is a formatter extent, not an input multiplier.
-    let length = fixed
-        .checked_add(24)?
-        .checked_add(input_debug_bytes(bytes)?)?;
+    let length = fixed.checked_add(24)?.checked_add(input_debug)?;
     // Arguments::estimated_capacity is at most twice its literal-piece sum.
     // RawVec growth/shrink retains at most max(initial, 2*length, 8) + length.
     let initial = literals.checked_mul(2)?;

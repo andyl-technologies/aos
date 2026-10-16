@@ -66,7 +66,8 @@ fn returned_job_reuses_its_slot_only_after_actual_descriptor_close()
 }
 
 #[test]
-#[allow(clippy::disallowed_methods)] // Real worker containment uses a fixed test-only wall-clock bound.
+// crucible-lint: allow clippy-disallowed-method -- the real worker containment test retains one fixed wall-clock bound.
+#[allow(clippy::disallowed_methods)]
 fn one_worker_returns_actual_controls_for_sequential_jobs() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempfile::tempdir()?;

@@ -177,6 +177,20 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
         })
     }
 
+    /// Lends the retained account's Cleanup when physical disposition begins.
+    ///
+    /// # Errors
+    /// Refuses missing original account custody or its finite Cleanup policy.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn retain_parent_park_cleanup(
+        &self,
+    ) -> Result<crucible_qemu::OriginalParentParkCleanup, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "retain parent Park Cleanup",
+            message: String::from("guard has no original Cleanup owner"),
+        })
+    }
+
     /// Checks actual Node, host and Preparation custody before publication.
     ///
     /// # Errors

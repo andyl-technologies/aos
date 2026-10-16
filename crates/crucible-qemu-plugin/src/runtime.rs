@@ -672,13 +672,13 @@ impl OwnedCallbackRuntimeState {
         let header = std::ptr::NonNull::from(state.setup.mapped_region().header());
         #[cfg(not(test))]
         let fault_commands = {
-            // SAFETY: the parent is already prepaid/pinned and observer completion
-            // enrolled. Its actual storage field never moves after Native transfer.
             let material = state.setup.command_storage_material().map_err(|source| {
                 LiveVcpuTimeCallbackError::FaultCommands {
                     source: crate::fault_command::FaultCommandBridgeError::StorageSource { source },
                 }
             })?;
+            // SAFETY: the parent is already prepaid/pinned and observer completion
+            // enrolled. Its actual storage field never moves after Native transfer.
             unsafe {
                 state.command_storage.create(material, || {
                     crate::fault_command::FaultCommandBridge::new(
@@ -737,7 +737,7 @@ impl OwnedCallbackRuntimeState {
         let header = unsafe { header.as_ref() };
         #[cfg(not(test))]
         {
-            // The whole containing Runtime is already paid/pinned and its
+            // SAFETY: the containing Runtime is already paid/pinned and its
             // distinct canonical child field never moves. Source entered
             // creation retains the real Bridge parent before allocation/post.
             unsafe {
@@ -795,7 +795,7 @@ impl OwnedCallbackRuntimeState {
             owner?;
             owner_post?;
 
-            // Genuine Source current lends the complete initialized child only
+            // SAFETY: Source current lends the complete initialized child only
             // for this entered family preparation. The loan is not a Native
             // callback binding and no pointer escapes into global storage.
             unsafe {
@@ -809,7 +809,7 @@ impl OwnedCallbackRuntimeState {
                     )
                 })
             }?;
-            // End the retained network-ring borrow before asking the same setup
+            // SAFETY: end the network-ring borrow before asking the same setup
             // owner for distinct device views. Each new typed access obtains its
             // own genuine Source current and preserves its negative loan outputs.
             unsafe {
@@ -860,10 +860,10 @@ impl OwnedCallbackRuntimeState {
                 LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source }
             })?;
             state.registration_owner.current()?;
+            let receiver = std::ptr::NonNull::from(&state.command_receive);
             // SAFETY: the only typed address is obtained in the genuine entered
             // span. Source independently retains its owner dependency before the
             // component output/post; no borrowed Rust reference escapes.
-            let receiver = std::ptr::NonNull::from(&state.command_receive);
             let enrollment = unsafe {
                 state.callback_child.prepare_publication(|child| {
                     // SAFETY: this genuine complete typed child and paid pinned

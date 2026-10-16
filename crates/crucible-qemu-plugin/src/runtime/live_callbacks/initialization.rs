@@ -36,9 +36,9 @@ pub(in crate::runtime) unsafe trait CallbackAllocation {
     fn prefix_rollback_completed(&mut self) {}
 }
 
+#[cfg(test)]
 // SAFETY: this sole Box owns a stable exact uninitialized child allocation;
 // conversion and unfinished cleanup retain the same allocator ownership.
-#[cfg(test)]
 unsafe impl CallbackAllocation for Box<MaybeUninit<LiveVcpuTimeCallbackState>> {
     type Initialized = Box<LiveVcpuTimeCallbackState>;
 
@@ -46,6 +46,11 @@ unsafe impl CallbackAllocation for Box<MaybeUninit<LiveVcpuTimeCallbackState>> {
         self.as_mut_ptr()
     }
 
+    /// Converts the complete unique storage using its existing allocation owner.
+    ///
+    /// # Safety
+    /// Every child field is initialized and no unfinished prefix guard or other
+    /// owner may destroy it. The original backing remains live after conversion.
     unsafe fn initialized(self) -> Self::Initialized {
         // SAFETY: caller proves the complete initialized body in this sole Box.
         unsafe { self.assume_init() }
@@ -61,6 +66,11 @@ unsafe impl<'a> CallbackAllocation for &'a mut MaybeUninit<LiveVcpuTimeCallbackS
         self.as_mut_ptr()
     }
 
+    /// Converts the complete unique storage using its existing allocation owner.
+    ///
+    /// # Safety
+    /// Every child field is initialized and no unfinished prefix guard or other
+    /// owner may destroy it. The original backing remains live after conversion.
     unsafe fn initialized(self) -> Self::Initialized {
         // SAFETY: caller proves all fields initialized in the unique live span.
         // The lifetime remains tied to its real backing owner, not a new Box.

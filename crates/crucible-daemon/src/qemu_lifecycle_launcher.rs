@@ -19,7 +19,6 @@ use crucible_qemu::{
     QemuProductionFreshLaunchAdmission,
 };
 
-#[cfg(not(feature = "private-measurement-domain"))]
 use crate::{
     ExactCheckpointStore, ExecutionCancellation, QemuAttemptGenerationLease,
     QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
@@ -438,10 +437,8 @@ where
         &mut self,
         source: &mut crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
         request: crucible_api::ProductionVmParentParkDrainRequest<'_>,
-    ) -> Result<
-        crucible_qemu::QmpParentParkDrainReceipt,
-        crucible_api::ProductionVmParentParkDrainRefusal,
-    > {
+    ) -> Result<crucible_qemu::QmpParentParkResult, crucible_api::ProductionVmParentParkDrainRefusal>
+    {
         self.invoke_parent_park_drain(source, request)
     }
 

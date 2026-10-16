@@ -189,10 +189,6 @@ pub(super) enum QmpCommand<'a> {
         request_hex: &'a str,
         correlation: u64,
     },
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    ParentParkDrain {
-        request: &'a super::parent_park_drain::ParentParkDrainRequest<'a>,
-    },
     SaveVm {
         tag: &'a QmpSnapshotTag,
         job_id: &'a str,
@@ -355,8 +351,6 @@ impl QmpCommand<'_> {
             Self::Capabilities => QmpCommandKind::Capabilities,
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
             Self::SelectableReset { .. } => QmpCommandKind::SelectableReset,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-            Self::ParentParkDrain { .. } => QmpCommandKind::ParentParkDrain,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
             #[cfg(target_os = "linux")]
@@ -442,8 +436,6 @@ impl QmpCommand<'_> {
                     "reply-address": pending.guest_virtual_address(),
                 },
             }),
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-            Self::ParentParkDrain { request } => request.request(),
             Self::SaveVm { tag, job_id } => {
                 snapshot_request(QMP_SNAPSHOT_SAVE_COMMAND, job_id, tag)
             }

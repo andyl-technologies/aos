@@ -53,6 +53,8 @@ pub use original_node::OriginalBackingObservationError;
 #[cfg(feature = "private-measurement-domain")]
 pub use original_node::OriginalBoundBackingObservation;
 pub use original_node::{InstalledNodeLaunchIssuer, OriginalNativeFreshLaunchError};
+#[cfg(feature = "private-measurement-domain")]
+pub use original_roster::OriginalParentParkCleanup;
 pub(crate) use original_roster::TargetWatcherOriginal;
 pub(crate) use original_roster::device_digest::AllocationWorkspaceRecord;
 pub(crate) use original_roster::{
