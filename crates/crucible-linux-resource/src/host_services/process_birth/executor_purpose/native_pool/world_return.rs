@@ -1,11 +1,17 @@
 //! Returns exact World accounting under its once-entered saved Cleanup.
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{AuthenticatedNativeWorldClaim, NativeWorldReturn, ServiceBirthError, ledger};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use super::{
+    AuthenticatedNativeWorldClaim, AuthenticatedNativeWorldCleanupLoan, HostOperationGuard,
+    NativeWorldReturn, PoolState, ServiceBirthError, ledger,
+};
+use crate::host_supervision::HostOperationClass;
 
 /// Preserves a native return refusal and its independent saved-Cleanup postcut.
 ///
-/// The containing claim records actual irreversible return separately. These
+/// The containing journal records actual irreversible return separately. These
 /// moved errors contain no replacement guard, account, clock or return grant.
 #[derive(Debug)]
 pub struct NativePoolReturnError {
@@ -87,10 +93,19 @@ impl AuthenticatedNativeWorldClaim {
         }
     }
 
-    /// Observes actual assignment return separately from any historical post-refusal.
+    /// Observes actual return, including return driven by this World's loan.
+    ///
+    /// An uncertain ledger remains unreturned. The cached local fact stays true
+    /// after irreversible return, independently of any historical post-refusal.
     #[must_use]
-    pub fn is_physically_returned(&self) -> bool {
-        self.returned
+    pub fn is_physically_returned(&mut self) -> bool {
+        if self.returned {
+            return true;
+        }
+        let Some(held) = self.held.as_ref() else {
+            return false;
+        };
+        observe_claim_returned(&held.ledger, self.epoch, &mut self.returned)
     }
 
     /// Returns exact accounting or observes its still-retained containing body.
@@ -109,73 +124,227 @@ impl AuthenticatedNativeWorldClaim {
         if self.returned {
             return Ok(NativeWorldReturn::Returned);
         }
-        let held =
-            self.held.as_ref().cloned().ok_or_else(|| {
-                ServiceBirthError::policy("native World return custody is absent")
-            })?;
-        let cleanup = {
-            let ledger = held
-                .ledger
-                .try_lock()
-                .map_err(|_| ServiceBirthError::policy("native World retirement is uncertain"))?;
-            ledger.verify_world_original(self.epoch, &self.original)?;
-            if matches!(
-                ledger.prepare_world_return(self.epoch)?,
-                ledger::WorldReturnPreparation::PendingBody
-            ) {
-                return Ok(NativeWorldReturn::PendingBody);
-            }
-            // Actual retirement begins here. Verification below only reads
-            // this once-latched result and cannot initialize another operation.
-            ledger.enter_cleanup(self.epoch)?
-        };
-        let result = (|| {
-            held.verify_return_custody(&cleanup)?;
-            let mut ledger = held
-                .ledger
-                .try_lock()
-                .map_err(|_| ServiceBirthError::policy("native World retirement is uncertain"))?;
-            ledger.verify_world_original(self.epoch, &self.original)?;
-            ledger.verify_cleanup(self.epoch, &cleanup)?;
-            let (index, used, peak, tables) = match ledger.prepare_world_return(self.epoch)? {
-                ledger::WorldReturnPreparation::PendingBody => {
-                    return Ok(NativeWorldReturn::PendingBody);
-                }
-                ledger::WorldReturnPreparation::Ready {
-                    index,
-                    used,
-                    peak,
-                    tables,
-                } => (index, used, peak, tables),
-            };
-            let (work, consumed) = held
-                .root
-                .owner
-                .host_descriptors
-                .try_lock()
-                .map_err(|_| ServiceBirthError::policy("Main descriptor owner is uncertain"))?
-                .as_mut()
-                .ok_or_else(|| ServiceBirthError::policy("Main descriptor owner is absent"))?
-                .close_pool_assignment(peak, tables);
-            if consumed {
-                ledger.commit_world_return(index, self.epoch, used);
-            }
-            drop(ledger);
-            if consumed {
-                self.returned = true;
-            }
-            work?;
-            Ok(NativeWorldReturn::Returned)
-        })();
-        let post = cleanup
-            .verify_operation_class(crate::host_supervision::HostOperationClass::Cleanup)
-            .and_then(|()| {
-                if self.is_physically_returned() {
-                    cleanup.complete().map(|_| ())
-                } else {
-                    Ok(())
-                }
-            });
-        NativePoolReturnError::finish(result, post)
+        let held = self
+            .held
+            .as_ref()
+            .ok_or_else(|| ServiceBirthError::policy("native World return custody is absent"))?;
+        try_return_world(held, self.epoch, Some(&self.original), &mut self.returned)
     }
 }
+
+impl AuthenticatedNativeWorldCleanupLoan {
+    /// Returns only this genuinely borrowed World's closed assignment.
+    ///
+    /// The original and cached Cleanup come from this loan's actual retained
+    /// pool and epoch. A pending body enters no Cleanup. Actual descriptor and
+    /// ledger consumption is recorded before reporting work or post-refusal.
+    ///
+    /// # Errors
+    /// Retains uncertain/stale custody, live members, structural/kernel failure
+    /// and the same Cleanup's independent post. An error may follow actual
+    /// return; use [`Self::observe_physically_returned`] before retrying effects.
+    pub fn try_finish_after_members_returned(
+        &self,
+    ) -> Result<NativeWorldReturn, NativePoolReturnError> {
+        let mut returned = false;
+        try_return_world(&self.held, self.epoch, None, &mut returned)
+    }
+
+    /// Observes this exact issued epoch's physical return without new work.
+    ///
+    /// The loan's private pool identity and monotonic epoch survive canonical
+    /// row reuse. This neither enters Cleanup nor erases earlier return errors.
+    ///
+    /// # Errors
+    /// Refuses an unissued epoch or an unavailable/uncertain ledger. Absence
+    /// proves return only at the existing irreversible journal-removal cut.
+    pub fn observe_physically_returned(&self) -> Result<bool, ServiceBirthError> {
+        observe_returned(&self.held.ledger, self.epoch)
+    }
+}
+
+impl Drop for AuthenticatedNativeWorldClaim {
+    fn drop(&mut self) {
+        let returned = self.is_physically_returned();
+        if let Some(held) = self.held.take() {
+            if returned {
+                drop(held);
+            } else {
+                // Losing an uncertain facade still proves no physical return.
+                std::mem::forget(held);
+            }
+        }
+    }
+}
+
+fn observe_returned(
+    ledger: &Mutex<ledger::PoolLedger>,
+    epoch: u64,
+) -> Result<bool, ServiceBirthError> {
+    ledger
+        .try_lock()
+        .map_err(|_| ServiceBirthError::policy("native World retirement is uncertain"))?
+        .observe_world_returned(epoch)
+}
+
+/// Keeps the same World open until its existing pool alias has been retained.
+pub(super) fn borrow_unreturned_world(
+    ledger: &Mutex<ledger::PoolLedger>,
+    epoch: u64,
+) -> Result<MutexGuard<'_, ledger::PoolLedger>, ServiceBirthError> {
+    let ledger = ledger
+        .try_lock()
+        .map_err(|_| ServiceBirthError::policy("native World retirement is uncertain"))?;
+    if ledger.observe_world_returned(epoch)? {
+        return Err(ServiceBirthError::policy("native World already returned"));
+    }
+    Ok(ledger)
+}
+
+/// A factual observation remains true even if a later Drop cannot borrow the ledger.
+fn observe_claim_returned(
+    ledger: &Mutex<ledger::PoolLedger>,
+    epoch: u64,
+    returned: &mut bool,
+) -> bool {
+    if *returned {
+        return true;
+    }
+    let observed = ledger
+        .try_lock()
+        .is_ok_and(|ledger| ledger.world_return_fact(epoch) == Ok(true));
+    if observed {
+        *returned = true;
+    }
+    observed
+}
+
+enum ReturnStart {
+    Observed(NativeWorldReturn),
+    Ready {
+        original: Arc<HostOperationGuard>,
+        cleanup: Arc<HostOperationGuard>,
+    },
+}
+
+/// Holds the same ledger lock while authenticating and preparing first effects.
+fn prepare_return(
+    ledger: &ledger::PoolLedger,
+    epoch: u64,
+    expected_original: Option<&Arc<HostOperationGuard>>,
+) -> Result<ReturnStart, ServiceBirthError> {
+    if ledger.observe_world_returned(epoch)? {
+        return Ok(ReturnStart::Observed(NativeWorldReturn::Returned));
+    }
+    if let Some(original) = expected_original {
+        ledger.verify_world_original(epoch, original)?;
+    }
+    if matches!(
+        ledger.prepare_world_return(epoch)?,
+        ledger::WorldReturnPreparation::PendingBody
+    ) {
+        return Ok(ReturnStart::Observed(NativeWorldReturn::PendingBody));
+    }
+    let original = Arc::clone(ledger.world_original(epoch)?);
+    // Only the ready physical cut enters Cleanup. Every retry reads the same
+    // saved admission result; no caller supplies a replacement original.
+    let cleanup = ledger.enter_cleanup(epoch)?;
+    Ok(ReturnStart::Ready { original, cleanup })
+}
+
+fn try_return_world(
+    held: &PoolState,
+    epoch: u64,
+    expected_original: Option<&Arc<HostOperationGuard>>,
+    returned: &mut bool,
+) -> Result<NativeWorldReturn, NativePoolReturnError> {
+    let start = {
+        let ledger = held
+            .ledger
+            .try_lock()
+            .map_err(|_| ServiceBirthError::policy("native World retirement is uncertain"))?;
+        prepare_return(&ledger, epoch, expected_original)?
+    };
+    let (original, cleanup) = match start {
+        ReturnStart::Observed(observed) => {
+            if observed == NativeWorldReturn::Returned {
+                *returned = true;
+            }
+            return Ok(observed);
+        }
+        ReturnStart::Ready { original, cleanup } => (original, cleanup),
+    };
+    let result = (|| {
+        held.verify_return_custody(&cleanup)?;
+        let mut ledger = held
+            .ledger
+            .try_lock()
+            .map_err(|_| ServiceBirthError::policy("native World retirement is uncertain"))?;
+        if ledger.observe_world_returned(epoch)? {
+            *returned = true;
+            return Ok(NativeWorldReturn::Returned);
+        }
+        ledger.verify_world_original(epoch, &original)?;
+        ledger.verify_cleanup(epoch, &cleanup)?;
+        let (index, used, peak, tables) = match ledger.prepare_world_return(epoch)? {
+            ledger::WorldReturnPreparation::PendingBody => {
+                return Ok(NativeWorldReturn::PendingBody);
+            }
+            ledger::WorldReturnPreparation::Ready {
+                index,
+                used,
+                peak,
+                tables,
+            } => (index, used, peak, tables),
+        };
+        let (work, consumed) = held
+            .root
+            .owner
+            .host_descriptors
+            .try_lock()
+            .map_err(|_| ServiceBirthError::policy("Main descriptor owner is uncertain"))?
+            .as_mut()
+            .ok_or_else(|| ServiceBirthError::policy("Main descriptor owner is absent"))?
+            .close_pool_assignment(peak, tables);
+        record_return(&mut ledger, epoch, index, used, consumed, returned);
+        drop(ledger);
+        work?;
+        Ok(NativeWorldReturn::Returned)
+    })();
+    finish_return(result, &cleanup, *returned)
+}
+
+/// Latches the actual consumption before either its work result or postcut.
+fn record_return(
+    ledger: &mut ledger::PoolLedger,
+    epoch: u64,
+    index: usize,
+    used: super::HostResourceVector,
+    consumed: bool,
+    returned: &mut bool,
+) {
+    if consumed {
+        ledger.commit_world_return(index, epoch, used);
+        *returned = true;
+    }
+}
+
+fn finish_return(
+    result: Result<NativeWorldReturn, ServiceBirthError>,
+    cleanup: &HostOperationGuard,
+    returned: bool,
+) -> Result<NativeWorldReturn, NativePoolReturnError> {
+    let post = cleanup
+        .verify_operation_class(HostOperationClass::Cleanup)
+        .and_then(|()| {
+            if returned {
+                cleanup.complete().map(|_| ())
+            } else {
+                Ok(())
+            }
+        });
+    NativePoolReturnError::finish(result, post)
+}
+
+#[cfg(test)]
+pub(super) mod tests;
