@@ -635,7 +635,9 @@ impl ClientContent {
             .hash
             .digest
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .zip(digest.as_bytes())
         {
             let digit = |value: u8| {

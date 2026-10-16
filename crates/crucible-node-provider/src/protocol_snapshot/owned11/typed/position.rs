@@ -4,7 +4,7 @@
 //! are typed currency/report coordinates; accepting them creates no original
 //! actor, completed report, source selection or reconstruction authority.
 
-use super::{HistoricalType, Ledger, historical_struct, invalid};
+use super::{HistoricalType, Ledger, invalid};
 use crate::ProviderError;
 use crucible_node_contract::{Phase, Position, U64};
 

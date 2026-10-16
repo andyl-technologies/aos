@@ -295,8 +295,7 @@ pub fn packet_native_owned13_snapshot_validation_layouts()
         std::mem::align_of::<PacketNativeOwned13SnapshotPlan<'static>>();
     layouts.raw_chunk_array_bytes = layouts
         .raw_chunk_array_bytes
-        .checked_add(INNER_STARTUP_PREFIX.len())
-        .unwrap_or(usize::MAX);
+        .saturating_add(INNER_STARTUP_PREFIX.len());
     layouts
 }
 

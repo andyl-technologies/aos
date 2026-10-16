@@ -17,7 +17,7 @@ use std::{
         },
     },
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     time::Duration,
 };
 
@@ -894,6 +894,7 @@ mod construction_tests {
     use super::*;
     use std::{
         path::PathBuf,
+        process::Command,
         sync::{Arc, Mutex},
     };
 

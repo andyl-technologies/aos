@@ -34,7 +34,9 @@ impl Hash<'_> {
     fn matches_digest(&self, expected: &[u8; 32]) -> bool {
         self.digest
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .zip(expected)
             .all(|(hex, byte)| digit(hex[0]) * 16 + digit(hex[1]) == *byte)
     }
@@ -289,7 +291,7 @@ pub fn original_capture_allocation_report_counter_scratch_data() -> usize {
         + size_of::<blake3::Hash>()
         + size_of::<[u8; 32]>()
         + size_of::<[u8; 128]>()
-        + 8 * size_of::<usize>()
+        + size_of::<[usize; 8]>()
         + crate::protocol_snapshot::owned11::correspondence::envelope_counter_scratch_data()
         + size_of::<PacketNative5ProtocolMetadataLimits>()
         + size_of::<[(U64, U64, usize); 3]>()

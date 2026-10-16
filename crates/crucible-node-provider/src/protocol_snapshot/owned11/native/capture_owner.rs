@@ -11,7 +11,7 @@
 
 use super::super::{
     state::{next, tag},
-    typed::{Fields, HistoricalType, invalid},
+    typed::{Fields, invalid},
 };
 use super::{capture_sdk::HistoricalNativeCaptureSdkOwner, shared::NativeLedger};
 use crate::retained_metadata::{aliases::MetadataSharedKind, records::MetadataRecordKind};

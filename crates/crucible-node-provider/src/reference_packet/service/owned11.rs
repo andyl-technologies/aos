@@ -74,8 +74,7 @@ impl OriginalNativeCaptureContext<'_> {
 
     pub(crate) fn invocation_additional_counter_scratch_data() -> usize {
         NativeAckBoot::invocation_wire_counter_scratch_data()
-            .checked_add(OriginalNativeBootstrapOwned11::invocation_wire_counter_scratch_data())
-            .unwrap_or(usize::MAX)
+            .saturating_add(OriginalNativeBootstrapOwned11::invocation_wire_counter_scratch_data())
     }
 
     pub(crate) fn authenticate_original<S: ProviderStream>(

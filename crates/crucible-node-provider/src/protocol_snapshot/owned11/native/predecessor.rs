@@ -126,10 +126,10 @@ impl SealedHistoricalNativeState {
             _ => return Err(invalid()),
         }
         for state in [before_state, after_state] {
-            if let Some(owner) = &state.capture_allocation {
-                if owner.capture_request_data() != Some(capture_request) {
-                    return Err(invalid());
-                }
+            if let Some(owner) = &state.capture_allocation
+                && owner.capture_request_data() != Some(capture_request)
+            {
+                return Err(invalid());
             }
         }
         static_token(before.connection[14], later.connection[14])?;

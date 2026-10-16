@@ -253,8 +253,7 @@ impl OriginalSerializationStorageData {
 /// Compiler/recursive serializer frames and allocator overhead are separate.
 pub(crate) fn original_serialization_counter_scratch_data() -> usize {
     size_of::<Credit>()
-        .checked_add(size_of::<OriginalSerializationStorageData>())
-        .unwrap_or(usize::MAX)
+        .saturating_add(size_of::<OriginalSerializationStorageData>())
 }
 
 /// Counts the existing Bytes/decimal formatter bank before invoking Serialize.

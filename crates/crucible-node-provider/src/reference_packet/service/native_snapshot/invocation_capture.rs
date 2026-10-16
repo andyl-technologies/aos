@@ -311,8 +311,7 @@ pub fn packet_native_owned14_snapshot_validation_layouts()
         std::mem::align_of::<PacketNativeOwned14SnapshotPlan<'static>>();
     layouts.raw_chunk_array_bytes = layouts
         .raw_chunk_array_bytes
-        .checked_add(INNER_INVOCATION_PREFIX.len())
-        .unwrap_or(usize::MAX);
+        .saturating_add(INNER_INVOCATION_PREFIX.len());
     layouts
 }
 

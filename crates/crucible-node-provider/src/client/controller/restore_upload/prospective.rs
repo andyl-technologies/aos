@@ -345,7 +345,7 @@ fn request_identity(id: &Id) -> blake3::Hash {
 }
 
 fn reference_identities(references: [&ContentRef; 5]) -> [blake3::Hash; 5] {
-    references.map(|reference| inputs::reference_identity(reference))
+    references.map(inputs::reference_identity)
 }
 
 fn mapping_identity(mapping: &PreparedArchivedProtocolMapping) -> blake3::Hash {

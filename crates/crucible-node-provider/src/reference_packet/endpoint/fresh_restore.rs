@@ -458,7 +458,7 @@ pub(crate) fn original_fresh_current_counter_scratch_data() -> usize {
         size_of::<[crate::protocol_snapshot::ProtocolSnapshotAllocationFacts; 2]>(),
         size_of::<super::super::service::OriginalNativeCaptureContext<'static>>(),
         size_of::<OriginalSelectedFreshData<crate::client::DeadlineStream>>(),
-        8 * size_of::<usize>(),
+        size_of::<[usize; 8]>(),
     ]
     .into_iter()
     .try_fold(0usize, usize::checked_add)
@@ -475,7 +475,7 @@ mod tests;
 
 /// Adds only the explicit invocation views; the old numeric getter stays exact.
 pub(crate) fn original_invocation_fresh_current_counter_scratch_data() -> usize {
-    original_fresh_current_counter_scratch_data().checked_add(
+    original_fresh_current_counter_scratch_data().saturating_add(
         super::super::service::OriginalNativeCaptureContext::invocation_additional_counter_scratch_data(),
-    ).unwrap_or(usize::MAX)
+    )
 }

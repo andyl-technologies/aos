@@ -178,7 +178,7 @@ pub fn original_native_restore_commit_construction_storage_data(
             align_of::<PacketCompleteRestorePhysicalHold>(),
         )?,
         size_of::<PacketNativeRestoredCommitHold>(),
-        8 * size_of::<usize>(),
+        size_of::<[usize; 8]>(),
     ])?;
     let model_control_bytes = inputs.model.total_bytes;
     let held = maximum_complete_restore_held_evidence_bytes()?;

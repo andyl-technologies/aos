@@ -169,10 +169,10 @@ impl serde::Serialize for CompleteIngressContractValue {
             (
                 "limits",
                 V::Object(&[
-                    ("coordinator_bytes", V::Number(131072 as u64)),
-                    ("frame_bytes", V::Number(65536 as u64)),
-                    ("grant_retirement_bytes", V::Number(8192 as u64)),
-                    ("blob_chunk_bytes", V::Number(4096 as u64)),
+                    ("coordinator_bytes", V::Number(131072_u64)),
+                    ("frame_bytes", V::Number(65536_u64)),
+                    ("grant_retirement_bytes", V::Number(8192_u64)),
+                    ("blob_chunk_bytes", V::Number(4096_u64)),
                 ]),
             ),
             (

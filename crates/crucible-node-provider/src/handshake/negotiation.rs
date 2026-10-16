@@ -587,9 +587,9 @@ impl Handshake {
             }
         }
         let authority = if typed_extensions {
-            self.admit_exchange_versioned(&hello, &result, connection, verifier, true)?
+            self.admit_exchange_versioned(hello, result, connection, verifier, true)?
         } else {
-            self.admit_exchange(&hello, &result, connection, verifier)?
+            self.admit_exchange(hello, result, connection, verifier)?
         };
         self.hello_request_ids.insert(request_id.clone());
         Ok(authority)

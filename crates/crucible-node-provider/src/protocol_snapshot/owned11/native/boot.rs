@@ -307,10 +307,10 @@ pub(super) fn read(
     // reconstruction has retained the complete owning result. Its phase and
     // Source syntax were checked before allocation; a later full target/hash
     // mismatch must leave this owner in that caller's output slot.
-    if owner.invocation.is_none() {
-        if let Some(startup) = &owner.startup {
-            startup.authenticate(&owner)?;
-        }
+    if owner.invocation.is_none()
+        && let Some(startup) = &owner.startup
+    {
+        startup.authenticate(&owner)?;
     }
     Ok(Some(owner))
 }

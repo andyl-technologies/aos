@@ -37,7 +37,6 @@ pub(super) fn borrow_original(
 
 impl serde::Serialize for OriginalCompletedOwner<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::Serialize;
         self.original
             .association
             .actor

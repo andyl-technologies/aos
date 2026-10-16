@@ -190,7 +190,7 @@ pub fn complete_restore_selected_model_output_population_counter_scratch_data() 
         + size_of::<&PacketCompleteRestoreSelectedOwnerInputs<'static>>()
         + 4 * size_of::<&[u8]>()
         + size_of::<&str>()
-        + 8 * size_of::<usize>()
+        + size_of::<[usize; 8]>()
 }
 
 #[cfg(test)]
