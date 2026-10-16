@@ -273,10 +273,10 @@ where
         {
             Ok(_commit) => self.provider.checkout(key).map_err(Into::into),
             Err(
-                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkExactAdmissionFailure::Poisoned,
+                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkAdmissionFailure::Poisoned,
             ) => Err(Self::Error::AdmissionPoisoned),
             Err(
-                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkExactAdmissionFailure::Admission(
+                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkAdmissionFailure::Admission(
                     failure,
                 ),
             ) => self.reconcile_exact_admission_failure(key, checkpoint, failure),

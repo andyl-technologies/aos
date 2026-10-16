@@ -356,6 +356,49 @@ pub struct AuthenticatedExactQemuHotForkSource {
     source: ProductionVmHotForkSourceWorld,
 }
 
+/// Thin attempt world accepted only by the managed published-root path.
+///
+/// The thin-attempt runner mints this token after authenticating the prepared
+/// world against its sealed observation: the configuration, scenario,
+/// lineage, and complete scheduler boundary match, and `published` is the
+/// observation's child configuration artifact. Admission persists
+/// [`crate::HotCheckpointFallback::Thin`] for that artifact before the world
+/// becomes reusable.
+#[must_use = "admit the authenticated source or retain its complete authority"]
+pub(crate) struct AuthenticatedPublishedRootQemuHotForkSource {
+    key: QemuHotForkSourceWorldKey,
+    published: ConfigurationArtifactId,
+    source: ProductionVmHotForkSourceWorld,
+}
+
+impl AuthenticatedPublishedRootQemuHotForkSource {
+    /// Seals a validated thin-attempt world with its published child artifact.
+    ///
+    /// Callers must already have authenticated the world against the sealed
+    /// observation; managed admission rechecks only the boundary predicates.
+    pub(crate) const fn new(
+        key: QemuHotForkSourceWorldKey,
+        published: ConfigurationArtifactId,
+        source: ProductionVmHotForkSourceWorld,
+    ) -> Self {
+        Self {
+            key,
+            published,
+            source,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        QemuHotForkSourceWorldKey,
+        ConfigurationArtifactId,
+        ProductionVmHotForkSourceWorld,
+    ) {
+        (self.key, self.published, self.source)
+    }
+}
+
 impl AuthenticatedExactQemuHotForkSource {
     pub(crate) fn into_parts(
         self,
