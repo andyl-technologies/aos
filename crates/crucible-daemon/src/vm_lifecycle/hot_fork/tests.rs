@@ -972,14 +972,10 @@ struct LoanAwareSourceLauncher {
 
 #[cfg(target_os = "linux")]
 impl crucible_api::ProductionVmCleanupOwner for LoanAwareSourceLauncher {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -1019,7 +1015,7 @@ impl ProductionVmNodeLauncher for LoanAwareSourceLauncher {
         self.inner.replay_candidate()
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         self.inner.finish()
     }
 }

@@ -240,7 +240,7 @@ impl AdmittedFlightOwner {
 
     pub(in crate::packaged_qemu_executor::tests::paging_native) fn finish(
         &mut self,
-    ) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+    ) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         let result = self.guard.borrow_mut().finish();
         self.terminal = result.is_ok();
         result

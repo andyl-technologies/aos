@@ -36,27 +36,31 @@ const CLEANUP_DECLARATIONS: &[(&str, usize)] = &[
 
 // This one shared method includes both body boundaries. A loop, another
 // statement, foreign receiver or success fallback cannot preserve this match.
-const SAME_OWNER_FORWARDER: &str = r#"fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-    ProductionVmNodeLauncher::finish(self).map_err(|error| {
-        crucible::SchedulerError::BoundaryViolation {
-            message: error.to_string(),
-        }
-    })
+const SAME_OWNER_FORWARDER: &str = r#"fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+    ProductionVmNodeLauncher::finish(self)
 }"#;
 
 // This suffix keeps the scanned method name visible when an omission
-// mutation removes its parameters. The expression binds the entire method.
-const FORWARDER_PARAMETERS: &str = "(&mut self) -> Result<(), crucible::SchedulerError>";
+// mutation removes its parameters. Each forwarding owner and its matching
+// launcher finish now share the type; the census includes both signatures.
+const FORWARDER_PARAMETERS: &str =
+    "(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError>";
 const OWNER_IMPLEMENTATION: &str = "impl crucible_api::ProductionVmCleanupOwner for";
 const ONE_FORWARDER: &[(&str, usize)] = &[
     (OWNER_IMPLEMENTATION, 1),
-    (FORWARDER_PARAMETERS, 1),
-    ("type Failure = crucible::SchedulerError;", 1),
+    (FORWARDER_PARAMETERS, 2),
+    (
+        "type Failure = crate::ProductionVmConstructionCleanupError;",
+        1,
+    ),
 ];
 const FOUR_FORWARDERS: &[(&str, usize)] = &[
     (OWNER_IMPLEMENTATION, 4),
-    (FORWARDER_PARAMETERS, 4),
-    ("type Failure = crucible::SchedulerError;", 4),
+    (FORWARDER_PARAMETERS, 8),
+    (
+        "type Failure = crate::ProductionVmConstructionCleanupError;",
+        4,
+    ),
 ];
 
 const FORWARDING_COMPANIONS: &[Companion] = &[
@@ -68,7 +72,7 @@ const FORWARDING_COMPANIONS: &[Companion] = &[
         path: "crates/crucible-daemon/src/vm_lifecycle.rs",
         required: &[
             (
-                "pub trait ProductionVmNodeLauncher: ProductionVmCleanupOwner<Failure = crucible::SchedulerError> {",
+                "pub trait ProductionVmNodeLauncher: ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError> {",
                 1,
             ),
             (
@@ -80,8 +84,80 @@ const FORWARDING_COMPANIONS: &[Companion] = &[
             ),
             (
                 "fn finish(&mut self) -> Result<(), LifecycleApiError>; }",
+                1,
+            ),
+            (
+                "fn finish(&mut self) -> Result<(), ProductionVmConstructionCleanupError>; }",
+                1,
+            ),
+        ],
+    },
+    Companion {
+        path: "crates/crucible-daemon/src/qemu_hot_fork_world_resource/node_target.rs",
+        required: &[
+            (
+                "pub(crate) fn finish_member(&mut self) -> Result<(), QemuWorldMemberCleanupStatus>",
+                1,
+            ),
+            ("state.guard.finish(", 0),
+            (
+                "state.released.insert(self.identity.clone()); self.retirement = WorldMemberRetirement::Returned; Ok(())",
+                1,
+            ),
+            (
+                "retire_unpublished_after_cleanup(registration.target, registration.resources)",
                 2,
             ),
+        ],
+    },
+    Companion {
+        path: "crates/crucible-daemon/src/qemu_hot_fork_reconciliation/linux.rs",
+        required: &[
+            ("target: QemuHotForkWorldNodeTarget<G>,", 2),
+            ("pub(crate) fn into_world_node_adoption(", 1),
+            (
+                "let lease = LinuxQemuHotForkWorldNodeLease { identity: identity.clone(), reconciliation: Some(self), completed, diagnostics_reported: false, live_diagnostics_enabled: diagnostics::live_diagnostics_enabled(), };",
+                1,
+            ),
+        ],
+    },
+    Companion {
+        path: "crates/crucible-daemon/src/qemu_hot_fork_reconciliation/linux/reconciliation.rs",
+        required: &[(
+            "fn release_target(&mut self) -> Result<(), Self::Error> { self.run_directory = None; self.target.finish_member().map_err(Into::into) }",
+            1,
+        )],
+    },
+    Companion {
+        path: "crates/crucible-daemon/src/qemu_hot_fork_reconciliation/launch.rs",
+        required: &[
+            (
+                "LinuxQemuHotForkReconciliationBackend::from_world_launch(",
+                1,
+            ),
+            ("LinuxQemuHotForkReconciliationBackend<G>", 1),
+        ],
+    },
+    Companion {
+        path: "crates/crucible-daemon/src/vm_lifecycle/construction/custody.rs",
+        required: &[
+            (
+                "pub(super) struct MissingStorage { pub(super) first: LifecycleApiError, pub(super) partial: Mutex<Partial>, pub(super) existing: Option<Box<ProductionVmConstructionCustody>>, }",
+                1,
+            ),
+            (
+                "first_guard: crate::QemuAttemptResourceGuardCleanupFailure,",
+                1,
+            ),
+            (
+                "second_guard: crate::QemuAttemptResourceGuardCleanupFailure,",
+                1,
+            ),
+            (
+                "(Err(first), Err(existing)) => Err(first.with_later_failure(existing)),",
+                1,
+            ),
+            ("first.and(existing)", 0),
         ],
     },
 ];
@@ -211,7 +287,10 @@ mod tests {
                         "default cleanup body was classified as a declaration"
                     );
                 }
-                for replacement in ["", "type Failure = crucible::SchedulerError;"] {
+                for replacement in [
+                    "",
+                    "type Failure = crate::ProductionVmConstructionCleanupError;",
+                ] {
                     let changed = code.replacen(
                         "type Failure: std::error::Error + Send + 'static;",
                         replacement,
@@ -226,7 +305,7 @@ mod tests {
                 continue;
             }
             let changed = code.replacen(
-                "type Failure = crucible::SchedulerError;",
+                "type Failure = crate::ProductionVmConstructionCleanupError;",
                 "type Failure = OtherFailure;",
                 1,
             );
@@ -258,14 +337,84 @@ mod tests {
                 contract.target
             );
             let changed = code.replace(
-                "message: error.to_string(),",
-                "message: { unreviewed_effect(); error.to_string() },",
+                "ProductionVmNodeLauncher::finish(self)",
+                "ProductionVmNodeLauncher::finish(self).map_err(|error| { unreviewed_effect(); error })",
             );
             assert_ne!(changed, code);
             assert!(
                 rejects(&changed),
                 "added error-path effect passed: {}",
                 contract.target
+            );
+            let changed = code.replace(
+                "ProductionVmNodeLauncher::finish(self)",
+                "ProductionVmNodeLauncher::finish(self).map_err(|_error| crate::ProductionVmConstructionCleanupError::Pending)",
+            );
+            assert_ne!(changed, code);
+            assert!(rejects(&changed), "typed cleanup leaf erasure passed");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_owner_forwarding_requires_the_actual_member_and_two_body_bounds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let contract = &CONTRACTS[1];
+        let root = crate::workspace_root();
+        let code = crate::scrub_comments_and_strings(&std::fs::read_to_string(
+            root.join("crates")
+                .join(contract.package)
+                .join(format!("{}.rs", contract.target)),
+        )?);
+        let companions = super::super::read_companions(contract)?;
+        let rejects = |evidence: &[String]| {
+            let masked = super::super::mask_contract(contract, &code, evidence);
+            !crate::flaky_escape_failures("unreviewed", "unreviewed", &masked).is_empty()
+        };
+        assert!(!rejects(&companions));
+        for (path, needle, replacement) in [
+            (
+                "node_target.rs",
+                "pub(crate) fn finish_member",
+                "pub(crate) fn missing_member",
+            ),
+            (
+                "node_target.rs",
+                "state.released.insert(self.identity.clone());",
+                "state.guard.finish(); state.released.insert(self.identity.clone());",
+            ),
+            (
+                "linux.rs",
+                "target: QemuHotForkWorldNodeTarget<G>,",
+                "target: G,",
+            ),
+            (
+                "linux/reconciliation.rs",
+                "self.target.finish_member()",
+                "self.target.finish()",
+            ),
+            (
+                "launch.rs",
+                "LinuxQemuHotForkReconciliationBackend::from_world_launch(",
+                "LinuxQemuHotForkReconciliationBackend::from_world_launch(LinuxQemuHotForkReconciliationBackend::from_world_launch(",
+            ),
+            (
+                "custody.rs",
+                "Err(first.with_later_failure(existing))",
+                "first.and(Err(existing))",
+            ),
+        ] {
+            let mut changed = companions.clone();
+            let index = contract
+                .companions
+                .iter()
+                .position(|binding| binding.path.ends_with(path))
+                .unwrap();
+            assert!(changed[index].contains(needle));
+            changed[index] = changed[index].replacen(needle, replacement, 1);
+            assert!(
+                rejects(&changed),
+                "lost actual cleanup ownership restriction: {path}: {needle}"
             );
         }
         Ok(())

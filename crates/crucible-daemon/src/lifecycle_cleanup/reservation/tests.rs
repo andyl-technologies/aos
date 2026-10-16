@@ -21,14 +21,10 @@ struct FileOwner {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for FileOwner {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -62,10 +58,10 @@ impl ProductionVmNodeLauncher for FileOwner {
         Err(refusal("component owns no replay authority"))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         self.attempts.fetch_add(1, Ordering::AcqRel);
         if std::mem::take(&mut self.refuse_once) {
-            return Err(refusal("first file cleanup refusal"));
+            return Err((refusal("first file cleanup refusal")).into());
         }
         Ok(())
     }

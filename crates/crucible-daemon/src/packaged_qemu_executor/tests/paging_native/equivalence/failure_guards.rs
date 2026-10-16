@@ -60,7 +60,7 @@ impl<G: QemuAttemptOperationalBoundary> QemuAttemptOperationalBoundary for Finis
 }
 
 impl<G: QemuAttemptResourceGuard> QemuAttemptResourceGuard for FinishFailingGuard<G> {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         if self
             .failures
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
@@ -68,10 +68,11 @@ impl<G: QemuAttemptResourceGuard> QemuAttemptResourceGuard for FinishFailingGuar
             })
             .is_ok()
         {
-            return Err(QemuVmRealizationError::Executor {
+            return Err((QemuVmRealizationError::Executor {
                 operation: "finish native atomic-world target resources",
                 message: "injected target guard finish failure".into(),
-            });
+            })
+            .into());
         }
         self.inner.finish()
     }

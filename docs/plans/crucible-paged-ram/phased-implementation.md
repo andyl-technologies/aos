@@ -372,9 +372,10 @@ Both 512-MiB workload cases pass. An isolated diagnostic invocation also passes,
 which does not clear the original failed run. The unchanged six ordering/unwind
 cases now run in one dedicated test child. The parent requires successful exit
 and the real outer-fence measurement, so selecting no test cannot pass. The fresh focused
-control, default/private workspace checks and hygiene pass; confirmation in the
-complete parallel storage suite remains pending. In that fresh four-thread run,
-the fixed control passes and the 512-MiB workload is in progress. Packaged target
+control, default/private workspace checks and hygiene pass. The fresh complete
+four-thread storage suite now passes all 686 tests in 2,182.89 seconds, including
+the fixed observer and both 512-MiB workloads. This replaces the pending full-suite
+qualification without erasing the original failed run. Packaged target
 compilation passes for the immutable member-state/promotion cohort, before the
 subsequent test-only controls and World-loan return API. Packaged qualification
 of the latest joined source remains due. These results do not qualify native
@@ -417,9 +418,10 @@ shutdown refusal. A replacement must preserve reachable cleanup custody and
 exclude every work and reuse route once retirement starts. Keeping the lifecycle
 alive until aggregate World return is insufficient: its existing cleanup cell
 holds the containing-body lease, which returns only after actual body
-destruction. The successful construction path currently drops its exact World
-cleanup loan when extracting launcher parts. The repair must move that same
-loan and observer outside the retiring body, use the existing preallocated
+destruction. Successful construction now moves the same World cleanup loan
+from Pending into the concrete launcher, including restoration of the other
+moved parts if that loan is absent. The loan remains inside the lifecycle body;
+retirement must move it and the observer outside that body, use the existing preallocated
 carrier/reservation for destruction, and observe exact World return before
 service discharge. A historical error or cleanup receipt alone cannot establish
 that return. The existing Source lifecycle Box also needs explicit accounting
@@ -427,6 +429,28 @@ for its overlap with the retained carrier; no increased ceiling is assumed.
 Consuming demotion, restore-refusal and descendant-retirement callers must retain
 the actual Source or its existing cleanup handoff across failure. Typed error
 preservation is a prerequisite, not an implementation of these ownership seams.
+
+Guard finish now transports its original realization error and independently
+observed quarantine fact through generation ownership, the launcher, Loop,
+canonical cleanup cell and completed receipt. Local member release uses a finite
+status that cannot perform aggregate host cleanup. If rejected construction owns
+two independent bodies, both cleanup attempts execute in their original order
+and both raw failures remain owned after body destruction. The existing cell,
+reservation, epoch and receipt are reused; no new cleanup allocation, clock or
+resource ceiling is introduced. World aggregate state explicitly distinguishes
+active, returned and retained, so an absent diagnostic cannot imply return.
+Default and private workspace/all-target checks pass for this joined source.
+All five new release-mode cleanup controls pass. The full daemon run is still
+finishing its 512-MiB GC case and has the same 17 failed names as the preceding
+run. The standards suite now has 34 passes and its existing broad classifier
+failure, with 26 findings after the exact publication declaration contract;
+its negative and omission mutations pass. Two mutation targets were repaired:
+the canonical unavailable constructor is selected explicitly, and deleting a
+whole signature preserves its same unreviewed retry marker. No matcher,
+inventory or operational requirement was weakened. Final layout
+and native budget fit remain unqualified. The final Service/Flight diagnostic
+boundary still consumes owning failures after formatting and needs its own
+retained continuation.
 
 World and node returns now verify their exact saved Cleanup, retained family,
 kernel partition and ledger epoch rather than requiring a live preparation

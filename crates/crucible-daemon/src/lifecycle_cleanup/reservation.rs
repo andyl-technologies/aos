@@ -7,7 +7,7 @@ pub(super) struct CleanupReservation {
     index: usize,
     epoch: u64,
     observed: ProductionVmCleanupStage,
-    first_failure: Option<SchedulerError>,
+    first_failure: Option<crate::ProductionVmConstructionCleanupError>,
 }
 
 impl LifecycleCleanupHandle {
@@ -22,7 +22,11 @@ impl LifecycleCleanupHandle {
         &self,
         controls: AuthenticatedNativeWorldControlLease,
     ) -> Result<
-        Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<
+            dyn ProductionVmCleanupReservation<
+                Failure = crate::ProductionVmConstructionCleanupError,
+            >,
+        >,
         (AuthenticatedNativeWorldControlLease, LifecycleApiError),
     > {
         self.reserve_with(controls, |cell, controls| cell.controls = Some(controls))
@@ -33,7 +37,11 @@ impl LifecycleCleanupHandle {
         input: T,
         attach: impl FnOnce(&mut CleanupCell, T),
     ) -> Result<
-        Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<
+            dyn ProductionVmCleanupReservation<
+                Failure = crate::ProductionVmConstructionCleanupError,
+            >,
+        >,
         (T, LifecycleApiError),
     > {
         let queue = match self.queue.upgrade() {
@@ -58,16 +66,24 @@ impl LifecycleCleanupHandle {
 }
 
 impl ProductionVmCleanupReservation for CleanupReservation {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
     fn retain(
         self: Box<Self>,
-        owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+        owner: Box<
+            dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+        >,
     ) -> Result<
-        Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+        Box<dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>>,
         (
-            Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
-            Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+            Box<
+                dyn ProductionVmCleanupReservation<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+            >,
+            Box<
+                dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+            >,
         ),
     > {
         let Some(queue) = self.queue.upgrade() else {
@@ -77,7 +93,12 @@ impl ProductionVmCleanupReservation for CleanupReservation {
             return Err((self, owner));
         };
         self.publish_owner(slot, owner).map(|receipt| {
-            receipt as Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>
+            receipt
+                as Box<
+                    dyn ProductionVmCleanupHandoff<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                    >,
+                >
         })
     }
 }
@@ -126,12 +147,20 @@ impl CleanupReservation {
     fn publish_owner(
         self: Box<Self>,
         slot: &CleanupSlot,
-        owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+        owner: Box<
+            dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+        >,
     ) -> Result<
         Box<Self>,
         (
-            Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
-            Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+            Box<
+                dyn ProductionVmCleanupReservation<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+            >,
+            Box<
+                dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+            >,
         ),
     > {
         if !slot.claim(CleanupPhase::Reserved, CleanupPhase::Publishing) {
@@ -202,7 +231,7 @@ impl CleanupReservation {
 }
 
 impl ProductionVmCleanupHandoff for CleanupReservation {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
     fn retry(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError> {
         if self.observed == ProductionVmCleanupStage::Complete {
@@ -240,17 +269,66 @@ impl ProductionVmCleanupHandoff for CleanupReservation {
         self.observe_slot(slot)
     }
 
-    fn first_failure(&self) -> Option<&SchedulerError> {
+    fn first_failure(&self) -> Option<&crate::ProductionVmConstructionCleanupError> {
         self.first_failure.as_ref()
     }
 
-    fn take_first_failure(&mut self) -> Option<SchedulerError> {
+    fn take_first_failure(&mut self) -> Option<crate::ProductionVmConstructionCleanupError> {
         self.first_failure.take()
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+/// Exercises the canonical cell and receipt without constructing a Main issuer.
+#[cfg(test)]
+pub(crate) fn component_owner_history_for_test(
+    owner: Box<dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>>,
+    observe_retained: impl FnOnce(),
+) -> crate::ProductionVmConstructionCleanupError {
+    let slot = CleanupSlot {
+        phase: AtomicU8::new(CleanupPhase::Queued as u8),
+        body_destroyed_epoch: AtomicU64::new(0),
+        completed_epoch: AtomicU64::new(0),
+        cell: Mutex::new(CleanupCell {
+            epoch: 1,
+            owner: Some(owner),
+            controls: None,
+            first_failure: None,
+            handoff: true,
+        }),
+    };
+    let mut receipt = CleanupReservation {
+        queue: Weak::new(),
+        index: 0,
+        epoch: 1,
+        observed: ProductionVmCleanupStage::BodyRetained,
+        first_failure: None,
+    };
+
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _retained = slot.cell.lock().unwrap();
+        panic!("component control poisons the real cleanup cell");
+    }));
+    assert!(poisoned.is_err());
+    assert!(slot.cell.is_poisoned());
+
+    assert!(retry_slot(&slot, Some(1)).is_err());
+    assert_eq!(
+        receipt.observe_slot(&slot).unwrap(),
+        ProductionVmCleanupStage::BodyRetained
+    );
+    observe_retained();
+    retry_slot(&slot, Some(1)).unwrap();
+    assert_eq!(
+        receipt.observe_slot(&slot).unwrap(),
+        ProductionVmCleanupStage::Complete
+    );
+    assert!(slot.cell.lock().unwrap().owner.is_none());
+    assert_eq!(slot.body_destroyed_epoch.load(Ordering::Acquire), 1);
+    receipt.take_first_failure().unwrap()
+}
 
 #[cfg(test)]
 impl LifecycleCleanupHandle {

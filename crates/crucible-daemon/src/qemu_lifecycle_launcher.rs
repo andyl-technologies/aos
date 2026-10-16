@@ -69,7 +69,11 @@ where
     // existing host Arc. The field itself exposes no permit or process contract.
     fork_target_factory: Option<F>,
     cleanup_reservation: Option<
-        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<
+            dyn crucible_api::ProductionVmCleanupReservation<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+        >,
     >,
     construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
     retained_node: Option<RetainedNodeLaunch>,
@@ -79,6 +83,11 @@ where
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
     image_helpers: Arc<Mutex<ImageHelperCleanupDebt>>,
     terminal_checkpoint: Option<TerminalCheckpointImport>,
+    // Retains the same World through the other launcher fields' destruction.
+    // Holding this loan does not attest physical return.
+    _world_cleanup_loan: Option<
+        crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+    >,
 }
 
 impl<G> QemuAttemptProductionVmNodeLauncher<G>
@@ -116,6 +125,7 @@ where
             run_directories: Arc::new(Mutex::new(BTreeMap::new())),
             image_helpers: Arc::new(Mutex::new(ImageHelperCleanupDebt::default())),
             terminal_checkpoint: None,
+            _world_cleanup_loan: None,
         }
     }
 
@@ -179,11 +189,22 @@ where
             .ok_or_else(|| launcher_message("selected Source control extent overflow"))
     }
 
+    /// Retains the same admitted World's cleanup loan after construction.
+    pub(crate) fn with_world_cleanup_loan(
+        mut self,
+        world: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+    ) -> Self {
+        self._world_cleanup_loan = Some(world);
+        self
+    }
+
     /// Moves the exact claimed World's token into the successful launcher.
     pub(crate) fn with_cleanup_reservation(
         mut self,
         reservation: Box<
-            dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>,
+            dyn crucible_api::ProductionVmCleanupReservation<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
         >,
     ) -> Self {
         self.cleanup_reservation = Some(reservation);
@@ -418,14 +439,10 @@ where
     G: QemuAttemptProcessResourceGuard + Send,
     F: Send,
 {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -441,7 +458,11 @@ where
     fn take_cleanup_reservation(
         &mut self,
     ) -> Option<
-        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<
+            dyn crucible_api::ProductionVmCleanupReservation<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+        >,
     > {
         self.cleanup_reservation.take()
     }
@@ -653,10 +674,10 @@ where
         ))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if self.parent_park_phase.is_some() {
-            return Err(LifecycleApiError::ParentParkHeld);
+            return Err((LifecycleApiError::ParentParkHeld).into());
         }
         if let Some(failed) = self.retained_node.as_mut() {
             failed.finish()?;
@@ -968,7 +989,7 @@ mod tests {
     }
 
     impl crate::QemuAttemptResourceGuard for HelperGuard {
-        fn finish(&mut self) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+        fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
             panic!("an abandoned generation must enter quarantine")
         }
 

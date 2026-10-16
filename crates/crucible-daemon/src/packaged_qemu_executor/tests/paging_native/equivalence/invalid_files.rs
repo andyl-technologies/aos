@@ -88,7 +88,7 @@ impl<G: QemuAttemptOperationalBoundary> QemuAttemptOperationalBoundary
 }
 
 impl<G: QemuAttemptResourceGuard> QemuAttemptResourceGuard for InvalidChildFileGuard<G> {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         self.inner.finish()
     }
 

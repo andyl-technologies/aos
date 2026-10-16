@@ -341,6 +341,27 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
     /// Fat/thin realization, comparison, or mandatory cleanup failed.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
+    /// Guard cleanup preserves its moved leaf and observed custody.
+    #[error(transparent)]
+    ResourceCleanup(#[from] crate::QemuAttemptResourceGuardCleanupFailure),
+    /// Realization refused before guard cleanup independently failed.
+    #[error("realization failed: {first}; guard cleanup failed: {cleanup}")]
+    RealizationCleanup {
+        /// The unchanged initiating realization error.
+        #[source]
+        first: QemuVmRealizationError,
+        /// The independent cleanup cause and reporting policy.
+        cleanup: crate::QemuAttemptResourceGuardCleanupFailure,
+    },
+    /// Comparison failed before independent guard cleanup also refused.
+    #[error("comparison failed: {comparison}; guard cleanup failed: {cleanup}")]
+    ComparisonCleanup {
+        /// The unchanged initiating comparison error.
+        #[source]
+        comparison: QemuVmRealizationError,
+        /// The independently observed cleanup result.
+        cleanup: crate::QemuAttemptResourceGuardCleanupFailure,
+    },
     /// Resource begin retained its original refusal and any rollback history.
     #[error(transparent)]
     ResourceBegin(#[from] crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport),
@@ -854,9 +875,7 @@ where
             operation: "admit production replay-oracle aggregate",
             message: String::from("resource guard does not match the requested aggregate basis"),
         };
-        return Err(PausedCheckpointPromotionPreparationError::Realization(
-            finish_replay_guard(&mut guard).unwrap_or(error),
-        ));
+        return Err(finish_replay_after_failure(&mut guard, error));
     }
 
     let mut matches = BTreeMap::new();
@@ -884,9 +903,7 @@ where
         let (mut realization_store, mut executor) = match session {
             Ok(session) => session.into_parts(),
             Err(error) => {
-                return Err(PausedCheckpointPromotionPreparationError::Realization(
-                    finish_replay_guard(&mut guard).unwrap_or(error),
-                ));
+                return Err(finish_replay_after_failure(&mut guard, error));
             }
         };
         if executor.node() != &node {
@@ -896,7 +913,7 @@ where
             };
             drop(executor);
             drop(realization_store);
-            return Err(finish_replay_guard(&mut guard).unwrap_or(error).into());
+            return Err(finish_replay_after_failure(&mut guard, error));
         }
         let baked = match realization_store
             .baked_genesis(target.source.world(), &installed.configuration().def)
@@ -905,7 +922,7 @@ where
             Err(error) => {
                 drop(executor);
                 drop(realization_store);
-                return Err(finish_replay_guard(&mut guard).unwrap_or(error).into());
+                return Err(finish_replay_after_failure(&mut guard, error));
             }
         };
         let mut session = QemuGuardedReplayOracleSession::new(&mut executor, &mut guard);
@@ -939,13 +956,13 @@ where
                 ));
             }
             (Err(comparison), Ok(())) => {
-                let error = match finish_replay_guard(&mut guard) {
-                    Some(cleanup) => replay_quarantine_with_cause(comparison, cleanup),
-                    None => comparison,
-                };
-                return Err(PausedCheckpointPromotionPreparationError::Realization(
-                    error,
-                ));
+                return Err(match finish_replay_guard(&mut guard) {
+                    Some(cleanup) => PausedCheckpointPromotionPreparationError::ComparisonCleanup {
+                        comparison,
+                        cleanup,
+                    },
+                    None => PausedCheckpointPromotionPreparationError::Realization(comparison),
+                });
             }
             (Ok(check), Ok(())) => check,
         };
@@ -958,14 +975,14 @@ where
                 },
             );
             return match finish_replay_guard(&mut guard) {
-                Some(cleanup) => Err(PausedCheckpointPromotionPreparationError::Realization(
+                Some(cleanup) => Err(PausedCheckpointPromotionPreparationError::ResourceCleanup(
                     cleanup,
                 )),
                 None => Err(error),
             };
         }
         if let Err(error) = factory.target_completed(&mut guard) {
-            return Err(finish_replay_guard(&mut guard).unwrap_or(error).into());
+            return Err(finish_replay_after_failure(&mut guard, error));
         }
     }
     guard.finish()?;
@@ -996,9 +1013,21 @@ where
     ))
 }
 
+fn finish_replay_after_failure(
+    guard: &mut impl QemuAttemptProcessResourceGuard,
+    first: QemuVmRealizationError,
+) -> PausedCheckpointPromotionPreparationError {
+    match finish_replay_guard(guard) {
+        Some(cleanup) => {
+            PausedCheckpointPromotionPreparationError::RealizationCleanup { first, cleanup }
+        }
+        None => PausedCheckpointPromotionPreparationError::Realization(first),
+    }
+}
+
 fn finish_replay_guard(
     guard: &mut impl QemuAttemptProcessResourceGuard,
-) -> Option<QemuVmRealizationError> {
+) -> Option<crate::QemuAttemptResourceGuardCleanupFailure> {
     guard.finish().err()
 }
 

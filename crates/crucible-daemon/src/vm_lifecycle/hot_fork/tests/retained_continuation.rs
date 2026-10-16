@@ -7,14 +7,10 @@ use super::*;
 struct HeldLauncher;
 
 impl crucible_api::ProductionVmCleanupOwner for HeldLauncher {
-    type Failure = crucible::SchedulerError;
+    type Failure = crate::ProductionVmConstructionCleanupError;
 
-    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-        ProductionVmNodeLauncher::finish(self).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: error.to_string(),
-            }
-        })
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
     }
 }
 
@@ -52,7 +48,7 @@ impl ProductionVmNodeLauncher for HeldLauncher {
         panic!("held Drop cannot mint replay authority")
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         panic!("held Drop cannot release the containing owner")
     }
 }

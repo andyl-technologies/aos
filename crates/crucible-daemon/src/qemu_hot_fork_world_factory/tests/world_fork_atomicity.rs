@@ -421,13 +421,24 @@ fn production_aggregate_release_failure_blocks_source_restore() {
         .try_start(&input, &execution_context(&input, 0xc0))
         .err()
         .expect("aggregate release failure must reject restore");
-    let AttemptWorkerFailure::Retryable(QemuProductionHotForkWorldLifecycleFactoryError::Assembly(
-        message,
-    )) = failure
+    let AttemptWorkerFailure::Retryable(
+        QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup { message, cleanup },
+    ) = failure
     else {
         panic!("unexpected aggregate release disposition")
     };
     assert!(message.contains("aggregate target release failed after rollback"));
+    let raw = cleanup
+        .guard_failure()
+        .expect("aggregate release retains its actual leaf");
+    assert!(
+        matches!(raw.error(), QemuVmRealizationError::Executor { message, .. }
+        if message == "scripted target cleanup failure")
+    );
+    assert!(
+        !raw.was_quarantined(),
+        "logical terminal retention is not a new physical transfer"
+    );
     assert!(!factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
     assert!(

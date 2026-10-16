@@ -336,7 +336,7 @@ impl QemuAttemptOperationalBoundary for FakeResourceGuard {
 }
 
 impl QemuAttemptResourceGuard for FakeResourceGuard {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         if !self.terminal {
             self.counters.finishes.fetch_add(1, Ordering::SeqCst);
             self.terminal = true;
@@ -571,7 +571,7 @@ impl QemuAttemptProductionVmLifecycleFactory<FakeResourceFactory> {
         {
             guard
                 .finish()
-                .map_err(QemuAttemptProductionVmLifecycleError::ResourceInstallation)?;
+                .map_err(QemuAttemptProductionVmLifecycleError::ResourceContractCleanup)?;
             return Err(QemuAttemptProductionVmLifecycleError::ResourceContractMismatch);
         }
         let owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
@@ -608,7 +608,10 @@ fn exact_guard_is_transferred_to_lifecycle_launcher_hooks() {
             |mut launcher| {
                 launcher.begin_execution_quantum()?;
                 launcher.check_operational_boundary()?;
-                launcher.finish()
+                launcher
+                    .finish()
+                    .expect("exact guard should finish lifecycle launcher hooks");
+                Ok(())
             },
         )
         .expect("exact guard should back lifecycle launcher hooks");

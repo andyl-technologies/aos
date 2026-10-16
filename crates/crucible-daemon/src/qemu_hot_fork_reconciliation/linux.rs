@@ -17,6 +17,9 @@ pub enum LinuxQemuHotForkReconciliationError {
     /// Target pidfd, watcher, or cgroup cleanup failed.
     #[error(transparent)]
     Target(#[from] QemuVmRealizationError),
+    /// Exact Target-member accounting refused without running aggregate cleanup.
+    #[error(transparent)]
+    TargetCleanup(#[from] crate::QemuWorldMemberCleanupStatus),
     /// An acknowledged source response contradicted the retained exact basis.
     #[error("source QEMU contradicted the retained hot-fork lifecycle basis")]
     BasisMismatch,
@@ -275,7 +278,11 @@ impl QemuNodeExternalProcessControl for LinuxQemuHotForkNodeProcessControl {
     }
 }
 
-/// Concrete source-QEMU, pidfd, cgroup, and private-channel owner.
+/// Concrete source-QEMU, pidfd, member reservation, and private-channel owner.
+///
+/// The target is always the actual World member wrapper. Per-node release can
+/// change only that member's shared accounting; final host cleanup belongs to
+/// the separate aggregate owner.
 pub struct LinuxQemuHotForkReconciliationBackend<G>
 where
     G: crate::QemuAttemptResourceGuard,
@@ -284,7 +291,7 @@ where
     template_configuration: ContentHash,
     template_event_log_offset: EventLogOffset,
     world_assembly: QemuHotForkWorldAssemblyToken,
-    target: G,
+    target: QemuHotForkWorldNodeTarget<G>,
     basis: QemuHotForkChildProcessBasis,
     pending_child_qmp: Option<crucible_qemu::QemuHotForkChildQmpHostEndpoint>,
     scheduler_node: Option<QemuHotForkSchedulerNodeContinuation>,
@@ -341,7 +348,7 @@ where
     pub(super) fn from_world_launch(
         source: LinuxQemuHotForkWorldLaunchSource,
         world_assembly: QemuHotForkWorldAssemblyToken,
-        target: G,
+        target: QemuHotForkWorldNodeTarget<G>,
         launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
         detached_resources: QemuHotForkDetachedChildResources,
         run_directory: crucible_qemu::QemuPreparedRunDirectory,
@@ -702,10 +709,7 @@ where
     }
 }
 
-impl<G>
-    QemuHotForkAttemptReconciliation<
-        LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
-    >
+impl<G> QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>
 where
     G: crate::QemuAttemptResourceGuard + Send + 'static,
 {
@@ -717,7 +721,7 @@ where
     pub(crate) fn into_world_node_adoption(
         mut self,
         identity: ProductionVmNodeGeneration,
-        completed: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+        completed: LinuxQemuHotForkWorldReconciliationSet<G>,
     ) -> Result<ProductionVmHotForkNodeAdoption, LifecycleApiError> {
         if let Err(error) = self.require_phase(
             "adopt assembled hot-fork scheduler node",
@@ -822,9 +826,7 @@ pub(super) fn report_reconciled_child_diagnostics_once<B>(
 }
 
 fn retain_failed_world_adoption<G>(
-    mut reconciliation: QemuHotForkAttemptReconciliation<
-        LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
-    >,
+    mut reconciliation: QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>,
     message: impl Into<String>,
 ) -> Result<ProductionVmHotForkNodeAdoption, LifecycleApiError>
 where

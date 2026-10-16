@@ -17,7 +17,7 @@ use crate::executor_supervisor::SelectedExactCheckpointRoot;
 
 mod resource_begin;
 pub use resource_begin::QemuAttemptResourceGuardBeginReport;
-pub(crate) use resource_begin::QemuAttemptResourceGuardCleanupFailure;
+pub use resource_begin::QemuAttemptResourceGuardCleanupFailure;
 
 /// Read-only operational boundary available to a modeled attempt driver.
 ///
@@ -102,16 +102,18 @@ impl QemuExecutionQuantumCounter {
 /// be able to interrupt a blocked process operation rather than relying only
 /// on caller polling.
 pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
-    /// Releases the installed resource controls after QEMU has been reaped.
+    /// Attempts the same installed controls' cleanup after QEMU has been reaped.
     ///
-    /// This operation must be idempotent. An error may report cleanup
-    /// diagnostics only after the guard has completed its release ladder.
+    /// Successful return is idempotent. A refusal moves its actual cause to
+    /// the caller and independently records any performed quarantine transfer.
+    /// Neither diagnostic history nor a quarantine observation proves return;
+    /// a quarantined guard remains refused on subsequent calls.
     ///
     /// # Errors
-    ///
-    /// Returns [`QemuVmRealizationError`] when cleanup completed with an
-    /// operational diagnostic failure.
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError>;
+    /// Returns the actual cleanup leaf and its existing reporting policy while
+    /// preserving separately observed custody. A repeated terminal observation
+    /// does not repeat host cleanup or manufacture another physical owner.
+    fn finish(&mut self) -> Result<(), QemuAttemptResourceGuardCleanupFailure>;
 
     /// Transfers enforcement to a supervisor-owned quarantine after failed reap.
     ///
@@ -670,7 +672,7 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
         &self,
         controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
     ) -> Result<
-        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crate::ProductionVmConstructionCleanupError>>,
         (
             crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
             QemuVmRealizationError,

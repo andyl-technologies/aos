@@ -209,7 +209,7 @@ where
         };
         let (guard, expected, pending) =
             self.begin_retained_native_world_guard(context, source, config)?;
-        let (guard, storage, factory, reservation, custody) =
+        let (guard, storage, factory, reservation, custody, world) =
             match pending.into_launcher_parts(guard) {
                 Ok(parts) => parts,
                 Err(owner) => {
@@ -248,7 +248,8 @@ where
                 Some(factory),
             )
             .with_cleanup_reservation(reservation)
-            .with_construction_custody(custody),
+            .with_construction_custody(custody)
+            .with_world_cleanup_loan(world),
         );
         let installed = launcher.with_native_guard(|guard| {
             Self::complete_native_world_guard_installation(context, source, config, guard, expected)

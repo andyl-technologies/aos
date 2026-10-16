@@ -107,7 +107,7 @@ pub struct SourceCleanupHistory {
 /// Retains the concrete cleanup refusal without replacing the constructor cause.
 #[derive(Debug)]
 pub(crate) enum SourceCleanupCause {
-    Scheduler(SchedulerError),
+    Cleanup(crate::ProductionVmConstructionCleanupError),
     Native(QemuVmRealizationError),
     Body(crucible_linux_resource::host_services::process_birth::ServiceBirthError),
 }
@@ -115,7 +115,7 @@ pub(crate) enum SourceCleanupCause {
 impl SourceCleanupCause {
     pub(crate) fn as_error(&self) -> &(dyn std::error::Error + 'static) {
         match self {
-            Self::Scheduler(first) => first,
+            Self::Cleanup(first) => first,
             Self::Native(first) => first,
             Self::Body(first) => first,
         }
@@ -255,7 +255,7 @@ pub enum QemuAttemptProductionVmLifecycleError {
     ResourceContractMismatch,
     /// Releasing a mismatched resource guard failed.
     #[error("release mismatched production VM attempt resources: {0}")]
-    ResourceContractCleanup(#[source] QemuVmRealizationError),
+    ResourceContractCleanup(#[source] crate::QemuAttemptResourceGuardCleanupFailure),
     /// The production lifecycle rejected construction under the installed guard.
     #[error("build guarded production VM lifecycle: {0}")]
     Lifecycle(#[source] LifecycleApiError),

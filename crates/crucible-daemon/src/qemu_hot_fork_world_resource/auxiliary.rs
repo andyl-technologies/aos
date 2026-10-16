@@ -262,7 +262,7 @@ where
     let mut registry = state
         .lock()
         .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-    if registry.terminal {
+    if registry.retirement != WorldResourceRetirement::Active {
         return Err(world_resource_error(
             registry
                 .terminal_failure
@@ -357,7 +357,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.auxiliary_lifecycle_active
         {
             return Err(world_resource_error(
@@ -373,7 +373,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.auxiliary_lifecycle_active
         {
             return Err(world_resource_error(
@@ -388,21 +388,24 @@ impl<G> QemuAttemptResourceGuard for QemuHotForkWorldAuxiliaryGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.retirement.already_returned()? {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
+        if self.retirement.already_returned().map_err(|status| {
+            crate::QemuAttemptResourceGuardCleanupFailure::member_status(status).after_quarantine()
+        })? {
             return Ok(());
         }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if state.terminal || !state.auxiliary_lifecycle_active {
-            return Err(world_resource_error(
+        let mut state = self.state.lock().map_err(|_| {
+            QemuWorldMemberCleanupStatus::registry("hot-fork world resource registry is poisoned")
+        })?;
+        if state.retirement != WorldResourceRetirement::Active || !state.auxiliary_lifecycle_active
+        {
+            return Err((QemuWorldMemberCleanupStatus::registry(
                 state
                     .terminal_failure
                     .as_deref()
                     .unwrap_or("hot-fork world auxiliary lifecycle is not active"),
-            ));
+            ))
+            .into());
         }
         state.auxiliary_lifecycle_active = false;
         self.retirement = WorldMemberRetirement::Returned;
@@ -435,7 +438,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.auxiliary_lifecycle_active
         {
             return Err(world_resource_error(
@@ -467,7 +470,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.auxiliary_lifecycle_active
         {
             return Err(world_resource_error(
@@ -488,7 +491,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.auxiliary_lifecycle_active
         {
             return Err(world_resource_error(
@@ -510,7 +513,7 @@ where
             }
         })?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.auxiliary_lifecycle_active
         {
             return Err(
@@ -550,7 +553,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.auxiliary_lifecycle_active
         {
             return Err(world_resource_error(
@@ -566,7 +569,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.auxiliary_lifecycle_active
         {
             return Err(world_resource_error(
@@ -586,7 +589,7 @@ where
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
         if self.retirement != WorldMemberRetirement::Active
-            || state.terminal
+            || state.retirement != WorldResourceRetirement::Active
             || !state.auxiliary_lifecycle_active
         {
             return Err(world_resource_error(
@@ -601,7 +604,7 @@ where
             Ok(mut state) => {
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
-                state.terminal = true;
+                state.retirement = WorldResourceRetirement::Retained;
                 state.terminal_failure.get_or_insert_with(|| {
                     String::from(
                         "hot-fork world auxiliary lifecycle retained an unreaped launch child",
@@ -612,7 +615,7 @@ where
                 let mut state = poisoned.into_inner();
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
-                state.terminal = true;
+                state.retirement = WorldResourceRetirement::Retained;
                 state.terminal_failure.get_or_insert_with(|| {
                     String::from("hot-fork world auxiliary resource registry was poisoned")
                 });
@@ -668,7 +671,7 @@ impl<G> QemuAttemptResourceGuard for QemuHotForkWorldAuxiliaryResourceGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         match self {
             Self::Fresh(guard) => guard.finish(),
             Self::Retained(guard) => guard.finish(),

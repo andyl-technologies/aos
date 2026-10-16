@@ -36,8 +36,7 @@ use crate::{
     QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuFreshAttemptLifecycleOwner,
     QemuFreshStartMaterialization, QemuHotForkAttemptReconciliation, QemuHotForkSourceWorldLease,
-    QemuHotForkWorldAuxiliaryResourceBroker, QemuHotForkWorldNodeTarget,
-    QemuHotForkWorldResourceOwner,
+    QemuHotForkWorldAuxiliaryResourceBroker, QemuHotForkWorldResourceOwner,
 };
 
 mod installation;
@@ -45,9 +44,8 @@ pub(crate) use installation::{
     HotForkInstallationRetirementError, HotForkLifecycleInstallError, RetainedHotForkInstallation,
 };
 
-type ProductionWorldChild<G> = QemuHotForkAttemptReconciliation<
-    LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
->;
+type ProductionWorldChild<G> =
+    QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>;
 
 /// Immutable inputs used to install one complete hot-fork world.
 pub(crate) struct QemuHotForkProductionLifecycleContext<'a> {
@@ -93,7 +91,7 @@ where
     G: QemuAttemptProcessResourceGuard,
 {
     _source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-    _reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    _reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
     _resources: QemuHotForkWorldResourceOwner<G>,
 }
 
@@ -107,7 +105,7 @@ where
     lifecycle: ProductionVmLifecycleLoop,
     source_lease: Option<QemuHotForkSourceWorldLease>,
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-    reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
     resources: QemuHotForkWorldResourceOwner<G>,
     auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
     auxiliary_binding: Option<QemuHotForkWorldAuxiliaryResourceBinding<G>>,
@@ -128,7 +126,7 @@ where
 {
     source_lease: QemuHotForkSourceWorldLease,
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-    reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
     resources: QemuHotForkWorldResourceOwner<G>,
     auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
     auxiliary_binding: Option<QemuHotForkWorldAuxiliaryResourceBinding<G>>,
@@ -274,11 +272,13 @@ where
     pub fn reconcile_execution_disposition(
         &mut self,
         disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         if !self.shutdown_complete {
-            return Err(lifecycle_error(
+            return Err((lifecycle_error(
                 "hot-fork world publication reconciliation preceded lifecycle shutdown",
-            ));
+            ))
+            .into());
         }
         if self.aggregate_released {
             return Ok(AttemptExecutionReconciliationStep::Complete);
@@ -289,11 +289,7 @@ where
         if step == AttemptExecutionReconciliationStep::Progressed {
             return Ok(step);
         }
-        self.resources.finish().map_err(|error| {
-            lifecycle_error(format!(
-                "release hot-fork world aggregate resources after publication: {error}"
-            ))
-        })?;
+        self.resources.finish()?;
         self.auxiliary_binding = None;
         self.aggregate_released = true;
         Ok(AttemptExecutionReconciliationStep::Complete)
@@ -372,13 +368,17 @@ where
     pub fn retire_source_world(
         mut self,
         source: ProductionVmHotForkSourceWorld,
-    ) -> Result<(), LifecycleApiError> {
+    ) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         let mut lifecycle = source
             .recover()
             .map_err(|failure| lifecycle_error(failure.to_string()))?;
-        QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).map_err(|error| {
-            lifecycle_error(format!("shutdown promoted hot-fork source: {error}"))
-        })?;
+        if let Err(error) = QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle) {
+            let first = crate::ProductionVmConstructionCleanupError::Scheduler(error);
+            return Err(match lifecycle.take_cleanup_failure() {
+                Some(cleanup) => first.with_later_failure(cleanup),
+                None => first,
+            });
+        }
         if let Some(broker) = &self.auxiliary_resources {
             self.auxiliary_binding = Some(broker.bind(&self.resources).map_err(|error| {
                 lifecycle_error(format!(
@@ -401,13 +401,12 @@ where
         if !reconciliation_complete {
             self.quarantine();
             let _retained = Box::leak(Box::new((self, lifecycle)));
-            return Err(lifecycle_error(
+            return Err((lifecycle_error(
                 "promoted hot-fork child did not reconcile within the bounded retirement",
-            ));
+            ))
+            .into());
         }
-        self.resources.finish().map_err(|error| {
-            lifecycle_error(format!("release promoted hot-fork resources: {error}"))
-        })?;
+        self.resources.finish()?;
         self.auxiliary_binding = None;
         lifecycle.release_reaped_hot_fork_process_loans()?;
         drop(lifecycle);
@@ -419,7 +418,7 @@ where
         })?;
         match self.ancestor {
             Some(ancestor) => ancestor.retire_source_world(parent),
-            None => parent.retire(),
+            None => parent.retire().map_err(Into::into),
         }
     }
 
@@ -631,9 +630,7 @@ where
 
 impl<G>
     QemuHotForkCompleteWorldAssembly<
-        QemuHotForkAttemptReconciliation<
-            LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
-        >,
+        QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>,
     >
 where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
@@ -861,7 +858,7 @@ where
 fn retain_remaining_install_failure<G>(
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
     mut resources: QemuHotForkWorldResourceOwner<G>,
-    mut reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    mut reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
     children: BTreeMap<NodeId, ProductionWorldChild<G>>,
 ) where
     G: QemuAttemptProcessResourceGuard + Send + 'static,

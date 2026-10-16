@@ -966,18 +966,16 @@ impl ProductionVmLifecycleLoop {
         Ok(())
     }
 
-    pub(super) fn retry_retained_debug_construction(&mut self) -> Result<(), SchedulerError> {
+    pub(super) fn retry_retained_debug_construction(
+        &mut self,
+    ) -> Result<(), ProductionVmConstructionCleanupError> {
         let retained = self.retained_debug_construction.get_mut().map_err(|_| {
             SchedulerError::BoundaryViolation {
                 message: String::from("debug construction custody is poisoned"),
             }
         })?;
         if let Some(failure) = retained.as_ref() {
-            failure
-                .retry_cleanup()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("retire retained debug construction: {error}"),
-                })?;
+            failure.retry_cleanup()?;
         }
         *retained = None;
         Ok(())

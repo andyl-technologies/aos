@@ -9,11 +9,17 @@ use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn assert_retained(result: Result<(), QemuVmRealizationError>) {
+fn assert_retained(result: Result<(), crate::QemuAttemptResourceGuardCleanupFailure>) {
+    let failure = result.expect_err("quarantine must remain retained");
     assert!(matches!(
-        result,
-        Err(QemuVmRealizationError::CleanupRetained { .. })
+        failure.error(),
+        QemuVmRealizationError::CleanupRetained { .. }
     ));
+    assert!(failure.was_quarantined());
+    assert!(
+        !failure.has_raw_cause(),
+        "member status cannot contain an aggregate host leaf"
+    );
 }
 
 #[test]
@@ -223,5 +229,33 @@ fn successful_local_returns_remain_idempotent_after_aggregate_quarantine() -> Te
     assert!(owner.finish().is_err());
     assert_eq!(finishes.load(Ordering::Acquire), 0);
     assert_eq!(quarantines.load(Ordering::Acquire), 1);
+    Ok(())
+}
+
+#[test]
+fn direct_member_release_updates_only_exact_member_and_never_finishes_host() -> TestResult {
+    let finishes = Arc::new(AtomicUsize::new(0));
+    let quarantines = Arc::new(AtomicUsize::new(0));
+    let mut owner =
+        QemuHotForkWorldResourceOwner::new(guard(finishes.clone(), quarantines.clone())?, 2)?;
+    let exact = identity("first", 1)?;
+    let sibling = identity("second", 1)?;
+    let mut target = owner.reserve_node(exact.clone())?;
+    let mut peer = owner.reserve_node(sibling.clone())?;
+
+    target.finish_member()?;
+    target.finish_member()?;
+
+    let state = owner.state.lock().unwrap();
+    assert!(state.released.contains(&exact));
+    assert!(!state.released.contains(&sibling));
+    assert_eq!(state.retirement, WorldResourceRetirement::Active);
+    assert_eq!(finishes.load(Ordering::Acquire), 0);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    drop(state);
+    peer.finish_member()?;
+    owner.finish()?;
+    assert_eq!(finishes.load(Ordering::Acquire), 1);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
     Ok(())
 }

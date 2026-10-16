@@ -17,33 +17,65 @@ pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall<
     ),
     Api {
         owner: crate::ProductionVmConstructionFailure,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
+        handoff: Option<
+            Box<
+                dyn ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+            >,
+        >,
     },
-    Handoff(Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>),
+    Handoff(
+        Box<dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>>,
+    ),
     ResourceBegin {
         owner: SourceConstructionCustodyFailure<
             crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
         >,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
+        handoff: Option<
+            Box<
+                dyn ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+            >,
+        >,
     },
     Begin {
         owner: SourceConstructionCustodyFailure,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
+        handoff: Option<
+            Box<
+                dyn ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+            >,
+        >,
     },
     Storage {
         owner: SourceConstructionCustodyFailure<SourceGenerationStorageRefusal>,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
+        handoff: Option<
+            Box<
+                dyn ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+            >,
+        >,
     },
     Post {
         owner: SourceConstructionCustodyFailure<SourcePostInstallationRefusal>,
-        handoff: Option<Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>>,
+        handoff: Option<
+            Box<
+                dyn ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+            >,
+        >,
     },
     MissingRetirementCarrier {
         lifecycle: ProductionVmLifecycleLoop,
     },
     MissingCallback {
         guard: F::Guard,
-        first_cleanup: Option<QemuVmRealizationError>,
+        first_cleanup: Option<crate::QemuAttemptResourceGuardCleanupFailure>,
     },
 }
 
@@ -94,7 +126,11 @@ where
 
     fn handoff_mut(
         &mut self,
-    ) -> Option<&mut Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>> {
+    ) -> Option<
+        &mut Box<
+            dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>,
+        >,
+    > {
         match self {
             Self::Handoff(receipt) => Some(receipt),
             Self::Api { handoff, .. }
@@ -132,7 +168,7 @@ where
                 first: None,
                 cleanup: handoff
                     .take_first_failure()
-                    .map(SourceCleanupCause::Scheduler),
+                    .map(SourceCleanupCause::Cleanup),
                 cleanup_post: None,
             },
             Self::Api {
@@ -143,7 +179,7 @@ where
                     first: Some(SourceInstallationFirst::Api(first)),
                     cleanup: handoff
                         .take_first_failure()
-                        .map(SourceCleanupCause::Scheduler),
+                        .map(SourceCleanupCause::Cleanup),
                     cleanup_post: None,
                 },
                 Err(owner) => {
@@ -161,7 +197,7 @@ where
                     first: Some(SourceInstallationFirst::ResourceBegin(first)),
                     cleanup: handoff
                         .take_first_failure()
-                        .map(SourceCleanupCause::Scheduler),
+                        .map(SourceCleanupCause::Cleanup),
                     cleanup_post: None,
                 },
                 Err(owner) => {
@@ -179,7 +215,7 @@ where
                     first: Some(SourceInstallationFirst::Native(first)),
                     cleanup: handoff
                         .take_first_failure()
-                        .map(SourceCleanupCause::Scheduler),
+                        .map(SourceCleanupCause::Cleanup),
                     cleanup_post: None,
                 },
                 Err(owner) => {
@@ -197,7 +233,7 @@ where
                     first: Some(SourceInstallationFirst::Storage(first)),
                     cleanup: handoff
                         .take_first_failure()
-                        .map(SourceCleanupCause::Scheduler),
+                        .map(SourceCleanupCause::Cleanup),
                     cleanup_post: None,
                 },
                 Err(owner) => {
@@ -215,7 +251,7 @@ where
                     first: Some(SourceInstallationFirst::Post(first)),
                     cleanup: handoff
                         .take_first_failure()
-                        .map(SourceCleanupCause::Scheduler),
+                        .map(SourceCleanupCause::Cleanup),
                     cleanup_post: None,
                 },
                 Err(owner) => {
@@ -237,7 +273,11 @@ where
                         cleanup: None,
                         cleanup_post: None,
                     },
-                    SourceCleanupHistory::from_native,
+                    |source| SourceCleanupHistory {
+                        first: None,
+                        cleanup: Some(SourceCleanupCause::Cleanup(source.into())),
+                        cleanup_post: None,
+                    },
                 ));
             }
             retained => return Err(retained),
@@ -301,7 +341,9 @@ where
 
     pub(super) fn retain_cleanup_handoff(
         &mut self,
-        handoff: Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+        handoff: Box<
+            dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>,
+        >,
     ) {
         // The exclusive factory borrow spans its checked vacancy and handoff;
         // no callback can install another value in this fixed prepaid slot.
@@ -460,7 +502,11 @@ mod history_tests {
                 message,
                 ..
             })
-            | SourceCleanupCause::Scheduler(SchedulerError::BoundaryViolation { message })
+            | SourceCleanupCause::Cleanup(
+                crate::ProductionVmConstructionCleanupError::Scheduler(
+                    SchedulerError::BoundaryViolation { message },
+                ),
+            )
             | SourceCleanupCause::Body(
                 crucible_linux_resource::host_services::process_birth::ServiceBirthError::Policy(
                     message,
@@ -474,9 +520,11 @@ mod history_tests {
     fn history_keeps_constructor_and_each_typed_cleanup_allocation() {
         // Error transport only: no World, closure or cleanup permission is issued.
         let causes = [
-            SourceCleanupCause::Scheduler(SchedulerError::BoundaryViolation {
-                message: String::from("scheduler cleanup"),
-            }),
+            SourceCleanupCause::Cleanup(crate::ProductionVmConstructionCleanupError::Scheduler(
+                SchedulerError::BoundaryViolation {
+                    message: String::from("scheduler cleanup"),
+                },
+            )),
             SourceCleanupCause::Native(native("native cleanup")),
             SourceCleanupCause::Body(
                 crucible_linux_resource::host_services::process_birth::ServiceBirthError::Policy(
@@ -529,10 +577,12 @@ mod history_tests {
     fn cleanup_only_history_exposes_the_underlying_scheduler_error() {
         let history = SourceCleanupHistory {
             first: None,
-            cleanup: Some(SourceCleanupCause::Scheduler(
-                SchedulerError::BoundaryViolation {
-                    message: String::from("actual scheduler cleanup cause"),
-                },
+            cleanup: Some(SourceCleanupCause::Cleanup(
+                crate::ProductionVmConstructionCleanupError::Scheduler(
+                    SchedulerError::BoundaryViolation {
+                        message: String::from("actual scheduler cleanup cause"),
+                    },
+                ),
             )),
             cleanup_post: None,
         };
@@ -540,10 +590,18 @@ mod history_tests {
         let source = history
             .source()
             .unwrap()
+            .downcast_ref::<crate::ProductionVmConstructionCleanupError>()
+            .unwrap()
+            .source()
+            .unwrap()
             .downcast_ref::<SchedulerError>()
             .unwrap();
         let cleanup = history
             .cleanup_error()
+            .unwrap()
+            .downcast_ref::<crate::ProductionVmConstructionCleanupError>()
+            .unwrap()
+            .source()
             .unwrap()
             .downcast_ref::<SchedulerError>()
             .unwrap();

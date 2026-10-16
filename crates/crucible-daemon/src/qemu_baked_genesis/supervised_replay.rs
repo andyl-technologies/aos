@@ -5,10 +5,7 @@
 //! a newly admitted full-resource Service on the same executor actor.
 
 use super::*;
-use crate::crucible_qemu_session::{
-    QemuAttemptResourceGuardBeginFailure as ReplayBeginFailure,
-    QemuAttemptResourceGuardCleanupFailure as ReplayCleanupFailure,
-};
+use crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure as ReplayBeginFailure;
 use crate::vm_lifecycle::ProductionHostRamRegistrationFactory;
 use crate::{QemuAttemptOperationalBoundary, QemuAttemptResourceGuard};
 use crucible_api::host_operational::ProductionHostRamLaunchShape;
@@ -164,12 +161,12 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptOperationalBoundary
 impl<G: QemuAttemptProcessResourceGuard> QemuAttemptResourceGuard
     for ProductionCheckpointReplayGuard<G>
 {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         if self.finished {
             return Ok(());
         }
         if self.service.is_none() {
-            return Err(replay_contract("replay cleanup authority was quarantined"));
+            return Err((replay_contract("replay cleanup authority was quarantined")).into());
         }
         self.native.finish()?;
         let completed = self
@@ -183,7 +180,7 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptResourceGuard
         }
         self.service = None;
         self.finished = true;
-        completed.map(|_| ())
+        completed.map(|_| ()).map_err(Into::into)
     }
 
     fn quarantine(&mut self) {
@@ -424,7 +421,7 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
                 Err(cleanup) => {
                     native.quarantine();
                     service.retain_after_unknown_cleanup();
-                    ReplayBeginFailure::rollback(error, ReplayCleanupFailure::quarantined(cleanup))
+                    ReplayBeginFailure::rollback(error, cleanup.after_quarantine())
                 }
             });
         }

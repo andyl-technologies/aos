@@ -19,7 +19,11 @@ impl ProductionVmConstructionFailure {
     ) -> Result<
         (
             LifecycleApiError,
-            Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+            Box<
+                dyn crucible_api::ProductionVmCleanupHandoff<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                    >,
+            >,
         ),
         Self,
     > {
@@ -124,7 +128,11 @@ impl ProductionVmConstructionFailure {
         &mut self,
     ) -> Result<
         Option<
-            Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+            Box<
+                dyn crucible_api::ProductionVmCleanupHandoff<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                    >,
+            >,
         >,
         &'static str,
     > {
@@ -161,7 +169,11 @@ impl ProductionVmConstructionCustody {
     pub fn publish_for_cleanup(
         mut self: Box<Self>,
     ) -> Result<
-        Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+        Box<
+            dyn crucible_api::ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                >,
+        >,
         ProductionVmConstructionFailure,
     > {
         if self.reservation.is_none() {

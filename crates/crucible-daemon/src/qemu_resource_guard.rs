@@ -457,7 +457,7 @@ pub trait QemuAttemptHostResourceFactory {
         &self,
         controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
     ) -> Result<
-        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crate::ProductionVmConstructionCleanupError>>,
         (
             crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
             QemuVmRealizationError,
@@ -750,7 +750,7 @@ where
         &self,
         controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
     ) -> Result<
-        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crate::ProductionVmConstructionCleanupError>>,
         (
             crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
             QemuVmRealizationError,
@@ -1766,7 +1766,7 @@ where
         &self,
         controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
     ) -> Result<
-        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crate::ProductionVmConstructionCleanupError>>,
         (
             crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
             QemuVmRealizationError,
@@ -1931,15 +1931,14 @@ where
         match self.retirement {
             ComposedResourceRetirement::Returned => return Ok(()),
             ComposedResourceRetirement::Quarantined => {
-                return Err(QemuAttemptResourceGuardCleanupFailure::quarantined(
-                    QemuVmRealizationError::Canceled {
-                        operation: if self.original_native_registry.is_some() {
-                            "repeat quarantined original native retirement"
-                        } else {
-                            "repeat quarantined attempt host retirement"
-                        },
+                return Err(QemuAttemptResourceGuardCleanupFailure::canceled_status(
+                    if self.original_native_registry.is_some() {
+                        "repeat quarantined original native retirement"
+                    } else {
+                        "repeat quarantined attempt host retirement"
                     },
-                ));
+                )
+                .after_quarantine());
             }
             ComposedResourceRetirement::Active => {}
         }
@@ -1997,18 +1996,13 @@ impl<H> QemuAttemptResourceGuard for ComposedQemuAttemptResourceGuard<H>
 where
     H: QemuAttemptHostResourceOwner,
 {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         let original_registry = self.original_native_registry.is_some();
         self.finish_raw().map_err(|failure| {
-            let error = failure.into_error();
             if original_registry {
-                return error;
-            }
-            // Every raw failure records a quarantined host. Generic retirement
-            // reports that terminal state; Original retirement retains its leaf.
-            QemuVmRealizationError::ReapQuarantined {
-                operation: "release QEMU attempt host resources",
-                message: error.to_string(),
+                failure
+            } else {
+                failure.terminal_category()
             }
         })
     }

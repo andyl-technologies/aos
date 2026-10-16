@@ -320,10 +320,7 @@ impl Drop for LinuxQemuHotForkSourceWorldFailureOwner {
     }
 }
 
-impl<G>
-    QemuHotForkAttemptReconciliation<
-        LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
-    >
+impl<G> QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>
 where
     G: crate::QemuAttemptProcessResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,

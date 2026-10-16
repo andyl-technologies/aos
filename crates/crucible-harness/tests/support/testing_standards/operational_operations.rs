@@ -14,6 +14,8 @@ use super::{
 mod cache;
 #[path = "operational_operations/cleanup_delegation.rs"]
 mod cleanup_delegation;
+#[path = "operational_operations/production_publication.rs"]
+mod production_publication;
 #[path = "operational_operations/refused_publication.rs"]
 mod refused_publication;
 #[path = "operational_operations/worker_custody.rs"]
@@ -647,6 +649,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(cache::CONTRACTS)
         .chain(cleanup_delegation::CONTRACTS)
         .chain(refused_publication::CONTRACTS)
+        .chain(production_publication::CONTRACTS)
         .chain(worker_custody::CONTRACTS)
 }
 
@@ -813,8 +816,24 @@ fn continuation_waits_require_original_posts_and_physical_custody()
                 );
                 continue;
             }
-            let changed =
-                replace_one_obligation(&code, &obligation, " removed_original_obligation() ");
+            // Omitting an entire signature must leave its same retry name
+            // visible; deleting the sole escape cannot test classification.
+            let declaration_marker = contract.identifiers.iter().find_map(|(name, _)| {
+                obligation
+                    .contains(&format!("fn{name}("))
+                    .then(|| format!("fn {name}() {{"))
+            });
+            let replacement = declaration_marker
+                .as_deref()
+                .unwrap_or(" removed_original_obligation() ");
+            let changed = replace_one_obligation(&code, &obligation, replacement);
+            assert_ne!(changed, code, "local omission did not change {requirement}");
+            assert_eq!(
+                mask_contract(contract, &changed, &companions),
+                changed,
+                "missing local obligation still satisfied its contract: {} {requirement}",
+                contract.target
+            );
             assert!(
                 rejects(&changed, &companions),
                 "removed local obligation was masked: {} {requirement}",

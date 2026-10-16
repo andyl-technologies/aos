@@ -445,7 +445,7 @@ impl crate::QemuAttemptOperationalBoundary for UnusedPromotionGuard {
 }
 
 impl crate::QemuAttemptResourceGuard for UnusedPromotionGuard {
-    fn finish(&mut self) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         Ok(())
     }
 

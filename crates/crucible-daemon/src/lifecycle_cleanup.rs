@@ -19,6 +19,8 @@ use crucible_linux_resource::host_services::process_birth::{
 
 mod reservation;
 use reservation::CleanupReservation;
+#[cfg(test)]
+pub(crate) use reservation::component_owner_history_for_test;
 
 /// Owns fixed cleanup storage beneath the actual containing Main pool.
 pub(crate) struct LifecycleCleanupQueue {
@@ -41,9 +43,11 @@ struct CleanupSlot {
 
 struct CleanupCell {
     epoch: u64,
-    owner: Option<Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>>,
+    owner: Option<
+        Box<dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>>,
+    >,
     controls: Option<AuthenticatedNativeWorldControlLease>,
-    first_failure: Option<SchedulerError>,
+    first_failure: Option<crate::ProductionVmConstructionCleanupError>,
     handoff: bool,
 }
 
@@ -208,10 +212,12 @@ fn retry_slot(slot: &CleanupSlot, expected_epoch: Option<u64>) -> Result<(), Lif
             slot.publish(CleanupPhase::DestructionRefused);
             return Err(refusal("poisoned cleanup cell has no retained owner"));
         }
-        cell.first_failure
-            .get_or_insert_with(|| SchedulerError::BoundaryViolation {
+        cell.first_failure.get_or_insert_with(|| {
+            SchedulerError::BoundaryViolation {
                 message: String::from("retained lifecycle cleanup cell was poisoned"),
-            });
+            }
+            .into()
+        });
         slot.cell.clear_poison();
     }
     let Some(owner) = cell.owner.as_mut() else {
@@ -223,12 +229,15 @@ fn retry_slot(slot: &CleanupSlot, expected_epoch: Option<u64>) -> Result<(), Lif
     let error = match attempted {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(error),
-        Err(_) => Some(SchedulerError::BoundaryViolation {
-            message: String::from("retained lifecycle cleanup panicked"),
-        }),
+        Err(_) => Some(
+            SchedulerError::BoundaryViolation {
+                message: String::from("retained lifecycle cleanup panicked"),
+            }
+            .into(),
+        ),
     };
     if let Some(error) = error {
-        cell.first_failure.get_or_insert(error);
+        crate::ProductionVmConstructionCleanupError::retain_first(&mut cell.first_failure, error);
         drop(cell);
         slot.publish(CleanupPhase::Queued);
         return Err(refusal("exact lifecycle cleanup remains retained"));
@@ -251,10 +260,12 @@ fn retry_slot(slot: &CleanupSlot, expected_epoch: Option<u64>) -> Result<(), Lif
         return Err(refusal("cleanup destruction epoch or owner changed"));
     }
     if destroyed.is_err() {
-        cell.first_failure
-            .get_or_insert_with(|| SchedulerError::BoundaryViolation {
+        cell.first_failure.get_or_insert_with(|| {
+            SchedulerError::BoundaryViolation {
                 message: String::from("retained lifecycle destruction panicked"),
-            });
+            }
+            .into()
+        });
         drop(cell);
         slot.publish(CleanupPhase::DestructionRefused);
         return Err(refusal("actual cleanup body destruction is uncertain"));
@@ -278,10 +289,12 @@ fn publish_return(slot: &CleanupSlot, returned: bool) {
 fn close_controls_retaining_failure(cell: &mut CleanupCell) -> Result<(), LifecycleApiError> {
     let returned = close_controls(cell);
     if let Err(cause) = &returned {
-        cell.first_failure
-            .get_or_insert_with(|| SchedulerError::BoundaryViolation {
+        cell.first_failure.get_or_insert_with(|| {
+            SchedulerError::BoundaryViolation {
                 message: cause.to_string(),
-            });
+            }
+            .into()
+        });
     }
     returned
 }

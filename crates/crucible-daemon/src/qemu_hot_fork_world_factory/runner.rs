@@ -81,7 +81,7 @@ pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
         cleanup: SchedulerError,
     },
     /// Durable publication reconciliation failed.
-    Reconciliation(crucible_api::LifecycleApiError),
+    Reconciliation(crate::ProductionVmConstructionCleanupError),
     /// A reconciliation callback arrived without pending authority.
     NoPendingReconciliation,
     /// Complete source-world recovery contradicted lifecycle ownership.

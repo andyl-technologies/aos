@@ -592,7 +592,7 @@ impl QemuAttemptOperationalBoundary for TestProcessGuard {
 
 #[cfg(target_os = "linux")]
 impl QemuAttemptResourceGuard for TestProcessGuard {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         if !self.terminal {
             self.finishes.fetch_add(1, Ordering::SeqCst);
             self.active.fetch_sub(1, Ordering::SeqCst);

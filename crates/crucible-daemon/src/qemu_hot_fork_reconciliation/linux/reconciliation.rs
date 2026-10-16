@@ -1,6 +1,7 @@
 //! Ordered source observation, private-resource release, and target cleanup.
 
 use super::*;
+use crate::QemuAttemptResourceGuard;
 
 impl<G> QemuHotForkReconciliationBackend for LinuxQemuHotForkReconciliationBackend<G>
 where
@@ -127,7 +128,7 @@ where
         // The child's pinned run-directory descriptors go first so the target
         // guard's storage cleanup never races an authority this owner holds.
         self.run_directory = None;
-        self.target.finish().map_err(Into::into)
+        self.target.finish_member().map_err(Into::into)
     }
 
     fn release_source_status(

@@ -571,14 +571,10 @@ mod tests {
     }
 
     impl crucible_api::ProductionVmCleanupOwner for RecordingRejectingLauncher {
-        type Failure = crucible::SchedulerError;
+        type Failure = crate::ProductionVmConstructionCleanupError;
 
-        fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
-            ProductionVmNodeLauncher::finish(self).map_err(|error| {
-                crucible::SchedulerError::BoundaryViolation {
-                    message: error.to_string(),
-                }
-            })
+        fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+            ProductionVmNodeLauncher::finish(self)
         }
     }
 
@@ -640,7 +636,7 @@ mod tests {
             ))
         }
 
-        fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
             Ok(())
         }
     }
