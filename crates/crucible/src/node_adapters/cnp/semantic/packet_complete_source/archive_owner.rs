@@ -1200,4 +1200,3 @@ mod tests {
         assert!(checked_sum([20usize, 20, 20], 59).is_err());
     }
 }
-

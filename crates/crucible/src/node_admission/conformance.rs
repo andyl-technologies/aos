@@ -1368,8 +1368,9 @@ pub use restoration_construction::{
 pub(crate) use restoration_construction::OriginalRestorationSigningConstructionInputs;
 
 pub(crate) use restoration_construction::{
-    OriginalRestorationMappingInputs, OriginalRestorationSigningInputs, OriginalRestorationTransactionClaim,
-    OriginalRestorationTransactionInspection, OriginalRestorationTransactionPhase,
+    OriginalRestorationMappingInputs, OriginalRestorationSigningInputs,
+    OriginalRestorationTransactionClaim, OriginalRestorationTransactionInspection,
+    OriginalRestorationTransactionPhase,
 };
 
 pub(crate) use restoration_construction::OriginalRestorationSigningCollector;

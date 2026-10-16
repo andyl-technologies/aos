@@ -180,8 +180,8 @@ pub(crate) use construction_inputs::OriginalRestorationSigningConstructionInputs
 #[path = "restoration_construction/claim.rs"]
 mod claim;
 pub(crate) use claim::{
-    OriginalRestorationMappingInputs, OriginalRestorationSigningInputs, OriginalRestorationTransactionClaim,
-    OriginalRestorationTransactionPhase,
+    OriginalRestorationMappingInputs, OriginalRestorationSigningInputs,
+    OriginalRestorationTransactionClaim, OriginalRestorationTransactionPhase,
 };
 #[path = "restoration_construction/inspection.rs"]
 mod inspection;
