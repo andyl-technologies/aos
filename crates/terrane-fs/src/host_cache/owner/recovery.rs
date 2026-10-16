@@ -14,7 +14,7 @@ use super::{
     recovery_namespace::SharedNamespaceObservation,
     recovery_state,
     recovery_state_parent::StateParentObservation,
-    retention::{Command, Custody, NativeMetadataOwner},
+    retention::{Command, Custody, NativeMetadataOwner, NativeOwnerExecutor},
 };
 use crate::{
     host_cache::NativeRecoveryInspection,
@@ -174,10 +174,8 @@ impl NativeMetadataOwner {
 /// Refuses every unresolved record/name/candidate, stale native or publisher
 /// custody, failed durability, unknown quota or excessive actual charge. After
 /// the first snapshot attempt, failures retain the owner's hold and fault state.
-pub(super) async fn run(
-    custody: &Arc<Mutex<Custody>>,
-    adopted_inline: &mut Vec<AdoptedInline>,
-) -> io::Result<CompletedRecovery> {
+pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<CompletedRecovery> {
+    let custody = Arc::clone(executor.custody());
     let (session, inspector, shared, state_parent) = {
         let mut owner = custody
             .lock()
@@ -241,19 +239,24 @@ pub(super) async fn run(
     };
     // No embedded lock crosses the RPC. Each actual receipt enters the physical
     // registry before the next fallible operation, including a cancelled reply.
-    adopted_inline
+    executor
+        .inline_registry_mut()
         .try_reserve(claims.len())
         .map_err(io::Error::other)?;
     for claim in claims {
         let body = session.adopt_inline(claim).map_err(io::Error::other)?;
-        adopted_inline.push(Arc::new(body));
+        executor.inline_registry_mut().push(Arc::new(body));
     }
     let inventory = inspector.inspect()?;
     {
         let owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
-        recovery_inline::check(&inventory, owner.preparation.layout(), adopted_inline)?;
+        recovery_inline::check(
+            &inventory,
+            owner.preparation.layout(),
+            executor.inline_registry(),
+        )?;
     }
     session
         .check_recovery_context(&context)
@@ -269,8 +272,12 @@ pub(super) async fn run(
         let claims = recovery_inline::claims(&inventory, owner.preparation.layout())?;
         owner.state.residences = recovery_inline::residences(&claims);
         owner.persist().await?;
-        let allocation =
-            recovery_accounting::observe(&owner, &shared, &state_parent, adopted_inline)?;
+        let allocation = recovery_accounting::observe(
+            &owner,
+            &shared,
+            &state_parent,
+            executor.inline_registry(),
+        )?;
         owner.snapshot_allocated_bytes = owner
             .snapshot
             .as_ref()
@@ -282,7 +289,11 @@ pub(super) async fn run(
         shared.check_current()?;
         state_parent.check_current()?;
         owner.check_current()?;
-        recovery_inline::check(&inventory, owner.preparation.layout(), adopted_inline)?;
+        recovery_inline::check(
+            &inventory,
+            owner.preparation.layout(),
+            executor.inline_registry(),
+        )?;
         let expected = recovery_inline::claims(&inventory, owner.preparation.layout())?;
         recovery_state::check_reconciled(
             &owner.preparation.config,
@@ -315,7 +326,7 @@ pub(super) async fn run(
         return Err(io::Error::other(error));
     }
     Ok(CompletedRecovery {
-        custody: Arc::clone(custody),
+        custody: Arc::clone(&custody),
         session,
         context,
         shared,
@@ -326,7 +337,7 @@ pub(super) async fn run(
         allocation,
         charged_reserved_bytes,
         future_hold_bytes,
-        adopted_inline: adopted_inline.clone(),
+        adopted_inline: executor.inline_registry().to_vec(),
     })
 }
 

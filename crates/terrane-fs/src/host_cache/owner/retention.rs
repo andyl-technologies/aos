@@ -38,7 +38,7 @@ use tokio::sync::oneshot;
 mod executor;
 mod manifest;
 mod recovery_manifest;
-use executor::NativeOwnerExecutor;
+pub(super) use executor::NativeOwnerExecutor;
 pub(crate) use executor::{PublisherResumeTurn, PublisherRunningTurn};
 use manifest::retain;
 pub(crate) use recovery_manifest::{
