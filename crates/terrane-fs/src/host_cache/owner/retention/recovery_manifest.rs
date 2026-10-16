@@ -86,7 +86,7 @@ impl NativeOwnerExecutor {
     /// # Errors
     /// Refuses another worker, a handoff, stale original barrier, absent exact
     /// bootstrap reservation, cold records or missing synchronized state.
-    pub(super) fn live_manifest_recovery(
+    pub(in crate::host_cache::owner) fn live_manifest_recovery(
         &mut self,
         original: PublisherRecoveryContext<HostDomainLocation>,
         bootstrap_id: [u8; 16],
@@ -130,7 +130,9 @@ impl<'executor> LiveManifestRecoveryContext<'executor> {
     /// # Errors
     /// Refuses an in-flight/faulted phase, changed owner/source generation or a
     /// stale original publisher context. It never captures a new barrier.
-    pub(super) fn finish(self) -> io::Result<(PublisherRecoveryContext<HostDomainLocation>, u64)> {
+    pub(in crate::host_cache::owner) fn finish(
+        self,
+    ) -> io::Result<(PublisherRecoveryContext<HostDomainLocation>, u64)> {
         self.check_current()?;
         let generation = self.generation.get();
         Ok((self.original, generation))

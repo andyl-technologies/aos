@@ -18,7 +18,7 @@ use std::{
 };
 
 /// Owns one retained physical queue's native custody on its actual worker thread.
-pub(super) struct NativeOwnerExecutor {
+pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     custody: Arc<Mutex<Custody>>,
     worker: ThreadId,
     running: Option<Arc<PublisherRunningContext>>,
@@ -51,7 +51,7 @@ impl NativeOwnerExecutor {
     }
 
     /// Borrows actual custody for one serialized physical command.
-    pub(super) fn custody(&self) -> &Arc<Mutex<Custody>> {
+    pub(in crate::host_cache::owner) fn custody(&self) -> &Arc<Mutex<Custody>> {
         &self.custody
     }
 
@@ -85,19 +85,23 @@ impl NativeOwnerExecutor {
     }
 
     /// Borrows actual adopted inline bodies retained by the physical owner.
-    pub(super) fn inline_registry(&self) -> &[super::super::recovery_inline::AdoptedInline] {
+    pub(in crate::host_cache::owner) fn inline_registry(
+        &self,
+    ) -> &[super::super::recovery_inline::AdoptedInline] {
         &self.adopted_inline
     }
 
     /// Borrows the physical inline registry for bounded command-owned insertion.
-    pub(super) fn inline_registry_mut(
+    pub(in crate::host_cache::owner) fn inline_registry_mut(
         &mut self,
     ) -> &mut Vec<super::super::recovery_inline::AdoptedInline> {
         &mut self.adopted_inline
     }
 
     /// Borrows the real verified metadata source closure retained by this worker.
-    pub(super) fn manifest_sources(&self) -> &[Arc<crate::host_cache::NativeManifestSource>] {
+    pub(in crate::host_cache::owner) fn manifest_sources(
+        &self,
+    ) -> &[Arc<crate::host_cache::NativeManifestSource>] {
         &self.manifest_sources
     }
 
