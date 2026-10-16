@@ -2769,10 +2769,10 @@ mod cli_campaign_store;
 mod cli_control;
 #[path = "cli/dispatch.rs"]
 mod cli_dispatch;
-#[path = "cli/node.rs"]
-mod cli_node;
 #[path = "cli/exploration.rs"]
 mod cli_exploration;
+#[path = "cli/node.rs"]
+mod cli_node;
 #[path = "cli/planning.rs"]
 mod cli_planning;
 #[path = "cli/replay.rs"]

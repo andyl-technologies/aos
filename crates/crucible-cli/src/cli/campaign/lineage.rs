@@ -115,7 +115,9 @@ impl AuthoredCampaignLineage {
                 ));
             }
             (None, None) => {
-                return Err(usage_error("campaign lineage requires backend_build_identity"));
+                return Err(usage_error(
+                    "campaign lineage requires backend_build_identity",
+                ));
             }
         };
 
@@ -244,9 +246,11 @@ shared-memory = 26
             let output = temporary.path().join(format!("{label}.bin"));
             std::fs::write(&input, text).expect("write lineage input");
 
-            let report = compile_campaign_lineage(&input, &output).expect("compile compatible lineage");
+            let report =
+                compile_campaign_lineage(&input, &output).expect("compile compatible lineage");
             let bytes = std::fs::read(output).expect("read canonical lineage");
-            let lineage = CampaignLineage::from_canonical_bytes(&bytes).expect("decode canonical lineage");
+            let lineage =
+                CampaignLineage::from_canonical_bytes(&bytes).expect("decode canonical lineage");
             assert_eq!(lineage.backend_build_identity(), "qemu-11.1.1-crucible");
             assert_eq!(lineage.protocol_versions().get("control"), Some(&3));
             results.push((report.lineage, bytes));
@@ -261,8 +265,14 @@ shared-memory = 26
         let temporary = tempdir().expect("temporary directory");
         let original = "backend_build_identity = \"qemu-11.1.1-crucible\"";
         for (label, replacement) in [
-            ("conflict", "backend_build_identity = \"native-build-a\"\nqemu_build = \"native-build-b\""),
-            ("reverse-conflict", "qemu_build = \"native-build-b\"\nbackend_build_identity = \"native-build-a\""),
+            (
+                "conflict",
+                "backend_build_identity = \"native-build-a\"\nqemu_build = \"native-build-b\"",
+            ),
+            (
+                "reverse-conflict",
+                "qemu_build = \"native-build-b\"\nbackend_build_identity = \"native-build-a\"",
+            ),
             ("missing", ""),
             ("neutral-empty", "backend_build_identity = \"\""),
             ("legacy-empty", "qemu_build = \"\""),
@@ -272,13 +282,17 @@ shared-memory = 26
             std::fs::write(&input, manifest().replace(original, replacement))
                 .expect("write invalid lineage input");
 
-            let error = compile_campaign_lineage(&input, &output).expect_err("refuse invalid identity");
+            let error =
+                compile_campaign_lineage(&input, &output).expect_err("refuse invalid identity");
 
             if label.contains("conflict") {
-                assert!(error.to_string().contains("conflicts with legacy qemu_build"));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("conflicts with legacy qemu_build")
+                );
             }
             assert!(!output.exists(), "{label} created an output record");
         }
     }
-
 }
