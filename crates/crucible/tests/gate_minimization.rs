@@ -63,8 +63,7 @@ fn gate_minimization_shrinks_schedule_and_rng_decisions_deterministically()
     assert_eq!(accepted.removed_indices.len(), 3);
     assert!(
         accepted
-            .removed_decisions
-            .iter()
+            .removed_decisions(first.original.artifact.schedule())
             .any(|decision| matches!(decision, Decision::RngDraw(_)))
     );
     assert_eq!(
@@ -300,7 +299,7 @@ fn automatic_minimization_selects_and_authenticates_the_latest_interesting_windo
         attempt
             .removed_indices
             .iter()
-            .all(|index| *index >= window.start() && *index < window.end())
+            .all(|index| index >= window.start() && index < window.end())
     }));
 
     Ok(())
@@ -344,7 +343,7 @@ fn automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_br
         attempt
             .removed_indices
             .iter()
-            .all(|index| *index >= window.start())
+            .all(|index| index >= window.start())
     }));
 
     Ok(())

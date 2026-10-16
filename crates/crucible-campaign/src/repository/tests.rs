@@ -482,7 +482,7 @@ impl CampaignRepository {
         );
         let minimization = FindingMinimizationEvidence::new(
             reproduction,
-            3,
+            4,
             b"campaign test minimization policy".to_vec(),
             Vec::new(),
             replayed_state,

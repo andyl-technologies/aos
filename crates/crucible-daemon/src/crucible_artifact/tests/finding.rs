@@ -86,12 +86,12 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
     assert_eq!(minimization.original(), id);
     assert_eq!(
         minimization.policy_schema(),
-        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V3
+        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V4
     );
     assert!(
         minimization
             .policy()
-            .starts_with(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V3)
+            .starts_with(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V4)
     );
     assert_eq!(
         minimization.policy(),

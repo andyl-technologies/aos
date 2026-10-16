@@ -1111,15 +1111,18 @@ oracle.
 
 The implemented deterministic schedule minimizer admits a shortest-first
 lexicographic window, then orders that bounded window with seeded
-content-address tie-breaks. One run considers at most 4,096 candidates and
-admits at most 128 MiB of conservative candidate-copy work, including the kept
-schedule, complementary removed decisions, and removed-index vector. The
-effective candidate count is the lesser of those two compiled bounds. Campaign
-reproduction schema v2 retains the seed plus both compiled bounds as the exact
-policy, every attempted candidate's artifact/schedule/replayed-state identities
-and observed fingerprint, and the final replayed state. Candidate generation
-stops at the policy bound; it does not allocate the complete combinatorial
-candidate space.
+content-address tie-breaks. One run considers at most 4,096 candidates,
+independent of schedule length. Each admitted candidate is held as a compact
+descriptor: the kept schedule prefix plus the few additional kept indexes, the
+kept schedule's content address, and its seeded order key, both streamed from
+the original schedule. A candidate's schedule is materialized only for its own
+replay, one candidate at a time, and its removed decisions are recorded as
+index ranges into the original schedule. Campaign reproduction schema v2
+retains minimization policy v4 (the seed, the 4,096-candidate bound, and any
+automatic interesting window) as the exact policy, every attempted candidate's
+artifact/schedule/replayed-state identities and observed fingerprint, and the
+final replayed state. Candidate generation stops at the policy bound; it does
+not allocate the complete combinatorial candidate space.
 
 - **[GUIDE-19]** Reduction MUST explore when equivalence or independence is
   uncertain. Guidance score similarity is not proof of semantic equivalence.

@@ -554,7 +554,7 @@ fn publish_observed_branch(
     let replayed_state = hash("retained-finding-replayed-state");
     let minimization = FindingMinimizationEvidence::new(
         reproduction,
-        3,
+        4,
         b"campaign continuity minimization policy".to_vec(),
         Vec::new(),
         replayed_state,

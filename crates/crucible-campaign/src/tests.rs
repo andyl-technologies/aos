@@ -2956,11 +2956,11 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
         Some(fingerprint),
         true,
     );
-    let current_policy = b"crucible.finding-minimization-policy.v3\0current-limits".to_vec();
+    let current_policy = b"crucible.finding-minimization-policy.v4\0current-limits".to_vec();
     assert!(matches!(
         FindingMinimizationEvidence::new(
             original_id,
-            2,
+            3,
             current_policy.clone(),
             vec![attempt],
             hash("candidate state"),
@@ -2972,7 +2972,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     assert!(matches!(
         FindingMinimizationEvidence::new(
             original_id,
-            3,
+            4,
             current_policy.clone(),
             vec![attempt],
             hash("different final state"),
@@ -2983,7 +2983,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     ));
     let minimization = FindingMinimizationEvidence::new(
         original_id,
-        3,
+        4,
         current_policy.clone(),
         vec![attempt],
         hash("candidate state"),
@@ -3011,7 +3011,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     let decoded_minimization = decoded
         .minimization()
         .expect("decode current minimization evidence");
-    assert_eq!(decoded_minimization.policy_schema(), 3);
+    assert_eq!(decoded_minimization.policy_schema(), 4);
     assert_eq!(decoded_minimization.policy(), current_policy);
 
     let checkpoint = |name: &[u8]| {

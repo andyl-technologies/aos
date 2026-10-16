@@ -58,9 +58,9 @@ pub use prepared_result::{
 
 use crucible::{
     Configuration, ContentHash, Decision, EngineError, FindingReproductionArtifact,
-    MAX_MINIMIZATION_CANDIDATE_WORK_BYTES, MAX_MINIMIZATION_CANDIDATES, MinimizationConfig,
-    MinimizationRun, NetworkFaultSelectable, ScenarioDefForm, Schedule,
-    SignalFaultCampaignReplayPlan, SignalFaultSelectable, validate_preemption_branch_schedule,
+    MAX_MINIMIZATION_CANDIDATES, MinimizationConfig, MinimizationRun, NetworkFaultSelectable,
+    ScenarioDefForm, Schedule, SignalFaultCampaignReplayPlan, SignalFaultSelectable,
+    validate_preemption_branch_schedule,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
@@ -94,10 +94,12 @@ const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
 type RetainedConfigurationMemoryGuard<'a> =
     dyn FnMut(&Configuration, usize) -> Result<usize, CrucibleArtifactError> + 'a;
-const CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V3: u32 = 3;
-const CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V3: &[u8] = b"crucible.finding-minimization-policy.v3\0";
+// Policy v4 retains the seed, the candidate-count bound, and the automatic
+// window. It dropped v3's candidate-copy byte bound once candidates became
+// compact descriptors, so v3 policies are rejected rather than reinterpreted.
+const CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V4: u32 = 4;
+const CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V4: &[u8] = b"crucible.finding-minimization-policy.v4\0";
 const CRUCIBLE_MINIMIZATION_CANDIDATES: u32 = 4_096;
-const CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES: u64 = 128 * 1024 * 1024;
 /// Maximum unique immutable records retained from both finding replay passes.
 pub const MAX_CRUCIBLE_FINDING_REPLAY_RECORDS: usize = 65_536;
 /// Maximum aggregate canonical bytes retained from both finding replay passes.
@@ -105,9 +107,6 @@ pub const MAX_CRUCIBLE_FINDING_REPLAY_BYTES: usize = 256 * 1024 * 1024;
 /// Maximum oracle results retained in either finding replay pass.
 pub const MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS: usize = MAX_MINIMIZATION_CANDIDATES + 1;
 const _: () = assert!(MAX_MINIMIZATION_CANDIDATES == CRUCIBLE_MINIMIZATION_CANDIDATES as usize);
-const _: () = assert!(
-    MAX_MINIMIZATION_CANDIDATE_WORK_BYTES == CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES as usize
-);
 
 /// Narrow verifier-backed capability for importing Crucible creation objects.
 ///
@@ -1435,7 +1434,7 @@ impl CrucibleCampaignArtifactStore {
             .collect();
         let minimization = FindingMinimizationEvidence::new(
             original,
-            CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V3,
+            CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V4,
             policy,
             attempts,
             CampaignHash::from_bytes(minimized.replay.state.bytes),

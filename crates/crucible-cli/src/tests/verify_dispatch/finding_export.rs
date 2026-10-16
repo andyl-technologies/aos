@@ -54,7 +54,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         let report: serde_json::Value = serde_json::from_str(&report)?;
         let minimization = &report["minimization"];
         assert_eq!(minimization["disposition"], "candidate-accepted");
-        assert_eq!(minimization["retained"]["policy_schema"], 3);
+        assert_eq!(minimization["retained"]["policy_schema"], 4);
         assert_eq!(minimization["retained"]["attempts"][0]["accepted"], true);
         assert!(
             minimization["retained"]["original_schedule_decisions"]
@@ -312,7 +312,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     let replayed_state = CampaignHash::from_bytes(minimized_model_finding.replay.state.bytes);
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"cli v4 deterministic minimizer".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,

@@ -224,7 +224,7 @@ fn forged_assertion_boundary_fails_closed_at_executor_publication() {
     let final_state = CampaignHash::derive("test.assertion", b"final-state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"minimization".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -858,7 +858,7 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
     let final_state = CampaignHash::derive("test-finding", b"authenticated final state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"authenticated minimization".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,

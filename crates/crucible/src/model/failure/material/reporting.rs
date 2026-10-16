@@ -87,7 +87,13 @@ pub(in crate::model) fn failure_signature_preserving_minimization_result_materia
             run.minimization.accepted_attempts()
         ));
         for (attempt_index, attempt) in run.minimization.attempts.iter().enumerate() {
-            push_minimization_attempt_lines(run_index, attempt_index, attempt, &mut lines);
+            push_minimization_attempt_lines(
+                run_index,
+                attempt_index,
+                attempt,
+                run.minimization.original.artifact.schedule(),
+                &mut lines,
+            );
         }
         lines.push(format!(
             "minimization.signature_preserved={}",
@@ -101,6 +107,7 @@ pub(in crate::model) fn push_minimization_attempt_lines(
     run_index: usize,
     attempt_index: usize,
     attempt: &MinimizationAttempt,
+    original_schedule: &Schedule,
     lines: &mut Vec<String>,
 ) {
     let prefix = format!("minimization.{run_index}.attempt.{attempt_index}");
@@ -116,9 +123,9 @@ pub(in crate::model) fn push_minimization_attempt_lines(
     }
     lines.push(format!(
         "{prefix}.removed_decision_count={}",
-        attempt.removed_decisions.len()
+        attempt.removed_decisions(original_schedule).count()
     ));
-    for (decision_index, decision) in attempt.removed_decisions.iter().enumerate() {
+    for (decision_index, decision) in attempt.removed_decisions(original_schedule).enumerate() {
         let mut decision_lines = Vec::new();
         push_decision_lines(decision_index, decision, &mut decision_lines);
         for decision_line in decision_lines {

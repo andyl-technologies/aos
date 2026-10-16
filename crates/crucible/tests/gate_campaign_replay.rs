@@ -510,7 +510,7 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
     let selected_state = CampaignHash::from_bytes(selected_finding.replay.state.bytes);
     let minimization = FindingMinimizationEvidence::new(
         original_reproduction_id,
-        3,
+        4,
         b"portable lexicographic minimization".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,

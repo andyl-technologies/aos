@@ -25,7 +25,7 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
     let final_state = CampaignHash::derive("test-finding", b"minimized final state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"seeded shortest-first; candidates=4096; bytes=134217728".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -77,7 +77,7 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
     .expect("missing reproduction id");
     let invalid_trace = FindingMinimizationEvidence::new(
         missing_original,
-        3,
+        4,
         b"same minimization policy".to_vec(),
         Vec::new(),
         final_state,
@@ -291,7 +291,7 @@ fn exact_retention_rejects_source_snapshot_and_campaign_lineage_substitution() {
     let final_state = CampaignHash::derive("test-finding", b"snapshot-bound final state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"snapshot-bound minimization".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,

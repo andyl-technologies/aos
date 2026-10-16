@@ -531,7 +531,7 @@ fn publish_pending_finding_fixture_with_observation(
     let replayed_state = hash("crucible.test.pending-finding.replayed-state", 0x18);
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"pending finding deterministic minimizer".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,

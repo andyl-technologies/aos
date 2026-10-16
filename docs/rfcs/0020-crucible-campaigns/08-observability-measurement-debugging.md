@@ -634,11 +634,11 @@ its sequence, self-contained artifact identity, schedule identity, replayed
 state, optional observed failure fingerprint, and accepted bit. At most one
 candidate is accepted; it is last and its observed fingerprint equals the
 finding fingerprint, and its replayed state equals the retained final replayed
-state. Crucible policy v1 contains the deterministic seed, the
-4,096-candidate hard bound, and the 128 MiB conservative candidate-copy work
-bound. The adapter reruns the bounded minimization before publication and the
-repository requires the trace's original to be the finding's original
-reproduction. Every noncurrent reproduction body is rejected by ordinary runtime.
+state. Crucible policy v4 contains the deterministic seed, the
+4,096-candidate hard bound, and the automatic interesting window when one is
+selected; earlier policy versions are rejected. The adapter reruns the bounded
+minimization before publication and the repository requires the trace's
+original to be the finding's original reproduction. Every noncurrent reproduction body is rejected by ordinary runtime.
 
 The signature includes property/assertion identity, stable guest or QEMU failure
 class, relevant target/opportunity, and canonical causal evidence. It excludes

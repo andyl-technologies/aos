@@ -829,7 +829,7 @@ mod tests {
         )?;
         let minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             Vec::new(),
             CampaignHash::derive("test", b"finding-candidate-final-state"),
@@ -1014,7 +1014,7 @@ mod tests {
         let final_state = CampaignHash::derive("test", b"signature-evidence-final-state");
         let rejected_minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             vec![FindingMinimizationAttempt::new(
                 0,
@@ -1035,7 +1035,7 @@ mod tests {
         )?;
         let selected_minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             vec![FindingMinimizationAttempt::new(
                 0,
@@ -1077,7 +1077,7 @@ mod tests {
         )?;
         let minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             Vec::new(),
             CampaignHash::derive("test", b"verification-mismatch-final-state"),
@@ -1142,7 +1142,7 @@ mod tests {
         let final_state = CampaignHash::derive("test", b"shrinking-winner-final-state");
         let minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             vec![FindingMinimizationAttempt::new(
                 0,

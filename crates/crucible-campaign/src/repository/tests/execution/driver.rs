@@ -352,7 +352,7 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
     let final_state = CampaignHash::derive("test-finding", b"executor driver final state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"executor-driver-test-policy".to_vec(),
         Vec::new(),
         final_state,

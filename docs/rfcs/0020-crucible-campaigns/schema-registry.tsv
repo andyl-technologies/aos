@@ -245,7 +245,7 @@ crucible.execution.signal-inverse-cdf-table	1	crucible::model::fault_signal::sam
 crucible.execution.signal-spatial-artifact	1	crucible::model::fault_signal::spatial	physical-record	gate:campaign-replay,gate:content-address
 crucible.execution.signal-trace-manifest	2	crucible::model::fault_signal::trace	physical-record	gate:campaign-replay,gate:content-address
 crucible.execution.signal-trace-chunk	2	crucible::model::fault_signal::trace	physical-record	gate:campaign-replay,gate:content-address
-crucible.execution.finding-minimization-policy	3	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-replay
+crucible.execution.finding-minimization-policy	4	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-replay
 crucible.execution.failure-triage-replay-evidence	3	crucible::model::failure::replay_evidence	trace	gate:campaign-replay,gate:content-address
 crucible.failure-triage.cluster-report	1	crucible::model::failure::reporting	cli-output	gate:campaign-replay
 crucible.failure-triage.cluster-report-set	1	crucible::model::failure::reporting	cli-output	gate:campaign-replay

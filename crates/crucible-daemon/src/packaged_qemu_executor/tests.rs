@@ -735,7 +735,7 @@ fn retain_packaged_pending_finding(
         CampaignHash::derive("crucible.test.packaged-pending-finding.state.v1", b"final");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"packaged-pending-finding-policy".to_vec(),
         Vec::new(),
         final_state,

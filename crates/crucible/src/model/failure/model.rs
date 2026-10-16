@@ -179,17 +179,16 @@ impl FindingReproductionArtifact {
 
         let mut attempts = Vec::new();
         let mut minimized = original.clone();
-        let candidates = minimization_candidates(
-            config,
-            original.artifact.id(),
-            original.artifact.schedule(),
-            minimization_candidate_limit(&original.artifact),
-        )?;
+        let original_schedule = original.artifact.schedule();
+        let candidates =
+            minimization_candidates(config, original.artifact.id(), original_schedule)?;
 
-        for (sequence, candidate) in candidates.into_iter().enumerate() {
+        // Candidates are compact descriptors; each schedule is built only for
+        // its own replay and dropped before the next candidate.
+        for (sequence, candidate) in candidates.iter().enumerate() {
             let configuration = Configuration {
                 def: original.artifact.scenario_def(),
-                schedule: candidate.schedule,
+                schedule: candidate.schedule(original_schedule),
             };
             let finding = FindingReproductionArtifact::capture(
                 original.discovery_path,
@@ -201,8 +200,7 @@ impl FindingReproductionArtifact {
             let accepted_candidate = observed_fingerprint == Some(target);
             attempts.push(MinimizationAttempt {
                 sequence: sequence as u64,
-                removed_indices: candidate.removed_indices,
-                removed_decisions: candidate.removed_decisions,
+                removed_indices: candidate.removed_indices(original_schedule),
                 candidate_artifact: finding.artifact.id(),
                 candidate_schedule: finding.artifact.schedule().content_hash(),
                 replayed_state: finding.replay.state,

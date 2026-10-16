@@ -360,10 +360,10 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   pre-failure, last-successful-measurement, post-failure, and additional exact
   checkpoint roles. The daemon authenticates at most 4,096 exact candidates
   and deterministically selects nearest event boundaries with content-address
-  tie-breaking. Crucible minimization is bounded by 4,096 candidates and
-  128 MiB of conservative candidate-copy work; its seed/bounds, dense candidate
-  history, observed fingerprints, accepted result, and final replay state are
-  retained in verifier-backed reproduction schema v2. The repository preflights
+  tie-breaking. Crucible minimization is bounded by 4,096 compact candidate
+  descriptors, each materialized only for its replay; its seed/bound, dense
+  candidate history, observed fingerprints, accepted result, and final replay
+  state are retained in verifier-backed reproduction schema v2. The repository preflights
   original/artifact bases before writes, atomically clusters occurrences and
   role sets, and revalidates the complete contract on import/restart. Paged
   proof-authenticated finding and finding-object queries are implemented. The

@@ -141,7 +141,7 @@ pub(super) fn prepare_minimized_reproduction(
         .collect();
     let minimization = FindingMinimizationEvidence::new(
         original,
-        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V3,
+        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V4,
         encode_crucible_minimization_policy(run.config()),
         attempts,
         CampaignHash::from_bytes(minimized.replay.state.bytes),
@@ -347,11 +347,10 @@ where
 }
 
 pub(super) fn encode_crucible_minimization_policy(config: MinimizationConfig) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V3.len() + 69);
-    bytes.extend_from_slice(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V3);
+    let mut bytes = Vec::with_capacity(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V4.len() + 61);
+    bytes.extend_from_slice(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V4);
     bytes.extend_from_slice(&config.seed.bytes());
     bytes.extend_from_slice(&CRUCIBLE_MINIMIZATION_CANDIDATES.to_be_bytes());
-    bytes.extend_from_slice(&CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES.to_be_bytes());
     match config.interesting_window() {
         Some(window) => {
             bytes.push(1);
