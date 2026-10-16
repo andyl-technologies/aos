@@ -5,7 +5,7 @@
 //! composed real owner, registered publisher and quota helper in its VM fixture.
 
 use super::{
-    files::{read_bounded, same_file, verify_read_hash},
+    files::{invalid, read_bounded, same_file, verify_read_hash},
     verification::bounded_pack,
 };
 use std::{
@@ -27,6 +27,19 @@ use terrane_core::{
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+#[test]
+fn unresolved_verification_failure_preserves_its_typed_source() -> TestResult {
+    let original = io::Error::new(io::ErrorKind::NotFound, "missing actual dependency");
+    let error = invalid(original);
+
+    let source = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<io::Error>())
+        .ok_or("typed verification source was discarded")?;
+    assert_eq!(source.kind(), io::ErrorKind::NotFound);
+    Ok(())
+}
 
 #[test]
 fn positioned_recovery_read_preserves_the_actual_open_description_cursor() -> TestResult {
