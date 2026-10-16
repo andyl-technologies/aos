@@ -2140,6 +2140,16 @@ holds a four-template ceiling across 10,000 pressure admissions, verifies exact
 coldest-source demotion and authenticated fallback roots, and keeps the retained
 set bounded.
 
+T-CAM-6.7 deep template promotion has started with thin-path root retention
+(§05.12): a thin attempt's world at a published next-choice boundary becomes a
+depth-0 root admitted after its durable observation, so a later branch from
+that boundary forks instead of replaying from genesis. The packaged executor
+disables root retention with a diagnostic when `maximum_templates` plus the
+worker count exceeds the host project-ID count. The Envoy flight requires the
+follow-up disruption to run thin and the completion attempt to fork from its
+retained root. Promotion of hot children at their own boundaries and the
+deep-promotion stress remain open.
+
 The supported profile is deterministic TCG with one round-robin vCPU per node,
 the aggregate fingerprint plugin protocol, raw read-only roots, branch-private
 writable overlays, deterministic network links, and first-class block and 9p

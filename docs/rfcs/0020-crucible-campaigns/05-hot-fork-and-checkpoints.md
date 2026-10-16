@@ -841,6 +841,18 @@ promotion is bounded by predicted reuse, prepare cost, memory pressure, depth,
 and retention policy. Evicting any hub leaves its semantic node and exact/thin
 realizations intact.
 
+Promotion currently begins at thin-path roots. A fresh thin attempt that stops
+at a published next-choice boundary, and whose non-destructive final drain
+proves no final events remain, may keep its complete paused world as a depth-0
+root keyed by lineage and that child configuration. Sealing receives the same
+empty final-event list whether or not the world is kept, so retention never
+changes the observation. The root's thin fallback names the published child
+artifact and is persisted before the source becomes reusable. The root is
+admitted only after its observation disposition is durable, fit-or-reject at
+initial hotness, so it never evicts genesis or another retained source. Only
+branches whose parent is that published configuration reuse it. Promoting a
+forked descendant at its own stop boundary remains future work.
+
 - **[HFORK-21]** Every writable mapping in a template capability profile MUST be
   classified as private-COW, replaced in the child, reconstructed in the child,
   or forbidden. `MAP_SHARED` inheritance is never presumed to become COW.
