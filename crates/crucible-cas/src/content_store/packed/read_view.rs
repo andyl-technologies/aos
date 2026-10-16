@@ -1,9 +1,9 @@
 //! Pins one authenticated Packed generation for a bounded RAM inventory walk.
 //!
-//! The caller's Original pays the concrete view, reader and active pack pin.
-//! An ordinary path retains one manifest; a physical service may retain shared
-//! rows while the reader keeps only an inert exact-key/count hint. Every
-//! selected object still passes fresh stamp, coordinate and full EOF checks.
+//! The caller's Original pays the view, reader, active manifest and pack pin.
+//! A physical service can supply authenticated rows, copied into independently
+//! prepaid Original storage. Same-pack reads then use the ordinary manifest
+//! path; every selected object still passes fresh stamp and complete EOF checks.
 
 use super::*;
 use crate::content_store::{batch, checked_reader};
@@ -172,12 +172,9 @@ impl Reader<'_> {
                     entry,
                     self.generation,
                     boundary,
-                )
-                .with_retention_hint(pack.manifest_hint.take());
+                );
                 physical.read_packed_manifest(&mut request)?;
-                let hint = request.retention_hint();
                 pack.manifest = request.finish()?;
-                pack.manifest_hint = hint;
             }
         } else {
             pack.verify(original, id, entry, boundary)?;
@@ -187,8 +184,6 @@ impl Reader<'_> {
 }
 
 struct CachedPack {
-    // Inline in the already-precharged Reader; contains no rows or authority.
-    manifest_hint: Option<super::shared_cache::ManifestHint>,
     file: checked::PackPin,
     id: PackId,
     manifest: Option<Manifest>,
@@ -240,7 +235,6 @@ impl CachedPack {
         checked_reader::check(original, boundary)?;
         let (file, descriptor) = file.into_parts();
         Ok(Self {
-            manifest_hint: None,
             file: checked::PackPin::with_resources(file, pin_credit, descriptor),
             id: entry.pack,
             manifest,

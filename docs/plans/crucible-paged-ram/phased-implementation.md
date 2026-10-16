@@ -77,6 +77,11 @@ Before admitting competing allocations, the service physically reclaims cached
 storage and rechecks the actual accounts. In-flight fills remain charged until
 their bodies close. Every read still authenticates its fresh configuration,
 placement generation, file stamp, selected entry and complete object identity.
+Each reader prepays an independent active manifest copy from its existing
+operation budget before borrowing shared rows. Copying under the cache mutex
+performs no allocation, filesystem work or caller callback. Subsequent reads
+within the same pack use that copy and preserve fresh stamp and entry checks;
+shared-cache eviction can close its own rows without invalidating the reader.
 Small manifests use ordinary operation-owned storage when the cache's index
 and control payload would cost more than their row storage. Ordinary single-tree
 reads retain their existing dispatch; this is not a claim that every page read
@@ -255,27 +260,35 @@ small-object overhead measurements, packed-object corruption, quota failure,
 crash during publication, concurrent GC, and retained source/child/transfer
 leases. An ordinary spill write is not accepted as durable publication.
 
-The current packed read view retains only the most recently used authenticated
+The original packed read view retained only the most recently used authenticated
 manifest. A local 32 MiB, 8192-page diagnostic performed the same 24,575 object
 lookups before and after repacking. Manifest authentication increased from 769
 operations over 18,438,337 encoded bytes to 23,246 operations over 3,878,963,049
-bytes. This measures excess work, not an isolated throughput comparison. A
-bounded retention fix remains required: metadata must be prepaid by the same
-operation, evicted within that allowance, and bound to the authenticated
-placement generation and immutable pack identity. Reuse must preserve inode
-stamp and selected-entry checks, complete object authentication and EOF checks,
-and the initiating operation's failures. A failed reservation cannot be hidden
-by falling back to an uncached read. Performance parity remains unqualified.
+bytes. This measured excess work, not an isolated throughput comparison.
 
-The retention policy must reach the actual inventory, lazy checkpoint reader,
-archive sender and closure-verification constructors through their selected
-physical-quota owner. The current cache candidate misses several of those
-production joins and remains unapplied. Resource qualification must use the
-actual owner topology: ordinary CLI archive transfers borrow exclusive service
-owners and send roots sequentially, retaining one source session. Their Packed
-service's authored metadata bank is distinct from the catalog service's SQLite
-heap partition. Neither a hypothetical concurrency count nor a successful
-component fixture proves that the normal configuration fits unchanged limits.
+The integrated retention path uses the selected physical-quota service's paired
+resident/metadata accounts for shared rows and index storage. The initiating
+operation separately funds its active manifest copy. Both admissions occur
+before the corresponding allocation; cache eviction destroys actual shared
+storage before returning its credit. Reuse binds configuration, placement
+generation, immutable pack identity, inode stamp and selected entry. Every
+object retains complete authentication and EOF checks. Reservation or caller
+failures propagate without falling back to an uncached read.
+
+Inventory, publication readback and canonical archive constructors use this
+path. Ordinary single-tree reads keep their existing dispatch. The 32/512 MiB
+controls exercise bounded traversal, reclamation and resource return, while
+balanced sequential/strided read measurements cover tiny, mixed and dense
+packs. Remaining lazy-checkpoint and closure-verification joins must be checked
+through their actual selected owners; these component controls do not establish
+complete VM performance parity.
+
+Resource qualification must use the actual owner topology: ordinary CLI archive
+transfers borrow exclusive service owners and send roots sequentially, retaining
+one source session. Their Packed service's authored metadata bank is distinct
+from the catalog service's SQLite heap partition. Neither a hypothetical
+concurrency count nor a successful component fixture proves that the normal
+configuration fits unchanged limits.
 
 ## 8 Package G: custom pager and authority lifecycle
 

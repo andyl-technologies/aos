@@ -118,7 +118,7 @@ fn evicting_rows_does_not_close_the_independent_active_pack_pin() {
 }
 
 #[test]
-fn a_shared_hit_still_refuses_changed_pack_bytes_and_the_old_object_at_eof() {
+fn an_active_copy_still_refuses_changed_pack_bytes_and_the_old_object_at_eof() {
     let fixture = Fixture::new();
     let id = fixture.objects[0].0;
     let view = View::begin(&fixture.backend, &fixture.original, &mut || Ok(())).unwrap();
@@ -136,8 +136,8 @@ fn a_shared_hit_still_refuses_changed_pack_bytes_and_the_old_object_at_eof() {
         .unwrap();
     let pack = reader.last_pack.as_ref().unwrap();
     assert!(
-        pack.manifest.is_none(),
-        "a shared row never escapes into the active pin"
+        pack.manifest.is_some(),
+        "the active pin retains an independently Original-paid copy"
     );
     let found = view
         .snapshot
@@ -157,6 +157,18 @@ fn a_shared_hit_still_refuses_changed_pack_bytes_and_the_old_object_at_eof() {
         matches!(reader.lookup(&fixture.backend, &fixture.original, id,
         Some(fixture.quota.as_ref()), &mut || Ok(())), Err(StoreError::Corrupt { id: found }) if found == id)
     );
+    // A fresh Reader has no active copy, so this lookup must borrow the
+    // retained service rows and reject their stale stamp after unlocking.
+    cost::reset();
+    let mut fresh_reader = view
+        .reader(&fixture.backend, &fixture.original, &mut || Ok(()))
+        .unwrap();
+    assert!(
+        matches!(fresh_reader.lookup(&fixture.backend, &fixture.original, id,
+        Some(fixture.quota.as_ref()), &mut || Ok(())), Err(StoreError::Corrupt { id: found }) if found == id)
+    );
+    assert_eq!(cost::snapshot().authenticated_manifests, 0);
+
     assert!(
         matches!(handle.read_all_with_boundary(&fixture.original, 24, &mut || Ok(())),
         Err(StoreError::Corrupt { id: found }) if found == id)
@@ -254,7 +266,7 @@ fn canceled_pending_fill_returns_its_real_credit_and_cannot_strand_the_lane() {
         &mut boundary,
     );
     fixture.quota.read_packed_manifest(&mut retry).unwrap();
-    assert!(retry.finish().unwrap().is_none());
+    assert!(retry.finish().unwrap().is_some());
     assert!(fixture.quota.1.reclaim(u64::MAX).unwrap().unwrap() > 0);
     assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
 }
@@ -420,7 +432,7 @@ fn duplicate_fill_rechecks_the_real_stamp_after_its_publication_lock() {
                     &mut boundary,
                 );
                 fixture.quota.read_packed_manifest(&mut inner)?;
-                assert!(inner.finish()?.is_none());
+                assert!(inner.finish()?.is_some());
             }
             Ok(credit)
         })
@@ -554,246 +566,6 @@ fn a_paid_working_set_survives_without_an_artificial_directory_partition() {
 }
 
 #[test]
-fn a_hinted_hit_rechecks_the_stamp_after_actual_cache_lock_contention() {
-    let fixture = Fixture::new();
-    let id = fixture.objects[0].0;
-    let view = View::begin(&fixture.backend, &fixture.original, &mut || Ok(())).unwrap();
-    let mut reader = view
-        .reader(&fixture.backend, &fixture.original, &mut || Ok(()))
-        .unwrap();
-    drop(
-        reader
-            .lookup(
-                &fixture.backend,
-                &fixture.original,
-                id,
-                Some(fixture.quota.as_ref()),
-                &mut || Ok(()),
-            )
-            .unwrap(),
-    );
-    let pack = reader.last_pack.as_ref().unwrap();
-    let entry = view
-        .snapshot
-        .find(&fixture.backend, id, &fixture.original, &mut || Ok(()))
-        .unwrap()
-        .unwrap();
-    let name = index_io::pack_name(pack.id);
-    let path = fixture
-        .backend
-        .packs
-        .join(std::str::from_utf8(&name).unwrap());
-    let baseline = fixture.quota.0.usage().unwrap();
-    let (held_tx, held_rx) = std::sync::mpsc::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    std::thread::scope(|scope| {
-        let cache = &fixture.quota.1;
-        let holder = scope.spawn(move || {
-            cache.with_locked_state_for_test(|| {
-                held_tx.send(()).unwrap();
-                release_rx
-                    .recv_timeout(std::time::Duration::from_secs(2))
-                    .unwrap();
-            });
-        });
-        held_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap();
-        let mut checks = 0;
-        let mut boundary = || {
-            checks += 1;
-            if checks == 3 {
-                // The first try_lock has refused; mutate during the SAME
-                // request's wait check, before its holder releases the mutex.
-                let writable = fs::OpenOptions::new().write(true).open(&path).unwrap();
-                writable.write_all_at(&[0xee], entry.offset).unwrap();
-                release_tx.send(()).unwrap();
-            }
-            Ok(())
-        };
-        let mut request = super::super::super::shared_cache::PackedManifestRead::new(
-            pack.file.file().unwrap(),
-            &fixture.backend,
-            &fixture.original,
-            id,
-            entry,
-            view.snapshot.digest(),
-            &mut boundary,
-        )
-        .with_retention_hint(pack.manifest_hint);
-        let result = request.retain_in(&fixture.quota.1, |_, _| panic!("a hit needs no admission"));
-        drop(request);
-        let _ = release_tx.send(());
-        holder.join().unwrap();
-        assert!(checks >= 3);
-        assert!(matches!(result, Err(StoreError::Corrupt { id: found }) if found == id));
-    });
-    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
-}
-
-#[test]
-fn a_hinted_miss_still_checks_the_actual_header_count_before_row_allocation() {
-    let fixture = Fixture::new();
-    let id = fixture.objects[0].0;
-    let view = View::begin(&fixture.backend, &fixture.original, &mut || Ok(())).unwrap();
-    let mut reader = view
-        .reader(&fixture.backend, &fixture.original, &mut || Ok(()))
-        .unwrap();
-    drop(
-        reader
-            .lookup(
-                &fixture.backend,
-                &fixture.original,
-                id,
-                Some(fixture.quota.as_ref()),
-                &mut || Ok(()),
-            )
-            .unwrap(),
-    );
-    let pack = reader.last_pack.as_ref().unwrap();
-    let entry = view
-        .snapshot
-        .find(&fixture.backend, id, &fixture.original, &mut || Ok(()))
-        .unwrap()
-        .unwrap();
-    let hint = pack.manifest_hint;
-    assert!(hint.is_some());
-    assert!(fixture.quota.1.reclaim(u64::MAX).unwrap().unwrap() > 0);
-    let baseline = fixture.quota.0.usage().unwrap();
-    let name = index_io::pack_name(pack.id);
-    let path = fixture
-        .backend
-        .packs
-        .join(std::str::from_utf8(&name).unwrap());
-    let writable = fs::OpenOptions::new().write(true).open(path).unwrap();
-    writable
-        .write_all_at(&63_u32.to_be_bytes(), (PACK_MAGIC.len() + 32) as u64)
-        .unwrap();
-    drop(writable);
-    cost::reset();
-    let mut reservations = 0;
-    let mut boundary = || Ok(());
-    let mut request = super::super::super::shared_cache::PackedManifestRead::new(
-        pack.file.file().unwrap(),
-        &fixture.backend,
-        &fixture.original,
-        id,
-        entry,
-        view.snapshot.digest(),
-        &mut boundary,
-    )
-    .with_retention_hint(hint);
-    let error = request
-        .retain_in(&fixture.quota.1, |bytes, check| {
-            check()?;
-            reservations += 1;
-            fixture.quota.0.reserve_with_control(bytes)
-        })
-        .unwrap_err();
-    assert_eq!(
-        reservations, 2,
-        "a matching hint selected the paid miss path"
-    );
-    assert!(matches!(error, StoreError::Corrupt { id: found } if found == id));
-    assert_eq!(cost::snapshot().authenticated_manifests, 0);
-    drop(request);
-    assert_eq!(fixture.quota.1.reclaim(u64::MAX).unwrap(), Some(0));
-    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
-}
-
-#[test]
-fn a_previous_generation_hint_cannot_skip_the_fresh_header_check() {
-    let fixture = Fixture::new();
-    let id = fixture.objects[0].0;
-    let (hint, old_generation) = {
-        let view = View::begin(&fixture.backend, &fixture.original, &mut || Ok(())).unwrap();
-        let mut reader = view
-            .reader(&fixture.backend, &fixture.original, &mut || Ok(()))
-            .unwrap();
-        drop(
-            reader
-                .lookup(
-                    &fixture.backend,
-                    &fixture.original,
-                    id,
-                    Some(fixture.quota.as_ref()),
-                    &mut || Ok(()),
-                )
-                .unwrap(),
-        );
-        (
-            reader.last_pack.as_ref().unwrap().manifest_hint,
-            view.snapshot.digest(),
-        )
-    };
-    assert!(hint.is_some());
-    let bytes = b"a real publication changes the authenticated placement generation".to_vec();
-    let added = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
-    let receipt = fixture
-        .backend
-        .put_many_if_absent_with_boundary(
-            &fixture.original,
-            &[(added, BlobHandle::from_bytes(bytes))],
-            &mut || Ok(()),
-        )
-        .unwrap();
-    drop(receipt.accept_with_boundary(&mut || Ok(())).unwrap());
-
-    let view = View::begin(&fixture.backend, &fixture.original, &mut || Ok(())).unwrap();
-    assert_ne!(view.snapshot.digest(), old_generation);
-    let mut reader = view
-        .reader(&fixture.backend, &fixture.original, &mut || Ok(()))
-        .unwrap();
-    drop(
-        reader
-            .lookup(
-                &fixture.backend,
-                &fixture.original,
-                id,
-                None,
-                &mut || Ok(()),
-            )
-            .unwrap(),
-    );
-    let pack = reader.last_pack.as_ref().unwrap();
-    let entry = view
-        .snapshot
-        .find(&fixture.backend, id, &fixture.original, &mut || Ok(()))
-        .unwrap()
-        .unwrap();
-    let name = index_io::pack_name(pack.id);
-    let path = fixture
-        .backend
-        .packs
-        .join(std::str::from_utf8(&name).unwrap());
-    let writable = fs::OpenOptions::new().write(true).open(path).unwrap();
-    writable
-        .write_all_at(&0_u32.to_be_bytes(), (PACK_MAGIC.len() + 32) as u64)
-        .unwrap();
-    drop(writable);
-    let baseline = fixture.quota.0.usage().unwrap();
-    let mut boundary = || Ok(());
-    let mut request = super::super::super::shared_cache::PackedManifestRead::new(
-        pack.file.file().unwrap(),
-        &fixture.backend,
-        &fixture.original,
-        id,
-        entry,
-        view.snapshot.digest(),
-        &mut boundary,
-    )
-    .with_retention_hint(hint);
-    let error = request
-        .retain_in(&fixture.quota.1, |_, _| {
-            panic!("foreign-generation hints must not reach shared admission")
-        })
-        .unwrap_err();
-    assert!(matches!(error, StoreError::Incompatible));
-    drop(request);
-    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
-}
-
-#[test]
 fn a_miss_authenticates_the_actual_manifest_after_resource_admission() {
     for corrupt in [false, true] {
         let fixture = Fixture::new();
@@ -878,7 +650,7 @@ fn a_miss_authenticates_the_actual_manifest_after_resource_admission() {
             assert_eq!(fixture.quota.1.reclaim(u64::MAX).unwrap(), Some(0));
         } else {
             result.unwrap();
-            assert!(request.finish().unwrap().is_none());
+            assert!(request.finish().unwrap().is_some());
             assert_eq!(cost::snapshot().authenticated_manifests, 1);
         }
         drop(reader);
@@ -916,4 +688,201 @@ fn a_miss_authenticates_the_actual_manifest_after_resource_admission() {
         assert_eq!(fixture.quota.0.usage().unwrap(), initial);
         fixture.original.verify_live().unwrap();
     }
+}
+
+#[test]
+fn an_original_paid_copy_survives_physical_service_row_reclamation() {
+    let fixture = Fixture::new();
+    let initial = fixture.quota.0.usage().unwrap();
+    let view = View::begin(&fixture.backend, &fixture.original, &mut || Ok(())).unwrap();
+    let mut reader = view
+        .reader(&fixture.backend, &fixture.original, &mut || Ok(()))
+        .unwrap();
+    drop(
+        reader
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                fixture.objects[0].0,
+                Some(fixture.quota.as_ref()),
+                &mut || Ok(()),
+            )
+            .unwrap(),
+    );
+    let copied = reader
+        .last_pack
+        .as_ref()
+        .unwrap()
+        .manifest
+        .as_ref()
+        .unwrap();
+    let pointer = copied.entries.as_ptr();
+    let retained = fixture.quota.0.usage().unwrap();
+    let freed = fixture.quota.1.reclaim(u64::MAX).unwrap().unwrap();
+    let active_only = fixture.quota.0.usage().unwrap();
+    assert!(freed > 0);
+    assert_eq!(active_only.0, retained.0);
+    assert_eq!(active_only.1, retained.1 - freed);
+    assert!(
+        active_only.1 > initial.1,
+        "the Original still funds its independent active copy"
+    );
+    assert_eq!(
+        reader
+            .last_pack
+            .as_ref()
+            .unwrap()
+            .manifest
+            .as_ref()
+            .unwrap()
+            .entries
+            .as_ptr(),
+        pointer
+    );
+
+    cost::reset();
+    let handle = reader
+        .lookup(
+            &fixture.backend,
+            &fixture.original,
+            fixture.objects[1].0,
+            Some(fixture.quota.as_ref()),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(
+        &*handle
+            .read_all_with_boundary(&fixture.original, 24, &mut || Ok(()))
+            .unwrap(),
+        &*fixture.objects[1].1.read_all(24).unwrap(),
+    );
+    drop(handle);
+    assert_eq!(
+        cost::snapshot().authenticated_manifests,
+        0,
+        "same-pack reads use the paid copy"
+    );
+    assert_eq!(fixture.quota.1.reclaim(u64::MAX).unwrap(), Some(0));
+    assert_eq!(fixture.quota.0.usage().unwrap(), active_only);
+    drop(reader);
+    drop(view);
+    assert_eq!(fixture.quota.0.usage().unwrap(), initial);
+}
+
+#[test]
+fn copy_admission_observes_the_same_caller_before_any_shared_debit() {
+    let fixture = Fixture::new();
+    let id = fixture.objects[0].0;
+    let view = View::begin(&fixture.backend, &fixture.original, &mut || Ok(())).unwrap();
+    let mut reader = view
+        .reader(&fixture.backend, &fixture.original, &mut || Ok(()))
+        .unwrap();
+    drop(
+        reader
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                id,
+                None,
+                &mut || Ok(()),
+            )
+            .unwrap(),
+    );
+    let pack = reader.last_pack.as_ref().unwrap();
+    let entry = view
+        .snapshot
+        .find(&fixture.backend, id, &fixture.original, &mut || Ok(()))
+        .unwrap()
+        .unwrap();
+    let baseline = fixture.quota.0.usage().unwrap();
+    let mut boundary = || {
+        if fixture.quota.0.usage()?.1 > baseline.1 {
+            Err(StoreError::Unauthorized)
+        } else {
+            Ok(())
+        }
+    };
+    let mut request = super::super::super::shared_cache::PackedManifestRead::new(
+        pack.file.file().unwrap(),
+        &fixture.backend,
+        &fixture.original,
+        id,
+        entry,
+        view.snapshot.digest(),
+        &mut boundary,
+    );
+    let error = request
+        .retain_in(&fixture.quota.1, |_, _| {
+            panic!("a refused Original copy cannot request shared credit")
+        })
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Unauthorized));
+    drop(request);
+    assert_eq!(fixture.quota.1.reclaim(u64::MAX).unwrap(), Some(0));
+    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
+}
+
+#[test]
+fn a_copy_miss_rechecks_the_paid_count_after_actual_service_grants() {
+    let fixture = Fixture::new();
+    let id = fixture.objects[0].0;
+    let view = View::begin(&fixture.backend, &fixture.original, &mut || Ok(())).unwrap();
+    let mut reader = view
+        .reader(&fixture.backend, &fixture.original, &mut || Ok(()))
+        .unwrap();
+    drop(
+        reader
+            .lookup(
+                &fixture.backend,
+                &fixture.original,
+                id,
+                None,
+                &mut || Ok(()),
+            )
+            .unwrap(),
+    );
+    let pack = reader.last_pack.as_ref().unwrap();
+    let entry = view
+        .snapshot
+        .find(&fixture.backend, id, &fixture.original, &mut || Ok(()))
+        .unwrap()
+        .unwrap();
+    let name = index_io::pack_name(pack.id);
+    let path = fixture
+        .backend
+        .packs
+        .join(std::str::from_utf8(&name).unwrap());
+    let baseline = fixture.quota.0.usage().unwrap();
+    cost::reset();
+    let mut reservations = 0;
+    let mut boundary = || Ok(());
+    let mut request = super::super::super::shared_cache::PackedManifestRead::new(
+        pack.file.file().unwrap(),
+        &fixture.backend,
+        &fixture.original,
+        id,
+        entry,
+        view.snapshot.digest(),
+        &mut boundary,
+    );
+    let error = request
+        .retain_in(&fixture.quota.1, |bytes, check| {
+            check()?;
+            let credit = fixture.quota.0.reserve_with_control(bytes)?;
+            reservations += 1;
+            if reservations == 2 {
+                let writable = fs::OpenOptions::new().write(true).open(&path).unwrap();
+                writable
+                    .write_all_at(&63_u32.to_be_bytes(), (PACK_MAGIC.len() + 32) as u64)
+                    .unwrap();
+            }
+            Ok(credit)
+        })
+        .unwrap_err();
+    assert_eq!(reservations, 2);
+    assert!(matches!(error, StoreError::Corrupt { id: found } if found == id));
+    assert_eq!(cost::snapshot().authenticated_manifests, 0);
+    drop(request);
+    assert_eq!(fixture.quota.1.reclaim(u64::MAX).unwrap(), Some(0));
+    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
 }

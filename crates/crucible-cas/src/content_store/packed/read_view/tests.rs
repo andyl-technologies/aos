@@ -39,6 +39,10 @@ impl StorePhysicalQuotaGuard for Quota {
     }
 
     fn reserve_resources(&self, fds: u64, bytes: u64) -> Result<ResourceLoan, StoreError> {
+        assert!(
+            self.1.reclaim(0)?.is_some(),
+            "Original admission and copy allocation occur outside the cache mutex"
+        );
         self.0.reserve(fds, bytes)
     }
 }

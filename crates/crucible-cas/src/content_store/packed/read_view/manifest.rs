@@ -20,6 +20,47 @@ pub(in crate::content_store::packed) struct Manifest {
     _credit: Option<DecodeScratch>,
 }
 
+/// Owns a preallocated active copy before borrowing any service rows.
+pub(in crate::content_store::packed) struct ManifestCopy {
+    entries: Vec<PackManifestEntry>,
+    selection: Option<(PackId, FileStamp)>,
+    original: DecodeBudget,
+    // The row allocation closes before its Original credit returns.
+    credit: DecodeScratch,
+}
+
+impl ManifestCopy {
+    pub(in crate::content_store::packed) fn copy_from(
+        &mut self,
+        source: &Manifest,
+        selected: ContentId,
+    ) -> Result<(), StoreError> {
+        if self.selection.is_some() || !self.entries.is_empty() {
+            return Err(StoreError::Incompatible);
+        }
+        if source.entries.len() != self.entries.capacity() {
+            return Err(StoreError::Corrupt { id: selected });
+        }
+        // PackManifestEntry contains only closed scalar fields. Exact capacity
+        // was allocated before locking: this copy neither allocates nor calls
+        // an Original, provider, filesystem or caller boundary.
+        self.entries.extend_from_slice(&source.entries);
+        self.selection = Some((source.id, source.stamp));
+        Ok(())
+    }
+
+    pub(in crate::content_store::packed) fn finish(self) -> Result<Manifest, StoreError> {
+        let (id, stamp) = self.selection.ok_or(StoreError::Incompatible)?;
+        Ok(Manifest {
+            entries: self.entries,
+            id,
+            stamp,
+            original: Some(self.original),
+            _credit: Some(self.credit),
+        })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::content_store::packed) struct FileStamp {
     device: u64,
@@ -83,11 +124,7 @@ impl Manifest {
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
         count: usize,
     ) -> Result<Self, StoreError> {
-        let bytes = count
-            .checked_mul(std::mem::size_of::<PackManifestEntry>())
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(StoreError::Quota)?;
+        let bytes = Self::owned_bytes(count)?;
         let credit = original
             .reserve_scratch_bytes(bytes)
             .map_err(|error| batch::admission_under(original, error))?;
@@ -95,6 +132,40 @@ impl Manifest {
         manifest.original = Some(original.clone());
         manifest._credit = Some(credit);
         Ok(manifest)
+    }
+
+    pub(in crate::content_store::packed) fn prepare_copy(
+        original: &DecodeBudget,
+        count: usize,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<ManifestCopy, StoreError> {
+        checked_reader::check(original, boundary)?;
+        let credit = original
+            .reserve_scratch_bytes(Self::owned_bytes(count)?)
+            .map_err(|error| batch::admission_under(original, error))?;
+        checked_reader::check(original, boundary)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(count)
+            .map_err(|error| batch::allocation_under(original, error))?;
+        if entries.capacity() != count {
+            return Err(StoreError::Quota);
+        }
+        checked_reader::check(original, boundary)?;
+        Ok(ManifestCopy {
+            entries,
+            selection: None,
+            original: original.clone(),
+            credit,
+        })
+    }
+
+    fn owned_bytes(count: usize) -> Result<u64, StoreError> {
+        count
+            .checked_mul(std::mem::size_of::<PackManifestEntry>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(StoreError::Quota)
     }
 
     pub(in crate::content_store::packed) fn row_count(
