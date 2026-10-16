@@ -316,7 +316,8 @@ fn manifest_identity_remains_distinct_from_all_verified_plaintext_hashes() {
     let mut reordered = bytes[40..].to_vec();
     reordered.extend_from_slice(&bytes[..40]);
     assert!(claim.verify_reader(&mut reordered.as_slice()).is_err());
-    assert!(claim.verify_reader(&mut bytes[..69].as_ref()).is_err());
+    let mut truncated = &bytes[..69];
+    assert!(claim.verify_reader(&mut truncated).is_err());
 }
 
 #[test]
