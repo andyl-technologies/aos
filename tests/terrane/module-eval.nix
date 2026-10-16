@@ -146,6 +146,28 @@
   ];
   extraAssertions = [
     {
+      name = "content-and-pin-state-groups-separated";
+      pass =
+        enabled.aos.users.groups.terrane-content.gid
+        == 845
+        && enabled.aos.users.groups.terrane-cache.gid == 844
+        && (service "publish").SupplementaryGroups == ["terrane-content"]
+        && enabled.aos.users.users.terrane-publish.extraGroups == ["terrane-content"]
+        && builtins.all (role: (service role).SupplementaryGroups == ["terrane-cache" "terrane-content"]) ["serve" "gc"]
+        && (service "realize").SupplementaryGroups == [];
+    }
+    {
+      name = "publisher-exact-retirement-write-paths";
+      pass = (service "publish").ReadWritePaths == map (path: "/var/lib/terrane/${path}") ["sealed" "staging" "pending-delete" "state/publication" "chunks" "objects" "quarantine"];
+    }
+    {
+      name = "body-and-pin-state-directory-groups";
+      pass =
+        builtins.all (name: lib.hasInfix "d /var/lib/terrane/${name} 2770 terrane terrane-content" enabled.environment.etc."tmpfiles.d/terrane.conf".text) ["chunks" "objects" "quarantine"]
+        && lib.hasInfix "d /var/lib/terrane/state/cache 2770 terrane terrane-cache" enabled.environment.etc."tmpfiles.d/terrane.conf".text;
+    }
+
+    {
       name = "module-metadata-excluded";
       pass = !(lib.hasInfix "_module" file) && !(lib.hasInfix "_module" domainFile);
     }

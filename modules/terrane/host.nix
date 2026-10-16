@@ -65,12 +65,16 @@
     if role == "serve"
     then "terrane"
     else "terrane-${role}";
+  # The publisher can retire cache bodies but cannot modify pins or quotas.
+  groupsFor = role:
+    lib.optional (role == "serve" || role == "gc") "terrane-cache"
+    ++ lib.optional (role == "serve" || role == "gc" || role == "publish") "terrane-content";
   roots = [cfg.hostTier.path] ++ lib.mapAttrsToList (_: domain: domain.path) cfg.hostTier.domains;
   overlaps = a: b: a == b || lib.hasPrefix "${a}/" b || lib.hasPrefix "${b}/" a;
   uniqueRoots = builtins.all (a: builtins.all (b: a == b || !overlaps a b) roots) roots && builtins.length (lib.unique roots) == builtins.length roots;
   writable = role:
     if role == "publish"
-    then builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication"]) roots
+    then builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
     else if role == "serve" || role == "gc"
     then builtins.concatMap (root: ["${root}/state/cache" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
     else [];
@@ -117,7 +121,7 @@
       ExecStart = "${cfg.package}/bin/terrane --config /etc/terrane/terrane.toml --role ${role}";
       User = userFor role;
       Group = userFor role;
-      SupplementaryGroups = lib.optional (role == "serve" || role == "gc") "terrane-cache";
+      SupplementaryGroups = groupsFor role;
       DynamicUser = false;
       Slice =
         if role == "serve"
@@ -216,6 +220,7 @@ in {
           uid = identities.${role};
           group = userFor role;
           description = "Terrane ${role} role";
+          extraGroups = groupsFor role;
         };
       })
       roleNames);
@@ -225,7 +230,10 @@ in {
           value.gid = identities.${role};
         })
         roleNames)
-      // {terrane-cache.gid = 844;};
+      // {
+        terrane-cache.gid = 844;
+        terrane-content.gid = 845;
+      };
     # The root stays root-owned: cache identities cannot rename publisher roots.
     # Publisher-private directories are intentionally not readable by path by
     # other roles; verified read-only descriptors cross the process boundary.
@@ -233,12 +241,13 @@ in {
       ''
         d ${root} 0755 root root - -
         d ${root}/state 0755 root root - -
+        d ${root}/state/cache 2770 terrane terrane-cache - -
         d ${root}/state/publication 0700 terrane-publish terrane-publish - -
         d ${root}/sealed 0700 terrane-publish terrane-publish - -
         d ${root}/staging 0700 terrane-publish terrane-publish - -
         d ${root}/pending-delete 0700 terrane-publish terrane-publish - -
       ''
-      + lib.concatMapStrings (name: "d ${root}/${name} 2770 terrane terrane-cache - -\n") ["state/cache" "chunks" "objects" "quarantine"])
+      + lib.concatMapStrings (name: "d ${root}/${name} 2770 terrane terrane-content - -\n") ["chunks" "objects" "quarantine"])
     roots;
     systemd.slices.aos-control = {description = "AOS control services";};
     systemd.slices.aos-view-services = {description = "AOS filesystem view services outside consumer freezer domains";};
