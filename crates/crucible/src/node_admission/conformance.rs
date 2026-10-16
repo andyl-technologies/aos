@@ -18,8 +18,8 @@ mod extensions;
 mod fresh_restore_host;
 mod host_startup;
 mod native_startup;
-mod runtime_construction;
 mod report_startup;
+mod runtime_construction;
 pub use host_startup::{
     CompleteOriginalNativeHostStartupAdmission, OriginalNativeHostStartupMemberScope,
     OriginalNativeHostStartupPolicy, OriginalNativeHostStartupScope,
@@ -1318,5 +1318,7 @@ pub(crate) use runtime_construction::original_runtime_construction_failure_reaso
 
 #[path = "conformance/restoration_construction.rs"]
 mod restoration_construction;
-pub use restoration_construction::{OriginalRestorationConstructionInputs,
-    OriginalRestorationNodeConstructionData, OriginalRestorationNodeInputs};
+pub use restoration_construction::{
+    OriginalRestorationConstructionInputs, OriginalRestorationNodeConstructionData,
+    OriginalRestorationNodeInputs,
+};

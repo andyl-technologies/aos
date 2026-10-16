@@ -130,18 +130,24 @@ impl PacketEndpoint<DeadlineStream> {
         let boot = canonical_ack_boot.as_ref().ok_or_else(refused)?;
         let context = service.with_original_endpoint_roots(boot, policy);
         context.authenticate_original(connection, uploads)?;
-        let invocation = boot.try_borrow()
+        let invocation = boot
+            .try_borrow()
             .map_err(|_| ProviderError::Conflict("invocation Observe boot borrowed"))?
             .requires_invocation_codec_data()?;
         let invocation_counter_scratch_bytes = if invocation {
             let additional = original_invocation_capture_report_additional_scratch_data();
             startup.authenticate_compiled_headers(
                 connection,
-                checked_sum(&[std::mem::size_of::<NativeEndpointCaptureStateData<'static>>(), additional])?,
+                checked_sum(&[
+                    std::mem::size_of::<NativeEndpointCaptureStateData<'static>>(),
+                    additional,
+                ])?,
                 super::capture_allocation::original_capture_report_owner_layout_data(),
             )?;
             additional
-        } else { 0 };
+        } else {
+            0
+        };
 
         let complete = complete.as_mut().ok_or_else(refused)?;
         complete.authenticate_live_capture_quote(native)?;
@@ -552,7 +558,6 @@ pub(crate) fn original_capture_report_quote_layout_data() -> usize {
         crate::reference_packet::service::native_snapshot::native_owned13_snapshot_schema_counter_scratch_data(),
     ].into_iter().try_fold(0usize, usize::checked_add).unwrap_or(usize::MAX)
 }
-
 
 /// Names only the new original-purpose writer views before the selected quote.
 pub(crate) fn original_invocation_capture_report_additional_scratch_data() -> usize {

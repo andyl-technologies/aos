@@ -41,10 +41,11 @@ pub(super) fn authenticate_edition_data(
         Some("crucible.complete-scene.installation/1") if !object.contains_key("mechanism") => {
             Ok(())
         }
-        Some("crucible.complete-scene.installation/2" | "crucible.complete-scene.installation/3")
-            if object
-                .get("mechanism")
-                .is_some_and(serde_json::Value::is_object) =>
+        Some(
+            "crucible.complete-scene.installation/2" | "crucible.complete-scene.installation/3",
+        ) if object
+            .get("mechanism")
+            .is_some_and(serde_json::Value::is_object) =>
         {
             Ok(())
         }
@@ -58,7 +59,10 @@ pub(super) fn authenticate_selection_data(
 ) -> Result<(), QualificationError> {
     match (schema, selected) {
         ("crucible.complete-scene.installation/1", None) => Ok(()),
-        ("crucible.complete-scene.installation/2" | "crucible.complete-scene.installation/3", Some(selected)) => selected.authenticate(),
+        (
+            "crucible.complete-scene.installation/2" | "crucible.complete-scene.installation/3",
+            Some(selected),
+        ) => selected.authenticate(),
         _ => Err(refused()),
     }
 }
@@ -77,9 +81,15 @@ pub(super) fn authenticate_snapshot_declaration_data(
     content: &[Content],
 ) -> Result<(), QualificationError> {
     const SNAPSHOT: &str = "source-owned.packet-native-continuation/14";
-    if matches!(schema, "crucible.complete-scene.installation/1" | "crucible.complete-scene.installation/2") {
+    if matches!(
+        schema,
+        "crucible.complete-scene.installation/1" | "crucible.complete-scene.installation/2"
+    ) {
         if rosters.iter().any(|(provider, binding)| {
-            provider.iter().chain(binding.iter()).any(|one| one.id.as_str() == SNAPSHOT)
+            provider
+                .iter()
+                .chain(binding.iter())
+                .any(|one| one.id.as_str() == SNAPSHOT)
         }) {
             return Err(refused());
         }
@@ -102,7 +112,9 @@ pub(super) fn authenticate_snapshot_declaration_data(
         authenticate_snapshot_roster_data(provider, &expected)?;
         authenticate_snapshot_roster_data(binding, &expected)?;
     }
-    let mut matching = content.iter().filter(|row| row.reference == expected.definition);
+    let mut matching = content
+        .iter()
+        .filter(|row| row.reference == expected.definition);
     let row = matching.next().ok_or_else(refused)?;
     if matching.next().is_some() || row.bytes.as_slice() != body.as_slice() {
         return Err(refused());
@@ -157,7 +169,6 @@ impl CompleteMechanism {
 #[cfg(test)]
 mod tests;
 
-
 #[cfg(test)]
 mod invocation_declaration_tests {
     use super::*;
@@ -165,7 +176,12 @@ mod invocation_declaration_tests {
         native_owned14_snapshot_contract, native_owned14_snapshot_schema,
     };
 
-    fn check(schema: &str, provider: &[SchemaRef], binding: &[SchemaRef], content: &[Content]) -> bool {
+    fn check(
+        schema: &str,
+        provider: &[SchemaRef],
+        binding: &[SchemaRef],
+        content: &[Content],
+    ) -> bool {
         authenticate_snapshot_declaration_data(schema, [(provider, binding); 3], content).is_ok()
     }
 
@@ -173,36 +189,97 @@ mod invocation_declaration_tests {
     fn explicit_edition_requires_both_exact_rosters_and_original_content() {
         let expected = native_owned14_snapshot_schema().unwrap();
         let body = native_owned14_snapshot_contract().unwrap();
-        let content = [Content { reference: expected.definition.clone(), bytes: Bytes::new(body.clone()) }];
+        let content = [Content {
+            reference: expected.definition.clone(),
+            bytes: Bytes::new(body.clone()),
+        }];
         let formats = [expected.clone()];
 
-        assert!(check("crucible.complete-scene.installation/3", &formats, &formats, &content));
+        assert!(check(
+            "crucible.complete-scene.installation/3",
+            &formats,
+            &formats,
+            &content
+        ));
         for member in 0..3 {
             let mut rosters = [(&formats[..], &formats[..]); 3];
             rosters[member] = (&[], &formats);
-            assert!(authenticate_snapshot_declaration_data("crucible.complete-scene.installation/3", rosters, &content).is_err());
+            assert!(
+                authenticate_snapshot_declaration_data(
+                    "crucible.complete-scene.installation/3",
+                    rosters,
+                    &content
+                )
+                .is_err()
+            );
         }
         for missing in [true, false] {
-            let (provider, binding) = if missing { (&[][..], &formats[..]) } else { (&formats[..], &[][..]) };
-            assert!(!check("crucible.complete-scene.installation/3", provider, binding, &content));
+            let (provider, binding) = if missing {
+                (&[][..], &formats[..])
+            } else {
+                (&formats[..], &[][..])
+            };
+            assert!(!check(
+                "crucible.complete-scene.installation/3",
+                provider,
+                binding,
+                &content
+            ));
         }
-        assert!(!check("crucible.complete-scene.installation/3", &formats, &formats, &[]));
-        let changed = [Content { reference: expected.definition.clone(), bytes: Bytes::new(b"changed".to_vec()) }];
-        assert!(!check("crucible.complete-scene.installation/3", &formats, &formats, &changed));
+        assert!(!check(
+            "crucible.complete-scene.installation/3",
+            &formats,
+            &formats,
+            &[]
+        ));
+        let changed = [Content {
+            reference: expected.definition.clone(),
+            bytes: Bytes::new(b"changed".to_vec()),
+        }];
+        assert!(!check(
+            "crucible.complete-scene.installation/3",
+            &formats,
+            &formats,
+            &changed
+        ));
         let duplicate = [expected.clone(), expected.clone()];
-        assert!(!check("crucible.complete-scene.installation/3", &duplicate, &formats, &content));
-        assert!(!check("crucible.complete-scene.installation/3", &formats, &duplicate, &content));
+        assert!(!check(
+            "crucible.complete-scene.installation/3",
+            &duplicate,
+            &formats,
+            &content
+        ));
+        assert!(!check(
+            "crucible.complete-scene.installation/3",
+            &formats,
+            &duplicate,
+            &content
+        ));
         let duplicate_content = [
-            Content { reference: expected.definition.clone(), bytes: Bytes::new(body.clone()) },
-            Content { reference: expected.definition.clone(), bytes: Bytes::new(body) },
+            Content {
+                reference: expected.definition.clone(),
+                bytes: Bytes::new(body.clone()),
+            },
+            Content {
+                reference: expected.definition.clone(),
+                bytes: Bytes::new(body),
+            },
         ];
-        assert!(!check("crucible.complete-scene.installation/3", &formats, &formats, &duplicate_content));
+        assert!(!check(
+            "crucible.complete-scene.installation/3",
+            &formats,
+            &formats,
+            &duplicate_content
+        ));
     }
 
     #[test]
     fn every_full_schema_axis_refuses_independently_in_either_roster() {
         let expected = native_owned14_snapshot_schema().unwrap();
-        let content = [Content { reference: expected.definition.clone(), bytes: Bytes::new(native_owned14_snapshot_contract().unwrap()) }];
+        let content = [Content {
+            reference: expected.definition.clone(),
+            bytes: Bytes::new(native_owned14_snapshot_contract().unwrap()),
+        }];
         for axis in 0..8 {
             let mut changed = expected.clone();
             match axis {
@@ -213,37 +290,61 @@ mod invocation_declaration_tests {
                 4 => changed.definition.hash.algorithm = "foreign".into(),
                 5 => changed.definition.hash.domain = "foreign".into(),
                 6 => changed.definition.hash.digest = "0".repeat(64),
-                7 => { changed.extensions.insert("unexpected".into(), serde_json::Value::Null); }
+                7 => {
+                    changed
+                        .extensions
+                        .insert("unexpected".into(), serde_json::Value::Null);
+                }
                 _ => unreachable!(),
             }
 
-            assert!(!check("crucible.complete-scene.installation/3", std::slice::from_ref(&changed), std::slice::from_ref(&expected), &content));
-            assert!(!check("crucible.complete-scene.installation/3", std::slice::from_ref(&expected), std::slice::from_ref(&changed), &content));
+            assert!(!check(
+                "crucible.complete-scene.installation/3",
+                std::slice::from_ref(&changed),
+                std::slice::from_ref(&expected),
+                &content
+            ));
+            assert!(!check(
+                "crucible.complete-scene.installation/3",
+                std::slice::from_ref(&expected),
+                std::slice::from_ref(&changed),
+                &content
+            ));
         }
     }
 
     #[test]
     fn old_editions_remain_unselected_and_new_edition_cannot_choose_a_purpose() {
         let expected = native_owned14_snapshot_schema().unwrap();
-        for schema in ["crucible.complete-scene.installation/1", "crucible.complete-scene.installation/2"] {
+        for schema in [
+            "crucible.complete-scene.installation/1",
+            "crucible.complete-scene.installation/2",
+        ] {
             assert!(check(schema, &[], &[], &[]));
             assert!(!check(schema, std::slice::from_ref(&expected), &[], &[]));
             assert!(!check(schema, &[], std::slice::from_ref(&expected), &[]));
         }
         let tuple = serde_json::json!({"complete_restore":"SourceSignedTransfer12", "restore_input_emitter":"CanonicalSdkRestoreInputs12", "fresh_restore_allocation":"completed_admit13"});
         let selected: CompleteMechanism = serde_json::from_value(tuple.clone()).unwrap();
-        assert!(authenticate_selection_data("crucible.complete-scene.installation/3", Some(selected)).is_ok());
-        assert!(authenticate_selection_data("crucible.complete-scene.installation/3", None).is_err());
+        assert!(
+            authenticate_selection_data("crucible.complete-scene.installation/3", Some(selected))
+                .is_ok()
+        );
+        assert!(
+            authenticate_selection_data("crucible.complete-scene.installation/3", None).is_err()
+        );
         let mut weaker = tuple.clone();
         weaker["complete_restore"] = serde_json::json!("SourceSignedOwned11");
         let weaker: CompleteMechanism = serde_json::from_value(weaker).unwrap();
-        assert!(authenticate_selection_data("crucible.complete-scene.installation/3", Some(weaker)).is_err());
+        assert!(
+            authenticate_selection_data("crucible.complete-scene.installation/3", Some(weaker))
+                .is_err()
+        );
 
         let mut purpose = tuple;
         purpose["purpose"] = serde_json::json!("OriginalExecution");
         assert!(serde_json::from_value::<CompleteMechanism>(purpose).is_err());
     }
-
 
     #[test]
     fn actual_installer_refuses_edition_three_missing_full_definition_before_namespace() {

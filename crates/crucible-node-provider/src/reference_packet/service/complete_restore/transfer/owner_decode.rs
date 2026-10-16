@@ -12,8 +12,8 @@ use std::mem::{align_of, size_of};
 mod selected_construction;
 pub use selected_construction::{
     PacketCompleteRestoreSelectedOwnerInputs,
-    complete_restore_selected_owner_construction_storage_data,
     complete_restore_selected_owner_construction_counter_scratch_data,
+    complete_restore_selected_owner_construction_storage_data,
 };
 
 /// Reports named requested-layout terms for the complete owner-state projector.

@@ -49,7 +49,9 @@ pub trait SimulationNode {
     /// # Errors
     /// Refuses foreign creators, missing originals or checked layout overflow.
     #[doc(hidden)]
-    fn original_restoration_construction_scratch_data(&self) -> Result<Option<usize>, RuntimeError> {
+    fn original_restoration_construction_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
         Ok(None)
     }
 
@@ -67,7 +69,8 @@ pub trait SimulationNode {
     fn original_restoration_construction_data(
         &self,
         _inputs: &crate::node_admission::OriginalRestorationNodeInputs<'_>,
-    ) -> Result<Option<crate::node_admission::OriginalRestorationNodeConstructionData>, RuntimeError> {
+    ) -> Result<Option<crate::node_admission::OriginalRestorationNodeConstructionData>, RuntimeError>
+    {
         Ok(None)
     }
 

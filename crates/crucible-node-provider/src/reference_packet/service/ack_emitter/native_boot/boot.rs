@@ -14,13 +14,14 @@ mod owned11;
 
 #[path = "restore.rs"]
 mod restore;
-pub use restore::{PacketNativeRestoreCommitConstructionInputs,
-    PacketNativeRestoreCommitConstructionData,
-    original_native_restore_commit_construction_counter_scratch_data,
-    original_native_restore_commit_construction_storage_data};
 pub(crate) use restore::{
     NativeRestoredControlEvidence, OriginalCompleteRestoreCommit, VerifiedCompleteRestoration,
     VerifiedCompleteRestorationHeld,
+};
+pub use restore::{
+    PacketNativeRestoreCommitConstructionData, PacketNativeRestoreCommitConstructionInputs,
+    original_native_restore_commit_construction_counter_scratch_data,
+    original_native_restore_commit_construction_storage_data,
 };
 #[path = "restore_prepare.rs"]
 mod restore_prepare;

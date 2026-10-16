@@ -244,13 +244,18 @@ impl PacketCompleteSettledJournal {
             } else if key.schema.id.as_str() == "source-owned.packet-native-continuation/14" {
                 if self.backend_implementation.media_type
                     != "application/vnd.source-owned.packet-complete-archive-backend.v17+json"
-                    || key.schema != super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15.schema()?
+                    || key.schema
+                        != super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15
+                            .schema()?
                 {
                     return Err(refused("complete invocation backend schema differs"));
                 }
                 serde_json::to_value(Self::backend_registry_identity_view_for_class_data(
-                    installed, key, super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15,
-                )).map_err(unknown)?
+                    installed,
+                    key,
+                    super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15,
+                ))
+                .map_err(unknown)?
             } else {
                 Self::backend_registry_identity_data(installed, key)
             }
@@ -676,34 +681,67 @@ mod selected_invocation_backend_tests {
     use super::*;
     use crate::node_adapters::cnp::semantic::packet_complete_source::{
         archive_owner::CompleteNativeSnapshotClass,
-        tests::{coordinator,installation},
+        tests::{coordinator, installation},
     };
 
     #[test]
     fn invocation_backend_names_full15_and_keeps_selected14_backend_distinct()
     -> Result<(), OperationFailure> {
         let installed = coordinator();
-        let installation = installation(&installed,0);
+        let installation = installation(&installed, 0);
         let implementation = &installation.provider.implementation;
         let mut key = NativeStateKey {
-            implementation:implementation.implementation_id.clone(),
-            profile:Id::new("source-owned.packet-complete-original-lineage/5").map_err(unknown)?,
-            schema:CompleteNativeSnapshotClass::StartupCapture14.schema()?,
+            implementation: implementation.implementation_id.clone(),
+            profile: Id::new("source-owned.packet-complete-original-lineage/5").map_err(unknown)?,
+            schema: CompleteNativeSnapshotClass::StartupCapture14.schema()?,
         };
-        let startup = serde_json::to_value(PacketCompleteSettledJournal::backend_registry_identity_view_for_class_data(
-            implementation,&key,CompleteNativeSnapshotClass::StartupCapture14)).map_err(unknown)?;
+        let startup = serde_json::to_value(
+            PacketCompleteSettledJournal::backend_registry_identity_view_for_class_data(
+                implementation,
+                &key,
+                CompleteNativeSnapshotClass::StartupCapture14,
+            ),
+        )
+        .map_err(unknown)?;
         key.schema = CompleteNativeSnapshotClass::InvocationCapture15.schema()?;
-        let invocation = serde_json::to_value(PacketCompleteSettledJournal::backend_registry_identity_view_for_class_data(
-            implementation,&key,CompleteNativeSnapshotClass::InvocationCapture15)).map_err(unknown)?;
+        let invocation = serde_json::to_value(
+            PacketCompleteSettledJournal::backend_registry_identity_view_for_class_data(
+                implementation,
+                &key,
+                CompleteNativeSnapshotClass::InvocationCapture15,
+            ),
+        )
+        .map_err(unknown)?;
 
-        assert_eq!(startup["schema"],"source-owned.packet-complete-archive-backend-before/16");
-        assert_eq!(startup["native_snapshot_class"],"source-owned.packet-native-continuation/13");
-        assert_eq!(invocation["schema"],"source-owned.packet-complete-archive-backend-before/17");
-        assert_eq!(invocation["native_snapshot_class"],"source-owned.packet-native-continuation/14");
-        assert_eq!(invocation["native_key"],serde_json::to_value(&key).map_err(unknown)?);
-        assert_eq!(invocation["native_connection_class"],"source-private.native-connection-complete-invocation/15");
-        assert_eq!(invocation["native_service_class"],"source-private.native-service/15");
-        assert_ne!(startup,invocation);
+        assert_eq!(
+            startup["schema"],
+            "source-owned.packet-complete-archive-backend-before/16"
+        );
+        assert_eq!(
+            startup["native_snapshot_class"],
+            "source-owned.packet-native-continuation/13"
+        );
+        assert_eq!(
+            invocation["schema"],
+            "source-owned.packet-complete-archive-backend-before/17"
+        );
+        assert_eq!(
+            invocation["native_snapshot_class"],
+            "source-owned.packet-native-continuation/14"
+        );
+        assert_eq!(
+            invocation["native_key"],
+            serde_json::to_value(&key).map_err(unknown)?
+        );
+        assert_eq!(
+            invocation["native_connection_class"],
+            "source-private.native-connection-complete-invocation/15"
+        );
+        assert_eq!(
+            invocation["native_service_class"],
+            "source-private.native-service/15"
+        );
+        assert_ne!(startup, invocation);
         Ok(())
     }
 }

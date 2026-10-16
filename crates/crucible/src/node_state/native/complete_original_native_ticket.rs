@@ -107,12 +107,7 @@ impl CompleteOriginalNativeTicket {
     }
 }
 
-
 impl CompleteOriginalNativeTicket {
-
-
-
-
     pub(crate) fn is_original_restoration_owner_data(&self, other: &Self) -> bool {
         self.owner_index == other.owner_index && Rc::ptr_eq(&self.source, &other.source)
     }
@@ -125,9 +120,12 @@ impl CompleteOriginalNativeTicket {
     ///
     /// # Errors
     /// Refuses another creator or an archive whose actual codec supplied no row.
-    pub fn native_restoration_construction_data(&self) -> Result<&super::CompleteOriginalNativeRestorationData, RuntimeError> {
+    pub fn native_restoration_construction_data(
+        &self,
+    ) -> Result<&super::CompleteOriginalNativeRestorationData, RuntimeError> {
         self.source.authenticate_birth()?;
-        self.source.native_restoration_construction_data(self.owner_index)
+        self.source
+            .native_restoration_construction_data(self.owner_index)
     }
 
     /// Counts the actual archive while its genuine inactive runtime/ticket agree.
@@ -141,7 +139,8 @@ impl CompleteOriginalNativeTicket {
     /// Refuses foreign origin/source/runtime/proposal/plan, unavailable actual backing,
     /// overflow or complete archive requested storage above the bound.
     pub fn retained_original_restoration_source_precredit_data(
-        &self, archive: &CompleteOriginalRestorationSource,
+        &self,
+        archive: &CompleteOriginalRestorationSource,
         runtime: &crate::node_contract::ConformanceRuntime,
         plan: &crate::node_admission::InstalledConformancePlan,
         activation: &crate::node_contract::ActivationRecord,
@@ -150,8 +149,9 @@ impl CompleteOriginalNativeTicket {
         self.authenticate_source(archive)?;
         runtime.authenticate_original_restoration_target_data(archive, plan, activation)?;
         let bytes = self.source.capture_owned_storage()?;
-        if bytes > maximum { return Err(RuntimeError::ResourceLimit); }
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
         Ok(bytes)
     }
 }
-

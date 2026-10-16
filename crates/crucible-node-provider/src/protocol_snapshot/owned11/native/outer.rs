@@ -869,8 +869,12 @@ impl SealedHistoricalNativeState {
         let mut data = Fields::array(next(&mut outer)?)?;
         let class = super::super::typed::plain_string(next(&mut data)?)?;
         match (class, boot.invocation.is_some()) {
-            (COMPLETE_NATIVE_STARTUP_CAPTURE_FORMAT, false) => Ok(crate::protocol_snapshot::RestorationMappingClass::StartupCapture14),
-            (COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT, true) => Ok(crate::protocol_snapshot::RestorationMappingClass::InvocationCapture15),
+            (COMPLETE_NATIVE_STARTUP_CAPTURE_FORMAT, false) => {
+                Ok(crate::protocol_snapshot::RestorationMappingClass::StartupCapture14)
+            }
+            (COMPLETE_NATIVE_INVOCATION_CAPTURE_FORMAT, true) => {
+                Ok(crate::protocol_snapshot::RestorationMappingClass::InvocationCapture15)
+            }
             _ => Err(invalid()),
         }
     }
@@ -883,6 +887,8 @@ impl SealedHistoricalNativeState {
             + std::mem::size_of::<&HistoricalNativeState>()
             + std::mem::size_of::<&super::boot::HistoricalNativeBoot>()
             + std::mem::size_of::<crate::protocol_snapshot::RestorationMappingClass>()
-            + std::mem::size_of::<Result<crate::protocol_snapshot::RestorationMappingClass, ProviderError>>()
+            + std::mem::size_of::<
+                Result<crate::protocol_snapshot::RestorationMappingClass, ProviderError>,
+            >()
     }
 }

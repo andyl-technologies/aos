@@ -11,7 +11,8 @@ use std::thread::{self, ThreadId};
 use super::*;
 use crate::node_contract::{
     HostSchedulingContinuationLimits, HostSchedulingContinuationRecord,
-    HostSchedulingRuntimeRecord, OriginalLineageRuntimeRecord, RuntimeError, RuntimeOriginalCaptureJournal,
+    HostSchedulingRuntimeRecord, OriginalLineageRuntimeRecord, RuntimeError,
+    RuntimeOriginalCaptureJournal,
 };
 use crucible_node_contract::ContentRef;
 
@@ -158,7 +159,9 @@ impl CompleteOriginalRestorationSource {
     /// Borrows the same already verified typed Runtime7 retained in the Host record.
     ///
     /// This raw data loan allocates nothing and creates no restoration context.
-    pub(crate) fn original_runtime_record_data(&self) -> Result<&OriginalLineageRuntimeRecord, RuntimeError> {
+    pub(crate) fn original_runtime_record_data(
+        &self,
+    ) -> Result<&OriginalLineageRuntimeRecord, RuntimeError> {
         self.inner.authenticate_birth()?;
         match &self.inner.host.runtime {
             HostSchedulingRuntimeRecord::OriginalLineage(record) => Ok(record),
@@ -233,12 +236,6 @@ impl CompleteOriginalSource {
         Ok(())
     }
 
-
-
-
-
-
-
     pub(crate) fn authenticate_target(&self, authority: &Rc<()>) -> Result<(), RuntimeError> {
         self.authenticate_birth()?;
         let target = self
@@ -306,7 +303,12 @@ impl NativeArchiveRecord {
     ) -> Result<CompleteOriginalRestorationSource, StateError> {
         self.authenticate_complete_load_admission()
             .map_err(super::super::schema)?;
-        let (content, native_restoration_data) = self.complete_original_lineage_content_with_restoration_data(graph, factory, limits.lineage)?;
+        let (content, native_restoration_data) = self
+            .complete_original_lineage_content_with_restoration_data(
+                graph,
+                factory,
+                limits.lineage,
+            )?;
         let administrative = super::complete_original_index::authenticate_admitted(
             &self,
             content
@@ -444,10 +446,13 @@ impl NativeArchiveRecord {
 
 impl CompleteOriginalSource {
     pub(super) fn native_restoration_construction_data(
-        &self, index: usize,
+        &self,
+        index: usize,
     ) -> Result<&super::CompleteOriginalNativeRestorationData, RuntimeError> {
         self.authenticate_birth()?;
-        self.native_restoration_data.get(index).and_then(Option::as_ref)
+        self.native_restoration_data
+            .get(index)
+            .and_then(Option::as_ref)
             .ok_or(RuntimeError::UnsupportedFacet)
     }
 

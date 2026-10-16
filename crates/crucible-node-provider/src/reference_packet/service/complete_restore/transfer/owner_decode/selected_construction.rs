@@ -37,7 +37,9 @@ pub struct PacketCompleteRestoreSelectedOwnerInputs<'a> {
 pub fn complete_restore_selected_owner_construction_counter_scratch_data() -> usize {
     let framing = packet_native_owned13_snapshot_validation_layouts();
     size_of::<PacketCompleteRestoreSelectedOwnerInputs<'static>>()
-        + size_of::<&[u8]>() + size_of::<&Phases>() + size_of::<[usize; 3]>()
+        + size_of::<&[u8]>()
+        + size_of::<&Phases>()
+        + size_of::<[usize; 3]>()
         + size_of::<PacketNativeOwned13SnapshotPlan<'static>>()
         + size_of::<PacketCompleteRestoreOwnerValidationStorage>()
         + 2 * size_of::<Credit>()
@@ -261,21 +263,35 @@ mod tests {
             }
         }
 
-        let phases = Phases { dom: 3, typed: 1, canonical: 2 };
+        let phases = Phases {
+            dom: 3,
+            typed: 1,
+            canonical: 2,
+        };
         let bytes = br#"[{},[{}],{"edge":{}}]"#;
         let actual: Value = serde_json::from_slice(bytes).unwrap();
         let roots = object_roots(&actual);
         assert_eq!(roots, 4);
-        let value_node = map_node(size_of::<String>() + size_of::<Value>(), align_of::<Value>()).unwrap();
+        let value_node = map_node(
+            size_of::<String>() + size_of::<Value>(),
+            align_of::<Value>(),
+        )
+        .unwrap();
         let typed_node = map_node(size_of::<ContentRef>(), align_of::<ContentRef>()).unwrap();
         let generic = scan(bytes, 4096, size_of::<ContentRef>(), typed_node)
-            .unwrap().requested(&phases).unwrap();
+            .unwrap()
+            .requested(&phases)
+            .unwrap();
 
-        let selected = anchor_storage(bytes, 4096, size_of::<ContentRef>(), typed_node, &phases).unwrap();
+        let selected =
+            anchor_storage(bytes, 4096, size_of::<ContentRef>(), typed_node, &phases).unwrap();
 
         let independent_roots = roots * (3 * value_node + typed_node);
         let independent_dom_headers = 3 * size_of::<Value>();
-        assert_eq!(selected - generic, independent_roots + independent_dom_headers);
+        assert_eq!(
+            selected - generic,
+            independent_roots + independent_dom_headers
+        );
         assert!(selected > generic);
     }
 }

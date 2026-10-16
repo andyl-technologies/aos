@@ -5,10 +5,11 @@
 //! before the SDK can install its distinct protocol acknowledgement marker.
 
 mod boot;
-pub use boot::{PacketNativeRestoreCommitConstructionInputs,
-    PacketNativeRestoreCommitConstructionData,
+pub use boot::{
+    PacketNativeRestoreCommitConstructionData, PacketNativeRestoreCommitConstructionInputs,
     original_native_restore_commit_construction_counter_scratch_data,
-    original_native_restore_commit_construction_storage_data};
+    original_native_restore_commit_construction_storage_data,
+};
 mod bootstrap;
 mod owned_read;
 pub(crate) use boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;

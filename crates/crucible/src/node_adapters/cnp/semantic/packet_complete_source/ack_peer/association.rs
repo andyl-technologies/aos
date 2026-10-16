@@ -963,8 +963,11 @@ impl PacketCompleteSemanticSource {
             return Err(refused("complete owning mechanism selection absent"));
         }
         let snapshot_class = self.selected_complete_native_snapshot_class()?;
-        if snapshot_class == super::super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15 {
-            self.authenticate_original_capture_invocation_data().map_err(unknown)?;
+        if snapshot_class
+            == super::super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15
+        {
+            self.authenticate_original_capture_invocation_data()
+                .map_err(unknown)?;
         }
         let schema = snapshot_class.schema()?;
         let installation = self.installation();
@@ -1182,7 +1185,10 @@ impl PacketCompleteSemanticSource {
         self.ensure_origin()?;
         // The explicit installed edition is DATA only; live original purpose
         // and full cold class ownership are authenticated by their callers.
-        if self.is_original_invocation_snapshot_declaration_data().map_err(unknown)? {
+        if self
+            .is_original_invocation_snapshot_declaration_data()
+            .map_err(unknown)?
+        {
             return Ok(CompleteNativeSnapshotClass::InvocationCapture15);
         }
         match self.selected_capture_allocation_selection()? {

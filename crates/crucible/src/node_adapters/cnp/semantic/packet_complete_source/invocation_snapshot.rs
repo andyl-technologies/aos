@@ -117,7 +117,10 @@ impl PacketCompleteSemanticSource {
             >()
             + size_of::<Option<&PacketNative5CaptureProfile>>()
             + size_of::<Option<Option<PacketNative5ConfirmationSelection>>>()
-            + size_of::<(Option<&PacketNative5CaptureProfile>, Option<Option<PacketNative5ConfirmationSelection>>)>()
+            + size_of::<(
+                Option<&PacketNative5CaptureProfile>,
+                Option<Option<PacketNative5ConfirmationSelection>>,
+            )>()
             + size_of::<&CnpSemanticInstallation>()
             + size_of::<bool>()
             + size_of::<Option<Declaration>>()

@@ -6,7 +6,6 @@
 //! mandatory before any Prepare, mapping construction or publication effect.
 
 use super::*;
-use std::rc::Rc;
 use crate::{
     node_admission::{OriginalRestorationNodeConstructionData, OriginalRestorationNodeInputs},
     node_contract::RuntimeError,
@@ -19,6 +18,7 @@ use crucible_node_provider::{
         original_native_restore_commit_construction_storage_data,
     },
 };
+use std::rc::Rc;
 
 impl PacketCompleteSemanticSource {
     pub(in crate::node_adapters::cnp::semantic) fn original_restoration_node_construction_data(

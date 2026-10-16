@@ -215,10 +215,21 @@ fn returned_observe_box_backing_fits_the_carried_typed_query_row() -> TestResult
     assert_eq!(extension_facts.tree_containers, 1);
     assert_eq!(extension_facts.tree_entries, 0);
     assert!(empty_root > 0);
-    assert_eq!(children, hash_backing.checked_add(empty_root).ok_or_else(query_error)?);
+    assert_eq!(
+        children,
+        hash_backing
+            .checked_add(empty_root)
+            .ok_or_else(query_error)?
+    );
     // Omitting the root from the carry fails this equality even when the
     // receive row's unrelated conservative terms cover the actual total.
-    assert_eq!(carried, receive.typed_query_requested_bytes.checked_add(empty_root).ok_or_else(query_error)?);
+    assert_eq!(
+        carried,
+        receive
+            .typed_query_requested_bytes
+            .checked_add(empty_root)
+            .ok_or_else(query_error)?
+    );
     assert!(actual <= carried);
     assert!(receive.requested_bytes()? > carried);
     assert_eq!(

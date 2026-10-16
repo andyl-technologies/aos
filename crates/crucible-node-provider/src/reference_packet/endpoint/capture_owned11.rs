@@ -21,9 +21,12 @@ impl PacketEndpoint<DeadlineStream> {
     ) -> Result<(), ProviderError> {
         self.ensure_complete_origin()?;
         if self.capture_allocation_attempt.is_some() {
-            let invocation = self.canonical_ack_boot.as_ref()
+            let invocation = self
+                .canonical_ack_boot
+                .as_ref()
                 .ok_or(ProviderError::Correlation("Capture original boot absent"))?
-                .try_borrow().map_err(|_| ProviderError::Conflict("Capture original boot borrowed"))?
+                .try_borrow()
+                .map_err(|_| ProviderError::Conflict("Capture original boot borrowed"))?
                 .requires_invocation_codec_data()?;
             return if invocation {
                 self.capture_original_invocation15(request, service, deadline)

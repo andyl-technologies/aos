@@ -253,8 +253,7 @@ mod tests {
 
 pub(crate) use storage::original_fresh_schema_generation_storage_data;
 
-
 pub use storage::{
-    original_invocation_report_startup_storage_data,
     original_invocation_report_startup_counter_scratch_data,
+    original_invocation_report_startup_storage_data,
 };

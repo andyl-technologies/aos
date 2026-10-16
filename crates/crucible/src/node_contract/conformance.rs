@@ -572,18 +572,38 @@ impl ConformanceRuntime {
         if !std::ptr::eq(self, inputs.runtime) {
             return Err(RuntimeError::ForeignAuthority);
         }
-        self.authenticate_original_restoration_target_data(inputs.archive, plan, inputs.activation)?;
-        inputs.ticket.authenticate_source(inputs.archive)?;
-        inputs.source.authenticate_original_restoration_target_data(
-            inputs.ticket, inputs.archive, self, plan, inputs.activation,
+        self.authenticate_original_restoration_target_data(
+            inputs.archive,
+            plan,
+            inputs.activation,
         )?;
+        inputs.ticket.authenticate_source(inputs.archive)?;
+        inputs
+            .source
+            .authenticate_original_restoration_target_data(
+                inputs.ticket,
+                inputs.archive,
+                self,
+                plan,
+                inputs.activation,
+            )?;
         let node_inputs = crate::node_admission::OriginalRestorationNodeInputs {
-            source: inputs.source, plan, ticket: inputs.ticket, launch: inputs.launch,
-            encoded_launch: inputs.encoded_launch, prepare_id: inputs.prepare_id,
+            source: inputs.source,
+            plan,
+            ticket: inputs.ticket,
+            launch: inputs.launch,
+            encoded_launch: inputs.encoded_launch,
+            prepare_id: inputs.prepare_id,
             maximum_requested_bytes: maximum,
         };
-        let result = self.runtime.quote_original_restoration_node_data(&node_inputs)?;
-        self.authenticate_original_restoration_target_data(inputs.archive, plan, inputs.activation)?;
+        let result = self
+            .runtime
+            .quote_original_restoration_node_data(&node_inputs)?;
+        self.authenticate_original_restoration_target_data(
+            inputs.archive,
+            plan,
+            inputs.activation,
+        )?;
         Ok(result)
     }
 
@@ -592,30 +612,52 @@ impl ConformanceRuntime {
         inputs: &crate::node_admission::OriginalRestorationConstructionInputs<'_>,
         plan: &crate::node_admission::InstalledConformancePlan,
         maximum: usize,
-    ) -> Result<[crate::node_admission::OriginalRestorationNodeConstructionData; 3], RuntimeError> {
+    ) -> Result<[crate::node_admission::OriginalRestorationNodeConstructionData; 3], RuntimeError>
+    {
         inputs.authenticate_original_group_data()?;
         if !std::ptr::eq(self, inputs.runtime) {
             return Err(RuntimeError::ForeignAuthority);
         }
-        self.authenticate_original_restoration_target_data(inputs.archive, plan, inputs.activation)?;
+        self.authenticate_original_restoration_target_data(
+            inputs.archive,
+            plan,
+            inputs.activation,
+        )?;
         let mut rows = [None, None, None];
         for (index, slot) in rows.iter_mut().enumerate() {
             let source = &inputs.sources[index];
             source.authenticate_original_restoration_target_data(
-                inputs.tickets[index], inputs.archive, self, plan, inputs.activation,
+                inputs.tickets[index],
+                inputs.archive,
+                self,
+                plan,
+                inputs.activation,
             )?;
             let node_inputs = crate::node_admission::OriginalRestorationNodeInputs {
-                source, plan, ticket: inputs.tickets[index], launch: &inputs.launches[index],
-                encoded_launch: inputs.encoded_launches[index], prepare_id: &inputs.prepare_ids[index],
+                source,
+                plan,
+                ticket: inputs.tickets[index],
+                launch: &inputs.launches[index],
+                encoded_launch: inputs.encoded_launches[index],
+                prepare_id: &inputs.prepare_ids[index],
                 maximum_requested_bytes: maximum,
             };
-            *slot = Some(self.runtime.quote_original_restoration_node_data(&node_inputs)?);
+            *slot = Some(
+                self.runtime
+                    .quote_original_restoration_node_data(&node_inputs)?,
+            );
         }
-        self.authenticate_original_restoration_target_data(inputs.archive, plan, inputs.activation)?;
+        self.authenticate_original_restoration_target_data(
+            inputs.archive,
+            plan,
+            inputs.activation,
+        )?;
         let [first, second, third] = rows;
-        Ok([first.ok_or(RuntimeError::OwnerUnavailable)?,
+        Ok([
+            first.ok_or(RuntimeError::OwnerUnavailable)?,
             second.ok_or(RuntimeError::OwnerUnavailable)?,
-            third.ok_or(RuntimeError::OwnerUnavailable)?])
+            third.ok_or(RuntimeError::OwnerUnavailable)?,
+        ])
     }
 
     pub(crate) fn original_restoration_group_counter_scratch_data(
@@ -623,16 +665,25 @@ impl ConformanceRuntime {
         inputs: &crate::node_admission::OriginalRestorationConstructionInputs<'_>,
         plan: &crate::node_admission::InstalledConformancePlan,
     ) -> Result<usize, RuntimeError> {
-        use crate::node_admission::{OriginalRestorationConstructionInputs,
-            OriginalRestorationNodeConstructionData, OriginalRestorationNodeInputs};
+        use crate::node_admission::{
+            OriginalRestorationConstructionInputs, OriginalRestorationNodeConstructionData,
+            OriginalRestorationNodeInputs,
+        };
         inputs.authenticate_original_group_data()?;
         if !std::ptr::eq(self, inputs.runtime) {
             return Err(RuntimeError::ForeignAuthority);
         }
-        self.authenticate_original_restoration_target_data(inputs.archive, plan, inputs.activation)?;
+        self.authenticate_original_restoration_target_data(
+            inputs.archive,
+            plan,
+            inputs.activation,
+        )?;
         let mut largest_node = 0usize;
         for ticket in inputs.tickets {
-            largest_node = largest_node.max(self.runtime.original_restoration_node_counter_scratch_data(ticket)?);
+            largest_node = largest_node.max(
+                self.runtime
+                    .original_restoration_node_counter_scratch_data(ticket)?,
+            );
         }
         let owning = self.original_inactive_retained_storage_counter_scratch_data()?;
         let terms = [
@@ -651,7 +702,8 @@ impl ConformanceRuntime {
             crate::node_adapters::cnp::OriginalRestorationColdGroup::inline_root_storage_data(),
             largest_node, owning,
         ];
-        terms.into_iter().try_fold(0usize, |sum, term|
-            sum.checked_add(term).ok_or(RuntimeError::ResourceLimit))
+        terms.into_iter().try_fold(0usize, |sum, term| {
+            sum.checked_add(term).ok_or(RuntimeError::ResourceLimit)
+        })
     }
 }

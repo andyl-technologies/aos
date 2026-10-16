@@ -21,8 +21,10 @@ mod inputs;
 mod prospective;
 mod storage;
 use inputs::PrepareInputs;
-pub use prospective::{OriginalCompleteRestoreInputUploadProspectiveStorageData,
-    OriginalCompleteRestoreUploadBeforeMappingData};
+pub use prospective::{
+    OriginalCompleteRestoreInputUploadProspectiveStorageData,
+    OriginalCompleteRestoreUploadBeforeMappingData,
+};
 
 /// Quotes this actor's additional six-input publication work as DATA.
 ///

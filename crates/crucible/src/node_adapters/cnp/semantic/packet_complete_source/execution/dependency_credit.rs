@@ -239,7 +239,9 @@ impl PacketCompleteSemanticSource {
             )?;
             plan.data.maximum_lookup_scratch = plan.data.maximum_lookup_scratch.max(
                 allocation_report::allocation_reference_phase_storage_for_class_data(
-                    self.selected_complete_native_snapshot_class()?, maximum)?,
+                    self.selected_complete_native_snapshot_class()?,
+                    maximum,
+                )?,
             );
         }
         let mut semantic = RowQuote::new(maximum);

@@ -147,7 +147,6 @@ impl Write for SerializedCreditCounter {
     }
 }
 
-
 /// Names actual counting writer/serializer headers before their borrowed walk.
 pub(crate) fn original_serialized_credit_counter_scratch_data() -> usize {
     std::mem::size_of::<SerializedCreditCounter>()

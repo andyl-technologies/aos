@@ -526,7 +526,9 @@ impl NodeRuntime {
         let [node_id] = owner.participants.as_slice() else {
             return Err(RuntimeError::UnsupportedFacet);
         };
-        self.nodes.get(node_id).ok_or(RuntimeError::UnknownNode)?
+        self.nodes
+            .get(node_id)
+            .ok_or(RuntimeError::UnknownNode)?
             .original_restoration_construction_data(inputs)?
             .ok_or(RuntimeError::UnsupportedFacet)
     }
@@ -538,7 +540,9 @@ impl NodeRuntime {
         let [node] = ticket.owner()?.participants.as_slice() else {
             return Err(RuntimeError::UnsupportedFacet);
         };
-        self.nodes.get(node).ok_or(RuntimeError::UnknownNode)?
+        self.nodes
+            .get(node)
+            .ok_or(RuntimeError::UnknownNode)?
             .original_restoration_construction_scratch_data()?
             .ok_or(RuntimeError::UnsupportedFacet)
     }

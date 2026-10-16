@@ -29,7 +29,10 @@ impl ConformanceRuntime {
         self.retained_inactive_wrapper_storage_data(maximum)
     }
 
-    fn retained_inactive_wrapper_storage_data(&self, maximum: usize) -> Result<usize, RuntimeError> {
+    fn retained_inactive_wrapper_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
         let runtime = self
             .runtime
             .original_retained_requested_storage_precredit_data(maximum)?;
@@ -150,7 +153,9 @@ impl ConformanceRuntime {
         activation: &ActivationRecord,
     ) -> Result<usize, RuntimeError> {
         self.authenticate_original_restoration_target_data(archive, plan, activation)?;
-        let count = self.runtime.original_inactive_descriptor_views_precredit_data()?;
+        let count = self
+            .runtime
+            .original_inactive_descriptor_views_precredit_data()?;
         self.authenticate_original_restoration_target_data(archive, plan, activation)?;
         Ok(count)
     }

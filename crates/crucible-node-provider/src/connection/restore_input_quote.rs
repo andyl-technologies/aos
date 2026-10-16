@@ -17,9 +17,11 @@ use std::mem::{align_of, size_of};
 
 #[path = "restore_input_quote/prospective.rs"]
 mod prospective;
-pub use prospective::{OriginalNativeRestoreInputConstructionData,
+pub use prospective::{
+    OriginalNativeRestoreInputConstructionData,
     original_native_restore_input_construction_counter_scratch_data,
-    original_native_restore_input_construction_storage_data};
+    original_native_restore_input_construction_storage_data,
+};
 
 const MAXIMUM_SELECTION_BYTES: usize = 512 * 1024 * 1024;
 
@@ -230,10 +232,19 @@ impl<S: ProviderStream> Connection<S> {
         let allocation = &request.allocation;
         let input_lengths = input_lengths(request)?;
         let InputGeometry {
-            raw_input_bytes, historical_backing_bytes, reconstruction_lookup_bytes,
-            requested_geometry_bytes, declared_scratch_and_owner_bytes, custody_layout_bytes,
-        } = input_geometry(allocation, input_lengths, facts,
-            selected(self.authority.limits().frame_bytes.get())?, size_of::<Self>())?;
+            raw_input_bytes,
+            historical_backing_bytes,
+            reconstruction_lookup_bytes,
+            requested_geometry_bytes,
+            declared_scratch_and_owner_bytes,
+            custody_layout_bytes,
+        } = input_geometry(
+            allocation,
+            input_lengths,
+            facts,
+            selected(self.authority.limits().frame_bytes.get())?,
+            size_of::<Self>(),
+        )?;
         let held_proof = self.quote_original_restore_held_proof_allocation()?;
         let sdk_requested_bytes = sum(&[
             raw_input_bytes,
@@ -480,8 +491,10 @@ struct InputGeometry {
 
 fn input_geometry(
     allocation: &crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreInputAllocation,
-    input_lengths: [usize; 6], facts: RetainedProtocolMetadataFacts,
-    maximum_frame: usize, connection_header_bytes: usize,
+    input_lengths: [usize; 6],
+    facts: RetainedProtocolMetadataFacts,
+    maximum_frame: usize,
+    connection_header_bytes: usize,
 ) -> Result<InputGeometry, ProviderError> {
     let raw_input_bytes = input_lengths
         .iter()
@@ -572,9 +585,7 @@ fn input_geometry(
         >(),
         2 * size_of::<usize>()
             + align_of::<
-                std::cell::RefCell<
-                    crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping,
-                >,
+                std::cell::RefCell<crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping>,
             >()
             - 1,
         connection_header_bytes,
@@ -584,9 +595,7 @@ fn input_geometry(
         // transients used by the actual selected response constructor.
         multiply(
             2,
-            original_restore_response_requested_bound(selected(
-                maximum_frame as u64,
-            )?)?,
+            original_restore_response_requested_bound(selected(maximum_frame as u64)?)?,
         )?,
     ])?;
     // Each baseline nonempty BlobChunk consumes a node-budgeted descriptor.
@@ -599,7 +608,12 @@ fn input_geometry(
         super::restore_inputs::original_input_custody_layout(),
     )?;
 
-    Ok(InputGeometry {raw_input_bytes, historical_backing_bytes,
-        reconstruction_lookup_bytes, requested_geometry_bytes,
-        declared_scratch_and_owner_bytes, custody_layout_bytes})
+    Ok(InputGeometry {
+        raw_input_bytes,
+        historical_backing_bytes,
+        reconstruction_lookup_bytes,
+        requested_geometry_bytes,
+        declared_scratch_and_owner_bytes,
+        custody_layout_bytes,
+    })
 }

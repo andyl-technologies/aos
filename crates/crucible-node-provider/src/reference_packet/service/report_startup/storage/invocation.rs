@@ -24,22 +24,37 @@ pub fn original_invocation_report_startup_storage_data(
         || launch.capture_allocation_selection != Some(
             super::super::super::capture_allocation::PacketNative5CaptureAllocationSelection::OriginalObserve12)
     { return Err(refused()); }
-    let [binding] = launch.selection.realization.bindings.as_slice() else { return Err(refused()); };
-    for formats in [&launch.selection.provider.implementation.formats, &binding.compatibility.implementation.formats] {
+    let [binding] = launch.selection.realization.bindings.as_slice() else {
+        return Err(refused());
+    };
+    for formats in [
+        &launch.selection.provider.implementation.formats,
+        &binding.compatibility.implementation.formats,
+    ] {
         let mut found = false;
         for schema in formats {
             if schema.id.as_str() == "source-owned.packet-native-continuation/14" {
-                if found { return Err(refused()); }
+                if found {
+                    return Err(refused());
+                }
                 super::super::super::native_snapshot::authenticate_native_owned14_snapshot_schema_data(schema)?;
                 found = true;
             }
         }
-        if !found { return Err(refused()); }
+        if !found {
+            return Err(refused());
+        }
     }
     let mut data = original_report_startup_storage_data(launch, purpose)?;
     data.declared_counter_scratch_bytes = original_invocation_report_startup_counter_scratch_data();
-    if sum(&[data.retained_growth_bytes, data.maximum_simultaneous_transient_bytes,
-        data.declared_counter_scratch_bytes])? > MAXIMUM_COMPILED_PROJECTION_BYTES { return Err(exhausted()); }
+    if sum(&[
+        data.retained_growth_bytes,
+        data.maximum_simultaneous_transient_bytes,
+        data.declared_counter_scratch_bytes,
+    ])? > MAXIMUM_COMPILED_PROJECTION_BYTES
+    {
+        return Err(exhausted());
+    }
     Ok(data)
 }
 

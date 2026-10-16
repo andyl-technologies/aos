@@ -104,7 +104,7 @@ impl PacketCompleteSemanticSource {
             + Self::original_invocation_snapshot_declaration_counter_scratch_data()
             + size_of::<Result<usize, crate::node_contract::RuntimeError>>()
             + size_of::<usize>())
-            .saturating_add(original_purpose)
+        .saturating_add(original_purpose)
     }
 
     pub(crate) fn authenticate_original_report_startup_launch_data(

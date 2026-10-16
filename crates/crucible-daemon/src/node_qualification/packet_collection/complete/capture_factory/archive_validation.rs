@@ -344,11 +344,17 @@ impl PacketCompleteCaptureFactory {
         // Preserve the actual detailed native-after DATA before the temporary
         // cold owners disappear. Equal labels cannot choose another owner slot.
         for (source, bank) in self.authority.roster().sources.iter().zip(&cold) {
-            let bank = bank.as_ref().ok_or_else(|| refused("complete cold owner absent"))?;
+            let bank = bank
+                .as_ref()
+                .ok_or_else(|| refused("complete cold owner absent"))?;
             let owner = native_owner(&scope, &source.installation().owner.owner.id)?;
-            scope.retain_original_native_restoration_data(
-                owner, bank.original_native_restoration_data().map_err(operation_failure)?,
-            ).map_err(error)?;
+            scope
+                .retain_original_native_restoration_data(
+                    owner,
+                    bank.original_native_restoration_data()
+                        .map_err(operation_failure)?,
+                )
+                .map_err(error)?;
         }
         Ok(())
     }

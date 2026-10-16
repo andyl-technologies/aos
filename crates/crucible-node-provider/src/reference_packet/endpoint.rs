@@ -97,7 +97,9 @@ pub trait PacketEndpointPolicy: BlobSchemaVerifier {
     /// Refuses unless the concrete installer supplies the exact full definition.
     /// This check alone never supplies the private original invocation purpose.
     fn authenticate_invocation_capture_snapshot_definition(&self) -> Result<(), ProviderError> {
-        Err(ProviderError::Correlation("invocation Capture snapshot definition not installed"))
+        Err(ProviderError::Correlation(
+            "invocation Capture snapshot definition not installed",
+        ))
     }
 
     /// Selects the independently installed consuming schema for an exact upload.
@@ -432,41 +434,42 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         } else {
             None
         };
-        let frame = if fresh_query {
-            self.receive_original_fresh_query()?
-        } else if self.capture_allocation_attempt.is_some() {
-            let receive = selected_next.ok_or(ProviderError::Correlation(
-                "native Report next original receiver absent",
-            ))?;
-            receive(
-                self,
-                service_context.ok_or(ProviderError::Correlation(
-                    "native Report next original service absent",
-                ))?,
-            )?
-        } else {
-            match self.transport.as_mut() {
-                Some(Transport::Connected(connection)) => {
-                    let birth_read = self.canonical_ack_boot.as_ref().map(|boot|
+        let frame =
+            if fresh_query {
+                self.receive_original_fresh_query()?
+            } else if self.capture_allocation_attempt.is_some() {
+                let receive = selected_next.ok_or(ProviderError::Correlation(
+                    "native Report next original receiver absent",
+                ))?;
+                receive(
+                    self,
+                    service_context.ok_or(ProviderError::Correlation(
+                        "native Report next original service absent",
+                    ))?,
+                )?
+            } else {
+                match self.transport.as_mut() {
+                    Some(Transport::Connected(connection)) => {
+                        let birth_read = self.canonical_ack_boot.as_ref().map(|boot|
                     super::service::ack_emitter::NativeAckBoot::original_birth_read_scope(
                         boot,self.native.endpoint_scope()?,self.records.len(),
                     )).transpose()?.flatten();
-                    if let Some(scope) = birth_read.as_ref() {
-                        connection.receive_original_native_birth_request(scope)?
-                    } else if let Some(scope) = original_report_query.as_ref() {
-                        connection.receive_original_native_report_query(scope)?
-                    } else {
-                        connection.receive()?
+                        if let Some(scope) = birth_read.as_ref() {
+                            connection.receive_original_native_birth_request(scope)?
+                        } else if let Some(scope) = original_report_query.as_ref() {
+                            connection.receive_original_native_report_query(scope)?
+                        } else {
+                            connection.receive()?
+                        }
+                    }
+                    _ => {
+                        return Err(ProviderError::Conflict(
+                            "packet original exchange unavailable",
+                        ));
                     }
                 }
-                _ => {
-                    return Err(ProviderError::Conflict(
-                        "packet original exchange unavailable",
-                    ));
-                }
             }
-        }
-        .ok_or(ProviderError::Frame("packet endpoint original peer closed"))?;
+            .ok_or(ProviderError::Frame("packet endpoint original peer closed"))?;
         if fresh_query {
             // The endpoint retains the complete actual result before any
             // frontier/hash/currentness check or report transformation.

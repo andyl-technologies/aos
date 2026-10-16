@@ -62,17 +62,23 @@ impl CnpController {
     pub fn original_archived_mapping_construction_storage_data(
         &self,
     ) -> Result<usize, ProviderError> {
-        use crate::protocol_snapshot::{ArchivedProtocolMappingIdentity,
-            PreparedArchivedProtocolMapping};
+        use crate::protocol_snapshot::{
+            ArchivedProtocolMappingIdentity, PreparedArchivedProtocolMapping,
+        };
         self.protocol_owner.ensure_current()?;
         let identity = std::alloc::Layout::new::<[usize; 2]>()
             .extend(std::alloc::Layout::new::<ArchivedProtocolMappingIdentity>())
             .map_err(|_| ProviderError::ResourceExhausted("archived mapping identity layout"))?
-            .0.pad_to_align().size();
+            .0
+            .pad_to_align()
+            .size();
         let authority = self.authority().independent_clone_backing_storage_data()?;
         let total = std::mem::size_of::<PreparedArchivedProtocolMapping>()
-            .checked_add(identity).and_then(|n| n.checked_add(authority))
-            .ok_or(ProviderError::ResourceExhausted("archived mapping construction"))?;
+            .checked_add(identity)
+            .and_then(|n| n.checked_add(authority))
+            .ok_or(ProviderError::ResourceExhausted(
+                "archived mapping construction",
+            ))?;
         self.protocol_owner.ensure_current()?;
         Ok(total)
     }
@@ -93,5 +99,4 @@ impl CnpController {
             + std::mem::size_of::<[usize; 4]>()
             + std::mem::size_of::<Result<usize, ProviderError>>()
     }
-
 }

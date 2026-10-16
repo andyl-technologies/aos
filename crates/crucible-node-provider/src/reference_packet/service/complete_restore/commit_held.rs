@@ -236,11 +236,23 @@ struct MaximumHeldCoordinate {
 /// and recursive serde frames and allocator physical overhead remain separate.
 pub fn maximum_complete_restore_held_evidence_counter_scratch_data() -> usize {
     use std::mem::size_of;
-    3 * size_of::<[u8; 128]>() + size_of::<[u8; 64]>() + size_of::<[u8; 43]>()
-        + size_of::<U64>() + size_of::<MaximumHeldHash<'static>>()
-        + size_of::<MaximumHeldContent<'static>>() + size_of::<MaximumHeldCoordinate>()
-        + size_of::<HoldView<'static, MaximumHeldHash<'static>, MaximumHeldContent<'static>,
-            str, MaximumHeldCoordinate, str>>()
+    3 * size_of::<[u8; 128]>()
+        + size_of::<[u8; 64]>()
+        + size_of::<[u8; 43]>()
+        + size_of::<U64>()
+        + size_of::<MaximumHeldHash<'static>>()
+        + size_of::<MaximumHeldContent<'static>>()
+        + size_of::<MaximumHeldCoordinate>()
+        + size_of::<
+            HoldView<
+                'static,
+                MaximumHeldHash<'static>,
+                MaximumHeldContent<'static>,
+                str,
+                MaximumHeldCoordinate,
+                str,
+            >,
+        >()
         + crate::connection::original_serialized_credit_counter_scratch_data()
         + 20
 }

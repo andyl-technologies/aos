@@ -1,9 +1,12 @@
 //! Restricts selected host input publication to its real installed codec.
 
 use super::*;
-use crate::{protocol_snapshot::ProtocolCaptureCut, reference_packet::service::complete_restore::{
-    PacketNative5CompleteRestoreSelection, PacketNative5RestoreInputEmitterSelection,
-}};
+use crate::{
+    protocol_snapshot::ProtocolCaptureCut,
+    reference_packet::service::complete_restore::{
+        PacketNative5CompleteRestoreSelection, PacketNative5RestoreInputEmitterSelection,
+    },
+};
 
 impl<S: ProviderStream> Connection<S> {
     pub(crate) fn preflight_original_restore_upload_data(&self) -> Result<(), ProviderError> {
@@ -14,7 +17,11 @@ impl<S: ProviderStream> Connection<S> {
                 != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
             || self.original_native5_restore_input_emitter_selection()?
                 != Some(PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12)
-        { return Err(ProviderError::Correlation("original uploader selection differs")); }
+        {
+            return Err(ProviderError::Correlation(
+                "original uploader selection differs",
+            ));
+        }
         self.guard.protocol_cut(ProtocolCaptureCut::HostSettled)
     }
 }

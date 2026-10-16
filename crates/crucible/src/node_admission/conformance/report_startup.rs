@@ -523,5 +523,4 @@ fn add(left: usize, right: usize) -> Result<usize, EvidenceError> {
         .ok_or_else(|| failure("original startup requested allocation overflow"))
 }
 
-
 mod invocation;

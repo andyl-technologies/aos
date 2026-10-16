@@ -23,7 +23,8 @@ pub struct OriginalRestorationConstructionInputs<'a> {
     /// Borrows the complete actual registered three-Source reconstruction roster.
     pub sources: &'a [Rc<PacketCompleteSemanticSource>; 3],
     /// Borrows its same immutable typed launches in original roster order.
-    pub launches: &'a [crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch; 3],
+    pub launches:
+        &'a [crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch; 3],
     /// Borrows the three actual original canonical nested launch5 banks.
     pub encoded_launches: [&'a [u8]; 3],
     /// Borrows the same archive's three native tickets without transferring them.
@@ -58,24 +59,38 @@ pub struct OriginalRestorationConstructionInputs<'a> {
     pub prepare_id: &'a Id,
     /// Borrows the distinct already retained unique Commit request identifier.
     pub commit_id: &'a Id,
-
 }
 
 impl OriginalRestorationConstructionInputs<'_> {
     pub(crate) fn authenticate_original_group_data(&self) -> Result<(), RuntimeError> {
-        let source = self.sources.get(self.selected).ok_or(RuntimeError::ForeignAuthority)?;
-        let launch = self.launches.get(self.selected).ok_or(RuntimeError::ForeignAuthority)?;
-        let encoded = self.encoded_launches.get(self.selected).ok_or(RuntimeError::ForeignAuthority)?;
-        let ticket = self.tickets.get(self.selected).ok_or(RuntimeError::ForeignAuthority)?;
-        if !Rc::ptr_eq(source, self.source) || !std::ptr::eq(launch, self.launch)
+        let source = self
+            .sources
+            .get(self.selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        let launch = self
+            .launches
+            .get(self.selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        let encoded = self
+            .encoded_launches
+            .get(self.selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        let ticket = self
+            .tickets
+            .get(self.selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if !Rc::ptr_eq(source, self.source)
+            || !std::ptr::eq(launch, self.launch)
             || !std::ptr::eq(*ticket, self.ticket)
             || !std::ptr::eq(encoded.as_ptr(), self.encoded_launch.as_ptr())
-            || encoded.len() != self.encoded_launch.len() {
+            || encoded.len() != self.encoded_launch.len()
+        {
             return Err(RuntimeError::ForeignAuthority);
         }
         if self.journals[self.selected] != self.journal
             || !std::ptr::eq(&self.prepare_ids[self.selected], self.prepare_id)
-            || !std::ptr::eq(&self.commit_ids[self.selected], self.commit_id) {
+            || !std::ptr::eq(&self.commit_ids[self.selected], self.commit_id)
+        {
             return Err(RuntimeError::ForeignAuthority);
         }
         for index in 0..3 {
@@ -88,7 +103,8 @@ impl OriginalRestorationConstructionInputs<'_> {
             }
             for prior in 0..index {
                 if Rc::ptr_eq(&self.sources[prior], &self.sources[index])
-                    || self.tickets[prior].is_original_restoration_owner_data(self.tickets[index]) {
+                    || self.tickets[prior].is_original_restoration_owner_data(self.tickets[index])
+                {
                     return Err(RuntimeError::ForeignAuthority);
                 }
             }
@@ -96,7 +112,6 @@ impl OriginalRestorationConstructionInputs<'_> {
         Ok(())
     }
 }
-
 
 #[path = "restoration_construction/node.rs"]
 mod node;

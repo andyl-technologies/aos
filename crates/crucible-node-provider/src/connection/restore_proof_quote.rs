@@ -174,9 +174,8 @@ impl<S: ProviderStream> Connection<S> {
             .observe_owned11_metadata(&mut observer)?;
         let prior_roots = requested_facts(&observer.finish())?;
 
-        let requested_bytes = held_proof_geometry(
-            maximum_frame, chunk, prior_roots, size_of::<Self>(), held,
-        )?.1;
+        let requested_bytes =
+            held_proof_geometry(maximum_frame, chunk, prior_roots, size_of::<Self>(), held)?.1;
         Ok(OriginalRestoreHeldProofAllocationQuote {
             actor: Rc::clone(&self.protocol_owner),
             codec: Rc::clone(codec),
@@ -259,10 +258,18 @@ fn maximum_closed_key_bytes() -> usize {
 
 /// Projects the exact closed proof banks without fabricating a frame owner.
 pub(super) fn held_proof_geometry(
-    maximum_frame: usize, chunk: usize, prior_roots: usize,
-    connection_header_bytes: usize, maximum_held_evidence: usize,
+    maximum_frame: usize,
+    chunk: usize,
+    prior_roots: usize,
+    connection_header_bytes: usize,
+    maximum_held_evidence: usize,
 ) -> Result<(usize, usize), ProviderError> {
-    if maximum_frame == 0 || maximum_frame > 65_536 || chunk == 0 || chunk > 4096 || maximum_held_evidence == 0 {
+    if maximum_frame == 0
+        || maximum_frame > 65_536
+        || chunk == 0
+        || chunk > 4096
+        || maximum_held_evidence == 0
+    {
         return Err(credit());
     }
     let chunks = maximum_held_evidence.div_ceil(chunk);

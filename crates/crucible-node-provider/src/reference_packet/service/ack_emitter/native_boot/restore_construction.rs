@@ -7,12 +7,12 @@
 
 use super::*;
 use crate::reference_packet::service::complete_restore::transfer::{
-    PacketCompleteRestoreOwnerValidationStorage, selected_issuer_decode_storage_data,
-    selected_issuer_decode_counter_scratch_data, selected_value_decode_storage_data,
+    PacketCompleteRestoreOwnerValidationStorage, selected_issuer_decode_counter_scratch_data,
+    selected_issuer_decode_storage_data, selected_value_decode_storage_data,
 };
 use crate::retained_metadata::serialization_storage::{
-    original_json_value_storage_extent_data,
     original_json_value_storage_extent_counter_scratch_data,
+    original_json_value_storage_extent_data,
 };
 use std::mem::{align_of, size_of};
 
@@ -56,14 +56,22 @@ pub struct PacketNativeRestoreCommitConstructionData {
 
 impl PacketNativeRestoreCommitConstructionData {
     /// Returns this complete Commit/model requested-storage row as DATA.
-    pub fn requested_bytes(&self) -> usize {self.requested_bytes}
+    pub fn requested_bytes(&self) -> usize {
+        self.requested_bytes
+    }
 
     /// Returns separately named original/projection/model/hold/measurement terms.
     pub fn requested_terms_data(&self) -> [usize; 8] {
-        [self.original_projection_bytes, self.incoming_commit_bytes,
-            self.immutable_launch_bytes, self.attempt_and_model_header_bytes,
-            self.model_control_bytes, self.held_receipt_response_bytes,
-            self.measurement_bytes, self.declared_counter_scratch_bytes]
+        [
+            self.original_projection_bytes,
+            self.incoming_commit_bytes,
+            self.immutable_launch_bytes,
+            self.attempt_and_model_header_bytes,
+            self.model_control_bytes,
+            self.held_receipt_response_bytes,
+            self.measurement_bytes,
+            self.declared_counter_scratch_bytes,
+        ]
     }
 }
 
@@ -106,68 +114,110 @@ pub fn original_native_restore_commit_construction_storage_data(
 ) -> Result<PacketNativeRestoreCommitConstructionData, ProviderError> {
     if inputs.launch.complete_restore_selection
         != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
-        || inputs.model.total_bytes == 0 || inputs.maximum_requested_bytes == 0
-        || inputs.encoded_launch.is_empty() || inputs.encoded_launch.len() > 1024 * 1024 {
+        || inputs.model.total_bytes == 0
+        || inputs.maximum_requested_bytes == 0
+        || inputs.encoded_launch.is_empty()
+        || inputs.encoded_launch.len() > 1024 * 1024
+    {
         return Err(refused());
     }
     let maximum = inputs.maximum_requested_bytes;
     let raw = usize::try_from(inputs.launch.limits.frame_bytes.get()).map_err(|_| refused())?;
-    if raw == 0 || raw > 65_536 {return Err(refused());}
+    if raw == 0 || raw > 65_536 {
+        return Err(refused());
+    }
     let frame = original_json_value_storage_extent_data(raw)?;
     let layouts = crate::reference_packet::control::packet_control_snapshot_validation_layouts();
-    let slot = layouts.maximum_typed_slot_bytes
+    let slot = layouts
+        .maximum_typed_slot_bytes
         .max(size_of::<PacketCompleteRestoreCommitRequest>())
         .max(size_of::<PacketCompleteRestoreTransferProof>())
         .max(size_of::<PacketCompleteRestoreCommitContext>())
         .max(size_of::<PacketNative5SourceLaunch>());
     let mut original_projection_bytes = 0usize;
-    for original in [inputs.source_birth, inputs.host_registration,
-        inputs.kernel_binding, inputs.policy_binding] {
-        original_projection_bytes = add(original_projection_bytes,
-            selected_value_decode_storage_data(original, maximum)?)?;
+    for original in [
+        inputs.source_birth,
+        inputs.host_registration,
+        inputs.kernel_binding,
+        inputs.policy_binding,
+    ] {
+        original_projection_bytes = add(
+            original_projection_bytes,
+            selected_value_decode_storage_data(original, maximum)?,
+        )?;
     }
     let incoming_commit_bytes = sum(&[
         mul(5, frame.value_dom_requested_bytes)?,
         mul(3, mul(frame.maximum_value_nodes, slot)?)?,
-        frame.canonical_work_requested_bytes, frame.canonical_output_requested_bytes,
-        3 * size_of::<Envelope>(), size_of::<crate::bodies::BeginRequest>(),
+        frame.canonical_work_requested_bytes,
+        frame.canonical_output_requested_bytes,
+        3 * size_of::<Envelope>(),
+        size_of::<crate::bodies::BeginRequest>(),
         size_of::<PacketCompleteRestoreCommitContext>(),
         MAXIMUM_COMPLETE_RESTORE_TRANSFER_CONTEXT_BYTES,
     ])?;
-    let immutable_launch_bytes = selected_issuer_decode_storage_data(
-        inputs.encoded_launch, slot, maximum,
-    )?;
+    let immutable_launch_bytes =
+        selected_issuer_decode_storage_data(inputs.encoded_launch, slot, maximum)?;
     let attempt_and_model_header_bytes = sum(&[
         size_of::<RefCell<NativeCompleteRestoreAttempt>>(),
-        crate::retained_metadata::requested_storage::shared_header_storage_data(1,
-            align_of::<RefCell<NativeCompleteRestoreAttempt>>())?,
-        size_of::<VerifiedCompleteRestoration>(), size_of::<VerifiedCompleteRestorationHeld>(),
-        size_of::<PacketPreparedCompleteModel>(), size_of::<PacketDecodedControlSnapshot>(),
+        crate::retained_metadata::requested_storage::shared_header_storage_data(
+            1,
+            align_of::<RefCell<NativeCompleteRestoreAttempt>>(),
+        )?,
+        size_of::<VerifiedCompleteRestoration>(),
+        size_of::<VerifiedCompleteRestorationHeld>(),
+        size_of::<PacketPreparedCompleteModel>(),
+        size_of::<PacketDecodedControlSnapshot>(),
         size_of::<PacketCompleteRestorePhysicalHold>(),
-        crate::retained_metadata::requested_storage::shared_header_storage_data(1,
-            align_of::<PacketCompleteRestorePhysicalHold>())?,
-        size_of::<PacketNativeRestoredCommitHold>(), 8 * size_of::<usize>(),
+        crate::retained_metadata::requested_storage::shared_header_storage_data(
+            1,
+            align_of::<PacketCompleteRestorePhysicalHold>(),
+        )?,
+        size_of::<PacketNativeRestoredCommitHold>(),
+        8 * size_of::<usize>(),
     ])?;
     let model_control_bytes = inputs.model.total_bytes;
     let held = maximum_complete_restore_held_evidence_bytes()?;
-    let held_receipt_response_bytes = sum(&[held, held,
-        MAXIMUM_COMPLETE_RESTORE_TRANSFER_RECEIPT_BYTES, 65_536])?;
+    let held_receipt_response_bytes = sum(&[
+        held,
+        held,
+        MAXIMUM_COMPLETE_RESTORE_TRANSFER_RECEIPT_BYTES,
+        65_536,
+    ])?;
     // The two real measurements are sequential; both returned references remain
     // live. The actual called Prepare streamer keeps one fixed8KiB bank and
     // before/after metadata; no whole executable Vec or current_exe path exists.
     let measurement_bytes = add(
-        super::super::restore_prepare::original_prepare_executable_measurement_counter_scratch_data(),
+        super::super::restore_prepare::original_prepare_executable_measurement_counter_scratch_data(
+        ),
         2 * ("blake3-256".len() + "cnp.blob.v1".len() + 64 + "application/octet-stream".len()),
     )?;
-    let declared_counter_scratch_bytes = original_native_restore_commit_construction_counter_scratch_data();
-    let requested_bytes = sum(&[original_projection_bytes, incoming_commit_bytes,
-        immutable_launch_bytes, attempt_and_model_header_bytes, model_control_bytes,
-        held_receipt_response_bytes, measurement_bytes, declared_counter_scratch_bytes])?;
-    if requested_bytes > maximum {return Err(refused());}
-    Ok(PacketNativeRestoreCommitConstructionData {original_projection_bytes,
-        incoming_commit_bytes, immutable_launch_bytes, attempt_and_model_header_bytes,
-        model_control_bytes, held_receipt_response_bytes, measurement_bytes,
-        declared_counter_scratch_bytes, requested_bytes})
+    let declared_counter_scratch_bytes =
+        original_native_restore_commit_construction_counter_scratch_data();
+    let requested_bytes = sum(&[
+        original_projection_bytes,
+        incoming_commit_bytes,
+        immutable_launch_bytes,
+        attempt_and_model_header_bytes,
+        model_control_bytes,
+        held_receipt_response_bytes,
+        measurement_bytes,
+        declared_counter_scratch_bytes,
+    ])?;
+    if requested_bytes > maximum {
+        return Err(refused());
+    }
+    Ok(PacketNativeRestoreCommitConstructionData {
+        original_projection_bytes,
+        incoming_commit_bytes,
+        immutable_launch_bytes,
+        attempt_and_model_header_bytes,
+        model_control_bytes,
+        held_receipt_response_bytes,
+        measurement_bytes,
+        declared_counter_scratch_bytes,
+        requested_bytes,
+    })
 }
 
 fn add(left: usize, right: usize) -> Result<usize, ProviderError> {

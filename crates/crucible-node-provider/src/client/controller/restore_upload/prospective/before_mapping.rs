@@ -23,13 +23,19 @@ pub struct OriginalCompleteRestoreUploadBeforeMappingData {
 
 impl OriginalCompleteRestoreUploadBeforeMappingData {
     /// Returns future uploader ownership, excluding Prepare and mapping owners.
-    pub fn retained_growth_bytes(&self) -> usize { self.retained }
+    pub fn retained_growth_bytes(&self) -> usize {
+        self.retained
+    }
 
     /// Returns complete simultaneous future upload protocol work.
-    pub fn maximum_simultaneous_transient_bytes(&self) -> usize { self.transient }
+    pub fn maximum_simultaneous_transient_bytes(&self) -> usize {
+        self.transient
+    }
 
     /// Returns explicit quote and prospective association view headers.
-    pub fn declared_counter_scratch_bytes(&self) -> usize { self.scratch }
+    pub fn declared_counter_scratch_bytes(&self) -> usize {
+        self.scratch
+    }
 
     /// Checks all later identity-bearing upload axes beneath this earlier row.
     ///
@@ -46,12 +52,15 @@ impl OriginalCompleteRestoreUploadBeforeMappingData {
         references: [&ContentRef; 5],
     ) -> Result<(), ProviderError> {
         if actual.bounded_input_bytes.is_some()
-            || references.into_iter().zip(self.input_lengths)
+            || references
+                .into_iter()
+                .zip(self.input_lengths)
                 .any(|(reference, length)| usize::try_from(reference.length.get()) != Ok(length))
             || actual.mapping_bytes > self.mapping_bytes
             || actual.retained > self.retained
             || actual.transient > self.transient
-            || actual.scratch > self.scratch {
+            || actual.scratch > self.scratch
+        {
             return Err(credit());
         }
         Ok(())
@@ -64,17 +73,23 @@ impl CnpController {
     /// Includes the actual future mapping-normalization tuple and serializer
     /// layouts without constructing a mapping or encoding any archive bytes.
     pub fn original_complete_restore_upload_before_mapping_counter_scratch_data(&self) -> usize {
-        PreparedArchivedProtocolMapping::original_normalization_counter_scratch_data(self.authority())
-            + storage::counter_scratch_data()
+        PreparedArchivedProtocolMapping::original_normalization_counter_scratch_data(
+            self.authority(),
+        ) + storage::counter_scratch_data()
             + size_of::<OriginalCompleteRestoreUploadBeforeMappingData>()
             + size_of::<OriginalCompleteRestoreInputUploadProspectiveStorageData>()
             + size_of::<[inputs::Reference<'static>; 6]>()
             + size_of::<[Result<inputs::Reference<'static>, ProviderError>; 5]>()
-            + size_of::<[usize; 5]>() + size_of::<std::array::IntoIter<usize, 5>>()
-            + size_of::<[blake3::Hash; 5]>() + size_of::<[&ContentRef; 5]>()
-            + size_of::<[&str; 4]>() + size_of::<[u8; 32]>()
-            + 2 * size_of::<blake3::Hasher>() + 2 * size_of::<blake3::Hash>()
-            + size_of::<(usize, usize)>() + size_of::<std::fmt::Arguments<'static>>()
+            + size_of::<[usize; 5]>()
+            + size_of::<std::array::IntoIter<usize, 5>>()
+            + size_of::<[blake3::Hash; 5]>()
+            + size_of::<[&ContentRef; 5]>()
+            + size_of::<[&str; 4]>()
+            + size_of::<[u8; 32]>()
+            + 2 * size_of::<blake3::Hasher>()
+            + 2 * size_of::<blake3::Hash>()
+            + size_of::<(usize, usize)>()
+            + size_of::<std::fmt::Arguments<'static>>()
     }
 
     /// Quotes six-role publication before constructing a historical mapping.
@@ -105,23 +120,43 @@ impl CnpController {
             || self.original_complete_restore.is_some()
             || self.original_complete_restore_prepare.is_some()
             || self.original_complete_restore_commit.is_some()
-            || self.original(planned_prepare).is_some() {
+            || self.original(planned_prepare).is_some()
+        {
             return Err(refused());
         }
         let roles = input_lengths.map(inputs::Reference::archive_bound);
         let [native, control, anchor, owner, journal] = roles;
-        let references = [native?, control?, anchor?, owner?, journal?,
-            inputs::Reference::mapping(maximum_mapping_bytes)?];
-        let parts = storage::quote_references(self, &references,
-            request_identity(planned_prepare), 1, maximum)?;
+        let references = [
+            native?,
+            control?,
+            anchor?,
+            owner?,
+            journal?,
+            inputs::Reference::mapping(maximum_mapping_bytes)?,
+        ];
+        let parts = storage::quote_references(
+            self,
+            &references,
+            request_identity(planned_prepare),
+            1,
+            maximum,
+        )?;
         let scratch = self.original_complete_restore_upload_before_mapping_counter_scratch_data();
-        if parts.retained.checked_add(parts.transient)
+        if parts
+            .retained
+            .checked_add(parts.transient)
             .and_then(|total| total.checked_add(scratch))
-            .filter(|total| *total <= maximum).is_none() {
+            .filter(|total| *total <= maximum)
+            .is_none()
+        {
             return Err(credit());
         }
-        Ok(OriginalCompleteRestoreUploadBeforeMappingData {input_lengths,
-            mapping_bytes: maximum_mapping_bytes, retained: parts.retained,
-            transient: parts.transient, scratch})
+        Ok(OriginalCompleteRestoreUploadBeforeMappingData {
+            input_lengths,
+            mapping_bytes: maximum_mapping_bytes,
+            retained: parts.retained,
+            transient: parts.transient,
+            scratch,
+        })
     }
 }

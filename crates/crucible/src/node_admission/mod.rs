@@ -106,8 +106,8 @@ pub struct AdmittedGraph {
     capability_requirements: Option<AdmittedCapabilitySelection>,
 }
 
-mod retained_runtime_storage;
 mod construction_storage;
+mod retained_runtime_storage;
 pub use construction_storage::{
     FixedFourConformanceGraphConstructionInputs, FixedFourConformanceGraphConstructionStorageData,
 };
@@ -491,5 +491,7 @@ pub use conformance::{
 
 pub(crate) use conformance::original_runtime_construction_failure_reason;
 
-pub use conformance::{OriginalRestorationConstructionInputs,
-    OriginalRestorationNodeConstructionData, OriginalRestorationNodeInputs};
+pub use conformance::{
+    OriginalRestorationConstructionInputs, OriginalRestorationNodeConstructionData,
+    OriginalRestorationNodeInputs,
+};

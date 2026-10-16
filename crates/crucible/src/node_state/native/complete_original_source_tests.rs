@@ -273,10 +273,12 @@ fn native_ticket_does_not_infer_missing_restoration_data_from_signed_archive() {
     let owners = native_ids(&source);
     let ticket = source.take_native_ticket(&owners[0]).unwrap();
 
-    assert!(matches!(ticket.native_restoration_construction_data(), Err(RuntimeError::UnsupportedFacet)));
+    assert!(matches!(
+        ticket.native_restoration_construction_data(),
+        Err(RuntimeError::UnsupportedFacet)
+    ));
     ticket.authenticate_source(&source).unwrap();
     assert_eq!(ticket.owner().unwrap().owner, owners[0]);
     assert!(source.take_native_ticket(&owners[0]).is_err());
     assert!(source.take_native_ticket(&owners[1]).is_ok());
 }
-

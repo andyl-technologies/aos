@@ -278,17 +278,26 @@ impl PacketCompleteReportStartupHolder {
         }
         let _loan = StartupLoan(&held.in_flight);
         let invocation = held.authority.original_launches.iter().any(|launch| {
-            launch.selection.provider.implementation.formats.iter().any(|schema| {
-                schema.id.as_str() == "source-owned.packet-native-continuation/14"
-            })
+            launch
+                .selection
+                .provider
+                .implementation
+                .formats
+                .iter()
+                .any(|schema| schema.id.as_str() == "source-owned.packet-native-continuation/14")
         });
         let mut admission = if invocation {
             held.plan.reserve_original_invocation_report_startup(
-                &held.authority.roster.sources, &held.authority.original_launches)
+                &held.authority.roster.sources,
+                &held.authority.original_launches,
+            )
         } else {
             held.plan.reserve_original_report_startup(
-                &held.authority.roster.sources, &held.authority.original_launches)
-        }.map_err(evidence_qualification)?;
+                &held.authority.roster.sources,
+                &held.authority.original_launches,
+            )
+        }
+        .map_err(evidence_qualification)?;
         let peak = admission.requested_peak_data();
         for member in 0..3 {
             admission

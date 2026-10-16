@@ -305,8 +305,12 @@ fn prepare_sources(
             // This fixed-stack, allocation-free DATA binder belongs to the
             // ordinary operator-install phase, like the tuple binders above.
             // Later runtime/native grants do not authorize this earlier work.
-            source.bind_original_invocation_snapshot_declaration().map_err(|_| refused())?;
-            super::super::records::validate_original_native_definition_data(&source, content, member)?;
+            source
+                .bind_original_invocation_snapshot_declaration()
+                .map_err(|_| refused())?;
+            super::super::records::validate_original_native_definition_data(
+                &source, content, member,
+            )?;
         }
         let host_protocol_bytes = match &participant.capture_profile {
             PacketNative5CaptureProfile::OwnedProtocol11 {

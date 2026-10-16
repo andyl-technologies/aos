@@ -41,9 +41,11 @@ pub(crate) use restore_identity::{
     OriginalNativeRestorationConnectionIdentity, authenticate_original_native_prepare_header_data,
 };
 pub(crate) use restore_input_quote::NativeRestoreInputAllocationQuote;
-pub use restore_input_quote::{OriginalNativeRestoreInputConstructionData,
+pub use restore_input_quote::{
+    OriginalNativeRestoreInputConstructionData,
     original_native_restore_input_construction_counter_scratch_data,
-    original_native_restore_input_construction_storage_data};
+    original_native_restore_input_construction_storage_data,
+};
 pub(crate) use restore_inputs::{
     OriginalCompleteRestoreInputCustody, OriginalCompleteRestoreInputProgress,
 };

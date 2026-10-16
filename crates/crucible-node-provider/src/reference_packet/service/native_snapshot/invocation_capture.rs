@@ -80,8 +80,9 @@ pub const fn native_owned14_snapshot_schema_counter_scratch_data() -> usize {
         + std::mem::size_of::<&crucible_node_contract::ContentRef>()
         + std::mem::size_of::<&[u8]>()
         + std::mem::size_of::<(&u8, &[u8])>()
-        + std::mem::size_of::<std::iter::Zip<
-            std::slice::Iter<'static, u8>, std::slice::ChunksExact<'static, u8>>>()
+        + std::mem::size_of::<
+            std::iter::Zip<std::slice::Iter<'static, u8>, std::slice::ChunksExact<'static, u8>>,
+        >()
         + std::mem::size_of::<[u8; 4]>()
         + std::mem::size_of::<[u8; 8]>()
         + std::mem::size_of::<Result<u64, std::num::TryFromIntError>>()

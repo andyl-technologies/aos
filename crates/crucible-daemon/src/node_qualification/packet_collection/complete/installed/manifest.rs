@@ -208,10 +208,17 @@ fn validate_declaration(selected: &Manifest) -> Result<(), QualificationError> {
     mechanism::authenticate_selection_data(&selected.schema, selected.mechanism)?;
     mechanism::authenticate_snapshot_declaration_data(
         &selected.schema,
-        selected.participants.each_ref().map(|one| (
-            one.installation.provider.implementation.formats.as_slice(),
-            one.installation.binding.compatibility.implementation.formats.as_slice(),
-        )),
+        selected.participants.each_ref().map(|one| {
+            (
+                one.installation.provider.implementation.formats.as_slice(),
+                one.installation
+                    .binding
+                    .compatibility
+                    .implementation
+                    .formats
+                    .as_slice(),
+            )
+        }),
         &selected.content,
     )?;
     if selected.content.len() > 128

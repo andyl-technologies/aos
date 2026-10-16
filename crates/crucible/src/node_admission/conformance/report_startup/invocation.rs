@@ -6,8 +6,8 @@
 
 use super::*;
 use crucible_node_provider::reference_packet::service::report_startup::{
-    original_invocation_report_startup_storage_data,
     original_invocation_report_startup_counter_scratch_data,
+    original_invocation_report_startup_storage_data,
 };
 
 impl InstalledConformancePlan {
@@ -33,8 +33,10 @@ impl InstalledConformancePlan {
             .0
             .authority
             .original_report_startup_policy(self.evidence(), &scope)?;
-        let fixed = add(fixed_scratch(&policy)?,
-            original_invocation_report_startup_counter_scratch_data())?;
+        let fixed = add(
+            fixed_scratch(&policy)?,
+            original_invocation_report_startup_counter_scratch_data(),
+        )?;
         let mut budget = Budget::new(policy.maximum_requested_bytes, fixed)?;
         let storage = self.0.authority.authenticate_original_report_startup(
             self.evidence(),
@@ -91,7 +93,9 @@ impl InstalledConformancePlan {
     }
 }
 
-fn compiled_invocation_rows(launch: &PacketNative5SourceLaunch) -> Result<StartupRows, EvidenceError> {
+fn compiled_invocation_rows(
+    launch: &PacketNative5SourceLaunch,
+) -> Result<StartupRows, EvidenceError> {
     let mut rows = StartupRows::default();
     for (selected, purpose, slot) in [
         (

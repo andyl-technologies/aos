@@ -583,7 +583,6 @@ mod member_edition_data_tests {
     }
 }
 
-
 impl PacketCompleteSemanticSource {
     /// Checks only this live Source's completed genuine-original invocation.
     ///
@@ -601,11 +600,19 @@ impl PacketCompleteSemanticSource {
         &self,
     ) -> Result<(), RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
-        let slot = self.ack_peer_birth.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        let slot = self
+            .ack_peer_birth
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
         let birth = slot.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
         birth.authenticate_original_initial_lifecycle_data()?;
-        let state = birth.native_startup.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
-        state.member.authenticate_original_invocation_source_identity_data(self)?;
+        let state = birth
+            .native_startup
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        state
+            .member
+            .authenticate_original_invocation_source_identity_data(self)?;
         if !state.member.requires_original_invocation_data()? {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -647,24 +654,43 @@ impl PacketCompleteSemanticSource {
 // This leaf validates immutable constructor-produced DATA only. Its caller has
 // already authenticated the actual private member edition/Source and completion;
 // no decoded field or public argument can bypass that original owner boundary.
-fn original_capture_purpose_data(body: &serde_json::Value)
--> Result<PacketNativeInvocationPurposeData, RuntimeError> {
+fn original_capture_purpose_data(
+    body: &serde_json::Value,
+) -> Result<PacketNativeInvocationPurposeData, RuntimeError> {
     let source = body.as_object().ok_or(RuntimeError::ForeignAuthority)?;
     let keys = [
-        "ack_emitter_selection", "capture_allocation_selection", "capture_profile",
-        "codec_metadata_extent", "complete_restore_selection", "confirmation_selection",
-        "coordinator", "fresh_restore_allocation_selection", "invocation", "limits",
-        "native_codec_metadata_extent", "native_startup_allocation", "program",
-        "protocol_metadata_limits", "report_startup_allocation", "restore_input_emitter_selection",
-        "schema", "selection", "storage",
+        "ack_emitter_selection",
+        "capture_allocation_selection",
+        "capture_profile",
+        "codec_metadata_extent",
+        "complete_restore_selection",
+        "confirmation_selection",
+        "coordinator",
+        "fresh_restore_allocation_selection",
+        "invocation",
+        "limits",
+        "native_codec_metadata_extent",
+        "native_startup_allocation",
+        "program",
+        "protocol_metadata_limits",
+        "report_startup_allocation",
+        "restore_input_emitter_selection",
+        "schema",
+        "selection",
+        "storage",
     ];
-    if source.len() != keys.len() || keys.iter().any(|key| !source.contains_key(*key))
+    if source.len() != keys.len()
+        || keys.iter().any(|key| !source.contains_key(*key))
         || body.get("schema").and_then(serde_json::Value::as_str)
             != Some(PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA)
-    { return Err(RuntimeError::ForeignAuthority); }
+    {
+        return Err(RuntimeError::ForeignAuthority);
+    }
     let purpose = PacketNativeInvocationPurposeData::from_original_value_data(
-        body.get("invocation").ok_or(RuntimeError::ForeignAuthority)?,
-    ).map_err(|_| RuntimeError::ForeignAuthority)?;
+        body.get("invocation")
+            .ok_or(RuntimeError::ForeignAuthority)?,
+    )
+    .map_err(|_| RuntimeError::ForeignAuthority)?;
     if !purpose.is_original_execution_data() {
         return Err(RuntimeError::ForeignAuthority);
     }
@@ -681,32 +707,57 @@ mod original_capture_purpose_data_tests {
     fn source_data() -> Value {
         let mut source = serde_json::Map::new();
         for key in [
-            "ack_emitter_selection", "capture_allocation_selection", "capture_profile",
-            "codec_metadata_extent", "complete_restore_selection", "confirmation_selection",
-            "coordinator", "fresh_restore_allocation_selection", "invocation", "limits",
-            "native_codec_metadata_extent", "native_startup_allocation", "program",
-            "protocol_metadata_limits", "report_startup_allocation", "restore_input_emitter_selection",
-            "schema", "selection", "storage",
-        ] { source.insert(key.into(), Value::Null); }
-        source.insert("schema".into(), PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA.into());
-        source.insert("invocation".into(), json!({
-            "schema":"source-owned.packet-native-invocation-purpose/1",
-            "purpose":"original_execution", "source":null,
-            "target":{
-                "world":canonical::hash("cnp.world-binding.v1", b"data").unwrap(),
-                "binding":canonical::hash("cnp.node-binding.v1", b"data").unwrap(),
-                "node":"node", "owner":"owner", "session":"session",
-                "incarnation":"incarnation", "owner_generation":"1",
-                "prepared_token":"prepared", "admission":"admission"
-            }
-        }));
+            "ack_emitter_selection",
+            "capture_allocation_selection",
+            "capture_profile",
+            "codec_metadata_extent",
+            "complete_restore_selection",
+            "confirmation_selection",
+            "coordinator",
+            "fresh_restore_allocation_selection",
+            "invocation",
+            "limits",
+            "native_codec_metadata_extent",
+            "native_startup_allocation",
+            "program",
+            "protocol_metadata_limits",
+            "report_startup_allocation",
+            "restore_input_emitter_selection",
+            "schema",
+            "selection",
+            "storage",
+        ] {
+            source.insert(key.into(), Value::Null);
+        }
+        source.insert(
+            "schema".into(),
+            PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA.into(),
+        );
+        source.insert(
+            "invocation".into(),
+            json!({
+                "schema":"source-owned.packet-native-invocation-purpose/1",
+                "purpose":"original_execution", "source":null,
+                "target":{
+                    "world":canonical::hash("cnp.world-binding.v1", b"data").unwrap(),
+                    "binding":canonical::hash("cnp.node-binding.v1", b"data").unwrap(),
+                    "node":"node", "owner":"owner", "session":"session",
+                    "incarnation":"incarnation", "owner_generation":"1",
+                    "prepared_token":"prepared", "admission":"admission"
+                }
+            }),
+        );
         Value::Object(source)
     }
 
     #[test]
     fn original_capture_purpose_data_refuses_target_legacy_and_incomplete_full_grammars() {
         let original = source_data();
-        assert!(original_capture_purpose_data(&original).unwrap().is_original_execution_data());
+        assert!(
+            original_capture_purpose_data(&original)
+                .unwrap()
+                .is_original_execution_data()
+        );
         let bytes = canonical::canonical_json(&original).unwrap();
         let reference = canonical::content_ref(b"archive data", "application/json").unwrap();
         let mut target = original.clone();
@@ -714,18 +765,33 @@ mod original_capture_purpose_data_tests {
         target["invocation"]["source"] = json!({
             "runtime":reference, "native_state":reference, "owner":"owner"
         });
-        assert!(!PacketNativeInvocationPurposeData::from_original_value_data(
-            &target["invocation"]).unwrap().is_original_execution_data());
+        assert!(
+            !PacketNativeInvocationPurposeData::from_original_value_data(&target["invocation"])
+                .unwrap()
+                .is_original_execution_data()
+        );
         assert!(original_capture_purpose_data(&target).is_err());
         for axis in 0..7 {
             let mut changed = original.clone();
             match axis {
-                0 => changed["schema"] = "source-owned.packet-canonical-ack-source-binding/14".into(),
-                1 => { changed.as_object_mut().unwrap().remove("native_startup_allocation"); },
+                0 => {
+                    changed["schema"] = "source-owned.packet-canonical-ack-source-binding/14".into()
+                }
+                1 => {
+                    changed
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("native_startup_allocation");
+                }
                 2 => changed["unknown"] = true.into(),
                 3 => changed["invocation"]["source"] = json!({}),
                 4 => changed["invocation"]["unknown"] = true.into(),
-                5 => { changed["invocation"]["target"].as_object_mut().unwrap().remove("incarnation"); },
+                5 => {
+                    changed["invocation"]["target"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("incarnation");
+                }
                 _ => changed["invocation"]["target"]["world"]["domain"] = "cnp.foreign.v1".into(),
             }
             assert!(original_capture_purpose_data(&changed).is_err());
