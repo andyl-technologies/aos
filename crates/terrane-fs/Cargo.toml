@@ -16,6 +16,12 @@ tokio = { workspace = true, optional = true }
 
 [features]
 tokio = ["dep:tokio", "terrane/tokio"]
+# Native proof executables run in isolated guests, outside deployed role builds.
+native-test-fixtures = ["tokio"]
+
+[[example]]
+name = "publication_fixture"
+required-features = ["native-test-fixtures"]
 
 [lints]
 workspace = true
