@@ -315,8 +315,7 @@ mod tests {
 
     #[test]
     fn canonical_launch_bank_covers_actual_capacity_and_refuses_one_short_retained_window()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
+    -> Result<(), Box<dyn std::error::Error>> {
         for value in [
             serde_json::json!({}),
             serde_json::json!({"launch": "x".repeat(8193)}),
