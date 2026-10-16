@@ -27,6 +27,9 @@ fn mask_after_operations(package: &str, target: &str, code: &str) -> String {
     let operational = operational_inputs::mask(package, target, code);
     let recovery = operational_recovery::mask(package, target, &operational);
     let code = recovery.as_str();
+    if package == "crucible-qemu" && target == "src/linux_cgroup/target_dispatcher/tests" {
+        return mask_dispatcher_test_waits(code);
+    }
     let (requirements, expressions): (&[&str], &[(&str, usize)]) = match (package, target) {
         ("crucible-daemon", "src/executor_pool/checkpoint") => (
             &[
@@ -112,24 +115,6 @@ fn mask_after_operations(package: &str, target: &str, code: &str) -> String {
         ),
         // Component mechanisms and deliberate expiry inputs do not establish
         // native pager lifecycle or Source authority.
-        ("crucible-qemu", "src/linux_cgroup/target_dispatcher/tests") => (
-            &[
-                "letworker=thread::spawn(move||run(worker_state));",
-                "letworker_id=worker.thread().id();",
-                "letend=std::time::Instant::now()+Duration::from_secs(5);",
-                "forepochin1..=4{",
-                "while!job.is_finished()&&std::time::Instant::now()<end{",
-                "while!worker.is_finished()&&std::time::Instant::now()<end{",
-                "assert!(job.is_finished(),);",
-                "assert_eq!(worker.thread().id(),worker_id);",
-                "assert!(!worker.is_finished());",
-                "drop(job.retire().unwrap());",
-                "assert!(worker.is_finished(),);",
-                "worker.join().unwrap();",
-                "assert_eq!(Arc::strong_count(&state),1);",
-            ],
-            &[("thread::sleep(Duration::from_millis(1));", 2)],
-        ),
         ("crucible-qemu", "src/node/exact_snapshot/capture_original/tests/external") => (
             &[
                 "fnwait(&self,timeout:Duration)",
@@ -213,6 +198,170 @@ fn mask_after_operations(package: &str, target: &str, code: &str) -> String {
         for name in identifiers.1 {
             masked = mask_identifier(&masked, name);
         }
+    }
+    masked
+}
+
+// Only the entered worker/slot transitions and physical observations are bound.
+// These file-backed component mechanisms grant no native authority.
+const DISPATCHER_TEST_REQUIREMENTS: &[&str] = &[
+    r#"fn mechanism_worker(state: Arc<DispatcherState>, capacity: usize) -> JoinHandle<()> {
+    let event_capacity = capacity + 1;
+    thread::spawn(move || run(state, event_capacity))
+}"#,
+    r#"fn one_worker_returns_actual_controls_for_sequential_jobs()"#,
+    r#"fn busy_node_cannot_block_another_nodes_physical_return()"#,
+    r#"let state = mechanism_state(directory.path(), 1)?;
+    let worker_state = Arc::clone(&state);
+    let worker = mechanism_worker(worker_state, 1);
+    let worker_id = worker.thread().id();
+    let end = std::time::Instant::now() + Duration::from_secs(5);"#,
+    r#"for epoch in 1..=4 {"#,
+    r#"signal_terminal(&control.watcher_state, cancellation.as_raw_fd())?;
+        {
+            let mut slots = state.slots.lock().unwrap();
+            let slot = &mut slots[0];
+            assert_eq!(slot.phase, JobPhase::Idle);
+            slot.epoch = epoch;
+            slot.phase = JobPhase::Queued;
+            slot.control = Some(control);
+        }
+        let job = TargetWatchJob {
+            state: Arc::clone(&state),
+            epoch,
+            index: 0,
+            released: false,
+        };
+        wake(&state.wake)?;"#,
+    r#"assert!(
+            job.is_finished(),
+            "same worker did not return actual job controls"
+        );
+        assert_eq!(worker.thread().id(), worker_id);
+        assert!(!worker.is_finished());
+        drop(job.retire().unwrap());
+        assert_eq!(state.slots.lock().unwrap()[0].phase, JobPhase::Idle);"#,
+    r#"state.shutdown.store(true, Ordering::Release);
+    wake(&state.wake)?;
+    while !worker.is_finished() && std::time::Instant::now() < end {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        worker.is_finished(),
+        "fixed Main worker did not physically stop"
+    );
+    worker.join().unwrap();
+    assert_eq!(Arc::strong_count(&state), 1);"#,
+    r#"let state = mechanism_state(directory.path(), 2)?;
+    let worker = mechanism_worker(Arc::clone(&state), 2);
+    let end = std::time::Instant::now() + Duration::from_secs(5);"#,
+    r#"signal_terminal(&first.watcher_state, first_cancel.as_raw_fd())?;
+    signal_terminal(&second.watcher_state, second_cancel.as_raw_fd())?;
+    {
+        let mut slots = state.slots.lock().unwrap();
+        for (slot, control) in slots.iter_mut().zip([first, second]) {
+            slot.epoch = 1;
+            slot.phase = JobPhase::Queued;
+            slot.control = Some(control);
+        }
+    }
+    let first = TargetWatchJob {
+        state: Arc::clone(&state),
+        epoch: 1,
+        index: 0,
+        released: false,
+    };
+    let second = TargetWatchJob {
+        state: Arc::clone(&state),
+        epoch: 1,
+        index: 1,
+        released: false,
+    };
+    wake(&state.wake)?;"#,
+    r#"assert!(
+        second.is_finished(),
+        "empty node must return independently of populated node"
+    );
+    assert!(
+        !first.is_finished(),
+        "populated node must retain its own controls"
+    );
+    drop(second.retire().unwrap());
+    assert_eq!(state.slots.lock().unwrap()[0].phase, JobPhase::Running);
+    assert_eq!(state.slots.lock().unwrap()[1].phase, JobPhase::Idle);"#,
+    r#"fs::write(first_path.join("cgroup.events"), "populated 0\n")?;
+    while !first.is_finished() && std::time::Instant::now() < end {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        first.is_finished(),
+        "first node must retain and later return its exact controls"
+    );
+    drop(first.retire().unwrap());"#,
+    r#"state.shutdown.store(true, Ordering::Release);
+    wake(&state.wake)?;
+    while !worker.is_finished() && std::time::Instant::now() < end {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(worker.is_finished());
+    worker.join().unwrap();
+    assert_eq!(Arc::strong_count(&state), 1);"#,
+    r#"let returned = job.retire().unwrap();
+    assert_eq!(state.slots.lock().unwrap()[0].phase, JobPhase::Retiring);
+    let observed = fs::metadata(format!("/proc/self/fd/{descriptor}"))?;
+    assert_eq!(
+        (observed.dev(), observed.ino()),
+        (expected.dev(), expected.ino())
+    );
+    drop(returned);
+
+    assert_eq!(state.slots.lock().unwrap()[0].phase, JobPhase::Idle);
+    // Another parallel test may reuse the numeric descriptor. It cannot reopen
+    // this private fixture's same inode between these two observations.
+    assert!(
+        fs::metadata(format!("/proc/self/fd/{descriptor}")).map_or(true, |observed| {
+            (observed.dev(), observed.ino()) != (expected.dev(), expected.ino())
+        })
+    );
+    assert_eq!(Arc::strong_count(&state), 1);"#,
+];
+
+const DISPATCHER_TEST_LOOPS: &[(&str, usize)] = &[
+    (
+        r#"while !job.is_finished() && std::time::Instant::now() < end { thread::sleep(Duration::from_millis(1)); }"#,
+        1,
+    ),
+    (
+        r#"while !worker.is_finished() && std::time::Instant::now() < end { thread::sleep(Duration::from_millis(1)); }"#,
+        2,
+    ),
+    (
+        r#"while !first.is_finished() && std::time::Instant::now() < end { thread::sleep(Duration::from_millis(1)); }"#,
+        1,
+    ),
+    (
+        r#"while !second.is_finished() && std::time::Instant::now() < end { thread::sleep(Duration::from_millis(1)); }"#,
+        1,
+    ),
+];
+
+fn mask_dispatcher_test_waits(code: &str) -> String {
+    let compact = compact_code(code);
+    let deadline = source_pattern("let end = std::time::Instant::now() + Duration::from_secs(5);");
+    if expression_offsets(code, &deadline).len() != 2
+        || !DISPATCHER_TEST_REQUIREMENTS
+            .iter()
+            .all(|required| compact.contains(&source_pattern(required)))
+        || !DISPATCHER_TEST_LOOPS.iter().all(|(expression, count)| {
+            expression_offsets(code, &source_pattern(expression)).len() == *count
+        })
+    {
+        return code.to_owned();
+    }
+
+    let mut masked = code.to_owned();
+    for (expression, count) in DISPATCHER_TEST_LOOPS {
+        mask_expression(&mut masked, &source_pattern(expression), *count);
     }
     masked
 }
@@ -433,6 +582,66 @@ fn reviewed_waits_keep_deadlines_and_reject_additional_delays()
                 .iter()
                 .any(|finding| finding.contains("`retry`")),
             "callable retry helper passed: {target}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn dispatcher_waits_require_each_fixed_deadline_and_whole_loop()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = super::workspace_root();
+    let source = std::fs::read_to_string(
+        root.join("crates/crucible-qemu/src/linux_cgroup/target_dispatcher/tests.rs"),
+    )?;
+    let has_wait = |source: &str| {
+        let code = super::scrub_comments_and_strings(source);
+        let masked = mask_dispatcher_test_waits(&code);
+        super::flaky_escape_failures("unreviewed", "unreviewed", &masked)
+            .iter()
+            .any(|finding| finding.contains("`thread::sleep`"))
+    };
+    assert!(!has_wait(&source));
+
+    let deadline = "let end = std::time::Instant::now() + Duration::from_secs(5);";
+    let deadlines = source
+        .match_indices(deadline)
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    assert_eq!(deadlines.len(), 2);
+    for offset in deadlines {
+        let mut changed = source.clone();
+        changed.replace_range(offset..offset + deadline.len(), "removed_deadline();");
+        assert!(
+            has_wait(&changed),
+            "one missing fixed deadline was admitted"
+        );
+    }
+
+    let condition = " && std::time::Instant::now() < end";
+    let conditions = source
+        .match_indices(condition)
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    assert_eq!(conditions.len(), 5);
+    for offset in conditions {
+        let mut changed = source.clone();
+        changed.replace_range(offset..offset + condition.len(), "");
+        assert!(has_wait(&changed), "one unbounded wait loop was admitted");
+    }
+    for (expression, _) in DISPATCHER_TEST_LOOPS {
+        let changed = format!("{source}\nfn extra_wait() {{ {expression} }}");
+        assert!(
+            has_wait(&changed),
+            "an additional reviewed loop was admitted"
+        );
+    }
+    for requirement in DISPATCHER_TEST_REQUIREMENTS {
+        assert!(source.contains(*requirement));
+        let changed = source.replacen(*requirement, "removed_worker_or_custody_proof();", 1);
+        assert!(
+            has_wait(&changed),
+            "missing worker/custody proof was admitted"
         );
     }
     Ok(())

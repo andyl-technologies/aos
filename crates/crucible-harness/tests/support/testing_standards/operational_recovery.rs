@@ -4,13 +4,17 @@
 //! custody assertion or adding another attempt leaves the retry token visible.
 //! These local controls establish no live native Source or lifecycle authority.
 
-use super::{compact_code, identifier_count, mask_identifier, source_pattern};
+use super::{
+    compact_code, expression_offsets, identifier_count, mask_expression, mask_identifier,
+    source_pattern,
+};
 
 struct Contract {
     package: &'static str,
     target: &'static str,
     required: &'static [&'static str],
     identifiers: &'static [(&'static str, usize)],
+    expressions: &'static [(&'static str, usize)],
 }
 
 const CONTRACTS: &[Contract] = &[
@@ -28,6 +32,7 @@ const CONTRACTS: &[Contract] = &[
             r#"drop((first, retry)); assert_eq!(fixture.quota.0.usage().unwrap(), baseline);"#,
         ],
         identifiers: &[("retry", 5)],
+        expressions: &[],
     },
     Contract {
         package: "crucible-cas",
@@ -45,6 +50,7 @@ const CONTRACTS: &[Contract] = &[
             "pending_duplicate_still_compares_exact_envelope_and_preserves_retry_state",
             1,
         )],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu",
@@ -71,6 +77,7 @@ const CONTRACTS: &[Contract] = &[
                 1,
             ),
         ],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu",
@@ -85,6 +92,7 @@ const CONTRACTS: &[Contract] = &[
             "begin_refuses_a_mismatched_or_absent_connection_receipt_and_poisoning_blocks_retry",
             1,
         )],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu",
@@ -106,6 +114,7 @@ const CONTRACTS: &[Contract] = &[
             ),
             ("retry", 3),
         ],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu",
@@ -128,6 +137,7 @@ const CONTRACTS: &[Contract] = &[
                 1,
             ),
         ],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu-plugin",
@@ -147,6 +157,7 @@ const CONTRACTS: &[Contract] = &[
             "negative_completion_after_its_effect_retains_the_receipt_without_retry",
             1,
         )],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu-plugin",
@@ -161,6 +172,7 @@ const CONTRACTS: &[Contract] = &[
             r#"assert!(owner.identity_return().is_ok()); assert!(!owner.retained());"#,
         ],
         identifiers: &[("retry", 2)],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu-plugin",
@@ -179,6 +191,7 @@ const CONTRACTS: &[Contract] = &[
             ),
             ("retry", 2),
         ],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu-plugin",
@@ -195,6 +208,7 @@ const CONTRACTS: &[Contract] = &[
             "already_held_workspace_cannot_bless_a_retry_with_retained_capture",
             1,
         )],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu-plugin",
@@ -209,6 +223,7 @@ const CONTRACTS: &[Contract] = &[
             r#"assert_eq!(writer.journal.lock().unwrap().bytes, bytes);"#,
         ],
         identifiers: &[("retry", 3)],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu-plugin",
@@ -227,6 +242,7 @@ const CONTRACTS: &[Contract] = &[
             "empty_negative_creation_settles_only_local_custody_without_retry",
             1,
         )],
+        expressions: &[],
     },
     Contract {
         package: "crucible-qemu-plugin",
@@ -241,6 +257,7 @@ const CONTRACTS: &[Contract] = &[
             "null_success_cannot_admit_birth_or_retry_the_same_attempt",
             1,
         )],
+        expressions: &[],
     },
     Contract {
         package: "crucible-cas",
@@ -254,6 +271,253 @@ const CONTRACTS: &[Contract] = &[
             r#"assert!(fixture.quota.1.reclaim(u64::MAX).unwrap().unwrap() > 0); assert_eq!(fixture.quota.0.usage().unwrap(), baseline);"#,
         ],
         identifiers: &[("retry", 3)],
+        expressions: &[],
+    },
+    // Real file descriptors model physical controls. These bounded component
+    // recovery attempts preserve the same cell/epoch and first cause; no Main
+    // or Target Original is issued, and the production retry helper is unmasked.
+    Contract {
+        package: "crucible-qemu",
+        target: "src/linux_cgroup/target_dispatcher/tests",
+        required: &[
+            r#"fn assert_descriptor_closed(descriptor: RawFd, expected: &fs::Metadata) {
+    // Parallel tests may reuse the number, but cannot reopen this private file.
+    assert!(
+        fs::metadata(format!("/proc/self/fd/{descriptor}")).map_or(true, |observed| {
+            (observed.dev(), observed.ino()) != (expected.dev(), expected.ino())
+        }),
+        "the exact retained file must close before its slot becomes reusable"
+    );
+}"#,
+            r#"slots[0].epoch = 1;
+        slots[0].phase = JobPhase::Quarantined;
+        slots[0].control = Some(control);
+        slots[0].failure = Some(JobFailure {
+            panicked: true,
+            ..JobFailure::default()
+        });
+    }
+    let job = TargetWatchJob {
+        state: Arc::clone(&state),
+        epoch: 1,
+        index: 0,
+        released: false,
+    };
+
+    let (job, first) = match job.retire() {
+        Err(retained) => retained,
+        Ok(_) => panic!("first failed attempt must be reported before physical retry"),
+    };
+    assert!(first.to_string().contains("panic true"));
+    assert!(fs::metadata(format!("/proc/self/fd/{descriptor}")).is_ok());
+    assert_eq!(state.slots.lock().unwrap()[0].phase, JobPhase::Quarantined);"#,
+            r#"let returned = job.retire().unwrap();
+    assert_eq!(state.slots.lock().unwrap()[0].phase, JobPhase::Retiring);
+    assert!(fs::metadata(format!("/proc/self/fd/{descriptor}")).is_ok());
+    drop(returned);
+
+    let slots = state.slots.lock().unwrap();
+    assert_eq!(slots[0].phase, JobPhase::Idle);
+    assert!(slots[0].failure.as_ref().unwrap().panicked);
+    assert!(slots[0].failure_reported);
+    assert_descriptor_closed(descriptor, &expected);"#,
+            r#"slots[0].epoch = 1;
+        slots[0].phase = JobPhase::Running;
+        state.running.lock().unwrap()[0] = Some(RunningJob {
+            epoch: 1,
+            control,
+            original: None,
+            draining: true,
+            failure: None,
+            next_attempt: None,
+        });
+    }"#,
+            r#"let poisoned = Arc::clone(&state);
+    assert!(
+        thread::spawn(move || {
+            let _held = poisoned.running.lock().unwrap();
+            panic!("component worker unwind while retaining actual controls");
+        })
+        .join()
+        .is_err()
+    );
+    let job = TargetWatchJob {
+        state: Arc::clone(&state),
+        epoch: 1,
+        index: 0,
+        released: false,
+    };
+
+    assert!(job.is_finished());
+    let (job, first) = match job.retire() {
+        Err(retained) => retained,
+        Ok(_) => panic!("first failed attempt must be reported before physical retry"),
+    };
+    assert!(first.to_string().contains("panic true"));
+    assert!(state.running.is_poisoned());
+    match state.running.lock() {
+        Err(poison) => assert!(poison.get_ref()[0].is_none()),
+        Ok(_) => panic!("job recovery must not erase containing worker poison"),
+    }
+    assert!(fs::metadata(format!("/proc/self/fd/{descriptor}")).is_ok());"#,
+            r#"drop(job.retire().unwrap());
+    let slots = state.slots.lock().unwrap();
+    assert_eq!(slots[0].phase, JobPhase::Idle);
+    assert!(slots[0].failure.as_ref().unwrap().panicked);
+    assert!(state.running.is_poisoned());
+    assert_descriptor_closed(descriptor, &expected);"#,
+            r#"for slot in slots.iter_mut() {
+            slot.epoch = 1;
+            slot.facade_live = true;
+        }
+        slots[0].phase = JobPhase::Running;
+        slots[1].phase = JobPhase::Queued;
+        slots[1].control = Some(queued_control);
+        state.running.lock().unwrap()[0] = Some(RunningJob {
+            epoch: 1,
+            control: running_control,
+            original: None,
+            draining: false,
+            failure: None,
+            next_attempt: None,
+        });
+    }"#,
+            r#"let poisoned = Arc::clone(&state);
+    assert!(
+        thread::spawn(move || {
+            let _held = poisoned.slots.lock().unwrap();
+            panic!("component slot-only poison before worker dispatch");
+        })
+        .join()
+        .is_err()
+    );
+
+    // This exits normally while holding an unpoisoned running array. Recovery
+    // must depend on the actual exit witness, not running mutex poison.
+    run(Arc::clone(&state), 3);
+    assert!(state.worker_exited.load(Ordering::Acquire));
+    assert!(!state.running.is_poisoned());"#,
+            r#"for (index, (descriptor, expected)) in descriptors.into_iter().enumerate() {
+        let job = TargetWatchJob {
+            state: Arc::clone(&state),
+            epoch: 1,
+            index,
+            released: false,
+        };
+        assert!(job.is_finished());
+        let (job, first) = match job.retire() {
+            Err(retained) => retained,
+            Ok(_) => panic!("worker exit must be reported before physical retry"),
+        };
+        assert!(first.to_string().contains("Target worker exited"));
+        assert!(fs::metadata(format!("/proc/self/fd/{descriptor}")).is_ok());
+        drop(job.retire().unwrap());
+        assert_descriptor_closed(descriptor, &expected);
+    }
+    assert!(state.running.lock().unwrap().iter().all(Option::is_none));
+    let slots = match state.slots.lock() {
+        Err(poison) => poison.into_inner(),
+        Ok(_) => panic!("individual recovery must retain containing slot poison"),
+    };
+    assert!(slots.iter().all(|slot| slot.phase == JobPhase::Idle));
+    assert!(slots.iter().all(|slot| slot.failure_reported));"#,
+            r#"slots[0].epoch = 7;
+        slots[0].phase = JobPhase::Quarantined;
+        slots[0].facade_live = true;
+        slots[0].control = Some(control);
+        slots[0].failure = Some(JobFailure {
+            panicked: true,
+            ..JobFailure::default()
+        });
+    }
+    drop(TargetWatchJob {
+        state: Arc::clone(&state),
+        epoch: 7,
+        index: 0,
+        released: false,
+    });
+    assert!(!state.slots.lock().unwrap()[0].facade_live);"#,
+            r#"let first = dispatcher.retry_abandoned_jobs().unwrap_err();
+    assert!(first.to_string().contains("panic true"));
+    assert_eq!(state.slots.lock().unwrap()[0].epoch, 7);
+    assert!(!state.slots.lock().unwrap()[0].facade_live);
+    assert!(fs::metadata(format!("/proc/self/fd/{descriptor}")).is_ok());
+
+    dispatcher.retry_abandoned_jobs()?;
+    let slots = state.slots.lock().unwrap();
+    assert_eq!(slots[0].epoch, 7);
+    assert_eq!(slots[0].phase, JobPhase::Idle);
+    assert!(slots[0].failure.as_ref().unwrap().panicked);
+    assert_descriptor_closed(descriptor, &expected);
+    drop(slots);"#,
+            r#"for (index, populated) in [true, false].into_iter().enumerate() {"#,
+            r#"super::super::tests::watcher_control_fixture(&path, populated)?;"#,
+            r#"slots[index].epoch = 1;
+        slots[index].phase = JobPhase::Quarantined;
+        slots[index].control = Some(control);
+        slots[index].failure = Some(JobFailure {
+            panicked: true,
+            ..JobFailure::default()
+        });"#,
+            r#"assert!(dispatcher.retry_abandoned_jobs().is_err());
+    assert!(
+        state
+            .slots
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|slot| slot.failure_reported)
+    );
+    assert!(dispatcher.retry_abandoned_jobs().is_err());
+    {
+        let slots = state.slots.lock().unwrap();
+        assert_eq!(slots[0].phase, JobPhase::Quarantined);
+        assert!(slots[0].control.is_some());
+        assert!(slots[0].next_retry.is_some());
+        assert_eq!(slots[1].phase, JobPhase::Idle);
+        assert!(slots[1].control.is_none());
+    }
+    // Model a scheduler timestamp already beyond the next permitted pass;
+    // this changes no Cleanup authority or physical empty observation.
+    fs::write(
+        directory.path().join("abandoned-0/cgroup.events"),
+        "populated 0\n",
+    )?;
+    state.slots.lock().unwrap()[0].next_retry = Some(Instant::now());
+    dispatcher.retry_abandoned_jobs()?;
+    assert!(
+        state
+            .slots
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|slot| slot.phase == JobPhase::Idle)
+    );"#,
+        ],
+        identifiers: &[
+            (
+                "quarantined_failure_is_reported_before_same_control_physical_retry",
+                1,
+            ),
+            (
+                "poisoned_running_cell_returns_its_same_owners_through_explicit_retry",
+                1,
+            ),
+            (
+                "slot_poison_exit_preserves_running_and_queued_controls_for_retry",
+                1,
+            ),
+            ("next_retry", 3),
+            ("retry_abandoned_jobs", 5),
+        ],
+        expressions: &[
+            (
+                "let first = dispatcher.retry_abandoned_jobs().unwrap_err();",
+                1,
+            ),
+            ("dispatcher.retry_abandoned_jobs()?;", 2),
+            ("assert!(dispatcher.retry_abandoned_jobs().is_err());", 2),
+        ],
     },
 ];
 
@@ -277,11 +541,17 @@ fn mask_contract(contract: &Contract, code: &str) -> String {
             .identifiers
             .iter()
             .all(|(name, count)| identifier_count(code, name) == *count)
+        || !contract.expressions.iter().all(|(expression, count)| {
+            expression_offsets(code, &source_pattern(expression)).len() == *count
+        })
     {
         return code.to_owned();
     }
 
     let mut masked = code.to_owned();
+    for (expression, count) in contract.expressions {
+        mask_expression(&mut masked, &source_pattern(expression), *count);
+    }
     for (name, _) in contract.identifiers {
         masked = mask_identifier(&masked, name);
     }
@@ -363,6 +633,16 @@ fn recovery_names_require_custody_and_reject_additional_attempts()
                 contract.target
             );
         }
+        for (expression, count) in contract.expressions {
+            let expression = source_pattern(expression);
+            assert_eq!(expression_offsets(&code, &expression).len(), *count);
+            let extra = format!("{code}\n{expression}");
+            assert!(
+                has_retry(&mask_contract(contract, &extra)),
+                "additional recovery call was admitted: {} {expression}",
+                contract.target
+            );
+        }
         for addition in [
             "fn conceal_failure() { retry(); }",
             "fn conceal_failure() { retry!(); }",
@@ -374,6 +654,64 @@ fn recovery_names_require_custody_and_reject_additional_attempts()
                 has_retry(&mask_contract(contract, &changed)),
                 "test rerun was admitted: {} {addition}",
                 contract.target
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn dispatcher_recovery_requires_each_actual_custody_observation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = super::super::super::workspace_root();
+    let source = std::fs::read_to_string(
+        root.join("crates/crucible-qemu/src/linux_cgroup/target_dispatcher/tests.rs"),
+    )?;
+    let code = super::super::scrub_comments_and_strings(&source);
+    let contract = CONTRACTS
+        .iter()
+        .find(|contract| {
+            contract.package == "crucible-qemu"
+                && contract.target == "src/linux_cgroup/target_dispatcher/tests"
+        })
+        .expect("the exact dispatcher component contract is present");
+    let has_retry = |code: &str| {
+        super::super::flaky_escape_failures("unreviewed", "unreviewed", code)
+            .iter()
+            .any(|finding| finding.contains("`retry`"))
+    };
+    assert!(!has_retry(&mask_contract(contract, &code)));
+    let offsets = code
+        .char_indices()
+        .filter(|(_, character)| !character.is_whitespace())
+        .flat_map(|(offset, character)| std::iter::repeat_n(offset, character.len_utf8()))
+        .collect::<Vec<_>>();
+    for requirement in [
+        "assert_descriptor_closed(descriptor, &expected);",
+        "assert!(slots[0].failure.as_ref().unwrap().panicked);",
+        "assert!(slots[0].failure_reported);",
+        "assert!(state.running.is_poisoned());",
+        "assert!(!state.running.is_poisoned());",
+        "run(Arc::clone(&state), 3); assert!(state.worker_exited.load(Ordering::Acquire)); assert!(!state.running.is_poisoned());",
+        "assert_eq!(slots[0].epoch, 7);",
+        "assert!(slots[0].control.is_some());",
+        "assert!(slots[1].control.is_none());",
+        "assert!(slots[0].next_retry.is_some());",
+    ] {
+        let expression = source_pattern(requirement);
+        let occurrences = expression_offsets(&code, &expression);
+        assert!(
+            !occurrences.is_empty(),
+            "missing original observation: {requirement}"
+        );
+        for occurrence in occurrences {
+            let mut changed = code.clone();
+            let start = offsets[occurrence];
+            let end = offsets[occurrence + expression.len() - 1] + 1;
+            changed.replace_range(start..end, " removed_custody_observation(); ");
+            assert!(
+                has_retry(&mask_contract(contract, &changed)),
+                "one missing custody observation was admitted: {requirement}"
             );
         }
     }
