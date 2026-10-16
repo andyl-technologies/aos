@@ -67,6 +67,7 @@ mod observation_candidate;
 mod quantum_budget_report;
 mod replay_proof;
 mod resume_progress;
+mod retention_boundary;
 mod selection_projection;
 mod stop_boundary;
 
@@ -1095,6 +1096,13 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
         pending.terminal_checkpoint_choices()
     }
 
+    fn retention_boundary(
+        &self,
+        pending: &Self::Pending,
+    ) -> Option<(Configuration, QemuSavepointReplayProof)> {
+        pending.retention_boundary()
+    }
+
     fn has_terminal_assertion_failure(&self, pending: &Self::Pending) -> Result<bool, Self::Error> {
         pending.has_terminal_assertion_failure()
     }
@@ -1162,6 +1170,13 @@ impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
         pending: &Self::Pending,
     ) -> Option<(QemuCheckpointChoiceProvenance, u64)> {
         pending.terminal_checkpoint_choices()
+    }
+
+    fn retention_boundary(
+        &self,
+        pending: &Self::Pending,
+    ) -> Option<(Configuration, QemuSavepointReplayProof)> {
+        pending.retention_boundary()
     }
 
     fn has_terminal_assertion_failure(&self, pending: &Self::Pending) -> Result<bool, Self::Error> {

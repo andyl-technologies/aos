@@ -528,6 +528,24 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// Returns [`SchedulerError`] when retained effect evidence cannot be encoded.
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError>;
 
+    /// Settles the final boundary without teardown so the world may be retained.
+    ///
+    /// [`QemuFinalBoundaryDrain::Retainable`] means the boundary settled with
+    /// no new entries; a later [`Self::shutdown`] then publishes none either.
+    /// [`QemuFinalBoundaryDrain::Drained`] entries were appended and precede
+    /// whatever shutdown returns. [`QemuFinalBoundaryDrain::Ineligible`]
+    /// changes nothing. Owners that cannot retain their world use the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the boundary cannot be settled. The
+    /// caller must then shut the lifecycle down.
+    fn drain_final_events_for_retention(
+        &mut self,
+    ) -> Result<QemuFinalBoundaryDrain, SchedulerError> {
+        Ok(QemuFinalBoundaryDrain::Ineligible)
+    }
+
     /// Performs final drain, process reap, lease release, and aggregate release.
     ///
     /// Returned entries are the only scheduler observations produced during
@@ -750,11 +768,30 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         QuantumLoop::resolved_effect_trace(self)
     }
 
+    fn drain_final_events_for_retention(
+        &mut self,
+    ) -> Result<QemuFinalBoundaryDrain, SchedulerError> {
+        Ok(
+            match ProductionVmLifecycleLoop::drain_final_boundary_for_retention(self)? {
+                None => QemuFinalBoundaryDrain::Ineligible,
+                Some(entries) if entries.is_empty() => QemuFinalBoundaryDrain::Retainable,
+                Some(entries) => QemuFinalBoundaryDrain::Drained(entries),
+            },
+        )
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- scheduler shutdown returns authoritative final evidence and does not synthesize modeled state.
         QuantumLoop::shutdown(self)
     }
 }
+
+mod source_retention;
+pub use source_retention::QemuFinalBoundaryDrain;
+pub(crate) use source_retention::{
+    QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
+    QemuRetainedSourcePreparation,
+};
 
 mod evidence;
 #[cfg(test)]
@@ -1092,14 +1129,31 @@ pub(crate) trait QemuFreshAttemptLifecycleFactory {
         signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>>;
+
+    /// Prepares a drained lifecycle as a retained source at `boundary`.
+    ///
+    /// The lifecycle has settled its final boundary with no new entries, and
+    /// `boundary` is the configuration it stopped at. Factories rebind the
+    /// world to the configuration an exact resume at that boundary would use
+    /// before preparation. Factories that cannot retain worlds return the
+    /// lifecycle unchanged through the default.
+    fn prepare_retained_source(
+        &mut self,
+        lifecycle: Self::Lifecycle,
+        _source: &ScenarioDefForm,
+        _boundary: &Configuration,
+    ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
+        QemuRetainedSourcePreparation::Recovered(lifecycle)
+    }
 }
 
 /// Two-phase modeled driver for one guarded fresh production lifecycle.
 ///
 /// [`Self::drive`] may advance and inspect the lifecycle but cannot shut it
-/// down. [`Self::seal`] runs only after runner-owned shutdown has supplied every
-/// final event-log entry, preventing a candidate from being accepted at a
-/// pre-teardown observable boundary.
+/// down. [`Self::seal`] runs only after runner-owned shutdown, or a
+/// non-destructive final drain proven empty at a paused boundary, has supplied
+/// every final event-log entry, preventing a candidate from being accepted at
+/// a pre-teardown observable boundary.
 pub trait QemuFreshAttemptDriver {
     /// Driver state retained between modeled stop and final shutdown drain.
     type Pending;
@@ -1114,6 +1168,19 @@ pub trait QemuFreshAttemptDriver {
         &self,
         _pending: &Self::Pending,
     ) -> Option<(QemuCheckpointChoiceProvenance, u64)> {
+        None
+    }
+
+    /// Returns the configuration and replay proof of a retainable modeled stop.
+    ///
+    /// A retainable stop pauses a continuing run at a published next-choice
+    /// boundary with discovered choices, no live-network preselection, and no
+    /// terminal verdict, so the runner may keep its stopped world as a
+    /// reusable source. Drivers without that projection use the default.
+    fn retention_boundary(
+        &self,
+        _pending: &Self::Pending,
+    ) -> Option<(Configuration, QemuSavepointReplayProof)> {
         None
     }
 
@@ -1258,6 +1325,8 @@ pub(crate) struct QemuFreshExecutionRunner<F, D> {
         Option<crate::automatic_finding_runner::QemuFindingReplayCaptureProducer>,
     terminal_exact_retention:
         Option<Arc<dyn crate::automatic_finding_runner::FindingExactRetentionSource>>,
+    published_root_retention: Option<Arc<dyn QemuPublishedRootSink>>,
+    pending_retention: Option<source_retention::QemuPendingPublishedRoot>,
 }
 
 /// Stable reasons an exact finding candidate cannot be reconstructed.
@@ -1290,6 +1359,8 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             driver,
             finding_replay_capture: None,
             terminal_exact_retention: None,
+            published_root_retention: None,
+            pending_retention: None,
         }
     }
 
@@ -1566,6 +1637,12 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// The exact materialized start was not safe for checkpoint capture.
     #[error("materialized-start capture was not checkpoint ready")]
     CaptureStartNotCheckpointReady,
+    /// A retained thin-attempt world awaits its prior durable disposition.
+    #[error("fresh production QEMU runner still retains a prior attempt's world")]
+    PriorRetentionPending,
+    /// A retained thin-attempt world could not be released completely.
+    #[error("release retained published-root source: {0}")]
+    PublishedRootRetention(String),
     /// Cleanup failed after the driver had already returned a failure.
     #[error(
         "fresh production QEMU driver failed: {}; cleanup also failed: {cleanup}",
@@ -2430,6 +2507,20 @@ where
         self.begin_fresh_with_config(scenario, source, context, config)
             .map_err(classify_production_lifecycle_failure)
     }
+
+    fn prepare_retained_source(
+        &mut self,
+        lifecycle: Self::Lifecycle,
+        source: &ScenarioDefForm,
+        boundary: &Configuration,
+    ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
+        source_retention::prepare_production_retained_source(
+            &self.config,
+            lifecycle,
+            source,
+            boundary,
+        )
+    }
 }
 
 mod attempt_input;
@@ -2936,6 +3027,9 @@ where
         cleanup,
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests;

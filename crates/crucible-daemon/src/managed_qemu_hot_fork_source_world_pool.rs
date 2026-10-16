@@ -671,6 +671,7 @@ where
 
 mod pool;
 mod published_roots;
+pub(crate) use published_roots::ManagedQemuPublishedRootSink;
 
 /// Shared process-wide source pool that mints one checkout session per worker.
 pub struct SharedManagedQemuHotForkSourceWorldPool<D, R>

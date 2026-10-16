@@ -377,9 +377,15 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        if self.pending_retention.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::PriorRetentionPending,
+            ));
+        }
         let continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuation_free = continuations.is_empty();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -559,7 +565,51 @@ where
         } else {
             Ok(None)
         };
-        let cleanup = lifecycle.shutdown();
+        let (mut lifecycle, driven, captured_trace, drained) = match (driven, captured_trace) {
+            (Ok(QemuFreshRunnerResult::Observation(pending)), Ok(trace)) => {
+                match self.published_root_plan(input, context, continuation_free, &pending) {
+                    None => (
+                        lifecycle,
+                        Ok(QemuFreshRunnerResult::Observation(pending)),
+                        Ok(trace),
+                        Vec::new(),
+                    ),
+                    Some(plan) => {
+                        match self.retain_published_root(lifecycle, pending, trace, plan, input) {
+                            source_retention::QemuPublishedRootAttempt::Declined {
+                                lifecycle,
+                                pending,
+                                trace,
+                                drained,
+                            } => (
+                                lifecycle,
+                                Ok(QemuFreshRunnerResult::Observation(pending)),
+                                Ok(trace),
+                                drained,
+                            ),
+                            source_retention::QemuPublishedRootAttempt::Finished(finished) => {
+                                let (product, retained) = finished?;
+                                self.pending_retention = retained;
+                                return Ok(CrucibleExecutionOutcome::new(
+                                    product,
+                                    CrucibleMaterializationTier::ThinReplay,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            (driven, captured_trace) => (lifecycle, driven, captured_trace, Vec::new()),
+        };
+        // A nonempty retention drain already appended its entries; they
+        // precede shutdown's entries exactly as one shutdown would order them.
+        let cleanup = lifecycle.shutdown().map(|events| {
+            if drained.is_empty() {
+                events
+            } else {
+                drained.into_iter().chain(events).collect()
+            }
+        });
         crate::crucible_execution::record_execution_phase_diagnostic(
             "shutdown-return",
             format_args!(
@@ -623,6 +673,26 @@ where
             product,
             CrucibleMaterializationTier::ThinReplay,
         ))
+    }
+
+    fn reconcile_execution(
+        &mut self,
+        disposition: crate::AttemptExecutionDisposition,
+    ) -> Result<crate::AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        if let Some(pending) = self.pending_retention.take() {
+            source_retention::reconcile_published_root(pending, &disposition).map_err(|error| {
+                AttemptWorkerFailure::Terminal(
+                    QemuFreshExecutionRunnerError::PublishedRootRetention(error.to_string()),
+                )
+            })?;
+        }
+        Ok(crate::AttemptExecutionReconciliationStep::Complete)
+    }
+
+    fn quarantine_pending_execution(&mut self) {
+        if let Some(pending) = self.pending_retention.take() {
+            source_retention::quarantine_published_root(pending);
+        }
     }
 }
 

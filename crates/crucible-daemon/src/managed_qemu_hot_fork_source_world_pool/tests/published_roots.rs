@@ -1,4 +1,4 @@
-//! Published-root binding and fit-or-reject admission.
+//! Published-root binding, fit-or-reject admission, and sink retirement.
 
 use crucible_campaign::ConfigurationArtifactId;
 use crucible_cas::content_store::{ContentId, ObjectKind};
@@ -6,6 +6,7 @@ use crucible_cas::content_store::{ContentId, ObjectKind};
 use super::super::test_support::advanced_published_root_source_for_test;
 use super::*;
 use crate::qemu_hot_fork_source_capture::AuthenticatedPublishedRootQemuHotForkSource;
+use crate::{QemuPublishedRootAdmission, QemuPublishedRootSink};
 
 fn published_artifact(name: &[u8]) -> ConfigurationArtifactId {
     ConfigurationArtifactId::parse(&format!(
@@ -206,4 +207,47 @@ fn published_root_never_evicts_a_retained_source_with_equal_signals() {
         .expect("retire rejected candidate");
 
     pool.orderly_shutdown().expect("retire retained root");
+}
+
+#[test]
+fn published_root_sink_admits_and_retires_rejected_roots() {
+    let mut first = advanced_source("published.sink-first");
+    let first_key = published_key(&first);
+    let limits = single_template_limits(&mut first);
+    let pool = SharedManagedQemuHotForkSourceWorldPool::new(
+        ManagedQemuHotForkSourceWorldPool::open(
+            limits,
+            ReapingDemotionSink,
+            MemoryHotCheckpointFallbackRetentionStore::new(),
+        )
+        .expect("managed source-world pool"),
+    );
+    let sink = ManagedQemuPublishedRootSink::new(pool.clone(), HotCheckpointHotnessSignals::new());
+    assert!(sink.may_admit());
+
+    let admitted = sink
+        .admit(AuthenticatedPublishedRootQemuHotForkSource::new(
+            first_key,
+            published_artifact(b"published-sink-first-child"),
+            first,
+        ))
+        .expect("admit first root");
+    assert_eq!(admitted, QemuPublishedRootAdmission::Admitted);
+    assert!(!sink.may_admit());
+
+    let second = advanced_source("published.sink-second");
+    let second_key = published_key(&second);
+    let rejected = sink
+        .admit(AuthenticatedPublishedRootQemuHotForkSource::new(
+            second_key,
+            published_artifact(b"published-sink-second-child"),
+            second,
+        ))
+        .expect("a rejected root is retired");
+    let QemuPublishedRootAdmission::Rejected(reason) = rejected else {
+        panic!("a full pool must reject the second root")
+    };
+    assert!(reason.contains("insufficient") || reason.contains("rejected"));
+
+    pool.orderly_shutdown().expect("retire admitted root");
 }

@@ -806,6 +806,10 @@ pub trait CrucibleExecutionRunner {
     /// Attempt-charged execution resources must already be stopped before the
     /// successful result is returned; this callback owns only cleanup whose
     /// release is ordered after semantic publication.
+    /// A fresh runner that keeps its stopped world as a published-boundary
+    /// root satisfies this by pausing the world and releasing its attempt
+    /// bindings before returning; this callback then admits the root to the
+    /// hot-fork pool for an accepted observation or retires it otherwise.
     /// A runner returning an execution error must finish or quarantine its
     /// operational owner before returning so a retry cannot overlap it.
     ///

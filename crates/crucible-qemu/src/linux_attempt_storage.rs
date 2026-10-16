@@ -153,6 +153,12 @@ impl LinuxQemuAttemptStorageConfig {
     pub(crate) const fn maximum_inodes(&self) -> u64 {
         self.maximum_inodes
     }
+
+    /// Returns how many attempt storage owners may exist at once.
+    #[must_use]
+    pub(crate) const fn project_id_count(&self) -> u32 {
+        self.project_id_count
+    }
 }
 
 /// Exclusive allocator for one private ext4 QEMU run root.

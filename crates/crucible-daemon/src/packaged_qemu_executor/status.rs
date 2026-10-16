@@ -118,9 +118,20 @@ pub(super) struct PackagedStatusHotForkFactory<F> {
 
 pub(super) struct PackagedStatusLifecycle<L> {
     inner: L,
+    status: PackagedLifecycleStatus,
+}
+
+/// Phase ownership of one attempt lifecycle, separable from the lifecycle.
+///
+/// Dropping an unfinished status invalidates the tracker. A lifecycle whose
+/// world becomes a retained source finishes its status at conversion, so the
+/// separated status can then be dropped cleanly.
+struct PackagedLifecycleStatus {
     lifecycles: PackagedWorldLifecycleTracker,
     execution: Option<ExecutionId>,
     shutdown_finished: bool,
+    /// The world settled its final boundary for retention and is post-processing.
+    retention_drained: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -391,10 +402,42 @@ where
         }
         Ok(PackagedStatusLifecycle {
             inner: lifecycle,
-            lifecycles: self.lifecycles.clone(),
-            execution: context.runtime_basis().map(|basis| basis.execution()),
-            shutdown_finished: false,
+            status: PackagedLifecycleStatus {
+                lifecycles: self.lifecycles.clone(),
+                execution: context.runtime_basis().map(|basis| basis.execution()),
+                shutdown_finished: false,
+                retention_drained: false,
+            },
         })
+    }
+
+    fn prepare_retained_source(
+        &mut self,
+        lifecycle: Self::Lifecycle,
+        source: &ScenarioDefForm,
+        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the sealed stop boundary unchanged.
+        boundary: &Configuration,
+    ) -> crate::QemuRetainedSourcePreparation<Self::Lifecycle> {
+        let PackagedStatusLifecycle { inner, mut status } = lifecycle;
+        match self.inner.prepare_retained_source(inner, source, boundary) {
+            crate::QemuRetainedSourcePreparation::Prepared(world) => {
+                // Converting a drained world into a source finishes this
+                // attempt's lifecycle; it is no longer an unfinished teardown.
+                if status.retention_drained {
+                    status.shutdown_finished = true;
+                }
+                crate::QemuRetainedSourcePreparation::Prepared(world)
+            }
+            crate::QemuRetainedSourcePreparation::Recovered(inner) => {
+                crate::QemuRetainedSourcePreparation::Recovered(PackagedStatusLifecycle {
+                    inner,
+                    status,
+                })
+            }
+            crate::QemuRetainedSourcePreparation::Quarantined => {
+                crate::QemuRetainedSourcePreparation::Quarantined
+            }
+        }
     }
 }
 
@@ -435,9 +478,12 @@ where
         }
         Ok(PackagedStatusLifecycle {
             inner: lifecycle,
-            lifecycles: self.lifecycles.clone(),
-            execution: context.runtime_basis().map(|basis| basis.execution()),
-            shutdown_finished: false,
+            status: PackagedLifecycleStatus {
+                lifecycles: self.lifecycles.clone(),
+                execution: context.runtime_basis().map(|basis| basis.execution()),
+                shutdown_finished: false,
+                retention_drained: false,
+            },
         })
     }
 }
@@ -667,22 +713,50 @@ where
         self.inner.resolved_effect_trace()
     }
 
+    fn drain_final_events_for_retention(
+        &mut self,
+    ) -> Result<crate::QemuFinalBoundaryDrain, SchedulerError> {
+        let drained = self.inner.drain_final_events_for_retention()?;
+        if drained == crate::QemuFinalBoundaryDrain::Retainable && !self.status.retention_drained {
+            // The world stops running here; a retained source is never torn
+            // down by this attempt, so it enters post-processing directly.
+            match self.status.execution {
+                Some(execution) => {
+                    self.status.lifecycles.tearing_down(execution);
+                    self.status.lifecycles.post_processing(execution);
+                }
+                None => self.status.lifecycles.invalidate(),
+            }
+            self.status.retention_drained = true;
+        }
+        Ok(drained)
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        if self.shutdown_finished {
-            self.lifecycles.invalidate();
+        if self.status.shutdown_finished {
+            self.status.lifecycles.invalidate();
             return self.inner.shutdown();
         }
-        if let Some(execution) = self.execution {
-            self.lifecycles.tearing_down(execution);
+        if self.status.retention_drained {
+            // Already post-processing; only a failed teardown changes status.
+            let result = self.inner.shutdown();
+            self.status.shutdown_finished = true;
+            if result.is_err() {
+                self.status.lifecycles.invalidate();
+            }
+            return result;
+        }
+        if let Some(execution) = self.status.execution {
+            self.status.lifecycles.tearing_down(execution);
         } else {
-            self.lifecycles.invalidate();
+            self.status.lifecycles.invalidate();
         }
 
         let result = self.inner.shutdown();
-        self.shutdown_finished = true;
-        match (&result, self.execution) {
-            (Ok(_), Some(execution)) => self.lifecycles.post_processing(execution),
-            (Ok(_), None) | (Err(_), _) => self.lifecycles.invalidate(),
+        self.status.shutdown_finished = true;
+        match (&result, self.status.execution) {
+            (Ok(_), Some(execution)) => self.status.lifecycles.post_processing(execution),
+            (Ok(_), None) | (Err(_), _) => self.status.lifecycles.invalidate(),
         }
         result
     }
@@ -697,7 +771,7 @@ where
     }
 }
 
-impl<L> Drop for PackagedStatusLifecycle<L> {
+impl Drop for PackagedLifecycleStatus {
     fn drop(&mut self) {
         if !self.shutdown_finished {
             self.lifecycles.invalidate();

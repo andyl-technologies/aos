@@ -576,14 +576,16 @@ pub use qemu_campaign_driver::{
 };
 pub use qemu_campaign_lifecycle::{
     InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
-    QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshDriveOutcome,
+    QemuFinalBoundaryDrain, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
+    QemuFreshDriveOutcome,
     QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
     build_guarded_interactive_qemu_session,
 };
 pub(crate) use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner,
+    QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner, QemuPublishedRootAdmission,
+    QemuPublishedRootRetirementError, QemuPublishedRootSink, QemuRetainedSourcePreparation,
     capture_fresh_genesis_checkpoint_candidate,
 };
 #[cfg(test)]

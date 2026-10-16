@@ -3716,3 +3716,6 @@ mod network_fault_replay;
 
 #[path = "tests/replay_limits.rs"]
 mod replay_limits;
+
+#[path = "tests/published_root_retention.rs"]
+mod published_root_retention;

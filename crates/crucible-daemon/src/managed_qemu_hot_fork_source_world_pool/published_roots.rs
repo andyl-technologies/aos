@@ -10,6 +10,10 @@
 
 use super::*;
 use crate::qemu_hot_fork_source_capture::AuthenticatedPublishedRootQemuHotForkSource;
+use crate::{QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink};
+
+/// Longest diagnostic recorded for one rejected root.
+const MAX_REJECTION_DIAGNOSTIC_CHARS: usize = 512;
 
 impl<D, R> ManagedQemuHotForkSourceWorldPool<D, R>
 where
@@ -87,4 +91,103 @@ where
             .lock()
             .is_ok_and(|pool| pool.has_free_template_slot())
     }
+}
+
+/// Published-root sink over the shared managed pool.
+pub(crate) struct ManagedQemuPublishedRootSink<D, R>
+where
+    D: HotCheckpointTemplateDemotionSink<ManagedQemuHotForkSourceWorld>,
+    R: HotCheckpointFallbackRetentionStore,
+{
+    pool: SharedManagedQemuHotForkSourceWorldPool<D, R>,
+    signals: HotCheckpointHotnessSignals,
+}
+
+impl<D, R> ManagedQemuPublishedRootSink<D, R>
+where
+    D: HotCheckpointTemplateDemotionSink<ManagedQemuHotForkSourceWorld>,
+    R: HotCheckpointFallbackRetentionStore,
+{
+    /// Admits roots into `pool` with the deployment's initial hotness signals.
+    pub(crate) const fn new(
+        pool: SharedManagedQemuHotForkSourceWorldPool<D, R>,
+        signals: HotCheckpointHotnessSignals,
+    ) -> Self {
+        Self { pool, signals }
+    }
+}
+
+impl<D, R> QemuPublishedRootSink for ManagedQemuPublishedRootSink<D, R>
+where
+    D: HotCheckpointTemplateDemotionSink<ManagedQemuHotForkSourceWorld> + Send,
+    D::Error: std::error::Error + 'static,
+    R: HotCheckpointFallbackRetentionStore + Send,
+{
+    fn may_admit(&self) -> bool {
+        self.pool.has_free_template_slot()
+    }
+
+    fn admit(
+        &self,
+        root: AuthenticatedPublishedRootQemuHotForkSource,
+    ) -> Result<QemuPublishedRootAdmission, QemuPublishedRootRetirementError> {
+        let failure = match self
+            .pool
+            .admit_authenticated_published_root(root, self.signals)
+        {
+            Ok(_commit) => return Ok(QemuPublishedRootAdmission::Admitted),
+            Err(SharedManagedQemuHotForkAdmissionFailure::Poisoned) => {
+                return Err(QemuPublishedRootRetirementError::new(
+                    "shared source-world pool lock is poisoned",
+                ));
+            }
+            Err(SharedManagedQemuHotForkAdmissionFailure::Admission(failure)) => failure,
+        };
+
+        // A durable record left behind by a failed cleanup still names the
+        // stored child artifact, so it remains a valid cold fallback root.
+        let (source, reason) = match failure {
+            ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding(failure) => {
+                let (source, error) = failure.into_parts();
+                (source, rejection_diagnostic(&error))
+            }
+            ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission(failure) => {
+                let (candidate, _cleanup_slot, error) = failure.into_parts();
+                let reason = rejection_diagnostic(&error);
+                match candidate.into_source() {
+                    Ok(source) => (source, reason),
+                    Err(candidate) => {
+                        let _retained_for_process_lifetime = Box::leak(candidate);
+                        return Err(QemuPublishedRootRetirementError::new(format!(
+                            "rejected root lost its source ({reason})"
+                        )));
+                    }
+                }
+            }
+        };
+        source
+            .retire()
+            .map(|()| QemuPublishedRootAdmission::Rejected(reason.clone()))
+            .map_err(|error| {
+                QemuPublishedRootRetirementError::new(format!("{error} (rejected: {reason})"))
+            })
+    }
+}
+
+/// Joins a bounded error chain into one diagnostic line.
+fn rejection_diagnostic<E: std::error::Error>(error: &E) -> String {
+    let mut message = error.to_string();
+    let mut cause = error.source();
+    while let Some(current) = cause {
+        if message.chars().count() >= MAX_REJECTION_DIAGNOSTIC_CHARS {
+            break;
+        }
+        message.push_str(": ");
+        message.push_str(&current.to_string());
+        cause = current.source();
+    }
+    message
+        .chars()
+        .take(MAX_REJECTION_DIAGNOSTIC_CHARS)
+        .collect()
 }

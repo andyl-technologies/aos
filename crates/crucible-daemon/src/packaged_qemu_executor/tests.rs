@@ -1893,3 +1893,5 @@ fn packaged_scenario_catalog_charges_an_exact_aggregate_byte_bound() {
 }
 
 mod lifecycle_recovery;
+
+mod published_root_status;

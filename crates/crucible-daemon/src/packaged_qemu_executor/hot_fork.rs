@@ -553,6 +553,7 @@ where
     let source_catalog = catalog;
     let source_bases = basis.sources.values().cloned().collect::<Vec<_>>();
     let hot_fork = config.hot_fork.clone();
+    let project_id_count = config.host.project_id_count();
 
     compose_packaged_qemu_executor_with_builders(
         storage,
@@ -686,6 +687,8 @@ where
             }
 
             let pool = SharedManagedQemuHotForkSourceWorldPool::new(pool);
+            let published_roots =
+                published_root_sink(&hot_fork, &pool, worker_count, project_id_count);
             let owner: Box<dyn PackagedQemuHotForkSourceOwner> =
                 Box::new(ConcretePackagedQemuHotForkSourceOwner {
                     pool: pool.clone(),
@@ -714,6 +717,10 @@ where
                 let fallback =
                     QemuFreshExecutionRunner::new(fallback_lifecycles, QemuFreshModeledDriver)
                         .with_terminal_exact_retention_source(Arc::clone(finding_exact_retention));
+                let fallback = match &published_roots {
+                    Some(sink) => fallback.with_published_root_retention(Arc::clone(sink)),
+                    None => fallback,
+                };
                 let provider = match pool.provider() {
                     Ok(provider) => provider,
                     Err(source) => {
@@ -783,6 +790,46 @@ where
             Ok(PackagedQemuInitialRunnerBuild::hot_fork(runners, owner))
         },
     )
+}
+
+/// Enables thin-attempt root retention when host capacity can hold it.
+///
+/// Every retained source world and every running attempt holds one host
+/// project ID. Retaining roots up to the template limit while each worker runs
+/// an attempt must therefore fit the deployment's project-ID count; otherwise
+/// a retained root could starve later attempts of host resources, so thin
+/// worlds are shut down as before.
+fn published_root_sink<D, R>(
+    hot_fork: &PackagedQemuHotForkConfig,
+    pool: &SharedManagedQemuHotForkSourceWorldPool<D, R>,
+    worker_count: usize,
+    project_id_count: u32,
+) -> Option<Arc<dyn crate::QemuPublishedRootSink>>
+where
+    D: crate::HotCheckpointTemplateDemotionSink<
+            crate::ManagedQemuHotForkSourceWorld,
+            Error = PackagedQemuHotForkDemotionError,
+        > + Send
+        + 'static,
+    R: crate::HotCheckpointFallbackRetentionStore + Send + 'static,
+{
+    let templates = hot_fork.limits().maximum_templates();
+    let fits = templates.checked_add(worker_count).is_some_and(|required| {
+        usize::try_from(project_id_count).is_ok_and(|available| required <= available)
+    });
+    if !fits {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "CRUCIBLE-HOT-FORK-RETENTION-V1 decision=disabled reason=\"maximum_templates={templates} + workers={worker_count} exceeds project_id_count={project_id_count}\""
+        );
+        return None;
+    }
+    Some(Arc::new(
+        crate::managed_qemu_hot_fork_source_world_pool::ManagedQemuPublishedRootSink::new(
+            pool.clone(),
+            hot_fork.initial_signals(),
+        ),
+    ))
 }
 
 fn reconcile_source_admission_failure<D, R>(
