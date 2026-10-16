@@ -274,7 +274,7 @@ impl NativeManifestSource {
     }
 
     /// Borrows the actual read-only pack and index while retaining source custody.
-    pub(super) fn files(&self) -> (&File, &File) {
+    pub(crate) fn files(&self) -> (&File, &File) {
         (&self.pack, &self.index)
     }
 
