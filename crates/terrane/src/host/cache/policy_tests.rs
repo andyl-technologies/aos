@@ -189,3 +189,181 @@ fn host_cache_reassembly_never_keeps_multi_chunk_and_still_seals_inline() {
     assert!(ReassemblyMode::Always.requires_sealed_file(&multi));
     assert!(ReassemblyMode::try_from("smart").is_err());
 }
+
+#[test]
+fn host_cache_index_reconstruction_checks_every_body_before_deriving_bytes() {
+    use crate::{
+        pack::{EntryKind, PackClass, PackId, PackReader, PackWriter},
+        repository::MetadataValidator,
+    };
+    use terrane_core::chunking::ChunkProfile;
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let id = PackId::from_random_bytes([31; 16]);
+    let mut writer = PackWriter::new(id, PackClass::Data, false);
+    writer
+        .append_raw(EntryKind::Chunk, b"first retained body")
+        .unwrap();
+    writer
+        .append_raw(EntryKind::Chunk, b"second retained body")
+        .unwrap();
+    let pack = writer.seal().unwrap();
+    let validator = MetadataValidator::new(profile.clone());
+    let dictionaries = Default::default();
+
+    let rebuilt = super::reconstruct_pack_index(
+        pack.bytes(),
+        id,
+        &profile,
+        &validator,
+        &dictionaries,
+        super::HostReadLimits::default(),
+    )
+    .unwrap();
+
+    assert_eq!(rebuilt.pack_id(), id);
+    assert_eq!(rebuilt.bytes(), pack.index_object());
+    assert_eq!(
+        rebuilt.pack_identity(),
+        &terrane_core::identity::TERRANE_V1
+            .calculate(terrane_core::identity::IdentityKind::Pack, pack.bytes(),)
+            .unwrap()
+    );
+
+    let mut damaged = pack.bytes().to_vec();
+    let offset = PackReader::open(pack.bytes()).unwrap().entries()[0].offset() as usize;
+    damaged[offset + 1] ^= 1;
+    assert!(PackReader::open(&damaged).is_ok());
+    let failure = super::reconstruct_pack_index(
+        &damaged,
+        id,
+        &profile,
+        &validator,
+        &dictionaries,
+        super::HostReadLimits::default(),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(
+        failure.kind(),
+        crate::store::StoreErrorKind::Corrupt(_)
+    ));
+}
+
+#[test]
+fn host_cache_index_reconstruction_rejects_wrong_key_and_operator_excess() {
+    use crate::{
+        pack::{EntryKind, PackClass, PackId, PackWriter},
+        repository::MetadataValidator,
+    };
+    use terrane_core::chunking::ChunkProfile;
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let id = PackId::from_random_bytes([32; 16]);
+    let mut writer = PackWriter::new(id, PackClass::Data, false);
+    writer
+        .append_raw(EntryKind::Chunk, b"retained body")
+        .unwrap();
+    let pack = writer.seal().unwrap();
+    let validator = MetadataValidator::new(profile.clone());
+    let dictionaries = Default::default();
+
+    let wrong_key = super::reconstruct_pack_index(
+        pack.bytes(),
+        PackId::from_random_bytes([33; 16]),
+        &profile,
+        &validator,
+        &dictionaries,
+        super::HostReadLimits::default(),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(
+        wrong_key.kind(),
+        crate::store::StoreErrorKind::Corrupt(_)
+    ));
+
+    let over_budget = super::reconstruct_pack_index(
+        pack.bytes(),
+        id,
+        &profile,
+        &validator,
+        &dictionaries,
+        super::HostReadLimits {
+            max_allocation_bytes: pack.bytes().len() - 1,
+        },
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(
+        over_budget.kind(),
+        crate::store::StoreErrorKind::Capacity
+    ));
+}
+
+#[test]
+fn host_cache_index_reconstruction_distinguishes_dictionary_dependency_failure() {
+    use crate::{
+        pack::{NativeBodyDecoder, PackClass, PackId, PackWriter},
+        repository::MetadataValidator,
+        store::{CorruptSubject, StoreErrorKind},
+    };
+    use terrane_core::{
+        chunking::ChunkProfile,
+        identity::{IdentityKind, TERRANE_V1},
+    };
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let dictionary = b"repeated dictionary content repeated dictionary content";
+    let dictionary_identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, dictionary)
+        .unwrap();
+    let dictionary_digest = dictionary_identity.terrane_v1_digest().unwrap();
+    let plaintext = b"repeated dictionary content ".repeat(200);
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, &plaintext)
+        .unwrap();
+    let encoded =
+        crate::codec::encode_chunk(&plaintext, profile.maximum(), 3, Some(dictionary)).unwrap();
+    assert_eq!(encoded[0], 2);
+    let valid = [(dictionary_digest, dictionary.to_vec())].into();
+    let id = PackId::from_random_bytes([34; 16]);
+    let mut writer = PackWriter::new(id, PackClass::Data, false);
+    writer
+        .append_chunk(
+            identity.terrane_v1_digest().unwrap(),
+            &encoded,
+            plaintext.len() as u32,
+            0,
+            &NativeBodyDecoder::new(&profile, &valid),
+        )
+        .unwrap();
+    let pack = writer.seal().unwrap();
+    let validator = MetadataValidator::new(profile.clone());
+    let limits = super::HostReadLimits::default();
+
+    let missing = super::reconstruct_pack_index(
+        pack.bytes(),
+        id,
+        &profile,
+        &validator,
+        &Default::default(),
+        limits,
+    )
+    .err()
+    .unwrap();
+    assert!(
+        matches!(missing.kind(), StoreErrorKind::Absent(identity) if identity == &dictionary_identity)
+    );
+
+    let invalid = [(dictionary_digest, b"wrong dictionary".to_vec())].into();
+    let failure =
+        super::reconstruct_pack_index(pack.bytes(), id, &profile, &validator, &invalid, limits)
+            .err()
+            .unwrap();
+    assert!(
+        matches!(failure.kind(), StoreErrorKind::Corrupt(CorruptSubject::Identity(identity)) if identity == &dictionary_identity)
+    );
+
+    let restored =
+        super::reconstruct_pack_index(pack.bytes(), id, &profile, &validator, &valid, limits)
+            .unwrap();
+    assert_eq!(restored.bytes(), pack.index_object());
+}

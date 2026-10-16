@@ -10,6 +10,7 @@ mod metadata;
 mod policy;
 mod readonly;
 mod reassembly;
+mod recovery;
 mod residence;
 mod state;
 mod verification;
@@ -21,6 +22,7 @@ pub use metadata::HostMetadataReader;
 pub use policy::{CacheEntry, CachePolicy, CircuitBreaker, PolicyConfig};
 pub use readonly::{HostReadLimits, HostReadOnlyContent};
 pub use reassembly::ReassemblyMode;
+pub use recovery::{ReconstructedPackIndex, reconstruct_pack_index};
 pub use residence::{HostResidenceReader, HostResidentContent, ResidenceChunk};
 pub use state::{
     CacheState, LeaseRecord, PinRecord, ReservationRecord, ResidenceRecord, StateLimits,
