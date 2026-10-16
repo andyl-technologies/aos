@@ -165,10 +165,28 @@ A fresh x86-bound production fixture compiles but fails during initial native
 preparation, before readiness, Arm or World publication: zero passes and one
 failure. The retained error reports that the native owner exited; its exact
 exit status is unavailable. Source tracing identifies an inherited descriptor
-number ceiling of 256 that conflicts with DMTCP's fixed descriptors above 820,
-and a separate missing temporary-directory route. Both require correction before
-the next native run. No production-path success is inferred from the package
-witnesses.
+number ceiling of 256, imposed by the temporary test runner, that conflicts
+with DMTCP's fixed descriptors above 820. That incompatibility is not a proven
+cause of the observed exit. Source tracing also finds a missing temporary-directory
+route. The failed run remains unqualified; the package witnesses do not establish
+production-path success.
+
+Gem5 launch, restart and retained-audit commands now share an independently
+reserved construction budget. Each command is charged before owning its argument
+and environment buffers; failure and completion do not renew the budget. Fresh
+restoration requires a new caller-owned reservation. Both architectures pass
+`TMPDIR`, `DMTCP_TMPDIR` and the working directory from the owned temporary root.
+The restored Python controller also updates the native environment, clears the
+cached Python temporary directory and changes its working directory before
+rebinding the model.
+
+The documented Cargo dev shell passes six-crate, all-feature/all-target checking
+for this stage. On the worktree source, 115 gem5 Provider unit tests pass, including
+all three new command-budget controls; three native controls remain ignored.
+Both new Python temporary-root controls pass. The required application test-target
+build is running separately. Current ARM/x86 profiles still require rebuilding
+and fresh native qualification; these component results do not establish native
+readiness, complete Capture, device parity or restored execution.
 
 ### Original-owner preparation and Clock continuation
 
