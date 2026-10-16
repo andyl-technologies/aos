@@ -211,6 +211,7 @@ pub struct NativePublisherConfig {
 /// constructor or native-handle conversion; startup consumes these same guards.
 /// It establishes directory custody, not complete host quota admission.
 pub struct NativePublisherPrepared {
+    configured_custody: Option<Arc<crate::configured::ConfiguredPublisherCustody>>,
     confinement: Arc<crate::quota_confinement::Installed>,
     config: NativePublisherConfig,
     native: NativePublisher,
@@ -225,6 +226,47 @@ impl NativePublisherPrepared {
     /// Borrows the trusted operator settings whose actual roots are retained.
     pub fn configuration(&self) -> &NativePublisherConfig {
         &self.config
+    }
+
+    /// Attaches actual configured verifier custody to the accepted native owner.
+    ///
+    /// The typed receipt has no public constructor. Its authenticated domain,
+    /// root incarnation and exact installed receipt must match these guards.
+    ///
+    /// # Errors
+    /// Refuses duplicate attachment, a mismatching domain/root/receipt, changed
+    /// native project assignments, or kernel inspection errors.
+    pub(crate) fn retain_configured_custody(
+        &mut self,
+        custody: Arc<crate::configured::ConfiguredPublisherCustody>,
+    ) -> io::Result<()> {
+        if self.configured_custody.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "configured publisher custody already attached",
+            ));
+        }
+        let root = self
+            .retained_layout
+            .0
+            .first()
+            .ok_or_else(|| io::Error::other("missing retained domain root"))?;
+        custody.check_domain(&self.config.domain, root, &self.confinement)?;
+        self.configured_custody = Some(custody);
+        Ok(())
+    }
+
+    fn check_custody(&self) -> io::Result<()> {
+        self.confinement.check_current()?;
+        if let Some(custody) = &self.configured_custody {
+            let root = self
+                .retained_layout
+                .0
+                .first()
+                .ok_or_else(|| io::Error::other("missing retained domain root"))?;
+            custody.check_domain(&self.config.domain, root, &self.confinement)?;
+        }
+        Ok(())
     }
 }
 
@@ -296,6 +338,7 @@ impl NativePublisherConfig {
         let state_directory = self.layout_root.join("state/publication");
         let retained_state = super::native::open_directory(&state_directory)?;
         Ok(NativePublisherPrepared {
+            configured_custody: None,
             confinement,
             config: self,
             native,
@@ -348,7 +391,7 @@ impl NativePublicationWorker {
     /// Returns changed confinement, runtime/thread creation or actual
     /// staging/state recovery errors.
     pub fn start_prepared(prepared: NativePublisherPrepared) -> io::Result<Self> {
-        prepared.confinement.check_current()?;
+        prepared.check_custody()?;
         #[cfg(feature = "native-test-fixtures")]
         let started = Self::start_prepared_thread(prepared, None, None);
         #[cfg(not(feature = "native-test-fixtures"))]
@@ -377,8 +420,9 @@ impl NativePublicationWorker {
         #[cfg(feature = "native-test-fixtures")] before_record: Option<WorkerGate>,
         #[cfg(feature = "native-test-fixtures")] finish_first_unlink: Option<WorkerGate>,
     ) -> io::Result<(Self, std::thread::JoinHandle<()>)> {
-        prepared.confinement.check_current()?;
+        prepared.check_custody()?;
         let NativePublisherPrepared {
+            configured_custody,
             confinement,
             config,
             mut native,
@@ -432,6 +476,7 @@ impl NativePublicationWorker {
                         body_io,
                         inventory,
                         Arc::clone(&confinement),
+                        configured_custody,
                     );
                     while let Some(command) = receiver.recv().await {
                         match command {

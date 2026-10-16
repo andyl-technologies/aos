@@ -224,6 +224,9 @@ struct RetainedBody {
 }
 
 pub(super) struct CommandOwner {
+    // Accepted effects outlive a connection's waiter. Keep actual configured
+    // quota observations, root descriptors and shared guards in this owner.
+    _configured_custody: Option<std::sync::Arc<crate::configured::ConfiguredPublisherCustody>>,
     confinement: std::sync::Arc<crate::quota_confinement::Installed>,
     domain: String,
     publisher: Option<Publisher<NativePublisher, WorkerState>>,
@@ -245,8 +248,10 @@ impl CommandOwner {
         body_io: BodyIo,
         inventory: super::inventory::NativeInventory,
         confinement: std::sync::Arc<crate::quota_confinement::Installed>,
+        configured_custody: Option<std::sync::Arc<crate::configured::ConfiguredPublisherCustody>>,
     ) -> Self {
         Self {
+            _configured_custody: configured_custody,
             confinement,
             domain: config.domain,
             publisher: Some(publisher),
