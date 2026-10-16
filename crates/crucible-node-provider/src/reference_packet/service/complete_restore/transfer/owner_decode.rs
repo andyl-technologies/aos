@@ -424,12 +424,7 @@ pub(crate) fn selected_native_dto_decode_storage_data(
         size_of::<String>() + size_of::<Value>(),
         align_of::<Value>(),
     )?;
-    let credit = scan(
-        bytes,
-        maximum,
-        typed_slot,
-        value_node,
-    )?;
+    let credit = scan(bytes, maximum, typed_slot, value_node)?;
     let requested = sum(&[
         credit.requested(&Phases {
             dom: 2,
@@ -462,12 +457,7 @@ pub(crate) fn selected_value_decode_storage_data(
         size_of::<String>() + size_of::<Value>(),
         align_of::<Value>(),
     )?;
-    let credit = scan(
-        bytes,
-        maximum,
-        size_of::<Value>(),
-        value_node,
-    )?;
+    let credit = scan(bytes, maximum, size_of::<Value>(), value_node)?;
     // scan stores the root inline header in its typed term. This Value-only
     // phase must name both independent root headers explicitly, including {}.
     let requested = sum(&[
@@ -611,5 +601,4 @@ mod tests {
         );
         Ok(())
     }
-
 }
