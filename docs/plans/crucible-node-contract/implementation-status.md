@@ -75,6 +75,15 @@ captured source, sixty-package local dependency closure and registered output.
 The separate constructor failures below remain failures; this compilation gate
 does not exercise inactive construction, activation or native preservation.
 
+The gate also passes for the invocation and retained-storage checkpoint at
+`c6de83ed87`. All 167 test targets freshly compile across the 48 application
+roots, including 69 integration targets, in 21 minutes 50 seconds. Independent
+review checks installed Cargo records, normal profiles, captured source and
+registered output. The source filter contains the sixty-package local dependency
+inventory; the installed messages contain artifacts for 59 of those packages,
+with no standalone `crucible-harness` artifact. No test executable runs in this
+gate, and the separate constructor failures remain unresolved.
+
 ### QEMU package
 
 The ordinary QEMU package passes 589 upstream TAP checks, 44 project model/cost
@@ -369,6 +378,37 @@ fit remain unqualified, and earlier failed results remain recorded.
 Arm, readiness, activation, Observe, Capture and restoration remain separate
 qualification gates. The original-execution versus restoration-target launch
 purpose also remains an outstanding prerequisite for the later native route.
+
+### Native invocation ownership and retained backing
+
+Commit `1cb7ed6616`, with formatting separately in `c6de83ed87`, retains native
+invocation phase and storage through the original protocol owners. It adds
+explicit original-versus-restoration invocation data, coordinator backing
+accounting, publication lifetime accounting and full cold invocation readers.
+Independent retained owners remain summed, and every later action still needs
+its original admission and currentness checks.
+
+Normal six-crate, all-feature/all-target checking passes over the complete
+6,125-file source capture and 891 selected roles. Three fresh normal library-test
+executables also compile. Independent review checks compiler profiles, complete
+dependency/source correspondence and preservation of the original dependency
+cache. The separate production binary still needs a fresh linked qualification.
+
+The focused runtime sequence executes 46 component controls: 45 pass and one
+publication control fails, with none ignored and no recorded resource-limit
+violation. Its failed assertion expects actual Observe backing to exceed the
+older conservative receive quote. A reviewed test-only correction instead
+observes the empty-map root independently and checks its exact carry term while
+preserving the actual-capacity upper bound. That correction remains outside this
+checkpoint. The sequence stops at the failure; its remaining cold-data and daemon
+groups are unrun.
+
+A separately admitted run of the two unchanged constructor controls fails both
+cases during fixture native-startup finalization, before their intended
+exact-budget and one-byte-short assertions. The pair completes in 6.31 seconds
+without a recorded cap violation. The current refusing numeric row remains under
+investigation. These results establish neither successful construction nor
+native Capture or restoration; earlier failed results remain recorded.
 
 ## Work in progress
 
