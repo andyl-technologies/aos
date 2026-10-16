@@ -28,7 +28,9 @@ impl DomainHostLayout {
         binding: DomainBinding,
         profile: ChunkProfile,
     ) -> Result<Self, StoreFailure> {
-        if !root.is_absolute()
+        let normalized: PathBuf = root.components().collect();
+        if normalized.as_os_str() != root.as_os_str()
+            || !root.is_absolute()
             || root
                 .components()
                 .any(|part| matches!(part, Component::ParentDir | Component::CurDir))

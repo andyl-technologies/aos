@@ -184,24 +184,35 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         self.fs.read_nofollow(path).await.map_err(io_failure)
     }
 
-    async fn pack_paths(&self) -> Result<Vec<PathBuf>, StoreFailure> {
-        let root = self.layout.root().join("objects/pack");
-        let directories = match self.fs.read_dir(&root).await {
-            Ok(paths) => paths,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(io_failure(error)),
-        };
-        let mut paths = Vec::new();
-        for directory in directories {
-            let metadata = self
-                .fs
-                .symlink_metadata(&directory)
-                .await
-                .map_err(io_failure)?;
-            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    async fn directory_entries(&self, directory: &Path) -> Result<Vec<PathBuf>, StoreFailure> {
+        match self.fs.symlink_metadata(directory).await {
+            Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
                 return Err(invalid());
             }
-            for path in self.fs.read_dir(&directory).await.map_err(io_failure)? {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(io_failure(error)),
+        }
+        let parents = self
+            .observe_parents(&directory.join(".enumeration"))
+            .await?;
+        let entries = self.fs.read_dir(directory).await.map_err(io_failure)?;
+        self.close_parents(parents).await?;
+        for path in &entries {
+            if path.parent() != Some(directory) {
+                return Err(invalid());
+            }
+        }
+        Ok(entries)
+    }
+
+    async fn pack_paths(&self) -> Result<Vec<PathBuf>, StoreFailure> {
+        let mut paths = Vec::new();
+        for directory in self
+            .directory_entries(&self.layout.root().join("objects/pack"))
+            .await?
+        {
+            for path in self.directory_entries(&directory).await? {
                 if path
                     .extension()
                     .is_some_and(|extension| extension == "pack")
@@ -212,6 +223,49 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostReadOn
         }
         paths.sort();
         Ok(paths)
+    }
+
+    async fn standalone_identities(&self) -> Result<Vec<Identity>, StoreFailure> {
+        let mut identities = BTreeMap::new();
+        for directory in self
+            .directory_entries(&self.layout.root().join("chunks"))
+            .await?
+        {
+            let shard = directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid)?;
+            for path in self.directory_entries(&directory).await? {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(invalid)?;
+                if name.starts_with('.') || name.ends_with(".tmp") {
+                    continue;
+                }
+                let (hash, codec) = name.rsplit_once('.').ok_or_else(invalid)?;
+                if !matches!(codec, "0" | "1" | "2")
+                    || hash.len() != 64
+                    || shard.len() != 2
+                    || !hash.starts_with(shard)
+                    || !hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(invalid());
+                }
+                let mut digest = [0_u8; 32];
+                for (index, byte) in digest.iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(&hash[index * 2..index * 2 + 2], 16)
+                        .map_err(|_| invalid())?;
+                }
+                let identity = TERRANE_V1
+                    .from_digest(IdentityKind::Chunk, &digest)
+                    .map_err(|_| invalid())?;
+                identities.insert(digest, identity);
+            }
+        }
+        Ok(identities.into_values().collect())
     }
 
     async fn encoded(&self, identity: &Identity) -> Result<Vec<u8>, StoreFailure> {
@@ -577,6 +631,17 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> ContentSto
                     error,
                 )
             })?;
+            if self.layout.root().join(reader.header().id().pack_key()) != path {
+                return Err(invalid());
+            }
+            if prefix.kind == IdentityKind::Pack {
+                let identity = TERRANE_V1
+                    .calculate(IdentityKind::Pack, &bytes)
+                    .map_err(|_| invalid())?;
+                if identity.digest().starts_with(&prefix.digest_prefix) {
+                    identities.insert(identity.digest().to_vec(), identity);
+                }
+            }
             for entry in reader.entries() {
                 if entry.kind().identity_kind() == prefix.kind
                     && entry.hash().starts_with(&prefix.digest_prefix)
@@ -588,7 +653,19 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> ContentSto
                 }
             }
         }
-        Ok(identities.into_values().collect())
+        if prefix.kind == IdentityKind::Chunk {
+            for identity in self.standalone_identities().await? {
+                if identity.digest().starts_with(&prefix.digest_prefix) {
+                    identities.insert(identity.digest().to_vec(), identity);
+                }
+            }
+        }
+        let mut verified = Vec::with_capacity(identities.len());
+        for identity in identities.into_values() {
+            self.encoded(&identity).await?;
+            verified.push(identity);
+        }
+        Ok(verified)
     }
 }
 

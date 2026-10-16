@@ -7,7 +7,7 @@ use crate::{
     domain::DomainBinding,
     pack::{EntryKind, PackClass, PackId, PackWriter},
     repository::MetadataValidator,
-    store::{ByteRange, ContentStore, StoreErrorKind, TokioLocalFs},
+    store::{ByteRange, ContentStore, IdentityPrefix, StoreErrorKind, TokioLocalFs},
 };
 use std::{
     path::PathBuf,
@@ -272,4 +272,85 @@ async fn host_cache_native_dictionary_is_verified_before_decoding_its_dependent(
     )
     .unwrap();
     assert!(reader.get(&identity, None).await.is_err());
+}
+
+#[tokio::test]
+async fn host_cache_native_enumeration_includes_standalone_and_checks_bodies() {
+    let scratch = Scratch::new();
+    let standalone = scratch.chunk(b"standalone bytes");
+    let id = PackId::from_random_bytes([11; 16]);
+    let mut writer = PackWriter::new(id, PackClass::Data, false);
+    let packed_hash = writer
+        .append_raw(EntryKind::Chunk, b"packed bytes")
+        .unwrap();
+    let packed = TERRANE_V1
+        .from_digest(IdentityKind::Chunk, &packed_hash)
+        .unwrap();
+    let pack = writer.seal().unwrap();
+    let path = scratch.0.join(id.pack_key());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, pack.bytes()).unwrap();
+    std::fs::write(scratch.0.join(id.index_key()), pack.index_object()).unwrap();
+    let reader = scratch.reader().await;
+    let prefix = IdentityPrefix {
+        kind: IdentityKind::Chunk,
+        digest_prefix: Vec::new(),
+    };
+
+    let identities = reader.list(&prefix).await.unwrap();
+
+    assert_eq!(identities.len(), 2);
+    assert!(identities.contains(&standalone));
+    assert!(identities.contains(&packed));
+    assert_eq!(reader.has(&identities).await.unwrap(), [true, true]);
+    let hash: String = standalone
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    std::fs::write(
+        scratch.0.join(format!("chunks/{}/{}.0", &hash[..2], hash)),
+        b"\0corrupt",
+    )
+    .unwrap();
+    assert!(reader.list(&prefix).await.is_err());
+}
+
+#[test]
+fn host_cache_native_layout_rejects_byte_noncanonical_roots() {
+    let scratch = Scratch::new();
+    let layout = scratch.layout();
+    assert!(
+        DomainHostLayout::new(
+            scratch.0.join("."),
+            layout.domain_binding().clone(),
+            layout.chunk_profile().clone()
+        )
+        .is_err()
+    );
+    let redundant = PathBuf::from(format!("{}//nested", scratch.0.display()));
+    assert!(
+        DomainHostLayout::new(
+            redundant,
+            layout.domain_binding().clone(),
+            layout.chunk_profile().clone()
+        )
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn host_cache_native_enumeration_refuses_foreign_pack_directory() {
+    let scratch = Scratch::new();
+    let foreign = Scratch::new();
+    std::fs::create_dir_all(scratch.0.join("objects")).unwrap();
+    std::os::unix::fs::symlink(&foreign.0, scratch.0.join("objects/pack")).unwrap();
+    let reader = scratch.reader().await;
+    let prefix = IdentityPrefix {
+        kind: IdentityKind::Chunk,
+        digest_prefix: Vec::new(),
+    };
+
+    assert!(reader.list(&prefix).await.is_err());
+    assert_eq!(std::fs::read_dir(&foreign.0).unwrap().count(), 0);
 }
