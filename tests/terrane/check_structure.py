@@ -21,9 +21,9 @@ def main():
     expected = {
         "terrane-core": set(),
         "terrane": {"terrane-core"},
-        "terrane-fs": {"terrane"},
+        "terrane-fs": {"terrane", "terrane-core"},
         "terrane-cli": {"terrane", "terrane-fs"},
-        "aos-terrane": {"terrane"},
+        "aos-terrane": {"terrane", "terrane-core", "terrane-fs"},
     }
 
     for name in [*standalone, "aos-terrane"]:

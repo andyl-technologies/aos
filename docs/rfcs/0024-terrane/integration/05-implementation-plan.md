@@ -8812,10 +8812,21 @@ event, original exclusion and complete bounded inode preimages; its nine tests
 remain unrun. Native administrative claim and setter consumers are still pending.
 Manifest recovery's resource-custody layer also passes source review, including
 cancelled effects and adopted-body retention before fallible completion. Actual
-publisher response correlation and owner dispatch remain pending. The cache proof
+publisher response correlation now passes source review; owner dispatch and
+runtime qualification remain pending. The cache proof
 image now builds and verifies its three actual executables and retained guest
 supervisor. Earlier guest attempts stopped before actor cases because that script
-was absent from the guest closure. Corrected guest execution is in progress.
+was absent from the guest closure. Corrected guest execution reaches actual quota
+provisioning and privileged helper readiness, then stops before component cases
+when the unprivileged publisher reports a permission error. Source diagnosis
+identifies private files created without the inode write permission required by
+the fs-verity enable ioctl. The correction must preserve closed writable
+descriptors and final read-only custody; no capability is added to the publisher.
+The native initial-enrollment scaffold and administrative consumer are under
+review and implementation respectively. The shared glue dependency now names
+the existing Core types directly, and the crate-graph audit includes the current
+native and glue edges. All 632 external dependencies remain unchanged; every
+affected vendor hash is reproduced from local staging and the exact new lock.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
