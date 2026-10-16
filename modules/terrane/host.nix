@@ -69,7 +69,9 @@
   groupsFor = role:
     lib.optional (role == "serve" || role == "gc") "terrane-cache"
     ++ lib.optional (role == "serve" || role == "gc" || role == "publish") "terrane-content";
-  roots = [cfg.hostTier.path] ++ lib.mapAttrsToList (_: domain: domain.path) cfg.hostTier.domains;
+  publicRoot = (cfg.hostTier.domains.public or {path = cfg.hostTier.path;}).path;
+  roots = [publicRoot] ++ lib.mapAttrsToList (_: domain: domain.path) (builtins.removeAttrs cfg.hostTier.domains ["public"]);
+  declaredRoots = lib.unique ([cfg.hostTier.path] ++ roots);
   overlaps = a: b: a == b || lib.hasPrefix "${a}/" b || lib.hasPrefix "${b}/" a;
   uniqueRoots = builtins.all (a: builtins.all (b: a == b || !overlaps a b) roots) roots && builtins.length (lib.unique roots) == builtins.length roots;
   writable = role:
@@ -111,8 +113,8 @@
   service = role: {
     description = "Terrane ${role} role";
     wantedBy = lib.optional (role != "gc") "multi-user.target";
-    after = ["systemd-tmpfiles-setup.service"];
-    requires = ["systemd-tmpfiles-setup.service"];
+    after = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service";
+    requires = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service";
     serviceConfig = {
       Type =
         if role == "gc"
@@ -154,6 +156,8 @@
     };
   };
 in {
+  imports = [./_host-quota.nix];
+
   options.aos.terrane = {
     enable = lib.mkEnableOption "the Terrane host tier";
     package = option types.package pkgs.terrane "AOS-built Terrane program.";
@@ -192,11 +196,11 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = builtins.all cleanPath roots;
+        assertion = builtins.all cleanPath declaredRoots;
         message = "Terrane host roots must be canonical absolute paths without traversal or trailing separators.";
       }
       {
-        assertion = uniqueRoots;
+        assertion = uniqueRoots && builtins.all (root: cfg.hostTier.path == root || !overlaps cfg.hostTier.path root) roots;
         message = "Terrane host and domain roots must not overlap.";
       }
       {
@@ -239,6 +243,7 @@ in {
     # other roles; verified read-only descriptors cross the process boundary.
     environment.etc."tmpfiles.d/terrane.conf".text =
       "d /run/terrane-publish 2750 terrane-publish terrane-content - -\n"
+      + lib.optionalString (publicRoot != cfg.hostTier.path) "d ${cfg.hostTier.path} 0755 root root - -\n"
       + lib.concatMapStrings (root:
         ''
           d ${root} 0755 root root - -

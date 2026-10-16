@@ -144,7 +144,150 @@
       pass = rejected {aos.terrane.hostTier.domains.arbitrary.path = "/var/lib/domain";};
     }
   ];
+  quotaLabels = ["layout-root" "chunks" "objects" "sealed" "staging" "quarantine" "pending-delete" "state"];
+  quotaOwner = domain: root: id: {
+    ownerId = "owner-${domain}";
+    inherit domain;
+    projectId = id;
+    hardLimitBytes = 536870912;
+    roots =
+      map (label: {
+        roleDirectory = label;
+        path =
+          if label == "layout-root"
+          then root
+          else "${root}/${label}";
+      })
+      quotaLabels;
+  };
+  helperFixture = {
+    aos.terrane.hostHelper = {
+      enable = true;
+      # Only a derivation path is inspected; this fixture never executes it.
+      package = pkgs.terrane;
+      epoch = "00112233445566778899aabbccddeeff";
+      owners = [(quotaOwner "public" "/var/lib/terrane" 1001)];
+    };
+  };
+  helper = evaluate helperFixture;
+  helperConfig = helper.environment.etc."terrane-host/host.toml".text;
+  rejectedHelper = extra: let
+    cfg =
+      (mkSystem {
+        modules = [fixture helperFixture extra];
+        systemName = "terrane-helper-negative";
+      }).config;
+    attempt = builtins.tryEval (builtins.deepSeq cfg.environment.etc."terrane-host/host.toml".text (checksPass cfg));
+  in
+    !attempt.success || !attempt.value;
   extraAssertions = [
+    {
+      name = "public-override-quota-has-explicit-administrative-root";
+      pass = let
+        owners = [
+          (quotaOwner "public" "/var/lib/terrane-public" 1001
+            // {
+              roots =
+                (quotaOwner "public" "/var/lib/terrane-public" 1001).roots
+                ++ [
+                  {
+                    roleDirectory = "administrative-root";
+                    path = "/var/lib/terrane";
+                  }
+                ];
+            })
+        ];
+        cfg =
+          (mkSystem {
+            modules = [
+              fixture
+              helperFixture
+              {
+                aos.terrane.hostTier.domains.public.path = "/var/lib/terrane-public";
+                aos.terrane.hostHelper.owners = lib.mkForce owners;
+              }
+            ];
+            systemName = "terrane-helper-public-override";
+          }).config;
+      in
+        checksPass cfg && lib.hasInfix "role_directory = \"administrative-root\"" cfg.environment.etc."terrane-host/host.toml".text;
+    }
+    {
+      name = "host-helper-orders-unprivileged-clients";
+      pass =
+        builtins.all (role: builtins.elem "aos-terrane-host-quota.service" helper.systemd.services."terrane-${role}".requires) ["serve" "publish" "gc"]
+        && !(builtins.elem "aos-terrane-host-quota.service" helper.systemd.services.terrane-realize.requires);
+    }
+    {
+      name = "host-helper-missing-admin-root-refused";
+      pass = rejectedHelper {
+        aos.terrane.hostTier.domains.public.path = "/var/lib/terrane-public";
+        aos.terrane.hostHelper.owners = lib.mkForce [(quotaOwner "public" "/var/lib/terrane-public" 1001)];
+      };
+    }
+    {
+      name = "host-helper-misaligned-limit-refused";
+      pass = rejectedHelper {aos.terrane.hostHelper.owners = lib.mkForce [(quotaOwner "public" "/var/lib/terrane" 1001 // {hardLimitBytes = 1025;})];};
+    }
+
+    {
+      name = "host-helper-explicit-config";
+      pass =
+        checksPass helper
+        && helper.environment.etc."terrane-host/host.toml".mode == "0600"
+        && builtins.all (field: lib.hasInfix field helperConfig) ["tier_charge_budget_bytes = 1073741824" "role_directory = \"layout-root\"" "project_id = 1001" "allowed_client_uids = [840, 841, 843]"]
+        && !(lib.hasInfix "_module" helperConfig);
+    }
+    {
+      name = "host-helper-query-least-authority";
+      pass = let
+        unit = helper.systemd.services.aos-terrane-host-quota.serviceConfig;
+      in
+        unit.User
+        == "root"
+        && unit.CapabilityBoundingSet == "CAP_SYS_ADMIN CAP_DAC_READ_SEARCH"
+        && unit.PrivateNetwork
+        && unit.RestrictAddressFamilies == "AF_UNIX"
+        && unit.ReadWritePaths == ["/run/aos-terrane-host"]
+        && lib.hasInfix "serve --config /etc/terrane-host/host.toml --ledger /var/lib/terrane-host/ledger.toml" unit.ExecStart;
+    }
+    {
+      name = "host-helper-provision-manual";
+      pass =
+        helper.systemd.services.aos-terrane-host-provision.wantedBy
+        == []
+        && !(builtins.elem "aos-terrane-host-provision.service" helper.systemd.services.aos-terrane-host-quota.requires)
+        && lib.hasInfix "provision --config" helper.systemd.services.aos-terrane-host-provision.serviceConfig.ExecStart;
+    }
+    {
+      name = "host-helper-disabled-inert";
+      pass = !(enabled.systemd.services ? aos-terrane-host-quota) && !(enabled.environment.etc ? "terrane-host/host.toml");
+    }
+    {
+      name = "host-helper-budget-refused";
+      pass = rejectedHelper {aos.terrane.hostHelper.owners = lib.mkForce [(quotaOwner "public" "/var/lib/terrane" 1001 // {hardLimitBytes = 2147483648;})];};
+    }
+    {
+      name = "host-helper-missing-class-refused";
+      pass = rejectedHelper {aos.terrane.hostHelper.owners = lib.mkForce [(quotaOwner "public" "/var/lib/terrane" 1001 // {roots = [];})];};
+    }
+    {
+      name = "host-helper-extra-client-refused";
+      pass = rejectedHelper {aos.terrane.hostHelper.owners = lib.mkForce [(quotaOwner "public" "/var/lib/terrane" 1001 // {allowedClientUids = [0 840 841 843];})];};
+    }
+    {
+      name = "public-override-has-one-data-layout";
+      pass = let
+        cfg = evaluate {aos.terrane.hostTier.domains.public.path = "/var/lib/terrane-public";};
+        text = cfg.environment.etc."tmpfiles.d/terrane.conf".text;
+      in
+        checksPass cfg
+        && lib.hasInfix "d /var/lib/terrane 0755 root root" text
+        && lib.hasInfix "d /var/lib/terrane-public/state/cache" text
+        && !(lib.hasInfix "d /var/lib/terrane/state" text)
+        && !(builtins.elem "/var/lib/terrane/chunks" cfg.systemd.services.terrane-serve.serviceConfig.ReadWritePaths);
+    }
+
     {
       name = "publisher-socket-parent-custody";
       pass =
