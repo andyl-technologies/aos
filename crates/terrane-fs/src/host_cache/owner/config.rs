@@ -31,7 +31,7 @@ pub struct NativeCacheOwnerConfig {
     pub project_id: u32,
     /// Exact configured project hard limit, independently of current usage.
     pub project_hard_limit_bytes: u64,
-    /// Exact configured finite project inode hard limit.
+    /// Exact configured inode hard limit; zero means no inode-specific ceiling.
     pub project_hard_inode_limit: u64,
     /// UID owning ordinary encoded content; it must equal the serving role.
     pub content_uid: u32,
@@ -106,7 +106,7 @@ impl NativeCacheOwnerConfig {
 
         if self.project_id == 0
             || self.project_hard_limit_bytes == 0
-            || self.project_hard_inode_limit == 0
+            || self.project_hard_limit_bytes % 1024 != 0
             || self.project_hard_limit_bytes > self.tier_charge_budget_bytes
             || self.tier_charge_budget_bytes == 0
             || self.policy.capacity == 0
@@ -174,12 +174,12 @@ mod tests {
             quota_owner: "fixture".into(),
             filesystem_uuid: [2; 16],
             project_id: 100,
-            project_hard_limit_bytes: 1000,
-            project_hard_inode_limit: 100,
+            project_hard_limit_bytes: 1024,
+            project_hard_inode_limit: 0,
             content_uid: 840,
             content_gid: 845,
             state_gid: 844,
-            tier_charge_budget_bytes: 2000,
+            tier_charge_budget_bytes: 2048,
             policy: PolicyConfig {
                 capacity: 900,
                 low_watermark: 500,
@@ -210,6 +210,10 @@ mod tests {
 
         let mut config = configuration();
         config.policy.capacity = config.project_hard_limit_bytes + 1;
+        assert!(config.validate().is_err());
+
+        let mut config = configuration();
+        config.project_hard_limit_bytes = 1000;
         assert!(config.validate().is_err());
 
         let mut config = configuration();

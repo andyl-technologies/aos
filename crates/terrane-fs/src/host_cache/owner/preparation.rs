@@ -172,7 +172,7 @@ fn check_observation(
         || value.hard_limit_bytes != config.project_hard_limit_bytes
         || value.hard_inode_limit != config.project_hard_inode_limit
         || value.charged_reserved_bytes > value.hard_limit_bytes
-        || value.charged_inodes > value.hard_inode_limit
+        || (value.hard_inode_limit != 0 && value.charged_inodes > value.hard_inode_limit)
         || value.tier_charge_budget_bytes != config.tier_charge_budget_bytes
         || value.configured_limit_sum_bytes > value.tier_charge_budget_bytes
     {
