@@ -35,6 +35,20 @@ impl RecoveryManifestBackingRetention {
         )
     }
 
+    /// Checks actual durable registration while the physical owner holds custody.
+    ///
+    /// This does not check a client context or grant ordinary currentness. The
+    /// caller must separately verify the retained original recovery barrier.
+    ///
+    /// # Errors
+    /// Refuses changed source or missing/foreign durable pin, lease and hold rows.
+    pub(in crate::host_cache::owner) fn check_recovery_registration(
+        &self,
+        owner: &Custody,
+    ) -> io::Result<()> {
+        self.retained.check_registration(owner)
+    }
+
     /// Returns scoped synchronized source/backing inode blocks after successful reconciliation.
     ///
     /// Absence denotes unresolved effects, not zero allocation. This excludes
