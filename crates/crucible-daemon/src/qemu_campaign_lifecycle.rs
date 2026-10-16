@@ -2432,6 +2432,9 @@ where
     }
 }
 
+mod attempt_input;
+use attempt_input::{unsupported_fresh_replay_decision, validated_attempt_continuations};
+
 #[path = "qemu_campaign_lifecycle/continuation.rs"]
 mod continuation;
 use continuation::*;
