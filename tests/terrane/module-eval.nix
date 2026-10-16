@@ -214,13 +214,113 @@
   rejectedNative = extra: let
     cfg =
       (mkSystem {
-        modules = [fixture nativeFixture helperFixture extra];
+        modules = [fixture {aos.terrane = lib.recursiveUpdate nativeFixture.aos.terrane (extra.aos.terrane or {});} helperFixture];
         systemName = "terrane-native-config-negative";
       }).config;
     attempt = builtins.tryEval (builtins.deepSeq cfg.environment.etc."terrane/terrane.toml".text (checksPass cfg));
   in
     !attempt.success || !attempt.value;
+  localFixture = {
+    aos.terrane = {
+      store = lib.mkForce "bucket(file:///var/lib/terrane-bucket)";
+      localRepository = {
+        authorityDirectory = "/var/lib/terrane-authority";
+        issuer = "configured-operator";
+        keyId = "current-key";
+        ownerUid = 840;
+        storeName = "local";
+        domain = "public";
+        defaultPrivateDomain = "private:operator";
+        currentReference = "refs/heads/_/main";
+        acl = [
+          {
+            principal = "reader";
+            verbs = ["read"];
+          }
+        ];
+        timing = {
+          maximumMs = 30000;
+          graceMs = 60000;
+          marginMs = 10000;
+        };
+      };
+    };
+  };
+  local = evaluate localFixture;
+  localFile = local.environment.etc."terrane/terrane.toml".text;
+  localConfig = extra:
+    (mkSystem {
+      modules = [fixture {aos.terrane = lib.recursiveUpdate localFixture.aos.terrane (extra.aos.terrane or {});}];
+      systemName = "terrane-local-repository-eval";
+    }).config;
+  rejectedLocal = extra: let
+    cfg = localConfig extra;
+    attempt = builtins.tryEval (builtins.deepSeq cfg.environment.etc."terrane/terrane.toml".text (checksPass cfg));
+  in
+    !attempt.success || !attempt.value;
   extraAssertions = [
+    {
+      name = "native-complete-override-positive-control";
+      pass = !rejectedNative {aos.terrane.hostTier.publisher.maxConnections = 16;};
+    }
+    {
+      name = "local-complete-override-positive-control";
+      pass = !rejectedLocal {aos.terrane.localRepository.timing.maximumMs = 20000;};
+    }
+
+    {
+      name = "local-repository-explicit-projection";
+      pass =
+        checksPass local
+        && !(lib.hasInfix "_module" localFile)
+        && builtins.all (field: lib.hasInfix field localFile) ["[local_repository]" "authority_directory = \"/var/lib/terrane-authority\"" "owner_uid = 840" "current_reference = \"refs/heads/_/main\"" "maximum_ms = 30000" "principal = \"reader\"" "verbs = [\"read\"]"]
+        && !(lib.hasInfix "policy_authority" localFile)
+        && !(lib.hasInfix "/var/lib/terrane-authority" local.environment.etc."tmpfiles.d/terrane.conf".text);
+    }
+    {
+      name = "local-repository-empty-acl-denies";
+      pass = lib.hasInfix "acl = []" (localConfig {aos.terrane.localRepository.acl = lib.mkForce [];}).environment.etc."terrane/terrane.toml".text;
+    }
+    {
+      name = "local-repository-optional-policy-authority";
+      pass = lib.hasInfix "policy_authority = \"refs/heads/_/policy\"" (localConfig {aos.terrane.localRepository.policyAuthority = "refs/heads/_/policy";}).environment.etc."terrane/terrane.toml".text;
+    }
+    {
+      name = "local-repository-uid-mismatch-refused";
+      pass = rejectedLocal {aos.terrane.localRepository.ownerUid = 900;};
+    }
+    {
+      name = "local-repository-invalid-uid-refused";
+      pass = rejectedLocal {aos.terrane.localRepository.ownerUid = 4294967295;};
+    }
+    {
+      name = "local-repository-invalid-timing-refused";
+      pass = rejectedLocal {aos.terrane.localRepository.timing.maximumMs = 50000;};
+    }
+    {
+      name = "local-repository-invalid-verb-refused";
+      pass = rejectedLocal {
+        aos.terrane.localRepository.acl = lib.mkForce [
+          {
+            principal = "reader";
+            verbs = ["write"];
+          }
+        ];
+      };
+    }
+    {
+      name = "local-repository-invalid-head-refused";
+      pass = rejectedLocal {aos.terrane.localRepository.currentReference = "refs/tags/_/v1";};
+    }
+    {
+      name = "local-repository-shared-with-other-roles";
+      pass = builtins.all (role: builtins.hasAttr "terrane-${role}" local.systemd.services) roles;
+    }
+    {
+      name = "local-repository-absent-by-default";
+      pass = !(lib.hasInfix "local_repository" file);
+    }
+
     {
       name = "publisher-content-identity-separation-refused";
       pass = rejectedNative {aos.terrane.hostTier.publisher.contentUid = 841;};

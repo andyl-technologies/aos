@@ -8,6 +8,7 @@
   cfg = config.aos.terrane;
   types = lib.types;
   toml = lib.formats.toml {inherit lib pkgs;};
+  localRepository = import ./_local-repository.nix {inherit lib;};
   # Reject traversal and unit-file metacharacters before paths reach tmpfiles
   # or systemd. Parent ownership is part of the publisher's security boundary.
   pathType = types.strMatching "/[A-Za-z0-9_./-]+";
@@ -155,6 +156,7 @@
     else [];
   configuration = {
     store = cfg.store;
+    local_repository = localRepository.render cfg.localRepository;
     locality = {inherit (cfg.locality) region zone host;};
     host_tier = {
       path = cfg.hostTier.path;
@@ -264,6 +266,7 @@ in {
   options.aos.terrane = {
     enable = lib.mkEnableOption "the Terrane host tier";
     package = option types.package pkgs.terrane "AOS-built Terrane program.";
+    localRepository = option (types.nullOr localRepository.type) null "Explicit trust inputs for serve-only reopening of an existing leaf file:// bucket. This does not configure host-cache routing or create authority.";
     store = lib.mkOption {
       type = types.str;
       description = "Store expression using the Terrane specification grammar.";
@@ -300,7 +303,12 @@ in {
 
   config = lib.mkIf cfg.enable {
     assertions =
-      (import ./_identity-checks.nix {
+      (localRepository.checks {
+        value = cfg.localRepository;
+        serveEnabled = cfg.roles.serve.enable;
+        serveUid = identities.serve;
+      })
+      ++ (import ./_identity-checks.nix {
         inherit config roleNames identities userFor groupsFor reservedGroupIds expectedGroupName;
       })
       ++ [
