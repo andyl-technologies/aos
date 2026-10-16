@@ -180,6 +180,11 @@ impl<L: HostReadLocation> Client<L> {
         result
     }
 
+    /// Borrows this actual client's stable private-generated owner incarnation.
+    pub(crate) fn cache_incarnation(&self) -> &[u8; 16] {
+        &self.cache_incarnation
+    }
+
     fn inline_claim(&self, claim: PublicationClaim) -> Result<PublicationClaim, Error> {
         self.layout.recheck()?;
         if claim.domain() != self.layout.layout().domain() || claim.manifest().is_some() {

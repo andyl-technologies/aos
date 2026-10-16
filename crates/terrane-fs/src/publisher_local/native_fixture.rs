@@ -403,9 +403,9 @@ fn check_other_domain(
 fn check_unknown_domain(root: &Path) {
     let connection = Connection::connect(&root.join("publisher.sock"), identities()).unwrap();
     let mut unknown = packet(Operation::Probe, 900, 1);
-    unknown.domain = "unknown".into();
+    unknown.domain = "private:unknown".into();
     let policy = ValidationPolicy {
-        domain: "unknown",
+        domain: "private:unknown",
         identity: &TERRANE_V1,
         chunk_profile: "cdc-1m",
     };
