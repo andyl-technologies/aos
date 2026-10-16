@@ -562,7 +562,9 @@ mod tests {
                 generation: source.selection.binding.authority.owner_generation,
             }],
             boundary: crucible_node_contract::Position::new(
-                0.into(), 0.into(), crucible_node_contract::Phase::BoundaryControl,
+                0.into(),
+                0.into(),
+                crucible_node_contract::Phase::BoundaryControl,
             ),
         }
     }
@@ -570,18 +572,30 @@ mod tests {
     #[test]
     fn collecting_node_quote_counts_actual_clone_backing_and_preserves_unspent_source() {
         let (selection, world) = complete_selection();
-        let owner = HostSchedulingOwner::new_complete_original_continuation(selection, world).unwrap();
+        let owner =
+            HostSchedulingOwner::new_complete_original_continuation(selection, world).unwrap();
         let source = owner.source();
         let mut activation = collection_activation(&source);
         activation.owners.reserve_exact(7);
         let original_capacity = activation.owners.capacity();
-        let data = source.original_collection_node_construction_storage_data(&activation, usize::MAX).unwrap();
+        let data = source
+            .original_collection_node_construction_storage_data(&activation, usize::MAX)
+            .unwrap();
         let peak = data.retained_requested_bytes()
             + data.maximum_simultaneous_transient_bytes()
             + data.declared_counter_scratch_bytes();
 
-        assert_eq!(source.original_collection_node_construction_storage_data(&activation, peak).unwrap(), data);
-        assert!(source.original_collection_node_construction_storage_data(&activation, peak - 1).is_err());
+        assert_eq!(
+            source
+                .original_collection_node_construction_storage_data(&activation, peak)
+                .unwrap(),
+            data
+        );
+        assert!(
+            source
+                .original_collection_node_construction_storage_data(&activation, peak - 1)
+                .is_err()
+        );
         assert_eq!(activation.owners.capacity(), original_capacity);
         assert!(!source.node_created.get());
         assert!(!source.attachment_attempted.get());
@@ -596,32 +610,51 @@ mod tests {
         };
         let actual = std::mem::size_of::<PreparedHostSchedulingNode>()
             + crate::node_contract::NodeRuntime::capture_shared_allocation_storage::<()>()
-            + crate::node_contract::NodeRuntime::capture_host_node_metadata_storage(&cloned, &route, None).unwrap();
+            + crate::node_contract::NodeRuntime::capture_host_node_metadata_storage(
+                &cloned, &route, None,
+            )
+            .unwrap();
         assert!(data.retained_requested_bytes() >= actual);
     }
 
     #[test]
     fn collecting_node_quote_refuses_foreign_owner_world_and_spent_phase() {
         let (selection, world) = complete_selection();
-        let owner = HostSchedulingOwner::new_complete_original_continuation(selection, world).unwrap();
+        let owner =
+            HostSchedulingOwner::new_complete_original_continuation(selection, world).unwrap();
         let source = owner.source();
         let activation = collection_activation(&source);
         let mut foreign = activation.clone();
         foreign.owners[0].incarnation = Id::new("another/host-incarnation").unwrap();
-        assert!(source.original_collection_node_construction_storage_data(&foreign, usize::MAX).is_err());
+        assert!(
+            source
+                .original_collection_node_construction_storage_data(&foreign, usize::MAX)
+                .is_err()
+        );
         foreign = activation.clone();
         foreign.world_binding_hash.digest.push('0');
-        assert!(source.original_collection_node_construction_storage_data(&foreign, usize::MAX).is_err());
+        assert!(
+            source
+                .original_collection_node_construction_storage_data(&foreign, usize::MAX)
+                .is_err()
+        );
 
         let busy = source.node.borrow_mut();
-        assert!(source.original_collection_node_construction_storage_data(&activation, usize::MAX).is_err());
+        assert!(
+            source
+                .original_collection_node_construction_storage_data(&activation, usize::MAX)
+                .is_err()
+        );
         drop(busy);
         assert!(!source.node_created.get());
         source.node_created.set(true);
-        assert!(source.original_collection_node_construction_storage_data(&activation, usize::MAX).is_err());
+        assert!(
+            source
+                .original_collection_node_construction_storage_data(&activation, usize::MAX)
+                .is_err()
+        );
         assert!(!source.attachment_attempted.get());
     }
-
 }
 
 impl SelectedPreservation {

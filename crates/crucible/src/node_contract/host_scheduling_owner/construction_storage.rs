@@ -7,7 +7,10 @@
 use super::*;
 use crate::node_admission::InstalledConformancePlan;
 use crate::node_contract::NodeRuntime;
-use std::{cell::{Ref, RefMut}, mem::size_of};
+use std::{
+    cell::{Ref, RefMut},
+    mem::size_of,
+};
 
 /// Describes requested storage added by one original collecting Host node.
 ///
@@ -47,7 +50,9 @@ struct Counter {
 
 impl Counter {
     fn add(&mut self, bytes: usize) -> Result<(), RuntimeError> {
-        self.bytes = self.bytes.checked_add(bytes)
+        self.bytes = self
+            .bytes
+            .checked_add(bytes)
             .filter(|total| *total <= self.maximum)
             .ok_or(RuntimeError::ResourceLimit)?;
         Ok(())
@@ -123,7 +128,11 @@ impl HostSchedulingSource {
             size_of::<OwnerIdentity>(),
             selected.descriptor.id.allocated_capacity(),
             selected.owner.owner.id.allocated_capacity(),
-            selected.binding.authority.incarnation_id.allocated_capacity(),
+            selected
+                .binding
+                .authority
+                .incarnation_id
+                .allocated_capacity(),
         ] {
             retained.add(bytes)?;
         }
@@ -138,7 +147,10 @@ impl HostSchedulingSource {
             + size_of::<Rc<()>>()
             + size_of::<RefMut<'_, Weak<()>>>();
         let scratch = Self::original_collection_node_construction_counter_scratch_data();
-        let mut total = Counter { bytes: retained.bytes, maximum };
+        let mut total = Counter {
+            bytes: retained.bytes,
+            maximum,
+        };
         total.add(transient)?;
         total.add(scratch)?;
         self.authenticate_original_report_startup_data()?;
@@ -155,17 +167,34 @@ fn activation_clone_storage(
     maximum: usize,
 ) -> Result<usize, RuntimeError> {
     let ActivationRecord {
-        generation: _, activation_id, world_binding_hash, owners, boundary: _,
+        generation: _,
+        activation_id,
+        world_binding_hash,
+        owners,
+        boundary: _,
     } = activation;
-    let HashRef { algorithm, domain, digest } = world_binding_hash;
+    let HashRef {
+        algorithm,
+        domain,
+        digest,
+    } = world_binding_hash;
     let mut counter = Counter { bytes: 0, maximum };
     counter.add(activation_id.allocated_capacity())?;
     for value in [algorithm, domain, digest] {
         counter.add(value.capacity())?;
     }
-    counter.add(owners.capacity().checked_mul(size_of::<OwnerIdentity>())
-        .ok_or(RuntimeError::ResourceLimit)?)?;
-    for OwnerIdentity { owner, incarnation, generation: _ } in owners {
+    counter.add(
+        owners
+            .capacity()
+            .checked_mul(size_of::<OwnerIdentity>())
+            .ok_or(RuntimeError::ResourceLimit)?,
+    )?;
+    for OwnerIdentity {
+        owner,
+        incarnation,
+        generation: _,
+    } in owners
+    {
         counter.add(owner.allocated_capacity())?;
         counter.add(incarnation.allocated_capacity())?;
     }
