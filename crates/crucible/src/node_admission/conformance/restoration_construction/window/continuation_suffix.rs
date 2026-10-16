@@ -56,6 +56,8 @@ impl OriginalRestoredSuffixConstructionData {
     /// Names fixed claim, ledger and borrowed Window counter views.
     pub(crate) fn counter_scratch_data() -> usize {
         size_of::<Self>()
+            + super::current_observation::OriginalRestoredSchedulingObservationConstructionData::counter_scratch_data()
+            + crate::node_contract::OriginalRuntimeOperationDispatch::counter_scratch_data()
             + 2 * size_of::<&Self>()
             + size_of::<Option<Self>>()
             + size_of::<Result<Self, RuntimeError>>()
@@ -109,6 +111,16 @@ impl OriginalRestoredSuffixConstructionData {
                 &OriginalRestoredSuffixSeedClaim<'static>,
                 &OriginalRestoredSuffixConstructionData,
             )>()
+            + size_of::<&crate::node_contract::OriginalRuntimeOperationDispatch<'static>>()
+            + size_of::<&crate::node_contract::OperationAdmission>()
+            + size_of::<&crate::node_contract::NodeRoute>()
+            + size_of::<&crate::node_contract::OwnerIdentity>()
+            + size_of::<&[crate::node_contract::OwnerIdentity]>()
+            + size_of::<&crate::node_contract::ActivationRecord>()
+            + size_of::<&crate::node_contract::OperationToken>()
+            + size_of::<std::slice::Iter<'static, crate::node_contract::OwnerIdentity>>()
+            + size_of::<Option<&crate::node_contract::OwnerIdentity>>()
+            + size_of::<&crate::node_adapters::cnp::CnpSemanticInstallation>()
             + size_of::<Result<(), RuntimeError>>()
     }
 }
@@ -123,7 +135,7 @@ pub(crate) struct OriginalRestoredSuffixCheckpointData {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SeedStage {
+pub(super) enum SeedStage {
     Empty,
     Started,
     Verified,
@@ -151,7 +163,7 @@ impl SuffixLedger {
         }
     }
 
-    fn authenticate(&self, expected: SeedStage) -> Result<(), RuntimeError> {
+    pub(super) fn authenticate(&self, expected: SeedStage) -> Result<(), RuntimeError> {
         if self.0.get() != expected {
             return Err(RuntimeError::OutstandingObligations);
         }
@@ -280,7 +292,7 @@ impl OriginalRestoredSuffixSeedClaim<'_> {
 }
 
 impl CompleteOriginalRestorationWindow {
-    fn authenticate_suffix_identity_data(
+    pub(super) fn authenticate_suffix_identity_data(
         &self,
         selected: usize,
         source: &PacketCompleteSemanticSource,
@@ -468,5 +480,61 @@ mod tests {
         assert!(whole.authenticate_dispatch_data().is_err());
 
         assert!(ledger.begin().is_err());
+    }
+}
+
+impl CompleteOriginalRestorationWindow {
+    /// Authenticates pending Runtime admission against the actual restored seed.
+    ///
+    /// This bank-free correspondence check creates no action claim, allocates
+    /// nothing and invokes no erased authority callback. A later issuer must
+    /// retain/admit its independent complete future row and observe all current
+    /// owners before opening SourceRead or publishing a fresh original.
+    ///
+    /// # Errors
+    /// Refuses a copied/foreign admission, another actual World/Source/node or
+    /// owner, unverified first observations/seed, or changed retained provenance.
+    pub(crate) fn authenticate_original_suffix_runtime_dispatch_data(
+        &self,
+        selected: usize,
+        source: &dyn crate::node_adapters::cnp::CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        dispatch: &crate::node_contract::OriginalRuntimeOperationDispatch<'_>,
+    ) -> Result<(), RuntimeError> {
+        if self.original_installed_source_index_data(source)? != selected {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let source = self
+            .sources
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .as_ref();
+        let admission = dispatch.admission_data();
+        let world = admission.activation();
+        let route = admission.token().route();
+        dispatch.authenticate_original_data(admission, world, route)?;
+        let [owner] = route.owners.as_slice() else {
+            return Err(RuntimeError::UnsupportedFacet);
+        };
+        let installation = source.installation();
+        if route.node != installation.binding.compatibility.node_id
+            || owner.owner != installation.owner.owner.id
+            || !world.record().owners.iter().any(|actual| actual == owner)
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let proof = self.original_complete_scope_proof_identity_data()?;
+        self.authenticate_suffix_identity_data(selected, source, read_owner, world, proof)?;
+        self.suffix_seeds
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .authenticate(SeedStage::Verified)?;
+        self.node_rows
+            .get()
+            .and_then(|rows| rows.get(selected))
+            .and_then(|row| row.restored_suffix.as_ref())
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .authenticate_original_data(source, controller)
     }
 }

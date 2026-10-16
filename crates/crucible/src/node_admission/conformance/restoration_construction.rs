@@ -230,3 +230,9 @@ pub(crate) use window::{
     OriginalRestoredSuffixCheckpointData, OriginalRestoredSuffixConstructionData,
     OriginalRestoredSuffixSeedClaim,
 };
+
+pub use window::{
+    OriginalRestoredInitialSchedulingAdmission, OriginalRestoredSchedulingObservationAdmission,
+    OriginalRestoredSchedulingObservationClaim,
+    OriginalRestoredSchedulingObservationConstructionData,
+};

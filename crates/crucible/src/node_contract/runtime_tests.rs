@@ -81,6 +81,11 @@ struct NativeState {
     uncertain: bool,
     facet_calls: usize,
     thread_affinity_override: Option<ThreadAffinity>,
+    retained_dispatches: usize,
+    retained_dispatch_address: Option<usize>,
+    retained_dispatch_clone_refused: bool,
+    retained_dispatch_foreign_world: Option<WorldActivation>,
+    retained_dispatch_foreign_refused: bool,
     begin_calls: usize,
     poll_calls: usize,
     close_calls: usize,
@@ -560,6 +565,39 @@ impl SimulationNode for TestNode {
             evidence: vec![],
             artifacts: state.native_capture_artifacts.clone(),
         })
+    }
+
+    fn begin_original_retained_operation(
+        &mut self,
+        dispatch: &OriginalRuntimeOperationDispatch<'_>,
+    ) -> Submission {
+        let admission = dispatch.admission_data();
+        dispatch
+            .authenticate_original_data(
+                admission,
+                admission.activation(),
+                admission.token().route(),
+            )
+            .unwrap();
+        let copied = admission.clone();
+        let clone_refused = dispatch
+            .authenticate_original_data(&copied, copied.activation(), copied.token().route())
+            .is_err();
+        {
+            let mut state = self.state.borrow_mut();
+            state.retained_dispatches += 1;
+            state.retained_dispatch_address = Some(std::ptr::from_ref(admission) as usize);
+            state.retained_dispatch_clone_refused = clone_refused;
+            state.retained_dispatch_foreign_refused = state
+                .retained_dispatch_foreign_world
+                .as_ref()
+                .is_some_and(|world| {
+                    dispatch
+                        .authenticate_original_data(admission, world, admission.token().route())
+                        .is_err()
+                });
+        }
+        self.begin_operation(admission)
     }
 
     fn begin_operation(&mut self, admission: &OperationAdmission) -> Submission {
@@ -2139,3 +2177,114 @@ mod deferred_validation;
 
 #[path = "runtime_tests/known_initial_storage.rs"]
 pub(crate) mod known_initial_storage;
+
+#[test]
+fn actual_retained_dispatch_borrows_ledger_and_rejects_equal_admission_copies() {
+    let (mut runtime, states) = runtime(OperatingMode::Exact);
+    let activation = activate(&mut runtime);
+    let (mut foreign, _) = self::runtime(OperatingMode::Exact);
+    let foreign_world = activate(&mut foreign);
+    states[0].borrow_mut().retained_dispatch_foreign_world = Some(foreign_world);
+
+    let token = exact(&mut runtime, &activation, "retained-dispatch");
+    let retained = runtime.operations.get(token.operation()).unwrap();
+    let observed = states[0].borrow();
+    assert_eq!(observed.retained_dispatches, 1);
+    assert_eq!(
+        observed.retained_dispatch_address,
+        Some(std::ptr::from_ref(&retained.admission) as usize)
+    );
+    assert!(observed.retained_dispatch_clone_refused);
+    assert!(observed.retained_dispatch_foreign_refused);
+    assert_eq!(observed.begin_calls, 1);
+    assert!(matches!(retained.result, RetainedResult::Pending));
+}
+
+#[test]
+fn refused_dispatch_remains_retained_and_global_limit_precedes_another_scope() {
+    let (mut runtime, states) = runtime(OperatingMode::Exact);
+    let activation = activate(&mut runtime);
+    runtime.limits.maximum_operations = 1;
+    states[0].borrow_mut().refuse = true;
+    let request = OperationRequest::ExactRun {
+        start: position(0),
+        limit: position(10),
+        boundary_policy: ExactBoundaryPolicy::HorizonPark,
+    };
+
+    assert!(matches!(
+        runtime
+            .begin(
+                &activation,
+                &id("a"),
+                id("retained-refusal"),
+                request.clone()
+            )
+            .unwrap(),
+        BeginResult::Refused(_)
+    ));
+    assert!(matches!(
+        runtime
+            .operations
+            .get(&id("retained-refusal"))
+            .unwrap()
+            .result,
+        RetainedResult::Failed(_)
+    ));
+    assert_eq!(states[0].borrow().retained_dispatches, 1);
+    assert!(matches!(
+        runtime.begin(
+            &activation,
+            &id("a"),
+            id("retained-refusal"),
+            request.clone()
+        ),
+        Err(RuntimeError::DuplicateOperation)
+    ));
+    assert!(matches!(
+        runtime.begin(&activation, &id("a"), id("another-id"), request),
+        Err(RuntimeError::ResourceLimit)
+    ));
+    assert_eq!(states[0].borrow().retained_dispatches, 1);
+    assert_eq!(states[0].borrow().begin_calls, 1);
+    assert_eq!(runtime.operations.len(), 1);
+}
+
+#[test]
+fn uncertain_retained_dispatch_keeps_original_authority_without_another_scope() {
+    let (mut runtime, states) = runtime(OperatingMode::Exact);
+    let activation = activate(&mut runtime);
+    states[0].borrow_mut().uncertain = true;
+    let request = OperationRequest::ExactRun {
+        start: position(0),
+        limit: position(10),
+        boundary_policy: ExactBoundaryPolicy::HorizonPark,
+    };
+
+    let token = match runtime
+        .begin(
+            &activation,
+            &id("a"),
+            id("uncertain-dispatch"),
+            request.clone(),
+        )
+        .unwrap()
+    {
+        BeginResult::Uncertain { token, .. } => token,
+        _ => panic!("actual callback must retain its uncertainty"),
+    };
+    let recovered = runtime.recover(token.operation()).unwrap();
+    assert!(recovered.same_authority(&token));
+    let retained = runtime.operations.get(token.operation()).unwrap();
+    assert!(matches!(retained.result, RetainedResult::Pending));
+    assert_eq!(
+        retained.submission_effects,
+        Some(EffectKnowledge::MayHaveProgressed)
+    );
+    assert_eq!(states[0].borrow().retained_dispatches, 1);
+    assert!(matches!(
+        runtime.begin(&activation, &id("a"), id("uncertain-dispatch"), request),
+        Err(RuntimeError::DuplicateOperation)
+    ));
+    assert_eq!(states[0].borrow().retained_dispatches, 1);
+}

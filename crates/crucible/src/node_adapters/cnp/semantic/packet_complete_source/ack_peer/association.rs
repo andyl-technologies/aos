@@ -60,6 +60,7 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
         Option<restoration_observation::OriginalSourceRestorationObservationAttempt>,
     // Fixed, separate custody: immutable first-Observe owners are never replaced.
     // Every initialized/failed seed remains inside the actual Source sizeof root.
+    current_observations: std::cell::RefCell<restoration_observation::CurrentObservationHistory>,
     restored_suffix:
         std::cell::RefCell<Option<restoration_continuation::OriginalRestoredSuffixSeed>>,
     emitter: Option<OriginalCanonicalBlobAckEmitter>,
@@ -103,6 +104,9 @@ impl OriginalAckPeerAssociation {
             restoration_activation: None,
             restoration_observation: None,
             restored_suffix: std::cell::RefCell::new(None),
+            current_observations: std::cell::RefCell::new(
+                restoration_observation::CurrentObservationHistory::new(),
+            ),
             emitter: None,
             restore_input_emitter: None,
             native: None,
@@ -1166,6 +1170,7 @@ impl OriginalAckPeerAssociation {
             restoration_activation,
             restoration_observation,
             restored_suffix,
+            current_observations,
             emitter,
             restore_input_emitter,
             native,
@@ -1193,6 +1198,15 @@ impl OriginalAckPeerAssociation {
             ));
         }
         drop(seed);
+        let current = current_observations
+            .try_borrow()
+            .map_err(|_| E::refused("reserved prebirth current observation owner busy"))?;
+        if current.is_used_data() {
+            return Err(E::refused(
+                "reserved prebirth current observation owner already used",
+            ));
+        }
+        drop(current);
 
         if restoration_observation.is_some()
             || restoration_activation.is_some()
@@ -1316,3 +1330,5 @@ impl OriginalAckPeerAssociation {
             + size_of::<Result<usize, crate::node_contract::RuntimeError>>()
     }
 }
+
+pub(crate) use restoration_observation::OriginalSourceRestoredObservationCompletion;

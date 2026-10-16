@@ -62,6 +62,21 @@ pub(super) fn observe(
                 ],
                 policy.maximum_requested_bytes,
             )?;
+            for work in &window.initial_scheduling_work {
+                if let Some((retained, transient, scratch)) = work.get() {
+                    requested = checked_sum(
+                        &[requested, retained, transient, scratch],
+                        policy.maximum_requested_bytes,
+                    )?;
+                }
+            }
+            for ledger in &window.current_observations {
+                let ledger = ledger.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+                requested = checked_sum(
+                    &[requested, ledger.future_requested_bytes_data()?],
+                    policy.maximum_requested_bytes,
+                )?;
+            }
             let rows = window
                 .node_rows
                 .get()

@@ -167,6 +167,7 @@ impl PacketCompleteReportStartupHolder {
             crate::node_observed_executor::StoredWorldActivationPublisher::original_directory_publication_counter_scratch_data()?,
             InstalledConformancePlan::original_restoration_construction_counter_scratch_data()?,
             PacketCompleteRestorationPrebirth::restoration_holder_counter_scratch_data(),
+            Self::original_restored_scheduling_caller_counter_scratch_data(),
             size_of::<std::cell::Ref<'static, PacketCompleteReportStartupHolder>>(),
             size_of::<std::cell::Ref<'static, PacketCompleteRestorationPrebirth>>(),
             size_of::<std::cell::Ref<'static, OriginalRestorationRequestOwners>>(),

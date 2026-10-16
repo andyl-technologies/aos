@@ -569,3 +569,128 @@ impl OriginalInstalledRestorationNodeAssociation {
         )
     }
 }
+
+impl OriginalInstalledRestorationNodeAssociation {
+    /// Authenticates an actual pending Runtime dispatch against this same Window.
+    ///
+    /// This is immutable identity correspondence, not an action claim or a
+    /// current-model proof. It performs no SourceRead, callback or allocation.
+    ///
+    /// # Errors
+    /// Refuses expired association custody, changed scope proof or any actual
+    /// Runtime/World/Source/controller/read-owner or verified-seed mismatch.
+    pub(crate) fn authenticate_original_suffix_runtime_dispatch_data(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        dispatch: &crate::node_contract::OriginalRuntimeOperationDispatch<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.authenticate_original_suffix_runtime_dispatch_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            dispatch,
+        )
+    }
+}
+
+impl OriginalInstalledRestorationNodeAssociation {
+    pub(crate) fn quote_original_current_observation_data(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        raw5: &[u8],
+        ordinal: u64,
+        maximum: usize,
+    ) -> Result<
+        crate::node_admission::OriginalRestoredSchedulingObservationConstructionData,
+        RuntimeError,
+    > {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.quote_original_current_observation_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            launch,
+            raw5,
+            ordinal,
+            maximum,
+        )
+    }
+
+    pub(crate) fn call_original_current_observation_into(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &mut CnpController,
+        read_owner: *const (),
+        claim: &crate::node_admission::OriginalRestoredSchedulingObservationClaim<'_>,
+        retained: &mut Option<crate::node_scheduling::NativeSchedulingObservation>,
+        returned: &mut Option<crate::node_scheduling::NativeSchedulingObservation>,
+    ) -> Result<(), RuntimeError> {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.call_original_current_observation_into(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            claim,
+            retained,
+            returned,
+        )
+    }
+
+    pub(crate) fn authenticate_original_current_observation_data(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        world: &WorldActivation,
+        ordinal: u64,
+        observation: &crate::node_scheduling::NativeSchedulingObservation,
+    ) -> Result<(), RuntimeError> {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.authenticate_original_current_observation_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            world,
+            ordinal,
+            observation,
+        )
+    }
+}

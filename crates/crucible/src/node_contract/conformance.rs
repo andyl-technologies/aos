@@ -885,3 +885,6 @@ impl ConformanceRuntime {
 
 #[path = "conformance/installed_restoration.rs"]
 mod installed_restoration;
+
+#[path = "conformance/current_observation.rs"]
+mod current_observation;

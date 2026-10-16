@@ -4,6 +4,15 @@
 //! runtime nor its mutable native nodes, prepared publisher or graph escapes.
 
 use super::*;
+use crucible::node_adapters::cnp::PacketCompleteOriginalHostSdk;
+use crucible::node_admission::{
+    OriginalRestoredInitialSchedulingAdmission, OriginalRestoredSchedulingObservationAdmission,
+};
+use crucible::node_contract::RuntimePollFailure;
+use crucible::node_scheduling::ValidatedSchedulingObservation;
+use crucible_node_contract::Id;
+use crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch;
+
 use crucible::node_admission::CompleteOriginalRestorationWindow;
 use crucible::node_contract::{ActivationRecord, OriginalLineageRestoration, RuntimeError};
 
@@ -129,5 +138,96 @@ impl PacketCompleteRestorationPrebirth {
             .as_mut()
             .ok_or(RuntimeError::OwnerUnavailable)?
             .activate_original_installed_restoration_worlds(window, plan, context)
+    }
+}
+
+impl PacketCompleteRestorationPrebirth {
+    pub(in crate::node_qualification::packet_collection::complete) fn prepare_original_complete_restored_scheduling(
+        &self,
+        window: &Rc<CompleteOriginalRestorationWindow>,
+        plan: &InstalledConformancePlan,
+        sdks: [&PacketCompleteOriginalHostSdk; 3],
+        launches: &[PacketNative5SourceLaunch; 3],
+        canonical_launch5: [&[u8]; 3],
+        node: &Id,
+    ) -> Result<OriginalRestoredSchedulingObservationAdmission, RuntimeError> {
+        self.runtime
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .prepare_original_installed_restored_scheduling(
+                window,
+                plan,
+                sdks,
+                launches,
+                canonical_launch5,
+                node,
+            )
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete) fn observe_original_complete_restored_scheduling(
+        &mut self,
+        admission: &mut OriginalRestoredSchedulingObservationAdmission,
+        launch: &PacketNative5SourceLaunch,
+        canonical_launch5: &[u8],
+        node: &Id,
+    ) -> Result<ValidatedSchedulingObservation, RuntimePollFailure> {
+        self.runtime
+            .as_mut()
+            .ok_or(RuntimePollFailure::Admission(
+                RuntimeError::OwnerUnavailable,
+            ))?
+            .observe_original_installed_restored_scheduling(
+                admission,
+                launch,
+                canonical_launch5,
+                node,
+            )
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete) fn prepare_original_complete_initial_scheduling(
+        &self,
+        window: &Rc<CompleteOriginalRestorationWindow>,
+        plan: &InstalledConformancePlan,
+        sdks: [&PacketCompleteOriginalHostSdk; 3],
+        launches: &[PacketNative5SourceLaunch; 3],
+        canonical_launch5: [&[u8]; 3],
+        node: &Id,
+    ) -> Result<OriginalRestoredInitialSchedulingAdmission, RuntimeError> {
+        self.runtime
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .prepare_original_installed_initial_scheduling(
+                window,
+                plan,
+                sdks,
+                launches,
+                canonical_launch5,
+                node,
+            )
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete) fn observe_original_complete_initial_scheduling(
+        &mut self,
+        admission: &mut OriginalRestoredInitialSchedulingAdmission,
+        node: &Id,
+    ) -> Result<(), RuntimePollFailure> {
+        self.runtime
+            .as_mut()
+            .ok_or(RuntimePollFailure::Admission(
+                RuntimeError::OwnerUnavailable,
+            ))?
+            .observe_original_installed_initial_scheduling(admission, node)
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete) fn seed_original_complete_restored_suffix(
+        &self,
+        window: &Rc<CompleteOriginalRestorationWindow>,
+        plan: &InstalledConformancePlan,
+        node: &Id,
+    ) -> Result<(), RuntimeError> {
+        self.runtime
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .seed_original_installed_restored_suffix(window, plan, node)
     }
 }

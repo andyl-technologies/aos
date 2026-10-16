@@ -69,6 +69,10 @@ enum RetainedResult {
     Acknowledged(OperationOutcome),
 }
 
+#[path = "runtime/original_retained_dispatch.rs"]
+mod original_retained_dispatch;
+pub use original_retained_dispatch::OriginalRuntimeOperationDispatch;
+
 struct RetainedOperation {
     admission: OperationAdmission,
     result: RetainedResult,
@@ -1704,3 +1708,6 @@ impl NodeRuntime {
 }
 
 pub use original_input_lineage::OriginalInstalledRestorationNodeAssociation;
+
+#[path = "runtime/current_observation.rs"]
+mod current_observation;

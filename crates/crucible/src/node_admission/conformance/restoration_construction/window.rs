@@ -140,6 +140,8 @@ enum WindowStage {
 /// the window cannot renew the archive's per-owner transaction ledger.
 #[must_use = "retain the original window and every partial owner through failure"]
 pub struct CompleteOriginalRestorationWindow {
+    current_observations: [RefCell<current_observation::CurrentObservationLedger>; 3],
+    initial_scheduling_work: [Cell<Option<(usize, usize, usize)>>; 3],
     process: u32,
     thread: ThreadId,
     plan: super::super::WeakInstalledConformancePlan,
@@ -391,6 +393,10 @@ impl InstalledConformancePlan {
             }),
             suffix_seeds: std::array::from_fn(|_| continuation_suffix::SuffixLedger::new()),
             suffix_in_flight: Cell::new(false),
+            initial_scheduling_work: std::array::from_fn(|_| Cell::new(None)),
+            current_observations: std::array::from_fn(|_| {
+                RefCell::new(current_observation::CurrentObservationLedger::new())
+            }),
             context_started: Cell::new(false),
             context_issued: Cell::new(false),
             coordinator_construction: OnceCell::new(),
@@ -1348,4 +1354,12 @@ mod continuation_suffix;
 pub(crate) use continuation_suffix::{
     OriginalRestoredSuffixCheckpointData, OriginalRestoredSuffixConstructionData,
     OriginalRestoredSuffixSeedClaim,
+};
+
+#[path = "window/current_observation.rs"]
+mod current_observation;
+pub use current_observation::{
+    OriginalRestoredInitialSchedulingAdmission, OriginalRestoredSchedulingObservationAdmission,
+    OriginalRestoredSchedulingObservationClaim,
+    OriginalRestoredSchedulingObservationConstructionData,
 };

@@ -74,6 +74,43 @@ impl PacketCompleteSemanticSource {
         Ok(suffix.reservation_data())
     }
 
+    /// Lends the actual immutable startup geometry to a new observation quote.
+    ///
+    /// This is the same completed host-wire owner, never a native receipt or
+    /// action grant. The effect caller separately holds the owning SourceRead.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, absent declaration/birth, unready member or an
+    /// incomplete startup16 publication. No fallback geometry is reconstructed.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn original_restored_suffix_observation_startup_data(
+        &self,
+    ) -> Result<crucible_node_provider::reference_packet::service::native_startup::PacketNativeRestoredSuffixStartupStorageData, RuntimeError>{
+        self.storage_origin_with_error::<RuntimeError>()?;
+        if !self.is_original_restored_suffix_declaration_data()? {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let birth = self
+            .ack_peer_birth
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let birth = birth.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        birth.authenticate_original_initial_lifecycle_data()?;
+        let state = birth
+            .native_startup
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if !state.complete {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        state.member.authenticate_boot_ready(self)?;
+        state
+            .member
+            .suffix
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .observation_startup_data(self)
+    }
+
     /// Counts the complete distinct wire owner independently of its raw banks.
     pub fn original_restored_suffix_wire_header_storage_data() -> usize {
         super::super::native_wire::original_restored_suffix_wire_counter_scratch_data()

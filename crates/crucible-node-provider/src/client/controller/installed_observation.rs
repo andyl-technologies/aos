@@ -121,6 +121,8 @@ impl CnpController {
             )
             + size_of::<Result<&Envelope, ProviderError>>()
             + size_of::<Result<&ResponseBody, ProviderError>>()
+            + size_of::<Result<&ObserveRequest, ProviderError>>()
+            + size_of::<Option<&ObserveRequest>>()
             + size_of::<Result<&mut serde_json::Map<String, Value>, ProviderError>>()
             + size_of::<Result<&Value, ProviderError>>()
             + size_of::<ObservationState>()
@@ -318,6 +320,26 @@ impl CnpController {
             return Err(refused());
         }
         Ok(())
+    }
+
+    /// Borrows the actual retained closed body for an independent suffix quote.
+    ///
+    /// The first original remains historical ancestry. This loan creates no
+    /// new request and grants no startup16 or per-action permission.
+    ///
+    /// # Errors
+    /// Refuses foreign emitter/codec, incomplete first custody or a changed body.
+    pub fn original_restored_suffix_observation_body_data(
+        &self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+    ) -> Result<&ObserveRequest, ProviderError> {
+        self.authenticate_original_installed_restored_suffix_data(emitter)?;
+        let state = self
+            .original_installed_restoration_observation
+            .as_ref()
+            .ok_or_else(refused)?;
+        state.request.authenticate_body_data(&state.body)?;
+        Ok(&state.body)
     }
 
     /// Checks a new actual suffix original against the immutable first scope.

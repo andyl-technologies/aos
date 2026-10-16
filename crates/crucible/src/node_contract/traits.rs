@@ -267,6 +267,54 @@ pub trait SimulationNode {
         })
     }
 
+    /// Seeds the distinct initial suffix after every first Observe is verified.
+    ///
+    /// # Errors
+    /// Refuses unsupported nodes or any actual installed seed/currentness guard.
+    fn seed_original_installed_restored_suffix(
+        &self,
+        _world: &super::WorldActivation,
+    ) -> Result<(), super::RuntimeError> {
+        Err(super::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Quotes an independently retained selected current-observation action.
+    ///
+    /// This immutable constructor creates DATA only. The actual installed
+    /// ConformanceRuntime must retain the row and repeat its whole-owner census.
+    ///
+    /// # Errors
+    /// Refuses unsupported nodes, foreign original launch views or an exhausted bound.
+    fn quote_original_restored_scheduling_observation(
+        &self,
+        _launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        _canonical_launch5: &[u8],
+        _ordinal: u64,
+        _maximum: usize,
+    ) -> Result<
+        crate::node_admission::OriginalRestoredSchedulingObservationConstructionData,
+        super::RuntimeError,
+    > {
+        Err(super::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Consumes a same-runtime scheduling claim without execution/input permission.
+    ///
+    /// The ordinary observation callback remains independent. A successful
+    /// selected callback retains actual fresh originals, proof and ACK custody.
+    ///
+    /// # Errors
+    /// Refuses unsupported selected claims or an incomplete native inspection.
+    fn observe_original_restored_scheduling(
+        &mut self,
+        _claim: &crate::node_admission::OriginalRestoredSchedulingObservationClaim<'_>,
+    ) -> Result<crate::node_scheduling::NativeSchedulingObservation, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "selected current-observation consumer is unsupported".into(),
+        })
+    }
+
     /// Authenticates a complete native scheduling observation for this activation.
     ///
     /// # Errors
@@ -1097,6 +1145,18 @@ pub trait SimulationNode {
             effects: super::EffectKnowledge::None,
             reason: "fresh initial native preparation validation is unsupported".into(),
         })
+    }
+
+    /// Receives the actual Runtime-retained pending admission before provider effects.
+    ///
+    /// The default preserves existing adapter behavior. Selected restored
+    /// adapters can require this stronger loan for their independently funded
+    /// Source/Core action path; receiving it does not waive those other gates.
+    fn begin_original_retained_operation(
+        &mut self,
+        dispatch: &super::OriginalRuntimeOperationDispatch<'_>,
+    ) -> Submission {
+        self.begin_operation(dispatch.admission_data())
     }
 
     /// Begins the original admitted operation without fabricating completion.

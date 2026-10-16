@@ -1426,3 +1426,9 @@ pub(crate) use restoration_construction::{
     OriginalRestoredSuffixCheckpointData, OriginalRestoredSuffixConstructionData,
     OriginalRestoredSuffixSeedClaim,
 };
+
+pub use restoration_construction::{
+    OriginalRestoredInitialSchedulingAdmission, OriginalRestoredSchedulingObservationAdmission,
+    OriginalRestoredSchedulingObservationClaim,
+    OriginalRestoredSchedulingObservationConstructionData,
+};

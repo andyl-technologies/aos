@@ -57,3 +57,8 @@ fn sum<const N: usize>(terms: [usize; N], maximum: usize) -> Result<usize, Runti
         N,
     >(terms, maximum)
 }
+
+#[path = "restoration_observation/current.rs"]
+mod current;
+pub(super) use current::CurrentObservationHistory;
+pub(crate) use current::OriginalSourceRestoredObservationCompletion;

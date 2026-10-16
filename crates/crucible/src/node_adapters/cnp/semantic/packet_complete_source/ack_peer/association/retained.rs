@@ -45,6 +45,15 @@ impl OriginalAckPeerAssociation {
                 maximum,
             )?;
         }
+        let current = self
+            .current_observations
+            .try_borrow()
+            .map_err(|_| E::unknown("current observation custody is borrowed"))?;
+        bytes = sum_with_error::<E, _>(
+            [bytes, current.retained_heap_bytes_with_error::<E>(maximum)?],
+            maximum,
+        )?;
+        drop(current);
         if let Some(observation) = &self.restoration_observation {
             bytes = sum_with_error::<E, _>(
                 [

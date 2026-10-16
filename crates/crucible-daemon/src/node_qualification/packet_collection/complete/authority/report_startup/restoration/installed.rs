@@ -5,6 +5,14 @@
 //! and repeats the same full owning observation before dispatching another one.
 
 use super::*;
+use crucible::node_adapters::cnp::{CnpSemanticSource, PacketCompleteOriginalHostSdk};
+use crucible::node_admission::{
+    OriginalRestoredInitialSchedulingAdmission, OriginalRestoredSchedulingObservationAdmission,
+};
+use crucible::node_contract::RuntimePollFailure;
+use crucible::node_scheduling::ValidatedSchedulingObservation;
+use crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch;
+
 use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
 use std::sync::Arc;
 
@@ -103,5 +111,290 @@ impl PacketCompleteReportStartupHolder {
             .map_err(|_| RuntimeError::OwnerBusy)?
             .activate_original_complete_restoration_worlds(&window, &plan, &context)?;
         Self::recheck_original_restoration_transaction_data(original, activation).map(|_| ())
+    }
+}
+
+impl PacketCompleteReportStartupHolder {
+    const RESTORATION_FAILURE: &str =
+        "complete restoration failed; native effects may have started";
+
+    /// Restores a suffix-selected world and returns its first recurring observation.
+    ///
+    /// This entrypoint drives the existing complete installation, every original
+    /// first Observe, and each separate suffix seed before requesting a current
+    /// scheduling observation. The same holder retains all native and protocol
+    /// partials after failure; it does not retry an incomplete native phase.
+    ///
+    /// # Errors
+    /// Refuses an unselected source, foreign holder, failed complete restoration,
+    /// missing census, incomplete initial roster or any native proof/ACK failure.
+    pub fn execute_original_complete_restoration_and_observe(
+        original: &Rc<RefCell<Self>>,
+        activation: &crucible::node_contract::ActivationRecord,
+        prepare_ids: &mut Option<[Id; 3]>,
+        commit_ids: &mut Option<[Id; 3]>,
+        publisher: &mut Option<crate::node_observed_executor::StoredWorldActivationPublisher>,
+        blobs: Arc<DirectoryBlobBackend>,
+        refs: Arc<DirectoryRefBackend>,
+        node: &Id,
+    ) -> Result<ValidatedSchedulingObservation, RuntimePollFailure> {
+        {
+            let held = original
+                .try_borrow()
+                .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?;
+            held.authenticate_native_origin_data()
+                .map_err(RuntimePollFailure::Admission)?;
+            for source in &held.authority.roster.sources {
+                if !source
+                    .is_original_restored_suffix_declaration_data()
+                    .map_err(RuntimePollFailure::Admission)?
+                {
+                    return Err(RuntimePollFailure::Admission(
+                        RuntimeError::UnsupportedFacet,
+                    ));
+                }
+            }
+            if !held
+                .authority
+                .roster
+                .sources
+                .iter()
+                .any(|source| &source.installation().binding.compatibility.node_id == node)
+            {
+                return Err(RuntimePollFailure::Admission(RuntimeError::UnknownNode));
+            }
+        }
+        Self::execute_original_complete_restoration(
+            original,
+            activation,
+            prepare_ids,
+            commit_ids,
+            publisher,
+            blobs,
+            refs,
+        )
+        .map_err(|_| {
+            // The older installer can fail after native or durable effects; its
+            // RuntimeError carries no evidence that those effects did not occur.
+            RuntimePollFailure::Native(crucible::node_contract::OperationFailure {
+                effects: crucible::node_contract::EffectKnowledge::Unknown,
+                reason: Self::RESTORATION_FAILURE.into(),
+            })
+        })?;
+        Self::complete_original_restored_initial_scheduling(original, activation)?;
+        Self::observe_original_restored_scheduling(original, node)
+    }
+
+    fn complete_original_restored_initial_scheduling(
+        original: &Rc<RefCell<Self>>,
+        activation: &crucible::node_contract::ActivationRecord,
+    ) -> Result<(), RuntimePollFailure> {
+        let held = original
+            .try_borrow()
+            .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?;
+        held.authenticate_native_origin_data()
+            .map_err(RuntimePollFailure::Admission)?;
+        let window = held
+            .restoration_window
+            .get()
+            .ok_or(RuntimePollFailure::Admission(
+                RuntimeError::OwnerUnavailable,
+            ))?;
+        let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose else {
+            return Err(RuntimePollFailure::Admission(
+                RuntimeError::ForeignAuthority,
+            ));
+        };
+
+        // Census callbacks reborrow the capsule immutably. End every dispatch
+        // RefMut before observing the next phase, including the final roster edge.
+        for source in &held.authority.roster.sources {
+            let node = &source.installation().binding.compatibility.node_id;
+            let mut admission = {
+                let outputs = held
+                    .host_sdk_outputs
+                    .try_borrow()
+                    .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?;
+                let sdks = [
+                    outputs[0].as_ref().ok_or(RuntimePollFailure::Admission(
+                        RuntimeError::OwnerUnavailable,
+                    ))?,
+                    outputs[1].as_ref().ok_or(RuntimePollFailure::Admission(
+                        RuntimeError::OwnerUnavailable,
+                    ))?,
+                    outputs[2].as_ref().ok_or(RuntimePollFailure::Admission(
+                        RuntimeError::OwnerUnavailable,
+                    ))?,
+                ];
+                let shared = capsule
+                    .try_borrow()
+                    .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?;
+                shared
+                    .prepare_original_complete_initial_scheduling(
+                        window,
+                        &held.plan,
+                        sdks,
+                        &held.authority.original_launches,
+                        held.authority
+                            .private_launches
+                            .each_ref()
+                            .map(Vec::as_slice),
+                        node,
+                    )
+                    .map_err(RuntimePollFailure::Admission)?
+            };
+            capsule
+                .try_borrow_mut()
+                .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?
+                .observe_original_complete_initial_scheduling(&mut admission, node)?;
+        }
+        Self::recheck_original_restoration_transaction_data(original, activation)
+            .map_err(RuntimePollFailure::Admission)?;
+
+        // Seeds require all three actual first observations. Each seed dirties
+        // the whole observation, so no following seed reuses the previous cut.
+        for source in &held.authority.roster.sources {
+            let node = &source.installation().binding.compatibility.node_id;
+            capsule
+                .try_borrow()
+                .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?
+                .seed_original_complete_restored_suffix(window, &held.plan, node)
+                .map_err(RuntimePollFailure::Admission)?;
+            Self::recheck_original_restoration_transaction_data(original, activation)
+                .map_err(RuntimePollFailure::Admission)?;
+        }
+        Ok(())
+    }
+
+    /// Returns a fresh scheduling observation through the actual retained holder.
+    ///
+    /// Preparation lends the original SDK3, launch3 and canonical launch bodies
+    /// under a shared capsule loan. That loan ends before the admitted dispatch
+    /// borrows the runtime mutably. No runtime or native handle is extracted.
+    ///
+    /// # Errors
+    /// Refuses incomplete initial observation/seed, changed original ownership,
+    /// stale or spent admission, resource excess and native proof/ACK failures.
+    pub fn observe_original_restored_scheduling(
+        original: &Rc<RefCell<Self>>,
+        node: &Id,
+    ) -> Result<ValidatedSchedulingObservation, RuntimePollFailure> {
+        let held = original
+            .try_borrow()
+            .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?;
+        held.authenticate_native_origin_data()
+            .map_err(RuntimePollFailure::Admission)?;
+        let window = held
+            .restoration_window
+            .get()
+            .ok_or(RuntimePollFailure::Admission(
+                RuntimeError::OwnerUnavailable,
+            ))?;
+        let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose else {
+            return Err(RuntimePollFailure::Admission(
+                RuntimeError::ForeignAuthority,
+            ));
+        };
+        let selected = held
+            .authority
+            .roster
+            .sources
+            .iter()
+            .position(|source| &source.installation().binding.compatibility.node_id == node)
+            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+
+        let mut admission = {
+            let outputs = held
+                .host_sdk_outputs
+                .try_borrow()
+                .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?;
+            let sdks = [
+                outputs[0].as_ref().ok_or(RuntimePollFailure::Admission(
+                    RuntimeError::OwnerUnavailable,
+                ))?,
+                outputs[1].as_ref().ok_or(RuntimePollFailure::Admission(
+                    RuntimeError::OwnerUnavailable,
+                ))?,
+                outputs[2].as_ref().ok_or(RuntimePollFailure::Admission(
+                    RuntimeError::OwnerUnavailable,
+                ))?,
+            ];
+            let shared = capsule
+                .try_borrow()
+                .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?;
+            shared
+                .prepare_original_complete_restored_scheduling(
+                    window,
+                    &held.plan,
+                    sdks,
+                    &held.authority.original_launches,
+                    held.authority
+                        .private_launches
+                        .each_ref()
+                        .map(Vec::as_slice),
+                    node,
+                )
+                .map_err(RuntimePollFailure::Admission)?
+        };
+
+        let result = capsule
+            .try_borrow_mut()
+            .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OwnerBusy))?
+            .observe_original_complete_restored_scheduling(
+                &mut admission,
+                &held.authority.original_launches[selected],
+                &held.authority.private_launches[selected],
+                node,
+            );
+        result
+    }
+}
+
+impl PacketCompleteReportStartupHolder {
+    pub(super) fn original_restored_scheduling_caller_counter_scratch_data() -> usize {
+        use crucible::node_adapters::cnp::PacketCompleteSemanticSource;
+        use std::mem::size_of;
+
+        type HolderRef = std::cell::Ref<'static, PacketCompleteReportStartupHolder>;
+        type CapsuleRef = std::cell::Ref<'static, PacketCompleteRestorationPrebirth>;
+        type CapsuleMut = std::cell::RefMut<'static, PacketCompleteRestorationPrebirth>;
+        type OutputsRef = std::cell::Ref<'static, [Option<PacketCompleteOriginalHostSdk>; 3]>;
+
+        PacketCompleteSemanticSource::original_restored_suffix_declaration_counter_scratch_data()
+            // The fixed failure diagnostic owns a String even when the older
+            // installer stops before the first scheduling admission exists.
+            + Self::RESTORATION_FAILURE.len()
+            + size_of::<HolderRef>()
+            + size_of::<Result<HolderRef, std::cell::BorrowError>>()
+            + size_of::<Result<HolderRef, RuntimePollFailure>>()
+            + size_of::<CapsuleRef>()
+            + size_of::<Result<CapsuleRef, std::cell::BorrowError>>()
+            + size_of::<Result<CapsuleRef, RuntimePollFailure>>()
+            + size_of::<CapsuleMut>()
+            + size_of::<Result<CapsuleMut, std::cell::BorrowMutError>>()
+            + size_of::<Result<CapsuleMut, RuntimePollFailure>>()
+            + size_of::<OutputsRef>()
+            + size_of::<Result<OutputsRef, std::cell::BorrowError>>()
+            + size_of::<Result<OutputsRef, RuntimePollFailure>>()
+            + size_of::<[&PacketCompleteOriginalHostSdk; 3]>()
+            + size_of::<[&Vec<u8>; 3]>()
+            + size_of::<[&[u8]; 3]>()
+            + size_of::<&[PacketNative5SourceLaunch; 3]>()
+            + size_of::<std::slice::Iter<'static, Rc<PacketCompleteSemanticSource>>>()
+            + size_of::<OriginalRestoredInitialSchedulingAdmission>()
+            + size_of::<Result<OriginalRestoredInitialSchedulingAdmission, RuntimeError>>()
+            + size_of::<Result<OriginalRestoredInitialSchedulingAdmission, RuntimePollFailure>>()
+            + size_of::<OriginalRestoredSchedulingObservationAdmission>()
+            + size_of::<Result<OriginalRestoredSchedulingObservationAdmission, RuntimeError>>()
+            + size_of::<Result<OriginalRestoredSchedulingObservationAdmission, RuntimePollFailure>>(
+            )
+            + size_of::<ValidatedSchedulingObservation>()
+            + size_of::<Result<ValidatedSchedulingObservation, RuntimePollFailure>>()
+            + size_of::<RuntimePollFailure>()
+            + size_of::<Result<(), RuntimePollFailure>>()
+            + size_of::<Result<bool, RuntimeError>>()
+            + size_of::<Result<bool, RuntimePollFailure>>()
+            + size_of::<Option<usize>>()
+            + size_of::<Result<usize, RuntimePollFailure>>()
     }
 }

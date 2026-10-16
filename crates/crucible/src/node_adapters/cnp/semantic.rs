@@ -177,3 +177,5 @@ pub use packet_complete_source::{
     OriginalSourceRestorationObservationConstructionData,
     OriginalSourceRestorationObservationVerifiedPhase,
 };
+
+pub(crate) use packet_complete_source::OriginalSourceRestoredObservationCompletion;

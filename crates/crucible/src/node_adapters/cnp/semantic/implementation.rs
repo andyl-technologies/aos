@@ -590,6 +590,40 @@ impl SimulationNode for CnpSemanticNode {
         self.validate_original_input_commit(commit)
     }
 
+    fn begin_original_retained_operation(
+        &mut self,
+        dispatch: &crate::node_contract::OriginalRuntimeOperationDispatch<'_>,
+    ) -> Submission {
+        let admission = dispatch.admission_data();
+        if dispatch
+            .authenticate_original_data(admission, admission.activation(), &self.route)
+            .is_err()
+        {
+            return Submission::Refused(Refusal {
+                reason:
+                    crate::node_contract::OriginalRuntimeOperationDispatch::NODE_IDENTITY_REFUSAL
+                        .into(),
+            });
+        }
+        if self.has_installed_restoration_data() {
+            if self
+                .authenticate_installed_suffix_dispatch_data(dispatch)
+                .is_err()
+            {
+                return Submission::Refused(Refusal {
+                    reason: crate::node_contract::OriginalRuntimeOperationDispatch::SUFFIX_IDENTITY_REFUSAL.into(),
+                });
+            }
+            // Identity is necessary, never sufficient for a new native effect.
+            // The paired current-proof row and Source/Core action issuer must
+            // be retained/admitted before this branch can dispatch an Observe.
+            return Submission::Refused(Refusal {
+                reason: crate::node_contract::OriginalRuntimeOperationDispatch::SUFFIX_ACTION_ROW_REFUSAL.into(),
+            });
+        }
+        self.begin_operation(admission)
+    }
+
     fn begin_operation(&mut self, admission: &OperationAdmission) -> Submission {
         match self.begin_original(admission) {
             Ok(()) => Submission::Accepted,
@@ -665,6 +699,33 @@ impl SimulationNode for CnpSemanticNode {
         self.acknowledge_original(operation, outputs)
     }
 
+    fn seed_original_installed_restored_suffix(
+        &self,
+        world: &WorldActivation,
+    ) -> Result<(), RuntimeError> {
+        self.seed_installed_restored_suffix_data(world)
+    }
+
+    fn quote_original_restored_scheduling_observation(
+        &self,
+        launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        canonical_launch5: &[u8],
+        ordinal: u64,
+        maximum: usize,
+    ) -> Result<
+        crate::node_admission::OriginalRestoredSchedulingObservationConstructionData,
+        RuntimeError,
+    > {
+        self.quote_installed_current_observation_data(launch, canonical_launch5, ordinal, maximum)
+    }
+
+    fn observe_original_restored_scheduling(
+        &mut self,
+        claim: &crate::node_admission::OriginalRestoredSchedulingObservationClaim<'_>,
+    ) -> Result<crate::node_scheduling::NativeSchedulingObservation, OperationFailure> {
+        self.observe_installed_current_data(claim)
+    }
+
     fn observe_scheduling(
         &mut self,
         activation: &WorldActivation,
@@ -727,6 +788,9 @@ impl SimulationNode for CnpSemanticNode {
         observation: &NativeSchedulingObservation,
     ) -> Result<(), OperationFailure> {
         if self.has_installed_restoration_data() {
+            if self.has_installed_current_observation_data() {
+                return self.validate_installed_current_observation_data(activation, observation);
+            }
             return self.validate_installed_restoration_observation(activation, observation);
         }
         self.current()?;

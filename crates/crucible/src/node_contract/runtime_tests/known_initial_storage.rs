@@ -60,6 +60,11 @@ impl KnownInitialNode {
             uncertain: _,
             facet_calls: _,
             thread_affinity_override: _,
+            retained_dispatches: _,
+            retained_dispatch_address: _,
+            retained_dispatch_clone_refused: _,
+            retained_dispatch_foreign_world,
+            retained_dispatch_foreign_refused: _,
             begin_calls: _,
             poll_calls: _,
             close_calls: _,
@@ -94,6 +99,7 @@ impl KnownInitialNode {
             || exact_restoration_record.is_some()
             || retained_outputs.capacity() != 0
             || admission.is_some()
+            || retained_dispatch_foreign_world.is_some()
             || scheduling_observation.is_some()
             || evidence_objects.capacity() != 0
             || progress_override.is_some()

@@ -353,6 +353,18 @@ impl OriginalRestoredSuffixStartupMember {
         self.rows.reservation.reservation_data()
     }
 
+    /// Lends the same immutable cached geometry after actual host publication.
+    ///
+    /// # Errors
+    /// Refuses another Source or an attempted-only/failed startup16 write.
+    pub(crate) fn observation_startup_data(
+        &self,
+        source: &PacketCompleteSemanticSource,
+    ) -> Result<PacketNativeRestoredSuffixStartupStorageData, RuntimeError> {
+        self.authenticate_completed_wire_data(source)?;
+        Ok(self.rows.reservation)
+    }
+
     pub(crate) fn launch_identity_data(&self) -> PacketNativeSuffixLaunchIdentityData {
         self.rows.construction.launch_identity_data()
     }

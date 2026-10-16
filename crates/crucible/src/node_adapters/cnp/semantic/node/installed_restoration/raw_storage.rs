@@ -36,8 +36,19 @@ pub(super) fn phase_owners(
         observation_completed,
         observation,
         observation_return,
+        current_observations,
     } = state;
-    let mut bytes = 0;
+    let slots = current_observations
+        .capacity()
+        .checked_mul(current_observation::slot_bytes_data())
+        .ok_or(RuntimeError::ResourceLimit)?;
+    let mut bytes = storage::sum(
+        &[
+            slots,
+            current_observation::retained_data(current_observations, maximum)?,
+        ],
+        maximum,
+    )?;
     if let Some(response) = observation_completed {
         let facts = crucible_node_provider::reference_packet::service::complete_restore::restoration_observe::RetainedRestorationObservationData::Response(response)
             .original_retained_metadata_facts().map_err(|_| RuntimeError::UnsupportedFacet)?;

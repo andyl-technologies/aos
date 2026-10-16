@@ -86,8 +86,21 @@ impl NodeRuntime {
             },
         );
 
+        // The actual retained entry exists before the callback receives its
+        // nonconstructible loan. Recovering a token cannot recreate this scope.
+        let retained = self
+            .operations
+            .get(&operation)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        let dispatch = OriginalRuntimeOperationDispatch::from_retained(
+            retained,
+            &self.authority,
+            activation,
+            &self.activated,
+            &self.barrier,
+        )?;
         let submission = match self.nodes.get_mut(node) {
-            Some(handle) => handle.begin_operation(&admission),
+            Some(handle) => handle.begin_original_retained_operation(&dispatch),
             None => return Err(RuntimeError::UnknownNode),
         };
         match submission {
@@ -420,6 +433,90 @@ impl NodeRuntime {
         {
             self.contain_roster(&route);
             return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+        }
+        Ok(crate::node_scheduling::ValidatedSchedulingObservation::new(
+            activation.clone(),
+            observation,
+        ))
+    }
+
+    pub(crate) fn observe_original_installed_first_scheduling(
+        &mut self,
+        activation: &WorldActivation,
+        node: &NodeId,
+    ) -> Result<(), RuntimePollFailure> {
+        self.validate_activation(activation)
+            .map_err(RuntimePollFailure::Admission)?;
+        let route = self
+            .checked_route(node)
+            .map_err(RuntimePollFailure::Admission)?;
+        self.validate_owners_available(&route)
+            .map_err(RuntimePollFailure::Admission)?;
+        let handle = self
+            .nodes
+            .get_mut(node)
+            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+        let observation = handle
+            .observe_scheduling(activation)
+            .map_err(RuntimePollFailure::Native)?;
+        if observation.node != *node
+            || observation.owners != route.owners
+            || observation.bounds.len() > self.limits.maximum_nodes
+            || observation.publications.len() > self.limits.maximum_retained_outputs
+            || handle
+                .validate_scheduling_observation(activation, &observation)
+                .is_err()
+        {
+            self.contain_roster(&route);
+            return Err(RuntimePollFailure::Native(OperationFailure {
+                effects: EffectKnowledge::Unknown,
+                reason: crate::node_admission::OriginalRestoredSchedulingObservationClaim::RECEIPT_FAILURE.into(),
+            }));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe_scheduling_with_original_claim(
+        &mut self,
+        activation: &WorldActivation,
+        node: &NodeId,
+        claim: &crate::node_admission::OriginalRestoredSchedulingObservationClaim<'_>,
+    ) -> Result<crate::node_scheduling::ValidatedSchedulingObservation, RuntimePollFailure> {
+        self.validate_activation(activation)
+            .map_err(RuntimePollFailure::Admission)?;
+        let route = self
+            .checked_route(node)
+            .map_err(RuntimePollFailure::Admission)?;
+        self.validate_owners_available(&route)
+            .map_err(RuntimePollFailure::Admission)?;
+        claim
+            .authenticate_runtime_data(self, &route)
+            .map_err(RuntimePollFailure::Admission)?;
+        if !claim.world_data().same_authority(activation) {
+            return Err(RuntimePollFailure::Admission(
+                RuntimeError::ForeignAuthority,
+            ));
+        }
+        let handle = self
+            .nodes
+            .get_mut(node)
+            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+        let observation = handle
+            .observe_original_restored_scheduling(claim)
+            .map_err(RuntimePollFailure::Native)?;
+        if observation.node != *node
+            || observation.owners != route.owners
+            || observation.bounds.len() > self.limits.maximum_nodes
+            || observation.publications.len() > self.limits.maximum_retained_outputs
+            || handle
+                .validate_scheduling_observation(activation, &observation)
+                .is_err()
+        {
+            self.contain_roster(&route);
+            return Err(RuntimePollFailure::Native(OperationFailure {
+                effects: EffectKnowledge::Unknown,
+                reason: crate::node_admission::OriginalRestoredSchedulingObservationClaim::RECEIPT_FAILURE.into(),
+            }));
         }
         Ok(crate::node_scheduling::ValidatedSchedulingObservation::new(
             activation.clone(),

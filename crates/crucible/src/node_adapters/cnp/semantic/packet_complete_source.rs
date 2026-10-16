@@ -1357,3 +1357,5 @@ pub use ack_peer::{
     OriginalSourceRestorationObservationConstructionData,
     OriginalSourceRestorationObservationVerifiedPhase,
 };
+
+pub(crate) use ack_peer::OriginalSourceRestoredObservationCompletion;

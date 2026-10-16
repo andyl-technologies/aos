@@ -86,7 +86,10 @@ impl Requested {
 // the growing tree; its payload allocations are already counted as clones.
 // All called iterators have an exact remaining size_hint. max(4,len) covers
 // both TrustedLen allocation and the ordinary first-item minimum-capacity path.
-fn collect_buffer_storage<T>(entries: usize, maximum: usize) -> Result<usize, RuntimeError> {
+pub(super) fn collect_buffer_storage<T>(
+    entries: usize,
+    maximum: usize,
+) -> Result<usize, RuntimeError> {
     let slots = if entries == 0 { 0 } else { entries.max(4) };
     let sort = stable_sort_heap_storage::<T>(entries)?;
     let bytes = slots
@@ -120,7 +123,7 @@ fn stable_sort_heap_storage<T>(entries: usize) -> Result<usize, RuntimeError> {
     slots.checked_mul(width).ok_or(RuntimeError::ResourceLimit)
 }
 
-fn stable_sort_fixed_scratch_data() -> usize {
+pub(super) fn stable_sort_fixed_scratch_data() -> usize {
     let width = size_of::<(Id, NodeSnapshot)>()
         .max(size_of::<(Id, Box<dyn SimulationNode>)>())
         .max(size_of::<OwnerIdentity>())
@@ -187,6 +190,9 @@ impl NodeRuntime {
     /// remain separate; this static DATA getter allocates nothing.
     pub fn original_fixed_four_construction_counter_scratch_data() -> usize {
         size_of::<QuoteLocals<'_>>()
+            // The new dispatch loan is stack-only. Its explicit future view is
+            // kept independently beside constructor views, never as heap credit.
+            + OriginalRuntimeOperationDispatch::counter_scratch_data()
             + size_of::<OriginalFixedFourRuntimeConstructionStorageData>()
             + size_of::<NodeSnapshot>()
             + size_of::<ActivationBarrier>()
@@ -308,6 +314,14 @@ fn quote(
         retained: Requested::new(maximum),
         transient: Requested::new(maximum),
     };
+    // Failed used IDs retain their reason while the original refusal is returned.
+    // This independent backing row uses the same real Runtime limit as construction.
+    quote.retained.add(
+        OriginalRuntimeOperationDispatch::refused_reason_retained_bytes_data(
+            limits.maximum_operations,
+        )?,
+    )?;
+
     quote.retained.add(size_of::<NodeRuntime>())?;
     quote
         .retained

@@ -537,3 +537,9 @@ pub(crate) use conformance::{
     OriginalRestoredSuffixCheckpointData, OriginalRestoredSuffixConstructionData,
     OriginalRestoredSuffixSeedClaim,
 };
+
+pub use conformance::{
+    OriginalRestoredInitialSchedulingAdmission, OriginalRestoredSchedulingObservationAdmission,
+    OriginalRestoredSchedulingObservationClaim,
+    OriginalRestoredSchedulingObservationConstructionData,
+};

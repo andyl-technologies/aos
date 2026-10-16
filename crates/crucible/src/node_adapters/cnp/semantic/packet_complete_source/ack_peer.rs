@@ -726,3 +726,5 @@ pub use association::{
     OriginalSourceRestorationObservationConstructionData,
     OriginalSourceRestorationObservationVerifiedPhase,
 };
+
+pub(crate) use association::OriginalSourceRestoredObservationCompletion;

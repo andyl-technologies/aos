@@ -124,3 +124,5 @@ pub use semantic::{
     OriginalSourceRestorationObservationConstructionData,
     OriginalSourceRestorationObservationVerifiedPhase,
 };
+
+pub(crate) use semantic::OriginalSourceRestoredObservationCompletion;
