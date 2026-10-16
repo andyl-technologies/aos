@@ -520,6 +520,30 @@ and source review do not establish execution or native qualification. Missing
 original owners, unknown storage and unavailable baseline/native prerequisites
 continue to refuse.
 
+### Retained-owner restoration and selected startup
+
+The checkpoint through `19d6d228d1` retains the original restoration owners,
+rechecks the complete ownership set after transfers and keeps stage failures
+terminal. Provider storage projections and selected native startup preparation
+account for simultaneously retained frames, decoded values and launch banks.
+The retained-owner fixture negotiates bounded evidence through the existing
+codec and controller checks.
+
+Normal six-crate, all-feature/all-target checking passes. Three fresh normal
+library-test executables consume the captured source, including all 141 changed
+roles. All 36 selected restoration controls pass, with no failures or ignored
+tests, in 7.42 seconds. Independent review verifies source bodies and modes,
+executable dependency closures, exact test selectors and all original process
+waits and releases. Earlier fixture setup failures remain recorded separately.
+
+The separate pair of unchanged Host SDK constructor tests still fails with
+`ResourceLimit` during fixture finalization, before either constructor assertion.
+Both failures reproduce on this checkpoint under the original 768 MiB policy;
+the diagnostic run completes in 6.12 seconds. These fixtures launch no child
+backend. The restoration controls do not establish constructor success, native
+readiness, complete preservation or device parity. Connected native activation,
+content upload and common restored-world installation remain in progress.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
