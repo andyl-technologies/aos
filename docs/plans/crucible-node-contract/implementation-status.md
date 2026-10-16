@@ -572,6 +572,28 @@ SDK constructor assertions. These are requested-storage accounting values,
 not physical RAM measurements. Phase lifetimes and projection bounds are under
 investigation. Probe sources, binaries and raw evidence remain outside Git.
 
+The restoration installation and activation checkpoint is committed in
+`2c07b8f`, with formatter output separately in `938e5918ec`. It connects retained
+runtime and scheduling custody, authenticated native activation and content
+upload, and publication storage admission. Paused originals and partial failure
+owners remain retained. The installed World dispatch and first Observe
+continuation are separate work in progress.
+
+Six-crate all-feature/all-target checking and four fresh normal library-test
+executables pass. All 90 selected component controls pass with no failures or
+ignored tests: 87 Core/provider/daemon controls in 11.66 seconds and three CAS
+controls in 4.10 seconds. Independent audits verify complete source bodies and
+modes, actual executable dependency closures, exact selectors and all 94 child
+waits and releases. The CAS fault-instrumented build exercises an explicit
+publication refusal; it does not qualify successful directory publication.
+
+These results preserve the earlier constructor failures and do not establish
+constructor fit, native restoration or device parity. A separate reviewed
+storage-lifetime change passes six-crate checking but still needs fresh test
+executables and the unchanged constructor controls. It preserves retained
+owners and the 768 MiB policy; no new fit or runtime performance result is
+inferred from its accounting formulas.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
