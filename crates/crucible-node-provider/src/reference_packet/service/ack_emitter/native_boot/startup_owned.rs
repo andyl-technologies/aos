@@ -45,6 +45,7 @@ pub(super) fn observe_owner(
     observer: &mut MetadataObserver,
 ) -> Result<(), ProviderError> {
     let OriginalNativeStartupBoot {
+        restored_suffix,
         allocation,
         source_digest,
         launch_digest,
@@ -73,14 +74,24 @@ pub(super) fn observe_owner(
     observer.observe(&birth_id.len())?;
     observer.observe(native_birth_issued)?;
     observer.observe(baseline_complete)?;
-    observer.observe(prepare_startup_issued)
+    observer.observe(prepare_startup_issued)?;
+    if let Some(suffix) = restored_suffix {
+        suffix.observe_retained_data(observer)?;
+    }
+    Ok(())
 }
 
 struct StartupOwnerView<'a>(&'a OriginalNativeStartupBoot);
 
 impl Serialize for StartupOwnerView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.0.restored_suffix.is_some() {
+            return Err(serde::ser::Error::custom(
+                "suffix ledger requires its separately paired continuation codec",
+            ));
+        }
         let OriginalNativeStartupBoot {
+            restored_suffix: _,
             allocation,
             source_digest,
             launch_digest,

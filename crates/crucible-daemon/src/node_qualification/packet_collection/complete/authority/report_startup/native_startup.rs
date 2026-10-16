@@ -50,7 +50,18 @@ impl PacketCompleteReportStartupHolder {
             .original_launches
             .iter()
             .any(|launch| launch.fresh_restore_allocation_selection.is_some());
-        let requested_peak = if invocation_selected {
+        let requested_peak = if held.restored_suffix_startup_selected_data()? {
+            let mut admission = held.plan.reserve_original_restored_suffix_startup(
+                &held.authority.roster.sources,
+                &held.authority.original_launches,
+                &held.authority.private_launches,
+            )?;
+            let requested_peak = admission.requested_peak_data();
+            for member in 0..3 {
+                admission.finalize_original_source(member)?;
+            }
+            requested_peak
+        } else if invocation_selected {
             let mut admission = held.plan.reserve_original_native_invocation(
                 &held.authority.roster.sources,
                 &held.authority.original_launches,
@@ -181,6 +192,18 @@ impl PacketCompleteReportStartupHolder {
                         })
                         .ok_or(RuntimeError::ResourceLimit)?,
                 )
+                .ok_or(RuntimeError::ResourceLimit)?
+        } else {
+            declared_observer_scratch_bytes
+        };
+        let declared_observer_scratch_bytes = declared_observer_scratch_bytes
+            .checked_add(Self::restored_suffix_selection_counter_scratch_data())
+            .ok_or(RuntimeError::ResourceLimit)?;
+        let declared_observer_scratch_bytes = if self.restored_suffix_startup_selected_data()? {
+            declared_observer_scratch_bytes
+                .checked_add(InstalledConformancePlan::original_restored_suffix_startup_counter_scratch_data()?)
+                .and_then(|bytes| bytes.checked_add(Self::restored_suffix_holder_counter_scratch_data()))
+                .and_then(|bytes| bytes.checked_add(launch::restored_suffix_wire_counter_scratch_data()))
                 .ok_or(RuntimeError::ResourceLimit)?
         } else {
             declared_observer_scratch_bytes
@@ -346,3 +369,6 @@ mod tests {
 }
 
 mod invocation;
+
+#[path = "native_startup/restored_suffix.rs"]
+mod restored_suffix;

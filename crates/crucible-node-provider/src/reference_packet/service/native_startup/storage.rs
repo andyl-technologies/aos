@@ -133,6 +133,7 @@ impl PacketNativeBirthStartupStorageData {
 /// formatting temporaries are separately included in this declared window.
 pub fn original_native_birth_startup_counter_scratch_data() -> usize {
     size_of::<crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'static>>()
+        + crate::reference_packet::control::PacketControl::original_native_birth_selection_counter_scratch_data()
         + super::data_equality::counter_scratch_data()
         + retained_overlap::counter_scratch_data()
         + coordinator_decode::counter_scratch_data()

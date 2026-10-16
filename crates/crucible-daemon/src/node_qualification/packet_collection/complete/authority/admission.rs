@@ -225,6 +225,17 @@ impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthorit
         self.original_native_invocation_data(scope)
     }
 
+    fn original_restored_suffix_startup_data(
+        &self,
+        _plan: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalNativeStartupScope<'_>,
+    ) -> Result<[
+        crucible_node_provider::reference_packet::service::native_startup::PacketNativeRestoredSuffixStartupStorageData;
+        3
+    ], crucible::node_contract::RuntimeError> {
+        self.original_restored_suffix_startup_data(scope)
+    }
+
     fn authenticate_original_native_startup_member(
         &self,
         _plan: &ConformancePlanEvidence<'_>,

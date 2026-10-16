@@ -36,6 +36,9 @@ mod restoration_activation;
 #[path = "association/restoration_observation.rs"]
 mod restoration_observation;
 
+#[path = "association/restoration_continuation.rs"]
+mod restoration_continuation;
+
 #[path = "association/restoration_transfer.rs"]
 mod restoration_transfer;
 #[path = "association/restore_transfer_banks.rs"]
@@ -55,6 +58,10 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
         Option<restoration_activation::OriginalSourceRestorationActivationAttempt>,
     restoration_observation:
         Option<restoration_observation::OriginalSourceRestorationObservationAttempt>,
+    // Fixed, separate custody: immutable first-Observe owners are never replaced.
+    // Every initialized/failed seed remains inside the actual Source sizeof root.
+    restored_suffix:
+        std::cell::RefCell<Option<restoration_continuation::OriginalRestoredSuffixSeed>>,
     emitter: Option<OriginalCanonicalBlobAckEmitter>,
     restore_input_emitter: Option<OriginalCanonicalRestoreInputEmitter>,
     native: Option<CnpSemanticSourceRead>,
@@ -95,6 +102,7 @@ impl OriginalAckPeerAssociation {
             restore_transfer_banks: None,
             restoration_activation: None,
             restoration_observation: None,
+            restored_suffix: std::cell::RefCell::new(None),
             emitter: None,
             restore_input_emitter: None,
             native: None,
@@ -1157,6 +1165,7 @@ impl OriginalAckPeerAssociation {
             restore_transfer_banks,
             restoration_activation,
             restoration_observation,
+            restored_suffix,
             emitter,
             restore_input_emitter,
             native,
@@ -1173,6 +1182,18 @@ impl OriginalAckPeerAssociation {
             publication_attempted,
             completed_mechanism,
         } = self;
+        // A fixed failed seed has no heap to refund, but it still permanently
+        // leaves this association outside the never-used prebirth family.
+        let seed = restored_suffix
+            .try_borrow()
+            .map_err(|_| E::refused("reserved prebirth ACK association is already used"))?;
+        if seed.is_some() {
+            return Err(E::refused(
+                "reserved prebirth ACK association is already used",
+            ));
+        }
+        drop(seed);
+
         if restoration_observation.is_some()
             || restoration_activation.is_some()
             || emitter.is_some()
@@ -1270,3 +1291,28 @@ pub use restoration_observation::{
     OriginalSourceRestorationObservationConstructionData,
     OriginalSourceRestorationObservationVerifiedPhase,
 };
+
+impl OriginalAckPeerAssociation {
+    /// Names the seed loan before either prebirth or retained backing walks.
+    pub(in crate::node_adapters::cnp::semantic) fn reserved_suffix_counter_scratch_data() -> usize {
+        use restoration_continuation::OriginalRestoredSuffixSeed as Seed;
+        use std::cell::{BorrowError, Ref, RefCell};
+        use std::mem::size_of;
+
+        Seed::retained_counter_scratch_data()
+            + size_of::<&RefCell<Option<Seed>>>()
+            + size_of::<Ref<'static, Option<Seed>>>()
+            + size_of::<Result<Ref<'static, Option<Seed>>, BorrowError>>()
+            + size_of::<Result<Ref<'static, Option<Seed>>, OperationFailure>>()
+            + size_of::<Result<Ref<'static, Option<Seed>>, crate::node_contract::RuntimeError>>()
+            + size_of::<&Option<Seed>>()
+            + size_of::<Option<&Seed>>()
+            + size_of::<bool>()
+            + size_of::<[usize; 2]>()
+            + size_of::<std::array::IntoIter<usize, 2>>()
+            + size_of::<Option<usize>>()
+            + size_of::<&usize>()
+            + size_of::<Result<usize, OperationFailure>>()
+            + size_of::<Result<usize, crate::node_contract::RuntimeError>>()
+    }
+}

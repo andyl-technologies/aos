@@ -124,6 +124,9 @@ impl PacketEndpoint<DeadlineStream> {
             original_capture_report_quote_layout_data(),
             super::capture_allocation::original_capture_report_owner_layout_data(),
         )?;
+        // The exact scope/census counter window is prepaid above before this
+        // original Source14 state check or any metadata/SDK/DOM/report work.
+        startup.authenticate_original_initial_observation_data(connection, native)?;
         // The SDK checks the actual actor and sealed native codec before any
         // pin/Hello/Control data borrow. Neither those owners nor their numeric
         // facts may replace the genuine installed native admission.
@@ -569,7 +572,8 @@ pub(crate) fn original_capture_report_quote_layout_data() -> usize {
     )>() + std::mem::size_of::<[usize; 6]>()
         + std::mem::size_of::<std::array::IntoIter<usize, 6>>()
         + std::mem::size_of::<Option<usize>>()
-        + std::mem::size_of::<usize>();
+        + std::mem::size_of::<usize>()
+        + crate::reference_packet::service::ack_emitter::original_native_report_startup_scope_layout_data();
     [
         std::mem::size_of::<NativeEndpointCaptureStateData<'static>>(),
         preparation_views,

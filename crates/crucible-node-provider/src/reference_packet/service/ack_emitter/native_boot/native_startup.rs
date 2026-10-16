@@ -12,6 +12,8 @@ use crate::reference_packet::service::native_startup::{
 
 pub(in crate::reference_packet::service::ack_emitter::native_boot) struct OriginalNativeStartupBoot
 {
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) restored_suffix:
+        Option<Box<super::restored_suffix::NativeRestoredSuffixStartupOwner>>,
     pub(in crate::reference_packet::service::ack_emitter::native_boot) allocation:
         PacketNativeStartupAllocation,
     pub(in crate::reference_packet::service::ack_emitter::native_boot) source_digest: [u8; 32],

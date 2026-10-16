@@ -438,3 +438,14 @@ pub(super) fn project(
         raw: super::raw_record::project(launch, maximum)?,
     })
 }
+
+
+/// Keeps the same report grammar while bounding the guarded initial raw child.
+pub(super) fn project_initial(
+    launch: &PacketNative5SourceLaunch,
+    maximum: usize,
+) -> Result<OriginalObserveStartupShapes, ProviderError> {
+    let mut shapes = project(launch, maximum)?;
+    shapes.raw = super::raw_record::project_initial(launch, maximum)?;
+    Ok(shapes)
+}

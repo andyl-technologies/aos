@@ -95,6 +95,7 @@ pub(crate) use admission_projection::validate_proof_value;
 pub(in crate::reference_packet::service) mod native_boot;
 pub(crate) use native_boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;
 pub(crate) use native_boot::{
+    OriginalRestoredSuffixPostObservation, original_restored_suffix_post_observation_counter_scratch_data,
     NativeRestorationObservationAttempt, NativeRestorationUploadAttempt,
     OriginalRestorationActivationPermit, OriginalRestorationActivationRequirement,
     OriginalRestorationObservationPermit, OriginalRestorationObservationRead,
@@ -201,4 +202,12 @@ pub(crate) fn native_canonical_blob_ack_contract_storage_data(
 pub use native_boot::{
     PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
     original_native_prepare_startup_storage_data,
+};
+
+
+pub(crate) use native_boot::{
+    original_restored_suffix_bootstrap_header_data,
+    original_restored_suffix_bootstrap_counter_scratch_data,
+    original_restored_suffix_native_header_data,
+    original_restored_suffix_native_counter_scratch_data,
 };

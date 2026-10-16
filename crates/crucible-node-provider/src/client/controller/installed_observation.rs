@@ -278,6 +278,99 @@ impl CnpController {
         Ok(PreparedOriginalInstalledRestorationObservation { controller: self })
     }
 
+    /// Checks suffix negotiation and the actual retained first Observe pair.
+    ///
+    /// This is SDK correspondence DATA. It does not prove that startup16 was
+    /// written or received and does not authenticate a current advanced model.
+    /// The Source wrapper supplies its genuine completed-wire and action claim
+    /// under the same owning SourceRead; native ingress checks receipt separately.
+    ///
+    /// # Errors
+    /// Refuses a foreign emitter, revoked codec, missing full negotiated suffix
+    /// definitions, a fenced Controller, incomplete first Observe or a changed
+    /// actual original/terminal in its immutable ClientCustody slot.
+    pub fn authenticate_original_installed_restored_suffix_data(
+        &self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+    ) -> Result<(), ProviderError> {
+        emitter.authenticate_original(self)?;
+        self.protocol_owner.ensure_current()?;
+        if self.fenced {
+            return Err(refused());
+        }
+        let selection = self.session.fresh_restore_query_selection()?;
+        crate::reference_packet::service::native_startup::authenticate_restoration_suffix_selection_data(
+            selection,
+            self.authority(),
+        )?;
+
+        let completed = self.original_completed_installed_restoration_observation(emitter)?;
+        let id = completed
+            .original()
+            .request_id
+            .0
+            .as_ref()
+            .ok_or_else(refused)?;
+        let actual = self.original(id).ok_or_else(refused)?;
+        if &actual.request != completed.original()
+            || actual.response.as_ref() != Some(completed.response())
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    /// Checks a new actual suffix original against the immutable first scope.
+    ///
+    /// The first Observe remains historical ancestry. Its initial model cursor
+    /// and inventory are deliberately not compared with this advancing record.
+    /// Current frontier, Source-keyed chain and native proof freshness remain
+    /// the independently admitted Source/Window consumer's obligations.
+    ///
+    /// # Errors
+    /// Refuses another emitter/actual journal pair, changed restoration scope,
+    /// held state, PID, request correlation or underlying native record.
+    pub fn authenticate_original_restored_suffix_receipt_data(
+        &self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        original: &Envelope,
+        terminal: &Envelope,
+        proof_original: &Envelope,
+        record: &crate::reference_packet::service::complete_restore::PacketNativeRestoredRecord,
+        underlying: &[u8],
+    ) -> Result<crate::reference_packet::control::PacketNative5UnderlyingRecord, ProviderError> {
+        self.authenticate_original_installed_restored_suffix_data(emitter)?;
+        self.original_completed_installed_restoration_observation(emitter)?;
+        let actual = original.request_id.0.as_ref()
+            .and_then(|id| self.original(id))
+            .ok_or_else(refused)?;
+        if &actual.request != original || actual.response.as_ref() != Some(terminal) {
+            return Err(refused());
+        }
+        original.matches_response(terminal)?;
+        authenticate_suffix_proof_original_data(original, proof_original)?;
+        let proof_id = proof_original.request_id.0.as_ref().ok_or_else(refused)?;
+        if self.original(proof_id).map(|pair| &pair.request) != Some(proof_original) {
+            return Err(refused());
+        }
+        let scope = &self.original_installed_restoration_observation
+            .as_ref().ok_or_else(refused)?.request.scope;
+        record.validate_data()?;
+        if record.captured_owner_state != scope.restoration.captured_owner_state
+            || record.captured_journal != scope.restoration.captured_journal
+            || record.mapping != scope.restoration.mapping
+            || record.restore_commit != scope.restoration.commit_request
+            || record.restore_response != scope.restoration.commit_response
+            || record.context_digest != scope.restoration.context_digest
+            || record.physical_gate_held
+            || scope.target.native_pid.get() != u64::from(self.peer_pid()) {
+            return Err(refused());
+        }
+        record.native_receipt.verify_original_record_data(
+            self.session.fresh_restore_query_selection()?, self.peer_pid(), proof_original, underlying,
+        )
+    }
+
     fn authenticate_observation_world_pair(
         &self,
         emitter: &OriginalCanonicalBlobAckEmitter,
@@ -566,6 +659,24 @@ impl AssignedOriginalInstalledRestorationObservation {
     }
 }
 
+fn authenticate_suffix_proof_original_data(
+    original: &Envelope,
+    proof_original: &Envelope,
+) -> Result<(), ProviderError> {
+    if original.method == Method::Poll {
+        if proof_original.method != Method::Begin
+            || original.operation_id.0.is_none()
+            || original.operation_id != proof_original.operation_id
+        {
+            return Err(refused());
+        }
+    } else if original != proof_original {
+        return Err(refused());
+    }
+
+    Ok(())
+}
+
 fn refused() -> ProviderError {
     ProviderError::Correlation("original installed restoration observation changed")
 }
@@ -684,5 +795,30 @@ mod pending_tests {
             sequence
         );
         assert_eq!(controller.originals().count(), originals);
+    }
+}
+
+#[cfg(test)]
+mod suffix_data_tests {
+    use super::*;
+
+    #[test]
+    fn suffix_poll_receipt_uses_its_actual_begin_original_not_the_poll() {
+        let mut begin = crate::envelope::tests::request();
+        begin.method = Method::Begin;
+        begin.request_id = Nullable(Some(Id::new("suffix/begin").unwrap()));
+        begin.operation_id = Nullable(Some(Id::new("suffix/operation").unwrap()));
+        let mut poll = begin.clone();
+        poll.method = Method::Poll;
+        poll.request_id = Nullable(Some(Id::new("suffix/poll").unwrap()));
+        poll.sequence = U64::new(19);
+
+        assert!(authenticate_suffix_proof_original_data(&poll, &begin).is_ok());
+        assert!(authenticate_suffix_proof_original_data(&poll, &poll).is_err());
+        let mut foreign = begin.clone();
+        foreign.operation_id = Nullable(Some(Id::new("suffix/foreign").unwrap()));
+        assert!(authenticate_suffix_proof_original_data(&poll, &foreign).is_err());
+        assert!(authenticate_suffix_proof_original_data(&begin, &poll).is_err());
+        assert!(authenticate_suffix_proof_original_data(&begin, &begin).is_ok());
     }
 }

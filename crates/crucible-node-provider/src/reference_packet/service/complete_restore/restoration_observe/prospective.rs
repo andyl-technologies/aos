@@ -53,9 +53,22 @@ fn quote(
     inputs: &PacketCompleteRestoreSelectedOwnerInputs<'_>,
 ) -> Result<OriginalInstalledRestorationObservationConstructionData, ProviderError> {
     let model = complete_restore_invocation_owner_construction_storage_data(inputs)?;
+    quote_from_cached_model_data(launch, &model, inputs.maximum_requested_bytes)
+}
+
+/// Projects the same closed proof geometry from already admitted immutable DATA.
+///
+/// No raw metadata is decoded here, and no Controller or observation is issued.
+/// The actual registered holder must bind the cached row to its same ticket and
+/// launch before and after this borrow. All returned demand is paid anew.
+pub(crate) fn quote_from_cached_model_data(
+    launch: &PacketNative5SourceLaunch,
+    model: &PacketCompleteRestoreOwnerValidationStorage,
+    maximum: usize,
+) -> Result<OriginalInstalledRestorationObservationConstructionData, ProviderError> {
     let model_work = sum(&[model.control_bytes, model.model_vector_backing_bytes])?;
     let [wire, terminal, proof, world_original, world_terminal] =
-        super::projection::wire_projection_data(inputs.maximum_requested_bytes)?;
+        super::projection::wire_projection_data(maximum)?;
     let objects = [
         crate::connection::OriginalContinuationContentExtent {
             maximum_payload_bytes: proof.maximum_encoded_bytes.min(65_536),
@@ -72,7 +85,7 @@ fn quote(
             terminal: &terminal,
             original: &wire,
             objects: &objects,
-            maximum_requested_bytes: inputs.maximum_requested_bytes,
+            maximum_requested_bytes: maximum,
         },
     )?;
     let scratch = original_installed_restoration_observation_construction_counter_scratch_data();
@@ -181,7 +194,8 @@ pub(crate) fn original_native_restoration_observation_required_storage_data(
 /// Names explicit prospective layouts, conversions and complete return views.
 pub fn original_installed_restoration_observation_construction_counter_scratch_data() -> usize {
     use crate::retained_metadata::serialization_storage::OriginalSerializationStorageData;
-    size_of::<OriginalInstalledRestorationObservationConstructionData>()
+    size_of::<&PacketCompleteRestoreOwnerValidationStorage>()
+        + size_of::<OriginalInstalledRestorationObservationConstructionData>()
         + size_of::<Result<OriginalInstalledRestorationObservationConstructionData, ProviderError>>(
         )
         + size_of::<[OriginalSerializationStorageData; 5]>()

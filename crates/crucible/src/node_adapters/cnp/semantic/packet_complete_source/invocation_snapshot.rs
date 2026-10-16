@@ -31,6 +31,7 @@ pub(super) enum Declaration {
     Invocation14,
     RestorationActivation14,
     RestorationObservation14,
+    RestorationSuffix14,
 }
 
 impl PacketCompleteSemanticSource {
@@ -97,7 +98,8 @@ impl PacketCompleteSemanticSource {
             Some(
                 Declaration::Invocation14
                 | Declaration::RestorationActivation14
-                | Declaration::RestorationObservation14,
+                | Declaration::RestorationObservation14
+                | Declaration::RestorationSuffix14,
             ) => {
                 self.authenticate_invocation_snapshot_declaration_tuple_data()?;
                 if matches!(
@@ -105,15 +107,19 @@ impl PacketCompleteSemanticSource {
                     Some(
                         Declaration::RestorationActivation14
                             | Declaration::RestorationObservation14
+                            | Declaration::RestorationSuffix14
                     )
                 ) {
                     self.authenticate_restoration_activation_declaration_tuple_data()?;
                 }
                 if matches!(
                     self.invocation_snapshot_declaration,
-                    Some(Declaration::RestorationObservation14)
+                    Some(Declaration::RestorationObservation14 | Declaration::RestorationSuffix14)
                 ) {
                     self.authenticate_restoration_observation_declaration_tuple_data()?;
+                }
+                if matches!(self.invocation_snapshot_declaration, Some(Declaration::RestorationSuffix14)) {
+                    self.authenticate_restored_suffix_declaration_tuple_data()?;
                 }
                 Ok(true)
             }
@@ -150,6 +156,7 @@ impl PacketCompleteSemanticSource {
             + native_owned14_snapshot_schema_counter_scratch_data()
             + restoration_activation::counter_scratch_data()
             + restoration_observation::counter_scratch_data()
+            + restored_suffix::counter_scratch_data()
     }
 
     fn authenticate_invocation_snapshot_declaration_tuple_data(&self) -> Result<(), RuntimeError> {
@@ -299,3 +306,6 @@ mod restoration_activation;
 
 #[path = "invocation_snapshot/restoration_observation.rs"]
 mod restoration_observation;
+
+#[path = "invocation_snapshot/restored_suffix.rs"]
+mod restored_suffix;

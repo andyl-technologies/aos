@@ -15,6 +15,7 @@ mod owned11;
 #[path = "restore.rs"]
 mod restore;
 pub(crate) use restore::{
+    OriginalRestoredSuffixPostObservation, original_restored_suffix_post_observation_counter_scratch_data,
     NativeRestorationActivationAttempt, NativeRestorationObservationAttempt,
     NativeRestorationUploadAttempt, OriginalRestorationActivationPermit,
     OriginalRestorationActivationRequirement, OriginalRestorationObservationPermit,
@@ -665,4 +666,11 @@ pub(crate) use restore_prepare::{
 pub use restore_prepare::{
     PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
     original_native_prepare_startup_storage_data,
+};
+
+#[path = "restored_suffix.rs"]
+pub(super) mod restored_suffix;
+pub(crate) use restored_suffix::{
+    original_restored_suffix_native_header_data,
+    original_restored_suffix_native_counter_scratch_data,
 };

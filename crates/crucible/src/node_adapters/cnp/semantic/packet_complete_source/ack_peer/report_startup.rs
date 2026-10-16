@@ -423,14 +423,14 @@ impl Serialize for StartupAdditions<'_> {
 }
 
 #[derive(Serialize)]
-struct StartupAllocationView {
+pub(super) struct StartupAllocationView {
     schema: &'static str,
     original_observe12: Option<crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow>,
     fresh_completed_admit13: Option<crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow>,
 }
 
 impl StartupAllocationView {
-    fn new(rows: StartupRows) -> Self {
+    pub(super) fn new(rows: StartupRows) -> Self {
         Self {
             schema: PACKET_NATIVE_REPORT_STARTUP_ALLOCATION_SCHEMA,
             original_observe12: rows.original_observe12,

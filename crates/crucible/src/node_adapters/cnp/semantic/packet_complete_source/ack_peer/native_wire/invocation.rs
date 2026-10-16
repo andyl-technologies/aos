@@ -80,6 +80,9 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
             .native_startup
             .as_ref()
             .ok_or_else(|| refused("native invocation member absent"))?;
+        if state.member.suffix.is_some() {
+            return Err(refused("restored suffix requires its distinct original wire entry"));
+        }
         if !state.complete {
             return Err(refused("native invocation Source incomplete"));
         }

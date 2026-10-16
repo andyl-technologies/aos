@@ -462,13 +462,13 @@ pub(crate) fn test_fixture_reference_device(
 
 pub use conformance::{
     CompleteOriginalNativeInvocationAdmission, CompleteOriginalNativeStartupAdmission,
-    OriginalNativeStartupMemberScope, OriginalNativeStartupPolicy, OriginalNativeStartupScope,
-    OriginalNativeStartupStorage,
+    CompleteOriginalRestoredSuffixStartupAdmission, OriginalNativeStartupMemberScope,
+    OriginalNativeStartupPolicy, OriginalNativeStartupScope, OriginalNativeStartupStorage,
 };
 
 pub(crate) use conformance::{
     NativeStartupRows, OriginalHostFinalizationBarrier, OriginalHostFinalizationSource,
-    OriginalNativeStartupMember, OriginalNativeStartupQuote,
+    OriginalNativeStartupMember, OriginalNativeStartupQuote, OriginalRestoredSuffixStartupMember,
 };
 
 pub use conformance::{
@@ -531,4 +531,9 @@ pub use conformance::OriginalInstalledRestorationObservationClaim;
 pub(crate) use conformance::{
     OriginalInstalledRestorationObservationSigningConstructionInputs,
     OriginalInstalledRestorationObservationSigningInputs,
+};
+
+pub(crate) use conformance::{
+    OriginalRestoredSuffixCheckpointData, OriginalRestoredSuffixConstructionData,
+    OriginalRestoredSuffixSeedClaim,
 };

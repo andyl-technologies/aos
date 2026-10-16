@@ -225,3 +225,8 @@ pub(crate) use activation::{
 };
 
 pub use window::OriginalRestorationCoordinatorConstructionData;
+
+pub(crate) use window::{
+    OriginalRestoredSuffixCheckpointData, OriginalRestoredSuffixConstructionData,
+    OriginalRestoredSuffixSeedClaim,
+};

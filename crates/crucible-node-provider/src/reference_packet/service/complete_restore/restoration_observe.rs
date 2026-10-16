@@ -42,6 +42,7 @@ pub use crypto::{
 };
 pub use prospective::original_installed_restoration_observation_construction_counter_scratch_data;
 pub(crate) use prospective::original_native_restoration_observation_required_storage_data;
+pub(crate) use prospective::quote_from_cached_model_data as restoration_observe_cached_model_projection_data;
 pub use retained::RetainedRestorationObservationData;
 pub use selection::authenticate_restoration_observe_selection_data;
 pub use storage::OriginalInstalledRestorationObservationConstructionData;

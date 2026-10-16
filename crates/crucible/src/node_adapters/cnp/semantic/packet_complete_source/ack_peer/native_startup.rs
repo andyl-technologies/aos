@@ -32,7 +32,11 @@ use crucible_node_provider::{
     },
 };
 use serde::{Serialize, ser::SerializeMap};
-use std::{cell::RefMut, mem::size_of, rc::Rc};
+use std::{
+    cell::{Ref, RefMut},
+    mem::size_of,
+    rc::Rc,
+};
 
 #[path = "native_startup/capture_construction.rs"]
 mod capture_construction;
@@ -203,10 +207,36 @@ impl PacketCompleteSemanticSource {
     /// # Errors
     /// Refuses checked arithmetic overflow before any observer or serializer.
     pub fn original_native_startup_counter_scratch_data() -> Result<usize, RuntimeError> {
-        [
+        let terms: [usize; 41] = [
+            size_of::<[usize; 41]>(),
+            size_of::<std::array::IntoIter<usize, 41>>(),
+            size_of::<Result<usize, RuntimeError>>(),
             original_native_birth_startup_counter_scratch_data(),
             original_native_prepare_startup_counter_scratch_data(),
             Self::original_report_startup_observer_scratch_data(),
+            crucible_node_provider::reference_packet::service::report_startup::original_report_startup_counter_scratch_data(),
+            size_of::<crate::node_admission::StartupRows>(),
+            size_of::<Option<crate::node_admission::StartupRows>>(),
+            size_of::<super::report_startup::StartupAllocationView>(),
+            size_of::<Result<crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupStorageData, crucible_node_provider::ProviderError>>(),
+            size_of::<Result<(), crucible_node_provider::ProviderError>>(),
+            size_of::<Result<Option<crate::node_admission::StartupRows>, RuntimeError>>(),
+            size_of::<Option<&crate::node_admission::StartupRows>>(),
+            size_of::<Result<(), RuntimeError>>(),
+            size_of::<Result<U64, RuntimeError>>(),
+            size_of::<Result<u64, std::num::TryFromIntError>>(),
+            size_of::<&crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow>(),
+            size_of::<Result<crate::node_admission::StartupRows, RuntimeError>>(),
+            size_of::<crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow>(),
+            size_of::<Result<crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupStorageData, RuntimeError>>(),
+            size_of::<Ref<'static, OriginalAckPeerBirth>>(),
+            size_of::<Result<Ref<'static, OriginalAckPeerBirth>, std::cell::BorrowError>>(),
+            size_of::<Result<Ref<'static, OriginalAckPeerBirth>, RuntimeError>>(),
+            size_of::<Option<&super::report_startup::OriginalReportStartupFinalization>>(),
+            size_of::<Result<&super::report_startup::OriginalReportStartupFinalization, RuntimeError>>(),
+            size_of::<Option<&crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow>>(),
+            size_of::<Result<&crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow, RuntimeError>>(),
+            size_of::<Result<bool, RuntimeError>>(),
             size_of::<NativeAdditions<'_>>(),
             size_of::<bool>(),
             size_of::<OriginalNativeStartupFinalization>(),
@@ -223,9 +253,8 @@ impl PacketCompleteSemanticSource {
             // Quote and pre-reservation recheck each return this fixed view.
             // Their bank storage is independently included in finalization.
             2 * size_of::<(usize, usize, usize)>(),
-        ]
-        .into_iter()
-        .try_fold(0usize, |sum, n| {
+        ];
+        terms.into_iter().try_fold(0usize, |sum, n| {
             sum.checked_add(n).ok_or(RuntimeError::ResourceLimit)
         })
     }
@@ -387,11 +416,41 @@ impl PacketCompleteSemanticSource {
         let retained_overlap = native
             .authenticated_retained_overlap_data(&input)
             .map_err(|_| RuntimeError::ForeignAuthority)?;
+        let initial_report_rows = if preflight && report.original_observe12.is_some() {
+            let data = crucible_node_provider::reference_packet::service::report_startup::original_initial_report_startup_storage_data(
+                launch,
+                crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupPurpose::OriginalObserve12,
+            ).map_err(|_| RuntimeError::ResourceLimit)?;
+            let quantity = |n| {
+                u64::try_from(n)
+                    .map(U64::new)
+                    .map_err(|_| RuntimeError::ResourceLimit)
+            };
+            let selected = crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow {
+                raw_report_capacity: quantity(data.raw_report_capacity())?,
+                retained_growth_bytes: quantity(data.retained_growth_bytes())?,
+                maximum_simultaneous_transient_bytes: quantity(data.maximum_simultaneous_transient_bytes())?,
+                declared_counter_scratch_bytes: quantity(data.declared_counter_scratch_bytes())?,
+            };
+            report
+                .original_observe12
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .authenticate_actual_data(&selected)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+            Some(crate::node_admission::StartupRows {
+                original_observe12: Some(selected),
+                fresh_completed_admit13: report.fresh_completed_admit13,
+            })
+        } else {
+            None
+        };
         let rows = NativeStartupRows {
             private_bootstrap,
             native_birth,
             restore_prepare,
             retained_overlap: Some(retained_overlap),
+            initial_report_rows,
         };
         let additions =
             NodeRuntime::capture_serialization_storage(&NativeAdditions { launch, rows }, maximum)?;
@@ -437,9 +496,13 @@ impl PacketCompleteSemanticSource {
             OriginalNativeStartupMember::host_finalization_allocation_requested_data(),
         ],maximum)?;
         let mut publication_bytes = 0usize;
-        for row in [report.original_observe12, report.fresh_completed_admit13]
-            .into_iter()
-            .flatten()
+        let publication = rows.initial_report_rows.unwrap_or(report);
+        for row in [
+            publication.original_observe12,
+            publication.fresh_completed_admit13,
+        ]
+        .into_iter()
+        .flatten()
         {
             publication_bytes = publication_bytes
                 .checked_add(
@@ -471,6 +534,37 @@ impl PacketCompleteSemanticSource {
     ) -> Result<(), RuntimeError> {
         member.authenticate(self)?;
         self.authenticate_native_launch_data(launch)?;
+        if let Some(selected) = member.rows.initial_report_rows {
+            if member.requires_original_invocation_data()? {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            let broad = {
+                let slot = self
+                    .ack_peer_birth
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?;
+                let birth = slot.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+                birth
+                    .report_startup
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .authenticated_rows_data(self)?
+            };
+            let allowed = broad
+                .original_observe12
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            let observed = selected
+                .original_observe12
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            allowed
+                .authenticate_actual_data(observed)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+            if selected.fresh_completed_admit13 != broad.fresh_completed_admit13 {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+        }
         let mut slot = self
             .ack_peer_birth
             .try_borrow_mut()
@@ -665,7 +759,13 @@ impl Serialize for NativeAdditions<'_> {
         let launch = self.launch;
         let report_absent = launch.capture_allocation_selection.is_none()
             && launch.fresh_restore_allocation_selection.is_none();
-        let mut map = serializer.serialize_map(Some(if report_absent { 9 } else { 8 }))?;
+        let initial_report = self.rows.initial_report_rows.as_ref();
+        let mut map =
+            serializer.serialize_map(Some(if report_absent || initial_report.is_some() {
+                9
+            } else {
+                8
+            }))?;
         map.serialize_entry("schema", PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA)?;
         map.serialize_entry(
             "native_codec_metadata_extent",
@@ -693,7 +793,18 @@ impl Serialize for NativeAdditions<'_> {
         {
             map.serialize_entry("report_startup_allocation", &Option::<()>::None)?;
         }
-        // An existing authenticated report object remains in the original map.
+        if let Some(rows) = initial_report {
+            if report_absent {
+                return Err(serde::ser::Error::custom(
+                    "initial report projection has no original report owner",
+                ));
+            }
+            map.serialize_entry(
+                "report_startup_allocation",
+                &super::report_startup::StartupAllocationView::new(*rows),
+            )?;
+        }
+        // Otherwise the original broad authenticated report object remains.
         struct Allocation<'a>(&'a NativeStartupRows);
         impl Serialize for Allocation<'_> {
             fn serialize<T: serde::Serializer>(&self, serializer: T) -> Result<T::Ok, T::Error> {
@@ -712,3 +823,73 @@ impl Serialize for NativeAdditions<'_> {
 
 #[path = "native_startup/invocation.rs"]
 mod invocation;
+
+#[cfg(any(test, feature = "test-double"))]
+impl PacketCompleteSemanticSource {
+    /// Reads actual broad, selected and emitted rows from one original Source.
+    ///
+    /// This test-only DATA never creates a startup member or native permission.
+    ///
+    /// # Errors
+    /// Refuses a foreign member, absent/unfinished source, malformed binding or
+    /// changed actual emitted selected report row.
+    #[doc(hidden)]
+    pub fn original_initial_report_refinement_audit_data(
+        &self,
+        expected_source: &Self,
+    ) -> Result<Option<(
+        crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow,
+        crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow,
+        crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow,
+    )>, RuntimeError>{
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let slot = self
+            .ack_peer_birth
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let birth = slot.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        let state = birth
+            .native_startup
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        state.member.authenticate(expected_source)?;
+        if !state.complete || birth.failed || birth.boot_started.get() {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        let Some(selected) = state.member.rows.initial_report_rows else {
+            return Ok(None);
+        };
+        let broad = birth
+            .report_startup
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .authenticated_rows_data(expected_source)?;
+        let body = canonical::parse_json(&birth.source_birth, birth.source_birth.len())
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        if body.get("schema").and_then(serde_json::Value::as_str)
+            != Some(PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA)
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let raw = body
+            .get("report_startup_allocation")
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let wire: crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocation =
+            serde_json::from_value(raw.clone()).map_err(|_| RuntimeError::ForeignAuthority)?;
+        let broad = broad
+            .original_observe12
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let selected = selected
+            .original_observe12
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let wire = *wire.row_data(crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupPurpose::OriginalObserve12)
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if wire != selected {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(Some((broad, selected, wire)))
+    }
+}
+
+#[path = "native_startup/restored_suffix.rs"]
+mod restored_suffix;

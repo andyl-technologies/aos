@@ -91,6 +91,14 @@ pub(super) fn observe(
                         policy.maximum_requested_bytes,
                     )?;
                 }
+                if let Some(suffix) = &row.restored_suffix {
+                    // A separate full validation extent survives every phase;
+                    // first-Observe credit is never reused for suffix inspection.
+                    requested = checked_sum(
+                        &[requested, suffix.requested_bytes_data()],
+                        policy.maximum_requested_bytes,
+                    )?;
+                }
                 let signer = row.signer.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
                 let custody = row
                     .installed_custody

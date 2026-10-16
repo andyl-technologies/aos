@@ -236,3 +236,130 @@ mod tests {
         Ok(())
     }
 }
+
+
+/// Projects only the actual untouched Source14 model checked before live quote.
+///
+/// The original constructor owns all initial event payloads. No callback/input
+/// has executed, and the actual activated model has no output or input history.
+/// The complete old stopped-state projection remains available independently.
+pub(super) fn project_initial(
+    launch: &PacketNative5SourceLaunch,
+    maximum: usize,
+) -> Result<OriginalSerializationStorageData, ProviderError> {
+    let mut projection = Projection::new(maximum)?;
+    object(&mut projection, &["schema", "native_pid", "original", "inventory", "grant"])?;
+    projection.add_string(match &launch.program {
+        PacketConnectedSourceProgram::Producer { .. } => "source-owned.packet-native/2",
+        PacketConnectedSourceProgram::Reactive { .. } => "source-owned.packet-native/4",
+    })?;
+    decimal(&mut projection)?;
+    original(&mut projection, launch)?;
+    initial_inventory(&mut projection, &launch.program)?;
+    projection.add_value(&())?;
+    projection.finish(maximum)
+}
+
+
+fn initial_inventory(
+    projection: &mut Projection,
+    program: &PacketConnectedSourceProgram,
+) -> Result<(), ProviderError> {
+    match program {
+        PacketConnectedSourceProgram::Producer { program } => {
+            object(projection, &["reached", "gate_closed", "pending", "retained_outputs", "private_mutations", "packet_effects"])?;
+            projection.add_value(&crucible_node_contract::Position::new(
+                crucible_node_contract::U64::new(0), crucible_node_contract::U64::new(0),
+                crucible_node_contract::Phase::BoundaryControl))?;
+            projection.add_value(&false)?;
+            projection.add_array_extent(program.events.len())?;
+            for event in &program.events {
+                projection.add_value(event)?;
+            }
+            projection.add_array_extent(0)?;
+            for _ in 0..2 { projection.add_value(&crucible_node_contract::U64::new(0))?; }
+        }
+        PacketConnectedSourceProgram::Reactive { .. } => {
+            object(projection, &["reached", "gate_closed", "reactions", "delivered_inputs", "publications", "retained_outputs", "reactions_completed", "packet_effects", "stages", "commits"])?;
+            projection.add_value(&crucible_node_contract::Position::new(
+                crucible_node_contract::U64::new(0), crucible_node_contract::U64::new(0),
+                crucible_node_contract::Phase::BoundaryControl))?;
+            projection.add_value(&false)?;
+            for _ in 0..4 { projection.add_array_extent(0)?; }
+            for _ in 0..2 { projection.add_value(&crucible_node_contract::U64::new(0))?; }
+            for _ in 0..2 { projection.add_array_extent(0)?; }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod initial_geometry_tests {
+    use super::*;
+    use crate::reference_packet::{PacketEvent, PacketProgram, PacketProgramDefinition};
+    use crate::reference_packet::connected::{PacketConnectedDefinition, PacketInputConnection};
+    use crucible_node_contract::{Bytes, Endpoint, Id, Phase, Position, U64, canonical};
+    use std::os::unix::net::UnixDatagram;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn check(program: &PacketConnectedSourceProgram, inventory: impl serde::Serialize) -> TestResult {
+        let maximum = 512 * 1024 * 1024;
+        let mut counter = Projection::new(maximum)?;
+        initial_inventory(&mut counter, program)?;
+        let projected = counter.finish(maximum)?;
+        let value = serde_json::to_value(inventory)?;
+        let encoded = canonical::canonical_json(&value)?;
+        let mut observer = MetadataObserver::new();
+        observer.observe(&value)?;
+        let actual_backing = crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())?;
+
+        assert!(encoded.len() <= projected.maximum_encoded_bytes);
+        assert!(actual_backing <= projected.retained_value_backing_bytes);
+        let exact = projected.requested_total()?;
+        let mut counter = Projection::new(exact)?;
+        initial_inventory(&mut counter, program)?;
+        counter.finish(exact)?;
+        let short = (|| {
+            let mut counter = Projection::new(exact - 1)?;
+            initial_inventory(&mut counter, program)?;
+            counter.finish(exact - 1)
+        })();
+        assert!(short.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn actual_initial_producer_and_reactive_inventory_dom_and_encoding_fit_exact_projection() -> TestResult {
+        let definition = PacketProgramDefinition {
+            schema: "source-owned.packet-program.v1".into(),
+            events: vec![PacketEvent {
+                id: Id::new("actual-initial-event")?,
+                evaluation: Position::new(U64::new(2), U64::new(0), Phase::Reaction),
+                completion: Position::new(U64::new(2), U64::new(1), Phase::Publication),
+                payload: Some(Bytes::new(vec![0, 255, 13, 10, 92, 34])),
+            }],
+        };
+        let (socket, _peer) = UnixDatagram::pair()?;
+        let mut producer = PacketProgram::new(definition.events.clone(), socket)?;
+        producer.open_gate()?;
+        check(&PacketConnectedSourceProgram::Producer { program: definition }, producer.inventory())?;
+
+        let endpoint = |node| -> Result<Endpoint, ProviderError> {
+            Ok(Endpoint { node_id: Id::new(node)?, port_id: Id::new("port")?, lane_id: Id::new("lane")? })
+        };
+        let definition = PacketConnectedDefinition {
+            schema: "source-owned.packet-connected-program/4".into(),
+            connections: vec![PacketInputConnection {
+                id: Id::new("actual-initial-route")?,
+                policy: canonical::content_ref(b"policy", "application/octet-stream")?,
+                producer: endpoint("producer")?, consumer: endpoint("consumer")?, delay_ps: U64::new(1),
+            }], output: None,
+        };
+        let (socket, _peer) = UnixDatagram::pair()?;
+        let mut reactive = PacketConnectedProgram::new(definition.clone(), socket)?;
+        reactive.open_gate()?;
+        check(&PacketConnectedSourceProgram::Reactive { program: definition }, reactive.inventory()?)?;
+        Ok(())
+    }
+}

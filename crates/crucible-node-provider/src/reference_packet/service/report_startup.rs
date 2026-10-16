@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 
 mod storage;
 pub use storage::{
-    PacketNativeReportStartupStorageData, original_report_startup_counter_scratch_data,
+    PacketNativeReportStartupStorageData, original_initial_report_startup_storage_data,
+    original_report_startup_counter_scratch_data,
     original_report_startup_storage_data,
 };
 

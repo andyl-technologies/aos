@@ -10,6 +10,13 @@ use super::*;
 use crate::connection::{ExchangeRecord, ReceivedBody};
 use crate::reference_packet::service::complete_restore::restoration_observe::*;
 
+#[path = "observation_suffix.rs"]
+mod restored_suffix;
+pub(crate) use restored_suffix::{
+    OriginalRestoredSuffixPostObservation,
+    original_restored_suffix_post_observation_counter_scratch_data,
+};
+
 pub(crate) struct NativeRestorationObservationAttempt {
     creator: u32,
     thread: ThreadId,
@@ -662,7 +669,8 @@ impl OriginalRestorationObservationPermit {
         drop(flight);
         self.read
             .released
-            .authenticate_current_data(connection, control, records)
+            .authenticate_current_data(connection, control, records)?;
+        restored_suffix::retain_published_suffix_observation_data(self, connection, control, records)
     }
 }
 

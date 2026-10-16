@@ -287,7 +287,7 @@ pub use invocation_preamble::{
 
 pub use invocation::{
     PacketNativeInvocationLaunchIdentityData, original_native_invocation_launch_identity_data,
-    write_original_native_invocation_launch_data,
+    write_original_native_invocation_launch_data, write_original_native_invocation_purpose_data,
 };
 
 pub use invocation::{
@@ -301,3 +301,27 @@ mod pre_dom;
 pub(crate) use pre_dom::OriginalNativeFramePreflight;
 
 pub(in crate::reference_packet::service) use storage::original_private_launch_backing_data;
+
+#[path = "native_startup/restored_suffix.rs"]
+mod restored_suffix;
+pub use restored_suffix::{
+    ORIGINAL_NATIVE_RESTORED_SUFFIX_PREAMBLE_BYTES, PACKET_RESTORATION_SUFFIX_FEATURE,
+    PacketNative7RestoredSuffixLaunch, PacketNative7RestoredSuffixLaunchView,
+    PacketNativeSuffixConstructionStorageData, PacketNativeSuffixLaunchIdentityData,
+    PacketNativeSuffixPreambleData, PacketRestoredSuffixReservationData,
+    authenticate_original_native_suffix_preamble_data, authenticate_restoration_suffix_schema_data,
+    authenticate_restoration_suffix_selection_data, decode_original_native_suffix_preamble_data,
+    encode_original_native_suffix_preamble_data, original_native_suffix_construction_storage_data,
+    original_native_suffix_counter_scratch_data, original_native_suffix_launch_identity_data,
+    restoration_suffix_contract_data, restoration_suffix_schema,
+    restoration_suffix_schema_counter_scratch_data, write_original_native_suffix_launch_data,
+};
+
+// This pure row is independently admitted by the actual prebirth holder.
+pub use restored_suffix::{
+    PacketNativeRestoredSuffixStartupStorageData,
+    original_native_restored_suffix_startup_counter_scratch_data,
+    original_native_restored_suffix_startup_storage_data,
+};
+
+pub(crate) use restored_suffix::OriginalRestoredSuffixBudget;

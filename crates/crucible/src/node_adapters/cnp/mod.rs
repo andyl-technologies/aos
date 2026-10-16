@@ -67,7 +67,7 @@ pub use semantic::{
     PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader,
     PacketCompleteHistoricalAllocationFacts, PacketCompleteHistoricalNativeGroup,
     PacketCompleteHistoricalProtocolData, PacketCompleteHistoricalProtocolDataBudget,
-    PacketCompleteNativeRecord, PacketCompleteNativeStartupWire, PacketCompleteNativeWitness,
+    PacketCompleteNativeRecord, PacketCompleteNativeStartupWire, PacketCompleteNativeRestoredSuffixStartupWire, PacketCompleteNativeWitness,
     PacketCompleteOriginalHostSdk, PacketCompleteRestorePreparation, PacketCompleteSemanticSource,
     PacketCompleteSettledJournal, PacketCompleteSourceRetainedStorage, PacketCompleteSourceRole,
     PacketConnectedInputWitness, PacketConnectedNativeWitness, PacketConnectedSemanticSource,

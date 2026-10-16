@@ -813,3 +813,6 @@ pub(crate) use requested_storage::requested_metadata_backing_storage_data;
 
 mod native_capture_data;
 pub use native_capture_data::RetainedNativeCaptureAllocationData;
+
+#[path = "retained_metadata/restored_suffix.rs"]
+pub(crate) mod restored_suffix;

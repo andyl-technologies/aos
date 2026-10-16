@@ -17,6 +17,7 @@ mod released;
 #[path = "restoration_activation/upload.rs"]
 mod upload;
 pub(crate) use observation::{
+    OriginalRestoredSuffixPostObservation, original_restored_suffix_post_observation_counter_scratch_data,
     NativeRestorationObservationAttempt, OriginalRestorationObservationPermit,
     OriginalRestorationObservationRead,
     original_native_restoration_observation_attempt_backing_data,

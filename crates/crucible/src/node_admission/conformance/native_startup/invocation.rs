@@ -315,6 +315,7 @@ impl CompleteOriginalNativeInvocationAdmission<'_> {
             source: Rc::downgrade(source),
             plan: self.baseline.scope.plan.downgrade(),
             rows: quote.rows,
+            suffix: None,
             finalization_bytes: quote.finalization_bytes,
             source_capture_backend_bytes: quote.source_capture_backend_bytes,
             source_capture_execution_bytes: quote.source_capture_execution_bytes,
@@ -364,3 +365,9 @@ impl OriginalNativeStartupMember {
         Ok(())
     }
 }
+
+#[path = "invocation/restored_suffix.rs"]
+mod restored_suffix;
+
+pub use restored_suffix::CompleteOriginalRestoredSuffixStartupAdmission;
+pub(crate) use restored_suffix::OriginalRestoredSuffixStartupMember;

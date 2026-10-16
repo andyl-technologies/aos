@@ -82,6 +82,9 @@ impl PacketCompleteNativeStartupWire {
         self.origin()
             .map_err(|_| refused("native startup wire foreign origin"))?;
         material.authenticate_original()?;
+        if material.original.native_startup.as_ref().is_some_and(|state| state.member.suffix.is_some()) {
+            return Err(refused("restored suffix requires its distinct original writer"));
+        }
         if !self.prepared || material.birth_id()? != &self.birth_id {
             return Err(refused("native startup wire original association differs"));
         }
@@ -167,6 +170,9 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
             .is_some()
         {
             return Err(refused("invocation15 requires its original wire entry"));
+        }
+        if finalized.member.suffix.is_some() {
+            return Err(refused("restored suffix requires its distinct original wire entry"));
         }
         if !finalized.complete
             || blake3::hash(encoded_launch).as_bytes() != &finalized.member.launch_digest
@@ -382,3 +388,9 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
 mod invocation;
 
 pub(super) use invocation::counter_scratch_data as original_native_invocation_wire_counter_scratch_data;
+
+#[path = "native_wire/restored_suffix.rs"]
+mod restored_suffix;
+
+pub use restored_suffix::PacketCompleteNativeRestoredSuffixStartupWire;
+pub(super) use restored_suffix::counter_scratch_data as original_restored_suffix_wire_counter_scratch_data;

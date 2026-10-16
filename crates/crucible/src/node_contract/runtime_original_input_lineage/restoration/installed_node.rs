@@ -502,3 +502,49 @@ impl OriginalInstalledRestorationNodeAssociation {
         )
     }
 }
+
+impl OriginalInstalledRestorationNodeAssociation {
+    /// Seeds distinct current custody after the complete original Observe roster.
+    ///
+    /// This is a once seed, not an operation or input permission. The actual
+    /// Window must complete another whole-owner observation before inspection.
+    ///
+    /// # Errors
+    /// Refuses foreign identity, incomplete Observe roster, missing independent
+    /// credit, a repeated attempt, changed proof or the final Source fence.
+    pub(crate) fn seed_original_restored_suffix_data(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        world: &WorldActivation,
+    ) -> Result<(), RuntimeError> {
+        self.origin()?;
+        let window = self.window.upgrade().ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.seed_original_restored_suffix_data(self.selected, source, controller, read_owner, world,)
+    }
+
+    /// Borrows the separate initial checkpoint inside the same complete fence.
+    ///
+    /// # Errors
+    /// Refuses an unfinished seed, changed actual owner, pending whole census or
+    /// any archived/current proof mismatch. Future progress needs its own producer.
+    pub(crate) fn with_original_restored_suffix_seed_data(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        world: &WorldActivation,
+        inspect: impl FnOnce(&crate::node_admission::OriginalRestoredSuffixCheckpointData,) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        self.origin()?;
+        let window = self.window.upgrade().ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.with_original_restored_suffix_seed_data(self.selected, source, controller, read_owner, world, inspect,)
+    }
+}

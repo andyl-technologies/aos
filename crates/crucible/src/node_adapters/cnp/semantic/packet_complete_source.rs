@@ -74,8 +74,9 @@ mod ack_peer;
 mod world_admission;
 pub use ack_peer::{
     PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
-    PacketCompleteAckPeerBootMaterial, PacketCompleteNativeStartupWire,
-    PacketCompleteOriginalHostSdk, PacketCompleteRestorePreparation,
+    PacketCompleteAckPeerBootMaterial, PacketCompleteNativeRestoredSuffixStartupWire,
+    PacketCompleteNativeStartupWire, PacketCompleteOriginalHostSdk,
+    PacketCompleteRestorePreparation,
 };
 pub(super) use world_admission::OriginalCompletedCanonicalAckWorldAdmission;
 
@@ -108,6 +109,8 @@ pub struct PacketCompleteSemanticSource {
     ack_peer_birth: std::cell::RefCell<Option<ack_peer::OriginalAckPeerBirth>>,
     ack_birth_attempted: bool,
     ack_peer_association: std::cell::RefCell<Option<ack_peer::OriginalAckPeerAssociation>>,
+    // Source-local once fence precedes every suffix custody/evidence loan.
+    restored_suffix_attempted: std::cell::Cell<bool>,
     ack_codec_metadata_extent: Option<crucible_node_provider::client::CanonicalAckCodecMetadataExtent>,
     native_ack_codec_metadata_extent: Option<crucible_node_provider::client::CanonicalAckCodecMetadataExtent>,
     ack_birth_input_banks: Option<(Vec<u8>, Vec<u8>)>,
@@ -154,6 +157,7 @@ impl PacketCompleteSemanticSource {
             ack_peer_birth: std::cell::RefCell::new(None),
             ack_birth_attempted: false,
             ack_peer_association: std::cell::RefCell::new(None),
+            restored_suffix_attempted: std::cell::Cell::new(false),
             ack_codec_metadata_extent: None,
             native_ack_codec_metadata_extent: None,
             ack_birth_input_banks: None,
@@ -200,6 +204,7 @@ impl PacketCompleteSemanticSource {
             ack_peer_birth: std::cell::RefCell::new(None),
             ack_birth_attempted: false,
             ack_peer_association: std::cell::RefCell::new(None),
+            restored_suffix_attempted: std::cell::Cell::new(false),
             ack_codec_metadata_extent: None,
             native_ack_codec_metadata_extent: None,
             ack_birth_input_banks: None,
@@ -295,6 +300,7 @@ impl PacketCompleteSemanticSource {
     /// It certifies no compiler/recursive frames, allocator or kernel resources.
     pub fn retained_requested_storage_precredit_scratch_data() -> usize {
         Self::original_report_startup_observer_scratch_data()
+            + ack_peer::OriginalAckPeerAssociation::reserved_suffix_counter_scratch_data()
             + NodeRuntime::capture_opaque_owner_observer_scratch_data()
             + CnpSemanticSourceRead::retained_requested_storage_precredit_scratch_data()
             + std::mem::size_of::<[Option<super::retained_storage::CnpRetainedStorageReport>; 2]>()

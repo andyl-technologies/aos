@@ -590,3 +590,6 @@ mod invocation;
 mod restoration_transaction;
 
 mod installed;
+
+#[path = "restoration_prebirth/restored_suffix.rs"]
+mod restored_suffix;

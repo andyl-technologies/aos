@@ -137,6 +137,13 @@ impl CnpSemanticNode {
             };
             data.installed_custody = Some(custody);
             data.source_activation = Some(source_activation);
+            data.restored_suffix = source_observation.as_ref().map(|observation| {
+                inputs.source.original_restored_suffix_construction_data(
+                    native.controller.as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+                    observation,
+                    inputs.maximum_requested_bytes,
+                )
+            }).transpose()?;
             data.source_observation = source_observation;
         }
         data.authenticate_original_owner_data(
@@ -163,8 +170,8 @@ impl CnpSemanticNode {
             .ok_or(RuntimeError::OwnerUnavailable)?;
         let controller = native.controller().ok_or(RuntimeError::OwnerUnavailable)?;
         let terms = [
-            std::mem::size_of::<[usize; 11]>(),
-            std::mem::size_of::<std::array::IntoIter<usize, 11>>(),
+            std::mem::size_of::<[usize; 12]>(),
+            std::mem::size_of::<std::array::IntoIter<usize, 12>>(),
             std::mem::size_of::<OriginalRestorationNodeInputs<'static>>(),
             std::mem::size_of::<OriginalRestorationNodeConstructionData>(),
             std::mem::size_of::<(
@@ -181,6 +188,9 @@ impl CnpSemanticNode {
             super::super::PacketCompleteSemanticSource::original_restoration_source_counter_scratch_data(),
             controller.original_complete_restore_upload_before_mapping_counter_scratch_data(),
             super::installed_restoration::custody_counter_scratch_data()?,
+            super::super::PacketCompleteSemanticSource::original_restored_suffix_counter_scratch_data()
+                .checked_add(crate::node_admission::OriginalRestoredSuffixConstructionData::counter_scratch_data())
+                .ok_or(RuntimeError::ResourceLimit)?,
         ];
         terms.into_iter().try_fold(0usize, |sum, term| {
             sum.checked_add(term).ok_or(RuntimeError::ResourceLimit)

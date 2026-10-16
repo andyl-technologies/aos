@@ -65,7 +65,7 @@ pub use packet_complete_source::{
     PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits,
     PacketCompleteCaptureDependencyLookupData, PacketCompleteCaptureDependencyStorageData,
     PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader,
-    PacketCompleteNativeRecord, PacketCompleteNativeStartupWire, PacketCompleteNativeWitness,
+    PacketCompleteNativeRecord, PacketCompleteNativeStartupWire, PacketCompleteNativeRestoredSuffixStartupWire, PacketCompleteNativeWitness,
     PacketCompleteOriginalHostSdk, PacketCompleteRestorePreparation, PacketCompleteSemanticSource,
     PacketCompleteSettledJournal, PacketCompleteSourceRetainedStorage, PacketCompleteSourceRole,
     original_capture_allocation_witness_counter_scratch_data,

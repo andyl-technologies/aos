@@ -252,6 +252,21 @@ impl PacketSourceService {
         ack_emitter::native_boot::accept_invocation(socket)
     }
 
+    /// Authenticates the separate restored suffix startup16 private channel.
+    ///
+    /// The inherited parent, prefix16 MAC, exact launch7 and unchanged Source15
+    /// and boot7 bodies must agree before this entry retains a native reservation.
+    /// Standard suffix dispatch and advanced Capture remain unavailable.
+    ///
+    /// # Errors
+    /// Refuses another private edition, foreign parent/key/birth, changed full
+    /// bodies or rows, expired original cut or insufficient independent storage.
+    pub fn accept_original_restored_suffix_bootstrap(
+        socket: &std::path::Path,
+    ) -> Result<Self, ProviderError> {
+        ack_emitter::native_boot::accept_restored_suffix(socket)
+    }
+
     /// Installs a complete original native source after actual peer authentication.
     ///
     /// # Errors

@@ -28,7 +28,7 @@ pub use host_startup::{
 pub(crate) use host_startup::{OriginalNativeHostStartupMember, OriginalNativeHostStartupQuote};
 pub(crate) use native_startup::{
     NativeStartupRows, OriginalHostFinalizationBarrier, OriginalHostFinalizationSource,
-    OriginalNativeStartupMember, OriginalNativeStartupQuote,
+    OriginalNativeStartupMember, OriginalNativeStartupQuote, OriginalRestoredSuffixStartupMember,
 };
 
 pub use runtime_construction::{
@@ -39,8 +39,8 @@ pub use runtime_construction::{
 
 pub use native_startup::{
     CompleteOriginalNativeInvocationAdmission, CompleteOriginalNativeStartupAdmission,
-    OriginalNativeStartupMemberScope, OriginalNativeStartupPolicy, OriginalNativeStartupScope,
-    OriginalNativeStartupStorage,
+    CompleteOriginalRestoredSuffixStartupAdmission, OriginalNativeStartupMemberScope,
+    OriginalNativeStartupPolicy, OriginalNativeStartupScope, OriginalNativeStartupStorage,
 };
 
 pub use fresh_restore_host::{
@@ -286,6 +286,27 @@ pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
         _: &ConformancePlanEvidence<'_>,
         _: &OriginalNativeStartupScope<'_>,
     ) -> Result<[crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData; 3], crate::node_contract::RuntimeError>{
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Quotes suffix DATA from the same registered prebirth tickets and scenario.
+    ///
+    /// Core preadmits fixed counter views before this callback. Each row must
+    /// derive from the actual ticket's cached complete owner geometry and the
+    /// same retained canonical launch, with the installed scenario action bound.
+    /// Equal numeric rows or a decoded reservation supply no construction right.
+    ///
+    /// # Errors
+    /// Defaults to refusal for unsupported holders, missing declarations,
+    /// foreign tickets, unavailable backing or an unsupported scenario bound.
+    fn original_restored_suffix_startup_data(
+        &self,
+        _: &ConformancePlanEvidence<'_>,
+        _: &OriginalNativeStartupScope<'_>,
+    ) -> Result<[
+        crucible_node_provider::reference_packet::service::native_startup::PacketNativeRestoredSuffixStartupStorageData;
+        3
+    ], crate::node_contract::RuntimeError>{
         Err(crate::node_contract::RuntimeError::UnsupportedFacet)
     }
 
@@ -1399,4 +1420,9 @@ pub use restoration_construction::OriginalInstalledRestorationObservationClaim;
 pub(crate) use restoration_construction::{
     OriginalInstalledRestorationObservationSigningConstructionInputs,
     OriginalInstalledRestorationObservationSigningInputs,
+};
+
+pub(crate) use restoration_construction::{
+    OriginalRestoredSuffixCheckpointData, OriginalRestoredSuffixConstructionData,
+    OriginalRestoredSuffixSeedClaim,
 };

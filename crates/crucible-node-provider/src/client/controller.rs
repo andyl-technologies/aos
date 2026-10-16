@@ -32,6 +32,8 @@ mod assigned_admit;
 mod assigned_restore;
 mod installed_activation;
 mod installed_observation;
+#[path = "controller/restored_suffix_host.rs"]
+mod restored_suffix_host;
 pub use installed_activation::{
     CompletedOriginalInstalledRestorationActivation, CompletedOriginalInstalledRestorationUpload,
     OriginalRestorationActivationTargetBindingData, PreparedOriginalInstalledRestorationActivation,
@@ -40,6 +42,10 @@ pub use installed_activation::{
 pub use installed_observation::{
     CompletedOriginalInstalledRestorationObservation,
     PreparedOriginalInstalledRestorationObservation,
+};
+pub use restored_suffix_host::{
+    OriginalRestoredSuffixBody, OriginalRestoredSuffixHostAttempt,
+    PreparedOriginalRestoredSuffixHostAttempt,
 };
 mod assigned_transfer;
 mod fresh_restore_query;

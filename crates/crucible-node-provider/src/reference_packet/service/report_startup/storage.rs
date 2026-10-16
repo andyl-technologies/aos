@@ -112,6 +112,41 @@ pub fn original_report_startup_storage_data(
     Ok(data)
 }
 
+/// Quotes the actual Source14 first-report producer before private boot.
+///
+/// Core's same-Source original startup claim is the only selected caller. The
+/// real native Source14 report scope independently requires the untouched model
+/// census before its live quote. Old generic and invocation producers stay broad.
+/// This DATA creates no boot, initial-state, currentness or construction right.
+///
+/// # Errors
+/// Refuses the old full tuple guards, checked overflow or the same compiled cap.
+pub fn original_initial_report_startup_storage_data(
+    launch: &PacketNative5SourceLaunch,
+    purpose: PacketNativeReportStartupPurpose,
+) -> Result<PacketNativeReportStartupStorageData, ProviderError> {
+    if purpose != PacketNativeReportStartupPurpose::OriginalObserve12 {
+        return original_report_startup_storage_data(launch, purpose);
+    }
+    authenticate_tuple(launch, purpose)?;
+    let maximum = MAXIMUM_COMPILED_PROJECTION_BYTES;
+    let receive = crate::connection::original_report_query_receive_storage_data(launch, purpose)?;
+    let shapes = observe::project_initial(launch, maximum)?;
+    let data = original(
+        launch, &shapes, receive.requested_bytes()?,
+        crate::connection::OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)?,
+    )?;
+    if sum(&[
+        data.retained_growth_bytes,
+        data.maximum_simultaneous_transient_bytes,
+        data.declared_counter_scratch_bytes,
+    ])? > maximum
+    {
+        return Err(exhausted());
+    }
+    Ok(data)
+}
+
 fn original(
     launch: &PacketNative5SourceLaunch,
     shapes: &observe::OriginalObserveStartupShapes,
@@ -365,33 +400,61 @@ fn authenticate_tuple(
 /// returns an unadmittable demand, never a smaller default. Compiler/recursive
 /// traversal frames and physical allocator overhead remain separate obligations.
 pub fn original_report_startup_counter_scratch_data() -> usize {
-    let result = schema_generation::requested_data().and_then(|schemas| sum(&[
-        schemas,
-        crate::reference_packet::control::original_observe_dispatch_scratch_data(),
-        crate::reference_packet::endpoint::original_capture_report_quote_layout_data(),
-        crate::reference_packet::endpoint::original_fresh_report_startup_publication_counter_scratch_data(),
-        size_of::<PacketNativeReportStartupStorageData>(),
-        size_of::<observe::OriginalObserveStartupShapes>(),
-        size_of::<OriginalSerializationStorageProjection>(),
-        size_of::<OriginalSerializationStorageData>(),
-        size_of::<MetadataObserver<'static>>(),
-        size_of::<RetainedProtocolMetadataFacts>(),
+    let result = schema_generation::requested_data().and_then(|schemas| {
+        let terms: [usize; 47] = [
+            size_of::<[usize; 47]>(),
+            size_of::<&[usize]>(),
+            size_of::<std::slice::Iter<'static, usize>>(),
+            size_of::<Result<usize, ProviderError>>(),
+            size_of::<[&str; 5]>(),
+            size_of::<[&str; 6]>(),
+            size_of::<[&str; 10]>(),
+            size_of::<&[&str]>(),
+            size_of::<std::slice::Iter<'static, &'static str>>(),
+            size_of::<&&str>(),
+            size_of::<&str>(),
+            schemas,
+            crate::reference_packet::control::original_observe_dispatch_scratch_data(),
+            crate::reference_packet::endpoint::original_capture_report_quote_layout_data(),
+            crate::reference_packet::endpoint::original_fresh_report_startup_publication_counter_scratch_data(),
+            size_of::<PacketNativeReportStartupStorageData>(),
+            size_of::<observe::OriginalObserveStartupShapes>(),
+            size_of::<observe::OriginalObserveStartupShapes>(),
+            size_of::<Result<observe::OriginalObserveStartupShapes, ProviderError>>(),
+            size_of::<Result<OriginalSerializationStorageData, ProviderError>>(),
+            size_of::<Result<PacketNativeReportStartupStorageData, ProviderError>>(),
+            size_of::<&PacketNative5SourceLaunch>(),
+            size_of::<PacketNativeReportStartupPurpose>(),
+            size_of::<&PacketConnectedSourceProgram>(),
+            size_of::<&crate::reference_packet::PacketProgramDefinition>(),
+            size_of::<&mut OriginalSerializationStorageProjection>(),
+            size_of::<&crate::reference_packet::PacketEvent>(),
+            size_of::<std::slice::Iter<'static, crate::reference_packet::PacketEvent>>(),
+            size_of::<std::ops::Range<usize>>(),
+            size_of::<crucible_node_contract::Position>(),
+            size_of::<Result<(), ProviderError>>(),
+            size_of::<OriginalSerializationStorageProjection>(),
+            size_of::<OriginalSerializationStorageData>(),
+            size_of::<MetadataObserver<'static>>(),
+            size_of::<RetainedProtocolMetadataFacts>(),
 
-        crate::reference_packet::service::ack_emitter::original_native_report_startup_scope_layout_data(),
-        crate::connection::original_packet_prefix_startup_counter_scratch_data(),
-        crate::connection::OriginalPacketPrefixStorageData::native_original_observe_prepared_lifetime_counter_scratch_data(),
-        // The independent ACK arm retains its actual typed query and both
-        // counter windows, using this direct three-term sum view.
-        size_of::<[usize; 3]>(),
-        size_of::<Result<usize, ProviderError>>(),
-        size_of::<usize>(),
-        crate::connection::original_report_query_receive_counter_scratch_data(),
-        super::super::fresh_restore_allocation::fresh_restore_allocation_startup_counter_scratch_data(),
-        crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::requested_serialization_scratch_bytes(),
-        crate::connection::NativeCaptureSdkStateQuote::requested_scratch_bytes(),
-        crate::protocol_snapshot::owned11::correspondence::closed_envelope_comparison_scratch_data(),
-        size_of::<[u8; 20]>(),
-    ]));
+            crate::reference_packet::service::ack_emitter::original_native_report_startup_scope_layout_data(),
+            crate::connection::original_packet_prefix_startup_counter_scratch_data(),
+            crate::connection::OriginalPacketPrefixStorageData::native_original_observe_prepared_lifetime_counter_scratch_data(),
+            // The independent ACK arm retains its actual typed query and both
+            // counter windows, using this direct three-term sum view.
+            size_of::<[usize; 3]>(),
+            size_of::<Result<usize, ProviderError>>(),
+            size_of::<usize>(),
+            crate::connection::original_report_query_receive_counter_scratch_data(),
+            super::super::fresh_restore_allocation::fresh_restore_allocation_startup_counter_scratch_data(),
+            crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::requested_serialization_scratch_bytes(),
+            crate::connection::NativeCaptureSdkStateQuote::requested_scratch_bytes(),
+            crate::protocol_snapshot::owned11::correspondence::closed_envelope_comparison_scratch_data(),
+            size_of::<[u8; 20]>(),
+        ];
+        sum(&terms)
+    });
     match result {
         Ok(bytes) => bytes,
         Err(_) => usize::MAX,

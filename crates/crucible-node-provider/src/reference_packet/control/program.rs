@@ -19,6 +19,17 @@ pub(super) enum NativeProgram {
 }
 
 impl NativeProgram {
+    /// Reads only the actual stopped gate; no inventory owner is projected.
+    pub(super) fn original_native_birth_gate_closed_data(&self) -> Result<bool, ProviderError> {
+        match self {
+            Self::OutputOnly(program) => Ok(program.gate_closed && !program.failed),
+            Self::Connected(program) => program.original_native_birth_gate_closed_data(),
+            Self::RestorationInProgress => {
+                Err(ProviderError::Conflict("packet restored model incomplete"))
+            }
+        }
+    }
+
     pub(super) fn inventory_hash(&self) -> Result<HashRef, ProviderError> {
         Ok(match self {
             Self::OutputOnly(program) => {

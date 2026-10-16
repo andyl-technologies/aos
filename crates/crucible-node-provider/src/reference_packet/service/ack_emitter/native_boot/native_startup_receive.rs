@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::reference_packet::{
-    control::PacketControlSelection, service::native_startup::data_equality,
+    control::{PacketControl, PacketControlSelection}, service::native_startup::data_equality,
 };
 use crate::{
     connection::{Connection, ProviderStream},
@@ -21,23 +21,23 @@ pub(crate) struct OriginalNativeBirthReadScope<'a> {
 impl NativeAckBoot {
     pub(crate) fn original_birth_read_scope<'a>(
         boot: &'a Rc<RefCell<Self>>,
-        selection: &'a PacketControlSelection,
+        control: &'a PacketControl,
         completed: usize,
     ) -> Result<Option<OriginalNativeBirthReadScope<'a>>, ProviderError> {
-        Self::original_birth_scope(boot, selection, completed, false)
+        Self::original_birth_scope(boot, control, completed, false)
     }
 
     pub(crate) fn original_birth_publication_scope<'a>(
         boot: &'a Rc<RefCell<Self>>,
-        selection: &'a PacketControlSelection,
+        control: &'a PacketControl,
         completed: usize,
     ) -> Result<Option<OriginalNativeBirthReadScope<'a>>, ProviderError> {
-        Self::original_birth_scope(boot, selection, completed, true)
+        Self::original_birth_scope(boot, control, completed, true)
     }
 
     fn original_birth_scope<'a>(
         boot: &'a Rc<RefCell<Self>>,
-        selection: &'a PacketControlSelection,
+        control: &'a PacketControl,
         completed: usize,
         publication: bool,
     ) -> Result<Option<OriginalNativeBirthReadScope<'a>>, ProviderError> {
@@ -61,6 +61,9 @@ impl NativeAckBoot {
         {
             return Err(refused());
         }
+        // Completed/legacy boots return above before a phase-specific Control
+        // loan. Ordinary later dispatch still keeps its own original guards.
+        let selection = control.original_native_birth_selection_data(completed, publication)?;
         owner
             .policy
             .as_ref()

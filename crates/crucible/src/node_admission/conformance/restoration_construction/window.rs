@@ -173,6 +173,8 @@ pub struct CompleteOriginalRestorationWindow {
     activation_request_ids: OnceCell<[Id; 2]>,
     observation_request_ids: [OnceCell<Id>; 3],
     observation_phases: [super::observation::OriginalInstalledRestorationObservationLedger; 3],
+    suffix_seeds: [continuation_suffix::SuffixLedger; 3],
+    suffix_in_flight: Cell<bool>,
     context_started: Cell<bool>,
     context_issued: Cell<bool>,
     coordinator_construction: OnceCell<OriginalRestorationCoordinatorConstructionData>,
@@ -245,6 +247,8 @@ impl InstalledConformancePlan {
             super::activation::OriginalInstalledRestorationActivationClaim::counter_scratch_data(),
             super::observation::OriginalInstalledRestorationObservationClaim::counter_scratch_data()?,
             observation_continuation::counter_scratch_data()?,
+            continuation_suffix::OriginalRestoredSuffixConstructionData::counter_scratch_data(),
+            PacketCompleteSemanticSource::original_restored_suffix_counter_scratch_data(),
             size_of::<[OnceCell<Id>; 3]>(),
             size_of::<Option<&Id>>(),
             size_of::<Result<Id, RuntimeError>>(),
@@ -385,6 +389,8 @@ impl InstalledConformancePlan {
             observation_phases: std::array::from_fn(|_| {
                 super::observation::OriginalInstalledRestorationObservationLedger::new()
             }),
+            suffix_seeds: std::array::from_fn(|_| continuation_suffix::SuffixLedger::new()),
+            suffix_in_flight: Cell::new(false),
             context_started: Cell::new(false),
             context_issued: Cell::new(false),
             coordinator_construction: OnceCell::new(),
@@ -624,6 +630,7 @@ impl CompleteOriginalRestorationWindow {
                 if row.signer.is_none()
                     || row.installed_custody.is_none()
                     || row.source_activation.is_none()
+                    || row.restored_suffix.is_some() != row.source_observation.is_some()
                     || row.source_observation.is_some()
                         != self.observation_request_ids[index].get().is_some()
                 {
@@ -1335,3 +1342,10 @@ mod observation_ids;
 
 #[path = "window/observation_continuation.rs"]
 mod observation_continuation;
+
+#[path = "window/continuation_suffix.rs"]
+mod continuation_suffix;
+pub(crate) use continuation_suffix::{
+    OriginalRestoredSuffixCheckpointData, OriginalRestoredSuffixConstructionData,
+    OriginalRestoredSuffixSeedClaim,
+};

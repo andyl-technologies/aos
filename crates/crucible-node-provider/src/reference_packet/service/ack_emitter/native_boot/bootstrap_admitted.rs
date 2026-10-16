@@ -277,6 +277,7 @@ impl OriginalNativeStartupBootstrap {
         self.failed = false;
         Ok(
             super::super::boot::native_startup::OriginalNativeStartupBoot {
+                restored_suffix: None,
                 allocation,
                 source_digest: expected.source_digest,
                 launch_digest: expected.launch_digest,

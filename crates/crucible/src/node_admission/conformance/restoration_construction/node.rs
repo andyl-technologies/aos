@@ -62,6 +62,7 @@ pub struct OriginalRestorationNodeConstructionData {
     pub(crate) installed_custody: Option<crate::node_adapters::cnp::OriginalInstalledRestorationCustodyConstructionData>,
     pub(crate) source_activation: Option<crate::node_adapters::cnp::OriginalSourceRestorationActivationConstructionData>,
     pub(crate) source_observation: Option<crate::node_adapters::cnp::OriginalSourceRestorationObservationConstructionData>,
+    pub(crate) restored_suffix: Option<window::OriginalRestoredSuffixConstructionData>,
 }
 
 impl OriginalRestorationNodeConstructionData {

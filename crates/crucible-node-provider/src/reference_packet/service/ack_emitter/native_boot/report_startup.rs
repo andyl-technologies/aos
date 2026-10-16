@@ -63,6 +63,32 @@ impl OriginalNativeReportStartupAllocation {
         self.purpose
     }
 
+    /// Requires the real Source14 baseline before checking initial model state.
+    ///
+    /// Invocation15 and old public paths retain their existing broad projection.
+    /// The wire row never selects this restriction or grants an initial owner.
+    ///
+    /// # Errors
+    /// Refuses stale boot/connection identity, incomplete actual Source14 birth,
+    /// changed Control selection or any noninitial original model state.
+    pub(crate) fn authenticate_original_initial_observation_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        native: &crate::reference_packet::control::PacketControl,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_current(connection)?;
+        let boot = self.boot.try_borrow().map_err(|_| refused())?;
+        if self.purpose == PacketNativeReportStartupPurpose::OriginalObserve12
+            && boot.data.source_birth.get("schema").and_then(Value::as_str)
+                == Some(crate::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA)
+        {
+            boot.authenticate_original_native_baseline_data()?;
+            let selection = native.original_initial_observation_selection_data()?;
+            self.policy.authenticate_original_control_selection(selection)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn authenticate_query_header_data<S: ProviderStream>(
         &self,
         connection: &Connection<S>,
@@ -422,6 +448,16 @@ fn refused() -> ProviderError {
 /// Names this actual private owner header; it carries no heap or permission.
 pub(crate) const fn original_native_report_startup_scope_layout_data() -> usize {
     std::mem::size_of::<OriginalNativeReportStartupAllocation>()
+        + crate::reference_packet::control::PacketControl::original_initial_observation_counter_scratch_data()
+        + std::mem::size_of::<Result<(), ProviderError>>()
+        + std::mem::size_of::<&crate::reference_packet::control::PacketControl>()
+        + std::mem::size_of::<std::cell::Ref<'static, NativeAckBoot>>()
+        + std::mem::size_of::<Result<std::cell::Ref<'static, NativeAckBoot>, std::cell::BorrowError>>()
+        + std::mem::size_of::<Result<std::cell::Ref<'static, NativeAckBoot>, ProviderError>>()
+        + std::mem::size_of::<Option<&Value>>()
+        + std::mem::size_of::<Option<&str>>()
+        + std::mem::size_of::<Result<&crate::reference_packet::control::PacketControlSelection, ProviderError>>()
+        + std::mem::size_of::<bool>()
 }
 
 // Invoked by the actual private boot validator before ACK installation. No

@@ -133,6 +133,37 @@ impl<'a> OriginalSourceRestorationObservationVerifiedPhase<'a> {
         )
     }
 
+    /// Lends the genuine initial native model under its existing complete fence.
+    ///
+    /// This loan seeds separate suffix custody. It cannot stand in for a native
+    /// record after subsequent execution has advanced the actual model cursor.
+    ///
+    /// # Errors
+    /// Refuses every old observation/currentness failure and either callback.
+    pub(crate) fn with_original_suffix_seed_data(
+        &self,
+        inputs: &OriginalInstalledRestorationObservationSigningInputs<'_>,
+        admitted: &OriginalSourceRestorationObservationConstructionData,
+        inspect: impl FnOnce(
+            &PacketNativeRestoredRecord,
+            &PacketNative5UnderlyingRecord,
+            &NativeSchedulingObservation,
+        ) -> Result<(), RuntimeError>,
+        final_currency: impl FnOnce() -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate(
+            inputs,
+            admitted,
+            |held, reference| inputs.authenticate_original_observation_hold_data(held, reference),
+            |scheduling| {
+                let original = self.association.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+                let attempt = original.restoration_observation.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+                inspect(attempt.record()?, attempt.underlying()?, scheduling)
+            },
+            final_currency,
+        )
+    }
+
     fn authenticate(
         &self,
         inputs: &OriginalInstalledRestorationObservationSigningInputs<'_>,

@@ -87,3 +87,9 @@ pub use controller::{
 pub use controller::{
     CompletedOriginalInstalledRestorationUpload, PreparedOriginalInstalledRestorationUpload,
 };
+
+/// Exposes retained ordinary suffix originals without issuing execution claims.
+pub use controller::{
+    OriginalRestoredSuffixBody, OriginalRestoredSuffixHostAttempt,
+    PreparedOriginalRestoredSuffixHostAttempt,
+};

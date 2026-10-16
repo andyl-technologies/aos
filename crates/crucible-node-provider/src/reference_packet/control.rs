@@ -67,6 +67,7 @@ pub use continuation::{
     decode_packet_control_snapshot, packet_control_snapshot_validation_layouts,
 };
 mod program;
+mod initial_observe;
 
 use program::NativeProgram;
 
@@ -1886,3 +1887,6 @@ pub(crate) use capture::{
     NativeStartupCaptureRegistrationData, NativeStartupCaptureReply,
     original_startup_capture_counter_scratch_data, startup_capture_terminal_cache_storage_data,
 };
+
+#[path = "control/birth_scope.rs"]
+mod birth_scope;

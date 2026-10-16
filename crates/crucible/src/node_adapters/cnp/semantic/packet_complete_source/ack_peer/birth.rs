@@ -27,7 +27,7 @@ mod native_startup;
 mod native_wire;
 #[path = "report_startup.rs"]
 mod report_startup;
-pub use native_wire::PacketCompleteNativeStartupWire;
+pub use native_wire::{PacketCompleteNativeStartupWire, PacketCompleteNativeRestoredSuffixStartupWire};
 
 /// Borrows one original source-owned private boot material transfer.
 ///

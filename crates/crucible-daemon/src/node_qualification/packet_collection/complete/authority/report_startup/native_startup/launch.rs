@@ -8,6 +8,7 @@ use super::*;
 use crucible::node_adapters::cnp::{
     CnpSemanticLaunchGuard, CnpSemanticLaunchReservation, CnpSemanticProcessSlot,
     PacketCompleteAckPeerBootMaterial, PacketCompleteNativeStartupWire,
+    PacketCompleteNativeRestoredSuffixStartupWire,
 };
 use crucible_node_contract::ContentRef;
 use std::{
@@ -25,7 +26,9 @@ use std::{
 const STARTUP_ARGUMENT: &str = "--original-native-startup14";
 // Same compiled argument extent preserves the old closed Command quote.
 const INVOCATION_ARGUMENT: &str = "--original-native-startup15";
+const RESTORED_SUFFIX_ARGUMENT: &str = "--original-native-startup16";
 const _: () = assert!(STARTUP_ARGUMENT.len() == INVOCATION_ARGUMENT.len());
+const _: () = assert!(STARTUP_ARGUMENT.len() == RESTORED_SUFFIX_ARGUMENT.len());
 const PATH_MAXIMUM: usize = 4096;
 const MAXIMUM_WRITE_WATCHDOG: Duration = Duration::from_secs(60);
 
@@ -63,6 +66,7 @@ pub(in crate::node_qualification::packet_collection::complete::authority::report
 struct NativeLaunchPeer {
     inputs: Option<PacketCompleteNativeLaunchInputs>,
     wire: Option<PacketCompleteNativeStartupWire>,
+    suffix_wire: Option<PacketCompleteNativeRestoredSuffixStartupWire>,
     reservation: Option<CnpSemanticLaunchReservation>,
     guard: Option<CnpSemanticLaunchGuard>,
     command: Option<Command>,
@@ -80,6 +84,7 @@ impl NativeLaunchOwners {
             peers: std::array::from_fn(|_| NativeLaunchPeer {
                 inputs: None,
                 wire: None,
+                suffix_wire: None,
                 reservation: None,
                 guard: None,
                 command: None,
@@ -205,6 +210,7 @@ impl PacketCompleteReportStartupHolder {
                 || peer.guard.is_some()
                 || peer.command.is_some()
                 || peer.wire.is_some()
+                || peer.suffix_wire.is_some()
                 || inputs.bootstrap_reader.is_none()
                 || inputs.bootstrap_writer.is_none()
             {
@@ -282,7 +288,15 @@ impl PacketCompleteReportStartupHolder {
                 continue;
             };
             Self::charge_original_native_launch_input_storage_data(inputs, counter)?;
+            if peer.wire.is_some() && peer.suffix_wire.is_some() {
+                return Err(RuntimeError::ForeignAuthority);
+            }
             if let Some(wire) = &peer.wire {
+                counter
+                    .add(wire.retained_requested_storage_precredit_data(counter.remaining())?)
+                    .map_err(|_| RuntimeError::ResourceLimit)?;
+            }
+            if let Some(wire) = &peer.suffix_wire {
                 counter
                     .add(wire.retained_requested_storage_precredit_data(counter.remaining())?)
                     .map_err(|_| RuntimeError::ResourceLimit)?;
@@ -384,6 +398,10 @@ impl PacketCompleteReportStartupHolder {
             .admitted
             .get()
             .ok_or(RuntimeError::OwnerUnavailable)?;
+        // This same-holder declaration routes only to a constructor that
+        // independently requires the consumed Core suffix member. It grants
+        // no native action and cannot make an old member use the new family.
+        let restored_suffix = held.restored_suffix_startup_selected_data()?;
         let mut materials: [Option<PacketCompleteAckPeerBootMaterial<'_>>; 3] = [None, None, None];
         for (member, peer) in owners.peers.iter_mut().enumerate() {
             let inputs = peer.inputs.as_mut().ok_or(RuntimeError::OwnerUnavailable)?;
@@ -399,7 +417,13 @@ impl PacketCompleteReportStartupHolder {
             let invocation = material
                 .requires_original_native_invocation_wire_data()
                 .map_err(|_| RuntimeError::ForeignAuthority)?;
-            if invocation {
+            if restored_suffix {
+                material.prepare_original_restored_suffix_wire_into(
+                    &held.authority.original_launches[member],
+                    &held.authority.private_launches[member],
+                    &mut peer.suffix_wire,
+                )
+            } else if invocation {
                 material.prepare_original_native_invocation_wire_into(
                     &held.authority.original_launches[member],
                     &held.authority.private_launches[member],
@@ -443,7 +467,9 @@ impl PacketCompleteReportStartupHolder {
             command
                 .env_clear()
                 .arg(&inputs.socket)
-                .arg(if invocation {
+                .arg(if restored_suffix {
+                    RESTORED_SUFFIX_ARGUMENT
+                } else if invocation {
                     INVOCATION_ARGUMENT
                 } else {
                     STARTUP_ARGUMENT
@@ -470,6 +496,7 @@ impl PacketCompleteReportStartupHolder {
                 command,
                 guard,
                 wire,
+                suffix_wire,
                 inputs,
                 written,
                 ..
@@ -501,15 +528,19 @@ impl PacketCompleteReportStartupHolder {
                     .ok_or(RuntimeError::OwnerUnavailable)?,
                 deadline,
             };
-            wire.as_mut()
-                .ok_or(RuntimeError::OwnerUnavailable)?
-                .write_original(
-                    materials[member]
-                        .as_ref()
-                        .ok_or(RuntimeError::OwnerUnavailable)?,
-                    &mut writer,
-                )
-                .map_err(|_| RuntimeError::OwnerUnavailable)?;
+            let material = materials[member]
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            match (wire.as_mut(), suffix_wire.as_mut()) {
+                (Some(wire), None) if !restored_suffix => {
+                    wire.write_original(material, &mut writer)
+                }
+                (None, Some(wire)) if restored_suffix => {
+                    wire.write_original(material, &mut writer)
+                }
+                _ => return Err(RuntimeError::ForeignAuthority),
+            }
+            .map_err(|_| RuntimeError::OwnerUnavailable)?;
             *written = true;
         }
         held.authenticate_native_origin_data()
@@ -785,4 +816,30 @@ impl NativeLaunchOwners {
         }
         Ok(total)
     }
+}
+
+// The holder's real Rc observer counts its enlarged inline peer slots. These
+// separate defining views prepay the new selected write and raw-bank observer
+// before any Source factory, wire allocation or original Child path.
+pub(super) fn restored_suffix_wire_counter_scratch_data() -> usize {
+    use crucible::node_contract::OperationFailure;
+    use std::mem::size_of;
+
+    size_of::<Option<PacketCompleteNativeRestoredSuffixStartupWire>>()
+        + size_of::<&PacketCompleteNativeRestoredSuffixStartupWire>()
+        + size_of::<Option<&PacketCompleteNativeRestoredSuffixStartupWire>>()
+        + size_of::<&mut PacketCompleteNativeRestoredSuffixStartupWire>()
+        + size_of::<Option<&mut PacketCompleteNativeRestoredSuffixStartupWire>>()
+        + size_of::<&mut Option<PacketCompleteNativeRestoredSuffixStartupWire>>()
+        + size_of::<(
+            Option<&mut PacketCompleteNativeStartupWire>,
+            Option<&mut PacketCompleteNativeRestoredSuffixStartupWire>,
+        )>()
+        + size_of::<Result<usize, RuntimeError>>()
+        + size_of::<Result<(), OperationFailure>>()
+        + size_of::<Result<bool, OperationFailure>>()
+        + size_of::<Result<bool, RuntimeError>>()
+        + size_of::<&PacketCompleteAckPeerBootMaterial<'static>>()
+        + size_of::<Result<&PacketCompleteAckPeerBootMaterial<'static>, RuntimeError>>()
+        + size_of::<bool>()
 }

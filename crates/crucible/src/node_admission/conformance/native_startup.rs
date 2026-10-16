@@ -129,6 +129,9 @@ pub(crate) struct NativeStartupRows {
     pub(crate) restore_prepare: Option<PacketNativeStartupAllocationRow>,
     // Non-wire same-input intersection; absent facts retain the full sum.
     pub(crate) retained_overlap: Option<crucible_node_provider::reference_packet::service::native_startup::PacketNativeBirthRetainedOverlapData>,
+    // Same-source selected preflight producer only; original broad report
+    // admission remains retained and independently authenticated in Source.
+    pub(crate) initial_report_rows: Option<super::report_startup::StartupRows>,
 }
 
 impl NativeStartupRows {
@@ -233,25 +236,29 @@ impl InstalledConformancePlan {
     /// # Errors
     /// Refuses checked layout arithmetic overflow.
     pub fn original_native_startup_counter_scratch_data() -> Result<usize, RuntimeError> {
-        sum(
-            &[
-                size_of::<CompleteOriginalNativeStartupAdmission<'_>>(),
-                size_of::<NativeStartupQuoteKind>(),
-                size_of::<std::array::IntoIter<(Option<PacketNativeStartupAllocationRow>, Option<usize>), 3>>(),
-                size_of::<[(Option<PacketNativeStartupAllocationRow>, Option<usize>); 3]>(),
-                size_of::<Option<usize>>(),
-                size_of::<Result<usize, crucible_node_provider::ProviderError>>(),
-                size_of::<OriginalNativeStartupScope<'_>>(),
-                size_of::<OriginalNativeStartupMemberScope<'_>>(),
-                size_of::<[OriginalNativeStartupQuote; 3]>(),
-                size_of::<[Option<OriginalNativeStartupQuote>; 3]>(),
-                crate::node_adapters::cnp::CnpSemanticLaunchReservation::unlaunched_storage_counter_scratch_data(),
-                PacketCompleteSemanticSource::original_native_startup_counter_scratch_data()?,
-                OriginalHostFinalizationBarrier::counter_scratch_data(),
-                PacketCompleteSemanticSource::original_native_host_barrier_slot_scratch_data(),
-            ],
-            usize::MAX,
-        )
+        let terms: [usize; 20] = [
+            size_of::<[usize; 20]>(),
+            size_of::<&[usize]>(),
+            size_of::<std::slice::Iter<'static, usize>>(),
+            size_of::<Result<usize, RuntimeError>>(),
+            size_of::<CompleteOriginalNativeStartupAdmission<'_>>(),
+            size_of::<NativeStartupQuoteKind>(),
+            size_of::<(Option<super::report_startup::StartupRows>, Option<super::report_startup::StartupRows>)>(),
+            size_of::<Option<super::report_startup::StartupRows>>(),
+            size_of::<std::array::IntoIter<(Option<PacketNativeStartupAllocationRow>, Option<usize>), 3>>(),
+            size_of::<[(Option<PacketNativeStartupAllocationRow>, Option<usize>); 3]>(),
+            size_of::<Option<usize>>(),
+            size_of::<Result<usize, crucible_node_provider::ProviderError>>(),
+            size_of::<OriginalNativeStartupScope<'_>>(),
+            size_of::<OriginalNativeStartupMemberScope<'_>>(),
+            size_of::<[OriginalNativeStartupQuote; 3]>(),
+            size_of::<[Option<OriginalNativeStartupQuote>; 3]>(),
+            crate::node_adapters::cnp::CnpSemanticLaunchReservation::unlaunched_storage_counter_scratch_data(),
+            PacketCompleteSemanticSource::original_native_startup_counter_scratch_data()?,
+            OriginalHostFinalizationBarrier::counter_scratch_data(),
+            PacketCompleteSemanticSource::original_native_host_barrier_slot_scratch_data(),
+        ];
+        sum(&terms, usize::MAX)
     }
 
     /// Admits native baseline allocations on the same actual pre-Child roster.
@@ -469,6 +476,16 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
                 _ => return Err(RuntimeError::ForeignAuthority),
             }
         }
+        match (
+            quote.rows.initial_report_rows,
+            actual.rows.initial_report_rows,
+        ) {
+            (Some(allowed), Some(observed))
+                if allowed.original_observe12 == observed.original_observe12
+                    && allowed.fresh_completed_admit13 == observed.fresh_completed_admit13 => {}
+            (None, None) => {}
+            _ => return Err(RuntimeError::ForeignAuthority),
+        }
         if actual.launch_digest != quote.launch_digest
             || actual.maximum_boot_bytes > quote.maximum_boot_bytes
             || actual.finalization_bytes > quote.finalization_bytes
@@ -494,6 +511,7 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
             source: Rc::downgrade(source),
             plan: self.scope.plan.downgrade(),
             rows: quote.rows,
+            suffix: None,
             finalization_bytes: quote.finalization_bytes,
             source_capture_backend_bytes: quote.source_capture_backend_bytes,
             source_capture_execution_bytes: quote.source_capture_execution_bytes,
@@ -607,6 +625,7 @@ pub(crate) struct OriginalNativeStartupMember {
     source: Weak<PacketCompleteSemanticSource>,
     plan: WeakInstalledConformancePlan,
     pub(crate) rows: NativeStartupRows,
+    pub(crate) suffix: Option<OriginalRestoredSuffixStartupMember>,
     pub(crate) finalization_bytes: usize,
     // Source-owned pre-Child output-bank construction is a distinct host term.
     // It is never serialized into the native private/bootstrap/Prepare rows.
@@ -716,7 +735,8 @@ fn sum(values: &[usize], maximum: usize) -> Result<usize, RuntimeError> {
 }
 
 mod invocation;
-pub use invocation::CompleteOriginalNativeInvocationAdmission;
+pub use invocation::{CompleteOriginalNativeInvocationAdmission, CompleteOriginalRestoredSuffixStartupAdmission};
+pub(crate) use invocation::OriginalRestoredSuffixStartupMember;
 
 #[cfg(test)]
 mod retained_overlap_tests {
@@ -734,6 +754,7 @@ mod retained_overlap_tests {
             native_birth: row(20, 6, 2),
             restore_prepare: Some(row(5, 2, 1)),
             retained_overlap: None,
+            initial_report_rows: None,
         };
         assert_eq!(rows.peak(43).unwrap(), 43);
         assert!(rows.peak(42).is_err());

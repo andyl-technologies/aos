@@ -1984,3 +1984,5 @@ mod restoration_retained;
 #[path = "session/installed_activation.rs"]
 mod installed_activation;
 mod installed_observation;
+#[path = "session/restored_suffix_host.rs"]
+mod restored_suffix_host;

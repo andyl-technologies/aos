@@ -110,6 +110,22 @@ impl Write for Identity {
     }
 }
 
+/// Streams the unchanged canonical invocation purpose without constructing a DOM.
+///
+/// This borrowed writer creates DATA only; its caller authenticates the actual
+/// Source member, input provenance and separately admitted output ownership.
+///
+/// # Errors
+/// Propagates writer or closed fixed-view serialization failure.
+pub fn write_original_native_invocation_purpose_data(
+    purpose: &PacketNativeInvocationPurposeData,
+    output: &mut impl Write,
+) -> Result<(), ProviderError> {
+    serde_json::to_writer(output, &CanonicalPurpose(purpose))
+        .map_err(crucible_node_contract::ContractError::from)?;
+    Ok(())
+}
+
 /// Streams the exact new wrapper around an independently authenticated original bank.
 ///
 /// The caller retains both raw input and partially written output through any
@@ -158,6 +174,9 @@ pub(super) const fn counter_scratch_data() -> usize {
         + std::mem::size_of::<CanonicalSource<'static>>()
         + std::mem::size_of::<CanonicalReference<'static>>()
         + std::mem::size_of::<CanonicalHash<'static>>()
+        + std::mem::size_of::<Result<(), serde_json::Error>>()
+        + std::mem::size_of::<Result<(), crucible_node_contract::ContractError>>()
+        + std::mem::size_of::<Result<(), ProviderError>>()
 }
 
 #[cfg(test)]

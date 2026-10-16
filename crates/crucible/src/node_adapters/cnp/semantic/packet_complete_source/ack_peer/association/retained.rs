@@ -54,6 +54,15 @@ impl OriginalAckPeerAssociation {
                 maximum,
             )?;
         }
+        {
+            let suffix = self
+                .restored_suffix
+                .try_borrow()
+                .map_err(|_| E::refused("retained suffix seed already borrowed"))?;
+            if let Some(seed) = suffix.as_ref() {
+                bytes = sum_with_error::<E, _>([bytes, seed.retained_heap_bytes_data()], maximum)?;
+            }
+        }
         for value in self
             .normalized
             .iter()

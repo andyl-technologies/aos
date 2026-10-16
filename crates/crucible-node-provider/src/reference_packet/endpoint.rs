@@ -467,7 +467,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                     Some(Transport::Connected(connection)) => {
                         let birth_read = self.canonical_ack_boot.as_ref().map(|boot|
                     super::service::ack_emitter::NativeAckBoot::original_birth_read_scope(
-                        boot,self.native.endpoint_scope()?,self.records.len(),
+                        boot,&self.native,self.records.len(),
                     )).transpose()?.flatten();
                         if let Some(scope) = birth_read.as_ref() {
                             connection.receive_original_native_birth_request(scope)?
@@ -727,7 +727,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             .map(|boot| {
                 super::service::ack_emitter::NativeAckBoot::original_birth_publication_scope(
                     boot,
-                    self.native.endpoint_scope()?,
+                    &self.native,
                     self.records.len(),
                 )
             })

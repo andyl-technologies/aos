@@ -80,7 +80,11 @@ impl PacketNativeRestoreCommitConstructionData {
 /// Streamed executable buffers are a separate named native construction phase.
 /// Compiler/recursive frames and allocator physical overhead remain separate.
 pub fn original_native_restore_commit_construction_counter_scratch_data() -> usize {
-    size_of::<PacketNativeRestoreCommitConstructionInputs<'static>>()
+    size_of::<Result<std::cell::Ref<'static, crate::reference_packet::service::ack_emitter::NativeAckBoot>, ProviderError>>()
+        + size_of::<Result<bool, ProviderError>>()
+        + size_of::<std::cell::Ref<'static, crate::reference_packet::service::ack_emitter::NativeAckBoot>>()
+        + size_of::<Result<std::cell::Ref<'static, crate::reference_packet::service::ack_emitter::NativeAckBoot>, std::cell::BorrowError>>()
+        + size_of::<PacketNativeRestoreCommitConstructionInputs<'static>>()
         + size_of::<PacketNativeRestoreCommitConstructionData>()
         + selected_issuer_decode_counter_scratch_data()
         + crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData::original_launch_literal_counter_scratch_data()
