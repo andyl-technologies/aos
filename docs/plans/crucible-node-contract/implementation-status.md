@@ -252,10 +252,12 @@ physical memory. The next refinement is reviewing their actual owner lifetimes.
 Both installer diagnostics identify the private-parent-directory check.
 The fixture uses default temporary-directory permissions rather than requesting
 the required `0700` mode. Historical directory metadata was not captured, so
-no actual mode is inferred from the diagnostic alone. Commit `29fd85764c` makes the fixture request and assert the required private
-directory without changing the production guard. It adds a paired public-parent
-refusal and private-parent acceptance control; these controls have not run yet.
-Diagnostic instrumentation remains outside the repository.
+no actual mode is inferred from the diagnostic alone. Commit `29fd85764c` makes
+the fixture request and assert the required private directory without changing
+the production guard. Its paired public-parent
+refusal and private-parent acceptance control now passes, together with the
+installer controls below. Diagnostic instrumentation remains outside the
+repository.
 
 ### Complete construction, capture archives and Fresh bindings
 
@@ -281,10 +283,19 @@ compilation failures remain recorded: a snapshot validator tuple mismatch, then
 two stale storage getter calls and one test error conversion. Their narrow
 corrections are included in the passing source. Formatting commits are separate.
 
-The stage adds 38 test bodies and changes six existing bodies. One added native
-Clock case remains ignored pending genuine enrollment; the other 43 new or
-changed controls remain unrun while fresh test executables build. No application
-test-target, native Capture or complete restoration success is inferred.
+The stage adds 38 test bodies and changes six existing bodies. Fresh normal test
+executables compile for Core, provider, daemon, campaign and CLI. All 43 ordinary
+new or changed controls pass, together with the two earlier object-root controls
+on the same newly built provider executable: 45 passed, none failed or ignored.
+The five ordered groups cover construction and archive storage, Fresh binding,
+lineage compatibility, installer ownership and refusals, publication failures,
+and retained Oracle/actor inputs. Source and executable checks remain exact
+after each group.
+
+The added native Clock case remains ignored pending genuine enrollment. The two
+previously failing constructor controls await the separately reviewed lifetime
+accounting fix. No current application test-target, native Capture or complete
+restoration success is inferred from these component results.
 
 Shared campaign APIs now use neutral replay-closure and fingerprint-bound names.
 The lineage authoring key is `backend_build_identity`; legacy `qemu_build` remains
