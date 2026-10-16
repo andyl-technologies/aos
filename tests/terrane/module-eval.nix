@@ -146,6 +146,47 @@
   ];
   extraAssertions = [
     {
+      name = "module-metadata-excluded";
+      pass = !(lib.hasInfix "_module" file) && !(lib.hasInfix "_module" domainFile);
+    }
+
+    {
+      name = "private-domain-default-zero";
+      pass = lib.hasInfix "wipe = \"zero\"" (evaluate {aos.terrane.hostTier.domains."private:default".path = "/var/lib/terrane-private";}).environment.etc."terrane/terrane.toml".text;
+    }
+    {
+      name = "public-domain-default-none";
+      pass = lib.hasInfix "wipe = \"none\"" (evaluate {aos.terrane.hostTier.domains.public.path = "/var/lib/terrane-public";}).environment.etc."terrane/terrane.toml".text;
+    }
+    {
+      name = "explicit-private-wipe-preserved";
+      pass =
+        lib.hasInfix "wipe = \"none\""
+        (evaluate {
+          aos.terrane.hostTier.domains."private:override" = {
+            path = "/var/lib/terrane-private";
+            wipe = "none";
+          };
+        }).environment.etc."terrane/terrane.toml".text;
+    }
+    {
+      name = "absent-mode-fields-pruned";
+      pass =
+        lib.hasInfix "mode = {}"
+        (evaluate {
+          aos.terrane.exposures = [
+            {
+              id = "default-mode";
+              view = "refs/heads/main";
+              surface = "sdk";
+              at = "/srv/sdk";
+              token = "anonymous:refs/heads/main:read";
+            }
+          ];
+        }).environment.etc."terrane/terrane.toml".text;
+    }
+
+    {
       name = "structured-input-only";
       pass = let
         options =

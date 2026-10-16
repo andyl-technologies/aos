@@ -20,7 +20,7 @@
         type = pathType;
         description = "Absolute filesystem root for this disclosure domain.";
       };
-      wipe = option (types.enum ["none" "zero"]) "none" "Required wipe policy; zero is never downgraded by the module.";
+      wipe = option (types.nullOr (types.enum ["none" "zero"])) null "Wipe policy; unset defaults to zero for private domains and none otherwise (DOM-18). Explicit policies are preserved.";
     };
   };
   exposureType = types.submodule {
@@ -76,18 +76,33 @@
     else [];
   configuration = {
     store = cfg.store;
-    locality = cfg.locality;
+    locality = {inherit (cfg.locality) region zone host;};
     host_tier = {
       path = cfg.hostTier.path;
       size_bytes = cfg.hostTier.sizeBytes;
       reassembly = cfg.hostTier.reassembly;
-      domains = cfg.hostTier.domains;
+      domains =
+        lib.mapAttrs (name: domain: {
+          inherit (domain) path;
+          wipe =
+            if domain.wipe != null
+            then domain.wipe
+            else if lib.hasPrefix "private:" name
+            then "zero"
+            else "none";
+        })
+        cfg.hostTier.domains;
     };
     tokens = {
       issuer_public_keys = cfg.tokens.issuerPublicKeys;
       host_token = cfg.tokens.hostToken;
     };
-    expose = cfg.exposures;
+    expose =
+      map (exposure: {
+        inherit (exposure) id view surface at token options;
+        mode = {inherit (exposure.mode) reader writer;};
+      })
+      cfg.exposures;
   };
   service = role: {
     description = "Terrane ${role} role";
