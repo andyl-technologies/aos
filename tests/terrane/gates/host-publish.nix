@@ -129,15 +129,17 @@
       version = "0.1.0";
       src = null;
       buildDeps = [pkgs.coreutils];
-      phases = [{
-        name = "qualify";
-        script = ''
-          mkdir -p "$out"
-          test -e ${portable}/ordering.log
-          test -e ${native}
-          printf '%s\n' '${name}: portable ordering and disk-backed kernel proof passed' > "$out/result"
-        '';
-      }];
+      phases = [
+        {
+          name = "qualify";
+          script = ''
+            mkdir -p "$out"
+            test -e ${portable}/ordering.log
+            test -e ${native}
+            printf '%s\n' '${name}: portable ordering and disk-backed kernel proof passed' > "$out/result"
+          '';
+        }
+      ];
     };
 in {
   host-publish-sequence = combined "host-publish-sequence";
