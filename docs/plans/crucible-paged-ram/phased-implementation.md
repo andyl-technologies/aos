@@ -183,10 +183,11 @@ includes CLI test-only delegation, while the Rust production-aware scan passes.
 Native Source activation, genuine Target preparation, owner-driven capture and
 full qualification remain open. The normal-service VM evaluation reaches the
 QEMU build, whose dirty-iterator fixture still fails; no VM lane was executed.
-The required application-target build passed locally for commit
-`f11edff9846b31dfec36633f8ad06c8ce73d7e5a`, including all application unit and
-integration targets. Its successor for the backend cutover is running locally
-with remote builders disabled. All 148 Linux resource tests passed in the
+The required application-target build passes locally for the backend-cutover
+snapshot, including every application's unit and integration target compilation,
+with remote builders disabled. The later private-observation snapshot has the
+workspace, feature and full private-library results above; its final packaged
+qualification remains required. All 148 Linux resource tests passed in the
 preceding never-born return cohort. A fully passing integrated suite and VM
 performance parity are not claimed.
 
