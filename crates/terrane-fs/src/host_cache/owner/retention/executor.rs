@@ -84,6 +84,18 @@ impl NativeOwnerExecutor {
         Ok(())
     }
 
+    /// Borrows actual adopted inline bodies retained by the physical owner.
+    pub(super) fn inline_registry(&self) -> &[super::super::recovery_inline::AdoptedInline] {
+        &self.adopted_inline
+    }
+
+    /// Borrows the physical inline registry for bounded command-owned insertion.
+    pub(super) fn inline_registry_mut(
+        &mut self,
+    ) -> &mut Vec<super::super::recovery_inline::AdoptedInline> {
+        &mut self.adopted_inline
+    }
+
     /// Borrows the real verified metadata source closure retained by this worker.
     pub(super) fn manifest_sources(&self) -> &[Arc<crate::host_cache::NativeManifestSource>] {
         &self.manifest_sources
@@ -152,7 +164,7 @@ impl NativeOwnerExecutor {
     /// quota reconciliation or a prior handoff; all adopted handles stay owned.
     pub(super) async fn recover(&mut self) -> io::Result<CompletedRecovery> {
         self.check_recovery_phase()?;
-        super::super::recovery::run(&self.custody, &mut self.adopted_inline).await
+        super::super::recovery::run(self).await
     }
 
     /// Retains the complete acknowledged or failed handoff before any reply.
