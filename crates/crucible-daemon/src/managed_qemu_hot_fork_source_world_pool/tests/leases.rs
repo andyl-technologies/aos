@@ -821,7 +821,7 @@ fn declared_multi_node_parent_park_refuses_before_pool_publication() {
     reason = "The authentic normal Main Source fixture remains unqualified."
 )]
 fn genuine_target_loan_preserves_the_same_pool_lease_until_target_cleanup(
-    source: ProductionVmHotForkSourceWorld,
+    mut source: ProductionVmHotForkSourceWorld,
     target_factory: &mut crate::ComposedQemuAttemptResourceGuardFactory<
         crate::SharedQemuAttemptHostResourceFactory<crate::LinuxQemuAttemptHostResourceFactory>,
     >,

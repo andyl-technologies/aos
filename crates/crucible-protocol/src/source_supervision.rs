@@ -4,7 +4,7 @@
 //! live[1504]: BE-u64 atomic sequence | payload[1496]
 //! sealed[1520]: file device(u64) | inode(u64) | extent=1504(u64) | initial payload
 //! payload header[232]:
-//!   0 magic CRUCSRV2; 8 schema2(u32); 12 length1496(u32)
+//!   0 magic CRUCSRV3; 8 schema3(u32); 12 length1496(u32)
 //!  16 supervisor cap[32]; 48 immutable monotonic origin(u64)
 //!  56 outer revision(u64); 64 allowance tag; 65 sticky state; 66 zero[6]
 //!  72 account generation(u64); 80 Source generation(u64)
@@ -81,8 +81,8 @@ pub fn decode_source_supervision_payload(
 ) -> Result<SourceSupervisionObservation, SourceSupervisionDecodeError> {
     let invalid = SourceSupervisionDecodeError;
     if bytes.len() != SOURCE_SUPERVISION_PAYLOAD_BYTES
-        || bytes[..8] != *b"CRUCSRV2"
-        || u32_at(bytes, 8) != Some(2)
+        || bytes[..8] != *b"CRUCSRV3"
+        || u32_at(bytes, 8) != Some(3)
         || u32_at(bytes, 12) != Some(1496)
         || bytes[64] > 1
         || bytes[65] > 3

@@ -56,6 +56,7 @@ extern "C" fn poll_register_result(
 #[path = "fault_command_test/event_backpressure.rs"]
 mod event_backpressure;
 
+#[path = "fault_command_test/negative_custody.rs"]
 mod negative_custody;
 use event_backpressure::{assert_event_ring_backpressure, assert_pump};
 

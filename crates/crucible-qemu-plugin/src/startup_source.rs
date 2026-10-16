@@ -206,7 +206,6 @@ impl InstallerStartupSource {
         self.accept_status((api.registration_complete)(self.plugin_id, 0))
     }
 
-    #[cfg(not(test))]
     pub(crate) fn retained_ram_error(error: StartupSourceError) -> crate::ram_error::RamError {
         match error {
             StartupSourceError::NativeStatus { status } => crate::ram_error::RamError::Native {

@@ -12,7 +12,7 @@ use crate::StartupSourceError;
 use std::cell::UnsafeCell;
 
 mod abi;
-use abi::{Api, Member, Reader, Receive, Status};
+use abi::{Api, Member, Reader, Receive, Status, Writer};
 
 /// Retains the same physical member/receive graph inside the paid pinned Runtime.
 pub(super) struct CommandReceive {
@@ -77,7 +77,7 @@ impl CommandReceive {
         }
     }
 
-    /// Enrolls the actual three-argument reader at the first nominal member birth.
+    /// Enrolls the reader and protected Park writer at first nominal member birth.
     ///
     /// # Safety
     /// This keeper is already inline in paid pinned Runtime. Component is a
@@ -90,12 +90,13 @@ impl CommandReceive {
         id: u64,
         component: *mut NativeComponent,
         reader: Reader,
+        writer: Writer,
     ) -> Result<(), StartupSourceError> {
         if self.member_attempted {
             return Err(status_error(-libc::EALREADY));
         }
         let api = Api::resolve()?;
-        self.enroll_using(id, component, reader, api)
+        self.enroll_using(id, component, reader, writer, api)
     }
 
     fn enroll_using(
@@ -103,6 +104,7 @@ impl CommandReceive {
         id: u64,
         component: *mut NativeComponent,
         reader: Reader,
+        writer: Writer,
         api: Api,
     ) -> Result<(), StartupSourceError> {
         if self.member_attempted {
@@ -112,7 +114,7 @@ impl CommandReceive {
         self.id = id;
         self.process = std::process::id();
         self.member_attempted = true;
-        let first = (api.member_create)(id, component, reader, &mut self.member_creation);
+        let first = (api.member_create)(id, component, reader, writer, &mut self.member_creation);
         self.member = self.member_creation;
         self.record(first);
         native_status(first)?;

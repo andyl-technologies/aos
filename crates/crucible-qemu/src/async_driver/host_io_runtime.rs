@@ -417,6 +417,52 @@ pub trait QemuHostIoRuntime: Send {
         ))
     }
 
+    /// Retains both actual Park lenders before importing any native request.
+    ///
+    /// # Errors
+    /// Refuses unavailable canonical Source or still-owned action custody.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn begin_parent_park_action(
+        &mut self,
+        _correlation: u64,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_protocol::boundary_action::ActionBinding, QemuAsyncDriverRuntimeError>
+    {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "retain parent Park action",
+            "runtime has no canonical paired Source publisher",
+        ))
+    }
+
+    /// Refreshes the same actual pair without beginning another operation.
+    ///
+    /// # Errors
+    /// Refuses absent membership or a dirty, terminal or changed live cohort.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn current_parent_park_action(
+        &self,
+    ) -> Result<crucible_protocol::boundary_action::ActionBinding, QemuAsyncDriverRuntimeError>
+    {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "observe parent Park action",
+            "runtime has no retained canonical paired action",
+        ))
+    }
+
+    /// Consumes only the same mapped native physical-return journal.
+    ///
+    /// # Errors
+    /// Refuses changed binding or physical/semantic uncertainty. An ACK or
+    /// local callback disposition cannot clear the retained pair.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn finish_parent_park_action(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "return parent Park action",
+            "runtime has no retained canonical paired action",
+        ))
+    }
+
     /// Clears a coordinated plugin pause while QEMU is already stopped.
     ///
     /// This operation must not wake the plugin's scheduler futex or main-loop

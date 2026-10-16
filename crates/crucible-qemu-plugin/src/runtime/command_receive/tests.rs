@@ -10,6 +10,9 @@ use std::cell::RefCell;
 #[derive(Default)]
 struct Cuts {
     creates: usize,
+    member_creates: usize,
+    member_create_status: i32,
+    writer_address: usize,
     member_transfer_status: i32,
     member_field: usize,
     member_returned_field: usize,
@@ -34,13 +37,18 @@ extern "C" fn member_create(
     _: u64,
     _: *mut NativeComponent,
     _: Reader,
+    writer: Writer,
     out: *mut *mut Member,
 ) -> i32 {
     // SAFETY: this fixture table receives one distinct live local output cell.
     unsafe {
         out.write(member());
     }
-    0
+    CUTS.with_borrow_mut(|cuts| {
+        cuts.member_creates += 1;
+        cuts.writer_address = writer as usize;
+        cuts.member_create_status
+    })
 }
 
 extern "C" fn member_transfer(_: u64, from: *mut *mut Member, to: *mut *mut Member) -> i32 {
@@ -67,6 +75,15 @@ extern "C" fn member_return(_: u64, field: *mut *mut Member) -> i32 {
 extern "C" fn reader(
     _: *mut ControlIntentFacts,
     _: *mut ReceiveProgress,
+    _: *mut std::ffi::c_void,
+) -> i32 {
+    -libc::ENOTSUP
+}
+
+extern "C" fn writer(
+    _: *const u8,
+    _: usize,
+    _: *mut super::super::live_callbacks::ParkReturnWriteProgress,
     _: *mut std::ffi::c_void,
 ) -> i32 {
     -libc::ENOTSUP
@@ -176,7 +193,7 @@ fn fixture() -> Box<CommandReceive> {
     // stable; no fixture pointer is admitted as genuine Source allocation.
     let mut keeper = Box::new(CommandReceive::new());
     keeper
-        .enroll_using(3, std::ptr::null_mut(), reader, api())
+        .enroll_using(3, std::ptr::null_mut(), reader, writer, api())
         .unwrap();
     keeper
 }
@@ -253,7 +270,7 @@ fn moved_destination_is_used_after_negative_transfer_without_foreign_field_read(
     let mut keeper = Box::new(CommandReceive::new());
 
     assert_eq!(
-        keeper.enroll_using(3, std::ptr::null_mut(), reader, api()),
+        keeper.enroll_using(3, std::ptr::null_mut(), reader, writer, api()),
         Err(status_error(-libc::EIO))
     );
     assert!(keeper.member_creation.is_null());
@@ -303,4 +320,33 @@ fn known_no_request_can_reenter_only_after_actual_identity_consumption() {
     assert_eq!(keeper.ready_facts().status, -libc::EAGAIN);
     assert_eq!(keeper.serial, 20);
     CUTS.with_borrow(|cuts| assert_eq!(cuts.creates, 2));
+}
+
+#[test]
+fn first_member_constructor_receives_the_exact_writer_before_negative_status() {
+    CUTS.with_borrow_mut(|cuts| {
+        *cuts = Cuts {
+            member_create_status: -libc::EAGAIN,
+            ..Cuts::default()
+        };
+    });
+    let mut keeper = CommandReceive::new();
+
+    let result = keeper.enroll_using(3, std::ptr::null_mut(), reader, writer, api());
+
+    assert!(result.is_err());
+    assert_eq!(keeper.member_creation, member());
+    assert_eq!(keeper.member, member());
+    assert!(keeper.member_attempted);
+    assert!(!keeper.member_transfer_attempted);
+    CUTS.with_borrow(|cuts| {
+        assert_eq!(cuts.member_creates, 1);
+        assert_eq!(cuts.writer_address, writer as usize);
+    });
+    assert!(
+        keeper
+            .enroll_using(3, std::ptr::null_mut(), reader, writer, api())
+            .is_err()
+    );
+    CUTS.with_borrow(|cuts| assert_eq!(cuts.member_creates, 1));
 }

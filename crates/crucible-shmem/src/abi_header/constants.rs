@@ -198,6 +198,7 @@ pub(super) fn emit_constants(out: &mut String) {
             ("PUBLISH_GEN", NODE_SLOT_PUBLISH_GEN_OFFSET),
             ("ACTION_HOLD", NODE_SLOT_ACTION_HOLD_OFFSET),
             ("ACTION_RETURN", NODE_SLOT_ACTION_RETURN_OFFSET),
+            ("PARK_RETURN", NODE_SLOT_PARK_RETURN_OFFSET),
             (
                 "CONTROL_BOUNDARY_ACK",
                 NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,

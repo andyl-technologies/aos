@@ -3,8 +3,165 @@
 use super::*;
 
 impl QemuLiveHostIoRuntime {
+    /// Publishes the actual two-lender Park cohort before descriptor transport.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(super) fn retain_parent_park_request(
+        &mut self,
+        correlation: u64,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_protocol::boundary_action::ActionBinding, QemuAsyncDriverRuntimeError>
+    {
+        if self.parent_park_action.is_some() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "retain parent Park action",
+                "a prior Park request still owns its physical lifetime",
+            ));
+        }
+        self.settle_previous_action()?;
+        let source = self.source_supervision.as_ref().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "retain parent Park action",
+                "actual standing Source publisher is unavailable",
+            )
+        })?;
+        let binding = source
+            .begin_parent_park_action(
+                self.region.as_ref().ok_or_else(region_missing)?,
+                self.vm_slot,
+                correlation,
+                actor,
+                family,
+            )
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "retain parent Park action",
+                    error,
+                )
+            })?;
+        // The actual publisher owns born memberships even when begin refuses.
+        // On success retain this selector before any later import or postcut.
+        self.parent_park_action = Some(binding);
+        self.observe_parent_park_request()
+    }
+
+    /// Recollects this same request without extending either original interval.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(super) fn observe_parent_park_request(
+        &self,
+    ) -> Result<crucible_protocol::boundary_action::ActionBinding, QemuAsyncDriverRuntimeError>
+    {
+        let binding = self.parent_park_action.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new("observe parent Park action", "pair absent")
+        })?;
+        self.source_supervision
+            .as_ref()
+            .ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new(
+                    "observe parent Park action",
+                    "actual standing Source publisher is unavailable",
+                )
+            })?
+            .check_parent_park_action(binding)
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "observe parent Park action",
+                    error,
+                )
+            })?;
+        Ok(binding)
+    }
+
+    /// Consumes only the actual mapped Park return, retaining negative custody.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(super) fn return_parent_park_request(
+        &mut self,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        let binding = self.parent_park_action.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new("return parent Park action", "pair absent")
+        })?;
+        let source = self.source_supervision.as_ref().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "return parent Park action",
+                "actual standing Source publisher is unavailable",
+            )
+        })?;
+        let mapping = self.region.as_ref().ok_or_else(region_missing)?;
+        let journal = source
+            .observe_action_return(mapping, self.vm_slot)
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "observe parent Park physical return",
+                    error,
+                )
+            })?;
+        let Some(journal) = journal else {
+            return Ok(false);
+        };
+        if journal.binding != binding {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "return parent Park action",
+                "another request's physical journal cannot retire this pair",
+            ));
+        }
+        let settled = source
+            .settle_action_from_mapping(mapping, self.vm_slot)
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "return canonical parent Park memberships",
+                    error,
+                )
+            })?;
+        let Some(settled) = settled else {
+            return Ok(false);
+        };
+        if settled.first < 0 || settled.post < 0 {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "return canonical parent Park memberships",
+                format!(
+                    "physical return retained first/post {}/{}",
+                    settled.first, settled.post,
+                ),
+            ));
+        }
+        self.parent_park_action = None;
+        Ok(true)
+    }
+
+    /// Enrolls both actual park producers before a tokenized Pause effect.
+    ///
+    /// An earlier action must have a physical return, independently of its
+    /// control acknowledgment. Born-negative membership stays Source-owned.
+    pub(super) fn lend_paired_pause_action(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+    ) -> Result<
+        Option<crucible_protocol::boundary_action::ActionBinding>,
+        QemuAsyncDriverRuntimeError,
+    > {
+        if !deadline.is_paired_quiescence() {
+            return Ok(None);
+        }
+        self.settle_previous_action()?;
+        let binding = self.lend_control_action(deadline, None)?;
+        if binding.is_none() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "lend paired Pause action",
+                "actual two-producer Source publication is unavailable",
+            ));
+        }
+        Ok(binding)
+    }
+
     /// Cleans old identity-only debt before a fresh producing operation enters.
     pub(super) fn settle_previous_action(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if self.parent_park_action.is_some() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "return previous action",
+                "the typed Park owner still retains this request lifetime",
+            ));
+        }
         let Some(source) = self.source_supervision.as_ref() else {
             return Ok(());
         };
@@ -104,6 +261,13 @@ impl QemuLiveHostIoRuntime {
 
     /// Observes physical close independently from both application ACK cuts.
     pub(super) fn finish_control_action(&self) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if self.parent_park_action.is_some() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "return control action",
+                "a control return cannot consume the retained Park request",
+            ));
+        }
         let Some(source) = &self.source_supervision else {
             return Ok(true);
         };
@@ -139,7 +303,8 @@ pub(super) fn validate_control_action_request(
     loan: Option<crucible_protocol::boundary_action::ActionBinding>,
 ) -> Result<(), QemuAsyncDriverRuntimeError> {
     if loan.is_some_and(|loan| {
-        request.generation != loan.token
+        loan.park_request.is_some()
+            || request.generation != loan.token
             || request.fault_command_frontier != loan.frontier
             || request.fingerprint_capture_request != loan.capture
     }) {

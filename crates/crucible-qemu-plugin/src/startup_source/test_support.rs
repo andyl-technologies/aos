@@ -41,7 +41,7 @@ impl InstallerStartupSourceModel {
         self.setup.is_some()
     }
 
-    pub(crate) const fn refused_acquisition() -> Self {
+    pub(crate) fn refused_acquisition() -> Self {
         Self {
             api: NativeStartupApi {
                 acquire: refuse,
@@ -136,7 +136,7 @@ pub(super) extern "C" fn reserve_control(
     requests: *const super::control_purpose::Request,
     output: *mut *mut super::control_purpose::ControlPurpose,
 ) -> i32 {
-    assert!(!requests.is_null() && !output.is_null() && !claim.is_null() && !child_claim.is_null());
+    assert!(!requests.is_null() && !output.is_null());
     // SAFETY: the shared reservation adapter lends its actual fixed seven rows
     // and writable holder output throughout this synchronous private model call.
     let requests = unsafe { std::slice::from_raw_parts(requests, 7) };
@@ -170,7 +170,7 @@ pub(super) extern "C" fn reserve_runtime(
     claim: *mut *mut super::runtime_purpose::CommandClaim,
     child_claim: *mut *mut super::runtime_purpose::CallbackChildClaim,
 ) -> i32 {
-    assert!(!requests.is_null() && !output.is_null() && !claim.is_null());
+    assert!(!requests.is_null() && !output.is_null() && !claim.is_null() && !child_claim.is_null());
     assert!(count > 0 && count <= crate::runtime::prebirth::MAX_RUNTIME_ALLOCATIONS);
     // SAFETY: the same adapter supplies the full initialized configured span.
     // These layout facts and the model token confer no native resource credit.

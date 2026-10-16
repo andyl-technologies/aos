@@ -602,8 +602,15 @@ mod failure_tests {
         };
         assert!(std::ptr::eq(borrowed, retained));
 
+        let cap = [1_u8; 32];
+        let reservation = [2_u8; 32];
         let receipt: QmpParentParkDrainReceipt = serde_json::from_value(serde_json::json!({
-            "schema-version": 1,
+            "schema-version": 2,
+            "source-action": {
+                "cap": cap, "reservation": reservation,
+                "account-generation": 1, "process-generation": 1,
+                "loan-sequence": 2, "frontier": 7,
+            },
             "action": "acquire",
             "request-correlation": 7,
             "generation": 11,

@@ -46,6 +46,8 @@ pub(super) fn emit_node_slot(out: &mut String) {
     out.push_str("    _Atomic uint64_t boundary_action_hold;\n");
     out.push_str("    _Atomic uint64_t boundary_action_return[24];\n");
     out.push_str("    uint8_t pad5[56];\n");
+    out.push_str("    _Atomic uint64_t parent_park_return[24];\n");
+    out.push_str("    uint8_t pad6[64];\n");
     out.push_str("} crucible_shmem_node_slot;\n\n");
 
     emit_static_asserts(
@@ -127,6 +129,7 @@ pub(super) fn emit_node_slot(out: &mut String) {
             ("pad4", "PAD4"),
             ("boundary_action_hold", "ACTION_HOLD"),
             ("boundary_action_return", "ACTION_RETURN"),
+            ("parent_park_return", "PARK_RETURN"),
         ],
     );
 }

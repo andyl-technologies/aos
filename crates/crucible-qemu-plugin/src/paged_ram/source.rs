@@ -85,7 +85,7 @@ impl ObservationOperationError {
         }
     }
 
-    pub(super) fn into_io(self) -> io::Error {
+    pub(crate) fn into_io(self) -> io::Error {
         match self {
             Self::Io(error) => error,
             Self::Static { kind, message } => io::Error::new(kind, message),
@@ -199,6 +199,7 @@ pub(crate) trait SourceOperationFactory: Send + Sync {
 ///
 /// Ordinary reads retain their historical I/O diagnostics. Root-scratch reads
 /// move a logical cause directly into the existing operational failure owner.
+#[derive(Debug)]
 pub(super) enum SourceFetchError {
     // Spill-lock and counter failures keep their original owner error projection.
     Owner(crate::ram_error::RamError),

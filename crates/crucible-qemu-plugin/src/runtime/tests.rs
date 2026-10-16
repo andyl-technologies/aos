@@ -72,41 +72,47 @@ extern "C" fn record_control_worker_shutdown(failure: i32) {
 }
 
 #[test]
-fn callback_teardown_route_moves_to_the_replacement_child_worker() {
-    let (template_sender, template_receiver) = mpsc::channel();
-    let router = LiveRuntimeTeardownRouter::new(template_sender);
-    let callback_route = Arc::clone(&router);
+fn callback_teardown_routes_keep_independent_parent_and_child_latches() {
+    let (parent_router, parent_consumer) = LiveRuntimeTeardownRouter::owned();
+    let callback_route = Arc::clone(&parent_router);
 
     callback_route
         .send(LiveRuntimeTeardownTrigger::RunControlFault {
             diagnostic: String::from("template"),
         })
-        .unwrap_or_else(|()| panic!("template route should remain connected"));
+        .unwrap_or_else(|()| panic!("parent route should remain connected"));
     assert!(matches!(
-        template_receiver.recv(),
+        parent_consumer.receive_trigger(),
         Ok(LiveRuntimeTeardownTrigger::RunControlFault { diagnostic })
             if diagnostic == "template"
     ));
 
-    let (child_sender, child_receiver) = mpsc::channel();
-    router
-        .replace(child_sender)
-        .unwrap_or_else(|()| panic!("quiescent route replacement should succeed"));
-    assert!(matches!(
-        template_receiver.try_recv(),
-        Err(mpsc::TryRecvError::Disconnected)
-    ));
+    // Independent worker custody requires its own latch. These local owners
+    // do not reconstruct or retarget the parent's registered child callbacks.
+    let (child_router, child_consumer) = LiveRuntimeTeardownRouter::owned();
+    let child_callback_route = Arc::clone(&child_router);
 
-    callback_route
+    child_callback_route
         .send(LiveRuntimeTeardownTrigger::RunControlFault {
             diagnostic: String::from("child"),
         })
-        .unwrap_or_else(|()| panic!("retained callback route should reach child worker"));
+        .unwrap_or_else(|()| panic!("child route should reach its own consumer"));
     assert!(matches!(
-        child_receiver.recv(),
+        child_consumer.receive_trigger(),
         Ok(LiveRuntimeTeardownTrigger::RunControlFault { diagnostic })
             if diagnostic == "child"
     ));
+    assert!(parent_consumer.receive_trigger().is_err());
+    assert!(child_consumer.receive_trigger().is_err());
+
+    drop(parent_consumer);
+    assert!(
+        callback_route
+            .send(LiveRuntimeTeardownTrigger::RunControlFault {
+                diagnostic: String::from("closed parent"),
+            })
+            .is_err()
+    );
 }
 
 #[test]
@@ -1052,7 +1058,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
 
     assert_eq!(runtime.plugin_id(), 41);
     assert_eq!(runtime.args().slot(), 0);
-    assert!(runtime._retained_control.is_some());
+    assert!(runtime.resources._retained_control.is_some());
     let manifest = registered_resource_manifest()
         .unwrap_or_else(|| panic!("plugin resource manifest should be sealed before readiness"));
     let (device, inode, length, node_count, control_fd, _sender_wake_fd) =
@@ -1322,6 +1328,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(released.pending_worker_mask, 0);
     assert_eq!(released.worker_operations_in_flight, 0);
     let teardown_handle = runtime
+        .resources
         ._callbacks
         .control_teardown_handle(0)
         .unwrap_or_else(|error| panic!("control teardown handle should validate: {error}"));

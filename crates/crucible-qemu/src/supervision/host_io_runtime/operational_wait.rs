@@ -18,6 +18,15 @@ pub(crate) enum OperationPollBudget<'a> {
 }
 
 impl<'a> OperationPollBudget<'a> {
+    /// Identifies the retained two-producer park path without creating a guard.
+    pub(crate) fn is_paired_quiescence(&self) -> bool {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if matches!(self, Self::BorrowedPair(_, _)) {
+            return true;
+        }
+        false
+    }
+
     /// Borrows the actual producing guard set, preserving every class and clock.
     pub(crate) fn action_producers(
         &self,

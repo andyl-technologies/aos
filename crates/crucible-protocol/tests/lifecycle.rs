@@ -274,7 +274,7 @@ fn restored_child_run_stream_accepts_only_the_terminal_run_frame() -> Result<(),
 
 #[cfg(unix)]
 #[test]
-fn plugin_setup_io_is_bounded_to_setup_and_rejected_during_run() -> Result<(), Box<dyn Error>> {
+fn plugin_transport_borrows_follow_setup_and_run_lifecycle() -> Result<(), Box<dyn Error>> {
     let (peer_socket, plugin_socket) = UnixStream::pair()?;
     let mut connected = ControlLifecycleStream::connected_unix_stream(plugin_socket)?;
     assert!(matches!(
@@ -290,6 +290,7 @@ fn plugin_setup_io_is_bounded_to_setup_and_rejected_during_run() -> Result<(), B
 
     let (mut peer_socket, plugin_socket) = UnixStream::pair()?;
     let mut setup = plugin_setup_lifecycle_stream(plugin_socket, &mut peer_socket)?;
+    assert!(setup.plugin_run_io_mut().is_err());
     setup.plugin_setup_io_mut()?.write_all(&[])?;
     setup.plugin_send_ready_setup_ack()?;
     let _ = read_control_frame(&mut peer_socket)?;
@@ -300,6 +301,27 @@ fn plugin_setup_io_is_bounded_to_setup_and_rejected_during_run() -> Result<(), B
             source: ControlLifecycleError::UnexpectedEvent {
                 state: ControlLifecycleState::RunningViaSharedMemory,
                 event: ControlLifecycleEvent::HostSetup,
+            },
+        })
+    ));
+
+    let _transport = setup.plugin_run_io_mut()?;
+    peer_socket.set_nonblocking(true)?;
+    assert_eq!(
+        peer_socket.read(&mut [0_u8; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    peer_socket.set_nonblocking(false)?;
+    assert_eq!(setup.state(), ControlLifecycleState::RunningViaSharedMemory);
+
+    peer_socket.write_all(&control_encode_host_msg(&HostMsg::Quit))?;
+    setup.plugin_read_run_control_frame()?;
+    assert!(matches!(
+        setup.plugin_run_io_mut(),
+        Err(ControlLifecycleIoError::Lifecycle {
+            source: ControlLifecycleError::UnexpectedEvent {
+                state: ControlLifecycleState::QuitSent,
+                event: ControlLifecycleEvent::RunViaSharedMemory,
             },
         })
     ));

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 use super::super::control_component::NativeComponent;
-use super::super::live_callbacks::{ControlIntentFacts, ReceiveProgress};
+use super::super::live_callbacks::{ControlIntentFacts, ParkReturnWriteProgress, ReceiveProgress};
 use crate::StartupSourceError;
 use std::ffi::c_void;
 
@@ -21,6 +21,10 @@ pub(super) struct Receive {
 /// Matches the distinct first-bound bounded-reader callback signature.
 pub(super) type Reader =
     extern "C" fn(*mut ControlIntentFacts, *mut ReceiveProgress, *mut c_void) -> i32;
+
+/// Matches the first-bound Source-produced Park journal writer callback.
+pub(super) type Writer =
+    extern "C" fn(*const u8, usize, *mut ParkReturnWriteProgress, *mut c_void) -> i32;
 
 /// Copies Source's actual callback and validation dispositions.
 #[repr(C)]
@@ -42,7 +46,7 @@ pub(super) struct Status {
 #[derive(Clone, Copy)]
 pub(super) struct Api {
     pub(super) member_create:
-        extern "C" fn(u64, *mut NativeComponent, Reader, *mut *mut Member) -> i32,
+        extern "C" fn(u64, *mut NativeComponent, Reader, Writer, *mut *mut Member) -> i32,
     pub(super) member_transfer: extern "C" fn(u64, *mut *mut Member, *mut *mut Member) -> i32,
     pub(super) member_current: extern "C" fn(u64, *mut Member) -> i32,
     pub(super) member_return: extern "C" fn(u64, *mut *mut Member) -> i32,
@@ -84,8 +88,8 @@ impl Api {
         }
         Ok(Self {
             member_create: entry!(
-                c"qemu_plugin_crucible_startup_source_command_member_create_v1",
-                extern "C" fn(u64, *mut NativeComponent, Reader, *mut *mut Member) -> i32
+                c"qemu_plugin_crucible_startup_source_command_member_create_v2",
+                extern "C" fn(u64, *mut NativeComponent, Reader, Writer, *mut *mut Member) -> i32
             ),
             member_transfer: entry!(
                 c"qemu_plugin_crucible_startup_source_command_member_transfer_v1",

@@ -61,6 +61,7 @@ mod doorbell_marker;
 mod golden_vectors;
 pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
+pub mod parent_park_return;
 mod plugin_observation;
 pub mod plugin_setup_plan;
 mod preemption;

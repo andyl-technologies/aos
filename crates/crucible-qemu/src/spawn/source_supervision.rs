@@ -306,8 +306,8 @@ impl SourcePublisher {
             })
             .transpose()?;
         let mut payload = [0; SOURCE_PAYLOAD_BYTES];
-        payload[..8].copy_from_slice(b"CRUCSRV2");
-        payload[8..12].copy_from_slice(&2_u32.to_be_bytes());
+        payload[..8].copy_from_slice(b"CRUCSRV3");
+        payload[8..12].copy_from_slice(&3_u32.to_be_bytes());
         payload[12..16].copy_from_slice(&(SOURCE_PAYLOAD_BYTES as u32).to_be_bytes());
         payload[16..48].copy_from_slice(&snapshot.outer.cap_id);
         payload[64] = u8::from(allowance.is_some());

@@ -1,4 +1,4 @@
-//! Owns the distinct action-return seqlock and Host command-frontier exclusion.
+//! Owns separate control/Park return journals and Host frontier exclusion.
 //!
 //! Native writes the return journal only under its actual retained writable
 //! setup-mapping loan. The standing Source publication remains read-only.
@@ -6,6 +6,9 @@
 
 use super::*;
 use crucible_protocol::boundary_action::{ACTION_RETURN_BYTES, ActionDecodeError, ActionReturn};
+use crucible_protocol::parent_park_return::{PARENT_PARK_RETURN_BYTES, ParentParkReturn};
+
+const _: () = assert!(PARENT_PARK_RETURN_BYTES == ACTION_RETURN_BYTES);
 
 impl NodeSlot {
     /// Observes the next existing token without publishing or ringing a wake.
@@ -38,6 +41,7 @@ impl NodeSlot {
             Ok(token.wrapping_add(1))
         }
     }
+
     /// Reserves the actual single-producer frontier through physical return.
     ///
     /// # Errors
@@ -81,8 +85,46 @@ impl NodeSlot {
         expected_sequence: u64,
         journal: ActionReturn,
     ) -> Result<u64, ActionDecodeError> {
-        let bytes = journal.encode()?;
-        if self.boundary_action_hold.load(Ordering::Acquire) != journal.binding.loan_sequence {
+        if journal.binding.park_request.is_some() {
+            return Err(ActionDecodeError);
+        }
+        self.publish_return(
+            &self.boundary_action_return,
+            expected_sequence,
+            journal.binding.loan_sequence,
+            &journal.encode()?,
+        )
+    }
+
+    /// Publishes Park bytes only through the distinct protected MODULE journal.
+    ///
+    /// The actual setup/module owner must separately lend the writer role.
+    /// This atomic byte accessor does not issue that role or physical return.
+    ///
+    /// # Errors
+    /// Refuses control records, invalid syntax, a stale writer sequence or a
+    /// different retained Host request.
+    pub fn publish_parent_park_return(
+        &self,
+        expected_sequence: u64,
+        journal: ParentParkReturn,
+    ) -> Result<u64, ActionDecodeError> {
+        self.publish_return(
+            &self.parent_park_return,
+            expected_sequence,
+            journal.binding.loan_sequence,
+            &journal.encode().map_err(|_| ActionDecodeError)?,
+        )
+    }
+
+    fn publish_return(
+        &self,
+        words: &[AtomicU64; 24],
+        expected_sequence: u64,
+        loan_sequence: u64,
+        bytes: &[u8; ACTION_RETURN_BYTES],
+    ) -> Result<u64, ActionDecodeError> {
+        if self.boundary_action_hold.load(Ordering::Acquire) != loan_sequence {
             return Err(ActionDecodeError);
         }
         let sequence = expected_sequence
@@ -92,7 +134,7 @@ impl NodeSlot {
         if expected_sequence & 1 != 0 {
             return Err(ActionDecodeError);
         }
-        self.boundary_action_return[0]
+        words[0]
             .compare_exchange(
                 expected_sequence.to_be(),
                 (sequence - 1).to_be(),
@@ -100,15 +142,12 @@ impl NodeSlot {
                 Ordering::SeqCst,
             )
             .map_err(|_| ActionDecodeError)?;
-        for (word, bytes) in self.boundary_action_return[1..]
-            .iter()
-            .zip(bytes.chunks_exact(8))
-        {
+        for (word, bytes) in words[1..].iter().zip(bytes.chunks_exact(8)) {
             let mut value = [0; 8];
             value.copy_from_slice(bytes);
             word.store(u64::from_be_bytes(value).to_be(), Ordering::SeqCst);
         }
-        self.boundary_action_return[0]
+        words[0]
             .compare_exchange(
                 (sequence - 1).to_be(),
                 sequence.to_be(),
@@ -125,7 +164,29 @@ impl NodeSlot {
     /// Refuses invalidation or malformed bytes. A concurrent writer yields
     /// `None`; the caller retries only under its real retained operation.
     pub fn observe_action_return(&self) -> Result<Option<ActionReturn>, ActionDecodeError> {
-        let before = u64::from_be(self.boundary_action_return[0].load(Ordering::SeqCst));
+        self.observe_return(&self.boundary_action_return)?
+            .map(|bytes| ActionReturn::decode(&bytes))
+            .transpose()
+    }
+
+    /// Reads the independent protected MODULE Park journal without retrying.
+    ///
+    /// # Errors
+    /// Refuses invalidation, malformed records or the control return variant.
+    /// A concurrent publication yields `None` and never acknowledges a request.
+    pub fn observe_parent_park_return(
+        &self,
+    ) -> Result<Option<ParentParkReturn>, ActionDecodeError> {
+        self.observe_return(&self.parent_park_return)?
+            .map(|bytes| ParentParkReturn::decode(&bytes).map_err(|_| ActionDecodeError))
+            .transpose()
+    }
+
+    fn observe_return(
+        &self,
+        words: &[AtomicU64; 24],
+    ) -> Result<Option<[u8; ACTION_RETURN_BYTES]>, ActionDecodeError> {
+        let before = u64::from_be(words[0].load(Ordering::SeqCst));
         if before == u64::MAX {
             return Err(ActionDecodeError);
         }
@@ -133,15 +194,12 @@ impl NodeSlot {
             return Ok(None);
         }
         let mut bytes = [0; ACTION_RETURN_BYTES];
-        for (target, word) in bytes
-            .chunks_exact_mut(8)
-            .zip(self.boundary_action_return[1..].iter())
-        {
+        for (target, word) in bytes.chunks_exact_mut(8).zip(words[1..].iter()) {
             target.copy_from_slice(&u64::from_be(word.load(Ordering::SeqCst)).to_be_bytes());
         }
-        if u64::from_be(self.boundary_action_return[0].load(Ordering::SeqCst)) != before {
+        if u64::from_be(words[0].load(Ordering::SeqCst)) != before {
             return Ok(None);
         }
-        ActionReturn::decode(&bytes).map(Some)
+        Ok(Some(bytes))
     }
 }

@@ -36,7 +36,7 @@ use std::{
 
 #[test]
 fn node_slot_layout_matches_wire_contract() {
-    assert_eq!(NODE_SLOT_SIZE, 512);
+    assert_eq!(NODE_SLOT_SIZE, 768);
     assert_eq!(NODE_SLOT_ALIGN, 128);
     assert_eq!(NODE_SLOT_CURRENT_ICOUNT_OFFSET, 0);
     assert_eq!(NODE_SLOT_CURRENT_NS_OFFSET, 8);

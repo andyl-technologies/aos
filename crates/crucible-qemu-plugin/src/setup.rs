@@ -1291,8 +1291,8 @@ pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
         purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
     }
     let mut standing = [0_u8; 1496];
-    standing[..8].copy_from_slice(b"CRUCSRV2");
-    standing[8..12].copy_from_slice(&2_u32.to_be_bytes());
+    standing[..8].copy_from_slice(b"CRUCSRV3");
+    standing[8..12].copy_from_slice(&3_u32.to_be_bytes());
     standing[12..16].copy_from_slice(&1496_u32.to_be_bytes());
     standing[16..48].copy_from_slice(&purpose[184..216]);
     standing[88..120].copy_from_slice(&purpose[184..216]);

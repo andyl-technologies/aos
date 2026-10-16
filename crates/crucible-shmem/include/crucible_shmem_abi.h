@@ -16,7 +16,7 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 32u
+#define CRUCIBLE_SHMEM_ABI_VERSION 33u
 #define CRUCIBLE_SHMEM_TICKS_PER_NS 1000u
 #define CRUCIBLE_SHMEM_TICKS_PER_INSTRUCTION 50u
 #define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_CEILING 0u
@@ -77,7 +77,7 @@
 #define CRUCIBLE_SHMEM_REGION_HEADER_RESERVED_OFFSET 68u
 #define CRUCIBLE_SHMEM_REGION_HEADER_RESERVED_LEN 188u
 
-#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 512u
+#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 768u
 #define CRUCIBLE_SHMEM_NODE_SLOT_ALIGN 128u
 #define CRUCIBLE_SHMEM_NODE_SLOT_CURRENT_ICOUNT_OFFSET 0u
 #define CRUCIBLE_SHMEM_NODE_SLOT_CURRENT_NS_OFFSET 8u
@@ -91,6 +91,7 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_PUBLISH_GEN_OFFSET 40u
 #define CRUCIBLE_SHMEM_NODE_SLOT_ACTION_HOLD_OFFSET 256u
 #define CRUCIBLE_SHMEM_NODE_SLOT_ACTION_RETURN_OFFSET 264u
+#define CRUCIBLE_SHMEM_NODE_SLOT_PARK_RETURN_OFFSET 512u
 #define CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET 44u
 #define CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET 48u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_TICK_OFFSET 56u
@@ -265,6 +266,8 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint64_t boundary_action_hold;
     _Atomic uint64_t boundary_action_return[24];
     uint8_t pad5[56];
+    _Atomic uint64_t parent_park_return[24];
+    uint8_t pad6[64];
 } crucible_shmem_node_slot;
 
 CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_node_slot) == CRUCIBLE_SHMEM_NODE_SLOT_SIZE, "crucible_shmem_node_slot size");
@@ -310,6 +313,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, advance_publicat
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad4) == CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET, "crucible_shmem_node_slot.pad4 offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, boundary_action_hold) == CRUCIBLE_SHMEM_NODE_SLOT_ACTION_HOLD_OFFSET, "crucible_shmem_node_slot.boundary_action_hold offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, boundary_action_return) == CRUCIBLE_SHMEM_NODE_SLOT_ACTION_RETURN_OFFSET, "crucible_shmem_node_slot.boundary_action_return offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, parent_park_return) == CRUCIBLE_SHMEM_NODE_SLOT_PARK_RETURN_OFFSET, "crucible_shmem_node_slot.parent_park_return offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_ring_header {
     _Atomic uint64_t read_idx;

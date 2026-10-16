@@ -170,7 +170,7 @@ struct PageState {
 /// Owns admitted full-peak arenas and retains fault authority through failures.
 pub(crate) struct PausedPagingOwner {
     resources: PluginRamResources,
-    operations: Arc<dyn SourceOperationFactory>,
+    pub(in crate::paged_ram) operations: Arc<dyn SourceOperationFactory>,
     counters: Arc<PagingCounters>,
     active: Arc<Mutex<Option<Arc<FaultService>>>>,
     preparing: AtomicBool,

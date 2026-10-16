@@ -115,11 +115,31 @@ impl QemuNode {
         family: &crucible_linux_resource::host_supervision::HostOperationGuard,
     ) -> Result<crate::QmpParentParkDrainReceipt, crate::QmpError> {
         use crate::qmp::parent_park_drain::ParentParkDrainRequest;
+        let source_action = self
+            .host_io_runtime
+            .begin_parent_park_action(correlation, actor, family)
+            .map_err(|error| crate::QmpError::OperationalSupervision {
+                operation: "retain canonical parent Park request",
+                message: error.to_string(),
+            })?;
         self.channels
             .qmp_machine_control
             .parent_park_import(imports, actor, family)?;
+        let current = self
+            .host_io_runtime
+            .current_parent_park_action()
+            .map_err(|error| crate::QmpError::OperationalSupervision {
+                operation: "recheck canonical parent Park request after imports",
+                message: error.to_string(),
+            })?;
+        if current != source_action {
+            return Err(crate::QmpError::InvalidBound {
+                operation: "parent Park canonical request changed during imports",
+            });
+        }
         self.channels.qmp_machine_control.parent_park_command(
             ParentParkDrainRequest::Acquire {
+                source_action,
                 correlation,
                 stopped,
                 basis: &imports.basis_name,
@@ -138,21 +158,69 @@ impl QemuNode {
         family: &crucible_linux_resource::host_supervision::HostOperationGuard,
     ) -> Result<crate::QmpParentParkDrainReceipt, crate::QmpError> {
         use crate::qmp::parent_park_drain::ParentParkDrainRequest;
+        let source_action = self
+            .host_io_runtime
+            .current_parent_park_action()
+            .map_err(|error| crate::QmpError::OperationalSupervision {
+                operation: "observe canonical parent Park request",
+                message: error.to_string(),
+            })?;
         let request = if relinquish {
             ParentParkDrainRequest::Relinquish {
+                source_action,
                 correlation: retained.request_correlation,
                 stopped: retained.stopped_generation,
                 generation: retained.generation,
             }
         } else {
             ParentParkDrainRequest::Query {
+                source_action,
                 correlation: retained.request_correlation,
                 stopped: retained.stopped_generation,
                 generation: retained.generation,
             }
         };
-        self.channels
+        let receipt = self
+            .channels
             .qmp_machine_control
-            .parent_park_command(request, actor, family)
+            .parent_park_command(request, actor, family)?;
+        if relinquish
+            && receipt.state == crate::QmpParentParkDrainState::Relinquished
+            && !receipt.retained
+        {
+            // A QMP reply or callback-local release is not physical return.
+            // Consume only this Source's actual mapped Park journal; both
+            // entered originals and all native borrower debt remain held here.
+            loop {
+                // Physical identity-only settlement is safe after cancellation;
+                // it starts no work and cannot renew either original. The
+                // enclosing phase still records both independent raw posts.
+                if self
+                    .host_io_runtime
+                    .finish_parent_park_action()
+                    .map_err(|error| crate::QmpError::OperationalSupervision {
+                        operation: "return canonical parent Park request",
+                        message: error.to_string(),
+                    })?
+                {
+                    break;
+                }
+                let actor_before = actor.check_original_quiescence_cancellation();
+                let family_before = family.check_original_quiescence_cancellation();
+                actor_before.and(family_before).map_err(|error| {
+                    crate::QmpError::OperationalSupervision {
+                        operation: "return canonical parent Park request",
+                        message: error.to_string(),
+                    }
+                })?;
+                actor
+                    .wait_for_quiescence_change_with(family)
+                    .map_err(|error| crate::QmpError::OperationalSupervision {
+                        operation: "wait for parent Park physical return",
+                        message: error.to_string(),
+                    })?;
+            }
+        }
+        Ok(receipt)
     }
 }

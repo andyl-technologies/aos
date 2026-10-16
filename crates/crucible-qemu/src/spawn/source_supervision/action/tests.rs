@@ -16,6 +16,7 @@ fn current() -> PendingAction {
                 loan_sequence: 2,
                 token: 0,
                 capture: Some(1),
+                park_request: None,
                 frontier: 7,
             },
             primary_count: 2,

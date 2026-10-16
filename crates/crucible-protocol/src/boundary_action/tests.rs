@@ -14,6 +14,7 @@ fn binding() -> ActionBinding {
         loan_sequence: 2,
         token: 0,
         capture: Some(1),
+        park_request: None,
         frontier: 9,
     }
 }
@@ -32,6 +33,72 @@ fn parent(class: u32, role: u32) -> ActionParent {
         required: 1,
         ..ActionParent::default()
     }
+}
+
+fn park_action() -> ActionObservation {
+    let mut request = binding();
+    request.capture = None;
+    request.park_request = Some(9);
+    let mut parents = [ActionParent::default(); 4];
+    parents[0] = parent(6, 0);
+    parents[1] = parent(6, 0);
+    parents[1].operation += 1;
+    ActionObservation {
+        binding: request,
+        primary_count: 2,
+        row_count: 2,
+        borrowed_mask: 3,
+        projected_mask: 3,
+        cohort_current: true,
+        parents,
+    }
+}
+
+#[test]
+fn park_has_a_distinct_request_lifetime_without_a_control_token() {
+    let action = park_action();
+    let bytes = action.encode().unwrap();
+
+    assert_eq!(&bytes[..8], b"CRUCPRK1");
+    assert_eq!(get64(&bytes, 96), 9);
+    assert_eq!(ActionObservation::decode(&bytes).unwrap(), action);
+    assert_eq!(action.binding.token, 0);
+    assert_eq!(action.binding.capture, None);
+
+    let mut invalid = action;
+    invalid.binding.token = 2;
+    assert!(invalid.encode().is_err());
+    invalid = action;
+    invalid.binding.park_request = Some(0);
+    assert!(invalid.encode().is_err());
+    invalid = action;
+    invalid.parents[1] = invalid.parents[0];
+    assert!(invalid.encode().is_err());
+    invalid = action;
+    invalid.parents[1].class = 7;
+    assert!(invalid.encode().is_err());
+}
+
+#[test]
+fn park_physical_return_cannot_settle_a_control_binding() {
+    let action = park_action();
+    let returned = ActionReturn {
+        binding: action.binding,
+        first: -5,
+        post: -110,
+        physical_state: 1,
+        returned_mask: 3,
+        borrowed_mask: 3,
+        row_count: 2,
+        progress_kind: 0,
+        progress_row: 0,
+        progress_ns: 0,
+        progress_witness: 0,
+    };
+    assert!(returned.encode().is_err());
+    let mut old_wire = [0; ACTION_RETURN_BYTES];
+    header(&mut old_wire, *b"CRUCPRR1", action.binding);
+    assert!(ActionReturn::decode(&old_wire).is_err());
 }
 
 #[test]

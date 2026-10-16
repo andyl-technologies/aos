@@ -918,7 +918,7 @@ impl QemuHotForkChildProcessOwner for LinuxQemuAttemptHostResourceOwner {
 }
 
 mod generation_resource;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
 pub(crate) use generation_resource::ProcessStageContractRefusal;
 
 pub use generation_resource::*;
