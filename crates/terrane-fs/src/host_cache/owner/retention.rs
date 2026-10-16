@@ -235,24 +235,44 @@ impl NativeMetadataOwner {
     /// # Errors
     /// Refuses a full or stopped queue, foreign or stale completion, repeated
     /// handoff, or failed/uncertain transport. Failures retain recovery custody.
-    pub async fn resume_recovered(&self, completed: super::CompletedRecovery) -> io::Result<()> {
-        let (response, receive) = oneshot::channel();
-        self.commands
-            .as_ref()
-            .ok_or_else(|| io::Error::other("metadata owner stopped"))?
-            .try_send(Command::Resume {
+    pub async fn resume_recovered(
+        &self,
+        completed: super::CompletedRecovery,
+    ) -> Result<(), super::NativeResumeError> {
+        use super::NativeResumeError;
+        let Some(commands) = self.commands.as_ref() else {
+            return Err(NativeResumeError::Unsubmitted {
+                error: io::Error::other("metadata owner stopped"),
                 completed,
-                response,
-            })
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => {
-                    io::Error::new(io::ErrorKind::WouldBlock, "metadata owner queue is full")
-                }
-                mpsc::TrySendError::Disconnected(_) => io::Error::other("metadata owner stopped"),
-            })?;
+            });
+        };
+        let (response, receive) = oneshot::channel();
+        if let Err(error) = commands.try_send(Command::Resume {
+            completed,
+            response,
+        }) {
+            let (kind, command) = match error {
+                mpsc::TrySendError::Full(command) => (io::ErrorKind::WouldBlock, command),
+                mpsc::TrySendError::Disconnected(command) => (io::ErrorKind::BrokenPipe, command),
+            };
+            let Command::Resume { completed, .. } = command else {
+                return Err(NativeResumeError::Accepted(io::Error::other(
+                    "unexpected owner command",
+                )));
+            };
+            return Err(NativeResumeError::Unsubmitted {
+                error: io::Error::new(kind, "Resume was not submitted to the owner"),
+                completed,
+            });
+        }
         receive
             .await
-            .map_err(|_| io::Error::other("metadata owner terminated before Resume completion"))?
+            .map_err(|_| {
+                NativeResumeError::Accepted(io::Error::other(
+                    "metadata owner terminated before Resume completion",
+                ))
+            })?
+            .map_err(NativeResumeError::Accepted)
     }
 
     /// Retains verified reconstruction metadata before any dependent publication.

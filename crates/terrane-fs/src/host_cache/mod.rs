@@ -28,7 +28,7 @@ pub(crate) use owner::PublisherResumeTurn;
 #[cfg(feature = "tokio")]
 pub use owner::{
     CompletedRecovery, IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation,
-    NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest,
+    NativeIndexRepairReport, NativeMetadataOwner, NativeResumeError, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
