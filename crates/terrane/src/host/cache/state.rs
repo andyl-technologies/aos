@@ -11,7 +11,7 @@
 //! Manifests, indexes, queues and tree nodes never enter this snapshot. Sealed
 //! reads do not access this module. Publication owns its separate verity state.
 
-use crate::store::{LocalFs, StoreErrorKind, StoreFailure};
+use crate::store::{ByteRange, LocalFs, StoreErrorKind, StoreFailure};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path};
 
@@ -176,8 +176,23 @@ impl CacheState {
         {
             return Err(capacity());
         }
-        let bytes = fs.read_nofollow(&path).await.map_err(io_failure)?;
-        if bytes.len() > limits.bytes {
+        // A file growing after the size check must not cause an unbounded
+        // allocation before the closing identity check can reject it.
+        let bytes = fs
+            .read_range(
+                &path,
+                ByteRange {
+                    offset: 0,
+                    length: metadata.len(),
+                },
+            )
+            .await
+            .map_err(io_failure)?;
+        let after = fs.symlink_metadata(&path).await.map_err(io_failure)?;
+        if bytes.len() as u64 != metadata.len()
+            || bytes.len() > limits.bytes
+            || !super::readonly::same_file(&metadata, &after)
+        {
             return Err(capacity());
         }
         let text = std::str::from_utf8(&bytes).map_err(|_| capacity())?;

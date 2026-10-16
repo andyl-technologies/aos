@@ -838,7 +838,7 @@ fn directory_identity(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
 }
 
 #[cfg(unix)]
-fn same_file(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+pub(super) fn same_file(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     before.dev() == after.dev()
         && before.ino() == after.ino()
@@ -852,7 +852,7 @@ fn same_file(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(not(unix))]
-fn same_file(_before: &std::fs::Metadata, _after: &std::fs::Metadata) -> bool {
+pub(super) fn same_file(_before: &std::fs::Metadata, _after: &std::fs::Metadata) -> bool {
     false
 }
 
