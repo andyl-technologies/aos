@@ -292,15 +292,34 @@ lineage compatibility, installer ownership and refusals, publication failures,
 and retained Oracle/actor inputs. Source and executable checks remain exact
 after each group.
 
-The added native Clock case remains ignored pending genuine enrollment. The two
-previously failing constructor controls await the separately reviewed lifetime
-accounting fix. No current application test-target, native Capture or complete
-restoration success is inferred from these component results.
+The added native Clock case remains ignored pending genuine enrollment. At that
+checkpoint, the two previously failing constructor controls still require the
+lifetime-accounting work below. No current application test-target, native
+Capture or complete restoration success is inferred from these component results.
 
 Shared campaign APIs now use neutral replay-closure and fingerprint-bound names.
 The lineage authoring key is `backend_build_identity`; legacy `qemu_build` remains
 accepted, and conflicting dual values refuse before output creation. Persisted
 lineage bytes and implementation-specific QEMU adapters are unchanged.
+
+### Native startup allocation lifetimes
+
+The lifetime-accounting stage through `43221c35a0` separates retained Value and
+typed-object backing from temporary decoding, validation and canonicalization
+work. Independent retained copies remain summed; only sequential temporary
+phases share their maximum. The native Hello path reuses its already normalized
+typed claims after checking correspondence and the existing authority guards.
+Retained serialization backing is also checked before materializing output.
+
+Normal six-crate, all-feature/all-target checking and three normal library-test
+producers pass for the complete 6,087-file source. Nine selected storage and
+handshake controls pass. Both unchanged Host SDK constructor controls still
+fail with `ResourceLimit` during native-startup fixture finalization, before
+their exact-budget and one-byte-short assertions. Their existing 768 MiB setup
+policy, assertions and separate negative controls are unchanged. The precise
+refusing row remains under investigation; these results do not qualify full
+native construction or restoration. An earlier type-check failure remains
+recorded separately from the corrected passing build.
 
 The next runtime work must also resolve Fresh launch chronology. The current
 Fresh-selected receive window requires Query before the ordinary Arm path can
