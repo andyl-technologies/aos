@@ -155,6 +155,7 @@ pub struct CompleteOriginalRestorationWindow {
     policy: OriginalRestorationConstructionPolicy,
     stage: Cell<WindowStage>,
     phase_in_flight: Cell<bool>,
+    whole_observation: observation::OriginalRestorationWholeObservation,
     cold_requested_peak: usize,
     transaction_requested_peak: Cell<Option<usize>>,
     observed_other_retained: Cell<Option<usize>>,
@@ -218,6 +219,8 @@ impl InstalledConformancePlan {
             PacketCompleteSemanticSource::original_restoration_signer_construction_counter_scratch_data(),
             CompleteOriginalRestorationWindow::continuation_counter_scratch_data(),
             size_of::<dispatch::RestorationDispatchAttempt<'static>>(),
+            size_of::<observation::OriginalRestorationWholeObservation>(),
+            size_of::<Result<(), RuntimeError>>(),
         ], usize::MAX)
     }
 
@@ -316,6 +319,7 @@ impl InstalledConformancePlan {
             policy,
             stage: Cell::new(WindowStage::ColdAdmitted),
             phase_in_flight: Cell::new(false),
+            whole_observation: observation::OriginalRestorationWholeObservation::new_pending(),
             cold_requested_peak: requested,
             transaction_requested_peak: Cell::new(None),
             observed_other_retained: Cell::new(None),
@@ -532,6 +536,7 @@ impl CompleteOriginalRestorationWindow {
         // Future rows remain funded in requested. Constructors separately add
         // their own future row to this actual current owning observation.
         self.observed_other_retained.set(Some(current));
+        self.whole_observation.complete_observation();
         self.stage.set(WindowStage::TransactionAdmitted);
         Ok(())
     }
@@ -687,6 +692,9 @@ impl CompleteOriginalRestorationWindow {
         {
             return Err(RuntimeError::ForeignAuthority);
         }
+        // Even a retained partial binding changes the live coexistence bank.
+        // Only the actual full observer may clear this transition boundary.
+        self.whole_observation.require_observation();
         let complete = self
             .targets
             .get(selected)
@@ -987,6 +995,10 @@ impl CompleteOriginalRestorationWindow {
         activation: &ActivationRecord,
     ) -> Result<usize, RuntimeError> {
         self.origin()?;
+        if self.phase_in_flight.get() {
+            self.stage.set(WindowStage::Failed);
+            return Err(RuntimeError::OutstandingObligations);
+        }
         if self.stage.replace(WindowStage::TransactionChecking) != WindowStage::TransactionAdmitted
         {
             self.stage.set(WindowStage::Failed);
@@ -1053,3 +1065,6 @@ impl CompleteOriginalRestorationWindow {
 #[path = "window/continuation.rs"]
 mod continuation;
 pub use continuation::OriginalRestorationNodeContinuationInspection;
+
+#[path = "window/observation.rs"]
+mod observation;

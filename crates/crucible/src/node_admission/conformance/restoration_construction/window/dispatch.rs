@@ -31,6 +31,7 @@ impl<'a> RestorationDispatchAttempt<'a> {
     ) -> Result<Self, RuntimeError> {
         window.origin()?;
         if window.stage.get() != WindowStage::TransactionAdmitted
+            || window.whole_observation.authenticate_dispatch_data().is_err()
             || window.phase_in_flight.replace(true)
         {
             window.stage.set(WindowStage::Failed);
@@ -43,6 +44,9 @@ impl<'a> RestorationDispatchAttempt<'a> {
     }
 
     pub(super) fn complete(mut self) {
+        // Group success retains new actual owners. Receipt verification alone
+        // cannot authorize the next phase without the complete owning walk.
+        self.window.whole_observation.require_observation();
         self.completed = true;
     }
 }
