@@ -7,7 +7,10 @@
 //! not all filesystem metadata or every private publisher inode; authenticated
 //! charged-and-reserved quota usage remains a distinct full-owner observation.
 
-use super::{recovery_namespace::SharedNamespaceObservation, retention::Custody};
+use super::{
+    recovery_namespace::SharedNamespaceObservation, recovery_state_parent::StateParentObservation,
+    retention::Custody,
+};
 use rustix::fs::{Mode, OFlags, openat, syncfs};
 use std::{collections::BTreeMap, fs::File, io, os::unix::fs::MetadataExt};
 
@@ -32,6 +35,7 @@ pub(super) struct SynchronizedAllocation {
 pub(super) fn observe(
     owner: &Custody,
     shared: &SharedNamespaceObservation,
+    state_parent: &StateParentObservation,
 ) -> io::Result<SynchronizedAllocation> {
     owner.check_current()?;
     let layout = owner.preparation.layout();
@@ -60,6 +64,9 @@ pub(super) fn observe(
     }
     measure(&owner.directory, &mut measured)?;
     for file in shared.retained_inodes() {
+        measure(file, &mut measured)?;
+    }
+    for file in state_parent.retained_inodes() {
         measure(file, &mut measured)?;
     }
     measure(owner.preparation.probe_handle(), &mut measured)?;
