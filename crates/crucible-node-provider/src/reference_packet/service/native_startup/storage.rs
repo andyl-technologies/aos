@@ -576,5 +576,12 @@ pub(super) fn hello_frame_work_data(
 pub(in crate::reference_packet::service) fn original_private_launch_backing_data(
     launch: &PacketNative5SourceLaunch,
 ) -> Result<usize, ProviderError> {
-    metadata_backing(launch)
+    let facts = crate::retained_metadata::observe_retained_native_launch(launch)?;
+    sum(
+        &[
+            size_of::<PacketNative5SourceLaunch>(),
+            requested_metadata_backing_storage_data(&facts)?,
+        ],
+        usize::MAX,
+    )
 }
