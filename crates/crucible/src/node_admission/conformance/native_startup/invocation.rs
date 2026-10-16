@@ -145,10 +145,14 @@ impl InstalledConformancePlan {
                 );
             }
             if let Some(overlap) = baseline.quotes[index].rows.retained_overlap {
-                baseline.quotes[index].rows.retained_overlap = Some(overlap
-                    .with_additional_retained_requested_bytes_data(data.private_retained_requested_bytes(),
-                        data.native_retained_requested_bytes())
-                    .map_err(|_| RuntimeError::ResourceLimit)?);
+                baseline.quotes[index].rows.retained_overlap = Some(
+                    overlap
+                        .with_additional_retained_requested_bytes_data(
+                            data.private_retained_requested_bytes(),
+                            data.native_retained_requested_bytes(),
+                        )
+                        .map_err(|_| RuntimeError::ResourceLimit)?,
+                );
             }
             let after = baseline.quotes[index]
                 .rows

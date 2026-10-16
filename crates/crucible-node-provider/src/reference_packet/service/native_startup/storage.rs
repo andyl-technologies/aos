@@ -85,8 +85,10 @@ impl PacketNativeBirthStartupStorageData {
     /// # Errors
     /// Refuses another creator, typed launch/private identity or complete raw
     /// original. This DATA grants no rights and never discounts another Source.
-    pub fn authenticated_retained_overlap_data(&self, input: &PacketNativeBirthStartupInputs<'_>)
-        -> Result<PacketNativeBirthRetainedOverlapData, ProviderError> {
+    pub fn authenticated_retained_overlap_data(
+        &self,
+        input: &PacketNativeBirthStartupInputs<'_>,
+    ) -> Result<PacketNativeBirthRetainedOverlapData, ProviderError> {
         self.retained_overlap.authenticate_inputs_data(input)?;
         Ok(self.retained_overlap)
     }
@@ -458,9 +460,18 @@ fn birth_storage_with_source(
     // Both standalone rows stay complete. Only their proven intersection is
     // carried separately to the host's joint census; no wire row is rewritten.
     let shared_private = private.shared_retained_owner_data(input, maximum)?;
-    let retained_overlap = PacketNativeBirthRetainedOverlapData::new(input, shared_private,
-        [input.encoded_launch.len(), source_backing, registration_backing],
-        private.retained, retained, maximum)?;
+    let retained_overlap = PacketNativeBirthRetainedOverlapData::new(
+        input,
+        shared_private,
+        [
+            input.encoded_launch.len(),
+            source_backing,
+            registration_backing,
+        ],
+        private.retained,
+        retained,
+        maximum,
+    )?;
     Ok(PacketNativeBirthStartupStorageData {
         retained_requested_bytes: retained,
         maximum_simultaneous_transient_bytes,

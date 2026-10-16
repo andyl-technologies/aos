@@ -384,7 +384,8 @@ impl PacketCompleteSemanticSource {
             Some(row(data.retained_growth_bytes(),data.maximum_simultaneous_transient_bytes(),
                 data.declared_counter_scratch_bytes())?)
         }else{None};
-        let retained_overlap = native.authenticated_retained_overlap_data(&input)
+        let retained_overlap = native
+            .authenticated_retained_overlap_data(&input)
             .map_err(|_| RuntimeError::ForeignAuthority)?;
         let rows = NativeStartupRows {
             private_bootstrap,

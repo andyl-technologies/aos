@@ -136,9 +136,11 @@ impl NativeStartupRows {
         let mut retained = 0;
         let mut phase = 0;
         let native_retained = match self.retained_overlap {
-            Some(overlap) => overlap.additional_native_retained_requested_bytes_data(
-                extent(self.private_bootstrap.retained_requested_bytes.get())?,
-                extent(self.native_birth.retained_requested_bytes.get())?)
+            Some(overlap) => overlap
+                .additional_native_retained_requested_bytes_data(
+                    extent(self.private_bootstrap.retained_requested_bytes.get())?,
+                    extent(self.native_birth.retained_requested_bytes.get())?,
+                )
                 .map_err(|_| RuntimeError::ForeignAuthority)?,
             None => extent(self.native_birth.retained_requested_bytes.get())?,
         };
@@ -147,7 +149,9 @@ impl NativeStartupRows {
             (Some(self.native_birth), Some(native_retained)),
             (self.restore_prepare, None),
         ] {
-            let Some(row) = row else { continue; };
+            let Some(row) = row else {
+                continue;
+            };
             row.requested_peak_data()
                 .map_err(|_| RuntimeError::ResourceLimit)?;
             retained = add(
@@ -714,7 +718,6 @@ fn sum(values: &[usize], maximum: usize) -> Result<usize, RuntimeError> {
 mod invocation;
 pub use invocation::CompleteOriginalNativeInvocationAdmission;
 
-
 #[cfg(test)]
 mod retained_overlap_tests {
     use super::*;
@@ -727,8 +730,10 @@ mod retained_overlap_tests {
             declared_counter_scratch_bytes: crucible_node_contract::U64::new(scratch),
         };
         let rows = NativeStartupRows {
-            private_bootstrap: row(10, 3, 2), native_birth: row(20, 6, 2),
-            restore_prepare: Some(row(5, 2, 1)), retained_overlap: None,
+            private_bootstrap: row(10, 3, 2),
+            native_birth: row(20, 6, 2),
+            restore_prepare: Some(row(5, 2, 1)),
+            retained_overlap: None,
         };
         assert_eq!(rows.peak(43).unwrap(), 43);
         assert!(rows.peak(42).is_err());

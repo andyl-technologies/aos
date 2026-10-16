@@ -39,11 +39,19 @@ impl PacketNativeBirthRetainedOverlapData {
             return Err(refused());
         }
         Ok(Self {
-            process: std::process::id(), thread: std::thread::current().id(),
-            launch: input.launch, private_launch: input.private_launch,
+            process: std::process::id(),
+            thread: std::thread::current().id(),
+            launch: input.launch,
+            private_launch: input.private_launch,
             inputs: input_fingerprint(input),
-            input_lengths: [input.encoded_launch.len(), input.source_birth.len(), input.host_registration.len()],
-            private_retained, native_retained, overlap,
+            input_lengths: [
+                input.encoded_launch.len(),
+                input.source_birth.len(),
+                input.host_registration.len(),
+            ],
+            private_retained,
+            native_retained,
+            overlap,
         })
     }
 
@@ -52,17 +60,35 @@ impl PacketNativeBirthRetainedOverlapData {
         input: &PacketNativeBirthStartupInputs<'_>,
     ) -> Result<(), ProviderError> {
         self.origin()?;
-        let lengths = [input.encoded_launch.len(), input.source_birth.len(), input.host_registration.len()];
-        if self.input_lengths != lengths { return Err(refused()); }
-        self.authenticate_input_parts(input.launch, input.private_launch, lengths, input_fingerprint(input))
+        let lengths = [
+            input.encoded_launch.len(),
+            input.source_birth.len(),
+            input.host_registration.len(),
+        ];
+        if self.input_lengths != lengths {
+            return Err(refused());
+        }
+        self.authenticate_input_parts(
+            input.launch,
+            input.private_launch,
+            lengths,
+            input_fingerprint(input),
+        )
     }
 
-    fn authenticate_input_parts(&self, launch: *const PacketNative5SourceLaunch,
-        private_launch: *const crucible_node_contract::Id, lengths: [usize; 3], digest: blake3::Hash,
+    fn authenticate_input_parts(
+        &self,
+        launch: *const PacketNative5SourceLaunch,
+        private_launch: *const crucible_node_contract::Id,
+        lengths: [usize; 3],
+        digest: blake3::Hash,
     ) -> Result<(), ProviderError> {
         self.origin()?;
-        if self.launch != launch || self.private_launch != private_launch
-            || self.input_lengths != lengths || self.inputs != digest {
+        if self.launch != launch
+            || self.private_launch != private_launch
+            || self.input_lengths != lengths
+            || self.inputs != digest
+        {
             return Err(refused());
         }
         Ok(())
@@ -74,14 +100,20 @@ impl PacketNativeBirthRetainedOverlapData {
     /// Refuses a different process/thread or complete row pair, invalid
     /// intersection or checked subtraction. Standalone row values are unchanged.
     pub fn additional_native_retained_requested_bytes_data(
-        &self, private_retained: usize, native_retained: usize,
+        &self,
+        private_retained: usize,
+        native_retained: usize,
     ) -> Result<usize, ProviderError> {
         self.origin()?;
-        if private_retained != self.private_retained || native_retained != self.native_retained
-            || self.overlap > private_retained {
+        if private_retained != self.private_retained
+            || native_retained != self.native_retained
+            || self.overlap > private_retained
+        {
             return Err(refused());
         }
-        native_retained.checked_sub(self.overlap).ok_or_else(refused)
+        native_retained
+            .checked_sub(self.overlap)
+            .ok_or_else(refused)
     }
 
     /// Preserves the baseline intersection while adding independent row owners.
@@ -92,12 +124,20 @@ impl PacketNativeBirthRetainedOverlapData {
     /// # Errors
     /// Refuses a different process/thread or checked full-row overflow.
     pub fn with_additional_retained_requested_bytes_data(
-        self, private_added: usize, native_added: usize,
+        self,
+        private_added: usize,
+        native_added: usize,
     ) -> Result<Self, ProviderError> {
         self.origin()?;
         Ok(Self {
-            private_retained: self.private_retained.checked_add(private_added).ok_or_else(refused)?,
-            native_retained: self.native_retained.checked_add(native_added).ok_or_else(refused)?,
+            private_retained: self
+                .private_retained
+                .checked_add(private_added)
+                .ok_or_else(refused)?,
+            native_retained: self
+                .native_retained
+                .checked_add(native_added)
+                .ok_or_else(refused)?,
             ..self
         })
     }
@@ -110,16 +150,32 @@ impl PacketNativeBirthRetainedOverlapData {
     }
 }
 
-fn intersection(private: [usize; 3], native: [usize; 3], maximum: usize) -> Result<usize, ProviderError> {
+fn intersection(
+    private: [usize; 3],
+    native: [usize; 3],
+    maximum: usize,
+) -> Result<usize, ProviderError> {
     // The positions name exactly launch_bytes, boot.source_birth, registration.
     // In particular min(4*n+256,n) is n: the canonical spare is not removed.
-    sum(&[private[0].min(native[0]), private[1].min(native[1]), private[2].min(native[2])], maximum)
+    sum(
+        &[
+            private[0].min(native[0]),
+            private[1].min(native[1]),
+            private[2].min(native[2]),
+        ],
+        maximum,
+    )
 }
 
 fn input_fingerprint(input: &PacketNativeBirthStartupInputs<'_>) -> blake3::Hash {
-    let mut hash = blake3::Hasher::new_derive_key("source-owned.native-birth-retained-intersection/1");
-    for bytes in [input.private_launch.as_str().as_bytes(), input.encoded_launch,
-        input.source_birth, input.host_registration] {
+    let mut hash =
+        blake3::Hasher::new_derive_key("source-owned.native-birth-retained-intersection/1");
+    for bytes in [
+        input.private_launch.as_str().as_bytes(),
+        input.encoded_launch,
+        input.source_birth,
+        input.host_registration,
+    ] {
         hash.update(&(bytes.len() as u64).to_le_bytes());
         hash.update(bytes);
     }
@@ -153,32 +209,90 @@ mod tests {
         // This private DATA fixture has no genuine input witness and cannot
         // authenticate a Source or native member. It tests row arithmetic only.
         PacketNativeBirthRetainedOverlapData {
-            process: std::process::id(), thread: std::thread::current().id(),
-            launch: std::ptr::null(), private_launch: std::ptr::null(),
-            inputs: blake3::hash(b"inert row arithmetic"), input_lengths: [0; 3],
-            private_retained: 1000, native_retained: 800, overlap: 300,
+            process: std::process::id(),
+            thread: std::thread::current().id(),
+            launch: std::ptr::null(),
+            private_launch: std::ptr::null(),
+            inputs: blake3::hash(b"inert row arithmetic"),
+            input_lengths: [0; 3],
+            private_retained: 1000,
+            native_retained: 800,
+            overlap: 300,
         }
     }
 
     #[test]
     fn actual_joint_row_authentication_refuses_foreign_rows_and_keeps_invocation_additive() {
         let rows = inert_rows();
-        assert_eq!(rows.additional_native_retained_requested_bytes_data(1000, 800).unwrap(), 500);
-        rows.authenticate_input_parts(rows.launch, rows.private_launch, rows.input_lengths, rows.inputs).unwrap();
-        assert!(rows.authenticate_input_parts(rows.launch, rows.private_launch, [1, 0, 0], rows.inputs).is_err());
-        assert!(rows.authenticate_input_parts(rows.launch, rows.private_launch, rows.input_lengths, blake3::hash(b"foreign original")).is_err());
+        assert_eq!(
+            rows.additional_native_retained_requested_bytes_data(1000, 800)
+                .unwrap(),
+            500
+        );
+        rows.authenticate_input_parts(
+            rows.launch,
+            rows.private_launch,
+            rows.input_lengths,
+            rows.inputs,
+        )
+        .unwrap();
+        assert!(
+            rows.authenticate_input_parts(rows.launch, rows.private_launch, [1, 0, 0], rows.inputs)
+                .is_err()
+        );
+        assert!(
+            rows.authenticate_input_parts(
+                rows.launch,
+                rows.private_launch,
+                rows.input_lengths,
+                blake3::hash(b"foreign original")
+            )
+            .is_err()
+        );
         let foreign_cookie = 1u8;
-        assert!(rows.authenticate_input_parts(std::ptr::from_ref(&foreign_cookie).cast(), rows.private_launch, rows.input_lengths, rows.inputs).is_err());
-        assert!(rows.additional_native_retained_requested_bytes_data(999, 800).is_err());
-        assert!(rows.additional_native_retained_requested_bytes_data(1000, 799).is_err());
-        let added = rows.with_additional_retained_requested_bytes_data(41, 59).unwrap();
-        assert_eq!(added.additional_native_retained_requested_bytes_data(1041, 859).unwrap(), 559);
-        assert!(added.additional_native_retained_requested_bytes_data(1000, 800).is_err());
+        assert!(
+            rows.authenticate_input_parts(
+                std::ptr::from_ref(&foreign_cookie).cast(),
+                rows.private_launch,
+                rows.input_lengths,
+                rows.inputs
+            )
+            .is_err()
+        );
+        assert!(
+            rows.additional_native_retained_requested_bytes_data(999, 800)
+                .is_err()
+        );
+        assert!(
+            rows.additional_native_retained_requested_bytes_data(1000, 799)
+                .is_err()
+        );
+        let added = rows
+            .with_additional_retained_requested_bytes_data(41, 59)
+            .unwrap();
+        assert_eq!(
+            added
+                .additional_native_retained_requested_bytes_data(1041, 859)
+                .unwrap(),
+            559
+        );
+        assert!(
+            added
+                .additional_native_retained_requested_bytes_data(1000, 800)
+                .is_err()
+        );
         assert_eq!(added.overlap, rows.overlap);
-        assert!(rows.with_additional_retained_requested_bytes_data(usize::MAX, 0).is_err());
+        assert!(
+            rows.with_additional_retained_requested_bytes_data(usize::MAX, 0)
+                .is_err()
+        );
         let mut foreign = rows;
         foreign.process ^= 1;
-        assert!(foreign.additional_native_retained_requested_bytes_data(1000, 800).is_err());
+        assert!(
+            foreign
+                .additional_native_retained_requested_bytes_data(1000, 800)
+                .is_err()
+        );
     }
 
     #[test]
@@ -187,7 +301,12 @@ mod tests {
         let private_launch = 4 * length + 256;
         let source = 240usize;
         let registration = 120usize;
-        let common = intersection([private_launch, source, registration], [length, source, registration], usize::MAX).unwrap();
+        let common = intersection(
+            [private_launch, source, registration],
+            [length, source, registration],
+            usize::MAX,
+        )
+        .unwrap();
         assert_eq!(common, length + source + registration);
         let private = private_launch + source + registration + 17;
         let independent_native = length + 2 * source + 2 * registration + 31;
@@ -195,7 +314,21 @@ mod tests {
         let union = private + native - common;
         assert_eq!(union, private + independent_native);
         assert!(union >= private && union >= native);
-        assert!(intersection([private_launch, source, registration], [length, source, registration], common).is_ok());
-        assert!(intersection([private_launch, source, registration], [length, source, registration], common - 1).is_err());
+        assert!(
+            intersection(
+                [private_launch, source, registration],
+                [length, source, registration],
+                common
+            )
+            .is_ok()
+        );
+        assert!(
+            intersection(
+                [private_launch, source, registration],
+                [length, source, registration],
+                common - 1
+            )
+            .is_err()
+        );
     }
 }
