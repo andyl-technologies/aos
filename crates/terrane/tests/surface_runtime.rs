@@ -182,3 +182,184 @@ async fn prepared_snapshots_recheck_current_authority_before_startup() -> TestRe
     assert!(!fixture.parent.join("second").exists());
     Ok(())
 }
+
+#[tokio::test]
+async fn sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs() -> TestResult {
+    use std::os::unix::fs::MetadataExt;
+    use terrane::repository::PreparedTree;
+    use terrane_core::{
+        cbor,
+        tree_builder::Tree,
+        tree_format::{self, Attribute, ExtendedAttribute, LeafItem, Property, TreeUse},
+    };
+
+    let fixture = Fixture::new().await?;
+    let old = fixture.commit_bytes(OLD).await?;
+    let metadata = fixture
+        .repository
+        .validate_view_schema(
+            &View::parse(MAIN)?,
+            fixture.authority.token(),
+            "sdk",
+            &TreeSchema::default(),
+        )
+        .await?;
+    let source_metadata = std::fs::metadata(fixture.parent.join("source/file"))?;
+    let mut uid = Vec::new();
+    let mut gid = Vec::new();
+    cbor::write_uint(&mut uid, u64::from(source_metadata.uid()));
+    cbor::write_uint(&mut gid, u64::from(source_metadata.gid()));
+    let mut entry =
+        tree_format::decode_entry_bytes(&metadata.entries[0].1, metadata.minimum_chunk_size)?;
+    entry.attrs = vec![
+        Attribute {
+            name: "gid",
+            value: &gid,
+        },
+        Attribute {
+            name: "uid",
+            value: &uid,
+        },
+    ];
+    entry.attrs_present = true;
+    entry.xattrs = vec![
+        ExtendedAttribute {
+            name: b"security.test",
+            value: b"must stay hidden",
+        },
+        ExtendedAttribute {
+            name: b"system.test",
+            value: b"must stay hidden",
+        },
+        ExtendedAttribute {
+            name: b"trusted.test",
+            value: b"must stay hidden",
+        },
+        ExtendedAttribute {
+            name: b"user.note",
+            value: b"visible bytes",
+        },
+    ];
+    entry.xattrs_present = true;
+    let mut domain = Vec::new();
+    cbor::write_text(&mut domain, "private:owner");
+    let mut acl = Vec::new();
+    cbor::write_array(&mut acl, 1);
+    cbor::write_array(&mut acl, 2);
+    cbor::write_text(&mut acl, "owner");
+    cbor::write_uint(&mut acl, 31);
+    let tree = Tree::build(
+        vec![
+            LeafItem {
+                key: b"file".to_vec(),
+                entry,
+            },
+            LeafItem {
+                key: b"link".to_vec(),
+                entry: tree_format::Entry {
+                    kind: tree_format::EntryKind::Symlink { target: b"file" },
+                    attrs: Vec::new(),
+                    attrs_present: false,
+                    xattrs: Vec::new(),
+                    xattrs_present: false,
+                    provenance: None,
+                },
+            },
+        ],
+        Some(vec![
+            Property {
+                name: "acl",
+                value: &acl,
+            },
+            Property {
+                name: "domain",
+                value: &domain,
+            },
+            Property {
+                name: "durability",
+                value: b"\x65local",
+            },
+        ]),
+        metadata.minimum_chunk_size,
+        TreeUse::Ordinary,
+    )?;
+    let staged = PreparedTree::from_tree(&tree)?;
+    let mut session = fixture
+        .repository
+        .begin(MAIN, fixture.authority.token(), "sdk")
+        .await?;
+    let mut request = fixture.repository.source_request(
+        &fixture.authority,
+        fixture::metadata("Publish inode presentation fixture"),
+    );
+    request.commit.tree = staged.root();
+    request.commit.parents = vec![old];
+    fixture
+        .repository
+        .commit(&mut session, staged, request)
+        .await?;
+
+    let serving = fixture
+        .repository
+        .realize(View::parse(MAIN)?, fixture.hints("presentation"))
+        .await?;
+    let output = fixture.parent.join("presentation/file");
+    let presented = std::fs::symlink_metadata(&output)?;
+    assert_eq!(presented.uid(), source_metadata.uid());
+    assert_eq!(presented.gid(), source_metadata.gid());
+    assert_eq!((presented.mtime(), presented.mtime_nsec()), (0, 0));
+    assert_eq!((presented.atime(), presented.atime_nsec()), (0, 0));
+    let link = std::fs::symlink_metadata(fixture.parent.join("presentation/link"))?;
+    assert!(link.file_type().is_symlink());
+    assert_eq!((link.mtime(), link.mtime_nsec()), (0, 0));
+    assert_eq!(
+        std::fs::read_link(fixture.parent.join("presentation/link"))?,
+        std::path::Path::new("file")
+    );
+    let root = std::fs::symlink_metadata(fixture.parent.join("presentation"))?;
+    assert_eq!((root.mtime(), root.mtime_nsec()), (0, 0));
+    let names = xattr::list(&output)?.collect::<Vec<_>>();
+    assert!(names.contains(&std::ffi::OsString::from("user.note")));
+    for hidden in ["security.test", "system.test", "trusted.test"] {
+        assert!(!names.contains(&std::ffi::OsString::from(hidden)));
+    }
+    assert_eq!(
+        xattr::get(&output, "user.note")?.as_deref(),
+        Some(b"visible bytes".as_slice())
+    );
+    serving.stop()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn readonly_sdk_refuses_writer_mode_before_any_endpoint_or_mutation() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let old = fixture.commit_bytes(OLD).await?;
+    let config = Config::parse(&configuration(&fixture))?;
+    let mut exposures = config.exposures().to_vec();
+    exposures[0].writer = Some(terrane::surface::WriterMode::Sync);
+    let resolver = Resolver {
+        token: fixture.authority.token().to_vec(),
+        deny_second: false,
+    };
+
+    assert!(
+        PreparedExposures::prepare(&fixture.repository, &exposures, &resolver)
+            .await
+            .is_err()
+    );
+    assert!(!fixture.parent.join("first").exists());
+    assert_eq!(
+        fixture
+            .repository
+            .read_file(
+                &View::parse(MAIN)?,
+                b"file",
+                fixture.authority.token(),
+                "sdk"
+            )
+            .await?,
+        (old, OLD.to_vec())
+    );
+    Ok(())
+}

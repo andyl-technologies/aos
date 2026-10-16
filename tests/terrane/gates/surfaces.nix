@@ -22,6 +22,11 @@ in {
     ${runTests "surface_runtime" ["preparation_refuses_entire_list_before_any_endpoint_starts" "prepared_snapshots_recheck_current_authority_before_startup"]}
     printf 'PASS: compiled registry, exposure contract and atomic preparation\n' > "$out/result"
   '';
+  surface-commit-path = sourceGate "surface-commit-path" ''
+    cd crates
+    ${runTests "surface_runtime" ["readonly_sdk_refuses_writer_mode_before_any_endpoint_or_mutation"]}
+    printf 'PASS: T2 read-only SDK refuses every configured write path; writable surfaces remain unavailable\n' > "$out/result"
+  '';
   surface-schema = sourceGate "surface-schema" ''
     cd crates
     ${runTests "surface_contract" ["metadata_schema_checks_root_types_properties_and_forbidden_paths" "schemas_check_entry_kinds_attributes_root_and_forbidden_matches"]}
@@ -39,7 +44,7 @@ in {
   '';
   surface-status = sourceGate "surface-status" ''
     cd crates
-    ${runTests "surface_runtime" ["prepared_snapshots_keep_validated_commit_and_report_complete_status"]}
+    ${runTests "surface_runtime" ["prepared_snapshots_keep_validated_commit_and_report_complete_status" "sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs"]}
     ${runTests "local_sdk" ["lifecycle::sdk_checkout_public_api_lifecycle_preserves_completed_directory"]}
     printf 'PASS: pinned SDK identity, status and monotonic lifecycle\n' > "$out/result"
   '';

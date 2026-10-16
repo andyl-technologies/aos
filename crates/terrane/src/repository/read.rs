@@ -47,7 +47,8 @@ pub(crate) struct ReadView {
 pub(crate) struct PreparedView {
     snapshot: AuthorizedSnapshot,
     entries: Vec<ReadEntry>,
-    metadata: crate::surface::ViewMetadata,
+    commit: Digest,
+    minimum: u64,
 }
 
 impl<S, C, F> Repository<S, C, F>
@@ -72,9 +73,9 @@ where
         schema: &crate::surface::TreeSchema,
     ) -> Result<crate::surface::ViewMetadata, Error> {
         Ok(self
-            .prepare_view_schema(view, token, surface, schema)
+            .prepare_schema_metadata(view, token, surface, schema)
             .await?
-            .metadata)
+            .1)
     }
 
     /// Retains the original authority binding alongside the validated commit.
@@ -85,6 +86,20 @@ where
         surface: &str,
         schema: &crate::surface::TreeSchema,
     ) -> Result<PreparedView, Error> {
+        Ok(self
+            .prepare_schema_metadata(view, token, surface, schema)
+            .await?
+            .0)
+    }
+
+    /// Builds the public projection while retaining private authority separately.
+    async fn prepare_schema_metadata(
+        &self,
+        view: &View,
+        token: &[u8],
+        surface: &str,
+        schema: &crate::surface::TreeSchema,
+    ) -> Result<(PreparedView, crate::surface::ViewMetadata), Error> {
         let (snapshot, entries) = self.metadata(view, token, surface).await?;
         let minimum = self.chunk_profile().minimum() as u64;
         let mut path = b"/".to_vec();
@@ -167,11 +182,15 @@ where
         drop(effective);
         drop(layers);
         drop(occurrences);
-        Ok(PreparedView {
-            snapshot,
-            entries,
+        Ok((
+            PreparedView {
+                commit: metadata.commit,
+                minimum: metadata.minimum_chunk_size,
+                snapshot,
+                entries,
+            },
             metadata,
-        })
+        ))
     }
 
     /// Reads one authenticated file under the view's current authority.
@@ -277,7 +296,8 @@ where
         let PreparedView {
             snapshot,
             mut entries,
-            metadata,
+            commit,
+            minimum,
         } = prepared;
         let guard = self.coordinator.guard();
         for item in &entries {
@@ -286,8 +306,7 @@ where
         }
         for item in &mut entries {
             let full_path = absolute_path(&snapshot.scope, &item.key);
-            let entry =
-                tree_format::decode_entry_bytes(&item.encoded, metadata.minimum_chunk_size)?;
+            let entry = tree_format::decode_entry_bytes(&item.encoded, minimum)?;
             if let EntryKind::File { content, size, .. } = entry.kind {
                 item.plaintext = Some(
                     guard
@@ -301,8 +320,8 @@ where
             .authorize_snapshot_path(&snapshot, &snapshot.scope)
             .await?;
         Ok(ReadView {
-            commit: metadata.commit,
-            minimum: metadata.minimum_chunk_size,
+            commit,
+            minimum,
             entries,
         })
     }
