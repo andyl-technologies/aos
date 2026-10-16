@@ -269,7 +269,8 @@ fn remeasure(artifact: &Artifact) -> Result<(), ProviderError> {
 }
 
 fn validate_qualification_sources(
-    document: &Value, artifacts: &BTreeMap<String, Artifact>,
+    document: &Value,
+    artifacts: &BTreeMap<String, Artifact>,
 ) -> Result<(), ProviderError> {
     let Some(raw) = document.get("qualification_inputs") else {
         return Ok(());
@@ -281,17 +282,23 @@ fn validate_qualification_sources(
     for artifact in inputs.values() {
         remeasure(artifact)?;
     }
-    let source = inputs.get("source_manifest")
+    let source = inputs
+        .get("source_manifest")
         .ok_or(ProviderError::Frame("Root qualification receipt absent"))?;
-    let check = inputs.get("temporary_root_check")
+    let check = inputs
+        .get("temporary_root_check")
         .ok_or(ProviderError::Frame("Root qualification test absent"))?;
-    let controller = artifacts.get("controller")
+    let controller = artifacts
+        .get("controller")
         .ok_or(ProviderError::Frame("Root native controller absent"))?;
     let value = super::installed_qualification::read_source_document(
-        immutable_file(&source.path, MAX_MANIFEST)?, MAX_MANIFEST as usize,
+        immutable_file(&source.path, MAX_MANIFEST)?,
+        MAX_MANIFEST as usize,
     )?;
     super::installed_qualification::validate_source_document(
-        &value, &controller.sha256, &check.sha256,
+        &value,
+        &controller.sha256,
+        &check.sha256,
     )
 }
 
@@ -381,11 +388,11 @@ mod tests {
         promoted["qualification"]["execution_admission_qualified"] = true.into();
         assert!(validate_scope(&promoted).is_err());
     }
+
     #[test]
     fn current_profile_requires_separate_qualification_inputs() {
-        let mut document: Value = serde_json::from_str(
-            include_str!("x86-root-scope-fixture.json"),
-        ).unwrap();
+        let mut document: Value =
+            serde_json::from_str(include_str!("x86-root-scope-fixture.json")).unwrap();
         document["schema"] = "crucible.gem5.installed-x86-root-profile-mechanism.v2".into();
         assert!(validate_scope(&document).is_err());
         document["qualification_inputs"] = serde_json::json!({
@@ -398,5 +405,4 @@ mod tests {
         document["schema"] = "crucible.gem5.installed-x86-root-profile-mechanism.v1".into();
         assert!(validate_scope(&document).is_err());
     }
-
 }
