@@ -738,7 +738,18 @@ which fits its restored 512 MiB policy; its old assertion that this quote must
 exceed the policy is stale. This quote covers a different phase from the earlier
 partial native-finalization probes and supplies no savings comparison. The
 corrected diagnostic requires admission to match the actual observed quote and
-retains birth, attempt and currentness checks. Its rerun remains outstanding.
+retains birth, attempt and currentness checks.
+
+A temporary ordinary Cargo diagnostic locates both SDK refusals at the third
+member's aggregate ceiling: all individual Source quotes succeed, but the
+2,359,983,863-byte aggregate exceeds 2 GiB. This conservatively reserves full
+outstanding commitments and includes known overlaps; it is not unique live heap
+usage. The two SDK boundary controls alone now use a finite 3 GiB setup allowance
+before installing their actual derived exact or one-byte-short policy. Other
+positive fixtures stay at 2 GiB. The temporary instrumentation is removed.
+Commit `f896cea8c7` passes all 28 startup controls, with zero failures or ignored
+cases, in 97.67 seconds. Production policy and all fixed negative assertions
+remain unchanged.
 
 These results do not qualify recurring native scheduling, complete Capture or
 fresh-world recapture. The actual recurring Observe producer and host scheduling
@@ -755,12 +766,30 @@ review finds no blocking issue. All 119 gem5 Provider unit tests pass, with thre
 native tests ignored; all three new Python format/provenance tests pass.
 
 The fresh ARM profile package passes its actual checks and emits profile v2.
-The fresh x86 shared-controller check passes, but its profile installation fails
-because the capture witness's helper bindings differ from the installed
-constructor/auditor. The strict check remains enabled while the mismatch is
-investigated. Fresh compile-time manifest bindings and production native
-qualification remain required; an installed mechanism profile is not a complete
-common-node or device-parity result.
+The first fresh x86 profile installation fails its strict helper-binding check:
+the witness includes the executed build-only check as a thirteenth runtime
+helper. Commit `94a6ec77bd` moves that source out of the closed runtime directory
+before the witness executes, retaining its separately verified qualification
+receipt and installed source. The twelve runtime helper bindings and strict
+reader guard remain unchanged. All five Python provenance controls pass, and
+the fresh x86 profile rebuild passes.
+
+A first compile-time-bound Rust rerun passes 118 cases and fails one because the
+invocation supplies the wrong ARM manifest filename. The actual x86 installed
+profile check passes. The corrected invocation uses the installed
+`arm-model-profile.json`. The subsequent full Provider run passes both actual
+compile-time-bound installed loaders and all 1,022 selected unit cases, with
+thirteen native/installed controls ignored. An installed mechanism profile alone
+is not a complete common-node or device-parity result.
+
+The ordinary Cargo workflow also runs the previously failing, genuinely native
+x86+Clock initial lifecycle fixture. It passes with one actual test, zero failures
+and zero ignored cases in 47.85 seconds, after 4 minutes 13 seconds of codegen.
+The assertions reach real native preparation, two-owner admission, Arm, prepared
+coordinator construction, durable World activation and original process-group
+reclamation. Both fresh v2 profile paths are compiled into the executable. This
+qualifies that selected initial lifecycle, not Capture, restored continuation,
+ARM native execution, device parity or a Linux boot benchmark.
 
 ### Cargo source packaging correction
 
@@ -774,8 +803,66 @@ regression check passes, including dummy-source preservation and actual reuse of
 the locked dependency. Its fixture hash changes only for the current Cargo
 checksum-format comment; the locked archive and package bytes are unchanged.
 The release-manifest fixture also models the current required paired QEMU outputs
-without building or executing an emulator. Its ordinary check and the restarted
-full application test-target build remain in progress.
+without building or executing an emulator. Its ordinary build now reaches the
+strict Provider Clippy dependency and fails on 129 diagnostics, including unused
+integration APIs and mechanical lint issues. No lint guard is disabled. A narrow
+cleanup addresses 27 reported sites while production integration continues; it
+has not yet passed strict Clippy. The restarted full application test-target
+build passes, compiling 167 test artifacts across 48 application roots, including
+69 integration targets. This build uses the source-filter/profile-v2 checkpoint
+before the subsequent recurring-Observe and final fixture changes. Final-source
+application qualification remains outstanding.
+
+### Recurring observation and historical alias validation
+
+Commit `a037f51186` implements the native recurring-Observe receive, independent
+admission/debit, current proof production and sent-prefix/ACK completion path.
+Independent review catches a real inherited prerequisite bug: the actual prefix
+builder puts its Response before the evidence-transfer requests, while completion
+selects the last frame. Arm/World, first Observe and recurring Observe now select
+the unique fully correlated Response at its actual retained index and validate
+the complete sent/ACK prefix. The real prefix-builder regression also retains
+refusal under insufficient negotiated correlation capacity.
+
+Commit `d564eadef9` integrates the paired host/Runtime/Source/Node and concrete
+daemon caller. They separate immutable admission/full census from mutable dispatch,
+retain actual first evidence separately from fresh proof, and report unknown
+effects after publication. Independent review finds no blocking issue. Ordinary
+six-crate, all-feature/all-target checking passes after integration fixes.
+The actual four-owner capture-to-restoration control remains unqualified.
+
+A broader Provider run initially passes 1,012 cases and fails seven, with thirteen
+ignored. It exposes an actual historical alias defect: a failed group can consume
+its final row yet leave the completeness check accepting unfinished state.
+Commit `28b89e7` rejects any in-progress summary while retaining the existing
+unvisited/trailing-row guards and adds focused incomplete-group coverage.
+Other corrections preserve typed-history declaration order, construct the real
+Discover schema, fund the test's full lifecycle proof bank, and test both
+preserved and tightened nonrenewed deadlines. Production capacity guards remain
+unchanged. The corrected full Provider run passes 1,022 cases with zero failures
+and thirteen ignored in 19.16 seconds, using both fresh installed profile bindings.
+
+These component passes do not replace the real four-owner roundtrip. Integration
+also identifies missing original actor lifecycle forwarding, durable Complete
+result publication/enrollment and the operator's authenticated fresh-target
+installation link. Those production paths and their native fixture are being
+implemented; no synthetic Window or committed-result stub supplies qualification.
+
+The current Core suite initially records 1,713 passes, eight failures and 32
+ignored tests. Five failures require the installed reference-provider executable
+at runtime; rerunning those five with its genuine source-built binary passes all
+five. Three expose a real prelaunch descriptor-census dispatch error: the launch
+reservation asks the launched guard for an executable that does not yet exist.
+A reservation-specific borrowed census is under test. The launched guard still
+refuses the unlaunched shape; neither a fake process nor an executable is inserted.
+All six new current-observation and retained-dispatch controls pass.
+
+The ordinary native Complete four-owner initial-scene fixture compiles and runs,
+but refuses before Child creation. Its complete immutable coordinator declaration
+is 171,918 bytes, above the existing 131,072-byte installation limit; the template
+and local declaration are individually within that limit. This is not a guest
+execution or capture result, and a larger transport buffer alone cannot fix it.
+The production limit and full-declaration carrier are under investigation.
 
 ## Known gaps and exit criteria
 
