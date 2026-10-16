@@ -587,12 +587,20 @@ modes, actual executable dependency closures, exact selectors and all 94 child
 waits and releases. The CAS fault-instrumented build exercises an explicit
 publication refusal; it does not qualify successful directory publication.
 
-These results preserve the earlier constructor failures and do not establish
-constructor fit, native restoration or device parity. A separate reviewed
-storage-lifetime change passes six-crate checking but still needs fresh test
-executables and the unchanged constructor controls. It preserves retained
-owners and the 768 MiB policy; no new fit or runtime performance result is
-inferred from its accounting formulas.
+The storage-lifetime refinement is committed in `79f872e1a7`, with formatting
+separately in `fac93465ae`. It preserves all retained owners and the whole-node
+sum while separating acknowledgement, frame-preparation and launch-validation
+workspaces whose lifetimes do not overlap. Six-crate checking and four fresh
+normal test executables pass. All 98 selected component controls pass with no
+failures or ignored tests: 95 controls in 11.86 seconds and three CAS controls
+in 4.05 seconds.
+
+Both unchanged SDK constructor controls still fail with `ResourceLimit` during
+original startup finalization, before their constructor assertions. The 768 MiB
+policy remains unchanged. The earlier diagnostic operands above describe the
+previous source; current-source operands are under investigation. Neither these
+component controls nor smaller accounting formulas establish constructor fit,
+native restoration, device parity or runtime performance improvement.
 
 ## Known gaps and exit criteria
 
