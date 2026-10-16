@@ -259,11 +259,9 @@ fn packed_incompressible_512_mib_capture_archive_restore_and_repack() {
     exercise_volume(VOLUME_BYTES);
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Measures fixed fixture stages without supplying guest or operational time."
-)]
 fn exercise_volume(bytes: u64) {
+    let complete = VolumeStage::start(bytes, "exercise");
+    let setup = VolumeStage::start(bytes, "setup");
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = Fixture::new(source_directory.path());
@@ -279,7 +277,10 @@ fn exercise_volume(bytes: u64) {
         .store
         .admit_ram_publication(&topology(bytes), Scope::Exact)
         .unwrap();
-    let capture_started = std::time::Instant::now();
+    setup.finish(format_args!(
+        "pages={pages} objects={objects} logical_bytes={bytes}"
+    ));
+    let capture = VolumeStage::start(bytes, "capture");
     let root = source
         .store
         .capture(
@@ -291,26 +292,20 @@ fn exercise_volume(bytes: u64) {
             &mut || Ok(()),
         )
         .unwrap();
-    // crucible-lint: allow direct-diagnostic -- this fixed fixture separates completed work without changing its original deadline.
-    eprintln!(
-        "packed volume capture returned: elapsed={:?}",
-        capture_started.elapsed()
-    );
+    capture.finish(format_args!(
+        "expected_objects={objects} root={}",
+        root.object_id()
+    ));
     drop(source_retention);
-    let accounting_started = std::time::Instant::now();
+    let accounting = VolumeStage::start(bytes, "source_accounting");
     assert_eq!(source.objects(), objects);
-    // crucible-lint: allow direct-diagnostic -- this fixed fixture reports authenticated accounting separately from capture.
-    eprintln!(
-        "packed volume accounting completed: elapsed={:?}",
-        accounting_started.elapsed()
-    );
-    // crucible-lint: allow direct-diagnostic -- this fixed volume fixture reports completed stages, not performance qualification.
-    eprintln!("packed volume captured: bytes={bytes} objects={objects}");
-    assert_restored(&source, &root, pages);
+    accounting.finish(format_args!("objects={objects}"));
+    assert_restored(&source, &root, pages, "source_initial_restore");
 
     let destination_retention = destination.retention();
     let owning_manifest =
         ContentId::for_bytes(ObjectKind::ExactManifest, 6, b"packed volume archive owner");
+    let first_archive = VolumeStage::start(bytes, "first_archive");
     let archive = source
         .store
         .transfer_archive_to(
@@ -328,10 +323,18 @@ fn exercise_volume(bytes: u64) {
     assert_eq!(archive.root().object_id(), root.object_id());
     assert_eq!(archive.report().copied_objects, objects);
     assert!(archive.report().copied_bytes >= bytes);
+    first_archive.finish(format_args!(
+        "copied_objects={} copied_bytes={} existing_objects={} object_visits={}",
+        archive.report().copied_objects,
+        archive.report().copied_bytes,
+        archive.report().authenticated_existing_objects,
+        archive.report().object_visits,
+    ));
+    let destination_accounting = VolumeStage::start(bytes, "destination_accounting");
     assert_eq!(destination.objects(), objects);
-    assert_restored(&destination, archive.root(), pages);
-    // crucible-lint: allow direct-diagnostic -- this fixed volume fixture reports completed stages, not performance qualification.
-    eprintln!("packed volume archived and restored: objects={objects}");
+    destination_accounting.finish(format_args!("objects={objects}"));
+    assert_restored(&destination, archive.root(), pages, "destination_restore");
+    let repeated_archive = VolumeStage::start(bytes, "repeated_archive");
     let repeated = source
         .store
         .transfer_archive_to(
@@ -348,9 +351,17 @@ fn exercise_volume(bytes: u64) {
         .unwrap();
     assert_eq!(repeated.report().copied_objects, 0);
     assert!(repeated.report().authenticated_existing_objects > 0);
+    repeated_archive.finish(format_args!(
+        "copied_objects={} copied_bytes={} existing_objects={} object_visits={}",
+        repeated.report().copied_objects,
+        repeated.report().copied_bytes,
+        repeated.report().authenticated_existing_objects,
+        repeated.report().object_visits,
+    ));
     drop((repeated, destination_retention));
 
     // The old source's already-open pack inode must outlive repack unlink.
+    let pin = VolumeStage::start(bytes, "pin_before_repack");
     let first_page = first_page(&source.store, root.regions[0], &source.original);
     let handle = source
         .store
@@ -360,14 +371,24 @@ fn exercise_volume(bytes: u64) {
     let scope = source.original.enter();
     let mut pinned = handle.open_with_boundary(&mut || Ok(())).unwrap();
     let repack = source.admin.packed_repack();
+    pin.finish(format_args!("object={first_page}"));
+    let repack_plan = VolumeStage::start(bytes, "repack_plan");
     let plan = repack[0]
         .plan_repack_with_boundary(&source.original, &mut || Ok(()))
         .unwrap();
+    repack_plan.finish(format_args!("expected_objects={objects}"));
+    let repack_apply = VolumeStage::start(bytes, "repack_apply");
     let report = repack[0]
         .apply_repack_with_boundary(&source.original, &plan, &mut || Ok(()))
         .unwrap();
     assert_eq!(report.before().logical_objects(), objects);
     assert_eq!(report.after().logical_objects(), objects);
+    repack_apply.finish(format_args!(
+        "before_objects={} after_objects={}",
+        report.before().logical_objects(),
+        report.after().logical_objects(),
+    ));
+    let pinned_read = VolumeStage::start(bytes, "pinned_read_after_repack");
     let mut hasher = crate::content_store::content_hasher(
         first_page.kind(),
         first_page.schema_version(),
@@ -387,11 +408,13 @@ fn exercise_volume(bytes: u64) {
     }
     assert_eq!(count, handle.logical_length());
     assert_eq!(*hasher.finalize().as_bytes(), first_page.digest());
+    pinned_read.finish(format_args!("bytes={count}"));
     drop((pinned, handle, scope));
-    assert_restored(&source, &root, pages);
+    assert_restored(&source, &root, pages, "source_restore_after_repack");
 
     // Reopening authenticates the complete persisted generation under the
     // same finite namespace bank, independently of the still-live old graph.
+    let reopen = VolumeStage::start(bytes, "reopen");
     let restarted = Fixture::with_quota(source_directory.path(), source.quota.clone());
     assert_eq!(restarted.objects(), objects);
     let reopened = restarted
@@ -399,12 +422,17 @@ fn exercise_volume(bytes: u64) {
         .open_with_metadata_resources(root.lease.clone(), &source.original, &mut || Ok(()))
         .unwrap();
     assert_eq!(reopened.object_id(), root.object_id());
-    assert_restored(&restarted, &reopened, pages);
+    reopen.finish(format_args!(
+        "objects={objects} root={}",
+        reopened.object_id()
+    ));
+    assert_restored(&restarted, &reopened, pages, "reopened_restore");
     drop((reopened, restarted));
 
     // Complete authenticated marking is streamed under actual GC exclusion.
     // One explicit non-RAM orphan is the only deletion candidate; this fixture
     // does not claim the daemon's complete campaign collection planner.
+    let orphan_publication = VolumeStage::start(bytes, "orphan_publication");
     let orphan_bytes = b"packed-volume-unreachable-trace";
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
     let orphan_source = BlobHandle::from_bytes(orphan_bytes.to_vec());
@@ -417,6 +445,8 @@ fn exercise_volume(bytes: u64) {
         .unwrap();
     let accepted = publication.accept_with_boundary(&mut || Ok(())).unwrap();
     drop(accepted);
+    orphan_publication.finish(format_args!("objects=1"));
+    let marking = VolumeStage::start(bytes, "mark_reachable");
     let ref_fence = source.ref_admin.acquire_ref_inventory_fence().unwrap();
     let mut reachable = 0;
     source
@@ -434,6 +464,8 @@ fn exercise_volume(bytes: u64) {
         )
         .unwrap();
     assert_eq!(reachable, objects);
+    marking.finish(format_args!("objects={reachable}"));
+    let physical_inventory = VolumeStage::start(bytes, "physical_inventory");
     let physical = source.admin.physical();
     let inventory_scope = source.original.enter();
     let mut inventory = physical[0]
@@ -451,17 +483,58 @@ fn exercise_volume(bytes: u64) {
         )
         .unwrap();
     assert_eq!(counted, objects + 1);
+    physical_inventory.finish(format_args!("objects={counted}"));
     drop(summary);
+    let deletion = VolumeStage::start(bytes, "delete_orphan");
     let deleted = inventory
         .delete_candidates_with_boundary(&[orphan], &mut || Ok(()))
         .unwrap();
     drop((deleted, inventory, inventory_scope, ref_fence));
+    deletion.finish(format_args!("candidate_objects=1"));
+    let final_accounting = VolumeStage::start(bytes, "final_accounting");
     assert_eq!(source.objects(), objects);
-    assert_restored(&source, &root, pages);
+    final_accounting.finish(format_args!("objects={objects}"));
+    assert_restored(&source, &root, pages, "source_final_restore");
     source.original.verify_live().unwrap();
     destination.original.verify_live().unwrap();
-    // crucible-lint: allow direct-diagnostic -- this fixed volume fixture reports completed stages, not performance qualification.
-    eprintln!("packed volume repacked and fenced maintenance complete: objects={objects}");
+    complete.finish(format_args!(
+        "pages={pages} objects={objects} logical_bytes={bytes}"
+    ));
+}
+
+// A start record locates interrupted stages; only completed stages have an end
+// record. These measurements neither renew an original nor certify performance.
+struct VolumeStage {
+    name: &'static str,
+    started: Option<std::time::Instant>,
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Reports fixture stage durations without supplying guest or operational time."
+)]
+impl VolumeStage {
+    fn start(bytes: u64, name: &'static str) -> Self {
+        let started = if bytes == VOLUME_BYTES {
+            // crucible-lint: allow direct-diagnostic -- fixed workload progress only.
+            eprintln!("packed_volume_stage_begin={name}");
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        Self { name, started }
+    }
+
+    fn finish(self, counts: std::fmt::Arguments<'_>) {
+        if let Some(started) = self.started {
+            // crucible-lint: allow direct-diagnostic -- completed fixed workload stage only.
+            eprintln!(
+                "packed_volume_stage_end={} elapsed_ns={} {counts}",
+                self.name,
+                started.elapsed().as_nanos(),
+            );
+        }
+    }
 }
 
 fn first_page(store: &RamStore, mut reference: TreeRef, original: &DecodeBudget) -> ContentId {
@@ -476,7 +549,8 @@ fn first_page(store: &RamStore, mut reference: TreeRef, original: &DecodeBudget)
     }
 }
 
-fn assert_restored(fixture: &Fixture, root: &LeasedRamRoot, pages: u64) {
+fn assert_restored(fixture: &Fixture, root: &LeasedRamRoot, pages: u64, stage: &'static str) {
+    let timing = VolumeStage::start(pages * 4096, stage);
     let mut restored = 0;
     let report = fixture
         .store
@@ -497,6 +571,10 @@ fn assert_restored(fixture: &Fixture, root: &LeasedRamRoot, pages: u64) {
     assert_eq!(restored, pages);
     assert_eq!(report.pages, pages);
     assert_eq!(report.logical_bytes, pages * 4096);
+    timing.finish(format_args!(
+        "pages={} logical_bytes={} object_visits={}",
+        report.pages, report.logical_bytes, report.object_visits,
+    ));
 }
 
 fn capture_pages(fixture: &Fixture, pages: u64) -> LeasedRamRoot {
