@@ -2,6 +2,14 @@
 
 use super::*;
 
+#[derive(serde::Serialize)]
+struct OriginalCompletedHello<'a> {
+    status: &'static str,
+    operation_state: crate::bodies::OperationState,
+    result: &'a HelloResult,
+    extensions: Extensions,
+}
+
 #[path = "negotiation_snapshot.rs"]
 mod negotiation_snapshot;
 pub use negotiation_snapshot::OriginalNegotiationView;
@@ -380,6 +388,15 @@ pub struct Handshake {
 }
 
 impl Handshake {
+    /// Names original-claim comparison views and every bounded Bytes formatter.
+    /// Actual request/result validation establishes32-byte secrets first.
+    pub(crate) fn original_native_hello_reuse_counter_scratch_data() -> usize {
+        std::mem::size_of::<OriginalCompletedHello<'static>>()
+            + std::mem::size_of::<Option<(&HelloRequest, &HelloResult)>>()
+            + crate::reference_packet::service::native_startup::data_equality::counter_scratch_data()
+            + 6 * 43
+    }
+
     /// Authenticates the sole correlated initial or resumed hello frame pair.
     ///
     /// # Errors
@@ -403,6 +420,32 @@ impl Handshake {
         connection: Id,
         verifier: &mut impl TrustedHandshakeVerifier,
         typed_extensions: bool,
+    ) -> Result<ConnectionAuthority, ProviderError> {
+        self.admit_envelopes_with_original(request, response, connection, verifier, typed_extensions, None)
+    }
+
+    /// Reuses the actual native constructor's first decoded request and generated
+    /// result after complete body correspondence; no portable claim is trusted.
+    pub(crate) fn admit_original_envelopes(
+        &mut self,
+        request: &crate::envelope::Envelope,
+        response: &crate::envelope::Envelope,
+        hello: &HelloRequest,
+        result: &HelloResult,
+        connection: Id,
+        verifier: &mut impl TrustedHandshakeVerifier,
+    ) -> Result<ConnectionAuthority, ProviderError> {
+        self.admit_envelopes_with_original(request, response, connection, verifier, false, Some((hello, result)))
+    }
+
+    pub(super) fn admit_envelopes_with_original(
+        &mut self,
+        request: &crate::envelope::Envelope,
+        response: &crate::envelope::Envelope,
+        connection: Id,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        typed_extensions: bool,
+        original: Option<(&HelloRequest, &HelloResult)>,
     ) -> Result<ConnectionAuthority, ProviderError> {
         if !typed_extensions
             && (request.extensions.contains_key(EXTENSION_NEGOTIATION_V1)
@@ -460,6 +503,23 @@ impl Handshake {
                 "hello identity history exhausted",
             ));
         }
+        let owned;
+        let (hello, result) = if let Some((hello, result)) = original {
+            use crate::reference_packet::service::native_startup::data_equality;
+            hello.validate()?;
+            result.validate()?;
+            let shape = OriginalCompletedHello {
+                status: "completed",
+                operation_state: crate::bodies::OperationState::Completed,
+                result,
+                extensions: Extensions::new(),
+            };
+            if !data_equality::matches_object(&request.body, hello)
+                || !data_equality::matches_object(&response.body, &shape) {
+                return Err(ProviderError::Correlation("original native Hello bodies changed"));
+            }
+            (hello, result)
+        } else {
         let RequestBody::Hello(hello) =
             crate::bodies::decode_request(Method::Hello, &request.body)?
         else {
@@ -478,6 +538,9 @@ impl Handshake {
             return Err(ProviderError::Frame(
                 "hello response has no negotiated result",
             ));
+        };
+            owned = (hello, result);
+            (&owned.0, &owned.1)
         };
         let expected_session = hello.resume_session.as_ref().map(|_| &hello.session_id);
         let expected_incarnation = hello

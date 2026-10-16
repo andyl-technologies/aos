@@ -27,6 +27,8 @@ pub(crate) struct OriginalPacketPrefixProjectionInput<'a> {
 pub(crate) struct OriginalPacketPrefixProjectionStorageData {
     pub(crate) exchange: OriginalPacketPrefixStorageData,
     pub(crate) source_owner_requested_bytes: usize,
+    /// Is present only for the closed native initial lifecycle grammar.
+    pub(crate) native_source_backing_bytes: Option<usize>,
     pub(crate) declared_counter_scratch_bytes: usize,
     terminal: OriginalSerializationStorageData,
     original: OriginalSerializationStorageData,
@@ -241,6 +243,7 @@ impl<S: ProviderStream> Connection<S> {
         )?;
         continuation::within(&actual_original, input.original)?;
         let mut data = OriginalPacketPrefixStorageData {
+            native_retained_backing_bytes: None,
             frames,
             requests,
             evidence_payload_bytes: payload,
@@ -372,6 +375,7 @@ impl<S: ProviderStream> Connection<S> {
         let result = OriginalPacketPrefixProjectionStorageData {
             exchange: data,
             source_owner_requested_bytes: source_owner,
+            native_source_backing_bytes: None,
             declared_counter_scratch_bytes: sum(&[
                 size_of::<&Self>(),
                 size_of::<OriginalPacketPrefixProjectionStorageData>(),

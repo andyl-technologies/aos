@@ -44,6 +44,9 @@ pub(crate) use report_query::{
 /// Names each independent original prefix obligation without authorizing it.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct OriginalPacketPrefixStorageData {
+    /// Separates actual native-baseline persistent banks from legacy work.
+    /// Ordinary/public prefix quotes keep their existing summed components.
+    pub(crate) native_retained_backing_bytes: Option<usize>,
     pub(crate) frames: usize,
     pub(crate) requests: usize,
     pub(crate) evidence_payload_bytes: usize,
@@ -210,6 +213,7 @@ impl<S: ProviderStream> Connection<S> {
         self.guard
             .preflight_original_packet_prefix_data(request, first, frames, requests)?;
         let mut data = OriginalPacketPrefixStorageData {
+            native_retained_backing_bytes: None,
             frames,
             requests,
             evidence_payload_bytes: whole_content,
@@ -499,6 +503,14 @@ fn charge_frame(
     if projected.maximum_encoded_bytes > maximum_frame.min(65_536) {
         return Err(credit());
     }
+    if let Some(retained) = data.native_retained_backing_bytes.as_mut() {
+        // Plan, outgoing guard and containment own three independent DOMs.
+        // The canonical frame bank is another persistent allocation.
+        *retained = sum(&[*retained,
+            mul(3, projected.retained_value_backing_bytes)?,
+            projected.canonical_output_requested_bytes,
+            if request { add(128, growth(128)?)? } else { 128 }])?;
+    }
     let deep_copy = projected.dom_and_canonical_scratch_bytes;
     data.original_plan_requested_bytes = add(data.original_plan_requested_bytes, deep_copy)?;
     data.outgoing_guard_requested_bytes =
@@ -542,6 +554,9 @@ fn charge_frame(
         add(mul(projected.requested_total()?, 4)?, typed_validation)?,
     )?;
     if request {
+        if let Some(retained) = data.native_retained_backing_bytes.as_mut() {
+            *retained = add(*retained, acknowledgements::successful_ack_storage()?)?;
+        }
         data.successful_ack_cache_requested_bytes = add(
             data.successful_ack_cache_requested_bytes,
             acknowledgements::successful_ack_storage()?,

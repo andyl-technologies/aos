@@ -136,33 +136,47 @@ pub(super) fn project(
 ) -> Result<AdmitStorage, ProviderError> {
     let source = private.source_requested_bytes;
     let host = decode_value(input.host_registration, maximum)?;
+    let host_backing = decoded::quote(input.host_registration, size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing;
+    let source_backing = private.source_value_backing_bytes;
     let [association, kernel, policy] = normalized_outer_storage(input, maximum)?;
     // Native registration changes only the connection ID. Keep the complete
     // original host tree and add the actual native Id's full128-byte grammar.
     // Its old ID is deliberately not refunded from this conservative bound.
     let mut native_id = Projection::new(maximum)?;
     native_id.add_unescaped_ascii_extent(128)?;
-    let assigned_admit = initial::admit_projection(input.launch, maximum)?.requested_total()?;
+    let native_id = native_id.finish(maximum)?;
+    let assigned = initial::admit_projection(input.launch, maximum)?;
+    let assigned_admit = assigned.requested_total()?;
     let normalized_requested = [
         sum(&[source, host, association.requested_total()?], maximum)?,
         kernel.requested_total()?,
         sum(&[source, host, policy.requested_total()?], maximum)?,
         sum(
-            &[host, native_id.finish(maximum)?.requested_total()?],
+            &[host, native_id.requested_total()?],
             maximum,
         )?,
         assigned_admit,
     ];
-    let mut retained = 0usize;
-    let mut transient = 0usize;
-    for requested in normalized_requested {
-        // All five independently constructed Values remain live together.
-        // Each complete known-shape quote already includes its canonical bank;
-        // retaining that work too is conservative. The additional temporary
-        // canonical writer phase is sequential and may be MAXed separately.
-        retained = sum(&[retained, requested], maximum)?;
-        transient = transient.max(requested);
-    }
+    // Every normalization keeps its own Value and canonical Vec. Source
+    // and host insertions are independent copies, never aliases. Canonical
+    // child banks are conservatively summed even within one outer bank.
+    let source_bank = private.maximum_source_bytes.checked_mul(4).and_then(|n| n.checked_add(256)).ok_or_else(refused)?;
+    let host_bank = input.host_registration.len().checked_mul(4).and_then(|n| n.checked_add(256)).ok_or_else(refused)?;
+    let normalized_backing = [
+        sum(&[source_backing, host_backing, source_bank, host_bank,
+            association.retained_value_backing_bytes, association.canonical_output_requested_bytes], maximum)?,
+        sum(&[kernel.retained_value_backing_bytes, kernel.canonical_output_requested_bytes], maximum)?,
+        sum(&[source_backing, host_backing, source_bank, host_bank,
+            policy.retained_value_backing_bytes, policy.canonical_output_requested_bytes], maximum)?,
+        sum(&[host_backing, host_bank, native_id.retained_value_backing_bytes,
+            native_id.canonical_output_requested_bytes], maximum)?,
+        sum(&[assigned.retained_value_backing_bytes, assigned.canonical_output_requested_bytes], maximum)?,
+    ];
+    let mut retained = sum(&normalized_backing, maximum)?;
+    // All five Values/banks above are present; only the temporary complete
+    // writer/validation phase is sequential. Earlier expected-body and original
+    // owners are added below and remain live throughout this max expression.
+    let mut transient = normalized_requested.into_iter().max().ok_or_else(refused)?;
     let context = context(maximum)?;
     let proof = proof(maximum)?;
     let context_children = sum(
@@ -191,8 +205,8 @@ pub(super) fn project(
             // The lifecycle's original remains separate. owner.original and
             // expected_body/comparison have independent backing beside all five
             // normalizations. A full original Envelope safely overcounts each.
-            assigned_admit,
-            assigned_admit,
+            assigned.retained_value_backing_bytes,
+            assigned.retained_value_backing_bytes,
         ],
         maximum,
     )?;

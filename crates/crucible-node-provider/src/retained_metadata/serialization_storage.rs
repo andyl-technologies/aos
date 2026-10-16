@@ -49,6 +49,7 @@ struct Credit {
     sequence_containers: usize,
     serialized_value_nodes: usize,
     serialized_capacity_records: usize,
+    object_roots: usize,
 }
 
 impl Credit {
@@ -101,6 +102,9 @@ impl Credit {
             return Err(Excess);
         }
         self.depth += 1;
+        if map {
+            self.object_roots = self.object_roots.checked_add(1).ok_or(Excess)?;
+        }
         self.encoded(2)?;
         let slots = if map {
             0
@@ -192,6 +196,7 @@ impl Credit {
     }
 
     fn variant(&mut self, variant: &str) -> Result<(), Excess> {
+        self.object_roots = self.object_roots.checked_add(1).ok_or(Excess)?;
         self.serialized_node(true)?;
         self.encoded(2)?;
         self.add(map_node_bytes()?)?;
@@ -208,6 +213,8 @@ impl Credit {
 /// from the same actual typed metadata walk BEFORE invoking Serialize.
 pub(crate) struct OriginalSerializationStorageData {
     pub(crate) dom_and_canonical_scratch_bytes: usize,
+    /// Bounds only the independently owned Value backing, including empty map roots.
+    pub(crate) retained_value_backing_bytes: usize,
     pub(crate) projected_parser_requested_bytes: usize,
     pub(crate) canonical_output_requested_bytes: usize,
     pub(crate) serializer_temporary_requested_bytes: usize,
@@ -294,6 +301,7 @@ pub(crate) fn actual_serialization_storage_data(
         sequence_containers: 0,
         serialized_value_nodes: 0,
         serialized_capacity_records: 0,
+        object_roots: 0,
     };
     value.serialize(&mut credit).map_err(|_| refused())?;
     let output = credit
@@ -303,6 +311,7 @@ pub(crate) fn actual_serialization_storage_data(
         .ok_or_else(refused)?;
     let result = OriginalSerializationStorageData {
         dom_and_canonical_scratch_bytes: credit.used,
+        retained_value_backing_bytes: retained_value_backing(&credit)?,
         projected_parser_requested_bytes: credit.parser_requested,
         canonical_output_requested_bytes: output,
         serializer_temporary_requested_bytes: temporary,
@@ -317,6 +326,16 @@ pub(crate) fn actual_serialization_storage_data(
         return Err(refused());
     }
     Ok(result)
+}
+
+
+/// Keeps growable decoded strings/arrays and every map root/entry separate
+/// from canonical key ordering, escaping, parser work and output banks.
+fn retained_value_backing(credit: &Credit) -> Result<usize, ProviderError> {
+    credit.object_roots.checked_mul(map_node_bytes().map_err(|_| projection_excess())?)
+        .and_then(|roots| roots.checked_add(credit.parser_requested))
+        .and_then(|bytes| bytes.checked_add(size_of::<serde_json::Value>()))
+        .ok_or_else(projection_excess)
 }
 
 fn value_slot_bytes() -> usize {
@@ -732,6 +751,7 @@ impl OriginalSerializationStorageProjection {
                 sequence_containers: 0,
                 serialized_value_nodes: 0,
                 serialized_capacity_records: 0,
+        object_roots: 0,
             },
         })
     }
@@ -771,6 +791,7 @@ impl OriginalSerializationStorageProjection {
 
     /// Adds the braces of one fixed object; its fields are counted separately.
     pub(crate) fn add_object(&mut self) -> Result<(), ProviderError> {
+        self.credit.object_roots = self.credit.object_roots.checked_add(1).ok_or_else(projection_excess)?;
         self.credit
             .serialized_node(true)
             .map_err(|_| projection_excess())?;
@@ -862,6 +883,7 @@ impl OriginalSerializationStorageProjection {
             .ok_or_else(projection_excess)?;
         let result = OriginalSerializationStorageData {
             dom_and_canonical_scratch_bytes: self.credit.used,
+            retained_value_backing_bytes: retained_value_backing(&self.credit)?,
             projected_parser_requested_bytes: self.credit.parser_requested,
             canonical_output_requested_bytes: output,
             serializer_temporary_requested_bytes: 20,
@@ -891,6 +913,26 @@ mod tests;
 mod logical_event_tests {
     use super::*;
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn split_retained_value_backing_covers_real_objects_and_has_no_canonical_bank_alias() -> TestResult {
+        for value in [serde_json::json!({}), serde_json::json!([{}, {"nested": ["value", 1]}, []])] {
+            let mut observer = crate::retained_metadata::MetadataObserver::new();
+            observer.observe(&value)?;
+            let facts = observer.finish();
+            let observed = crate::retained_metadata::requested_metadata_backing_storage_data(&facts)?;
+            let row = actual_serialization_storage_data(&value, facts, usize::MAX)?;
+            assert!(row.retained_value_backing_bytes >= observed + size_of::<serde_json::Value>());
+            assert!(row.canonical_output_requested_bytes >= 256);
+            // Backing and work are independent terms. A retained clone cannot
+            // spend the already separately retained canonical Vec as its heap.
+            let clone = value.clone();
+            let mut clone_observer = crate::retained_metadata::MetadataObserver::new();
+            clone_observer.observe(&clone)?;
+            assert!(row.retained_value_backing_bytes >= crate::retained_metadata::requested_metadata_backing_storage_data(&clone_observer.finish())?);
+        }
+        Ok(())
+    }
 
     #[test]
     fn actual_serializer_and_closed_projection_count_same_keys_values_and_backings() -> TestResult {

@@ -18,6 +18,7 @@ use std::mem::{align_of, size_of};
 
 mod admit;
 mod coordinator_decode;
+mod decoded;
 mod hello;
 mod initial;
 mod private_bootstrap;
@@ -116,6 +117,10 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
     size_of::<crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'static>>()
         + super::data_equality::counter_scratch_data()
         + coordinator_decode::counter_scratch_data()
+        + decoded::counter_scratch_data()
+        + 3 * size_of::<decoded::DecodedStorage>()
+        + size_of::<[usize; 12]>()
+        + crate::handshake::Handshake::original_native_hello_reuse_counter_scratch_data()
         + crate::protocol_snapshot::owned11::correspondence::envelope_counter_scratch_data()
         + size_of::<PacketNativeBirthStartupStorageData>()
         + size_of::<PacketNativeBirthStartupInputs<'_>>()
@@ -225,6 +230,10 @@ pub fn original_native_birth_startup_storage_data(
     // determine this tree. Its encoded length is not a license to replace that
     // known structure with the worst possible arbitrary JSON of equal length.
     let source_decode = source_shape.source_requested_bytes;
+    let source_backing = source_shape.source_value_backing_bytes;
+    let launch_backing = decoded::quote(input.encoded_launch, size_of::<PacketNative5SourceLaunch>(), native_element_slot(), maximum)?.typed_backing;
+    let coordinator_backing = coordinator_decode::backing(launch.initial_coordinator.bytes.as_slice(), maximum)?;
+    let registration_backing = decoded::quote(input.host_registration, size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing;
     let registration_decode = decode_value(input.host_registration, maximum)?;
 
     let selection = metadata_backing(&launch.selection)?;
@@ -240,22 +249,22 @@ pub fn original_native_birth_startup_storage_data(
     // assignments, rather than a numeric multiplier over an arbitrary maximum.
     let retained_copies = sum(
         &[
-            launch_decode,                     // Bootstrap.launch_value + canonical/typed phase.
+            launch_backing,                    // Actual typed launch moved into native service; private owns its separate Value.
             input.encoded_launch.len(),        // Bootstrap.launch_bytes.
             input.encoded_launch.len(),        // NativeAckBoot.launch_body.
-            source_decode,                     // Bootstrap.boot_value.source_birth.
-            source_decode,                     // NativeAckBoot.data.source_birth.
-            source_decode,                     // NativeAckBoot.normalized source binding.
+            source_backing,                    // Bootstrap.boot_value.source_birth.
+            source_backing,                    // NativeAckBoot.data.source_birth.
+            source_backing,                    // NativeAckBoot.normalized source binding.
             source_shape.maximum_source_bytes, // NativeAckBoot.source_body after finalization.
-            registration_decode,               // Bootstrap.boot_value registration.
-            registration_decode,               // NativeAckBoot.data registration.
-            registration_decode,               // NativeAckBoot.normalized registration.
+            registration_backing,              // Bootstrap.boot_value registration.
+            registration_backing,              // NativeAckBoot.data registration.
+            registration_backing,              // NativeAckBoot.normalized registration.
             input.host_registration.len(),     // NativeAckBoot.host_body.
             selection,                         // Native5Policy.selection.
             selection,                         // PacketControl.selection.
             coordinator_bytes,                 // Native5Policy installed coordinator bytes.
-            coordinator_decode,                // Native5Policy decoded common coordinator.
-            coordinator_decode,                // PacketControl complete coordinator.
+            coordinator_backing,               // Native5Policy decoded common coordinator.
+            coordinator_backing,               // PacketControl complete coordinator.
             model_definition,                  // Producer events or reactive definition.
             provider,                          // Handshake.TrustedInstallation.
             provider,                          // Actual retained native Hello response identity.
@@ -300,28 +309,20 @@ pub fn original_native_birth_startup_storage_data(
         ],
         maximum,
     )?;
-    // The new private decoder and selected native constructors are sequential,
-    // while every retained owner above persists. Sum complete constructor
-    // phases conservatively; no individual bank maximum replaces these terms.
-    let maximum_simultaneous_transient_bytes = sum(
-        &[
-            launch_decode,
-            coordinator_decode,
-            source_decode,
-            registration_decode,
-            lifecycle.transient,
-            definitions.transient,
-            admit.transient,
-            hello.transient,
-            // Inventory/record construction independently clones its typed model
-            // event/definition children before converting them to JSON evidence.
-            model_definition,
-            model_definition,
-            super::super::ack_emitter::original_prepare_executable_measurement_counter_scratch_data(
-            ),
-        ],
-        maximum,
-    )?;
+    // CompleteBirth::prepare returns before D/R/Admit dispatch. Its local
+    // Hello/decoded comparison banks are dropped; all service and failed-partial
+    // fields are in retained above. Coordinator validation is likewise a
+    // returning construction call. No max is taken over persistent owners.
+    // The explicit Hello scope has ended before either retained coordinator
+    // is constructed. Earlier private Source/host decoding likewise returns
+    // before CompleteBirth starts. Their actual permanent owners are above.
+    let birth_work = launch_decode.max(coordinator_decode)
+        .max(source_decode).max(registration_decode).max(hello.transient);
+    let lifecycle_work = sum(&[lifecycle.transient, definitions.transient,
+        model_definition, model_definition], maximum)?;
+    let maximum_simultaneous_transient_bytes = birth_work.max(lifecycle_work)
+        .max(admit.transient)
+        .max(super::super::ack_emitter::original_prepare_executable_measurement_counter_scratch_data());
     let scratch = original_native_birth_startup_counter_scratch_data();
     if lifecycle.scratch > scratch || admit.scratch > scratch || hello.scratch > scratch {
         return Err(refused());
@@ -336,6 +337,16 @@ pub fn original_native_birth_startup_storage_data(
         declared_counter_scratch_bytes: scratch,
         private_bootstrap: private,
     })
+}
+
+/// Lists actual independently allocated native Vec element classes. Scalar
+/// fields and nested structs are inline in their root/element, not heap DTOs
+/// per string/key token; unknown Value children retain their full DOM row.
+fn native_element_slot() -> usize {
+    coordinator_decode::typed_slot()
+        .max(size_of::<crate::reference_packet::PacketEvent>())
+        .max(size_of::<crate::reference_packet::connected::PacketInputConnection>())
+        .max(size_of::<u8>())
 }
 
 fn decode(bytes: &[u8], typed: usize, maximum: usize) -> Result<usize, ProviderError> {

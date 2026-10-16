@@ -34,6 +34,7 @@ const EXTRA: [&[u8]; 9] = [
 pub(super) struct SourceBindingStorage {
     pub(super) base_encoded_bytes: usize,
     pub(super) base_decoded_bytes: usize,
+    pub(super) base_value_backing_bytes: usize,
 }
 
 // The Source's actual constructor already emits canonical JSON. This cursor
@@ -175,8 +176,12 @@ pub(super) fn project(bytes: &[u8], maximum: usize) -> Result<SourceBindingStora
     // Nine keys, colons, eight commas and the outer braces are separately named.
     let mut encoded = 2usize + 8 + 9;
     let mut decoded = 0usize;
+    let mut backing = 0usize;
     for (key, value) in BASE.into_iter().zip(values) {
         encoded = sum(&[encoded, key.len() + 2, value.len()], maximum)?;
+        backing = sum(&[backing,
+            decoded::quote(value, size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing,
+            key.len()], maximum)?;
         decoded = sum(
             &[decoded, decode_value(value, maximum)?, key.len()],
             maximum,
@@ -192,5 +197,6 @@ pub(super) fn project(bytes: &[u8], maximum: usize) -> Result<SourceBindingStora
     Ok(SourceBindingStorage {
         base_encoded_bytes: encoded,
         base_decoded_bytes: decoded,
+        base_value_backing_bytes: sum(&[backing, roots, size_of::<serde_json::Value>()], maximum)?,
     })
 }

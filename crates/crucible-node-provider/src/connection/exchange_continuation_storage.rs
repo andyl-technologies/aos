@@ -514,6 +514,7 @@ impl<S: ProviderStream> Connection<S> {
         let windows = add(requests.div_ceil(simultaneous), 1)?;
         let window_slots = add(mul(requests.div_ceil(simultaneous), simultaneous)?, 2)?;
         let mut data = OriginalPacketPrefixStorageData {
+            native_retained_backing_bytes: None,
             frames,
             requests,
             evidence_payload_bytes: payload,
@@ -725,6 +726,7 @@ pub(super) fn copy_storage(
 ) -> OriginalSerializationStorageData {
     OriginalSerializationStorageData {
         dom_and_canonical_scratch_bytes: value.dom_and_canonical_scratch_bytes,
+        retained_value_backing_bytes: value.retained_value_backing_bytes,
         projected_parser_requested_bytes: value.projected_parser_requested_bytes,
         canonical_output_requested_bytes: value.canonical_output_requested_bytes,
         serializer_temporary_requested_bytes: value.serializer_temporary_requested_bytes,

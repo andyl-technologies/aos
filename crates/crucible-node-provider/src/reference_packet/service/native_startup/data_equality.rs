@@ -44,10 +44,38 @@ pub(crate) fn counter_scratch_data() -> usize {
 }
 
 pub(crate) fn matches<T: Serialize + ?Sized>(actual: &Value, expected: &T) -> bool {
-    expected.serialize(Compare(actual)).unwrap_or(false)
+    expected.serialize(Compare(View::Value(actual))).unwrap_or(false)
 }
 
-struct Compare<'a>(&'a Value);
+/// Borrows an object root without constructing or cloning a Value wrapper.
+pub(crate) fn matches_object<T: Serialize + ?Sized>(actual: &Map<String, Value>, expected: &T) -> bool {
+    expected.serialize(Compare(View::Object(actual))).unwrap_or(false)
+}
+
+enum View<'a> {
+    Value(&'a Value),
+    Object(&'a Map<String, Value>),
+}
+
+impl<'a> View<'a> {
+    fn value(&self) -> Option<&'a Value> {
+        match self { Self::Value(value) => Some(value), Self::Object(_) => None }
+    }
+
+    fn as_object(&self) -> Option<&'a Map<String, Value>> {
+        match self { Self::Value(value) => value.as_object(), Self::Object(value) => Some(value) }
+    }
+
+    fn as_bool(&self) -> Option<bool> { self.value().and_then(Value::as_bool) }
+    fn as_i64(&self) -> Option<i64> { self.value().and_then(Value::as_i64) }
+    fn as_u64(&self) -> Option<u64> { self.value().and_then(Value::as_u64) }
+    fn as_f64(&self) -> Option<f64> { self.value().and_then(Value::as_f64) }
+    fn as_str(&self) -> Option<&'a str> { self.value().and_then(Value::as_str) }
+    fn as_array(&self) -> Option<&'a Vec<Value>> { self.value().and_then(Value::as_array) }
+    fn is_null(&self) -> bool { self.value().is_some_and(Value::is_null) }
+}
+
+struct Compare<'a>(View<'a>);
 
 struct Sequence<'a> {
     values: &'a [Value],
@@ -211,7 +239,7 @@ impl SerializeSeq for Sequence<'_> {
     type Error = Unsupported;
     fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Unsupported> {
         let actual = self.values.get(self.position).ok_or(Unsupported)?;
-        self.matches &= value.serialize(Compare(actual))?;
+        self.matches &= value.serialize(Compare(View::Value(actual)))?;
         self.position = self.position.checked_add(1).ok_or(Unsupported)?;
         Ok(())
     }
@@ -266,7 +294,7 @@ impl<'a> SerializeMap for Object<'a> {
     }
     fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Unsupported> {
         let actual = self.pending.take().ok_or(Unsupported)?;
-        self.matches &= value.serialize(Compare(actual))?;
+        self.matches &= value.serialize(Compare(View::Value(actual)))?;
         self.fields = self.fields.checked_add(1).ok_or(Unsupported)?;
         Ok(())
     }
@@ -284,7 +312,7 @@ impl SerializeStruct for Object<'_> {
         value: &T,
     ) -> Result<(), Unsupported> {
         let actual = self.values.get(key).ok_or(Unsupported)?;
-        self.matches &= value.serialize(Compare(actual))?;
+        self.matches &= value.serialize(Compare(View::Value(actual)))?;
         self.fields = self.fields.checked_add(1).ok_or(Unsupported)?;
         Ok(())
     }

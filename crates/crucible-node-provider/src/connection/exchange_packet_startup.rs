@@ -106,6 +106,7 @@ fn quote_startup_parts(
     }
     let requests = frames.checked_sub(1).ok_or_else(credit)?;
     let mut data = OriginalPacketPrefixStorageData {
+        native_retained_backing_bytes: None,
         frames,
         requests,
         evidence_payload_bytes: payload,
@@ -153,6 +154,29 @@ fn quote_startup_parts(
         original_literal_required_bytes: mul(requests, add(maximum_frame, 4)?)?,
         original_slots_required: add(frames, requests)?,
     };
+    if allow_empty_baseline {
+        // The legacy containment projection mixes the original DOM and
+        // canonical work. Replace that one named component by backing only;
+        // all other actual guard/authority/map/root banks remain unchanged.
+        let containment_backing = data.containment_requested_bytes
+            .checked_sub(input.original.dom_and_canonical_scratch_bytes)
+            .and_then(|bytes| bytes.checked_add(input.original.retained_value_backing_bytes))
+            .ok_or_else(credit)?;
+        data.native_retained_backing_bytes = Some(sum(&[
+            data.original_plan_requested_bytes,
+            data.acknowledgement_index_requested_bytes,
+            data.record_slots_requested_bytes,
+            data.outgoing_guard_requested_bytes,
+            data.response_iterator_requested_bytes,
+            containment_backing,
+        ])?);
+    }
+    let mut native_source_backing = sum(&[
+        input.terminal.retained_value_backing_bytes,
+        payload,
+        mul(add(mul(2, input.objects.len())?, 4)?, size_of::<(ContentRef, Vec<u8>)>())?,
+        size_of::<crate::reference_packet::control::PacketControlReply>(),
+    ])?;
     let mut source_owner = sum(&[
         input.terminal.dom_and_canonical_scratch_bytes,
         payload,
@@ -169,6 +193,11 @@ fn quote_startup_parts(
     for object in objects.iter().flatten() {
         let reference = continuation::reference_projection(object, input.maximum_requested_bytes)?;
         source_owner = add(source_owner, reference.dom_and_canonical_scratch_bytes)?;
+        native_source_backing = add(native_source_backing, reference.retained_value_backing_bytes)?;
+        if let Some(retained) = data.native_retained_backing_bytes.as_mut() {
+            *retained = add(*retained, add(reference.retained_value_backing_bytes, growth(transfer)?)?)?;
+        }
+
         data.acknowledgement_index_requested_bytes = add(
             data.acknowledgement_index_requested_bytes,
             add(reference.dom_and_canonical_scratch_bytes, growth(transfer)?)?,
@@ -224,6 +253,7 @@ fn quote_startup_parts(
     let result = OriginalPacketPrefixProjectionStorageData {
         exchange: data,
         source_owner_requested_bytes: source_owner,
+        native_source_backing_bytes: allow_empty_baseline.then_some(native_source_backing),
         declared_counter_scratch_bytes: startup_counter_additional_scratch_data(),
         terminal: copy_storage(input.terminal),
         original: copy_storage(input.original),
@@ -274,7 +304,9 @@ pub(crate) const fn original_packet_prefix_startup_counter_scratch_data() -> usi
 }
 
 const fn startup_counter_additional_scratch_data() -> usize {
-    size_of::<&PacketNative5SourceLaunch>()
+    size_of::<[usize; 4]>()
+        + size_of::<Option<&mut usize>>()
+        + size_of::<&PacketNative5SourceLaunch>()
         + size_of::<OriginalPacketPrefixProjectionStorageData>()
         + size_of::<OriginalPacketPrefixProjectionInput<'static>>()
         + size_of::<[Option<ContentExtent>; 3]>()

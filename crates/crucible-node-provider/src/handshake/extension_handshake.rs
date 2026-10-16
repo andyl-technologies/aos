@@ -99,6 +99,30 @@ impl ExtensionHandshake {
         connection: Id,
         verifier: &mut impl TrustedHandshakeVerifier,
     ) -> Result<ConnectionAuthority, ProviderError> {
+        self.admit_envelopes_with_original(request, response, connection, verifier, None)
+    }
+
+    /// Keeps the same registry negotiation while borrowing native-owned claims.
+    pub(crate) fn admit_original_envelopes(
+        &mut self,
+        request: &Envelope,
+        response: &Envelope,
+        hello: &HelloRequest,
+        result: &HelloResult,
+        connection: Id,
+        verifier: &mut impl TrustedHandshakeVerifier,
+    ) -> Result<ConnectionAuthority, ProviderError> {
+        self.admit_envelopes_with_original(request, response, connection, verifier, Some((hello, result)))
+    }
+
+    fn admit_envelopes_with_original(
+        &mut self,
+        request: &Envelope,
+        response: &Envelope,
+        connection: Id,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        original: Option<(&HelloRequest, &HelloResult)>,
+    ) -> Result<ConnectionAuthority, ProviderError> {
         request.validate()?;
         response.validate()?;
         let offer: ExtensionOfferV1 =
@@ -133,13 +157,12 @@ impl ExtensionHandshake {
             installed: self.installed.as_ref(),
             selected: &retained,
         };
-        let mut authority = self.handshake.admit_envelopes_versioned(
-            request,
-            response,
-            connection,
-            &mut bridge,
-            true,
-        )?;
+        let mut authority = match original {
+            Some(original) => self.handshake.admit_envelopes_with_original(
+                request, response, connection, &mut bridge, true, Some(original))?,
+            None => self.handshake.admit_envelopes_versioned(
+                request, response, connection, &mut bridge, true)?,
+        };
         authority.extensions = Some(Arc::clone(&retained));
         self.selected = Some(retained);
         Ok(authority)

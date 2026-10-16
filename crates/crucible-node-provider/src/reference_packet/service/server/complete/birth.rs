@@ -244,6 +244,10 @@ impl CompleteBirth {
             }
         });
         self.cut.ensure_current()?;
+        // Hello local DOMs and typed claims end before policy/coordinator
+        // construction. All original journals/authority/handshake fields stay
+        // on self, including every failed-partial owner.
+        {
         let value = self
             .exchange
             .as_mut()
@@ -350,7 +354,7 @@ impl CompleteBirth {
             version: "CNP/1".into(),
             session_id: binding.authority.session_id.clone(),
             incarnation_id: binding.authority.incarnation_id.clone(),
-            controller_nonce: hello_request.controller_nonce,
+            controller_nonce: hello_request.controller_nonce.clone(),
             provider_nonce: Bytes::new(nonce),
             selected_features: selected.clone(),
             limits: self.launch.limits.intersection(hello_request.limits)?,
@@ -363,7 +367,7 @@ impl CompleteBirth {
         response.incarnation_id = Nullable(Some(binding.authority.incarnation_id.clone()));
         response.body = body(ResponseShape::Completed {
             operation_state: OperationState::Completed,
-            result: body(result)?,
+            result: body(&result)?,
             extensions: Extensions::new(),
         })?;
         self.cut.ensure_current()?;
@@ -383,9 +387,11 @@ impl CompleteBirth {
             )?);
         }
         self.authority = Some(if let Some(handshake) = self.selected_handshake.as_mut() {
-            handshake.admit_envelopes(
+            handshake.admit_original_envelopes(
                 &request,
                 &response,
+                &hello_request,
+                &result,
                 Id::new("packet-native5-original-connection")?,
                 &mut CompleteVerifier {
                     launch: &self.launch,
@@ -396,9 +402,11 @@ impl CompleteBirth {
             self.handshake
                 .as_mut()
                 .ok_or_else(absent)?
-                .admit_envelopes(
+                .admit_original_envelopes(
                     &request,
                     &response,
+                    &hello_request,
+                    &result,
                     Id::new("packet-native5-original-connection")?,
                     &mut CompleteVerifier {
                         launch: &self.launch,
@@ -406,11 +414,16 @@ impl CompleteBirth {
                     },
                 )?
         });
+        // Their complete body/identity/feature/registry guards have finished;
+        // publication needs the encoded response, not independent typed claims.
+        drop(hello_request);
+        drop(result);
         self.cut.ensure_current()?;
         self.exchange
             .as_mut()
             .ok_or_else(absent)?
             .publish(&serde_json::to_value(&response).map_err(ContractError::from)?)?;
+        }
         let policy = if let Some(restoration) = self.launch.complete_restore_selection {
             Native5Policy::from_original_launch_with_complete_restore(
                 self.launch.selection.clone(),
