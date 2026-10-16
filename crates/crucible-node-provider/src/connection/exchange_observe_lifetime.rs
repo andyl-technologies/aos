@@ -243,6 +243,14 @@ impl OriginalPacketPrefixStorageData {
             preparation,
             self.response_iterator_requested_bytes,
         ])?;
+        if self.requests != 0 {
+            // The old full cap was authenticated above. Keep every uncertain
+            // owner; only the same returning canonical output banks narrow.
+            let ack = acknowledgements::native_original_open_ack_lifetime_storage_data(
+                maximum_frame,
+            )?;
+            lifetime.acknowledgement = ack.returning;
+        }
         Ok(lifetime)
     }
 
@@ -250,6 +258,9 @@ impl OriginalPacketPrefixStorageData {
     pub(crate) fn native_original_observe_prepared_lifetime_counter_scratch_data() -> usize {
         Self::native_original_observe_lifetime_counter_scratch_data()
             + crate::connection::original_native_observe_preparation_counter_scratch_data()
+            + acknowledgements::native_original_open_ack_counter_scratch_data()
+            + size_of::<acknowledgements::OpenAckLifetimeStorageData>()
+            + size_of::<Result<acknowledgements::OpenAckLifetimeStorageData, ProviderError>>()
             + size_of::<&OriginalNativeObservePreparationStorageData>()
             + size_of::<NativeOriginalObservePrefixLifetimeStorageData>()
             + size_of::<Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError>>()

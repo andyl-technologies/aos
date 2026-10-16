@@ -44,7 +44,25 @@ pub(crate) fn original_report_query_receive_storage_data(
     launch: &PacketNative5SourceLaunch,
     purpose: Purpose,
 ) -> Result<OriginalReportQueryReceiveStorageData, ProviderError> {
-    query_receive_storage_from_limits(launch.limits, purpose)
+    native_query_receive_storage_from_limits(launch.limits, purpose)
+}
+
+fn native_query_receive_storage_from_limits(
+    limits: crate::handshake::Limits,
+    purpose: Purpose,
+) -> Result<OriginalReportQueryReceiveStorageData, ProviderError> {
+    let mut data = query_receive_storage_from_limits(limits, purpose)?;
+    if matches!(purpose, Purpose::OriginalObserve12) {
+        // This is the actual restricted native receive, not a feature-selected
+        // generic read. Raw framing, parser, Error and partial owner terms stay.
+        data.raw_and_envelope_requested_bytes = sum(&[
+            acknowledgements::native_original_open_ack_storage(data.maximum_frame_body_bytes)?,
+            mul(2, size_of::<Envelope>())?,
+            size_of::<ConnectionIncident>(),
+        ])?;
+    }
+    data.requested_bytes()?;
+    Ok(data)
 }
 
 fn query_receive_storage_from_limits(
@@ -117,7 +135,10 @@ impl<S: ProviderStream> Connection<S> {
         &self,
     ) -> Result<usize, ProviderError> {
         let receive =
-            query_receive_storage_from_limits(self.authority.limits(), Purpose::OriginalObserve12)?;
+            native_query_receive_storage_from_limits(
+                self.authority.limits(),
+                Purpose::OriginalObserve12,
+            )?;
         OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)
     }
 }
@@ -132,6 +153,12 @@ pub(crate) const fn original_report_query_receive_counter_scratch_data() -> usiz
         + size_of::<ReceivedFrame>()
         + size_of::<Purpose>()
         + size_of::<&OriginalNativeReportStartupAllocation>()
+        + acknowledgements::native_original_open_ack_counter_scratch_data()
+        + size_of::<OriginalReportQueryReceiveStorageData>()
+        + size_of::<Result<OriginalReportQueryReceiveStorageData, ProviderError>>()
+        + size_of::<crate::handshake::Limits>()
+        + size_of::<[usize; 3]>()
+        + size_of::<bool>()
 }
 
 /// Checks static installed source data; this predicate is not a startup issuer.

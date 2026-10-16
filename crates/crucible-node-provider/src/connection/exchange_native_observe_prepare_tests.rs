@@ -214,3 +214,36 @@ fn ordinary_fixture_cannot_create_native_preparation_data() -> TestResult {
     assert!(connection.original_canonical_ack_admission.is_none());
     Ok(())
 }
+
+
+#[test]
+fn selected_output_projection_keeps_retained_owners_and_full_quote_guards() -> TestResult {
+    let (_handshake, connection, request) = fixture()?;
+    let terminal = response(&request)?;
+    let projection = projection(&connection, &request, &terminal, MAXIMUM)?;
+    let preparation = super::super::packet_projection::native_observe_preparation_for_test(
+        &projection, &connection.authority,
+    )?;
+    let quote = &projection.exchange;
+    let maximum_frame = allowance(connection.authority.limits().frame_bytes.get())?;
+    let full = quote.requested_bytes()?;
+    let old = quote.native_original_observe_lifetime_storage_data(maximum_frame, full)?;
+    let selected = quote.native_original_observe_prepared_lifetime_storage_data(
+        &preparation, maximum_frame, full,
+    )?;
+    let ack = acknowledgements::native_original_open_ack_lifetime_storage_data(maximum_frame)?;
+    let broad_ack = acknowledgements::open_ack_lifetime_storage_data(maximum_frame)?;
+
+    assert_eq!(ack.retained, broad_ack.retained);
+    assert_eq!(selected.retained_requested_bytes, old.retained_requested_bytes);
+    assert!(ack.returning < broad_ack.returning);
+    assert!(selected.acknowledgement_work_requested_bytes()? < old.acknowledgement_work_requested_bytes()?);
+    assert!(quote.native_original_observe_prepared_lifetime_storage_data(
+        &preparation, maximum_frame, full - 1,
+    ).is_err());
+    assert!(quote.native_original_observe_prepared_lifetime_storage_data(
+        &preparation, maximum_frame - 1, full,
+    ).is_err());
+    assert!(connection.reader.stream_ref().output.is_empty());
+    Ok(())
+}
