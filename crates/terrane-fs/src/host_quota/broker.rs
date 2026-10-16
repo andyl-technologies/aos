@@ -50,6 +50,10 @@ pub struct ConfiguredScaffold {
 
 /// Binds one immutable disclosure-domain charge owner to its complete roots.
 pub struct ConfiguredOwner {
+    /// Durable host-global claim for precisely this filesystem and project.
+    /// An administrative pre-provisioning owner may leave this absent; the
+    /// broker rejects every owner without an actual retained claim.
+    pub claim: Option<super::RetainedProjectClaim>,
     /// Stable host-assigned identifier.
     pub owner_id: String,
     /// Canonical disclosure domain.
@@ -70,6 +74,10 @@ pub struct ConfiguredOwner {
 
 impl ConfiguredOwner {
     fn inspect(&self) -> io::Result<(NativeQuota, Vec<QuotaRoot>)> {
+        self.claim
+            .as_ref()
+            .ok_or_else(|| io::Error::other("owner has no durable project claim"))?
+            .verify(&self.filesystem_uuid, self.project_id)?;
         terrane_core::properties::Domain::parse(&self.domain)
             .map_err(|_| io::Error::other("invalid configured disclosure domain"))?;
         if self.owner_id.is_empty()

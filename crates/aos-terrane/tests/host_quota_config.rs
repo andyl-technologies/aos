@@ -46,6 +46,14 @@ fn host_quota_admin_ledger_preserves_domain_and_project_vm() {
     );
     let mount =
         PathBuf::from(std::env::var_os("TERRANE_HOST_QUOTA_ADMIN_ROOT").expect("guest mount"));
+    let registry = std::path::Path::new("/var/lib/terrane-host/project-claims");
+    fs::create_dir_all(registry).expect("fixed host registry");
+    fs::set_permissions(
+        registry.parent().expect("registry parent"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .expect("administrative parent custody");
+    fs::set_permissions(registry, fs::Permissions::from_mode(0o700)).expect("registry custody");
     let host = mount.join("host-ledger");
     let layout = mount.join("ledger-owner");
     fs::create_dir(&host).expect("host administrative directory");

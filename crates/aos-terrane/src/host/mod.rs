@@ -10,11 +10,16 @@
 //!
 //! The host ledger stores an explicit transition and original inode custody:
 //! ```toml
-//! version = 1
+//! version = 2
 //! epoch = "00000000000000000000000000000001"
 //! phase = "provisioning" # Becomes "ready" only after verified restoration.
 //! bindings = [] # Each binding records UUID, inode, domain, project and uid/gid/mode.
+//! [registry]
+//! device = 1
+//! inode = 2
 //! ```
+
+mod claims;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,7 +74,7 @@ pub struct RootConfig {
     pub path: PathBuf,
 }
 
-#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Binding {
     owner_id: String,
@@ -98,6 +103,7 @@ enum ProvisioningPhase {
 struct Ledger {
     version: u32,
     epoch: String,
+    registry: claims::RegistryIdentity,
     phase: ProvisioningPhase,
     bindings: Vec<Binding>,
 }
@@ -272,6 +278,7 @@ fn retain(config: &HostConfig) -> io::Result<Vec<ConfiguredOwner>> {
             allowed_client_uids: owner.allowed_client_uids.clone(),
             roots,
             scaffolding: Vec::new(),
+            claim: None,
         });
     }
     Ok(owners)
@@ -398,7 +405,7 @@ fn stable_binding(left: &Binding, right: &Binding) -> bool {
 
 fn read_ledger(path: &Path, config: &HostConfig) -> io::Result<Ledger> {
     let ledger: Ledger = toml::from_str(&protected_text(path)?).map_err(parse_error)?;
-    if ledger.version != 1
+    if ledger.version != 2
         || ledger.epoch != config.epoch
         || ledger.bindings.len() > 1024
         || !ledger
@@ -567,6 +574,11 @@ fn persist_ledger(path: &Path, ledger: &Ledger) -> io::Result<()> {
 
 fn verify_live(owners: &[ConfiguredOwner]) -> io::Result<()> {
     for owner in owners {
+        owner
+            .claim
+            .as_ref()
+            .ok_or_else(|| io::Error::other("owner has no durable project claim"))?
+            .verify(&owner.filesystem_uuid, owner.project_id)?;
         for scaffold in &owner.scaffolding {
             let named =
                 terrane_fs::host_quota::open_directory_child(&scaffold.parent, &scaffold.name)?
@@ -649,6 +661,14 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     // to a quota project; the directory is outside the content layout.
     let _ledger_guard =
         terrane_fs::host_quota::DomainProvisioningGuard::exclusive(&ledger_directory)?;
+    let initial_enrollment = match fs::symlink_metadata(ledger_path) {
+        Ok(_) => false,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error),
+    };
+    let registry = claims::Registry::open(&config, ledger_path, initial_enrollment)?;
+    let _registry_guard =
+        terrane_fs::host_quota::DomainProvisioningGuard::exclusive(registry.directory())?;
     let mut ledger = match fs::symlink_metadata(ledger_path) {
         Ok(_) => read_ledger(ledger_path, &config)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -667,16 +687,19 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
                 )?;
             }
             let ledger = Ledger {
-                version: 1,
+                version: 2,
                 epoch: config.epoch.clone(),
+                registry: registry.identity(),
                 phase: ProvisioningPhase::Provisioning,
                 bindings: snapshot.into_iter().map(|(binding, _)| binding).collect(),
             };
+            registry.ensure(&ledger, &owners)?;
             persist_ledger(ledger_path, &ledger)?;
             ledger
         }
         Err(error) => return Err(error),
     };
+    registry.bind(&ledger, &mut owners)?;
     let directories = bind_ledger(&config, &mut owners, &ledger)?;
     if ledger.phase == ProvisioningPhase::Ready {
         return verify_live(&owners);
@@ -726,6 +749,8 @@ pub fn serve(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     if ledger.phase != ProvisioningPhase::Ready {
         return Err(io::Error::other("host provisioning remains incomplete"));
     }
+    let registry = claims::Registry::open(&config, ledger_path, false)?;
+    registry.bind(&ledger, &mut owners)?;
     bind_ledger(&config, &mut owners, &ledger)?;
     verify_live(&owners)?;
     let parent = config
