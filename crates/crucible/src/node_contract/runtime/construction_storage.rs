@@ -89,7 +89,8 @@ impl Requested {
 fn collect_buffer_storage<T>(entries: usize, maximum: usize) -> Result<usize, RuntimeError> {
     let slots = if entries == 0 { 0 } else { entries.max(4) };
     let sort = stable_sort_heap_storage::<T>(entries)?;
-    let bytes = slots.checked_mul(size_of::<T>())
+    let bytes = slots
+        .checked_mul(size_of::<T>())
         .and_then(|bytes| bytes.checked_add(sort))
         .filter(|bytes| *bytes <= maximum)
         .ok_or(RuntimeError::ResourceLimit)?;
@@ -98,26 +99,36 @@ fn collect_buffer_storage<T>(entries: usize, maximum: usize) -> Result<usize, Ru
 
 fn stable_sort_heap_storage<T>(entries: usize) -> Result<usize, RuntimeError> {
     let width = size_of::<T>();
-    if width == 0 || entries < 2 { return Ok(0); }
+    if width == 0 || entries < 2 {
+        return Ok(0);
+    }
     // The normal stable-sort path uses insertion through20, then the exact
     // driftsort scratch rule (general small-sort scratch is32+16 slots).
-    let drift = if entries <= 20 { 0 } else {
-        (entries - entries / 2).max(entries.min(8_000_000 / width)).max(48)
+    let drift = if entries <= 20 {
+        0
+    } else {
+        (entries - entries / 2)
+            .max(entries.min(8_000_000 / width))
+            .max(48)
     };
     // The optimize_for_size standard-library branch uses len/2. Conservatively
     // cover either compiled branch, including a large tuple at small length.
     let slots = drift.max(entries / 2);
-    if slots <= 4096 / width { return Ok(0); }
+    if slots <= 4096 / width {
+        return Ok(0);
+    }
     slots.checked_mul(width).ok_or(RuntimeError::ResourceLimit)
 }
 
 fn stable_sort_fixed_scratch_data() -> usize {
     let width = size_of::<(Id, NodeSnapshot)>()
         .max(size_of::<(Id, Box<dyn SimulationNode>)>())
-        .max(size_of::<OwnerIdentity>()).max(size_of::<Id>());
+        .max(size_of::<OwnerIdentity>())
+        .max(size_of::<Id>());
     let alignment = align_of::<(Id, NodeSnapshot)>()
         .max(align_of::<(Id, Box<dyn SimulationNode>)>())
-        .max(align_of::<OwnerIdentity>()).max(align_of::<Id>());
+        .max(align_of::<OwnerIdentity>())
+        .max(align_of::<Id>());
     // One sort runs at a time. AlignedStorage<T,4096> remains live even when
     // sort uses a heap buffer; insertion keeps one ManuallyDrop<T> plus its
     // CopyOnDrop{src,dst,len}. Driftsort also names66 Run(usize) and66 u8 views.
@@ -323,7 +334,9 @@ fn quote(
     quote.retained.tree::<Id, NodeSnapshot>(4)?;
     quote.retained.tree::<Id, OwnerCustody>(4)?;
     quote.transient.collect_buffer::<(Id, NodeSnapshot)>(4)?;
-    quote.transient.collect_buffer::<(Id, Box<dyn SimulationNode>)>(4)?;
+    quote
+        .transient
+        .collect_buffer::<(Id, Box<dyn SimulationNode>)>(4)?;
 
     // validate_roster retains both node sets, the owner map and four final owner
     // sets. Sum even sequential sets, and retain their independent cloned keys.
@@ -356,7 +369,9 @@ fn quote(
         quote
             .retained
             .tree::<Id, ()>(owner.owner.state_domain_ids.len())?;
-        quote.transient.collect_buffer::<Id>(owner.owner.state_domain_ids.len())?;
+        quote
+            .transient
+            .collect_buffer::<Id>(owner.owner.state_domain_ids.len())?;
         for domain in &owner.owner.state_domain_ids {
             quote.retained.owned(domain)?;
         }
@@ -551,7 +566,8 @@ mod tests {
     fn real_domain_collect_keeps_input_slots_and_large_sort_workspace() -> TestResult {
         // Actual domain cardinality is independent of the four-node roster.
         // A real512-element collect crosses the pinned4096-byte Id sort bank.
-        let domains = (0..512).map(|index| Id::new(format!("domain-{index}")))
+        let domains = (0..512)
+            .map(|index| Id::new(format!("domain-{index}")))
             .collect::<Result<Vec<_>, _>>()?;
         let inputs: Vec<_> = domains.iter().cloned().collect();
         let sorted: BTreeSet<_> = domains.iter().cloned().collect();
@@ -560,8 +576,10 @@ mod tests {
         let input_bytes = inputs.capacity() * size_of::<Id>();
         assert!(quoted >= input_bytes + domains.len() * size_of::<Id>());
         assert_eq!(collect_buffer_storage::<Id>(domains.len(), quoted)?, quoted);
-        assert_eq!(collect_buffer_storage::<Id>(domains.len(), quoted - 1),
-                   Err(RuntimeError::ResourceLimit));
+        assert_eq!(
+            collect_buffer_storage::<Id>(domains.len(), quoted - 1),
+            Err(RuntimeError::ResourceLimit)
+        );
         assert_eq!(stable_sort_heap_storage::<Id>(20)?, 0);
         assert_eq!(stable_sort_heap_storage::<Id>(21)?, 0);
         assert!(stable_sort_heap_storage::<Id>(512)? >= 512 * size_of::<Id>());

@@ -62,10 +62,13 @@ impl OriginalSchedulingState {
     ) -> Result<usize, RuntimeError> {
         use super::RuntimeOwnedStorage;
         let header = super::NodeRuntime::capture_protocol_shared_header_storage(
-            1, std::mem::align_of::<Original>(), maximum,
+            1,
+            std::mem::align_of::<Original>(),
+            maximum,
         )?;
         let world = world.owned_storage()?;
-        header.checked_add(std::mem::size_of::<Original>())
+        header
+            .checked_add(std::mem::size_of::<Original>())
             .and_then(|bytes| bytes.checked_add(world))
             .filter(|bytes| *bytes <= maximum)
             .ok_or(RuntimeError::ResourceLimit)
