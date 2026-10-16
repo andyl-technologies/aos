@@ -222,9 +222,14 @@ mod tests {
             UnixDatagram::pair()?,
         ];
         let [(a, peer_a), (b, peer_b), (c, peer_c)] = pairs;
-        let (group,reader)=crucible::node_adapters::cnp::PacketCompleteEffectReceiverGroup::from_original_receivers([a,b,c]);
+        let (group, reader) =
+            crucible::node_adapters::cnp::PacketCompleteEffectReceiverGroup::from_original_receivers(
+                [a, b, c]
+            );
+
         let original = Rc::new(reader);
         let selected = ReaderOwner::Shared(Rc::clone(&original)).into_shared();
+
         assert!(Rc::ptr_eq(&original, &selected));
         selected
             .authenticate_original_group(&group)
