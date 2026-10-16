@@ -86,6 +86,7 @@ def select_artifact(events, packages, workspace, target, kind):
             and pathlib.Path(artifact["target"]["src_path"]) == workspace / source
             and sorted(artifact["features"]) == FS_FEATURES
             and profile["test"] is test and profile["debug_assertions"] is True
+            and profile["overflow_checks"] is True
             and profile["opt_level"] == ("s" if test else "0")
             and profile["debuginfo"] == (0 if test else 2)
             and executable.is_file() and os.access(executable, os.X_OK)
