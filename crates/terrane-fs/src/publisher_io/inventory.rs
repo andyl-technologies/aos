@@ -5,9 +5,10 @@
 //! chunks retain only bounded frame-declared sizes until independent HOST-14
 //! verification. Pages retain one owner-issued snapshot, never caller offsets.
 //! Unhandled private staging or publication-state remnants fail the whole scan.
-//! Empty candidate pages do not establish quota custody: the recovery owner must
-//! additionally verify actual descendant project assignments and inheritance
-//! against the authenticated prepared roots before claiming physical readiness.
+//! Private descendants must retain the actual layout-root project assignment,
+//! with inheritance enabled on directories. These read-only comparisons grant
+//! no quota or recovery-completion receipt: configured runtime separately binds
+//! the retained root to authenticated finite quotas before physical readiness.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -121,6 +122,13 @@ fn names(directory: &File, remaining: usize) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
+fn require_empty(directory: &File, budget: usize, message: &'static str) -> io::Result<()> {
+    if !names(directory, budget)?.is_empty() {
+        return Err(invalid(message));
+    }
+    Ok(())
+}
+
 fn digest(name: &str, size: usize) -> io::Result<Vec<u8>> {
     if name.len() != size * 2
         || !name
@@ -222,6 +230,23 @@ impl NativeInventory {
         Ok(NativeCommandResult::Inventory { keys, next_cursor })
     }
 
+    fn check_project(&self, file: &File, kind: InodeKind) -> io::Result<()> {
+        // The retained root comes from native preparation, not request fields.
+        // Configured startup independently authenticates its finite quota. The
+        // installed confinement prevents future setter changes but cannot make
+        // preexisting foreign-project descendants safe merely by observing it.
+        let root = crate::host_quota::NativeProject::inspect(&self.root)?;
+        let actual = crate::host_quota::NativeProject::inspect(file)?;
+        if !root.inherit
+            || actual.device != root.device
+            || actual.project_id != root.project_id
+            || (kind == InodeKind::Directory && !actual.inherit)
+        {
+            return Err(invalid("inventory inode project or inheritance changed"));
+        }
+        Ok(())
+    }
+
     fn check(&self, file: &File, custody: Custody, kind: InodeKind) -> io::Result<()> {
         let metadata = file.metadata()?;
         let encoded = custody == Custody::Content;
@@ -240,7 +265,7 @@ impl NativeInventory {
         {
             return Err(invalid("inventory inode custody changed"));
         }
-        Ok(())
+        self.check_project(file, kind)
     }
 
     async fn sealed(&self, name: &str, file: &mut File) -> io::Result<NativeBodyKey> {
@@ -339,9 +364,11 @@ impl NativeInventory {
             if directory.metadata()?.mode() & 0o7777 != 0o700 {
                 return Err(invalid("publisher staging incarnation is not private"));
             }
-            if !names(&directory, *budget)?.is_empty() {
-                return Err(invalid("unreconciled publisher staging contents"));
-            }
+            require_empty(
+                &directory,
+                *budget,
+                "unreconciled publisher staging contents",
+            )?;
         }
 
         charge(budget)?;
@@ -354,6 +381,7 @@ impl NativeInventory {
             return Err(invalid("publisher state parent custody changed"));
         }
         charge(budget)?;
+        self.check_project(&state, InodeKind::Directory)?;
         let publication = open(&state, "publication", true)?;
         self.check(&publication, Custody::Publisher, InodeKind::Directory)?;
         if publication.metadata()?.mode() & 0o7777 != 0o700 {
@@ -364,15 +392,17 @@ impl NativeInventory {
         // Binding and retirement records are physical recovery state, not body
         // keys. Until they are genuinely reconciled, an empty wire inventory
         // must not silently certify them (or unknown temporary remnants) absent.
-        if !names(&publication, *budget)?.is_empty() {
-            return Err(invalid("unreconciled publisher publication-state contents"));
-        }
-        Ok(())
+        require_empty(
+            &publication,
+            *budget,
+            "unreconciled publisher publication-state contents",
+        )
     }
 
     async fn scan(&self) -> io::Result<Vec<NativeBodyKey>> {
         let mut keys = Vec::new();
         let mut budget = MAX_CANDIDATES;
+        self.check_project(&self.root, InodeKind::Directory)?;
         self.scan_private_remnants(&mut budget)?;
         for (class, encoded) in [("sealed", false), ("chunks", true)] {
             charge(&mut budget)?;
@@ -537,8 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn private_remnants_prevent_empty_recovery_inventory() {
-        use std::os::unix::fs::PermissionsExt;
+    fn private_remnant_names_prevent_empty_namespace_classification() {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -548,44 +577,24 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         std::fs::create_dir(&path).unwrap();
-        for relative in ["staging", "state", "state/publication"] {
-            std::fs::create_dir(path.join(relative)).unwrap();
-            std::fs::set_permissions(path.join(relative), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-        }
-        let current = path.join("staging").join(std::process::id().to_string());
-        std::fs::create_dir(&current).unwrap();
-        std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let inventory = NativeInventory {
-            root: File::open(&path).unwrap(),
-            location: HostDomainLocation::new(
-                path.clone(),
-                "public".into(),
-                ChunkProfile::cdc_1m([0; 32]),
-            )
-            .unwrap(),
-            content_uid: rustix::process::geteuid().as_raw(),
-            content_gid: rustix::process::getegid().as_raw(),
-            snapshot: None,
-        };
+        let directory = File::open(&path).unwrap();
+        let scan = || require_empty(&directory, MAX_CANDIDATES, "unreconciled private contents");
 
-        // This read-only helper test mints no native readiness/quota receipt.
-        let scan = || {
-            let mut budget = MAX_CANDIDATES;
-            inventory.scan_private_remnants(&mut budget)
-        };
+        // This tests name coverage only. Actual project/inheritance inspection
+        // requires a provisioned native filesystem in the fresh-process VM.
         scan().unwrap();
-        for remnant in [
-            current.join("incomplete"),
-            path.join("state/publication/.binding-interrupted"),
-            path.join("state/publication/retirement-existing.toml"),
-            path.join("state/publication/unknown"),
+        for name in [
+            "incomplete",
+            ".binding-interrupted",
+            "retirement-existing.toml",
+            "unknown",
         ] {
+            let remnant = path.join(name);
             std::fs::write(&remnant, b"unreconciled").unwrap();
             assert!(scan().is_err());
             std::fs::remove_file(remnant).unwrap();
         }
-        std::fs::create_dir(path.join("staging/stale")).unwrap();
+        std::fs::create_dir(path.join("stale")).unwrap();
         assert!(scan().is_err());
         std::fs::remove_dir_all(path).unwrap();
     }
