@@ -10,6 +10,69 @@ pub(super) struct CleanupReservation {
     first_failure: Option<crate::ProductionVmConstructionCleanupError>,
 }
 
+/// Retains an original World reservation and its exact preborn Main cell.
+///
+/// Only successful reservation beneath the real Main creates this move-only
+/// bundle. Its private cell selection supplies no process, Source, cleanup or
+/// physical-return authority. Publication moves its existing reservation Box;
+/// retaining the selection creates no replacement allocation or queue owner.
+#[must_use = "retain the same reservation or move it into its owning cleanup path"]
+pub struct WorldLifecycleCleanupReservation {
+    reservation: Box<
+        dyn ProductionVmCleanupReservation<Failure = crate::ProductionVmConstructionCleanupError>,
+    >,
+    cell: ReservedWorldCell,
+}
+
+struct ReservedWorldCell {
+    queue: Weak<LifecycleCleanupQueue>,
+    index: usize,
+    epoch: u64,
+}
+
+impl WorldLifecycleCleanupReservation {
+    /// Checks retained cell custody without publishing, returning or renewing it.
+    pub(crate) fn is_reserved(&self) -> bool {
+        let Some(queue) = self.cell.queue.upgrade() else {
+            return false;
+        };
+        let Some(slot) = queue.slots.get(self.cell.index) else {
+            return false;
+        };
+        let Some(cell) = borrow_reserved_cell(slot, self.cell.epoch) else {
+            return false;
+        };
+        cell.controls.is_some()
+    }
+
+    /// Moves the original neutral reservation Box without a replacement wrapper.
+    pub(crate) fn into_reservation(
+        self,
+    ) -> Box<
+        dyn ProductionVmCleanupReservation<Failure = crate::ProductionVmConstructionCleanupError>,
+    > {
+        self.reservation
+    }
+}
+
+fn borrow_reserved_cell(
+    slot: &CleanupSlot,
+    epoch: u64,
+) -> Option<std::sync::MutexGuard<'_, CleanupCell>> {
+    if !slot.is(CleanupPhase::Reserved) {
+        return None;
+    }
+    let cell = slot.cell.try_lock().ok()?;
+    if cell.epoch != epoch
+        || cell.owner.is_some()
+        || cell.handoff
+        || !slot.is(CleanupPhase::Reserved)
+    {
+        return None;
+    }
+    Some(cell)
+}
+
 impl LifecycleCleanupHandle {
     pub(crate) fn owner(&self) -> Result<Arc<LifecycleCleanupQueue>, LifecycleApiError> {
         self.queue
@@ -17,51 +80,41 @@ impl LifecycleCleanupHandle {
             .ok_or_else(|| refusal("containing Main cleanup owner is absent"))
     }
 
-    /// Moves the selected body charge into its exact cell before body birth.
+    /// Moves the body charge and exact cell selection into one retained bundle.
     pub(crate) fn reserve_for_world(
         &self,
         controls: AuthenticatedNativeWorldControlLease,
     ) -> Result<
-        Box<
-            dyn ProductionVmCleanupReservation<
-                Failure = crate::ProductionVmConstructionCleanupError,
-            >,
-        >,
+        WorldLifecycleCleanupReservation,
         (AuthenticatedNativeWorldControlLease, LifecycleApiError),
-    > {
-        self.reserve_with(controls, |cell, controls| cell.controls = Some(controls))
-    }
-
-    fn reserve_with<T>(
-        &self,
-        input: T,
-        attach: impl FnOnce(&mut CleanupCell, T),
-    ) -> Result<
-        Box<
-            dyn ProductionVmCleanupReservation<
-                Failure = crate::ProductionVmConstructionCleanupError,
-            >,
-        >,
-        (T, LifecycleApiError),
     > {
         let queue = match self.queue.upgrade() {
             Some(queue) => queue,
-            None => return Err((input, refusal("containing Main cleanup owner is absent"))),
+            None => return Err((controls, refusal("containing Main cleanup owner is absent"))),
         };
         for (index, slot) in queue.slots.iter().enumerate() {
             if !slot.claim(CleanupPhase::Free, CleanupPhase::Reserving) {
                 continue;
             }
-            let epoch = initialize_reserved_slot(slot, input, attach)?;
-            return Ok(Box::new(CleanupReservation {
-                queue: Weak::clone(&self.queue),
-                index,
-                epoch,
-                observed: ProductionVmCleanupStage::BodyRetained,
-                first_failure: None,
-            }));
+            let epoch = initialize_reserved_slot(slot, controls, |cell, controls| {
+                cell.controls = Some(controls);
+            })?;
+            return Ok(WorldLifecycleCleanupReservation {
+                reservation: Box::new(CleanupReservation {
+                    queue: Weak::clone(&self.queue),
+                    index,
+                    epoch,
+                    observed: ProductionVmCleanupStage::BodyRetained,
+                    first_failure: None,
+                }),
+                cell: ReservedWorldCell {
+                    queue: Weak::clone(&self.queue),
+                    index,
+                    epoch,
+                },
+            });
         }
-        Err((input, refusal("prepaid cleanup ownership is occupied")))
+        Err((controls, refusal("prepaid cleanup ownership is occupied")))
     }
 }
 

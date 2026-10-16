@@ -156,21 +156,38 @@ let Some((reservation, owner)) = returned.take() else {
         &self,
         controls: AuthenticatedNativeWorldControlLease,
     ) -> Result<
-        Box<
-            dyn ProductionVmCleanupReservation<
-                Failure = crate::ProductionVmConstructionCleanupError,
-            >,
-        >,
+        WorldLifecycleCleanupReservation,
         (AuthenticatedNativeWorldControlLease, LifecycleApiError),
-    > { self.reserve_with(controls, |cell, controls| cell.controls = Some(controls)) }"#,
+    > {"#,
                     1,
                 ),
                 (
-                    r#"let epoch = initialize_reserved_slot(slot, input, attach)?;
-return Ok(Box::new(CleanupReservation {
-    queue: Weak::clone(&self.queue), index, epoch,
-    observed: ProductionVmCleanupStage::BodyRetained, first_failure: None,
-}));"#,
+                    r#"let epoch = initialize_reserved_slot(slot, controls, |cell, controls| {
+    cell.controls = Some(controls);
+})?;
+return Ok(WorldLifecycleCleanupReservation {
+    reservation: Box::new(CleanupReservation {
+        queue: Weak::clone(&self.queue), index, epoch,
+        observed: ProductionVmCleanupStage::BodyRetained, first_failure: None,
+    }),
+    cell: ReservedWorldCell { queue: Weak::clone(&self.queue), index, epoch, },
+});"#,
+                    1,
+                ),
+                (
+                    r#"let Some(queue) = self.cell.queue.upgrade() else { return false; };
+let Some(slot) = queue.slots.get(self.cell.index) else { return false; };
+let Some(cell) = borrow_reserved_cell(slot, self.cell.epoch) else { return false; };
+cell.controls.is_some()"#,
+                    1,
+                ),
+                (
+                    r#"if !slot.is(CleanupPhase::Reserved) { return None; }
+let cell = slot.cell.try_lock().ok()?;
+if cell.epoch != epoch || cell.owner.is_some() || cell.handoff || !slot.is(CleanupPhase::Reserved) {
+    return None;
+}
+Some(cell)"#,
                     1,
                 ),
                 (
@@ -359,9 +376,20 @@ if !matches!(stage, Ok(ProductionVmCleanupStage::Complete)) {"#,
                 ),
                 (
                     r#"match factory.reserve_world_lifecycle_cleanup(controls) {
-    Ok(reservation) => { self.reservation = Some(reservation); Ok(()) }
+    Ok(reservation) => {
+        let reserved = reservation.is_reserved();
+        self.reservation = Some(reservation);
+        if reserved { Ok(()) } else {
+            Err(QemuVmRealizationError::CleanupRetained { operation: "", })
+        }
+    }
     Err((controls, source)) => { self.controls = Some(controls); Err(source) }
 }"#,
+                    1,
+                ),
+                (
+                    r#"|| self.reservation.as_ref().is_none_or(|reservation| !reservation.is_reserved())
+|| self.controls.is_some()"#,
                     1,
                 ),
                 (
@@ -426,11 +454,7 @@ let result = owner.reserve_cleanup().and_then(|()| {"#,
                 (
                     r#"pub(crate) fn with_cleanup_reservation(
         mut self,
-        reservation: Box<
-            dyn crucible_api::ProductionVmCleanupReservation<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-        >,
+        reservation: crate::WorldLifecycleCleanupReservation,
     ) -> Self { self.cleanup_reservation = Some(reservation); self }"#,
                     1,
                 ),
@@ -443,7 +467,7 @@ let result = owner.reserve_cleanup().and_then(|()| {"#,
                     Failure = crate::ProductionVmConstructionCleanupError,
                 >,
         >,
-    > { self.cleanup_reservation.take() }"#,
+    > { self.cleanup_reservation.take().map(crate::WorldLifecycleCleanupReservation::into_reservation) }"#,
                     1,
                 ),
                 (

@@ -19,6 +19,7 @@ use crucible_linux_resource::host_services::process_birth::{
 
 mod reservation;
 use reservation::CleanupReservation;
+pub use reservation::WorldLifecycleCleanupReservation;
 #[cfg(test)]
 pub(crate) use reservation::component_owner_history_for_test;
 

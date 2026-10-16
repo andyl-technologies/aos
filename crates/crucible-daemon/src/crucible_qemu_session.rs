@@ -672,7 +672,7 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
         &self,
         controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
     ) -> Result<
-        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crate::ProductionVmConstructionCleanupError>>,
+        crate::WorldLifecycleCleanupReservation,
         (
             crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
             QemuVmRealizationError,

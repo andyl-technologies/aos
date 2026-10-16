@@ -68,13 +68,7 @@ where
     // A real shared factory facade is inline: retaining it clones only its
     // existing host Arc. The field itself exposes no permit or process contract.
     fork_target_factory: Option<F>,
-    cleanup_reservation: Option<
-        Box<
-            dyn crucible_api::ProductionVmCleanupReservation<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-        >,
-    >,
+    cleanup_reservation: Option<crate::WorldLifecycleCleanupReservation>,
     construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
     retained_node: Option<RetainedNodeLaunch>,
     #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
@@ -205,11 +199,7 @@ where
     /// Moves the exact claimed World's token into the successful launcher.
     pub(crate) fn with_cleanup_reservation(
         mut self,
-        reservation: Box<
-            dyn crucible_api::ProductionVmCleanupReservation<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-        >,
+        reservation: crate::WorldLifecycleCleanupReservation,
     ) -> Self {
         self.cleanup_reservation = Some(reservation);
         self
@@ -468,7 +458,9 @@ where
                 >,
         >,
     > {
-        self.cleanup_reservation.take()
+        self.cleanup_reservation
+            .take()
+            .map(crate::WorldLifecycleCleanupReservation::into_reservation)
     }
 
     #[cfg(target_os = "linux")]

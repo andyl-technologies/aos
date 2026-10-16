@@ -439,6 +439,21 @@ the Loop allocation; every refusal returns the same Box and its owners. Both
 new identity/destruction controls and the existing value-transfer controls pass.
 This supplies no new allocation or operational allowance and does not activate
 the still-unimplemented Source retirement phase.
+The actual cleanup producer now returns one opaque move-only bundle containing
+its original reservation Box and the exact Weak queue, index and epoch. Pending
+validates that same reserved cell before generation storage allocation and before
+successful transfer; the launcher retains the same bundle inline. Validation
+uses a nonblocking lock and rejects changed phase or epoch, occupied ownership,
+handoff, missing controls, poison, contention and an unavailable queue. Neutral
+publication consumes the original Box without another wrapper or strong queue
+edge. The existing size queries include this inline storage before body birth.
+Both new reservation controls and all nine existing module controls pass in
+release mode. Default and private workspace/all-target checks pass, as do all
+five hygiene controls and the publication mutation controls. This transports
+cell identity only: the post-body World/observer continuation and pre-Service
+reservation are still required, and receipt completion still proves only body
+destruction and control closure.
+
 Consuming demotion, restore-refusal and descendant-retirement callers must retain
 the actual Source or its existing cleanup handoff across failure. Typed error
 preservation is a prerequisite, not an implementation of these ownership seams.
@@ -460,7 +475,7 @@ number that another thread could reuse. The fixture now keeps its original inode
 linked and compares device/inode identity before and after last-alias destruction,
 while preserving its slot, Service-pin and exact capacity-return assertions.
 The complete parallel rerun has 1,709 passes, the same 17 failed names and 43
-ignored tests in 314.12 seconds. The failed 18-test run remains recorded; an
+ignored tests in 314.12 seconds. The run with 18 failures remains recorded; an
 isolated passing rerun was not used to clear it. The standards suite now has 34
 passes and its existing broad classifier
 failure, with 26 findings after the exact publication declaration contract;
