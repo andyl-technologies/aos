@@ -14,12 +14,73 @@
   cleanPath = path: path != "/" && builtins.all (part: part != ".." && part != "." && part != "") (builtins.tail (lib.splitString "/" path));
   referenceType = types.strMatching "(file:/[^[:space:]]+|secret:[^[:space:]]+|anonymous:[^[:space:]]+)";
   option = type: default: description: lib.mkOption {inherit type default description;};
+  positive = types.addCheck types.int (value: value > 0);
+  uidType = types.addCheck types.int (value: value >= 0 && value < 4294967295);
+  ownerIdType = types.addCheck types.str (value: builtins.stringLength value > 0 && builtins.stringLength value <= 256);
+  publisherType = types.submodule {
+    options = {
+      socketPath = lib.mkOption {
+        type = pathType;
+        description = "Absolute publisher transport socket path.";
+      };
+      serveUid = lib.mkOption {
+        type = uidType;
+        description = "Authorized serve process UID.";
+      };
+      publishUid = lib.mkOption {
+        type = uidType;
+        description = "Publisher process UID.";
+      };
+      contentUid = lib.mkOption {
+        type = uidType;
+        description = "Cache content directory owner UID.";
+      };
+      contentGid = lib.mkOption {
+        type = uidType;
+        description = "Cache content directory group ID.";
+      };
+      maxConnections = lib.mkOption {
+        type = types.addCheck positive (value: value <= 1024);
+        description = "Maximum simultaneous publisher connections, up to 1024.";
+      };
+    };
+  };
+  domainPublisherType = types.submodule {
+    options = {
+      retirementGraceMs = lib.mkOption {
+        type = types.addCheck positive (value: value <= 300000);
+        description = "Explicit retirement grace in milliseconds, up to 300000.";
+      };
+      chunkProfile = lib.mkOption {
+        type = types.enum ["cdc-1m"];
+        description = "Explicit registered chunk profile.";
+      };
+      chunkSeed = lib.mkOption {
+        type = types.strMatching "[0-9a-f]{64}";
+        description = "Explicit lowercase hexadecimal chunk-profile seed.";
+      };
+    };
+  };
+  quotaType = types.submodule {
+    options = {
+      socketPath = lib.mkOption {
+        type = pathType;
+        description = "Absolute host quota inspector socket path.";
+      };
+      configurationEpoch = lib.mkOption {
+        type = types.strMatching "[0-9a-f]{32}";
+        description = "Explicit lowercase hexadecimal host provisioning epoch.";
+      };
+    };
+  };
   domainType = types.submodule {
     options = {
       path = lib.mkOption {
         type = pathType;
         description = "Absolute filesystem root for this disclosure domain.";
       };
+      publisher = option (types.nullOr domainPublisherType) null "Explicit native publisher profile for this domain; omission supplies no defaults.";
+      quotaOwnerId = option (types.nullOr ownerIdType) null "Explicit host allocation owner identifier.";
       wipe = option (types.nullOr (types.enum ["none" "zero"])) null "Wipe policy; unset defaults to zero for private domains and none otherwise (DOM-18). Explicit policies are preserved.";
     };
   };
@@ -87,9 +148,36 @@
       path = cfg.hostTier.path;
       size_bytes = cfg.hostTier.sizeBytes;
       reassembly = cfg.hostTier.reassembly;
+      publisher =
+        if cfg.hostTier.publisher == null
+        then null
+        else {
+          socket_path = cfg.hostTier.publisher.socketPath;
+          serve_uid = cfg.hostTier.publisher.serveUid;
+          publish_uid = cfg.hostTier.publisher.publishUid;
+          content_uid = cfg.hostTier.publisher.contentUid;
+          content_gid = cfg.hostTier.publisher.contentGid;
+          max_connections = cfg.hostTier.publisher.maxConnections;
+        };
+      quota =
+        if cfg.hostTier.quota == null
+        then null
+        else {
+          socket_path = cfg.hostTier.quota.socketPath;
+          configuration_epoch = cfg.hostTier.quota.configurationEpoch;
+        };
       domains =
         lib.mapAttrs (name: domain: {
           inherit (domain) path;
+          quota_owner_id = domain.quotaOwnerId;
+          publisher =
+            if domain.publisher == null
+            then null
+            else {
+              retirement_grace_ms = domain.publisher.retirementGraceMs;
+              chunk_profile = domain.publisher.chunkProfile;
+              chunk_seed = domain.publisher.chunkSeed;
+            };
           wipe =
             if domain.wipe != null
             then domain.wipe
@@ -172,6 +260,8 @@ in {
       }) ["region" "zone" "host"]);
     }) {} "Store locality labels.";
     hostTier = {
+      publisher = option (types.nullOr publisherType) null "Explicit publisher transport and process identities; omitted for SDK-only operation.";
+      quota = option (types.nullOr quotaType) null "Explicit host quota inspector binding; an external helper is not enabled automatically.";
       path = option pathType "/var/lib/terrane" "Absolute host-tier root.";
       sizeBytes = lib.mkOption {
         type = types.addCheck types.int (value: value > 0);
@@ -195,6 +285,23 @@ in {
 
   config = lib.mkIf cfg.enable {
     assertions = [
+      {
+        assertion = cfg.hostTier.publisher == null || (cfg.hostTier.publisher.socketPath == "/run/terrane-publish/publisher.sock" && cfg.hostTier.publisher.serveUid == identities.serve && cfg.hostTier.publisher.publishUid == identities.publish && cfg.hostTier.publisher.contentUid == identities.serve && cfg.hostTier.publisher.contentGid == 845);
+        message = "Terrane publisher configuration must match the deployed socket and service/content identities.";
+      }
+      {
+        assertion = cfg.hostTier.quota == null || cleanPath cfg.hostTier.quota.socketPath;
+        message = "Terrane quota socket must use a canonical absolute path.";
+      }
+      {
+        assertion = !cfg.hostHelper.enable || cfg.hostTier.quota == null || (cfg.hostTier.quota.socketPath == "/run/aos-terrane-host/quota.sock" && cfg.hostTier.quota.configurationEpoch == cfg.hostHelper.epoch);
+        message = "Terrane local quota socket and epoch must match the configured host helper.";
+      }
+      {
+        assertion = !cfg.hostHelper.enable || builtins.all (name: let domain = cfg.hostTier.domains.${name}; in domain.quotaOwnerId == null || builtins.any (owner: owner.domain == name && owner.ownerId == domain.quotaOwnerId) cfg.hostHelper.owners) (builtins.attrNames cfg.hostTier.domains);
+        message = "Terrane per-domain quota owner IDs must match the local helper's explicit assignments.";
+      }
+
       {
         assertion = builtins.all cleanPath declaredRoots;
         message = "Terrane host roots must be canonical absolute paths without traversal or trailing separators.";

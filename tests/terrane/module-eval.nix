@@ -180,7 +180,106 @@
     attempt = builtins.tryEval (builtins.deepSeq cfg.environment.etc."terrane-host/host.toml".text (checksPass cfg));
   in
     !attempt.success || !attempt.value;
+  nativeFixture = {
+    aos.terrane.hostTier = {
+      publisher = {
+        socketPath = "/run/terrane-publish/publisher.sock";
+        serveUid = 840;
+        publishUid = 841;
+        contentUid = 840;
+        contentGid = 845;
+        maxConnections = 8;
+      };
+      quota = {
+        socketPath = "/run/aos-terrane-host/quota.sock";
+        configurationEpoch = "00112233445566778899aabbccddeeff";
+      };
+      domains.public = {
+        path = "/var/lib/terrane";
+        quotaOwnerId = "owner-public";
+        publisher = {
+          retirementGraceMs = 5000;
+          chunkProfile = "cdc-1m";
+          chunkSeed = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        };
+      };
+    };
+  };
+  native =
+    (mkSystem {
+      modules = [fixture nativeFixture];
+      systemName = "terrane-native-config";
+    }).config;
+  nativeFile = native.environment.etc."terrane/terrane.toml".text;
+  rejectedNative = extra: let
+    cfg =
+      (mkSystem {
+        modules = [fixture nativeFixture helperFixture extra];
+        systemName = "terrane-native-config-negative";
+      }).config;
+    attempt = builtins.tryEval (builtins.deepSeq cfg.environment.etc."terrane/terrane.toml".text (checksPass cfg));
+  in
+    !attempt.success || !attempt.value;
   extraAssertions = [
+    {
+      name = "host-helper-summed-domain-budget-refused";
+      pass = rejectedHelper {
+        aos.terrane.hostTier.domains."tenant:example".path = "/var/lib/terrane-tenant";
+        aos.terrane.hostHelper.owners = lib.mkForce [
+          (quotaOwner "public" "/var/lib/terrane" 1001 // {hardLimitBytes = 805306368;})
+          (quotaOwner "tenant:example" "/var/lib/terrane-tenant" 1002 // {hardLimitBytes = 805306368;})
+        ];
+      };
+    }
+
+    {
+      name = "native-runtime-sections-projected";
+      pass =
+        checksPass native
+        && !(lib.hasInfix "_module" nativeFile)
+        && builtins.all (field: lib.hasInfix field nativeFile) ["[host_tier.publisher]" "socket_path = \"/run/terrane-publish/publisher.sock\"" "serve_uid = 840" "content_gid = 845" "max_connections = 8" "[host_tier.quota]" "configuration_epoch = \"00112233445566778899aabbccddeeff\"" "quota_owner_id = \"owner-public\"" "retirement_grace_ms = 5000" "chunk_profile = \"cdc-1m\"" "chunk_seed = \"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\""];
+    }
+    {
+      name = "sdk-config-has-no-implicit-native-sections";
+      pass = !(lib.hasInfix "[host_tier.publisher]" file) && !(lib.hasInfix "[host_tier.quota]" file) && !(lib.hasInfix "chunk_seed" file);
+    }
+    {
+      name = "external-quota-helper-not-enabled";
+      pass = !(native.systemd.services ? aos-terrane-host-quota);
+    }
+    {
+      name = "publisher-identity-mismatch-refused";
+      pass = rejectedNative {aos.terrane.hostTier.publisher.serveUid = 900;};
+    }
+    {
+      name = "publisher-wrong-socket-refused";
+      pass = rejectedNative {aos.terrane.hostTier.publisher.socketPath = "/run/wrong.sock";};
+    }
+    {
+      name = "publisher-connection-bound-refused";
+      pass = rejectedNative {aos.terrane.hostTier.publisher.maxConnections = 1025;};
+    }
+    {
+      name = "publisher-seed-encoding-refused";
+      pass = rejectedNative {aos.terrane.hostTier.domains.public.publisher.chunkSeed = "not-a-seed";};
+    }
+    {
+      name = "quota-helper-epoch-mismatch-refused";
+      pass = rejectedNative {aos.terrane.hostTier.quota.configurationEpoch = "ffeeddccbbaa99887766554433221100";};
+    }
+    {
+      name = "quota-helper-socket-mismatch-refused";
+      pass = rejectedNative {aos.terrane.hostTier.quota.socketPath = "/run/external/quota.sock";};
+    }
+    {
+      name = "quota-helper-owner-mismatch-refused";
+      pass = rejectedNative {aos.terrane.hostTier.domains.public.quotaOwnerId = "different-owner";};
+    }
+    {
+      name = "provision-custody-caps-host-only";
+      pass = helper.systemd.services.aos-terrane-host-provision.serviceConfig.CapabilityBoundingSet == "CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN CAP_FSETID" && builtins.all (role: (service role).CapabilityBoundingSet == "") roles;
+    }
+
     {
       name = "public-override-quota-has-explicit-administrative-root";
       pass = let

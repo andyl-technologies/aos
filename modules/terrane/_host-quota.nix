@@ -85,7 +85,7 @@ in {
   options.aos.terrane.hostHelper = {
     enable = lib.mkEnableOption "host-supplied Terrane project-quota inspection";
     package = option (types.nullOr types.package) null "Explicit AOS-built host helper; no package is selected implicitly.";
-    epoch = option (types.nullOr (types.strMatching "[0-9a-fA-F]{32}")) null "Explicit provisioning epoch persisted in the host-owned ledger.";
+    epoch = option (types.nullOr (types.strMatching "[0-9a-f]{32}")) null "Explicit provisioning epoch persisted in the host-owned ledger.";
     owners = option (types.listOf (types.submodule {
       options = {
         ownerId = lib.mkOption {
@@ -169,7 +169,9 @@ in {
         // {
           Type = "oneshot";
           ExecStart = command "provision";
-          CapabilityBoundingSet = "CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_FOWNER";
+          # Root is not a member of the content groups; restoring setgid
+          # after restrictive custody modes therefore also needs CAP_FSETID.
+          CapabilityBoundingSet = "CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN CAP_FSETID";
           ReadWritePaths = [ledgerDirectory] ++ lib.unique (builtins.concatMap (owner: map (root: root.path) owner.roots) cfg.owners);
         };
     };
