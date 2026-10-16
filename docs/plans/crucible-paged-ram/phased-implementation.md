@@ -432,8 +432,13 @@ moved parts if that loan is absent. The loan remains inside the lifecycle body;
 retirement must move it and the observer outside that body, use the existing preallocated
 carrier/reservation for destruction, and observe exact World return before
 service discharge. A historical error or cleanup receipt alone cannot establish
-that return. The existing Source lifecycle Box also needs explicit accounting
-for its overlap with the retained carrier; no increased ceiling is assumed.
+that return. The existing Source lifecycle Box is now included in its actual
+prebirth request where it overlaps the launcher, shared controls and retained
+carrier. A boxed handoff validates the original empty carrier before releasing
+the Loop allocation; every refusal returns the same Box and its owners. Both
+new identity/destruction controls and the existing value-transfer controls pass.
+This supplies no new allocation or operational allowance and does not activate
+the still-unimplemented Source retirement phase.
 Consuming demotion, restore-refusal and descendant-retirement callers must retain
 the actual Source or its existing cleanup handoff across failure. Typed error
 preservation is a prerequisite, not an implementation of these ownership seams.
@@ -448,9 +453,16 @@ reservation, epoch and receipt are reused; no new cleanup allocation, clock or
 resource ceiling is introduced. World aggregate state explicitly distinguishes
 active, returned and retained, so an absent diagnostic cannot imply return.
 Default and private workspace/all-target checks pass for this joined source.
-All five new release-mode cleanup controls pass. The full daemon run is still
-finishing its 512-MiB GC case and has the same 17 failed names as the preceding
-run. The standards suite now has 34 passes and its existing broad classifier
+All five new release-mode cleanup controls pass. That full daemon run finished
+with 1,707 passes, the same 17 failed names and 43 ignored tests. The subsequent
+boxed-transfer run exposed a provider-fixture assertion against a descriptor
+number that another thread could reuse. The fixture now keeps its original inode
+linked and compares device/inode identity before and after last-alias destruction,
+while preserving its slot, Service-pin and exact capacity-return assertions.
+The complete parallel rerun has 1,709 passes, the same 17 failed names and 43
+ignored tests in 314.12 seconds. The failed 18-test run remains recorded; an
+isolated passing rerun was not used to clear it. The standards suite now has 34
+passes and its existing broad classifier
 failure, with 26 findings after the exact publication declaration contract;
 its negative and omission mutations pass. Two mutation targets were repaired:
 the canonical unavailable constructor is selected explicitly, and deleting a
