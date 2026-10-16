@@ -268,14 +268,22 @@ impl QuotaObservation {
         if value.result == 0 {
             let mut labels = std::collections::BTreeSet::new();
             let mut identities = std::collections::BTreeSet::new();
-            if value.roots.len() != super::ROOT_LABELS.len()
+            if !(super::ROOT_LABELS.len()..=super::ROOT_LABELS.len() + 1)
+                .contains(&value.roots.len())
                 || value.configured_limit_sum_bytes < value.hard_limit_bytes
                 || value.roots.iter().any(|root| {
                     !root.project_inherit
-                        || !super::ROOT_LABELS.contains(&root.role_directory.as_str())
+                        || (!super::ROOT_LABELS.contains(&root.role_directory.as_str())
+                            && root.role_directory != "administrative-root")
                         || !labels.insert(&root.role_directory)
                         || !identities.insert((root.device, root.inode))
                 })
+            {
+                return Err(invalid());
+            }
+            if !super::ROOT_LABELS
+                .iter()
+                .all(|label| labels.iter().any(|actual| actual.as_str() == *label))
             {
                 return Err(invalid());
             }

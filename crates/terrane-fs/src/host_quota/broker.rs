@@ -10,7 +10,7 @@ use std::io;
 use std::path::Path;
 
 /// Identifies every allocation class in a single compatible project.
-pub const ROOT_LABELS: [&str; 7] = [
+pub const ROOT_LABELS: [&str; 8] = [
     "chunks",
     "objects",
     "sealed",
@@ -18,6 +18,7 @@ pub const ROOT_LABELS: [&str; 7] = [
     "quarantine",
     "pending-delete",
     "state",
+    "layout-root",
 ];
 
 /// Retains one root and its provisioned native identity.
@@ -59,7 +60,7 @@ impl ConfiguredOwner {
             || self.domain.is_empty()
             || self.domain.len() > 256
             || self.project_id == 0
-            || self.roots.len() != ROOT_LABELS.len()
+            || !(ROOT_LABELS.len()..=ROOT_LABELS.len() + 1).contains(&self.roots.len())
         {
             return Err(io::Error::other("invalid owner partition"));
         }
@@ -67,7 +68,8 @@ impl ConfiguredOwner {
         let mut roots = Vec::new();
         for root in &self.roots {
             let actual = NativeProject::inspect(&root.directory)?;
-            if !ROOT_LABELS.contains(&root.role_directory.as_str())
+            if (!ROOT_LABELS.contains(&root.role_directory.as_str())
+                && root.role_directory != "administrative-root")
                 || !labels.insert(&root.role_directory)
                 || actual.project_id != self.project_id
                 || !actual.inherit
@@ -83,6 +85,12 @@ impl ConfiguredOwner {
                 inode: actual.inode,
                 project_inherit: actual.inherit,
             });
+        }
+        if !ROOT_LABELS
+            .iter()
+            .all(|label| labels.iter().any(|actual| actual.as_str() == *label))
+        {
+            return Err(io::Error::other("incomplete owner allocation coverage"));
         }
         let quota = NativeQuota::query(&self.roots[0].directory, self.project_id)?;
         if quota.hard_limit_bytes != self.hard_limit_bytes {

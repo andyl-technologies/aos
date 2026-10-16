@@ -69,10 +69,18 @@ fn host_quota_native_privilege_and_helper_vm() {
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("protect fixture");
     let mut roots = Vec::new();
     for label in ROOT_LABELS {
-        let path = root.join(label);
-        fs::create_dir(&path).expect("create allocation root");
+        let path = if label == "layout-root" {
+            root.clone()
+        } else {
+            root.join(label)
+        };
+        if label != "layout-root" {
+            fs::create_dir(&path).expect("create allocation root");
+        }
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("role-readable root");
-        std::os::unix::fs::chown(&path, Some(840), Some(840)).expect("role allocation custody");
+        if label != "layout-root" {
+            std::os::unix::fs::chown(&path, Some(840), Some(840)).expect("role allocation custody");
+        }
         let directory = File::open(&path).expect("open allocation root");
         provision_project(&directory, 41001, 2 * 1024 * 1024).expect("host quota provisioning");
         let identity = NativeProject::inspect(&directory).expect("actual project");
@@ -130,6 +138,8 @@ fn host_quota_native_privilege_and_helper_vm() {
     server.join().expect("server completion");
     fs::remove_file(socket).expect("remove socket");
     for label in ROOT_LABELS {
-        fs::remove_dir(root.join(label)).expect("remove allocation root");
+        if label != "layout-root" {
+            fs::remove_dir(root.join(label)).expect("remove allocation root");
+        }
     }
 }

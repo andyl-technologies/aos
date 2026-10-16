@@ -137,6 +137,7 @@ fn load(path: &Path) -> io::Result<HostConfig> {
     epoch(&config.epoch)?;
     let mut identities = BTreeSet::new();
     let mut projects = BTreeSet::new();
+    let mut domains = BTreeSet::new();
     let mut sum = 0u64;
     if config.owners.is_empty() || config.owners.len() > 256 {
         return Err(io::Error::other("invalid partition size"));
@@ -153,6 +154,7 @@ fn load(path: &Path) -> io::Result<HostConfig> {
             || owner.allowed_client_uids.is_empty()
             || !identities.insert((&owner.owner_id, &owner.domain))
             || !projects.insert(owner.project_id)
+            || !domains.insert(&owner.domain)
         {
             return Err(io::Error::other("invalid or duplicate project owner"));
         }
@@ -161,14 +163,54 @@ fn load(path: &Path) -> io::Result<HostConfig> {
             .iter()
             .map(|root| root.role_directory.as_str())
             .collect();
-        if owner.roots.len() != ROOT_LABELS.len() || labels != ROOT_LABELS.into_iter().collect() {
+        if labels.len() != owner.roots.len()
+            || !ROOT_LABELS.iter().all(|label| labels.contains(label))
+            || labels
+                .iter()
+                .any(|label| !ROOT_LABELS.contains(label) && *label != "administrative-root")
+        {
             return Err(io::Error::other(
                 "owner must cover all allocation classes exactly once",
             ));
         }
+        let layout = owner
+            .roots
+            .iter()
+            .find(|root| root.role_directory == "layout-root")
+            .ok_or_else(|| io::Error::other("missing explicit layout root"))?;
+        for root in &owner.roots {
+            if root.role_directory == "administrative-root" {
+                if owner.domain != "public" || root.path.starts_with(&layout.path) {
+                    return Err(io::Error::other(
+                        "administrative scaffold requires a separate explicit public-owner root",
+                    ));
+                }
+            } else if root.role_directory != "layout-root"
+                && root.path != layout.path.join(&root.role_directory)
+            {
+                return Err(io::Error::other(
+                    "allocation classes must belong to their explicit domain layout",
+                ));
+            }
+        }
         sum = sum
             .checked_add(owner.hard_limit_bytes)
             .ok_or_else(|| io::Error::other("partition limit overflow"))?;
+    }
+    let layouts: Vec<_> = config
+        .owners
+        .iter()
+        .flat_map(|owner| &owner.roots)
+        .filter(|root| root.role_directory == "layout-root")
+        .collect();
+    for (index, layout) in layouts.iter().enumerate() {
+        if layouts.iter().skip(index + 1).any(|other| {
+            layout.path.starts_with(&other.path) || other.path.starts_with(&layout.path)
+        }) {
+            return Err(io::Error::other(
+                "disclosure domain layouts must be physically disjoint",
+            ));
+        }
     }
     if sum > config.tier_charge_budget_bytes {
         return Err(io::Error::other("partition exceeds tier budget"));
@@ -225,6 +267,26 @@ fn retain(config: &HostConfig) -> io::Result<(Vec<ConfiguredOwner>, Vec<Binding>
     Ok((owners, bindings))
 }
 
+fn validate_initial_skeleton(config: &HostConfig) -> io::Result<()> {
+    let paths: BTreeSet<_> = config
+        .owners
+        .iter()
+        .flat_map(|owner| &owner.roots)
+        .map(|root| root.path.as_path())
+        .collect();
+    for path in &paths {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() || !paths.contains(entry.path().as_path()) {
+                return Err(io::Error::other(
+                    "initial provisioning permits only the exact configured directory skeleton",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn verify_ledger(path: &Path, config: &HostConfig, bindings: &[Binding]) -> io::Result<()> {
     let ledger: Ledger = toml::from_str(&protected_text(path)?).map_err(parse_error)?;
     if ledger.version != 1 || ledger.epoch != config.epoch || ledger.bindings != bindings {
@@ -265,13 +327,7 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
                     }
                 }
             }
-            for root in config.owners.iter().flat_map(|owner| &owner.roots) {
-                if fs::read_dir(&root.path)?.next().is_some() {
-                    return Err(io::Error::other(
-                        "initial provisioning requires empty roots",
-                    ));
-                }
-            }
+            validate_initial_skeleton(&config)?;
             let parent = ledger_path
                 .parent()
                 .ok_or_else(|| io::Error::other("ledger has no parent"))?;
@@ -307,29 +363,8 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     }
     for owner in &owners {
         for root in &owner.roots {
-            let actual = NativeProject::inspect(&root.directory)?;
-            if actual.project_id == 0
-                && fs::read_dir(
-                    config
-                        .owners
-                        .iter()
-                        .find(|candidate| candidate.owner_id == owner.owner_id)
-                        .and_then(|candidate| {
-                            candidate
-                                .roots
-                                .iter()
-                                .find(|candidate| candidate.role_directory == root.role_directory)
-                        })
-                        .ok_or_else(|| io::Error::other("root configuration missing"))?
-                        .path
-                        .clone(),
-                )?
-                .next()
-                .is_some()
-            {
-                return Err(io::Error::other(
-                    "refusing to assign a nonempty unprovisioned root",
-                ));
+            if NativeProject::inspect(&root.directory)?.project_id == 0 {
+                validate_initial_skeleton(&config)?;
             }
             provision_project(&root.directory, owner.project_id, owner.hard_limit_bytes)?;
         }
