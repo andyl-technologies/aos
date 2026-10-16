@@ -124,21 +124,23 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; eight of twenty-two T1 tasks are complete.
+**Status:** In progress; ten of twenty-two T1 tasks are complete.
 
-The corrected source checkpoint `d5b708f9ba` has independently reviewed passing
-outputs for 82 of the 89 current gates. Completed qualification groups include
-all thirteen pack/manifest gates, seven tree/property gates, five collector
-gates with their complete local prerequisite chain, and eight refs/provenance
-gates. Golden vectors pass all twenty owning suites covering thirty-one
-published sections. Strict native Clippy/rustdoc checks and application
-test-target compilation also pass, as do the local SDK and CLI workflows.
-The full production package, feature matrix, index maintenance, remaining
-file-store checks, genuine ext4 workflow and aggregate remain pending. Four
-isolated workers continue the same immutable source through the original
-aggregate, feature-matrix, index and file-store requests. Nix shares identical
-prerequisite builds between them. No task checkbox or milestone advances
-from these scoped results.
+The qualified source checkpoint `1d7451dd75` has independently reviewed passing
+outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
+runtime executions and seven documentation compilation checks, counted
+separately. The ordinary production package passed all 1,928 tests across
+sixteen binaries. The genuine ext4 workflow passed eleven CLI operations and
+two expected refusals using the current package. Strict native Clippy/rustdoc
+checks, all application test targets, local SDK/CLI workflows and the required
+formatter pair also pass. Source, tracked-file and protected SDK guards pass.
+
+The SDK history and ext4 guest dependency fix are integrated in `397acf5c4f`.
+The remaining original task histories and checkoffs are being merged after
+their owning checks, the full current gate set and formatter pair pass on each
+staged merge. T1 remains open until every task and exit gate is complete.
+
+Earlier qualification notes are retained below for provenance.
 
 The earlier 2026-10-15 qualification candidate `c4e44d6208` has independently
 reviewed passing outputs for 87 of the 89 current gates, including every store gate,
@@ -5223,7 +5225,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   configured profile. The actual six-case `descriptor-strict` gate and
   `core-no-std` pass. All 458 core tests, strict all-target core Clippy and
   rustdoc pass; no existing identity, descriptor bytes or store trait changes.
-- [ ] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
+- [x] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
   dictionary identities, canonical object manifests, and receiver-side
   validation. Content-class dictionary selection is completed jointly with
   T-DRV-1. D-81 corrects the registry to retain the stored profile seed;
