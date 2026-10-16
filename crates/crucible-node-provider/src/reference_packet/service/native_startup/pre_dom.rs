@@ -95,6 +95,10 @@ impl<'a> OriginalNativeFramePreflight<'a> {
                 registration,
             } => super::storage::hello_frame_work_data(launch, registration, extent, maximum)?,
         };
+        // FrameReader retains its independent raw body Vec through this gate
+        // and the strict Value parse. The literal journal is a distinct owner;
+        // neither it nor a separate length<=T check pays this simultaneous bank.
+        let requested = raw.len().checked_add(requested).ok_or_else(exhausted)?;
         if requested > maximum {
             return Err(exhausted());
         }
