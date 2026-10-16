@@ -502,7 +502,7 @@ impl<S: ProviderStream> Connection<S> {
         installed.token.authenticate_current(self)?;
         let selected_class = installed.token.original_selected_native_class_data(self)?;
         let selected_limits = match selected_class {
-            Some(_) => Some(selected_decoder_limits(&installed.token.request(self)?)?),
+            Some(_) => Some(selected_decoder_limits(&*installed.token.request(self)?)?),
             None => None,
         };
         let request = installed.token.request(self)?;
@@ -831,13 +831,13 @@ fn selected_decoder_limits(
             maximum_tree_entries: extent(a.maximum_tree_entries.get())?,
         },
         content: crate::client::compact_metadata8::CompactMetadata8Limits {
-            content: crate::client::CompactContentLimits {
+            content: crate::client::compact_cursor::CompactContentLimits {
                 max_input_bytes: extent(a.maximum_input_bytes.get())?,
                 max_rows: extent(a.maximum_content_transfers.get())?
                     .checked_add(extent(a.maximum_content_objects.get())?)
                     .ok_or_else(refused)?
                     .min(
-                        crate::client::CompactContentLimits::maximum_supported_combined_rows_data(),
+                        crate::client::compact_cursor::CompactContentLimits::maximum_supported_combined_rows_data(),
                     ),
                 max_groups: extent(a.maximum_content_groups.get())?,
                 max_first_group_capacity_bytes: extent(a.maximum_content_bytes.get())?,

@@ -23,7 +23,7 @@ pub(super) struct Parts {
     pub(super) transient: usize,
 }
 
-pub(super) fn counter_scratch_data() -> usize {
+pub(in crate::client::controller) fn counter_scratch_data() -> usize {
     size_of::<Parts>() + size_of::<OriginalCompleteRestoreInputUploadStorageData>()
         + size_of::<OriginalProtocolStorageFacts>()
         + size_of::<OriginalCompleteRestoreInputUpload>() + size_of::<UploadFrame>()
@@ -32,6 +32,9 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<[&[u8]; 6]>() + size_of::<[usize; 6]>()
         + 2 * size_of::<MetadataObserver<'static>>() + 2 * size_of::<RetainedProtocolMetadataFacts>()
         + 3 * size_of::<Data>() + size_of::<Projection>()
+        + size_of::<&inputs::Reference<'static>>()
+        + size_of::<Result<Data, ProviderError>>()
+        + size_of::<Result<(), ProviderError>>()
         + original_serialization_counter_scratch_data()
         + size_of::<ReceivedFrame>() + size_of::<ResponseBody>() + size_of::<RequestBody>()
         + size_of::<OperationalDeadline>() + size_of::<Rc<ProtocolCaptureOwner>>()
@@ -229,6 +232,34 @@ fn frame(
     response: bool,
     chunk: usize,
 ) -> Result<Data, ProviderError> {
+    frame_with_reference(controller, method, response, chunk, |projection| {
+        reference.project(projection)
+    })
+}
+
+// The held prefix has a different, fixed worst-case serializable reference.
+// Share the real envelope grammar without pretending it is an upload input.
+pub(in crate::client::controller) fn held_prefix_frame(
+    controller: &CnpController,
+    reference: &impl serde::Serialize,
+    method: Method,
+    response: bool,
+    chunk: usize,
+) -> Result<Data, ProviderError> {
+    frame_with_reference(controller, method, response, chunk, |projection| {
+        projection.add_value(reference)
+    })
+}
+
+// Both concrete adapters project directly into this same counting sink. No
+// reference is cloned or serialized into an owned intermediate Value.
+fn frame_with_reference(
+    controller: &CnpController,
+    method: Method,
+    response: bool,
+    chunk: usize,
+    project_reference: impl Fn(&mut Projection) -> Result<(), ProviderError>,
+) -> Result<Data, ProviderError> {
     let mut p = Projection::new(usize::MAX)?;
     object(
         &mut p,
@@ -274,7 +305,7 @@ fn frame(
         (Method::BlobBegin, false) => {
             object(&mut p, &["transfer_id", "content", "extensions"])?;
             p.add_unescaped_ascii_extent(128)?;
-            reference.project(&mut p)?;
+            project_reference(&mut p)?;
             p.add_object()?;
         }
         (Method::BlobBegin, true) => {
@@ -306,7 +337,7 @@ fn frame(
         (Method::BlobFinish, true) => {
             object(&mut p, &["transfer_id", "content"])?;
             p.add_unescaped_ascii_extent(128)?;
-            reference.project(&mut p)?;
+            project_reference(&mut p)?;
         }
         _ => return Err(refused()),
     }

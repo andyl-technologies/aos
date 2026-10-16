@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::reference_packet::service::complete_restore::{
-    PacketCompleteRestoreTransferPhase, maximum_complete_restore_held_evidence_bytes,
+    maximum_complete_restore_held_evidence_bytes,
+    transfer::PacketCompleteRestoreTransferPhase,
 };
 
 pub(in crate::client) struct HeldPrefix {
@@ -209,4 +210,5 @@ fn refused() -> ProviderError {
 }
 
 #[cfg(test)]
+#[path = "restore_transfer_prefix/tests.rs"]
 mod tests;

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::transport::original_frames::{OriginalFrame, OriginalFrameReservation};
+use serde_json::Value;
 use std::cell::Ref;
 
 /// Borrows the same original native-five literal bank under its surviving actor.
@@ -167,7 +168,7 @@ impl<S: ProviderStream> Connection<S> {
     pub(crate) fn receive_original_restore_transfer_prefix(
         &mut self,
         original: &Envelope,
-        phase: crate::reference_packet::service::complete_restore::PacketCompleteRestoreTransferPhase,
+        phase: crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreTransferPhase,
     ) -> Result<Option<ReceivedFrame>, ProviderError> {
         use crate::reference_packet::service::{
             complete_restore::PacketNative5CompleteRestoreSelection,
@@ -209,7 +210,7 @@ impl<S: ProviderStream> Connection<S> {
     fn receive_original_restore_transfer_prefix_inner(
         &mut self,
         original: &Envelope,
-        phase: crate::reference_packet::service::complete_restore::PacketCompleteRestoreTransferPhase,
+        phase: crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreTransferPhase,
     ) -> Result<Option<ReceivedFrame>, ProviderError> {
         let Some(value) = self.reader.read()? else {
             return Ok(None);
@@ -234,11 +235,11 @@ impl<S: ProviderStream> Connection<S> {
 
 fn authenticate_restore_prefix_header_data(
     original: &Envelope,
-    phase: crate::reference_packet::service::complete_restore::PacketCompleteRestoreTransferPhase,
+    phase: crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreTransferPhase,
     chunk: usize,
     envelope: &Envelope,
 ) -> Result<(), ProviderError> {
-    use crate::reference_packet::service::complete_restore::PacketCompleteRestoreTransferPhase;
+    use crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreTransferPhase;
     let refused = || ProviderError::Correlation("selected restore pretyped prefix shape differs");
     if envelope.message == MessageKind::Response {
         return original.matches_response(envelope);

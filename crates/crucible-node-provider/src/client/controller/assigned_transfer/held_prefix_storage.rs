@@ -93,10 +93,10 @@ impl CnpController {
             } else {
                 1
             };
-            let request = super::super::restore_upload::storage::frame(
+            let request = super::super::restore_upload::storage::held_prefix_frame(
                 self, &reference, method, false, chunk,
             )?;
-            let response = super::super::restore_upload::storage::frame(
+            let response = super::super::restore_upload::storage::held_prefix_frame(
                 self, &reference, method, true, chunk,
             )?;
             if request.maximum_encoded_bytes > frame || response.maximum_encoded_bytes > frame {
@@ -205,6 +205,9 @@ impl CnpController {
         crate::reference_packet::service::complete_restore::maximum_complete_restore_held_evidence_counter_scratch_data()
             + size_of::<HeldPrefix>() + size_of::<Option<HeldPrefix>>() + size_of::<Option<&mut HeldPrefix>>()
             + size_of::<Reference>() + size_of::<Hash>() + size_of::<Projection>()
+            // The concrete serializer callback borrows the same fixed reference.
+            + size_of::<&Reference>()
+            + size_of::<Result<crate::retained_metadata::serialization_storage::OriginalSerializationStorageData, ProviderError>>()
             + 2 * size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageData>()
             + original_serialization_counter_scratch_data()
             + super::super::restore_upload::storage::counter_scratch_data()
