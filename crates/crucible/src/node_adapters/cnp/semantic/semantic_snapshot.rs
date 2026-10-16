@@ -34,24 +34,60 @@ impl CnpSemanticSnapshotReservation {
     /// # Errors
     /// Refuses zero or excess bounds, overflow or allocation failure.
     pub fn reserve(maximum: usize, admitted_bytes: usize) -> Result<Self, OperationFailure> {
+        Self::reserve_with_error::<OperationFailure>(maximum, admitted_bytes)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn reserve_with_error<
+        E: super::packet_complete_source::storage_error::StorageError,
+    >(
+        maximum: usize,
+        admitted_bytes: usize,
+    ) -> Result<Self, E> {
+        let mut completed = None;
+        Self::reserve_into_with_error::<E>(maximum, admitted_bytes, &mut completed)?;
+        completed.ok_or_else(|| E::refused("semantic snapshot bank is absent"))
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn reserve_into_with_error<
+        E: super::packet_complete_source::storage_error::StorageError,
+    >(
+        maximum: usize,
+        admitted_bytes: usize,
+        completed: &mut Option<Self>,
+    ) -> Result<(), E> {
+        if completed.is_some() {
+            return Err(E::refused("semantic snapshot bank slot is occupied"));
+        }
         if maximum == 0 || maximum > admitted_bytes {
-            return Err(refused("semantic snapshot bank exceeds admitted bytes"));
+            return Err(E::limit("semantic snapshot bank exceeds admitted bytes"));
         }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(maximum)
-            .map_err(|_| refused("semantic snapshot bank allocation failed"))?;
-        if bytes.capacity() > admitted_bytes {
-            return Err(refused(
-                "actual semantic snapshot capacity exceeds admission",
-            ));
-        }
-        Ok(Self {
+        // The actual containing Source keeps the new owner before reservation
+        // and post-cap checks. A spent action cannot lose its partial bank.
+        *completed = Some(Self {
             storage_origin: super::retained_storage::StorageOrigin::current(),
-            bytes,
+            bytes: Vec::new(),
             maximum,
             started: false,
-        })
+        });
+        let owner = completed.as_mut()
+            .ok_or_else(|| E::refused("semantic snapshot bank is absent"))?;
+        owner.bytes.try_reserve_exact(maximum)
+            .map_err(|_| E::limit("semantic snapshot bank allocation failed"))?;
+        if owner.bytes.capacity() > admitted_bytes {
+            return Err(E::limit("actual semantic snapshot capacity exceeds admission"));
+        }
+        Ok(())
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn reservation_counter_scratch_data() -> usize {
+        // The allocation bank itself is the retained requested term. These
+        // actual owner/result/borrow views are simultaneous fixed construction
+        // scratch, separate from compiler frames and allocator physical memory.
+        std::mem::size_of::<Self>()
+            + std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<&mut Option<Self>>()
+            + std::mem::size_of::<std::collections::TryReserveError>()
+            + std::mem::size_of::<[usize; 2]>()
     }
 
     pub(super) fn maximum_bytes(&self) -> usize {
@@ -632,5 +668,52 @@ impl CnpOriginalSemanticSnapshot {
         counter.activation(&self.active)?;
         self.storage_origin.check_precredit_data()?;
         Ok(counter.finish())
+    }
+}
+
+#[cfg(test)]
+mod original_raw_reservation_tests {
+    use super::*;
+    use crate::node_contract::RuntimeError;
+
+    #[test]
+    fn original_raw_reservation_exact_and_short_preserve_real_destination() {
+        let mut completed = None;
+        assert_eq!(CnpSemanticSnapshotReservation::reserve_into_with_error::<RuntimeError>(
+            64, 63, &mut completed,
+        ), Err(RuntimeError::ResourceLimit));
+        assert!(completed.is_none());
+
+        CnpSemanticSnapshotReservation::reserve_into_with_error::<RuntimeError>(
+            64, 64, &mut completed,
+        ).unwrap();
+        let original = completed.as_ref().unwrap();
+        let pointer = original.bytes.as_ptr();
+        let capacity = original.allocated_bytes();
+        assert_eq!(capacity, 64);
+        assert_eq!(original.retained_metadata_requested_storage_precredit_data(), Ok(0));
+        assert!(!original.started);
+
+        assert!(CnpSemanticSnapshotReservation::reserve_into_with_error::<RuntimeError>(
+            32, 32, &mut completed,
+        ).is_err());
+        let still_original = completed.as_ref().unwrap();
+        assert_eq!(still_original.bytes.as_ptr(), pointer);
+        assert_eq!(still_original.allocated_bytes(), capacity);
+        assert!(!still_original.started);
+    }
+
+    #[test]
+    fn original_raw_reservation_keeps_legacy_bound_refusal_and_byte_extent() {
+        assert!(CnpSemanticSnapshotReservation::reserve(0, 64).is_err());
+        assert!(CnpSemanticSnapshotReservation::reserve(65, 64).is_err());
+        let legacy = CnpSemanticSnapshotReservation::reserve(64, 64).unwrap();
+        let raw = CnpSemanticSnapshotReservation::reserve_with_error::<RuntimeError>(64, 64).unwrap();
+        assert_eq!(legacy.maximum_bytes(), raw.maximum_bytes());
+        assert_eq!(legacy.allocated_bytes(), raw.allocated_bytes());
+        assert!(legacy.bytes.is_empty() && raw.bytes.is_empty());
+        assert!(!legacy.started && !raw.started);
+        assert!(CnpSemanticSnapshotReservation::reservation_counter_scratch_data()
+            >= std::mem::size_of::<CnpSemanticSnapshotReservation>());
     }
 }
