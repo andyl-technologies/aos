@@ -1056,3 +1056,12 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   and do not restore edges removed by a partition.
   Summary: live link latency changes now flow into scheduler lookahead at the
   quantum boundary; stale sends are frozen until the recompute applies.
+- [x] **T-IO-17** Stamp every block request with the frontend's oldest live
+  transport epoch and prune host block fault state below it: block request ABI
+  version 5 carries `oldest_live_epoch`, both decoders reject a floor above the
+  request epoch, the host rejects a regressing floor or one above its transport
+  epoch, and retired epochs and preserve-ID authorizations below the floor are
+  dropped and checkpointed. — satisfies [IO-35]; spec §15.2.2.
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-device`,
+  `-p crucible-qemu-plugin`, and `-p crucible-shmem`, including the transport
+  floor and request-stamp tests and the live adapter reset run.
