@@ -153,7 +153,7 @@ crucible.device.link-snapshot|crates/crucible-device/src/netlink/link/snapshot.r
 crucible.device.ninep-snapshot|crates/crucible-device/src/ninep/device/snapshot.rs|magic|NINEP_SNAPSHOT_MAGIC
 crucible.qemu.checkpoint-qmp|crates/crucible-qemu/src/qmp/ram_delta.rs|number|QMP_CHECKPOINT_SCHEMA_VERSION
 crucible.qemu.host-io-checkpoint|crates/crucible-qemu/src/checkpoint/host_io_codec.rs|magic|crucible.qemu-host-io-checkpoint.v6
-crucible.qemu.production-fault-runtime|crates/crucible-qemu/src/production_fault_runtime/checkpoint_codec.rs|magic|crucible.production-fault-runtime.v7
+crucible.qemu.production-fault-runtime|crates/crucible-qemu/src/production_fault_runtime/checkpoint_codec.rs|magic|crucible.production-fault-runtime.v8
 crucible.qemu.node-continuation|crates/crucible-qemu/src/checkpoint.rs|magic|crucible.qemu-node-continuation.v9
 crucible.qemu.native-console-continuation|crates/crucible-qemu/src/native_console_owner/continuation.rs|magic|MAGIC
 crucible.qemu.accelerator-checkpoint|crates/crucible-qemu/src/supervision/accelerator_io_servicer.rs|magic|ACCELERATOR_CHECKPOINT_MAGIC

@@ -522,10 +522,10 @@ impl NinepVisibilityState {
     /// returns its original sequence, even after that update was compacted.
     ///
     /// A new event-released update latches from `prior_emissions`, which must
-    /// hold every emission of its event among the first
+    /// hold every retained emission of its event among the first
     /// [`NinepVisibilityState::event_cursor`] fault-runtime emissions; other
     /// emissions are ignored. Later emissions reach it through
-    /// [`NinepVisibilityState::observe_events`].
+    /// [`NinepVisibilityState::observe_events_through`].
     ///
     /// # Errors
     ///

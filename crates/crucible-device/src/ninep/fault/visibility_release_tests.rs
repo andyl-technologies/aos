@@ -3,7 +3,7 @@
 //! These pin the release rule: an update latches the earliest emission of its
 //! event strictly after its commit, a re-emission never moves the latch later,
 //! lagged event releases fold once their deadline passes, and a restored
-//! continuation's latches must match the emissions its cursor consumed.
+//! continuation's latches must match the retained emissions its cursor consumed.
 
 use super::test_support::*;
 use super::*;
@@ -113,6 +113,39 @@ fn new_commit_latches_from_consumed_emissions() {
 }
 
 #[test]
+fn retired_emissions_advance_the_cursor_without_latching() {
+    let mut state = NinepVisibilityState::default();
+    let event = [9; 32];
+    ok(state.commit(
+        key(1, 1),
+        file("/a", 1, b"one"),
+        atomic(NinepVisibilityScope::Global),
+        on_event(event, coordinate(5, 0)),
+        0,
+        0,
+        &[],
+    ));
+
+    // Emissions 0..3 were appended; only the releasing one is retained.
+    ok(state.observe_events_through(&[emission(event, 7, 0)], 3));
+
+    assert_eq!(state.event_cursor(), 3);
+    assert_eq!(latch_of(&state, 0), Some(coordinate(7, 0)));
+    assert_eq!(
+        state.event_subscriptions().collect::<Vec<_>>(),
+        vec![(event, coordinate(5, 0))]
+    );
+    ok(state.verify_event_latches(&[emission(event, 7, 0)]));
+    assert!(state.observe_events_through(&[], 2).is_err());
+    assert!(
+        state
+            .observe_events_through(&[emission(event, 8, 0), emission(event, 9, 0)], 4)
+            .is_err()
+    );
+    assert_eq!(state.event_cursor(), 3);
+}
+
+#[test]
 fn recommit_from_a_later_opportunity_keeps_the_first_subscription() {
     let mut state = NinepVisibilityState::default();
     let event = [9; 32];
@@ -172,7 +205,8 @@ fn latch_verification_requires_the_consumed_emissions() {
     ok(state.observe_events(&consumed));
     ok(state.verify_event_latches(&consumed));
 
-    // A shorter log, or one whose emission differs, did not produce the latch.
+    // A log without the releasing emission, or one whose emission differs,
+    // did not produce the latch.
     assert!(state.verify_event_latches(&[]).is_err());
     assert!(
         state

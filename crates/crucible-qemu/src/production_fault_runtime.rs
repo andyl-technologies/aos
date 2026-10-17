@@ -72,8 +72,8 @@ pub struct ProductionFaultRuntimeCheckpoint {
     qemu_active_rule_ids: QemuActionSet,
     /// Scheduler-owned network queues, pending outputs, and transition ledger.
     network_state: Option<ProductionNetworkStateCheckpoint>,
-    /// Referenced event occurrences retained for device recovery subscriptions.
-    emitted_events: Vec<ReferencedSignalEvent>,
+    /// Referenced-event history charges, chain digest, and live window.
+    referenced_events: ReferencedEventWindow,
     /// Drained QEMU occurrences awaiting a successfully committed boundary.
     pending_qemu_observations: Vec<FaultObservation>,
     /// Raw drained QEMU events retained until validation succeeds atomically.
@@ -177,7 +177,7 @@ impl ProductionFaultRuntimeCheckpoint {
                 .qemu_active_rule_ids
                 .try_clone_with(|identity| Ok(*identity), allocation_error)?,
             network_state: self.network_state.clone(),
-            emitted_events: self.emitted_events.clone(),
+            referenced_events: self.referenced_events.clone(),
             pending_qemu_observations: self.pending_qemu_observations.clone(),
             pending_qemu_events: self.pending_qemu_events.try_clone_with(
                 |node| Ok(node.clone()),
@@ -286,7 +286,7 @@ impl ProductionFaultRuntimeCheckpoint {
             &self.qemu_action_commits,
             &self.qemu_active_rule_ids,
             self.network_state.as_ref(),
-            &self.emitted_events,
+            &self.referenced_events,
             &self.pending_qemu_observations,
             &self.pending_qemu_events,
         )?;
@@ -347,6 +347,14 @@ pub enum ProductionFaultRuntimeError {
     /// A process-neutral checkpoint duplicate could not reserve ledger storage.
     #[error("cannot reserve bounded production fault-checkpoint clone storage")]
     CheckpointCloneAllocation,
+    /// A device consumer's view of the referenced-event window is inconsistent.
+    #[error("referenced-event consumer {consumer} {reason}")]
+    ReferencedEventWindow {
+        /// Hexadecimal identity of the consumer.
+        consumer: String,
+        /// Inconsistency that failed closed.
+        reason: &'static str,
+    },
 }
 
 /// One fully authenticated node lifecycle decision awaiting host application.
@@ -448,7 +456,7 @@ pub struct ProductionFaultRuntime {
     runtime: Option<OwnedFaultExecutionRuntime>,
     host: HostFaultActionSink,
     restored_network_state: Option<ProductionNetworkStateCheckpoint>,
-    emitted_events: Vec<ReferencedSignalEvent>,
+    referenced_events: ReferencedEventWindow,
     qemu_issued_actions: QemuActionMap<ResolvedBindingAction>,
     qemu_action_commits: QemuActionMap<CommittedQemuActionEvidence>,
     qemu_active_rule_ids: QemuActionSet,
@@ -486,6 +494,13 @@ pub(crate) use evaluation::map_fault_event_drain_error;
 use evaluation::runtime_collection_reservation;
 #[path = "production_fault_runtime/evidence.rs"]
 mod evidence;
+mod referenced_events;
+use referenced_events::{ChargedReferencedEvents, ReferencedEventUsage};
+pub use referenced_events::{
+    ReferencedEventConsumer, ReferencedEventCoordinate, ReferencedEventEvidence,
+    ReferencedEventSubscription, ReferencedEventWindow, RetainedReferencedEvent,
+    retained_recovery_subscriptions,
+};
 
 use checkpoint_identity::*;
 pub(crate) use evidence::*;

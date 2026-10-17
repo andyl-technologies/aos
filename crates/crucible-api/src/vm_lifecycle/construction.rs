@@ -1379,15 +1379,27 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         }
     }
     let block_devices = Arc::new(std::sync::Mutex::new(block_device_map));
+    // Every installed block and 9p coordinator reads referenced events; the
+    // runtime retires events only once no bound consumer can use them.
+    let mut referenced_event_consumers = Vec::new();
     for (node, block) in &block_bindings {
         if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
             continue;
         }
+        let consumer = crucible_qemu::ReferencedEventConsumer::block_recovery(&block.target)
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "identify block recovery consumer for `{}`: {error}",
+                    node.name
+                ))
+            })?;
+        referenced_event_consumers.push(consumer);
         backends
             .install_block_fault_coordinator(
                 node,
                 Box::new(ProductionBlockFaultCoordinator::new(
                     Arc::clone(&fault_runtime),
+                    consumer,
                     Arc::clone(&fault_evaluation_cursor),
                     Arc::clone(&storage_fault_observations),
                     Arc::clone(&block_devices),
@@ -1408,11 +1420,20 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
             continue;
         }
+        let consumer = crucible_qemu::ReferencedEventConsumer::ninep_visibility(&ninep.target)
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "identify 9p visibility consumer for `{}`: {error}",
+                    node.name
+                ))
+            })?;
+        referenced_event_consumers.push(consumer);
         backends
             .install_ninep_fault_coordinator(
                 node,
                 Box::new(storage_faults::ProductionNinepFaultCoordinator::new(
                     Arc::clone(&fault_runtime),
+                    consumer,
                     Arc::clone(&fault_evaluation_cursor),
                     Arc::clone(&storage_fault_observations),
                     source.world().clone(),
@@ -1427,6 +1448,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 ))
             })?;
     }
+    fault_runtime
+        .lock()
+        .map_err(|_| loop_factory_error("production fault runtime lock is poisoned"))?
+        .bind_referenced_event_consumers(&referenced_event_consumers)
+        .map_err(|error| loop_factory_error(format!("bind referenced-event consumers: {error}")))?;
 
     let (active_branch, continuation_branches) = restore_checkpoint.as_ref().map_or_else(
         || {

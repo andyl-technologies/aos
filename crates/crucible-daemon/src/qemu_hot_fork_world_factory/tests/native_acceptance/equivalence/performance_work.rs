@@ -142,7 +142,7 @@ mod tests {
                 frontier: VirtualTime { ticks: frontier },
                 resolved_effect_trace: None,
                 locked_effect_trace: None,
-                emitted_events: Vec::new(),
+                referenced_events: crucible_qemu::ReferencedEventEvidence::default(),
                 network_outages: Vec::new(),
                 network_queues: Vec::new(),
                 block_devices: Vec::new(),

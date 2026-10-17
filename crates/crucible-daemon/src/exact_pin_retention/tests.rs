@@ -299,10 +299,11 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         // World-bound I/O ledger, the v3 host-assertion continuation, and the
         // genesis observation choice-source and direct-selection index anchors,
         // the v10 closure's resolved-effect trace-segment catalog, and a
-        // version 2 replay-closure root as the checkpoint choice child.
-        // Authenticate the pin and closure above before pinning these
+        // version 2 replay-closure root as the checkpoint choice child, and
+        // the version 8 production fault runtime with its referenced-event
+        // window. Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "0d804b9a111334d9dd7d9cbb84901c7fd4a92bfc0fc9ab6a3ab603525d66c7d8"
+        "ae92552f5715a7821e3cb0b16fdb9433da493783c1e26ac0252c4d7ec60b9a50"
     );
     drop(store);
 

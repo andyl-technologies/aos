@@ -392,7 +392,7 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
             };
-        let emitted_events = runtime.emitted_events().to_vec();
+        let referenced_events = runtime.referenced_events().evidence();
         drop(runtime);
 
         let network = self.inner.network_output_interceptor();
@@ -563,7 +563,7 @@ impl ProductionVmLifecycleLoop {
             frontier,
             resolved_effect_trace,
             locked_effect_trace,
-            emitted_events,
+            referenced_events,
             network_outages,
             network_queues,
             block_devices,

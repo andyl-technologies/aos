@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize, Serializer};
 use super::{
     MAX_QEMU_CHECKPOINT_NODES, PendingQemuEventMap, ProductionFaultRuntimeCheckpoint,
     ProductionNetworkStateCheckpoint, QemuActionMap, QemuActionSet, QemuNodeMap,
-    production_checkpoint_identity, validate_pending_qemu_event_sequences,
+    ReferencedEventConsumer, ReferencedEventCoordinate, ReferencedEventSubscription,
+    ReferencedEventWindow, production_checkpoint_identity, validate_pending_qemu_event_sequences,
     validate_production_record_state, validate_qemu_action_ledger,
 };
 use crate::fault_action_sink::CommittedQemuActionEvidence;
@@ -29,12 +30,15 @@ mod resource;
 use preflight::preflight_checkpoint_payload;
 use resource::*;
 
-const MAGIC: &[u8] = b"crucible.production-fault-runtime.v7\0";
+const MAGIC: &[u8] = b"crucible.production-fault-runtime.v8\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_EVENT_RECORDS: u64 = 1_073_741_824;
+/// Every World node contributes at most one block and one 9p consumer.
+const MAX_REFERENCED_EVENT_CONSUMERS: u64 = 2 * MAX_QEMU_CHECKPOINT_NODES;
 
 type CheckpointBytes = BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>;
 type CheckpointByteRecords = BoundedVec<CheckpointBytes, MAX_EVENT_RECORDS>;
+type SubscriptionRecords = BoundedVec<ReferencedEventSubscription, MAX_EVENT_RECORDS>;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,7 +52,7 @@ struct CheckpointWire {
     qemu_action_commits: QemuActionMap<CommittedQemuActionEvidence>,
     qemu_active_rule_ids: QemuActionSet,
     network_state: Option<NetworkWire>,
-    emitted_events: BoundedVec<ReferencedSignalEvent, MAX_EVENT_RECORDS>,
+    referenced_events: ReferencedEventsWire,
     pending_qemu_observations: BoundedVec<FaultObservation, MAX_EVENT_RECORDS>,
     pending_qemu_events: BoundedMap<NodeId, CheckpointByteRecords, { MAX_QEMU_CHECKPOINT_NODES }>,
     identity: ContentHash,
@@ -65,7 +69,7 @@ struct CheckpointEncodeWire<'a> {
     qemu_action_commits: &'a QemuActionMap<CommittedQemuActionEvidence>,
     qemu_active_rule_ids: &'a QemuActionSet,
     network_state: Option<NetworkEncodeWire<'a>>,
-    emitted_events: &'a [ReferencedSignalEvent],
+    referenced_events: ReferencedEventsEncodeWire<'a>,
     pending_qemu_observations: &'a [FaultObservation],
     pending_qemu_events: EncodedQemuEventMap<'a>,
     identity: ContentHash,
@@ -83,6 +87,34 @@ impl Serialize for EncodedQemuEventMap<'_> {
         }
         map.end()
     }
+}
+
+/// Referenced-event history counters, retained window, and subscriptions.
+///
+/// `retained` is the field the preflight admits against `event_records`;
+/// every other collection is bounded by live consumer state.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReferencedEventsWire {
+    emitted: u64,
+    log_bytes: u64,
+    history: ContentHash,
+    newest: Option<ReferencedEventCoordinate>,
+    retired: BoundedVec<([u8; 32], ReferencedEventCoordinate), MAX_EVENT_RECORDS>,
+    retained: BoundedVec<(u64, ReferencedSignalEvent), MAX_EVENT_RECORDS>,
+    consumers:
+        BoundedVec<(ReferencedEventConsumer, SubscriptionRecords), MAX_REFERENCED_EVENT_CONSUMERS>,
+}
+
+#[derive(Serialize)]
+struct ReferencedEventsEncodeWire<'a> {
+    emitted: u64,
+    log_bytes: u64,
+    history: ContentHash,
+    newest: Option<ReferencedEventCoordinate>,
+    retired: &'a [([u8; 32], ReferencedEventCoordinate)],
+    retained: Vec<(u64, &'a ReferencedSignalEvent)>,
+    consumers: Vec<(ReferencedEventConsumer, &'a [ReferencedEventSubscription])>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -128,7 +160,10 @@ impl ProductionFaultRuntimeCheckpoint {
         &self,
         maximum: u64,
     ) -> Result<Vec<u8>, ProductionFaultRuntimeCheckpointCodecError> {
-        admit_checkpoint_record_count("emitted fault events", self.emitted_events.len())?;
+        admit_checkpoint_record_count(
+            "retained referenced events",
+            self.referenced_events.retained().len(),
+        )?;
         admit_checkpoint_record_count(
             "pending QEMU observations",
             self.pending_qemu_observations.len(),
@@ -156,6 +191,7 @@ impl ProductionFaultRuntimeCheckpoint {
             .map(|network| encode_network(network, &mut budget))
             .transpose()?;
         let pending_qemu_events = encode_qemu_event_map(&self.pending_qemu_events, &mut budget)?;
+        let referenced_events = encode_referenced_events(&self.referenced_events)?;
 
         let wire = CheckpointEncodeWire {
             runtime,
@@ -167,7 +203,7 @@ impl ProductionFaultRuntimeCheckpoint {
             qemu_action_commits: &self.qemu_action_commits,
             qemu_active_rule_ids: &self.qemu_active_rule_ids,
             network_state,
-            emitted_events: &self.emitted_events,
+            referenced_events,
             pending_qemu_observations: &self.pending_qemu_observations,
             pending_qemu_events,
             identity: self.identity,
@@ -279,6 +315,7 @@ impl ProductionFaultRuntimeCheckpoint {
                 .try_insert(node, decoded)
                 .map_err(|_| record_allocation_limit("pending QEMU node count", 1))?;
         }
+        let referenced_events = decode_referenced_events(wire.referenced_events, plan)?;
         let checkpoint = Self {
             runtime,
             host,
@@ -289,7 +326,7 @@ impl ProductionFaultRuntimeCheckpoint {
             qemu_action_commits: wire.qemu_action_commits,
             qemu_active_rule_ids: wire.qemu_active_rule_ids,
             network_state,
-            emitted_events: wire.emitted_events.into_inner(),
+            referenced_events,
             pending_qemu_observations: wire.pending_qemu_observations.into_inner(),
             pending_qemu_events,
             identity: wire.identity,
@@ -427,6 +464,81 @@ fn decode_network(
     })
 }
 
+fn encode_referenced_events(
+    window: &ReferencedEventWindow,
+) -> Result<ReferencedEventsEncodeWire<'_>, ProductionFaultRuntimeCheckpointCodecError> {
+    let mut retained = Vec::new();
+    retained
+        .try_reserve_exact(window.retained().len())
+        .map_err(|_| {
+            record_allocation_limit("retained referenced events", window.retained().len())
+        })?;
+    retained.extend(
+        window
+            .retained()
+            .iter()
+            .map(|event| (event.index(), event.event())),
+    );
+
+    let subscriptions = window.consumer_subscriptions();
+    if u64::try_from(subscriptions.len())
+        .map_or(true, |count| count > MAX_REFERENCED_EVENT_CONSUMERS)
+    {
+        return Err(resource_limit(
+            "referenced-event consumers",
+            0,
+            u64::try_from(subscriptions.len()).unwrap_or(u64::MAX),
+            MAX_REFERENCED_EVENT_CONSUMERS,
+            MAX_REFERENCED_EVENT_CONSUMERS,
+        ));
+    }
+    let mut consumers = Vec::new();
+    consumers
+        .try_reserve_exact(subscriptions.len())
+        .map_err(|_| record_allocation_limit("referenced-event consumers", subscriptions.len()))?;
+    for (consumer, subscriptions) in subscriptions {
+        admit_checkpoint_record_count("referenced-event subscriptions", subscriptions.len())?;
+        consumers.push((*consumer, subscriptions.as_slice()));
+    }
+
+    Ok(ReferencedEventsEncodeWire {
+        emitted: window.emitted(),
+        log_bytes: window.log_bytes(),
+        history: window.history(),
+        newest: window.newest(),
+        retired: window.retired_frontiers(),
+        retained,
+        consumers,
+    })
+}
+
+fn decode_referenced_events(
+    wire: ReferencedEventsWire,
+    plan: &FaultSignalPlan,
+) -> Result<ReferencedEventWindow, ProductionFaultRuntimeCheckpointCodecError> {
+    let consumers = wire.consumers.into_inner();
+    let mut decoded_consumers = Vec::new();
+    decoded_consumers
+        .try_reserve_exact(consumers.len())
+        .map_err(|_| record_allocation_limit("referenced-event consumers", consumers.len()))?;
+    decoded_consumers.extend(
+        consumers
+            .into_iter()
+            .map(|(consumer, subscriptions)| (consumer, subscriptions.into_inner())),
+    );
+    ReferencedEventWindow::from_parts(
+        wire.emitted,
+        wire.log_bytes,
+        wire.history,
+        wire.newest,
+        wire.retired.into_inner(),
+        wire.retained.into_inner(),
+        decoded_consumers,
+        plan.resource_limits(),
+    )
+    .map_err(map_identity_error)
+}
+
 fn bounded_checkpoint_bytes(
     bytes: Vec<u8>,
 ) -> Result<CheckpointBytes, ProductionFaultRuntimeCheckpointCodecError> {
@@ -507,7 +619,7 @@ fn validate_checkpoint(
     )
     .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Invalid)?;
     validate_production_record_state(
-        &checkpoint.emitted_events,
+        checkpoint.referenced_events.usage(),
         &checkpoint.pending_qemu_observations,
         &checkpoint.pending_qemu_events,
         &checkpoint.qemu_issued_actions,
@@ -528,7 +640,7 @@ fn validate_checkpoint(
         &checkpoint.qemu_action_commits,
         &checkpoint.qemu_active_rule_ids,
         checkpoint.network_state.as_ref(),
-        &checkpoint.emitted_events,
+        &checkpoint.referenced_events,
         &checkpoint.pending_qemu_observations,
         &checkpoint.pending_qemu_events,
     )

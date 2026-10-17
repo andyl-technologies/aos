@@ -1009,8 +1009,9 @@ pub struct ProductionFaultEvidenceSnapshot {
     pub resolved_effect_trace: Option<ResolvedEffectTrace>,
     /// Committed locked-effect replay trace, including pass work items.
     pub locked_effect_trace: Option<ResolvedEffectTrace>,
-    /// Signal events emitted in authoritative evaluation order.
-    pub emitted_events: Vec<crucible::model::ReferencedSignalEvent>,
+    /// Referenced signal-event history: the emitted count, the chain digest
+    /// over every emission, and the events still retained for consumers.
+    pub referenced_events: crucible_qemu::ReferencedEventEvidence,
     /// Network outages active at `frontier`.
     pub network_outages: Vec<ProductionNetworkOutageEvidence>,
     /// Live network queues with at least one reservation.

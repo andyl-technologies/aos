@@ -188,17 +188,20 @@ impl NinepDevice {
         )
     }
 
-    /// Latches visibility updates from signal emissions appended since the
-    /// last call; see [`NinepVisibilityState::observe_events`].
+    /// Latches visibility updates from the retained signal emissions appended
+    /// since the last call; see [`NinepVisibilityState::observe_events_through`].
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError`] when the emission cursor would overflow.
+    /// Returns [`DeviceError`] when `consumed_through` precedes the cursor or
+    /// cannot hold `emissions`.
     pub fn observe_visibility_events(
         &mut self,
         emissions: &[NinepEventEmission],
+        consumed_through: u64,
     ) -> Result<(), DeviceError> {
-        self.visibility.observe_events(emissions)
+        self.visibility
+            .observe_events_through(emissions, consumed_through)
     }
 
     /// Advances the visible frontier at an exact simulation tick from fixed

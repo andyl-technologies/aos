@@ -405,7 +405,7 @@ crucible.qemu.hot-fork.plugin-child-status	3	qemu-patch::hot-fork-plugin	process
 crucible.qemu.hot-fork.qmp-child-reinitializer	2	qemu-patch::hot-fork-qmp	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.node-continuation	9	crucible-qemu::checkpoint	device-state	gate:exact-closure-streaming
 crucible.qemu.native-console-continuation	1	crucible-qemu::native_console_owner::continuation	device-state	gate:exact-closure-streaming,gate:hot-fork-isolation
-crucible.qemu.production-fault-runtime	7	crucible-qemu::production_fault_runtime::checkpoint_codec	device-state	gate:exact-closure-streaming
+crucible.qemu.production-fault-runtime	8	crucible-qemu::production_fault_runtime::checkpoint_codec	device-state	gate:exact-closure-streaming
 crucible.qemu.selectable-reply-status	1	qemu-patch::selectable-reply-status	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu.virtio-accelerator-config	1	qemu-patch::virtio-accelerator	process-protocol-message	gate:abi-conformance
 

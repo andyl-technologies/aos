@@ -94,7 +94,7 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
             sequence: 1,
         },
     };
-    ok(device.observe_visibility_events(&[emission]));
+    ok(device.observe_visibility_events(&[emission], 1));
     ok(device.commit_visibility_update(
         NinepVisibilityUpdateKey {
             slot: [10; 32],

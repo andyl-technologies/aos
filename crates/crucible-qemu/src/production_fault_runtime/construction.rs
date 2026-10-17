@@ -22,7 +22,7 @@ impl ProductionFaultRuntime {
             runtime: self.runtime.clone(),
             host: self.host.clone(),
             restored_network_state: self.restored_network_state.clone(),
-            emitted_events: self.emitted_events.clone(),
+            referenced_events: self.referenced_events.clone(),
             qemu_issued_actions: self.qemu_issued_actions.try_clone_with(
                 |identity| Ok(*identity),
                 |action| {
@@ -208,7 +208,7 @@ impl ProductionFaultRuntime {
             runtime,
             host: HostFaultActionSink::new(resource_limits),
             restored_network_state: None,
-            emitted_events: Vec::new(),
+            referenced_events: ReferencedEventWindow::default(),
             qemu_issued_actions: QemuActionMap::new(),
             qemu_action_commits: QemuActionMap::new(),
             qemu_active_rule_ids: QemuActionSet::new(),
@@ -247,7 +247,7 @@ impl ProductionFaultRuntime {
         let plan_id = plan.id();
         let resource_limits = plan.resource_limits();
         validate_production_record_state(
-            &checkpoint.emitted_events,
+            checkpoint.referenced_events.usage(),
             &checkpoint.pending_qemu_observations,
             &checkpoint.pending_qemu_events,
             &checkpoint.qemu_issued_actions,
@@ -265,7 +265,7 @@ impl ProductionFaultRuntime {
             &checkpoint.qemu_active_rule_ids,
         )?;
         let current_event_records = production_record_state_usage(
-            &checkpoint.emitted_events,
+            checkpoint.referenced_events.usage(),
             &checkpoint.pending_qemu_observations,
             &checkpoint.pending_qemu_events,
             &checkpoint.qemu_issued_actions,
@@ -301,7 +301,7 @@ impl ProductionFaultRuntime {
                 &checkpoint.qemu_action_commits,
                 &checkpoint.qemu_active_rule_ids,
                 checkpoint.network_state.as_ref(),
-                &checkpoint.emitted_events,
+                &checkpoint.referenced_events,
                 &checkpoint.pending_qemu_observations,
                 &checkpoint.pending_qemu_events,
             )?
@@ -349,7 +349,7 @@ impl ProductionFaultRuntime {
         let qemu_active_rule_ids = checkpoint.qemu_active_rule_ids;
         let host = checkpoint.host;
         let restored_network_state = checkpoint.network_state;
-        let emitted_events = checkpoint.emitted_events;
+        let referenced_events = checkpoint.referenced_events;
         let pending_qemu_observations = checkpoint.pending_qemu_observations;
         let pending_qemu_events = checkpoint.pending_qemu_events;
         let runtime = match (plan.programs().is_empty(), checkpoint.runtime) {
@@ -381,7 +381,7 @@ impl ProductionFaultRuntime {
             runtime,
             host: HostFaultActionSink::from_state(host, resource_limits),
             restored_network_state,
-            emitted_events,
+            referenced_events,
             qemu_issued_actions,
             qemu_action_commits,
             qemu_active_rule_ids,

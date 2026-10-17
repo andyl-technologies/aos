@@ -120,6 +120,7 @@ state plus a tail:
 | Named host predicates | One accumulator state per declared leaf ([§15.5](#155-named-predicate-accumulators)) |
 | Temporal operators, latches, `eventually` obligations | Existing evaluator checkpoint |
 | Prefix offsets | Offsets within the current observation interval and the terminal offset |
+| Production fault-runtime referenced events | Emitted count, cumulative byte charge, and history chain digest, plus the events a live device subscription can still use ([CMEAS-26]) |
 
 The prefix is built with a declaration catalog derived from the scenario so it
 can maintain per-declaration state. Entries leave the tail when every consumer
@@ -135,6 +136,27 @@ within one quantum, so the tail is held until the slower consumer advances.
   the attempt log's chain position instead of the retained entries. Restore
   MUST authenticate the fold state against the checkpoint identity and MUST NOT
   require the complete entry sequence.
+
+The production fault runtime emits a referenced signal event whenever an
+exported event named by a storage recovery contract fires. Block recovery
+releases a retained completion with the earliest such event strictly after its
+subscription, and 9p visibility latches an event-released update the same way,
+so a later event of the same signal cannot change either outcome. Each emission
+is charged once against the cumulative `event_records` and `event_log_bytes`
+budgets of RFC-0014 §13.7 and folded into a chain digest. Every block and 9p
+coordinator is a registered consumer that reports its live subscriptions after
+each service step, and the runtime retires an event once no reported
+subscription, active persistent recovery action, or action that could still be
+installed at the newest emitted tick can use it. A consumer whose live
+subscription may have lost its releasing event fails closed.
+
+- **[CMEAS-26]** The production fault-runtime continuation MUST retain a
+  referenced signal event only while a registered consumer's live subscription,
+  an active persistent storage action, or the newest emitted tick can still
+  select it, and MUST charge each emission once against cumulative counters
+  rather than rescan the emitted history (CPERF-10). Its checkpoint MUST carry
+  the emitted count, cumulative byte charge, and history chain digest in place
+  of the complete history, and restore MUST NOT require the complete history.
 
 ## 15.5 Named predicate accumulators
 

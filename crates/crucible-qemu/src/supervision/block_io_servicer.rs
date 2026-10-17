@@ -1582,6 +1582,26 @@ impl QemuLiveBlockIoServicer {
         Ok(self.device.lock()?.storage_fault_state().clone())
     }
 
+    /// Returns the recovery subscription of every retained completion.
+    ///
+    /// Each subscription names the completion's recovery event and the
+    /// coordinate strictly after which an emission releases it. The production
+    /// coordinator reports them to the fault runtime, which keeps every
+    /// referenced event that can still release one, without cloning the
+    /// complete storage-fault continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
+    pub fn retained_recovery_subscriptions(
+        &self,
+    ) -> Result<Vec<crate::ReferencedEventSubscription>, QemuLiveBlockIoServicerError> {
+        Ok(crate::retained_recovery_subscriptions(
+            self.device.lock()?.storage_fault_state(),
+        ))
+    }
+
     /// Returns the aggregate pending count and largest retained request extent.
     ///
     /// # Errors

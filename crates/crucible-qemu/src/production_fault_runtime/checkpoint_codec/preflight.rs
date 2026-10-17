@@ -32,7 +32,7 @@ pub(super) fn preflight_checkpoint_payload(
                 )?;
                 admit_aggregate_event_records(&mut event_records, records, limits)?;
             }
-            b"qemu_active_rule_ids" | b"emitted_events" | b"pending_qemu_observations" => {
+            b"qemu_active_rule_ids" | b"pending_qemu_observations" => {
                 let records = cursor.admit_array(
                     "event_records",
                     limits.event_records,
@@ -42,6 +42,10 @@ pub(super) fn preflight_checkpoint_payload(
             }
             b"pending_qemu_events" => {
                 let records = cursor.admit_pending_qemu_events(limits)?;
+                admit_aggregate_event_records(&mut event_records, records, limits)?;
+            }
+            b"referenced_events" => {
+                let records = cursor.admit_referenced_events(limits)?;
                 admit_aggregate_event_records(&mut event_records, records, limits)?;
             }
             _ => cursor.skip_value(0)?,
@@ -163,6 +167,30 @@ impl<'a> CborCursor<'a> {
             }
         }
         Ok(events)
+    }
+
+    /// Admits the retained referenced-event window inside its nested map.
+    ///
+    /// Only the retained events count against `event_records`; the
+    /// cumulative emitted count is a scalar charged after decode.
+    fn admit_referenced_events(
+        &mut self,
+        limits: FaultResourceLimits,
+    ) -> Result<u64, ProductionFaultRuntimeCheckpointCodecError> {
+        let fields = self.map_len()?;
+        let mut retained = 0_u64;
+        for _ in 0..fields {
+            if self.text()? == b"retained" {
+                retained = self.admit_array(
+                    "event_records",
+                    limits.event_records,
+                    hard_limits().event_records,
+                )?;
+            } else {
+                self.skip_value(0)?;
+            }
+        }
+        Ok(retained)
     }
 
     fn skip_value(

@@ -1707,6 +1707,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   identity, stop checks, imported I/O inventory, and fault accounting
   proportional to each quantum's appended work, and prove flat memory and
   per-quantum time over a long-horizon attempt with a deep selected branch.
+  The production fault runtime charges each referenced event once against
+  cumulative counters and a history chain digest, retains only the events
+  that block-recovery and 9p-visibility consumers' reported subscriptions,
+  active persistent recovery actions, or the newest emitted tick can still
+  select, and checkpoints that window in production fault-runtime version 8
+  (CMEAS-26). The issued QEMU action ledger still grows with the run until
+  the plugin reports rule retirement.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,

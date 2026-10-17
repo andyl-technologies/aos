@@ -571,10 +571,12 @@ poll, their modeled coordinates still determine the winner. Release of all
 completions selected at one boundary is atomic with response reservation,
 durability mutation, scheduler sequencing, and observation recording. A stalled
 flush advances and reports its captured durable frontier only on recovery; its
-timeout leaves that frontier unchanged. Referenced event occurrences and
-retained completions are authenticated checkpoint state and are subject to the
-declared hard runtime bounds; exhausting either bound fails the run rather than
-dropping history or inventing a completion.
+timeout leaves that frontier unchanged. Retained completions are authenticated
+checkpoint state. Every referenced event occurrence is charged once against the
+cumulative event budgets of §13.7 and bound into the checkpoint through its
+emitted count and a history chain digest; the checkpoint retains an occurrence
+only while it can still release a live subscription (RFC-0020 CMEAS-26).
+Exhausting either bound fails the run rather than inventing a completion.
 
 ## 8.5 Node, CPU, memory, clock, interrupt, and accelerator registry
 
