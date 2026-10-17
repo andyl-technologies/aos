@@ -189,7 +189,7 @@ pub fn original_native_restore_commit_construction_storage_data(
         65_536,
     ])?;
     // The two real measurements are sequential; both returned references remain
-    // live. The actual called Prepare streamer keeps one fixed8KiB bank and
+    // live. The actual called Prepare streamer keeps one fixed 256 KiB bank and
     // before/after metadata; no whole executable Vec or current_exe path exists.
     let measurement_bytes = add(
         super::super::restore_prepare::original_prepare_executable_measurement_counter_scratch_data(

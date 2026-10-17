@@ -9,13 +9,13 @@ use crucible_node_contract::{ContentRef, HashRef, U64, Validate};
 use std::{fs::File, io::Read, os::unix::fs::MetadataExt, path::Path};
 
 const MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
-const STREAM_BUFFER_BYTES: usize = 8192;
+const STREAM_BUFFER_BYTES: usize = 256 * 1024;
 const CONFORMANCE_STREAM_BUFFER_BYTES: usize = 256 * 1024;
 
 // Legacy probes finish their bounded read before comparing the original length
 // and post-read metadata. Prepare already refuses immediately on growth. Keep
-// both existing error-order contracts while sharing the hash/read loop. The
-// generic bank batches larger BLAKE3 updates; selected Prepare retains8KiB.
+// both existing error-order contracts while sharing the hash/read loop.
+// Both banks batch BLAKE3 updates without sharing their growth policies.
 #[derive(Clone, Copy)]
 enum GrowthPolicy {
     RefuseImmediately,
@@ -36,11 +36,11 @@ pub(crate) const fn original_prepare_executable_measurement_counter_scratch_data
     measurement_counter_scratch_data::<STREAM_BUFFER_BYTES>()
 }
 
-/// Reports the complete larger generic bank and the same conservative headers.
+/// Reports the complete generic bank and the same conservative headers.
 ///
 /// CompleteBirth uses this public conformance path before service dispatch.
-/// Its256KiB local array is distinct from the selected Prepare8KiB array; the
-/// calls are sequential, and neither function returns or stores its read bank.
+/// Its local array is distinct from the selected Prepare array. Both banks
+/// hold 256 KiB; calls are sequential and neither returns or stores its read bank.
 /// Compiler spills/copies and physical stack overhead remain outside this
 /// explicit requested-layout census, as they do for the existing Prepare path.
 pub(crate) const fn original_conformance_executable_measurement_counter_scratch_data() -> usize {
@@ -397,11 +397,12 @@ mod tests {
     #[test]
     fn growth_policy_preserves_prepare_refusal_and_generic_read_error_precedence() {
         struct GrowthThenError {
-            first: bool,
+            reads: usize,
         }
         impl Read for GrowthThenError {
             fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-                if std::mem::replace(&mut self.first, false) {
+                self.reads += 1;
+                if self.reads == 1 {
                     bytes[..3].copy_from_slice(b"new");
                     Ok(3)
                 } else {
@@ -410,13 +411,15 @@ mod tests {
             }
         }
 
+        let mut prepare_reader = GrowthThenError { reads: 0 };
+        let mut generic_reader = GrowthThenError { reads: 0 };
         let prepare = measure_bounded_stream::<STREAM_BUFFER_BYTES>(
-            &mut GrowthThenError { first: true },
+            &mut prepare_reader,
             1,
             GrowthPolicy::RefuseImmediately,
         );
         let generic = measure_bounded_stream::<CONFORMANCE_STREAM_BUFFER_BYTES>(
-            &mut GrowthThenError { first: true },
+            &mut generic_reader,
             1,
             GrowthPolicy::ReadToBound,
         );
@@ -430,6 +433,8 @@ mod tests {
         assert!(
             matches!(generic, Err(ProviderError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe)
         );
+        assert_eq!(prepare_reader.reads, 1);
+        assert_eq!(generic_reader.reads, 2);
     }
 
     #[test]
@@ -471,7 +476,8 @@ mod tests {
     }
 
     #[test]
-    fn generic_and_prepare_banks_keep_distinct_slices_and_identical_content() -> TestResult {
+    fn generic_and_prepare_banks_preserve_independent_policies_and_identical_content() -> TestResult
+    {
         struct ObservedRead<'a> {
             input: Cursor<&'a [u8]>,
             largest_slice: usize,
@@ -533,6 +539,49 @@ mod tests {
             measure_controller_executable(U64::new(u64::from(std::process::id())))?,
             expected
         );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires the same pinned immutable executable and complete expected ContentRef"]
+    fn original_prepare_executable_measurement_performance_sample() -> TestResult {
+        let input = std::env::var("CRUCIBLE_PREPARE_MEASUREMENT_INPUT")?;
+        let expected = std::env::var("CRUCIBLE_PREPARE_MEASUREMENT_EXPECTED")?;
+        let expected: ContentRef = canonical::decode(expected.as_bytes(), 4096)?;
+        let path = Path::new(&input);
+        let sentinel = File::open(path)?;
+        let before = sentinel.metadata()?;
+
+        let started = crate::operational_time::PhysicalMeasurement::begin();
+        let actual = measure_executable(path)?;
+        let elapsed = started.elapsed();
+
+        authenticate_metadata(&before, &sentinel.metadata()?)?;
+        let after = std::fs::metadata(path)?;
+        authenticate_metadata(&before, &after)?;
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        assert_eq!(actual, expected);
+        println!(
+            "{}",
+            serde_json::json!({
+                "measurement": "original-prepare-executable-api",
+                "stream_buffer_bytes": STREAM_BUFFER_BYTES,
+                "elapsed_ns": elapsed.as_nanos().to_string(),
+                "content": actual,
+                "device": after.dev().to_string(),
+                "inode": after.ino().to_string(),
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires the same pinned immutable executable selected for performance samples"]
+    fn original_prepare_executable_measurement_reference() -> TestResult {
+        let input = std::env::var("CRUCIBLE_PREPARE_MEASUREMENT_INPUT")?;
+        let reference = crate::conformance::measure_executable(Path::new(&input))?;
+        let bytes = canonical::canonical_json(&serde_json::to_value(reference)?)?;
+        println!("{}", std::str::from_utf8(&bytes)?);
         Ok(())
     }
 }

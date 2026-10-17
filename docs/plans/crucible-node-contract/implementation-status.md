@@ -1304,6 +1304,34 @@ advance past missing observations. All 25 public contract integration tests and
 rejection without cursor or storage mutation, exact retries, whole-batch paging,
 empty batches and valid ranges ending at the maximum sequence value.
 
+### Selected executable measurement
+
+The selected startup/Prepare path now reads through a 256 KiB bank. It retains
+the same complete read/hash/metadata/reference implementation, immediate-growth
+refusal and generic-path error precedence. Its shared scratch getter funds the
+larger bank; private bootstrap also explicitly prices the complete measurement
+phase and returned reference strings before authenticating its original row.
+All retained owners, policy limits and original cuts remain unchanged.
+
+Thirty alternating pairs use the same read-only 181,131,064-byte controller image
+and ordinary Cargo dev profile, with matching provider features and BLAKE3
+artifact records. Mean API time falls from 2,376.51 to 679.53 ms (71.41%); median
+speedup is 3.49x. Separately waited whole-test-process CPU falls from 2,361.26 to
+678.46 ms. All sixty complete ContentRefs match; the candidate wins every pair.
+CPU includes the libtest harness and checks outside the timed API. The file is
+warm in cache. Only the baseline has a separate untimed warm-up, a deviation
+from the measurement plan; the first candidate sample is near its median and
+all thirty pairs remain included. These are component results.
+
+All 1,753 Core and 1,077 provider tests pass, with 32 and fifteen ignored tests
+respectively. The two new ignored cases use the ordinary libtest harness for
+reference initialization and measurement. All four full-roster controls pass
+in 26.28 seconds; six-crate, all-feature/all-target checking passes in 41.15
+seconds. The provider rebuild passes in 19.20 seconds. The actual startup test
+still fails with zero passes and one failure in 74.83 seconds; its precise next
+refusal remains under investigation. The running application-target gate covers
+the preceding layout checkpoint, not this measurement change.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
@@ -1335,6 +1363,7 @@ including:
 | Full-file hash stream, 64 to 256 KiB blocks | 23.65% lower mean time | Thirty matched rounds over the same 160.8 MB file; identical framed hashes |
 | Full-file hash stream and runtime-selected BLAKE3 intrinsics | Median 77.11 to 35.56 ms; 53.89% lower time | Thirty balanced three-way rounds; all ninety full hashes and 55 boundary vectors match |
 | Generic executable measurement, whole-file buffer to 256 KiB stream | Mean 74.13 to 37.31 ms; 49.68% lower call time; mean process peak RSS 152 to 19.05 MiB | Thirty alternating pairs through the real public APIs; all sixty complete ContentRefs match |
+| Selected startup/Prepare executable measurement, 8 to 256 KiB bank | Mean 2,376.51 to 679.53 ms; 71.41% lower call time; median 3.49x speedup | Thirty alternating pairs, ordinary dev profile and warm 181.1 MB input; all sixty complete ContentRefs match |
 | Maximum-frontier component pair | 3.37x improvement | One matched component pair |
 | Immutable-domain component pair | 47.87x wall and 55.92x child CPU improvement | One matched component pair |
 

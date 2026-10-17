@@ -595,7 +595,8 @@ fn birth_storage_with_source(
         maximum,
     )?;
     // CompleteBirth::prepare calls the generic measurement path. Charge its
-    // entire bank here; selected Prepare/restore retain their separate8KiB bank.
+    // entire bank here. Selected Prepare/restore use their separately counted
+    // bank; the current-controller check remains in the private-bootstrap phase.
     let maximum_simultaneous_transient_bytes = birth_work
         .max(lifecycle_work)
         .max(admit.transient)

@@ -343,6 +343,21 @@ fn project_with_source(
             .max(second_raw_phase)
             .max(decode_phase)
     };
+    // The selected controller-image check runs after these parser/validator
+    // phases return, while every original private bank remains retained. Fund
+    // its actual complete read bank and independent returned reference strings
+    // before claim_birth_data authenticates this row and enters measurement.
+    let measurement = sum(
+        &[
+            super::super::super::ack_emitter::original_prepare_executable_measurement_counter_scratch_data(),
+            "blake3-256".len(),
+            "cnp.blob.v1".len(),
+            64,
+            "application/octet-stream".len(),
+        ],
+        maximum,
+    )?;
+    let transient = transient.max(measurement);
     // Original launch/source/registration/boot DOM children survive successful
     // service birth in the original private bootstrap holder. These independent
     // owners are not released merely because policy retains equivalent values.
