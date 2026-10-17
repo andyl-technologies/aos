@@ -61,7 +61,10 @@ fn original_five_constructs_full_suffix_grammar_without_selecting_startup_sixtee
 #[test]
 fn full_invocation_fresh_report_quote_preserves_sixty_four_kib_query_limits() {
     use crucible_node_provider::reference_packet::service::report_startup::{
-        PacketNativeReportStartupPurpose, original_invocation_report_startup_storage_data,
+        PACKET_NATIVE_REPORT_STARTUP_ALLOCATION_SCHEMA, PacketNativeReportStartupAllocation,
+        PacketNativeReportStartupAllocationRow, PacketNativeReportStartupPurpose,
+        original_invocation_report_startup_allocation_peak_data,
+        original_invocation_report_startup_storage_data,
     };
 
     let executable = std::env::current_exe().unwrap();
@@ -115,6 +118,147 @@ fn full_invocation_fresh_report_quote_preserves_sixty_four_kib_query_limits() {
         assert_eq!(data.raw_report_capacity(), 16_384);
         assert!(data.retained_growth_bytes() > 0);
         assert!(data.maximum_simultaneous_transient_bytes() > 0);
+
+        let row = |purpose| {
+            let quote = original_invocation_report_startup_storage_data(&launch, purpose).unwrap();
+            PacketNativeReportStartupAllocationRow {
+                raw_report_capacity: U64::new(quote.raw_report_capacity() as u64),
+                retained_growth_bytes: U64::new(quote.retained_growth_bytes() as u64),
+                maximum_simultaneous_transient_bytes: U64::new(
+                    quote.maximum_simultaneous_transient_bytes() as u64,
+                ),
+                declared_counter_scratch_bytes: U64::new(
+                    quote.declared_counter_scratch_bytes() as u64
+                ),
+            }
+        };
+        let original = row(PacketNativeReportStartupPurpose::OriginalObserve12);
+        let fresh = row(PacketNativeReportStartupPurpose::FreshCompletedAdmit13);
+        let allocation = PacketNativeReportStartupAllocation {
+            schema: PACKET_NATIVE_REPORT_STARTUP_ALLOCATION_SCHEMA.into(),
+            original_observe12: Some(original),
+            fresh_completed_admit13: Some(fresh),
+        };
+        let expected = allocation.requested_peak_data().unwrap();
+        assert!(expected > 512 * 1024 * 1024);
+        for one in [original, fresh] {
+            assert!(one.requested_peak_data().unwrap() <= 512 * 1024 * 1024);
+        }
+        let original_purpose = crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData::original_execution_data(&launch).unwrap();
+        let runtime =
+            canonical::content_ref(b"inert historical runtime", "application/runtime").unwrap();
+        let native =
+            canonical::content_ref(b"inert historical native", "application/native").unwrap();
+        let fresh_purpose = crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData::restoration_target_data(
+            &launch, &runtime, &native, &launch.selection.realization.owner_bindings[0].owner.id,
+        ).unwrap();
+        for purpose in [original_purpose, fresh_purpose] {
+            assert_eq!(
+                original_invocation_report_startup_allocation_peak_data(
+                    &launch,
+                    &purpose,
+                    Some(original),
+                    Some(fresh),
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        assert!(
+            original_invocation_report_startup_allocation_peak_data(
+                &launch,
+                &original_purpose,
+                None,
+                Some(fresh),
+            )
+            .is_err()
+        );
+        assert!(
+            original_invocation_report_startup_allocation_peak_data(
+                &launch,
+                &fresh_purpose,
+                Some(original),
+                None,
+            )
+            .is_err()
+        );
+        let saved_capture = launch.capture_allocation_selection;
+        launch.capture_allocation_selection = None;
+        assert!(
+            original_invocation_report_startup_allocation_peak_data(
+                &launch,
+                &original_purpose,
+                None,
+                Some(fresh),
+            )
+            .is_err()
+        );
+        launch.capture_allocation_selection = saved_capture;
+        let saved_fresh = launch.fresh_restore_allocation_selection;
+        launch.fresh_restore_allocation_selection = None;
+        assert!(
+            original_invocation_report_startup_allocation_peak_data(
+                &launch,
+                &fresh_purpose,
+                Some(original),
+                None,
+            )
+            .is_err()
+        );
+        launch.fresh_restore_allocation_selection = saved_fresh;
+
+        for field in ["original_observe12", "fresh_completed_admit13"] {
+            let mut null_row = serde_json::to_value(&allocation).unwrap();
+            null_row[field] = serde_json::Value::Null;
+            let parsed: PacketNativeReportStartupAllocation =
+                serde_json::from_value(null_row).unwrap();
+            assert!(
+                original_invocation_report_startup_allocation_peak_data(
+                    &launch,
+                    &original_purpose,
+                    parsed.original_observe12,
+                    parsed.fresh_completed_admit13,
+                )
+                .is_err()
+            );
+        }
+
+        let mut oversized = original;
+        oversized.retained_growth_bytes = U64::new(512 * 1024 * 1024);
+        assert!(
+            original_invocation_report_startup_allocation_peak_data(
+                &launch,
+                &fresh_purpose,
+                Some(oversized),
+                Some(fresh),
+            )
+            .is_err()
+        );
+        let mut overflow = fresh;
+        overflow.retained_growth_bytes = U64::new(u64::MAX);
+        assert!(
+            original_invocation_report_startup_allocation_peak_data(
+                &launch,
+                &original_purpose,
+                Some(original),
+                Some(overflow),
+            )
+            .is_err()
+        );
+        let saved_admission = launch.selection.admission.clone();
+        launch.selection.admission =
+            crucible_node_contract::Id::new("foreign-report-admission").unwrap();
+        assert!(
+            original_invocation_report_startup_allocation_peak_data(
+                &launch,
+                &original_purpose,
+                Some(original),
+                Some(fresh),
+            )
+            .is_err()
+        );
+
+        launch.selection.admission = saved_admission;
 
         launch.limits.frame_bytes = U64::new(0);
         assert!(

@@ -177,6 +177,103 @@ impl PacketNativeReportStartupAllocation {
     }
 }
 
+/// Checks the complete declared rows against one explicit invocation target.
+///
+/// Every positive compiled publisher retains its independent 512 MiB ceiling.
+/// The full checked retained sum plus largest complete phase is returned even
+/// when it exceeds that per-publisher ceiling. Core separately admits this whole
+/// owner aggregate; neither the returned number nor purpose DATA grants access.
+/// The private native consumer authenticates its real invocation before entry.
+///
+/// # Errors
+/// Refuses a foreign full target, mismatched selections, absent reachable row,
+/// invalid row, per-publisher excess or checked whole-owner overflow.
+pub fn original_invocation_report_startup_allocation_peak_data(
+    launch: &super::PacketNative5SourceLaunch,
+    invocation: &super::native_startup::PacketNativeInvocationPurposeData,
+    original: Option<PacketNativeReportStartupAllocationRow>,
+    fresh: Option<PacketNativeReportStartupAllocationRow>,
+) -> Result<u64, ProviderError> {
+    invocation.authenticate_target_data(launch)?;
+    if original.is_some() != launch.capture_allocation_selection.is_some()
+        || fresh.is_some() != launch.fresh_restore_allocation_selection.is_some()
+    {
+        return Err(invalid());
+    }
+    let reachable = if invocation.is_original_execution_data() {
+        original
+    } else {
+        fresh
+    };
+    reachable.ok_or_else(invalid)?.requested_peak_data()?;
+    invocation_allocation_peak_data(original, fresh)
+}
+
+type InvocationRows = (
+    Option<PacketNativeReportStartupAllocationRow>,
+    Option<PacketNativeReportStartupAllocationRow>,
+);
+
+// Credited by both the Core report prequote and the native invocation claim
+// before this borrowed validator runs. This has no dependency on a producer.
+pub(crate) const fn original_invocation_report_startup_allocation_counter_scratch_data() -> usize {
+    use super::native_startup::PacketNativeInvocationPurposeData;
+    use std::mem::size_of;
+
+    size_of::<&PacketNativeInvocationPurposeData>()
+        + size_of::<Option<&PacketNativeInvocationPurposeData>>()
+        + size_of::<[Option<PacketNativeReportStartupAllocationRow>; 2]>()
+        + size_of::<std::array::IntoIter<Option<PacketNativeReportStartupAllocationRow>, 2>>()
+        + size_of::<
+            std::iter::Flatten<
+                std::array::IntoIter<Option<PacketNativeReportStartupAllocationRow>, 2>,
+            >,
+        >()
+        + size_of::<Option<PacketNativeReportStartupAllocationRow>>()
+        + size_of::<Result<PacketNativeReportStartupAllocationRow, ProviderError>>()
+        + size_of::<InvocationRows>()
+        + size_of::<Result<InvocationRows, ProviderError>>()
+        + size_of::<Result<u64, ProviderError>>()
+        + size_of::<Result<(), ProviderError>>()
+        + size_of::<&serde_json::Map<String, serde_json::Value>>()
+        + size_of::<Result<&serde_json::Map<String, serde_json::Value>, ProviderError>>()
+        + size_of::<u64>()
+        + size_of::<bool>()
+        + size_of::<[usize; 6]>()
+        + size_of::<std::array::IntoIter<usize, 6>>()
+}
+
+// The compiled ceiling bounds each publisher's constructor, not the sum of
+// independently retained declarations. Keep the complete aggregate checked;
+// the actual installed admission remains responsible for funding all owners.
+fn invocation_allocation_peak_data(
+    original: Option<PacketNativeReportStartupAllocationRow>,
+    fresh: Option<PacketNativeReportStartupAllocationRow>,
+) -> Result<u64, ProviderError> {
+    let mut retained = 0u64;
+    let mut phase = 0u64;
+    let mut present = false;
+    for row in [original, fresh].into_iter().flatten() {
+        if row.requested_peak_data()? > 512 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        present = true;
+        retained = retained
+            .checked_add(row.retained_growth_bytes.get())
+            .ok_or_else(invalid)?;
+        phase = phase.max(
+            row.maximum_simultaneous_transient_bytes
+                .get()
+                .checked_add(row.declared_counter_scratch_bytes.get())
+                .ok_or_else(invalid)?,
+        );
+    }
+    if !present {
+        return Err(invalid());
+    }
+    retained.checked_add(phase).ok_or_else(invalid)
+}
+
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -200,6 +297,32 @@ mod tests {
             maximum_simultaneous_transient_bytes: U64::new(transient),
             declared_counter_scratch_bytes: U64::new(scratch),
         }
+    }
+
+    #[test]
+    fn invocation_publishers_keep_exact_individual_caps_and_all_axes() {
+        let ceiling = 512 * 1024 * 1024;
+        let exact = row(ceiling - 3, 2, 1);
+        let second = row(1, 2, 1);
+        assert_eq!(
+            invocation_allocation_peak_data(Some(exact), Some(second)).unwrap(),
+            ceiling + 1
+        );
+        assert_eq!(
+            invocation_allocation_peak_data(Some(second), Some(exact)).unwrap(),
+            ceiling + 1
+        );
+
+        for exceeded in [
+            row(ceiling - 2, 2, 1),
+            row(ceiling - 3, 3, 1),
+            row(ceiling - 3, 2, 2),
+        ] {
+            assert!(invocation_allocation_peak_data(Some(exceeded), Some(second)).is_err());
+            assert!(invocation_allocation_peak_data(Some(second), Some(exceeded)).is_err());
+        }
+        assert!(invocation_allocation_peak_data(None, None).is_err());
+        assert!(invocation_allocation_peak_data(Some(row(u64::MAX, 2, 1)), None).is_err());
     }
 
     #[test]

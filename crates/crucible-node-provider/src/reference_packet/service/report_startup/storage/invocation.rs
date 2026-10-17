@@ -69,5 +69,9 @@ pub fn original_invocation_report_startup_counter_scratch_data() -> usize {
         std::mem::size_of::<Result<PacketNativeReportStartupStorageData, ProviderError>>(),
         std::mem::size_of::<[&Vec<crucible_node_contract::SchemaRef>; 2]>(),
         std::mem::size_of::<bool>(),
-    ].into_iter().try_fold(0usize, usize::checked_add).unwrap_or(usize::MAX)
+        super::super::original_invocation_report_startup_allocation_counter_scratch_data(),
+    ]
+    .into_iter()
+    .try_fold(0usize, usize::checked_add)
+    .unwrap_or(usize::MAX)
 }

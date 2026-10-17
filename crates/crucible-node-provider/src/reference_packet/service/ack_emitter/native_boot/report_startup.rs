@@ -507,6 +507,46 @@ pub(super) fn authenticate_binding_data(
     Ok(())
 }
 
+// Only prepare_retained_data's authenticated private invocation branch calls
+// this validator. Legacy Source13/14 retains authenticate_binding_data exactly.
+pub(super) fn authenticate_invocation_binding_data(
+    value: &Value,
+    launch: &PacketNative5SourceLaunch,
+    invocation: &crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData,
+) -> Result<(), ProviderError> {
+    let (original, fresh) = invocation_rows(value)?;
+    crate::reference_packet::service::report_startup::original_invocation_report_startup_allocation_peak_data(
+        launch, invocation, original, fresh,
+    )?;
+    Ok(())
+}
+
+fn invocation_rows(
+    value: &Value,
+) -> Result<
+    (
+        Option<PacketNativeReportStartupAllocationRow>,
+        Option<PacketNativeReportStartupAllocationRow>,
+    ),
+    ProviderError,
+> {
+    let object = value.as_object().ok_or_else(refused)?;
+    exact_keys(
+        object,
+        &["schema", "original_observe12", "fresh_completed_admit13"],
+    )?;
+    if object.get("schema").and_then(Value::as_str)
+        != Some(PACKET_NATIVE_REPORT_STARTUP_ALLOCATION_SCHEMA)
+    {
+        return Err(refused());
+    }
+    // Reuse the exact canonical decimal/raw-capacity/positive-axis reader.
+    Ok((
+        row_data(object.get("original_observe12").ok_or_else(refused)?)?,
+        row_data(object.get("fresh_completed_admit13").ok_or_else(refused)?)?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +593,53 @@ mod tests {
         let mut oversized = allocation();
         oversized["original_observe12"]["retained_growth_bytes"] = Value::from("536870913");
         assert!(authenticate_binding_data(&oversized, original, None).is_err());
+    }
+
+    #[test]
+    fn invocation_rows_preserve_full_pair_and_legacy_aggregate_refusal() {
+        let data = serde_json::json!({
+            "schema": PACKET_NATIVE_REPORT_STARTUP_ALLOCATION_SCHEMA,
+            "original_observe12": {
+                "raw_report_capacity": "16384",
+                "retained_growth_bytes": "167671065",
+                "maximum_simultaneous_transient_bytes": "203707650",
+                "declared_counter_scratch_bytes": "992065"
+            },
+            "fresh_completed_admit13": {
+                "raw_report_capacity": "16384",
+                "retained_growth_bytes": "266139595",
+                "maximum_simultaneous_transient_bytes": "266755905",
+                "declared_counter_scratch_bytes": "992065"
+            }
+        });
+        let (original, fresh) = invocation_rows(&data).unwrap();
+        let allocation =
+            crate::reference_packet::service::report_startup::PacketNativeReportStartupAllocation {
+                schema: PACKET_NATIVE_REPORT_STARTUP_ALLOCATION_SCHEMA.into(),
+                original_observe12: original,
+                fresh_completed_admit13: fresh,
+            };
+        assert_eq!(allocation.requested_peak_data().unwrap(), 701_558_630);
+        assert!(authenticate_binding_data(
+            &data,
+            Some(PacketNative5CaptureAllocationSelection::OriginalObserve12),
+            Some(crate::reference_packet::service::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13),
+        ).is_err());
+        for field in ["original_observe12", "fresh_completed_admit13"] {
+            let mut changed = data.clone();
+            changed.as_object_mut().unwrap().remove(field);
+            assert!(invocation_rows(&changed).is_err());
+            changed = data.clone();
+            changed[field] = serde_json::json!({"unknown": "field"});
+            assert!(invocation_rows(&changed).is_err());
+            changed = data.clone();
+            changed[field]["retained_growth_bytes"] = Value::from("00");
+            assert!(invocation_rows(&changed).is_err());
+        }
+        let mut unknown = data;
+        unknown["unknown"] = Value::Null;
+        assert!(invocation_rows(&unknown).is_err());
+        assert!(invocation_rows(&Value::Null).is_err());
     }
 }
 

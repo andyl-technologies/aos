@@ -1234,6 +1234,35 @@ ceiling is under investigation. The complete probe is removed, and a 19.59-secon
 production rebuild reproduces its pre-probe executable hash. Native Capture,
 restoration and continuation remain unqualified.
 
+### Invocation-bound report declarations
+
+The private invocation bootstrap checks each compiled report publisher against
+its existing 512 MiB ceiling after authenticating the complete target and the
+same Source purpose. Both declarations remain present and the returned peak
+keeps their checked retained sum plus the largest complete transient/counter
+phase. Core and SDK still admit all current owners under the existing global
+policy. Legacy Source13/14 retains its combined-ceiling validator unchanged.
+
+The normal suites pass 1,753 Core, seven contract and 1,074 provider tests, with
+zero failures; 32 Core and thirteen provider tests remain ignored. The four
+full-roster definition/admission controls pass in 25.11 seconds, including the
+actual compiled report pair whose aggregate exceeds the individual publisher
+ceiling. Boundary controls retain each row's independent ceiling and reject
+missing, malformed, foreign and overflowing declarations. All six code files
+pass formatting; the provider rebuild passes in 24.35 seconds. Six-crate,
+all-feature/all-target checking passes in one minute six seconds.
+
+The corresponding clean production startup test still fails, with zero passes
+and one failure in 71.98 seconds. Its outer error is `installed complete
+collecting scene unavailable`; the exact next bootstrap refusal is not yet
+identified. No native Capture or fresh-world restoration is qualified by the
+allocation controls.
+
+The final campaign terminology cleanup preserves the documented compatibility
+aliases and serialized identities. Four backend identity/profile controls and
+the two directly affected lineage tests pass; this is not a full campaign-suite
+result. The earlier broad campaign run has no final result after interruption.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),

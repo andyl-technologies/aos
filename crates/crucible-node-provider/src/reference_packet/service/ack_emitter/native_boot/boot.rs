@@ -357,11 +357,28 @@ impl NativeAckBoot {
                     .map_err(ContractError::from)?;
         }
         if report_selected {
-            report_startup::authenticate_binding_data(
-                &source["report_startup_allocation"],
-                launch.capture_allocation_selection,
-                launch.fresh_restore_allocation_selection,
-            )?;
+            if let Some(purpose) = invocation.as_ref() {
+                // Only the already claimed private invocation reaches this
+                // branch. Check the complete target and same Source purpose
+                // before selecting its reachable report constructor.
+                purpose.authenticate_target_data(launch)?;
+                if crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData::from_original_value_data(
+                    source.get("invocation").ok_or(ProviderError::Correlation("native invocation Source purpose"))?,
+                )? != *purpose {
+                    return Err(ProviderError::Correlation("native invocation Source purpose differs"));
+                }
+                report_startup::authenticate_invocation_binding_data(
+                    &source["report_startup_allocation"],
+                    launch,
+                    purpose,
+                )?;
+            } else {
+                report_startup::authenticate_binding_data(
+                    &source["report_startup_allocation"],
+                    launch.capture_allocation_selection,
+                    launch.fresh_restore_allocation_selection,
+                )?;
+            }
             expected_source["capture_allocation_selection"] =
                 serde_json::to_value(launch.capture_allocation_selection)
                     .map_err(ContractError::from)?;

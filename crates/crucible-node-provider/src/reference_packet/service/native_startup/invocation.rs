@@ -484,6 +484,7 @@ pub const fn original_native_invocation_counter_scratch_data() -> usize {
         + std::mem::size_of::<[&str; 4]>()
         + std::mem::size_of::<[&str; 9]>()
         + 3 * std::mem::size_of::<[&str; 3]>()
+        + crate::reference_packet::service::report_startup::original_invocation_report_startup_allocation_counter_scratch_data()
         + wire::counter_scratch_data()
         + storage::counter_scratch_data()
         // New native claim/first-baseline views coexist with the complete old
