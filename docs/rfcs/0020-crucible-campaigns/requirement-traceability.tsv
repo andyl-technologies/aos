@@ -181,6 +181,7 @@ CCOMP-33	T-CAM-4.16	gate:campaign-replay,gate:exact-closure-streaming
 CCOMP-34	T-CAM-4.18	gate:campaign-replay,gate:campaign-cold-continuity
 CCOMP-36	T-CAM-4.20	gate:campaign-replay
 CCOMP-37	T-CAM-4.22	gate:campaign-replay,gate:campaign-performance
+CCOMP-39	T-CAM-4.24	gate:exact-closure-streaming,gate:content-address
 HFORK-1	T-CAM-7.3,T-CAM-7.6	gate:hot-fork-equivalence
 HFORK-2	T-CAM-7.3,T-CAM-7.6	gate:hot-fork-equivalence
 HFORK-3	T-CAM-6.1,T-CAM-7.1	gate:hot-fork-isolation,gate:abi-conformance
@@ -280,6 +281,7 @@ CMEAS-27	T-CAM-4.15	gate:campaign-replay,gate:content-address
 CMEAS-28	T-CAM-4.16	gate:exact-closure-streaming,gate:hot-fork-equivalence
 CMEAS-29	T-CAM-4.17	gate:campaign-replay,gate:campaign-model
 CMEAS-31	T-CAM-4.21	gate:campaign-replay
+CMEAS-33	T-CAM-4.24	gate:exact-closure-streaming,gate:hot-fork-equivalence
 CSEC-1	T-CAM-1.6,T-CAM-4.9	gate:content-address,gate:campaign-component-contract
 CSEC-2	T-CAM-2.4,T-CAM-2.5	gate:typed-choice,gate:abi-conformance
 CSEC-3	T-CAM-2.4,T-CAM-2.5	gate:campaign-policy-timeout-real-qemu,gate:typed-choice,gate:abi-conformance

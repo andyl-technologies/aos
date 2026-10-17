@@ -1763,6 +1763,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   objective rewards in one streamed pass over each branch point's credit
   index with `max(1, Q / f)` rarity, so branch guidance never scans the
   observation root or buffers credited observations (CCOMP-37).
+- [x] **T-CAM-4.24** Keep block overlay pages in an unnamed, quota-accounted
+  run-directory page store shared by hot forks, name 4 MiB content-addressed
+  overlay chunks with page bitmaps in block snapshot version 7, list the
+  chunk objects in production exact closure version 11, and copy,
+  authenticate, and restore them one chunk at a time (CMEAS-33, CCOMP-39).
+  The base image itself remains resident.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,

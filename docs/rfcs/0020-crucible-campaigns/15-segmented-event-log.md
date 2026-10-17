@@ -635,7 +635,47 @@ with the funded attempt count rather than imposing a second fixed limit.
   MUST NOT retain them beyond the terminal observation and a resume proof's
   source observation. A run's choice bound MUST be its funded campaign budget.
 
-## 15.14 Compatibility
+## 15.14 Block overlay storage
+
+A block device's copy-on-write overlay grows with every distinct page the
+guest writes, so an attempt that runs for hours can dirty far more disk than
+an executor can hold in memory. The overlay keeps the page semantics of
+RFC-0010 [IO-5], [IO-7], and [IO-11], but its pages live in a page store
+created as an unnamed file in the run directory, where the run's disk quota
+accounts for them. A hot fork shares its parent's page store, and a page is
+copied before either side patches a page the other still references.
+
+The overlay is partitioned into 4 MiB chunks of 1,024 pages. A chunk's
+identity is the BLAKE3 hash of its logical bytes: present pages in place,
+zeroes elsewhere, truncated to the device length. A chunk with no nonzero
+byte has no identity and no object. A block snapshot names every overlay
+chunk by that identity together with its present and dirty page bitmaps, and
+never carries page bytes:
+
+```text
+block snapshot overlay (block snapshot v7):
+  device_length
+  chunks: [{ index, identity?, present[16 x u64], dirty[16 x u64] }, ...]
+```
+
+Unchanged chunks keep their identity across checkpoints, so a checkpoint adds
+objects only for chunks that hold pages dirtied since its parent. An exact
+checkpoint closure lists the distinct chunk objects of every block
+continuation it retains, sorted, and stores each as a closure object.
+
+- **[CMEAS-33]** The block overlay MUST keep its pages in a run-local,
+  quota-accounted page store rather than in executor memory. Snapshot
+  capture, exact-closure publication, load, restore, and hot-fork admission
+  MUST NOT hold more than one overlay chunk's bytes resident at a time, and a
+  closure MUST bound each chunk object by the chunk size when it is loaded.
+- **[CCOMP-39]** A block snapshot MUST name each overlay chunk by its
+  content identity and page bitmaps, never by its bytes, and its canonical
+  encoding MUST NOT depend on the page store that held the pages. Restore and
+  restore validation MUST authenticate every named chunk's length, identity,
+  and zero bytes outside its present pages before exposing it, and an exact
+  closure MUST list exactly the chunk objects its block continuations name.
+
+## 15.15 Compatibility
 
 Version 2 measurement replay evidence remains readable for retained findings
 whose logs fit its bound; new attempts publish only version 3. The attempt
@@ -648,8 +688,13 @@ and carries only the open tail; version 8 continuations are refused.
 Version 10 replaces version 9: it keeps only the current boundary's search
 frontiers and names their parents by prefix length and identity
 ([CCOMP-36]); version 9 continuations are refused. The
-production exact closure stays at version 10, because sealed segments occupy
-the closure's existing event-log object role.
+production exact closure stayed at version 10 for those changes, because
+sealed segments occupy the closure's existing event-log object role.
+Block snapshot version 7 replaces version 6: it names overlay chunks by
+identity instead of carrying full and delta page lists ([CCOMP-39]). Host-I/O
+checkpoint version 7, device-scheduling sub-node checkpoint version 3, and
+production exact closure version 11 carry it, and the closure lists the
+block overlay chunk objects; their predecessors are refused.
 The resolved-effect trace manifest replaces the version 3 whole-trace object
 without a compatibility reader; version 3 traces, fault runtime checkpoints
 before version 7, and observations before version 16 are refused. Schedule
@@ -662,6 +707,9 @@ acceptances, or watch frames; this is a source-level breaking change for
 callers, which now consume them through a sink.
 
 [CCOMP-21]: 04a-coordinator-executor-contract.md#04a7-capability-and-locality-reporting
+[IO-5]: ../0010-crucible/15-io-subnodes.md#1521-base-image-overlay-and-cow-reads
+[IO-7]: ../0010-crucible/15-io-subnodes.md#1521-base-image-overlay-and-cow-reads
+[IO-11]: ../0010-crucible/15-io-subnodes.md#1524-snapshot-restore-and-materialize
 [OBS-17]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing
 [OBS-18]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing
 [OBS-19]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing

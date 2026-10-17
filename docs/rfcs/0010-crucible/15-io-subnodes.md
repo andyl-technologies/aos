@@ -200,13 +200,15 @@ consult the overlay first and fall back to the base image page by page:
       mark page_base dirty
 ```
 
-- **[IO-5]** The block sub-node MUST serve reads from an **in-memory
-  copy-on-write overlay of 4 KiB pages layered over a read-only base image**:
+- **[IO-5]** The block sub-node MUST serve reads from a **copy-on-write
+  overlay of 4 KiB pages layered over a read-only base image**:
   a read resolves each page from the overlay if present, else from the base
   image; a write copies the affected base page into the overlay (if not already
   present) and patches it there. The base image MUST be opened read-only and MUST
   NOT be mutated by any operation ([INV-5], [TEMP-9]). *Gate:* `gate:any-guest`,
   `gate:content-address`. *Spec:* §15.2.1; cross-ref 06, 07.
+  Overlay pages may live in a run-local, disk-backed page store (RFC-0020
+  §15.14); the store never affects a read, snapshot, or replay result.
 
 - **[IO-6]** The block sub-node MUST support the operations **read**, **write**,
   **flush**, and **get-length**: read returns the requested byte range (overlay
@@ -357,6 +359,11 @@ QEMU:
   reproduce a state byte-identical to an uninterrupted run, validated by the
   replay oracle ([INV-2], [TEMP-18]). *Gate:* `gate:replay-oracle`,
   `gate:content-address`. *Spec:* §15.2.4; cross-ref 07 §3, §5, §6.
+  The current encoding realizes the delta through content addressing: a
+  snapshot names every overlay chunk of 1,024 pages by its BLAKE3 identity
+  with present and dirty page bitmaps, so chunks unchanged since the parent
+  resolve to the parent's existing objects and a checkpoint stores only
+  chunks holding pages dirtied since its parent (RFC-0020 §15.14).
 
 - **[IO-12]** The block sub-node MUST support **materialize-to-image**: writing
   the read-only base image followed by every live overlay page on top, producing
