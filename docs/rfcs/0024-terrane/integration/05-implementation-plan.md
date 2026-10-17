@@ -8696,7 +8696,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 Status: in progress (2026-10-16). T1's 22 tasks and 89 current gates are
 complete; its identity, encoding, bucket-key and Store-trait freeze applies.
-Nine separate implementation worktrees cover the five T2 tasks, including
+Ten separate implementation worktrees cover the five T2 tasks, including
 dedicated publisher-transport, host-quota, native confinement and recovery
 inspection components.
 Shared module declarations,
@@ -8771,21 +8771,76 @@ publisher fixture helper reference and quota fixture synchronization races.
 The quota claim implementation now permanently binds each filesystem/project
 pair before ledger publication or native mutation; full process-crash and
 broker scenarios await execution. Configured SDK runtime composition and its
-separate unit/native proof harness pass source review; compilation and guest
-execution remain pending. The actual durable metadata-pin producer passes
+separate unit/native proof harness pass source review. After correcting a
+missing guest fixture parent, its current source-bound image, eleven unit
+cases and actual guest example/CLI success and denial cases pass with unchanged
+source guards and complete artifact verification. This qualifies the configured
+local SDK component on x86_64 Linux. The actual durable metadata-pin producer passes
 source review for consumer integration, without native qualification. Recovery
 inspection review found plaintext-allocation and retained-custody defects;
 their corrections precede integration. Publisher review likewise found a
-shared-claim field type mismatch before compilation. The frozen surface
-candidate passes its interface and schema gates. Its status gate fails on
-required xattrs; a finite probe confirms the actual Nix fixture filesystem
-rejects regular-file user xattrs both before and inside the protected namespace.
-The owning gate must run that presentation case on actual capable storage;
-unsupported metadata is not skipped. A separate native cache proof executable
+shared-claim field type mismatch before compilation. An earlier frozen surface
+candidate passes its interface and schema gates. Its status gate exposed
+unsupported regular-file user xattrs on the actual Nix fixture filesystem.
+The corrected status gate passes by requiring the unchanged presentation case
+in an actual ext4 guest as UID 840 with empty capabilities: one passed, none
+ignored. Its commit-path gate also passes with unchanged source guards.
+Interface and schema now also pass on that unchanged candidate, completing its
+four owning surface gates. Aggregate qualification remains pending. A separate native cache proof executable
 and image/guest selectors are declared but fail until implemented. Remaining
 surface gates and complete trunk qualification remain pending. These source
 reviews and component results do not establish configured role operation,
-completed recovery or task acceptance.
+completed recovery or task acceptance. The CLI now has reviewed thin dispatch
+to the configured publisher bootstrap. Serialized empty-case cache recovery
+passes source review after fixing unknown state-parent sibling coverage;
+compilation, nonempty reconstruction, actual admission and native cache execution
+remain incomplete.
+
+Canonical inline recovery now passes source review for retained adoption handles,
+durable residence reconstruction and final quota reconciliation. Publisher source
+review also covers existing inline bindings and exact temporary-state cleanup.
+The new bounded portable reader reuses the complete bucket-copy validators and
+returns immutable selected metadata with no ref authority. Its source and seven
+test cases pass review; compilation and execution remain pending. It does not
+provide live content serving or final native custody. Manifest recovery, genuine
+fresh-bucket enrollment and native admission remain incomplete. No T2 task is
+accepted by these component reviews.
+
+The fresh-only bucket enrollment producer now passes source review after fixing
+special-file classification before readable opens. It retains the actual creator
+event, original exclusion and complete bounded inode preimages; its nine tests
+remain unrun. Native administrative claim and setter consumers now pass source
+review, including complete first-claim preimages, preflight before effects and
+phase-aware administrative ancestor membership. Native qualification is pending.
+Manifest recovery's resource-custody layer also passes source review, including
+cancelled effects and adopted-body retention before fallible completion. Actual
+publisher response correlation and the actual manifest-only owner dispatch now
+pass source review; their runtime qualification remains pending. The cache proof
+image now builds and verifies its three actual executables and retained guest
+supervisor. Earlier guest attempts stopped before actor cases because that script
+was absent from the guest closure. Corrections preserve closed writable
+descriptors through real fs-verity enable and final read-only custody, and use
+the native retained-inode syscall to set listener permissions. Corrected guest
+execution at `454dc9fe0c` passes actual provisioning, helper and publisher
+preparation, empty recovery, eight cold-record or namespace refusal controls,
+the strict cancelled-waiter completion barrier, exclusive-owner refusal and
+release, and actual kernel quota exhaustion after 8,323,072 written bytes.
+All 6,449 source guards remain unchanged through the image, artifact verifier
+and guest execution. Two isolated signal tests also pass for retained socket
+delivery and the original receive deadline. The earlier broken connection's
+cause was not directly observed; this result does not establish its cause.
+These bounded component cases do not qualify Resume, native admission,
+BKT-15 or either complete host task.
+
+The first-enrollment fixture uses the existing vendored Tokio runtime as a
+development dependency. Its genuine same-process two-owner creator-to-setter
+flow, private-root traversal policy and refusal cases pass source review;
+compilation and native execution remain pending. Separate image and guest
+component checks are declared, with missing implementations failing explicitly.
+The shared glue dependency now names
+the existing Core types directly, and the crate-graph audit includes the current
+native and glue edges. All 632 external dependencies remain unchanged; every
+affected vendor hash is reproduced from local staging and the exact new lock.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
@@ -8822,13 +8877,37 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
 - [ ] **T-SURF-1** Surface interface, exposure records, schema validation,
   TOML configuration, status reporting, in-process registry, ownership and
   timestamp presentation, and privileged xattr filtering. — satisfies
-  TREE-9, TREE-10, TREE-15, SURF-1 to SURF-32, CRATE-17, CRATE-28;
+  TREE-9, TREE-10, TREE-15, SURF-1 to SURF-32, CRATE-17, and the SDK
+  component of CRATE-28, jointly with the surface tasks below;
   `checks.terrane.gates.surface-interface`,
   `checks.terrane.gates.surface-schema`,
   `checks.terrane.gates.surface-status`.
 - [ ] **T-PKG-3** `modules/terrane/` options, unit rendering for the
   `serve`, `realize`, `publish`, and `gc` roles, and the module evaluation
   check. — satisfies PKG-8, PKG-10; `checks.terrane.module-eval`.
+
+CRATE-28 is a shared full-specification obligation, not a claim that T2
+implements every registered surface. Under AD-13, each task below supplies its
+actual surface feature, compiled registry entry and feature-matrix coverage.
+T-SURF-1 owns the SDK component and the common closed registry; accepting it
+does not mark global CRATE-28 conformance complete. Unimplemented surfaces
+remain unavailable. Empty feature declarations and placeholder registrations
+do not complete these tasks. Every listed task must also pass
+`checks.terrane.gates.feature-matrix` when its real implementation lands.
+
+| Registered surface | Feature owner completing CRATE-28 |
+| --- | --- |
+| `sdk` | T-SURF-1 |
+| `nix-cache` | T-NIX-1 |
+| `reapi` | T-REAPI-1 |
+| `gha-cache` | T-GHA-1 |
+| `fuse` | T-FUSE-2 |
+| `erofs` | T-EROFS-1 |
+| `block` | T-VBLK-1 |
+| `virtiofs`, `virtio-pmem` | T-VM-1 |
+| `browse`, `api` | T-WEB-1 |
+| `git` | T-GIT-1 |
+| `oci` | T-OCI-1 |
 
 ### T3 — Wire protocol and buckets
 
@@ -9367,7 +9446,7 @@ the MVP conformance claim (PLAN-3) says so explicitly.
 | 34 observability | T3, B-ops | T-OBS-1, T-OBS-2, T-OBS-3 |
 | 35 performance | T6, B-ops | T-PERF-1, T-PERF-2 |
 | 36 testing | T1, T3, T6, B-topology | T-TEST-1, T-TEST-2, T-TEST-3, T-TEST-4, T-TEST-5 |
-| 37 crates | T0, T1 | T-PKG-1, T-CRATE-2, T-CRATE-1 |
+| 37 crates | T0, T1, T2, T4, T5, B-storage, B-surfaces-more, B-consistency | T-PKG-1, T-CRATE-2, T-CRATE-1; CRATE-28 component owners listed under T2 (AD-13) |
 | 38 edge | B-hub-edge | T-RISK-2, T-EDGE-1 |
 | 40 risks | T0, T3, T5, B-topology, B-bandwidth, B-hub-edge | T-RISK-3, T-RISK-1, T-RISK-4, T-RISK-5, T-PACK-3, T-RISK-2 |
 | integration 01 | T5 | T-SBX-1 to T-SBX-5 |

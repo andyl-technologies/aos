@@ -31,6 +31,12 @@ mod missing_placement;
 /// Stages verified recovered data through fresh native placement recipes.
 pub(crate) mod permanent_restore;
 
+/// Retains genuine fresh-bucket evidence for administrative host enrollment.
+pub mod enrollment;
+
+/// Validates portable bucket state without importing Original mutation authority.
+pub mod portable_reader;
+
 pub(crate) mod publication;
 mod quarantine;
 mod retirement;
