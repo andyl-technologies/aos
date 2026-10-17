@@ -93,15 +93,10 @@ pub(super) fn replay_exact_finding(
             Arc::clone(&lifecycle_objects),
         )?;
         if let Some(trace) = side.resolved_effect_trace() {
-            let trace = crate::decode_resolved_effect_trace_bundle(
-                trace,
-                model
-                    .scenario_form()
-                    .plan()
-                    .fault_signals()
-                    .resource_limits(),
-            )?;
-            lifecycle = lifecycle.with_fault_replay(trace);
+            // The capture authenticated every trace segment and admitted the
+            // manifest under this model's limits when it was decoded; the
+            // clone shares its segment handles rather than copying segments.
+            lifecycle = lifecycle.with_fault_replay(trace.clone());
         }
         if side.completed_quanta() == 0 || side.frontier().ticks == 0 {
             return Err(backend_error(
@@ -327,20 +322,18 @@ impl CampaignFindingBundleRole {
     }
 }
 
-/// Compares a fresh segmented trace with a retained trace bundle.
+/// Compares a fresh segmented trace with a retained one.
 ///
-/// Manifests name their segments by content identity, so equal manifests
-/// prove equal traces; an undecodable bundle never matches.
+/// Manifests name their segments by content identity, and the retained
+/// capture authenticated every segment against its manifest, so equal
+/// manifests prove equal traces without reading a segment.
 fn same_effect_trace(
     fresh: Option<&crucible_session::engine::ResolvedEffectTrace>,
-    retained: Option<&[u8]>,
+    retained: Option<&crucible_session::engine::ResolvedEffectTrace>,
 ) -> bool {
     match (fresh, retained) {
         (None, None) => true,
-        (Some(fresh), Some(bundle)) => {
-            crucible_session::engine::ResolvedEffectTrace::from_bundle_bytes(bundle, bundle.len())
-                .is_ok_and(|retained| retained.manifest() == fresh.manifest())
-        }
+        (Some(fresh), Some(retained)) => retained.manifest() == fresh.manifest(),
         _ => false,
     }
 }

@@ -7,9 +7,9 @@
 //! consumes a trace through [`ResolvedEffectTraceReader`], which holds one
 //! decoded segment and a cursor.
 //!
-//! Some carriers have no segment store: a finding production-replay capture,
-//! a saved run artifact, and a lifecycle query response assembled by a
-//! client. They carry a bundle instead (RFC-0020 section 15.8):
+//! Some carriers have no segment store: a saved run artifact and a lifecycle
+//! query response assembled by a client. They carry a bundle instead
+//! (RFC-0020 section 15.8):
 //!
 //! ```text
 //! "crucible.resolved-effect-trace-bundle.v1\0"

@@ -12,7 +12,9 @@ use crucible_cas::content_store::{
 };
 
 use crate::FindingProductionReplayCapture;
-use crate::finding_production_replay::test_support::timeout_capture;
+use crate::finding_production_replay::test_support::{
+    segmented_trace, timeout_capture, traced_capture,
+};
 
 fn incomplete() -> FindingReplayCaptureInput {
     FindingReplayCaptureInput::Incomplete(
@@ -150,6 +152,74 @@ fn shared_leaves_are_deduplicated_across_capture_roles() {
     )
     .expect("load retained capture set without publication authority");
     assert_eq!(decode(&imported[0], limits), second);
+}
+
+#[test]
+fn trace_segments_are_published_and_retained_beside_log_segments() {
+    let temporary = tempfile::tempdir().expect("capture directory");
+    let executor = executor_store(temporary.path());
+    let (capture, limits) = traced_capture(segmented_trace(64, 2 * 1024));
+    let side = &capture.sides()[0];
+    let trace = side.resolved_effect_trace().expect("side trace");
+    let trace_bytes: u64 = trace
+        .manifest()
+        .segments()
+        .iter()
+        .map(|segment| segment.encoded_bytes)
+        .sum();
+    let log_bytes: u64 = side
+        .event_log()
+        .manifest()
+        .segments()
+        .iter()
+        .map(|segment| segment.encoded_bytes)
+        .sum();
+
+    let prepared = FindingReplayCaptureStore::prepare_set([
+        complete(&capture),
+        incomplete(),
+        incomplete(),
+        incomplete(),
+    ])
+    .expect("prepare traced capture");
+
+    // Trace segments grow with the run, so they share the run-length
+    // allowance with the side log's segments.
+    assert_eq!(prepared.unique_segment_bytes(), trace_bytes + log_bytes);
+
+    let guard = executor
+        .acquire_finding_replay_publication_guard()
+        .expect("GC exclusion");
+    FindingReplayCaptureStore::publish_set(&guard, &prepared).expect("publish capture set");
+    drop(prepared);
+    let loaded = FindingReplayCaptureStore::load_set(
+        &guard,
+        FindingReplayCaptureSet::new(
+            FindingReplayCaptureReference::Complete(
+                capture.prepare_objects().expect("capture objects").root(),
+            ),
+            FindingReplayCaptureReference::Incomplete(
+                FindingReplayCaptureIncomplete::MissingTerminalFingerprints,
+            ),
+            FindingReplayCaptureReference::Incomplete(
+                FindingReplayCaptureIncomplete::MissingTerminalFingerprints,
+            ),
+            FindingReplayCaptureReference::Incomplete(
+                FindingReplayCaptureIncomplete::MissingTerminalFingerprints,
+            ),
+        ),
+    )
+    .expect("load traced capture");
+
+    let LoadedFindingReplayCapture::Complete(objects) = &loaded[0] else {
+        panic!("traced role should be complete");
+    };
+    // The manifest roots its trace segments as children, exactly as it
+    // roots its log segments, so the store keeps them while it exists.
+    for id in trace.manifest().segment_ids() {
+        assert!(objects.leaves().contains_key(&id));
+    }
+    assert_eq!(decode(&loaded[0], limits), capture);
 }
 
 #[test]

@@ -161,9 +161,13 @@ pub enum FindingProductionReplayCaptureError {
     /// Terminal fingerprints do not name every scenario VM exactly once.
     #[error("finding production replay terminal fingerprint set is incomplete or inconsistent")]
     InvalidTerminalFingerprints,
-    /// The resolved effect trace is absent, extraneous, or malformed.
+    /// The resolved effect trace is absent, extraneous, or malformed, or a
+    /// segment differs from its manifest reference.
     #[error("finding production replay resolved-effect trace is incomplete or inconsistent")]
     InvalidResolvedEffectTrace,
+    /// A resolved-effect trace segment could not be read from its store.
+    #[error("finding production replay resolved-effect trace storage failed: {0}")]
+    ResolvedEffectTraceStore(#[source] crucible::model::FaultRuntimeError),
     /// A lifecycle object is missing, extraneous, or has another content hash.
     #[error("finding production replay lifecycle object closure is incomplete or inconsistent")]
     InvalidLifecycleObjects,
@@ -555,8 +559,9 @@ pub(super) fn validate_execution_side(
     scenario: &crucible::ScenarioDefForm,
     recipe: FindingProductionReplayRecipe,
 ) -> Result<(), FindingProductionReplayCaptureError> {
-    // The side's log was authenticated when the side was built, so only its
-    // bounded scalar and fingerprint evidence is checked here.
+    // The side's log and trace segments were authenticated when the side was
+    // built, so only its bounded scalar, fingerprint, and manifest evidence
+    // is checked here.
     if side.completed_quanta > recipe.lifecycle_quantum_budget {
         return Err(FindingProductionReplayCaptureError::LimitExceeded {
             limit: "finding-production-replay-completed-quanta",
@@ -599,10 +604,10 @@ pub(super) fn validate_execution_side(
     {
         return Err(FindingProductionReplayCaptureError::InvalidResolvedEffectTrace);
     }
-    if let Some(bytes) = &side.resolved_effect_trace {
-        // Decoding authenticates every bundled segment against the manifest.
-        ResolvedEffectTrace::from_bundle_bytes(bytes, bytes.len())
-            .and_then(|trace| trace.manifest().admit(plan.resource_limits()))
+    if let Some(trace) = &side.resolved_effect_trace {
+        trace
+            .manifest()
+            .admit(plan.resource_limits())
             .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
     }
     Ok(())
