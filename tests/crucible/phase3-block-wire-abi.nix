@@ -255,10 +255,17 @@ in
       version = "0";
       src = crucibleSrc;
 
+      # The plugin's test-only crucible dependency links the campaign
+      # store's SQLite backend, so the lib-test link needs it.
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       phases = [
