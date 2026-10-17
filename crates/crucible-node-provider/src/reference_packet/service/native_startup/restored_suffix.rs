@@ -208,6 +208,7 @@ pub(crate) use observe_custody::{
 #[path = "restored_suffix/observation.rs"]
 mod observation;
 pub use observation::{
+    PacketNativeRestoredSuffixObservationHistoricalData,
     PacketNativeRestoredSuffixObservationStorageData,
     original_native_restored_suffix_observation_counter_scratch_data,
     original_native_restored_suffix_observation_storage_data,

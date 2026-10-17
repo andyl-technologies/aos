@@ -114,6 +114,7 @@ pub use retained::{
 pub use selection::authenticate_restoration_activation_selection_data;
 pub use storage::{
     OriginalInstalledRestorationActivationConstructionData,
+    OriginalInstalledRestorationActivationHistoricalData,
     PacketRestorationActivationCoordinatorConstructionInputs,
 };
 

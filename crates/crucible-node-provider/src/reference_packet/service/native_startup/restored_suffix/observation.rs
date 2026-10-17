@@ -276,3 +276,57 @@ fn quantity(value: usize) -> Result<U64, ProviderError> {
 fn invalid() -> ProviderError {
     ProviderError::Correlation("recurring Observe construction geometry differs")
 }
+
+/// Borrows every portable fixed field of the original DATA row.
+///
+/// The representation has no decoder, owned identity copy or conversion back
+/// to a live construction row. Process-private Controller identity is omitted.
+pub struct PacketNativeRestoredSuffixObservationHistoricalData<'a> {
+    original: &'a PacketNativeRestoredSuffixObservationStorageData,
+}
+
+impl PacketNativeRestoredSuffixObservationStorageData {
+    /// Lends all fixed historical axes without allocating or authenticating them.
+    pub fn historical_data(&self) -> PacketNativeRestoredSuffixObservationHistoricalData<'_> {
+        PacketNativeRestoredSuffixObservationHistoricalData { original: self }
+    }
+
+    /// Names the complete borrowed fixed-row historical projection views.
+    pub fn historical_counter_scratch_data() -> usize {
+        PacketNativeRestoredSuffixStartupStorageData::historical_counter_scratch_data()
+            + restoration_observe::OriginalInstalledRestorationObservationConstructionData::historical_counter_scratch_data()
+            + size_of::<&PacketNativeStartupAllocationRow>()
+            + std::mem::size_of::<PacketNativeRestoredSuffixObservationHistoricalData<'static>>()
+            + std::mem::size_of::<&PacketNativeRestoredSuffixObservationStorageData>()
+            + 8 * std::mem::size_of::<&usize>()
+    }
+}
+
+impl serde::Serialize for PacketNativeRestoredSuffixObservationHistoricalData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let PacketNativeRestoredSuffixObservationStorageData {
+            startup,
+            initial,
+            native,
+            maximum_restored,
+            maximum_underlying,
+            requested,
+            scratch,
+        } = self.original;
+        let mut state = serializer
+            .serialize_struct("PacketNativeRestoredSuffixObservationHistoricalData", 8)?;
+        state.serialize_field(
+            "schema",
+            "source-private.restored-suffix-observation-storage/1",
+        )?;
+        state.serialize_field("startup", &(startup.historical_data()))?;
+        state.serialize_field("initial", &(initial.historical_data()))?;
+        state.serialize_field("native", &(native))?;
+        state.serialize_field("maximum_restored", &(maximum_restored))?;
+        state.serialize_field("maximum_underlying", &(maximum_underlying))?;
+        state.serialize_field("requested", &(requested))?;
+        state.serialize_field("scratch", &(scratch))?;
+        state.end()
+    }
+}

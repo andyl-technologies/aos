@@ -16,6 +16,7 @@ mod provider_preparation;
 mod provider_revision;
 mod provider_world;
 mod quarantine;
+pub(crate) mod restored_owner_history;
 mod retirement_data;
 mod retirement_release;
 mod role_descriptions;

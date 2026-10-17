@@ -148,3 +148,110 @@ mod tests {
         assert!(row.authenticate_controller_data(std::ptr::null()).is_err());
     }
 }
+
+/// Borrows every portable fixed field of the original DATA row.
+///
+/// The representation has no decoder, owned identity copy or conversion back
+/// to a live construction row. Process-private Controller identity is omitted.
+pub struct OriginalInstalledRestorationObservationHistoricalData<'a> {
+    original: &'a OriginalInstalledRestorationObservationConstructionData,
+}
+
+impl OriginalInstalledRestorationObservationConstructionData {
+    /// Lends all fixed historical axes without allocating or authenticating them.
+    pub fn historical_data(&self) -> OriginalInstalledRestorationObservationHistoricalData<'_> {
+        OriginalInstalledRestorationObservationHistoricalData { original: self }
+    }
+
+    /// Names the complete borrowed fixed-row historical projection views.
+    pub fn historical_counter_scratch_data() -> usize {
+        std::mem::size_of::<&PacketRestorationActivationAllocationRow>()
+            + std::mem::size_of::<OriginalInstalledRestorationObservationHistoricalData<'static>>()
+            + std::mem::size_of::<&OriginalInstalledRestorationObservationConstructionData>()
+            + 10 * std::mem::size_of::<&usize>()
+    }
+}
+
+impl serde::Serialize for OriginalInstalledRestorationObservationHistoricalData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let OriginalInstalledRestorationObservationConstructionData {
+            controller: _,
+            native,
+            host_retained,
+            host_transient,
+            host_scratch,
+            source_evidence_retained,
+            source_evidence_transient,
+            source_evidence_scratch,
+            requested,
+            scratch,
+        } = self.original;
+        let mut state = serializer
+            .serialize_struct("OriginalInstalledRestorationObservationHistoricalData", 10)?;
+        state.serialize_field(
+            "schema",
+            "source-private.restoration-observation-construction/1",
+        )?;
+        state.serialize_field("native", &(native))?;
+        state.serialize_field("host_retained", &(host_retained))?;
+        state.serialize_field("host_transient", &(host_transient))?;
+        state.serialize_field("host_scratch", &(host_scratch))?;
+        state.serialize_field("source_evidence_retained", &(source_evidence_retained))?;
+        state.serialize_field("source_evidence_transient", &(source_evidence_transient))?;
+        state.serialize_field("source_evidence_scratch", &(source_evidence_scratch))?;
+        state.serialize_field("requested", &(requested))?;
+        state.serialize_field("scratch", &(scratch))?;
+        state.end()
+    }
+}
+
+#[cfg(test)]
+mod historical_tests {
+    use super::*;
+
+    #[test]
+    fn historical_observation_preserves_every_axis_but_never_the_controller() {
+        let row = OriginalInstalledRestorationObservationConstructionData {
+            controller: std::ptr::null(),
+            native: PacketRestorationActivationAllocationRow {
+                retained_requested_bytes: U64::new(10),
+                maximum_simultaneous_transient_bytes: U64::new(20),
+                declared_counter_scratch_bytes: U64::new(30),
+            },
+            host_retained: 40,
+            host_transient: 50,
+            host_scratch: 60,
+            source_evidence_retained: 70,
+            source_evidence_transient: 80,
+            source_evidence_scratch: 90,
+            requested: 100,
+            scratch: 110,
+        };
+        let actual = serde_json::to_value(row.historical_data()).unwrap();
+        assert_eq!(actual.as_object().unwrap().len(), 10);
+        assert!(actual.get("controller").is_none());
+        assert_eq!(actual["native"]["retained_requested_bytes"], "10");
+        for (key, expected) in [
+            ("host_retained", 40),
+            ("host_transient", 50),
+            ("host_scratch", 60),
+            ("source_evidence_retained", 70),
+            ("source_evidence_transient", 80),
+            ("source_evidence_scratch", 90),
+            ("requested", 100),
+            ("scratch", 110),
+        ] {
+            assert_eq!(actual[key], expected);
+        }
+        let changed = OriginalInstalledRestorationObservationConstructionData {
+            source_evidence_scratch: 91,
+            ..row
+        };
+        assert_ne!(
+            actual,
+            serde_json::to_value(changed.historical_data()).unwrap()
+        );
+        assert!(row.authenticate_controller_data(std::ptr::null()).is_err());
+    }
+}

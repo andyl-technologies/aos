@@ -224,3 +224,198 @@ pub(super) const fn index(phase: PacketRestorationActivationPhase) -> usize {
         PacketRestorationActivationPhase::WorldActivate => 1,
     }
 }
+
+/// Borrows every portable phase/upload field from the actual activation row.
+///
+/// This historical DATA has no decoder or live-row constructor. The actual
+/// process-private Controller pointer remains outside the serialized graph.
+pub struct OriginalInstalledRestorationActivationHistoricalData<'a> {
+    original: &'a OriginalInstalledRestorationActivationConstructionData,
+}
+
+impl OriginalInstalledRestorationActivationConstructionData {
+    /// Lends the full retained quote without copying owned identities.
+    pub fn historical_data(&self) -> OriginalInstalledRestorationActivationHistoricalData<'_> {
+        OriginalInstalledRestorationActivationHistoricalData { original: self }
+    }
+
+    /// Names borrowed arrays, nested fixed rows and their actual iterators.
+    pub fn historical_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        size_of::<OriginalInstalledRestorationActivationHistoricalData<'static>>()
+            + size_of::<&OriginalInstalledRestorationActivationConstructionData>()
+            + size_of::<HistoricalPhases<'static>>()
+            + size_of::<HistoricalPhase<'static>>()
+            + size_of::<HistoricalUploads<'static>>()
+            + size_of::<HistoricalUpload<'static>>()
+            + size_of::<&[PhaseStorage; 2]>()
+            + size_of::<&[super::upload::storage::UploadStorage; 2]>()
+            + size_of::<std::slice::Iter<'static, PhaseStorage>>()
+            + size_of::<std::slice::Iter<'static, super::upload::storage::UploadStorage>>()
+            + size_of::<&PacketRestorationActivationAllocationRow>()
+            + 16 * size_of::<&usize>()
+    }
+}
+
+impl serde::Serialize for OriginalInstalledRestorationActivationHistoricalData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let OriginalInstalledRestorationActivationConstructionData {
+            phases,
+            uploads,
+            controller: _,
+            requested,
+            counter_scratch,
+        } = self.original;
+        let mut state = serializer.serialize_struct("HistoricalActivationConstruction", 5)?;
+        state.serialize_field(
+            "schema",
+            "source-private.restoration-activation-construction/1",
+        )?;
+        state.serialize_field("phases", &HistoricalPhases(phases))?;
+        state.serialize_field("uploads", &HistoricalUploads(uploads))?;
+        state.serialize_field("requested", requested)?;
+        state.serialize_field("counter_scratch", counter_scratch)?;
+        state.end()
+    }
+}
+
+struct HistoricalPhases<'a>(&'a [PhaseStorage; 2]);
+
+struct HistoricalPhase<'a>(&'a PhaseStorage);
+
+struct HistoricalUploads<'a>(&'a [super::upload::storage::UploadStorage; 2]);
+
+struct HistoricalUpload<'a>(&'a super::upload::storage::UploadStorage);
+
+impl serde::Serialize for HistoricalPhases<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut state = serializer.serialize_seq(Some(self.0.len()))?;
+        for phase in self.0 {
+            state.serialize_element(&HistoricalPhase(phase))?;
+        }
+        state.end()
+    }
+}
+
+impl serde::Serialize for HistoricalPhase<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let PhaseStorage {
+            host_retained,
+            host_transient,
+            host_scratch,
+            native,
+            source_evidence_retained,
+            source_evidence_transient,
+            source_evidence_scratch,
+        } = self.0;
+        let mut state = serializer.serialize_struct("HistoricalActivationPhase", 7)?;
+        state.serialize_field("host_retained", host_retained)?;
+        state.serialize_field("host_transient", host_transient)?;
+        state.serialize_field("host_scratch", host_scratch)?;
+        state.serialize_field("native", native)?;
+        state.serialize_field("source_evidence_retained", source_evidence_retained)?;
+        state.serialize_field("source_evidence_transient", source_evidence_transient)?;
+        state.serialize_field("source_evidence_scratch", source_evidence_scratch)?;
+        state.end()
+    }
+}
+
+impl serde::Serialize for HistoricalUploads<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut state = serializer.serialize_seq(Some(self.0.len()))?;
+        for upload in self.0 {
+            state.serialize_element(&HistoricalUpload(upload))?;
+        }
+        state.end()
+    }
+}
+
+impl serde::Serialize for HistoricalUpload<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let super::upload::storage::UploadStorage {
+            maximum_bytes,
+            chunk,
+            frame,
+            requests,
+            journal,
+            retained,
+            transient,
+            scratch,
+            native,
+        } = self.0;
+        let mut state = serializer.serialize_struct("HistoricalActivationUpload", 9)?;
+        state.serialize_field("maximum_bytes", maximum_bytes)?;
+        state.serialize_field("chunk", chunk)?;
+        state.serialize_field("frame", frame)?;
+        state.serialize_field("requests", requests)?;
+        state.serialize_field("journal", journal)?;
+        state.serialize_field("retained", retained)?;
+        state.serialize_field("transient", transient)?;
+        state.serialize_field("scratch", scratch)?;
+        state.serialize_field("native", native)?;
+        state.end()
+    }
+}
+
+#[cfg(test)]
+mod historical_tests {
+    use super::*;
+
+    #[test]
+    fn historical_activation_keeps_both_phase_and_upload_rows_without_pointer_data() {
+        let native = PacketRestorationActivationAllocationRow {
+            retained_requested_bytes: U64::new(1),
+            maximum_simultaneous_transient_bytes: U64::new(2),
+            declared_counter_scratch_bytes: U64::new(3),
+        };
+        let phase = PhaseStorage {
+            host_retained: 4,
+            host_transient: 5,
+            host_scratch: 6,
+            native,
+            source_evidence_retained: 7,
+            source_evidence_transient: 8,
+            source_evidence_scratch: 9,
+        };
+        let upload = super::super::upload::storage::UploadStorage {
+            maximum_bytes: 10,
+            chunk: 11,
+            frame: 12,
+            requests: 13,
+            journal: 14,
+            retained: 15,
+            transient: 16,
+            scratch: 17,
+            native,
+        };
+        let row = OriginalInstalledRestorationActivationConstructionData {
+            phases: [phase, phase],
+            uploads: [upload, upload],
+            controller: std::ptr::null(),
+            requested: 18,
+            counter_scratch: 19,
+        };
+        let actual = serde_json::to_value(row.historical_data()).unwrap();
+        assert_eq!(actual.as_object().unwrap().len(), 5);
+        assert_eq!(actual["phases"].as_array().unwrap().len(), 2);
+        assert_eq!(actual["uploads"].as_array().unwrap().len(), 2);
+        assert_eq!(actual["phases"][1]["source_evidence_scratch"], 9);
+        assert_eq!(actual["uploads"][1]["journal"], 14);
+        assert_eq!(actual["uploads"][1]["scratch"], 17);
+        assert_eq!(actual["requested"], 18);
+        assert_eq!(actual["counter_scratch"], 19);
+        assert!(actual.get("controller").is_none());
+        let mut changed = row;
+        changed.uploads[1].journal = 20;
+        assert_ne!(
+            actual,
+            serde_json::to_value(changed.historical_data()).unwrap()
+        );
+        assert!(row.authenticate_controller_data(std::ptr::null()).is_err());
+    }
+}

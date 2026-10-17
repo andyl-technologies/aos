@@ -45,7 +45,10 @@ pub(crate) use prospective::original_native_restoration_observation_required_sto
 pub(crate) use prospective::quote_from_cached_model_data as restoration_observe_cached_model_projection_data;
 pub use retained::RetainedRestorationObservationData;
 pub use selection::authenticate_restoration_observe_selection_data;
-pub use storage::OriginalInstalledRestorationObservationConstructionData;
+pub use storage::{
+    OriginalInstalledRestorationObservationConstructionData,
+    OriginalInstalledRestorationObservationHistoricalData,
+};
 
 /// Names the separately installed schema, feature and request extension.
 pub const PACKET_RESTORATION_OBSERVE_FEATURE: &str = "source-owned.packet-restoration-observe/1";
