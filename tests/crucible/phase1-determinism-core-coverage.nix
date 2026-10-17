@@ -194,9 +194,9 @@
           require_covered_function decision_recorder_keeps_per_entity_streams_stable
           require_covered_function decision_recorder_resumes_stream_positions_from_existing_schedule
           require_covered_function decision_recorder_derives_default_rr_preemption_without_recording_schedule
-          require_covered_function decision_recorder_records_preemption_overrides_in_schedule
+          require_covered_function bare_swap_cannot_detach_a_preemption_from_its_typed_selection
           require_covered_function decision_recorder_rejects_invalid_default_preemption_shape
-          require_covered_function decision_recorder_derives_default_rr_preemption_without_overflow
+          require_covered_function decision_recorder_rejects_default_rr_preemption_time_overflow
           require_covered_function sim_backend_rejects_backward_advance_and_post_shutdown_mutation
           require_covered_function sim_backend_rejects_unknown_checkpoint_deterministically
           require_covered_function stable_hasher_is_repeatable
@@ -556,6 +556,20 @@
       ];
     }
     {
+      id = "typed-preemption-parent-binding";
+      sourcePath = "crates/crucible/src/model/runtime.rs";
+      testPath = "crates/crucible/src/model/engine/typed_preemption_por_tests.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "preemption_branch_choices"
+        "validate_preemption_branch_schedule"
+        "bare_swap_cannot_detach_a_preemption_from_its_typed_selection"
+      ];
+    }
+    {
       id = "sim-backend-error-variants";
       sourcePath = "crates/crucible/src/sim_backend.rs";
       testPath = "crates/crucible/src/sim_backend.rs";
@@ -664,6 +678,7 @@
     "scheduler-ordering-keys"
     "error-variant-floor"
     "instantiate-recursion"
+    "typed-preemption-parent-binding"
     "sim-backend-error-variants"
     "decision-rng-and-forking"
     "content-addressed-digest"
@@ -817,6 +832,7 @@
       "coverage_floor_regression_failures"
       "error-variant-floor"
       "instantiate-recursion"
+      "typed-preemption-parent-binding"
       "scheduler_errors_render_all_variants_deterministically"
       "scheduled_event_keys_cover_producer_tie_break"
       "engine_and_backend_errors_render_all_variants_deterministically"
@@ -834,9 +850,9 @@
       "decision_recorder_keeps_per_entity_streams_stable"
       "decision_recorder_resumes_stream_positions_from_existing_schedule"
       "decision_recorder_derives_default_rr_preemption_without_recording_schedule"
-      "decision_recorder_records_preemption_overrides_in_schedule"
+      "bare_swap_cannot_detach_a_preemption_from_its_typed_selection"
       "decision_recorder_rejects_invalid_default_preemption_shape"
-      "decision_recorder_derives_default_rr_preemption_without_overflow"
+      "decision_recorder_rejects_default_rr_preemption_time_overflow"
     ];
   in
     lib.concatMap (

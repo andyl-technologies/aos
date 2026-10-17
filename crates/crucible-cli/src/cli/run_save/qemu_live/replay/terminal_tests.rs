@@ -147,7 +147,11 @@ fn interactive_replay_terminal_samples_precede_genuine_stop_without_run()
     assert_eq!(samples, expected_samples);
     assert_eq!(actor.engine().snapshot(), artifact.final_snapshot);
     assert_eq!(actor.engine().boundary_control_log(), artifact.control_log);
-    assert_eq!(actor.reproduction_log().snapshot(), artifact.control_log);
+    let reproduction = {
+        let _scope = crate::tests::component_decode_scope();
+        actor.reproduction_log().snapshot_admitted()?
+    };
+    assert_eq!(reproduction.entries(), artifact.control_log);
     assert_eq!(artifact.final_snapshot.quanta, 0);
     let mut expected = vec!["sample"; nodes.len()];
     expected.push("shutdown");

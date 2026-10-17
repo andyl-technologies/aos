@@ -94,6 +94,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn prefix(entries: Vec<SchedulerEventLogEntry>) -> crucible::ConditionEventLogPrefix {
@@ -123,11 +124,17 @@ fn expected_calls_at(at: u64, events: u64) -> Vec<EvaluationCall> {
 
 #[test]
 fn properties_are_evaluated_by_stable_id_and_each_named_predicate_once_per_point() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = ordered_properties();
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = linted_host_oracle(RecordingOracle::default());
 
-    let outcomes = evaluator.observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle);
+    let outcomes = evaluator
+        .observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert!(outcomes.is_empty());
     assert_eq!(&*oracle.oracle().calls.borrow(), &expected_calls_at(1, 1));
@@ -135,6 +142,9 @@ fn properties_are_evaluated_by_stable_id_and_each_named_predicate_once_per_point
 
 #[test]
 fn duplicate_named_leaves_inside_one_predicate_are_evaluated_once_per_point() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "single-leaf-evaluation",
         Property::Always {
@@ -144,10 +154,13 @@ fn duplicate_named_leaves_inside_one_predicate_are_evaluated_once_per_point() {
             ]),
         },
     )]);
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = linted_host_oracle(RecordingOracle::default());
 
-    let outcomes = evaluator.observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle);
+    let outcomes = evaluator
+        .observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert!(outcomes.is_empty());
     assert_eq!(
@@ -162,6 +175,9 @@ fn duplicate_named_leaves_inside_one_predicate_are_evaluated_once_per_point() {
 
 #[test]
 fn eventually_trigger_and_property_share_one_named_leaf_evaluation_per_point() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "eventually-single-leaf-evaluation",
         Property::Eventually {
@@ -170,10 +186,13 @@ fn eventually_trigger_and_property_share_one_named_leaf_evaluation_per_point() {
             deadline: time(4),
         },
     )]);
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = linted_host_oracle(RecordingOracle::default());
 
-    let outcomes = evaluator.observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle);
+    let outcomes = evaluator
+        .observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
@@ -193,17 +212,24 @@ fn eventually_trigger_and_property_share_one_named_leaf_evaluation_per_point() {
 
 #[test]
 fn online_and_offline_custom_oracles_observe_identical_order() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = ordered_properties();
     let event_log = vec![boundary_entry(0, 1), boundary_entry(1, 2)];
     let recorded_log =
         RecordedAssertionLog::from_segments(vec![event_log[..1].to_vec(), event_log[1..].to_vec()])
             .expect("recorded assertion order log should fold");
     let mut online_oracle = linted_host_oracle(RecordingOracle::default());
-    let mut online_evaluator = HostAssertionEvaluator::new(&properties);
+    let mut online_evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
 
-    online_evaluator.observe_prefix(&prefix(event_log[..1].to_vec()), &mut online_oracle);
-    let online_report =
-        online_evaluator.finalize_prefix(&prefix(event_log.clone()), &mut online_oracle);
+    online_evaluator
+        .observe_prefix(&prefix(event_log[..1].to_vec()), &mut online_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let online_report = online_evaluator
+        .finalize_prefix(&prefix(event_log.clone()), &mut online_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     let mut offline_oracle = linted_host_oracle(RecordingOracle::default());
     let offline_report = OfflineAssertionChecker::new()

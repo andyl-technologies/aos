@@ -3,11 +3,19 @@
 use super::*;
 
 pub(super) struct QemuNodeAsyncStepTarget<'a> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) block_completion_observer:
+        Option<std::sync::Arc<dyn crate::QemuTestBlockCompletionObserver>>,
     pub(super) child: &'a mut QemuNodeProcessControl,
     pub(super) channels: &'a mut QemuNodeChannels,
     pub(super) lifecycle_state: &'a mut QemuNodeLifecycleState,
     pub(super) shutdown_policy: QemuShutdownPolicy,
+    pub(super) ram_registration: Option<crate::ram_control::RamControlRegistration>,
+    pub(super) supervisor:
+        Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     pub(super) stop_condition: crate::QemuQuantumStopCondition,
+    #[cfg(target_os = "linux")]
+    pub(super) ram_continuation: Option<&'a super::hot_fork_ram_stage::QemuHotForkRamContinuation>,
 }
 
 impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
@@ -17,6 +25,7 @@ impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
             self.channels,
             self.lifecycle_state,
             self.shutdown_policy,
+            self.supervisor.clone(),
         )
         .map_err(|error| QemuAsyncDriverTargetError::new("shutdown after crash", error.to_string()))
     }
@@ -24,6 +33,21 @@ impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
 
 impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
     type PendingQuantum = QemuNodePendingQuantum;
+
+    fn operational_health(&self) -> Result<(), crate::QemuAsyncDriverHealthError> {
+        super::operational_health::check_child_sources(self.child)?;
+        super::operational_health::native_actor::check(self.ram_registration.as_ref())?;
+        #[cfg(target_os = "linux")]
+        if let Some(source) = self
+            .ram_continuation
+            .and_then(|continuation| continuation.source.as_deref())
+        {
+            source
+                .check_health()
+                .map_err(crate::QemuAsyncDriverHealthError::ram_source)?;
+        }
+        Ok(())
+    }
 
     fn child_exit_status(
         &mut self,
@@ -53,6 +77,11 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
         &mut self,
         pending: &mut Self::PendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+        #[cfg(any(test, feature = "test-support"))]
+        super::block_completion_observation::observe_pending_completion(
+            self.channels,
+            self.block_completion_observer.as_deref(),
+        )?;
         self.channels.shmem_hot_path.poll_quantum(pending)
     }
 }
@@ -62,7 +91,22 @@ pub(super) fn shutdown_node_child(
     channels: &mut QemuNodeChannels,
     lifecycle_state: &mut QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
+    supervisor: Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
 ) -> Result<QemuShutdownReport, QemuNodeError> {
+    let guard = supervisor
+        .as_ref()
+        .map(|owner| {
+            owner.begin(crucible_linux_resource::host_supervision::HostOperationClass::Cleanup)
+        })
+        .transpose()
+        .map_err(|source| {
+            QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(
+                crate::QemuAsyncDriverRuntimeError::operational_supervision(
+                    "begin child cleanup",
+                    source,
+                ),
+            ))
+        })?;
     let report = if child.reaped() {
         QemuShutdownReport {
             attempts: Vec::new(),
@@ -75,9 +119,22 @@ pub(super) fn shutdown_node_child(
             child,
             plugin_control: channels.plugin_control.as_mut(),
             qmp_machine_control: channels.qmp_machine_control.as_mut(),
+            supervisor: supervisor.as_ref(),
+            guard: guard.as_ref(),
         };
         shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?
     };
+
+    if let Some(guard) = &guard {
+        guard.complete().map_err(|source| {
+            QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(
+                crate::QemuAsyncDriverRuntimeError::operational_supervision(
+                    "finish child cleanup",
+                    source,
+                ),
+            ))
+        })?;
+    }
 
     channels
         .qmp_machine_control

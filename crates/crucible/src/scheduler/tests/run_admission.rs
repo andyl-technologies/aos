@@ -32,6 +32,9 @@ fn prepare(scheduler: &SingleScheduler) -> PreparedHostConcurrentQuantum {
 
 #[test]
 fn final_preemption_clip_seals_actual_publication_and_semantic_horizon() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(vec![runnable("a")], Vec::new());
     let command = PreemptionDecision {
         node: NodeId {
@@ -58,6 +61,9 @@ fn final_preemption_clip_seals_actual_publication_and_semantic_horizon() {
 
 #[test]
 fn complete_inventory_projects_actual_ready_point_mapping() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("a", SchedulingNodeKind::Vm);
     let producer = scheduler_node("b", SchedulingNodeKind::Network);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -90,6 +96,9 @@ fn complete_inventory_projects_actual_ready_point_mapping() {
 
 #[test]
 fn unregistered_publication_and_stale_device_cache_cannot_mint_absence() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = test_scheduler(vec![runnable("a")], Vec::new());
     let mut prepared = prepare(&scheduler);
     let run = &prepared.runs[0];
@@ -114,6 +123,9 @@ fn unregistered_publication_and_stale_device_cache_cannot_mint_absence() {
 
 #[test]
 fn catchup_cap_preserves_natural_command_horizon_and_committed_prefix_remints() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(vec![runnable("a")], Vec::new());
     scheduler.preemption_requests.push(PreemptionDecision {
         node: NodeId {
@@ -149,6 +161,9 @@ fn catchup_cap_preserves_natural_command_horizon_and_committed_prefix_remints() 
 
 #[test]
 fn genuine_control_and_branch_caps_are_not_queued_service_inputs() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(vec![runnable("a")], Vec::new());
     scheduler
         .set_branch_frontier_cap(VirtualTime { ticks: 25 })
@@ -171,6 +186,9 @@ fn genuine_control_and_branch_caps_are_not_queued_service_inputs() {
 
 #[test]
 fn queued_control_refuses_inventory_seal_until_actual_boundary_drain() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let prepared = prepare(&test_scheduler(vec![runnable("a")], Vec::new()));
     let run = &prepared.runs[0];
     let mut frontier = prepared.next.clone();
@@ -188,6 +206,9 @@ fn queued_control_refuses_inventory_seal_until_actual_boundary_drain() {
 
 #[test]
 fn replacement_command_does_not_reuse_an_immutable_run_owner() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut frontier = test_scheduler(vec![runnable("a")], Vec::new());
     let mut command = PreemptionDecision {
         node: NodeId {

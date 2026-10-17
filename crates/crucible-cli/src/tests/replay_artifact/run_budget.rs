@@ -5,6 +5,7 @@ use super::*;
 #[test]
 pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     #[derive(Default)]
     struct NonQuiescentLifecycleLoop {
         quanta: u64,
@@ -55,6 +56,7 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
                 event_log_segment_hash: append.segment_hash,
                 event_log_offset: append.offset,
                 scheduler_quiescence: None,
+                event_log_custody: append.event_log_custody,
             })
         }
     }

@@ -57,7 +57,12 @@ pub(super) fn compiled_layout_target() -> &'static str {
 }
 
 pub(crate) fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutError> {
-    let mut rings = Vec::new();
+    let count = usize::try_from(vm_node_count)
+        .ok()
+        .and_then(|nodes| nodes.checked_mul(ReservedExecutorSlot::all().len()))
+        .and_then(|pairs| pairs.checked_mul(2))
+        .ok_or(RegionLayoutError::GeometryOverflow)?;
+    let mut rings = Vec::with_capacity(count);
     for vm_slot in 0..vm_node_count {
         for executor in ReservedExecutorSlot::all() {
             let executor_slot =
@@ -97,10 +102,8 @@ pub(super) fn layout_from_setup_region_geometry(
 
     let vm_node_count = snapshot.ring_count / rings_per_vm;
     let layout = RegionLayout::for_config(
-        RegionConfig::new(
-            vm_node_count,
-            snapshot.queue_capacity)
-        .with_fault_payload_arena_bytes(snapshot.fault_payload_arena_bytes),
+        RegionConfig::new(vm_node_count, snapshot.queue_capacity)
+            .with_fault_payload_arena_bytes(snapshot.fault_payload_arena_bytes),
     )
     .map_err(|source| RegionSetupValidationError::InvalidLayout { source })?;
 

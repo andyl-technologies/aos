@@ -434,7 +434,7 @@ pub fn validation_dag_with_baked_genesis(
     Ok(empty_validation_dag().with_baked_genesis(scenario, GenesisCheckpoint { checkpoint })?)
 }
 
-fn engine_from_validation_dag<L>(
+fn engine_from_validation_dag<L: QuantumLoop>(
     configuration: Configuration,
     graph: ValidationDag,
     quantum_loop: L,
@@ -460,15 +460,17 @@ where
 ///
 /// Returns [`SessionError`] when checkpoint resolution or runtime realization
 /// fails.
-pub fn resume_session_from_validation_dag<P, C>(
+pub fn resume_session_from_validation_dag<P: QuantumLoop, C: QuantumLoop>(
     configuration: Configuration,
     graph: ValidationDag,
     parent_loop: P,
     checkpoint: ContentHash,
     session_loop: C,
 ) -> Result<SessionResume<C>, SessionError> {
+    let session_loop = crate::session_engine::OwnedQuantumLoop::new(session_loop);
+
     let mut engine = engine_from_validation_dag(configuration, graph, parent_loop);
-    engine.resume_session_from_checkpoint(checkpoint, session_loop)
+    engine.resume_session_from_checkpoint(checkpoint, session_loop.into_inner()?)
 }
 
 /// Forks a child session actor from a checkpoint in a validation DAG.
@@ -477,7 +479,7 @@ pub fn resume_session_from_validation_dag<P, C>(
 ///
 /// Returns [`SessionError`] when the parent cannot start, the checkpoint cannot
 /// be resolved, or branch runtime realization fails.
-pub fn fork_session_from_validation_checkpoint<P, C>(
+pub fn fork_session_from_validation_checkpoint<P, C: QuantumLoop>(
     configuration: Configuration,
     graph: ValidationDag,
     parent_loop: P,
@@ -487,8 +489,10 @@ pub fn fork_session_from_validation_checkpoint<P, C>(
 where
     P: QuantumLoop,
 {
+    let child_loop = crate::session_engine::OwnedQuantumLoop::new(child_loop);
+
     let mut engine = started_engine_from_validation_dag(configuration, graph, parent_loop)?;
-    engine.fork_child_from_checkpoint(checkpoint, child_loop)
+    engine.fork_child_from_checkpoint(checkpoint, child_loop.into_inner()?)
 }
 
 /// Forks a child session actor from a configuration in a validation DAG.
@@ -497,7 +501,7 @@ where
 ///
 /// Returns [`SessionError`] when the parent cannot start, the branch cannot be
 /// recorded, or branch runtime realization fails.
-pub fn fork_session_from_validation_base<P, C, I>(
+pub fn fork_session_from_validation_base<P, C: QuantumLoop, I>(
     configuration: Configuration,
     graph: ValidationDag,
     parent_loop: P,
@@ -509,6 +513,8 @@ where
     P: QuantumLoop,
     I: IntoIterator<Item = Decision>,
 {
+    let child_loop = crate::session_engine::OwnedQuantumLoop::new(child_loop);
+
     let mut engine = started_engine_from_validation_dag(configuration, graph, parent_loop)?;
-    engine.fork_child(base, decisions, child_loop)
+    engine.fork_child(base, decisions, child_loop.into_inner()?)
 }

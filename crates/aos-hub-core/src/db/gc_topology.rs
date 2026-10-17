@@ -3883,6 +3883,12 @@ impl Database {
         completed_at: i64,
     ) -> Result<()> {
         validate_stable_key(generation_id, "cache GC generation id")?;
+
+        // Derived tables and recursive CTEs cannot resolve the outer UPDATE
+        // row on every backend. Read the same immutable generation cutoff by
+        // identity inside the statement, preserving the atomic recheck.
+        let generation_cutoff = "(SELECT cutoff_at FROM cache_gc_generations
+                                 WHERE cache_id = ?1 AND generation_id = ?2)";
         let statements = vec![
             Statement::new(
                 format!(
@@ -4014,8 +4020,8 @@ impl Database {
                      WHERE mark.cache_id = ?1 AND mark.generation_id = ?2
                        AND (referenced.id IS NULL
                          OR referenced_mark.cache_object_id IS NULL))",
-                    staged_seeds = staged_cache_seeds("?1", "cache_gc_generations.cutoff_at"),
-                    staged_closure = staged_store_closure("?1", "cache_gc_generations.cutoff_at"),
+                    staged_seeds = staged_cache_seeds("?1", generation_cutoff),
+                    staged_closure = staged_store_closure("?1", generation_cutoff),
                 ),
                 vals![cache_id, generation_id, completed_at],
             )

@@ -232,7 +232,7 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
             .await
             .unwrap_or_else(|error| panic!("event-log stream should not lag: {error}"))
             .unwrap_or_else(|| panic!("event-log stream should stay open while actor runs"));
-        streamed.push(frame.entry.clone());
+        streamed.push((**frame.entry).clone());
         let has_causal = streamed
             .iter()
             .any(|entry| entry.class() == SchedulerEventLogClass::Causal);
@@ -264,7 +264,12 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
             .any(|entry| matches!(entry.source(), EventSource::Command { .. })),
         "streamed control decisions must retain command correlation"
     );
-    let comparison = compare_event_log_determinism(&streamed, &streamed);
+    let comparison = {
+        let _scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite component comparison scope: {error}"));
+        compare_event_log_determinism(&streamed, &streamed)
+            .unwrap_or_else(|error| panic!("finite component comparison: {error}"))
+    };
     assert!(comparison.passes());
 
     let cursor = EventLogCursor::new(1);
@@ -499,6 +504,9 @@ impl SimDoubleQuantumLoop {
 
 impl QuantumLoop for SimDoubleQuantumLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _quantum_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite quantum fixture scope: {error}"));
+
         self.quanta = self.quanta.saturating_add(1);
         self.apply_backend_control(&request.control)?;
         let observation =
@@ -531,6 +539,8 @@ impl QuantumLoop for SimDoubleQuantumLoop {
                 self.event_log_events,
             ),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 
@@ -571,6 +581,9 @@ impl SimDoubleQuantumLoop {
     }
 
     fn event_log_entries(&mut self, control: &[ControlOperation]) -> Vec<SchedulerEventLogEntry> {
+        let _fixture_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite event fixture scope: {error}"));
+
         let base = self.event_log_events;
         let mut entries = Vec::new();
         for operation in control {
@@ -580,20 +593,26 @@ impl SimDoubleQuantumLoop {
                 operation,
             ));
         }
-        entries.push(crucible::test_support::condition_payload_entry_for_test(
-            base + entries.len() as u64,
-            VirtualTime { ticks: self.quanta },
-            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
-                "session.event-log.stream",
-                EventLevel::Debug,
-                BTreeMap::new(),
-            )),
-        ));
-        entries.push(crucible::test_support::condition_boundary_entry_for_test(
-            base + entries.len() as u64,
-            VirtualTime { ticks: self.quanta },
-            crucible::SchedulerEvaluationBoundaryKind::Quantum,
-        ));
+        entries.push(
+            crucible::test_support::condition_payload_entry_for_test(
+                base + entries.len() as u64,
+                VirtualTime { ticks: self.quanta },
+                SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                    "session.event-log.stream",
+                    EventLevel::Debug,
+                    BTreeMap::new(),
+                )),
+            )
+            .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
+        );
+        entries.push(
+            crucible::test_support::condition_boundary_entry_for_test(
+                base + entries.len() as u64,
+                VirtualTime { ticks: self.quanta },
+                crucible::SchedulerEvaluationBoundaryKind::Quantum,
+            )
+            .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
+        );
         self.event_log_events = self
             .event_log_events
             .saturating_add(u64::try_from(entries.len()).unwrap_or(u64::MAX));
@@ -621,6 +640,8 @@ fn complete_sim_double_setup(backend: &mut SimDouble) {
 
     let setup = control_encode_host_msg(&HostMsg::Setup {
         region_len: backend.shmem_layout().region_size,
+        process_generation: 1,
+        device_digest_workspace: None,
     });
     match backend.accept_host_control_frame(&setup) {
         Ok(Some(_setup_ack)) => {}
@@ -634,6 +655,9 @@ fn control_operation_log_entry(
     ticks: u64,
     operation: &ControlOperation,
 ) -> SchedulerEventLogEntry {
+    let _fixture_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite event fixture scope: {error}"));
+
     crucible::test_support::condition_payload_entry_for_test(
         sequence,
         VirtualTime { ticks },
@@ -642,6 +666,7 @@ fn control_operation_log_entry(
             operation.clone(),
         )),
     )
+    .unwrap_or_else(|error| panic!("finite fixture event identity: {error}"))
 }
 
 fn record_control_operations(

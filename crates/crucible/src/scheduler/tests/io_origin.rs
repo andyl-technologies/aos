@@ -3,6 +3,7 @@
 use super::*;
 
 fn source() -> SingleScheduler {
+    let _origin = crate::test_support::fixture_decode_scope(64 * 1024 * 1024).unwrap();
     test_scheduler(
         vec![test_scenario_node(
             "a",
@@ -18,6 +19,7 @@ fn source() -> SingleScheduler {
 
 #[test]
 fn resolution_retains_original_computed_key_instead_of_scheduler_ordinal() {
+    let _origin = crate::test_support::fixture_decode_scope(64 * 1024 * 1024).unwrap();
     let mut scheduler = source();
     let consumer = scheduler_node("a", SchedulingNodeKind::Vm);
     let producer = scheduler_node("disk", SchedulingNodeKind::Disk);
@@ -47,6 +49,7 @@ fn resolution_retains_original_computed_key_instead_of_scheduler_ordinal() {
 
 #[test]
 fn encoded_pending_completion_and_fork_clone_retain_the_actual_source_key() {
+    let _origin = crate::test_support::fixture_decode_scope(64 * 1024 * 1024).unwrap();
     let template = source();
     let mut scheduler = template.clone();
     let consumer = scheduler_node("a", SchedulingNodeKind::Vm);
@@ -83,6 +86,7 @@ fn encoded_pending_completion_and_fork_clone_retain_the_actual_source_key() {
 
 #[test]
 fn missing_origin_and_mismatched_persisted_tick_are_refused() {
+    let _origin = crate::test_support::fixture_decode_scope(64 * 1024 * 1024).unwrap();
     let mut scheduler = source();
     let consumer = scheduler_node("a", SchedulingNodeKind::Vm);
     let at = scheduler.device_sub_nodes[&consumer.node][0]
@@ -114,6 +118,7 @@ fn missing_origin_and_mismatched_persisted_tick_are_refused() {
 
 #[test]
 fn event5_binds_original_queue_keys_and_refuses_event4_bytes() {
+    let _origin = crate::test_support::fixture_decode_scope(64 * 1024 * 1024).unwrap();
     let mut scheduler = source();
     let consumer = scheduler_node("a", SchedulingNodeKind::Vm);
     let at = scheduler.device_sub_nodes[&consumer.node][0]
@@ -157,16 +162,18 @@ fn event5_binds_original_queue_keys_and_refuses_event4_bytes() {
         0,
         VirtualTime { ticks: at },
         SchedulerEventLogPayload::ResolvedHappening(original.clone()),
-    );
+    )
+    .unwrap();
     let changed_entry = scheduler_event_log_entry(
         0,
         VirtualTime { ticks: at },
         SchedulerEventLogPayload::ResolvedHappening(changed),
-    );
+    )
+    .unwrap();
     assert_ne!(entry.content_hash, changed_entry.content_hash);
 
     let mut encoded =
-        scheduler_event_log_segment_bytes(scheduler_event_log_empty_prefix(), &[entry]);
+        scheduler_event_log_segment_bytes(scheduler_event_log_empty_prefix(), &[entry]).unwrap();
     assert!(decode_scheduler_event_log_segment(&encoded).is_ok());
     encoded[16..20].copy_from_slice(&4_u32.to_le_bytes());
     assert!(matches!(

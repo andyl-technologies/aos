@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld;
+use crate::vm_lifecycle::ProductionVmHotForkSourceWorld;
 use thiserror::Error;
 
 use crate::qemu_hot_fork_source_capture::{
@@ -36,6 +36,11 @@ use crate::{
 };
 
 mod errors;
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+mod parent_park;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) use parent_park::ManagedParentParkError;
 
 /// Exact durable-catalog mutation failure.
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +73,23 @@ pub struct ManagedQemuHotForkSourceWorld {
     source: Option<ProductionVmHotForkSourceWorld>,
     leased_source: Option<Arc<Mutex<ProductionVmHotForkSourceWorld>>>,
     invalidated: bool,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    parent_park: Option<parent_park::ManagedParentParkGate>,
+}
+
+impl Drop for ManagedQemuHotForkSourceWorld {
+    fn drop(&mut self) {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Some(gate) = self.parent_park.take() {
+            std::mem::forget(gate);
+            if let Some(source) = self.leased_source.take() {
+                std::mem::forget(source);
+            }
+            if let Some(source) = self.source.take() {
+                std::mem::forget(source);
+            }
+        }
+    }
 }
 
 impl ManagedQemuHotForkSourceWorld {
@@ -96,8 +118,17 @@ impl ManagedQemuHotForkSourceWorld {
         mut source: ProductionVmHotForkSourceWorld,
         require_canonical_genesis: bool,
     ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
-        let actual_scenario = source.continuation().configuration().def.id();
-        let actual_configuration = source.continuation().configuration().id();
+        let continuation = match source.continuation() {
+            Ok(continuation) => continuation,
+            Err(error) => {
+                return Err(ManagedQemuHotForkSourceWorldBindingFailure::new(
+                    source,
+                    ManagedQemuHotForkSourceWorldBindingError::Continuation(error),
+                ));
+            }
+        };
+        let actual_scenario = continuation.configuration().def.id();
+        let actual_configuration = continuation.configuration().id();
         if actual_scenario != key.scenario() || actual_configuration != key.configuration() {
             let error = ManagedQemuHotForkSourceWorldBindingError::SourceKeyMismatch {
                 expected_scenario: key.scenario(),
@@ -110,7 +141,7 @@ impl ManagedQemuHotForkSourceWorld {
             ));
         }
         if require_canonical_genesis
-            && let Some(detail) = canonical_genesis_reuse_boundary_error(&source)
+            && let Some(detail) = canonical_genesis_reuse_boundary_error(continuation)
         {
             return Err(ManagedQemuHotForkSourceWorldBindingFailure::new(
                 source,
@@ -150,6 +181,8 @@ impl ManagedQemuHotForkSourceWorld {
             source: Some(source),
             leased_source: None,
             invalidated: false,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            parent_park: None,
         })
     }
 
@@ -161,16 +194,44 @@ impl ManagedQemuHotForkSourceWorld {
 
     /// Returns whether this source may be checked out immediately.
     #[must_use]
-    pub const fn available(&self) -> bool {
-        self.source.is_some() && !self.invalidated
+    pub fn available(&self) -> bool {
+        self.source.is_some()
+            && !self.invalidated
+            && !self.parent_park_owned()
+            && !self.fork_target_owned()
+    }
+
+    fn fork_target_owned(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(ProductionVmHotForkSourceWorld::fork_target_is_owned)
+            || self.leased_source.as_ref().is_some_and(|source| {
+                source
+                    .try_lock()
+                    .map_or(true, |source| source.fork_target_is_owned())
+            })
+    }
+
+    fn parent_park_owned(&self) -> bool {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        {
+            self.parent_park.is_some()
+        }
+        #[cfg(not(all(target_os = "linux", feature = "private-measurement-domain")))]
+        {
+            false
+        }
     }
 
     fn lease_available(&self) -> bool {
-        (self.source.is_some() || self.leased_source.is_some()) && !self.invalidated
+        (self.source.is_some() || self.leased_source.is_some())
+            && !self.invalidated
+            && !self.parent_park_owned()
+            && !self.fork_target_owned()
     }
 
     fn begin_lease(&mut self) -> Option<Arc<Mutex<ProductionVmHotForkSourceWorld>>> {
-        if self.invalidated {
+        if self.invalidated || self.parent_park_owned() || self.fork_target_owned() {
             return None;
         }
         if let Some(source) = &self.leased_source {
@@ -183,7 +244,7 @@ impl ManagedQemuHotForkSourceWorld {
     }
 
     fn finish_leases(&mut self) {
-        if self.invalidated {
+        if self.invalidated || self.parent_park_owned() || self.fork_target_owned() {
             return;
         }
         let Some(source) = self.leased_source.take() else {
@@ -211,13 +272,32 @@ impl ManagedQemuHotForkSourceWorld {
     }
 
     fn take(&mut self) -> Option<ProductionVmHotForkSourceWorld> {
-        if self.invalidated || self.leased_source.is_some() {
+        if self.invalidated
+            || self.leased_source.is_some()
+            || self.parent_park_owned()
+            || self.fork_target_owned()
+        {
             return None;
         }
         self.source.take()
     }
 
-    fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+    fn restore(&mut self, mut source: ProductionVmHotForkSourceWorld) {
+        if source.fork_target_is_owned() {
+            // Keep the actual owner without restoring supervision or claiming
+            // reusable Source while its physical Target remains retained.
+            self.source = Some(source);
+            return;
+        }
+        if self.parent_park_owned() {
+            std::mem::forget(source);
+            return;
+        }
+        if source.restore_retained_service_supervisor().is_err() {
+            self.invalidated = true;
+            let _retained_for_process_lifetime = Box::leak(Box::new(source));
+            return;
+        }
         match source.into_reusable() {
             Ok(source) => self.source = Some(source),
             Err(failure) => {
@@ -228,6 +308,11 @@ impl ManagedQemuHotForkSourceWorld {
     }
 
     fn invalidate(&mut self) {
+        if self.parent_park_owned() || self.fork_target_owned() {
+            // Preserve the real pool record, complete source and occupied charge.
+            self.invalidated = true;
+            return;
+        }
         self.invalidated = true;
         self.source = None;
         if let Some(source) = self.leased_source.take() {
@@ -298,6 +383,9 @@ impl std::error::Error for ManagedQemuHotForkSourceWorldBindingFailure {
 /// Exact reason a source world could not enter managed ownership.
 #[derive(Debug, Error)]
 pub enum ManagedQemuHotForkSourceWorldBindingError {
+    /// The complete continuation is unavailable; the binding failure keeps its source.
+    #[error("authenticate retained source continuation")]
+    Continuation(#[source] crate::vm_lifecycle::ProductionVmHotForkContinuationUnavailable),
     /// Captured semantic content differs from the internally derived reuse key.
     #[error("source world scenario/configuration differs from its managed reuse key")]
     SourceKeyMismatch {
@@ -373,9 +461,8 @@ impl<E> std::fmt::Display for ManagedQemuHotForkAuthenticatedAdmissionFailure<E>
 }
 
 fn canonical_genesis_reuse_boundary_error(
-    source: &ProductionVmHotForkSourceWorld,
+    continuation: &crate::ProductionVmHotForkWorldContinuation,
 ) -> Option<String> {
-    let continuation = source.continuation();
     let event_log = continuation.event_log_offset();
     let scheduler = continuation.scheduler();
     if !continuation.configuration().schedule.is_empty()
@@ -397,14 +484,13 @@ fn canonical_genesis_reuse_boundary_error(
 
     for node in continuation.nodes() {
         let ready_point = scheduler.epoch_ready_point_counter_for_node(node.node());
-        let physical_matches = match (node.physical_time(), ready_point) {
-            (Some(physical), Some(counter)) => physical.ticks == counter.ticks,
-            (None, Some(_)) => {
-                node.service_state()
-                    == crucible_api::vm_lifecycle::ProductionVmHotForkNodeServiceState::PermanentlyFailed
-            }
-            _ => false,
-        };
+        let physical_matches =
+            match (node.physical_time(), ready_point) {
+                (Some(physical), Some(counter)) => physical.ticks == counter.ticks,
+                (None, Some(_)) => node.service_state()
+                    == crate::vm_lifecycle::ProductionVmHotForkNodeServiceState::PermanentlyFailed,
+                _ => false,
+            };
         if node.scheduler_time().ticks != 0 || !physical_matches {
             return Some(format!(
                 "node={} scheduler_time={} physical_time={:?} epoch_ready_point={ready_point:?} service_state={:?}",
@@ -444,17 +530,24 @@ impl HotCheckpointSourceDemoter<ManagedQemuHotForkSourceWorld> for QemuHotForkSo
                 QemuHotForkSourceWorldDemotionError::TemplateKeyMismatch { expected, actual },
             ));
         }
-        let Some(source) = world.take() else {
+        let Some(mut source) = world.take() else {
             return Err(HotCheckpointTemplateDemotionFailure::new(
                 world,
                 QemuHotForkSourceWorldDemotionError::Unavailable,
             ));
         };
-        if let Err(source) = source.retire() {
-            world.invalidated = true;
+        if let Err(error) = source.retire() {
+            if source.continuation().is_ok() {
+                // Retirement moves this identity before starting cleanup. A
+                // pre-effect refusal keeps the same owner available for retry,
+                // even if the target loan clears just after that refusal.
+                world.source = Some(source);
+            } else {
+                world.invalidated = true;
+            }
             return Err(HotCheckpointTemplateDemotionFailure::new(
                 world,
-                QemuHotForkSourceWorldDemotionError::Retirement(source),
+                QemuHotForkSourceWorldDemotionError::Retirement(error),
             ));
         }
         Ok(())
@@ -493,8 +586,8 @@ impl QemuHotForkSourceWorldLease {
     pub(crate) fn exclusive(
         template: HotCheckpointPoolKey,
         source: ProductionVmHotForkSourceWorld,
+        identity: QemuHotForkSourceWorldCheckoutIdentity,
     ) -> Self {
-        let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(&source);
         Self {
             managed_lease: None,
             template,
@@ -512,13 +605,30 @@ impl QemuHotForkSourceWorldLease {
     }
 
     pub(crate) fn reauthenticates_source(&self) -> bool {
-        self.source.lock().is_ok_and(|mut source| {
-            self.identity.matches(&source) && source.fork_continuation().is_ok()
+        self.source.try_lock().is_ok_and(|mut source| {
+            !source.fork_target_is_owned()
+                && self.identity.matches(&source)
+                && source.restore_retained_service_supervisor().is_ok()
+                && source.fork_continuation().is_ok()
         })
     }
 
-    pub(crate) fn into_exclusive_source(self) -> Result<ProductionVmHotForkSourceWorld, Box<Self>> {
+    pub(crate) fn into_exclusive_source(
+        mut self,
+    ) -> Result<ProductionVmHotForkSourceWorld, Box<Self>> {
         if self.managed_lease.is_some() {
+            return Err(Box::new(self));
+        }
+        // Refuse every shared or weak borrower before source validation or a
+        // supervisor attachment can affect the installed complete lifecycle.
+        // The unique mutable Arc loan prevents new borrowers during that cut.
+        let Some(source) = Arc::get_mut(&mut self.source) else {
+            return Err(Box::new(self));
+        };
+        if !source
+            .get_mut()
+            .is_ok_and(|source| source.restore_retained_service_supervisor().is_ok())
+        {
             return Err(Box::new(self));
         }
         let Self {
@@ -574,6 +684,8 @@ struct ManagedQemuHotForkSourceWorldLeaseRecord {
     source: Weak<Mutex<ProductionVmHotForkSourceWorld>>,
     resources: HotCheckpointResourceProfile,
     _permit: crate::HotCheckpointForkPermit,
+    returned_lease: Option<QemuHotForkSourceWorldLease>,
+    abandoned: bool,
 }
 
 /// Durable, resource-accounted provider for complete source worlds.

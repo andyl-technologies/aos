@@ -274,7 +274,11 @@ pub(super) fn exercise_beam_out_of_order_completion(
         first_continuation.branch_point(),
         first_continuation.id().expect("first continuation ID"),
     );
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let restarted_snapshot = restarted
         .read_snapshot(settled_snapshot.content_id())
         .expect("load closure cohort after restart");

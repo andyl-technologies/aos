@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Finite, clock-independent ROM throughput with a common serial endpoint.
 //!
-//! This standalone host fixture reuses only the frozen Linux helper's public
-//! protocol, process, QMP and CPU-accounting support. The builder concatenates
-//! that unchanged support prefix after this source; no QEMU code is linked.
+//! Ordinary TCG controls retain their serial timing and permanent-halt oracle.
+//! Sim measurements dispatch to the packaged admitted native worker. Shared
+//! host process and QMP support contains no production plugin launch path.
 
 struct SerialCapture {
     events: std::sync::mpsc::Receiver<std::result::Result<(bool, Instant), String>>,
@@ -157,7 +157,7 @@ fn stock_halt_reached(registers: &str, manifest: &Value) -> Result<bool> {
         && register_value(registers, "EFL")? & 0x200 == 0)
 }
 
-fn rom_command(args: &[String], sockets: &Path, plugin: Option<(&str, i32)>) -> Result<Command> {
+fn rom_command(args: &[String], sockets: &Path) -> Result<Command> {
     let cpu: usize = args[6].parse()?;
     let log = File::create(Path::new(&args[5]).join("qemu.log"))?;
     let mut command = Command::new(&args[2]);
@@ -209,19 +209,7 @@ fn rom_command(args: &[String], sockets: &Path, plugin: Option<(&str, i32)>) -> 
                 "shift=0,align=off,sleep=off",
             ]);
         }
-        "sim" => {
-            command.args([
-                "-accel",
-                "sim,thread=single",
-                "-icount",
-                "shift=0,align=off,sleep=off,rr_switch_quantum=4096",
-            ]);
-        }
-        _ => return Err("mode must be tcg, tcg-icount or sim".into()),
-    }
-    let inherited_fd = plugin.map(|(_, fd)| fd);
-    if let Some((argument, _)) = plugin {
-        command.args(["-plugin", argument]);
+        _ => return Err("ordinary mode must be tcg or tcg-icount".into()),
     }
     command
         .stdin(Stdio::null())
@@ -230,11 +218,6 @@ fn rom_command(args: &[String], sockets: &Path, plugin: Option<(&str, i32)>) -> 
     // SAFETY: the child hook only sets inherited descriptor flags and affinity.
     unsafe {
         command.pre_exec(move || {
-            if let Some(fd) = inherited_fd {
-                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-            }
             let mut affinity: libc::cpu_set_t = std::mem::zeroed();
             libc::CPU_SET(cpu, &mut affinity);
             if libc::sched_setaffinity(0, std::mem::size_of_val(&affinity), &affinity) < 0 {
@@ -251,8 +234,10 @@ fn main() -> Result<()> {
     if args.len() != 8 {
         return Err("usage: DRIVER MODE QEMU PLUGIN_OR_DASH ROM OUTPUT CPU MANIFEST".into());
     }
-    let sim = args[1] == "sim";
-    if (args[3] == "-") == sim || args[6].parse::<usize>()? >= libc::CPU_SETSIZE as usize {
+    if args[1] == "sim" {
+        return managed::run("rom", &args);
+    }
+    if args[3] != "-" || args[6].parse::<usize>()? >= libc::CPU_SETSIZE as usize {
         return Err("invalid mode/plugin pairing or CPU".into());
     }
     let directory = Path::new(&args[5]);
@@ -273,80 +258,9 @@ fn main() -> Result<()> {
         return Err("temporary socket path exceeds Unix limit".into());
     }
 
-    // All allocation precedes the primary timer. Even stock rows construct the
-    // same public setup objects; only Sim transmits them to its real plugin.
-    let allocation = RegionAllocation::new(RegionConfig::new(1, 4))?;
-    let layout = allocation.layout();
-    let shared = memfd(&allocation.setup_region_bytes()?, false)?;
-    let region = mmap_setup_region(shared.as_fd(), layout.region_size)?;
-    let slot = region.node_slot(0)?;
-    let mut marker_region = mmap_setup_region(shared.as_fd(), layout.region_size)?;
-    let declaration = SelectablePlanDeclaration::new(
-        "flight.ready",
-        vec![1],
-        vec![1],
-        vec!["readiness".to_owned()],
-        SelectablePlanPresence::Required,
-    )?;
-    let plan = PluginSetupPlan::new(
-        AppRandomBranchPlan::default(),
-        SelectableCatalogPlan::new(
-            SelectablePlanLimits::new(1, 1, 1)?,
-            vec![declaration],
-            SelectablePlanContinuation::cold(),
-        )?,
-    );
-    let plan_file = memfd(&plan.encode()?, true)?;
-    // SAFETY: eventfd returns a unique owned descriptor without pointer inputs.
-    let wake_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-    if wake_fd < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    // SAFETY: the successful eventfd descriptor has not acquired another owner.
-    let wake = unsafe { File::from_raw_fd(wake_fd) };
-    let (host_socket, plugin_socket) = UnixStream::pair()?;
-    host_socket.set_read_timeout(Some(Duration::from_secs(30)))?;
-    let simfd = plugin_socket.as_raw_fd();
-    let plugin_argument = format!(
-        "{},simfd={simfd},slot=0,fault_node_hash={},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=off",
-        args[3],
-        "11".repeat(32)
-    );
-    let mut command = rom_command(
-        &args,
-        sockets.path(),
-        sim.then_some((plugin_argument.as_str(), simfd)),
-    )?;
+    let mut command = rom_command(&args, sockets.path())?;
     let launch_start = Instant::now();
     let mut process = Process(command.spawn()?);
-    drop(plugin_socket);
-    let ceiling = 20_000_000_000_000_u64;
-    let _control = if sim {
-        let mut control = ControlLifecycleStream::connected_unix_stream(host_socket)?;
-        control.host_accept_handshake(HostHandshakeConfig {
-            proto_version: CONTROL_PROTOCOL_VERSION,
-            abi_version: ABI_VERSION,
-            slot_index: 0,
-            node_count: layout.node_count,
-        })?;
-        control.host_send_setup_with_descriptors(
-            layout.region_size,
-            SetupDescriptorFds {
-                shmem_fd: shared.as_raw_fd(),
-                wake_fd: wake.as_raw_fd(),
-                plugin_setup_plan_fd: plan_file.as_raw_fd(),
-            },
-        )?;
-        control.host_accept_setup_ack()?;
-        control.enter_run_via_shared_memory()?;
-        slot.publish_scheduler_advance(
-            authorize_advance_ceiling(0, ceiling, None)?,
-            AdvanceStopCondition::Ceiling,
-        )?;
-        Some(control)
-    } else {
-        None
-    };
     let mut qmp = Qmp::connect(&sockets.path().join("qmp.sock"))?;
     let serial = SerialCapture::connect(
         &sockets.path().join("serial.sock"),
@@ -358,74 +272,10 @@ fn main() -> Result<()> {
     qmp.command("cont", json!({}))?;
     let mut start = None;
     let mut end = None;
-    let mut markers = Vec::new();
-    let mut registered = false;
-    let mut pending = None;
-    let expected_registration = SelectableRegister::new(
-        1,
-        "flight.ready",
-        vec![1],
-        vec![1],
-        vec!["readiness".to_owned()],
-    )?;
-    let stopped = loop {
+    loop {
         serial.poll(&mut start, &mut end)?;
-        if sim {
-            let ring = marker_region.whitebox_marker_ring_mut(0)?;
-            while let Some(record) = ring.header.dequeue_whitebox_marker(ring.entries)? {
-                let entry = record.validate()?;
-                markers.push(json!({
-                    "kind": entry.kind(),
-                    "logical_tick": entry.current_icount(),
-                    "vcpu": entry.vcpu_index(),
-                    "payload_hex": entry.payload().iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<String>(),
-                }));
-                if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED {
-                    if registered
-                        || SelectableRegister::decode(entry.payload())? != expected_registration
-                    {
-                        return Err("unexpected ROM registration".into());
-                    }
-                    registered = true;
-                } else if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING {
-                    let request = SelectablePendingTransportRecord::decode(entry.payload())?;
-                    if !registered
-                        || pending.is_some()
-                        || request.request().selectable_id() != "flight.ready"
-                        || request.request().instance_key() != "boot"
-                        || request.request().sequence() != 2
-                        || entry.vcpu_index() != 0
-                    {
-                        return Err("unexpected ROM authenticated request".into());
-                    }
-                    pending = Some((request, entry.current_icount()));
-                }
-            }
-            let snapshot = slot.snapshot();
-            if let Some((request, tick)) = &pending {
-                let raw = request
-                    .raw_icount()
-                    .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
-                    .ok_or("raw overflow")?;
-                let logical = tick
-                    .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
-                    .ok_or("tick overflow")?;
-                if snapshot.logical_time_raw_icount > raw || snapshot.current_icount > logical {
-                    return Err("ROM ran beyond exact native boundary".into());
-                }
-                if snapshot.logical_time_raw_icount == raw
-                    && snapshot.current_icount == logical
-                    && snapshot.status == STATUS_IDLE
-                    && snapshot.idle_wake_icount == logical
-                    && end.is_some()
-                {
-                    break Some(snapshot);
-                }
-            }
-        } else if end.is_some() {
-            break None;
+        if end.is_some() {
+            break;
         }
         if launch_start.elapsed() > Duration::from_secs(300) {
             return Err("ROM completion timeout after 300 seconds".into());
@@ -434,8 +284,8 @@ fn main() -> Result<()> {
             return Err("QEMU exited before ROM completion".into());
         }
         thread::sleep(Duration::from_micros(100));
-    };
-    if !sim {
+    }
+    {
         // END can arrive before popal and the protocol epilogue retire. Wait
         // for the permanent CLI/HLT tail after recording the primary endpoint;
         // this qualification latency is excluded from both serial intervals.
@@ -461,12 +311,6 @@ fn main() -> Result<()> {
     let pause_deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
         let status = qmp.command("query-status", json!({}))?;
-        if stopped
-            .as_ref()
-            .is_some_and(|reference| !same_readiness_state(&slot.snapshot(), reference))
-        {
-            return Err("ROM native state moved".into());
-        }
         if status["status"] == "paused" {
             break status;
         }
@@ -475,18 +319,15 @@ fn main() -> Result<()> {
         }
         thread::sleep(Duration::from_micros(100));
     };
-    let native_stop_seconds = launch_start.elapsed().as_secs_f64();
     let counters = cpu_seconds(process.0.id())?;
     let registers = qmp.command(
         "human-monitor-command",
         json!({"command-line":"info registers"}),
     )?;
-    if !sim
-        && !stock_halt_reached(
-            registers.as_str().ok_or("invalid register response")?,
-            &manifest,
-        )?
-    {
+    if !stock_halt_reached(
+        registers.as_str().ok_or("invalid register response")?,
+        &manifest,
+    )? {
         return Err("stock stopped capture is not the qualified permanent halt".into());
     }
     let replay = if args[1] == "tcg-icount" {
@@ -502,9 +343,6 @@ fn main() -> Result<()> {
     let memory = fs::read(&memory_path)?;
     if memory.len() != 64 * 1024 * 1024
         || qmp.command("query-status", json!({}))?["status"] != "paused"
-        || stopped
-            .as_ref()
-            .is_some_and(|reference| !same_readiness_state(&slot.snapshot(), reference))
     {
         return Err("ROM stopped capture changed state".into());
     }
@@ -523,35 +361,19 @@ fn main() -> Result<()> {
     serial.finish(&mut start, &mut end)?;
     let start = start.ok_or("missing ROM START")?;
     let end = end.ok_or("missing ROM END")?;
-    let request_witness = pending.as_ref().map(|(request, tick)| {
-        json!({
-            "sequence": request.request().sequence(),
-            "raw_icount": request.raw_icount(),
-            "logical_tick": tick,
-            "selectable_id": request.request().selectable_id(),
-            "instance_key": request.request().instance_key(),
-        })
-    });
-    let saved_registers = sim.then(|| {
-        memory[0x5ff8..0x6000]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    });
-
     println!(
         "{}",
         json!({
             "mode": args[1],
             "qemu": args[2],
-            "plugin": sim.then_some(&args[3]),
+            "plugin": null,
             "rom": args[4],
             "cpu": args[6].parse::<usize>()?,
 
             "seconds": end.duration_since(launch_start).as_secs_f64(),
             "startup_seconds": cont_start.duration_since(launch_start).as_secs_f64(),
             "roi_seconds": end.duration_since(start).as_secs_f64(),
-            "native_stop_seconds": sim.then_some(native_stop_seconds),
+            "native_stop_seconds": null,
             "roi_scope": "START receipt through checksum END receipt; includes finite loop plus UART epilogue and transport latency",
             "cpu_accounting": "process totals after paused acknowledgement, not exact END or ROI CPU coordinates",
             "user_seconds": counters.0,
@@ -566,12 +388,12 @@ fn main() -> Result<()> {
             "post_marker_stopped_replay": replay,
             "post_marker_icount_is_exact_token_coordinate": false,
 
-            "markers": markers,
-            "request": request_witness,
-            "raw_icount": stopped.as_ref().map(|state| state.logical_time_raw_icount),
-            "logical_tick": stopped.as_ref().map(|state| state.current_icount),
-            "idle_wake_tick": stopped.as_ref().map(|state| state.idle_wake_icount),
-            "sim_saved_registers_hex": saved_registers,
+            "markers": [],
+            "request": null,
+            "raw_icount": null,
+            "logical_tick": null,
+            "idle_wake_tick": null,
+            "sim_saved_registers_hex": null,
         })
     );
     Ok(())

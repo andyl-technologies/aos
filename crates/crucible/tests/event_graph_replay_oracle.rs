@@ -564,7 +564,11 @@ fn replay_trigger_applications_from_event_log(
         .iter()
         .inspect(|entry| {
             assert!(
-                entry.has_valid_content_hash(),
+                entry
+                    .has_valid_content_hash()
+                    .unwrap_or_else(|error| panic!(
+                        "finite component event-log operation: {error}"
+                    )),
                 "trigger replay oracle must reject corrupt event-log entries"
             );
         })
@@ -631,7 +635,9 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
             }
         }
 
-        let firings = scheduler.evaluate_event_graph(&graph, &mut graph_state, NoGuestLeaves);
+        let firings = scheduler
+            .evaluate_event_graph(&graph, &mut graph_state, NoGuestLeaves)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
         if !firings.is_empty() {
             let append = scheduler
                 .apply_trigger_firings(&firings)
@@ -724,6 +730,9 @@ fn check_event_graph_replay_oracle(
 
 #[test]
 fn event_graph_replay_oracle_rederives_identical_firings_actions_and_verdict() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let artifact = EventGraphReplayArtifact::capture_converged();
     let online = replay_event_graph_artifact(&artifact);
     let offline = check_event_graph_replay_oracle(&artifact, &online.trigger_firings)

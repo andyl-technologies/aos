@@ -366,6 +366,7 @@ fn scoped_capture_state_rejects_semantic_and_mismatched_promotion_shapes() {
             },
             capture.retention_policy(),
         )),
+        source_transfer: None,
     };
     let mut memory = MemoryAssignmentLedger::default();
 
@@ -479,6 +480,7 @@ fn checkpoint_states_round_trip_and_remain_gc_roots_after_restart() {
         execution,
         checkpoint: raw_checkpoint,
         promotion_basis,
+        source_transfer: None,
     };
     let promoting = AttemptRuntimeState::CheckpointPromoting {
         execution_basis: basis,
@@ -564,6 +566,7 @@ fn current_checkpoint_promotion_basis_must_match_the_execution_digest() {
             request.retention(),
             request.retention_policy(),
         )),
+        source_transfer: None,
     };
 
     assert!(matches!(
@@ -590,6 +593,7 @@ fn materialized_start_capture_basis_round_trips_and_rejects_unknown_modes() {
             capture.start_mode(),
             capture.retention_policy(),
         )),
+        source_transfer: None,
     };
 
     let encoded = encode_attempt_state(key, state);
@@ -610,6 +614,7 @@ fn materialized_start_capture_basis_round_trips_and_rejects_unknown_modes() {
             execute.retention(),
             execute.retention_policy(),
         )),
+        source_transfer: None,
     };
     let encoded_execute = encode_attempt_state(
         AttemptExecutionKey::new(execute.lineage(), execute.attempt()),
@@ -620,8 +625,11 @@ fn materialized_start_capture_basis_round_trips_and_rejects_unknown_modes() {
         .to_vec();
     let start_mode_tag = payload
         .len()
-        .checked_sub(2)
-        .expect("start mode precedes retention policy");
+        .checked_sub(3)
+        .expect("start mode precedes retention policy and source-transfer disposition");
+    // This exact fixture ends in Execute, disabled policy and no transfer.
+    // Bind all three tags before corrupting only the original start-mode field.
+    assert_eq!(&payload[start_mode_tag..], &[0, 0, 0]);
     payload[start_mode_tag] = 0xff;
     assert!(matches!(
         decode_attempt_state(&seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN)),
@@ -1206,7 +1214,7 @@ fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
 
 fn checkpoint(byte: u8) -> ExactCheckpointId {
     ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("checkpoint")

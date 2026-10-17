@@ -212,11 +212,26 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     let consumer_home = tmp.path().join("consumer-home");
     let profile_root = tmp.path().join("profiles");
     let registry_name = "cli-install-cache";
+    let release_key = maintainer_home.join(".config/apm/keys/cli-install-cache-release.key");
+    let key_output = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &["keys", "generate", "release", "--registry", registry_name],
+    )?;
+    let trust_key = extract_public_key(&key_output)?;
     run_apr_with_aos_root(
         &maintainer_home,
         &producer_aos_root,
-        &["create", registry_name],
+        &[
+            "create",
+            registry_name,
+            "--trust-key",
+            &trust_key,
+            "--key",
+            release_key.to_str().context("release key path utf-8")?,
+        ],
     )?;
+    let cache_key = prepare_signed_cache_fixture(tmp.path(), &consumer_aos_root, registry_name)?;
     let registry_dir = registry_dir(&maintainer_home, registry_name);
     configure_fixture_git_identity(&registry_dir)?;
     fs::create_dir_all(registry_dir.join("packages/f"))?;
@@ -251,16 +266,14 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             &cache_server.base_url(),
             "--priority",
             "37",
+            "--registry-key",
+            release_key.to_str().context("release key path utf-8")?,
+            "--key",
+            cache_key.to_str().context("cache key path utf-8")?,
         ],
     )?;
     assert_cache_entry_count(&cache_output, 2)?;
 
-    let release_key = maintainer_home.join(".config/apm/keys/cli-install-cache-release.key");
-    run_apr_with_aos_root(
-        &maintainer_home,
-        &producer_aos_root,
-        &["keys", "generate", "release", "--registry", registry_name],
-    )?;
     let upload_dir = tmp.path().join("origin-upload");
     run_apr_with_aos_root(
         &maintainer_home,
@@ -272,6 +285,8 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             registry_name,
             "--key",
             release_key.to_str().context("release key path utf-8")?,
+            "--cache-key",
+            cache_key.to_str().context("cache key path utf-8")?,
             "--cache-url",
             &cache_server.base_url(),
             "--upload-url",
@@ -384,6 +399,10 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             &cache_server.base_url(),
             "--priority",
             "37",
+            "--registry-key",
+            release_key.to_str().context("release key path utf-8")?,
+            "--key",
+            cache_key.to_str().context("cache key path utf-8")?,
         ],
     )?;
     run_apr_with_aos_root(
@@ -396,6 +415,8 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             registry_name,
             "--key",
             release_key.to_str().context("release key path utf-8")?,
+            "--cache-key",
+            cache_key.to_str().context("cache key path utf-8")?,
             "--cache-url",
             &cache_server.base_url(),
             "--upload-url",
@@ -605,6 +626,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     let consumer_home = tmp.path().join("consumer-home");
     let profile_root = tmp.path().join("profiles");
     let registry_name = "release-store-path-cache";
+    let cache_key = prepare_signed_cache_fixture(tmp.path(), &consumer_aos_root, registry_name)?;
 
     let key_output = run_apr_with_aos_root(
         &maintainer_home,
@@ -664,6 +686,8 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
             &cache_server.base_url(),
             "--cache-priority",
             "41",
+            "--cache-key",
+            cache_key.to_str().context("cache key path utf-8")?,
             "--channel",
             "stable",
             "--init-channel",
@@ -671,10 +695,6 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
             &upload_url,
         ],
     )?;
-    assert!(
-        release.contains("Committed: publish fixture-tool 1.0.0"),
-        "{release}",
-    );
     assert!(
         release.contains("Updated registry.toml [caches]"),
         "{release}",
@@ -694,6 +714,25 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     assert_cache_entry_count(&upload_dir, 3)?;
 
     let package_toml = fs::read_to_string(registry_dir.join("packages/f/fixture-tool.toml"))?;
+    let released_package = git_stdout(
+        &registry_dir,
+        &["show", "refs/tags/1.0.0:packages/f/fixture-tool.toml"],
+        "reading package from the committed release",
+    )?;
+    assert_eq!(released_package.trim_end(), package_toml.trim_end());
+    assert_eq!(
+        git_stdout(
+            &registry_dir,
+            &["rev-parse", "refs/tags/1.0.0^{commit}"],
+            "resolving released commit",
+        )?,
+        git_stdout(
+            &registry_dir,
+            &["rev-parse", "HEAD"],
+            "resolving registry head"
+        )?,
+        "the release tag must name the committed package and cache update",
+    );
     assert!(
         package_toml.contains(&format!("store_path = \"{}\"", fixture.tool_store_path)),
         "{package_toml}",
@@ -1431,10 +1470,56 @@ fn prepare_aos_root(aos_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Signs fixture narinfos and pins their public key only in the private store.
+fn prepare_signed_cache_fixture(
+    root: &Path,
+    consumer_aos_root: &Path,
+    name: &str,
+) -> Result<PathBuf> {
+    let private_key = root.join("cache-secret.key");
+    let public_key = root.join("cache-public.key");
+    let output = nix_store_command()?
+        .env_remove("LD_LIBRARY_PATH")
+        .arg("--generate-binary-cache-key")
+        .arg(name)
+        .arg(&private_key)
+        .arg(&public_key)
+        .output()
+        .context("generating fixture Nix cache key")?;
+    if !output.status.success() {
+        bail!(
+            "generating fixture Nix cache key failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    // The application must preserve signatures; the destination store owns
+    // trust policy. Keep signature enforcement enabled for this real import.
+    let config_dir = consumer_aos_root.join("etc/nix");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join("nix.conf"),
+        format!(
+            "require-sigs = true\ntrusted-public-keys = {}\n",
+            fs::read_to_string(public_key)?.trim(),
+        ),
+    )?;
+    Ok(private_key)
+}
+
 fn nix_command_env(aos_root: &Path) -> Vec<(&'static str, String)> {
     let store_dir = nix_store_dir(aos_root);
     vec![
         ("AOS_ROOT", aos_root.display().to_string()),
+        (
+            "NIX_CONF_DIR",
+            aos_root.join("etc/nix").display().to_string(),
+        ),
+        ("NIX_USER_CONF_FILES", String::new()),
+        (
+            "NIX_CONFIG",
+            "experimental-features = nix-command flakes".to_owned(),
+        ),
         ("AOS_NIX_STORE_DIR", store_dir.display().to_string()),
         ("NIX_STORE_DIR", store_dir.display().to_string()),
         (

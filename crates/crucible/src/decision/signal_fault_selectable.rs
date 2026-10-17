@@ -495,6 +495,43 @@ pub struct SignalFaultCampaignReplayPlan {
 }
 
 impl SignalFaultCampaignReplayPlan {
+    /// Copies the exact replay plan under the original artifact resource account.
+    ///
+    /// # Errors
+    /// Refuses unavailable original metadata authority, collection allocation
+    /// failure, or a retained configuration that fails canonical validation.
+    pub fn try_clone_admitted(&self) -> Result<Self, SignalFaultSelectableError> {
+        crate::owned_decode::charge_array::<SignalFaultCampaignBranch>(self.branches.len())
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        crate::owned_decode::charge_array::<crate::NetworkFaultCampaignBranch>(
+            self.network_branches.len(),
+        )
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        let mut branches = Vec::new();
+        branches
+            .try_reserve_exact(self.branches.len())
+            .map_err(|source| EngineError::ArtifactDecodeAdmission {
+                source: crate::owned_decode::DecodeAdmissionError::new(source),
+            })?;
+        for branch in &self.branches {
+            branches.push(branch.clone_admitted()?);
+        }
+        let mut network_branches = Vec::new();
+        network_branches
+            .try_reserve_exact(self.network_branches.len())
+            .map_err(|source| EngineError::ArtifactDecodeAdmission {
+                source: crate::owned_decode::DecodeAdmissionError::new(source),
+            })?;
+        for branch in &self.network_branches {
+            network_branches.push(branch.try_clone_admitted()?);
+        }
+        Ok(Self {
+            target: self.target.try_clone_admitted()?,
+            branches,
+            network_branches,
+        })
+    }
+
     /// Builds a bounded exact replay plan for `target`.
     ///
     /// # Errors
@@ -606,6 +643,31 @@ impl SignalFaultCampaignReplayPlan {
 }
 
 impl SignalFaultCampaignBranch {
+    fn clone_admitted(&self) -> Result<Self, EngineError> {
+        crate::owned_decode::charge_array::<Decision>(self.decisions.len())
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        let mut decisions = Vec::new();
+        decisions
+            .try_reserve_exact(self.decisions.len())
+            .map_err(|source| EngineError::ArtifactDecodeAdmission {
+                source: crate::owned_decode::DecodeAdmissionError::new(source),
+            })?;
+        for decision in &self.decisions {
+            decisions.push(decision.try_clone_admitted()?);
+        }
+        Ok(Self {
+            parent: self.parent.try_clone_admitted()?,
+            frontier: self.frontier,
+            choice: self.choice,
+            candidates_digest: self.candidates_digest,
+            candidate_count: self.candidate_count,
+            candidate_semantics: clone_candidate_semantics(&self.candidate_semantics)?,
+            selected_candidate: self.selected_candidate,
+            decisions,
+            selected: self.selected.try_clone_admitted()?,
+        })
+    }
+
     /// Returns the exact configuration before branch-prefix injection.
     #[must_use]
     pub const fn parent(&self) -> &Configuration {
@@ -710,9 +772,48 @@ impl SignalFaultCampaignBranch {
     }
 }
 
+fn clone_candidate_semantics(
+    semantics: &crate::model::BindingSearchCandidateSemantics,
+) -> Result<crate::model::BindingSearchCandidateSemantics, EngineError> {
+    use crate::model::BindingSearchCandidateSemantics;
+    let values = match semantics {
+        BindingSearchCandidateSemantics::Outcome => {
+            return Ok(BindingSearchCandidateSemantics::Outcome);
+        }
+        BindingSearchCandidateSemantics::Transition(values)
+        | BindingSearchCandidateSemantics::Parameter {
+            candidates: values, ..
+        } => values,
+    };
+    crate::owned_decode::charge_array::<crate::ContentHash>(values.len())
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    let mut copied = Vec::new();
+    copied.try_reserve_exact(values.len()).map_err(|source| {
+        EngineError::ArtifactDecodeAdmission {
+            source: crate::owned_decode::DecodeAdmissionError::new(source),
+        }
+    })?;
+    copied.extend_from_slice(values);
+    Ok(match semantics {
+        BindingSearchCandidateSemantics::Parameter { parameter, .. } => {
+            BindingSearchCandidateSemantics::Parameter {
+                parameter: *parameter,
+                candidates: copied,
+            }
+        }
+        BindingSearchCandidateSemantics::Transition(_) => {
+            BindingSearchCandidateSemantics::Transition(copied)
+        }
+        BindingSearchCandidateSemantics::Outcome => BindingSearchCandidateSemantics::Outcome,
+    })
+}
+
 /// Failure to normalize or replay one promoted signal-fault choice.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SignalFaultSelectableError {
+    /// Copying an authenticated network branch lost original resource custody.
+    #[error(transparent)]
+    NetworkReplayCopy(#[from] crate::NetworkFaultSelectableError),
     /// Appending a validated campaign decision exceeded the scenario model limit.
     #[error(transparent)]
     Configuration(#[from] EngineError),
@@ -734,7 +835,7 @@ pub enum SignalFaultSelectableError {
     /// Candidate decisions named different search identities or candidate sets.
     #[error("signal-fault search frontier mixes candidate bases")]
     MixedCandidateBasis,
-    /// Candidate tags did not preserve one homogeneous typed RFC-0014 domain.
+    /// Candidate tags did not preserve one homogeneous typed signal-fault domain.
     #[error("signal-fault search frontier mixes typed candidate semantics")]
     MixedCandidateSemantics,
     /// An index-only untyped candidate cannot be promoted as a typed choice.
@@ -1025,6 +1126,10 @@ mod tests {
         .expect("nested plan");
         assert_eq!(plan.target(), second.selected());
         assert_eq!(plan.branches(), &[first.clone(), second.clone()]);
+        let admitted = plan
+            .try_clone_admitted()
+            .unwrap_or_else(|error| panic!("copy exact nested replay plan: {error}"));
+        assert_eq!(admitted, plan);
         assert_eq!(
             SignalFaultCampaignReplayPlan::new(
                 second.selected().clone(),

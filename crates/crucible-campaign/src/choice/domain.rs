@@ -590,6 +590,17 @@ impl ChoiceDomain {
         encoder.finish()
     }
 
+    /// Returns the exact canonical byte length without allocating the body.
+    ///
+    /// # Errors
+    /// Refuses overflow or an encoded body exceeding the canonical format bound.
+    pub fn canonical_encoded_len(&self) -> Result<usize, CampaignCodecError> {
+        codec::encoded_length_with(|encoder| {
+            CHOICE_DOMAIN_SCHEMA_VERSION.encode(encoder);
+            self.encode(encoder);
+        })
+    }
+
     /// Decodes strict canonical bytes and validates all domain invariants.
     ///
     /// # Errors
@@ -738,6 +749,14 @@ pub enum ChoiceValue {
 }
 
 impl ChoiceValue {
+    /// Copies canonical group fields after original metadata admission.
+    ///
+    /// # Errors
+    /// Refuses exhausted original allocation authority or invalid canonical data.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        crate::codec::admitted_clone(self)
+    }
+
     /// Returns strict canonical value bytes for guest delivery and replay.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {

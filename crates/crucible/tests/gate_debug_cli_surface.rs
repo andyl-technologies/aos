@@ -2,7 +2,7 @@ use crucible::DebugCliSurfaceContract;
 
 #[test]
 fn debug_cli_surface_contract_covers_t_dbg_8_policy() {
-    let contract = DebugCliSurfaceContract::rfc0010();
+    let contract = DebugCliSurfaceContract::standard();
 
     assert!(contract.proves_t_dbg_8());
     assert!(contract.coordinate_flags.contains(&"--at"));
@@ -33,7 +33,7 @@ fn debug_cli_surface_contract_covers_t_dbg_8_policy() {
 
 #[test]
 fn debug_cli_surface_contract_rejects_symbol_server() {
-    let mut with_symbol_server = DebugCliSurfaceContract::rfc0010();
+    let mut with_symbol_server = DebugCliSurfaceContract::standard();
     with_symbol_server.symbol_resolution.crucible_symbol_server = true;
     assert!(
         !with_symbol_server

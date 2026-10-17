@@ -42,6 +42,7 @@ pub(super) async fn run_remote_guest_fork(
     node: crucible::NodeId,
 ) -> Result<(), CliError> {
     let client = remote_rpc_client(daemon, backend_plan)?;
+    admit_rpc_future(&client, async {
     let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
         .acquire_debug_controller(session, &acquisition)
@@ -76,6 +77,8 @@ pub(super) async fn run_remote_guest_fork(
         writable_branch.features.max_channels(),
     );
     Ok(())
+
+    })?.await
 }
 
 pub(super) async fn run_remote_debug_relay_async(
@@ -86,7 +89,10 @@ pub(super) async fn run_remote_debug_relay_async(
     gdb_listen: std::net::SocketAddr,
 ) -> Result<(), CliError> {
     let client = remote_rpc_client(daemon, backend_plan)?;
-    run_debug_relay_with_client_async(&client, session, node, gdb_listen).await
+    admit_rpc_future(&client, async {
+        run_debug_relay_with_client_async(&client, session, node, gdb_listen).await
+    })?
+    .await
 }
 
 /// Relays one authenticated debug session over a process-local GDB listener.
@@ -407,6 +413,7 @@ pub(super) async fn run_remote_guest_channel(
         None => None,
     };
     let client = remote_rpc_client(daemon, backend_plan)?;
+    admit_rpc_future(&client, async {
     let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
         .acquire_debug_controller(session, &acquisition)
@@ -689,6 +696,8 @@ pub(super) async fn run_remote_guest_channel(
     transcript_result?;
     release_result.map_err(control_client_error)?;
     Ok(())
+
+    })?.await
 }
 
 struct LocalTerminalMode {
@@ -757,7 +766,7 @@ fn local_terminal_size() -> Result<(u16, u16), CliError> {
     Ok((size.ws_col, size.ws_row))
 }
 
-pub(super) fn parse_debug_session_ref(value: &str) -> Result<SessionRef, CliError> {
+pub(crate) fn parse_debug_session_ref(value: &str) -> Result<SessionRef, CliError> {
     let mut fields = value.split(':');
     let id = parse_u64_value("--session id", fields.next().unwrap_or_default())?;
     let epoch = parse_u64_value("--session epoch", fields.next().unwrap_or_default())?;

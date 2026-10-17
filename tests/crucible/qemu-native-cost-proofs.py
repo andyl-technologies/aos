@@ -30,7 +30,12 @@ def reconstruct_baseline(args):
     manifest = json.loads(args.baseline_manifest.read_text())
     checked_reference(args.baseline_patch, manifest["patchSha256"])
     baseline_root = args.output_dir / "baseline-source"
-    for relative_path in manifest["files"]:
+    shared_declarations = manifest["sharedDeclarations"]
+    if set(shared_declarations) & set(manifest["files"]):
+        raise ValueError("shared declarations overlap historical body inputs")
+    if any(not path.endswith(".h") for path in shared_declarations):
+        raise ValueError("shared declarations must be public headers")
+    for relative_path in [*manifest["files"], *shared_declarations]:
         target = baseline_root / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(args.source_root / relative_path, target)
@@ -50,7 +55,12 @@ def reconstruct_baseline(args):
     reconstruction.check_returncode()
     for relative_path, expected_hash in manifest["files"].items():
         checked_reference(baseline_root / relative_path, expected_hash)
-    # Production declarations and compiler macros stay identical in both variants.
+    # Current API declarations are explicitly pinned separately from the
+    # historical body revision and stay identical in both variants.
+    for relative_path, expected_hash in shared_declarations.items():
+        checked_reference(args.source_root / relative_path, expected_hash)
+        checked_reference(baseline_root / relative_path, expected_hash)
+    # Unchanged historical declarations and compiler macros remain exact.
     for relative_path, expected_hash in manifest["files"].items():
         if relative_path.endswith(".h"):
             checked_reference(args.source_root / relative_path, expected_hash)
@@ -370,6 +380,7 @@ def main():
         "reference_revision": manifest["revision"],
         "reference_tree": manifest["tree"],
         "reference_files": manifest["files"],
+        "shared_declaration_files": manifest["sharedDeclarations"],
         "reference_reconstruction_patch_sha256": manifest["patchSha256"],
         "guest_execution": False,
     })

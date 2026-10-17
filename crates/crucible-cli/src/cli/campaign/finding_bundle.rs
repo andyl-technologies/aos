@@ -18,21 +18,28 @@ use std::sync::Arc;
 
 use crucible_campaign::{
     CampaignArchiveManifestId, CampaignArchivePolicy, CampaignClient, CampaignRepository,
-    CampaignSnapshotId, FindingId, MAX_ARCHIVE_INVENTORY_ENTRIES,
+    CampaignSnapshotId, FindingId,
 };
+use crucible_daemon::CampaignLocalServiceMode;
 use crucible_daemon::campaign_store_composition::{
-    DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement, ImmutableBlobBackend,
+    DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement,
 };
-use crucible_daemon::{CampaignLocalServiceMode, ExactCheckpointStore};
 use serde::Serialize;
 
-use super::authoring::{read_bounded_bytes, write_new_bundle, write_new_record};
+use super::authoring::{read_bounded_bytes, write_new_bundle_with_boundary, write_new_record};
 use super::replay::{CampaignReplayReport, render_campaign_replay, replay_finding_object};
 use super::*;
+
+#[path = "finding_bundle/admission.rs"]
+mod admission;
+use admission::ArchiveBundleAdmission;
 
 #[path = "finding_bundle/exact.rs"]
 mod exact;
 use exact::{ExactFindingReplayReport, replay_exact_finding};
+#[path = "finding_bundle/source_authentication.rs"]
+mod source_authentication;
+pub(crate) use source_authentication::FindingSourceAuthentication;
 #[path = "finding_bundle/midpoint.rs"]
 mod midpoint;
 pub(crate) use midpoint::run_finding_bundle_midpoint;
@@ -48,9 +55,31 @@ use minimization::{FindingBundleMinimizationReport, finding_bundle_minimization_
 
 const MANIFEST_HEADER: &str = "crucible.campaign.finding-bundle.v2";
 const MAX_LEDGER_BYTES: usize = 1024 * 1024 * 1024;
-// One loose object contributes at most four path components; the margin
-// covers archive metadata and directory administration entries.
-const MAX_ARCHIVE_TREE_ENTRIES: usize = MAX_ARCHIVE_INVENTORY_ENTRIES.saturating_mul(5) + 1024;
+const MAX_ARCHIVE_DIRECTORY_DEPTH: usize = 8;
+const MAX_ARCHIVE_DIRECTORIES: u64 = 4096;
+
+#[derive(Clone, Copy)]
+struct ArchivePhysicalLimits {
+    files: u64,
+    bytes: u64,
+    directories: u64,
+    depth: usize,
+}
+
+impl Default for ArchivePhysicalLimits {
+    fn default() -> Self {
+        Self {
+            // Physical RAM descendants are separate from the compact archive
+            // inventory. This is the same finite graph bound used by marking.
+            files: crucible_campaign::MAX_CAMPAIGN_CLOSURE_OBJECTS as u64 + 1024,
+            bytes: crucible_daemon::campaign_store_composition::CampaignArchiveRamLimits::default()
+                .maximum_io_bytes,
+            directories: MAX_ARCHIVE_DIRECTORIES,
+            depth: MAX_ARCHIVE_DIRECTORY_DEPTH,
+        }
+    }
+}
+
 const LOCAL_EXPORT_ENDPOINT: &str = "/tmp/crucible-finding-bundle-export.sock";
 
 #[derive(Serialize)]
@@ -84,6 +113,17 @@ struct AuthenticatedFindingBundle {
     evidence: crate::cli_report::CampaignTriageFindingEvidence,
 }
 
+fn retain_materialized_guest_assets(
+    assets: crucible_daemon::MaterializedFindingReplayGuestAssets,
+) -> Result<Arc<crucible_daemon::MaterializedFindingReplayGuestAssets>, CliError> {
+    let bytes = std::mem::size_of::<crucible_daemon::MaterializedFindingReplayGuestAssets>()
+        + 2 * std::mem::size_of::<usize>();
+    crucible_session::engine::owned_decode::charge_bytes(bytes as u64).map_err(|error| {
+        backend_error(format!("finding asset custody admission failed: {error}"))
+    })?;
+    Ok(Arc::new(assets))
+}
+
 /// Verifies an exported finding's native signature and pure model reproduction.
 ///
 /// This command consumes only the bundle directory. The temporary DAG store is
@@ -99,7 +139,29 @@ pub(crate) fn verify_exported_finding(
     args: &CampaignFindingBundleVerifyArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
-    let bundle = load_authenticated_bundle(&args.input)?;
+    let admission = ArchiveBundleAdmission::open(
+        args.archive_policy.as_deref(),
+        crucible_api::host_operational::HostOperationClass::Preparation,
+        None,
+        Some(&args.input),
+        None,
+    )?;
+    let input = admission.input_path(&args.input);
+    let source = args
+        .exact
+        .then(|| FindingSourceAuthentication::open(cli, input))
+        .transpose()?;
+    let _scope = source.as_ref().map(|source| source.decoding.enter());
+    let _archive_scope = admission.input_scope()?;
+    let bundle = match &source {
+        Some(source) => load_authenticated_bundle_in_workspace(
+            input,
+            &source.workspace,
+            &admission,
+            &mut || admission.boundary(),
+        )?,
+        None => load_authenticated_bundle(input, &admission)?,
+    };
     let finding = &bundle.evidence;
     let finding_id = finding
         .finding
@@ -120,11 +182,10 @@ pub(crate) fn verify_exported_finding(
         minimized,
         reproduction,
     )?;
-    let exact_replay = args
-        .exact
-        .then(|| {
+    let exact_replay = source
+        .map(|source| {
             replay_exact_finding(
-                cli,
+                source,
                 &bundle.archive,
                 bundle.archive_id,
                 finding_id,
@@ -141,11 +202,40 @@ pub(crate) fn verify_exported_finding(
         minimization: finding_bundle_minimization_report(finding)?,
         exact_replay,
     };
+    admission.complete()?;
     render_verification(&report, format)
 }
 
-fn load_authenticated_bundle(input: &Path) -> Result<AuthenticatedFindingBundle, CliError> {
-    validate_bundle_entries(input)?;
+fn load_authenticated_bundle(
+    input: &Path,
+    admission: &ArchiveBundleAdmission,
+) -> Result<AuthenticatedFindingBundle, CliError> {
+    load_authenticated_bundle_with_boundary(input, admission, &mut || admission.boundary())
+}
+
+fn load_authenticated_bundle_with_boundary(
+    input: &Path,
+    admission: &ArchiveBundleAdmission,
+    boundary: &mut dyn FnMut() -> Result<
+        (),
+        crucible_daemon::campaign_store_composition::CampaignArchiveBoundaryError,
+    >,
+) -> Result<AuthenticatedFindingBundle, CliError> {
+    let temporary = private_bundle_tempdir()?;
+    load_authenticated_bundle_in_workspace(input, temporary.path(), admission, boundary)
+}
+
+fn load_authenticated_bundle_in_workspace(
+    input: &Path,
+    workspace: &Path,
+    admission: &ArchiveBundleAdmission,
+    boundary: &mut dyn FnMut() -> Result<
+        (),
+        crucible_daemon::campaign_store_composition::CampaignArchiveBoundaryError,
+    >,
+) -> Result<AuthenticatedFindingBundle, CliError> {
+    boundary().map_err(|source| CliError::CampaignArchive(source.into()))?;
+    validate_bundle_entries_with_boundary(input, boundary)?;
     let manifest = read_bounded_bytes(&input.join("manifest"), "finding bundle manifest", 512)?;
     let archive_id = parse_manifest(&manifest)?;
     let bytes = read_bounded_bytes(
@@ -155,8 +245,7 @@ fn load_authenticated_bundle(input: &Path) -> Result<AuthenticatedFindingBundle,
     )?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| usage_error("finding bundle ledger is not valid UTF-8"))?;
-    let temporary = private_bundle_tempdir()?;
-    let store = crucible::LocalDagStore::new(temporary.path().join("evidence"));
+    let store = crucible::LocalDagStore::new(workspace.join("evidence"));
     let mut loaded =
         crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
             &store, &bytes, text,
@@ -170,18 +259,18 @@ fn load_authenticated_bundle(input: &Path) -> Result<AuthenticatedFindingBundle,
         .finding
         .id()
         .map_err(|error| backend_error(format!("verified finding identity is invalid: {error}")))?;
-    let archive = archive_repository(&input.join("archive"));
+    let archive = admission.input_repository(&input.join("archive"))?;
     let inspection = archive
-        .inspect_campaign_archive(archive_id)
-        .map_err(|error| backend_error(format!("finding archive is invalid: {error}")))?;
+        .inspect_campaign_archive_with_boundary(archive_id, boundary)
+        .map_err(CliError::CampaignArchive)?;
     if inspection.manifest().source_snapshot() != finding.snapshot {
         return Err(backend_error(
             "finding ledger and archive snapshot disagree",
         ));
     }
     let archived_finding = archive
-        .inspect_archived_finding(archive_id, finding_id)
-        .map_err(|error| backend_error(format!("finding archive lacks finding: {error}")))?;
+        .inspect_archived_finding_with_boundary(archive_id, finding_id, boundary)
+        .map_err(CliError::CampaignArchive)?;
     if archived_finding != finding.finding {
         return Err(backend_error("finding ledger and archive record disagree"));
     }
@@ -215,19 +304,19 @@ pub(crate) fn export_finding_bundle(
     args: &CampaignFindingBundleExportArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
+    let supervision = ArchiveBundleAdmission::open(
+        args.archive_policy.as_deref(),
+        crucible_api::host_operational::HostOperationClass::Transfer,
+        Some(args.host_transfer_timeout_ms),
+        None,
+        Some(&args.output),
+    )?;
+    let mut boundary = || supervision.boundary();
     let campaign = campaign_name(&args.name)?;
     let snapshot = CampaignSnapshotId::parse(&args.snapshot)
         .map_err(|error| usage_error(format!("invalid finding bundle snapshot: {error}")))?;
     let finding = FindingId::parse(&args.finding)
         .map_err(|error| usage_error(format!("invalid finding bundle finding: {error}")))?;
-    let source_graph =
-        super::super::cli_campaign_store::load_campaign_store_graph(&args.source_store)?;
-    let source_checkpoint_backend: Arc<dyn ImmutableBlobBackend> = source_graph;
-    let checkpoints =
-        ExactCheckpointStore::new(source_checkpoint_backend, args.maximum_checkpoint_bytes)
-            .map_err(|error| {
-                backend_error(format!("source checkpoint store is invalid: {error}"))
-            })?;
     let source = super::archive::prepare_owner(
         &args.source_state,
         &args.source_policy,
@@ -235,17 +324,21 @@ pub(crate) fn export_finding_bundle(
         LOCAL_EXPORT_ENDPOINT,
         CampaignLocalServiceMode::ReadWrite,
     )?;
+    let checkpoints = source
+        .exact_checkpoint_store(args.maximum_checkpoint_bytes)
+        .map_err(|error| backend_error(format!("source checkpoint store is invalid: {error}")))?;
     let mut exact_pins = super::archive::open_exact_pins(&args.source_state)?;
     let plan = source
-        .plan_campaign_archive_with_exact_pins(
+        .plan_campaign_archive_with_exact_pins_with_boundary(
             campaign.clone(),
             snapshot,
             CampaignArchivePolicy::Executable,
             [],
-            &checkpoints,
-            &mut exact_pins,
+            (&checkpoints, &mut exact_pins),
+            &mut boundary,
         )
-        .map_err(|error| backend_error(format!("finding archive planning failed: {error}")))?;
+        .map_err(CliError::ArchiveTransfer)?;
+    supervision.require_output(&plan)?;
     let principal = source.campaign_export_principal().map_err(|error| {
         backend_error(format!("local finding principal is unauthorized: {error}"))
     })?;
@@ -272,30 +365,40 @@ pub(crate) fn export_finding_bundle(
         "{MANIFEST_HEADER}\narchive_manifest={}\n",
         plan.manifest_id()
     );
-    let (output, ()) = write_new_bundle(&args.output, "finding bundle", |staged, _| {
-        std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o700))
-            .map_err(CliError::Io)?;
-        let archive = archive_repository(&staged.join("archive"));
-        source
-            .export_campaign_archive_to_repository(
-                &plan,
-                &archive,
-                DurabilityRequirement::new(1, false).map_err(|error| {
-                    backend_error(format!("private archive durability is invalid: {error}"))
-                })?,
-            )
-            .map_err(|error| backend_error(format!("finding archive transfer failed: {error}")))?;
-        archive
-            .inspect_archived_finding(plan.manifest_id(), finding)
-            .map_err(|error| backend_error(format!("transferred finding is invalid: {error}")))?;
-        write_new_record(
-            &staged.join("manifest"),
-            "finding bundle manifest",
-            manifest.as_bytes(),
-        )?;
-        write_new_record(&staged.join("ledger"), "finding bundle ledger", &ledger)?;
-        Ok(())
-    })?;
+    let mut publication_boundary = || supervision.publication_boundary();
+    let (output, ()) = write_new_bundle_with_boundary(
+        &args.output,
+        "finding bundle",
+        |staged, _| {
+            supervision.prepare_output_directory(staged)?;
+            std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o700))
+                .map_err(CliError::Io)?;
+            let archive = supervision.output_repository(&staged.join("archive"))?;
+            source
+                .export_campaign_archive_to_repository_with_boundary(
+                    &plan,
+                    &archive,
+                    DurabilityRequirement::new(1, false).map_err(|error| {
+                        backend_error(format!("private archive durability is invalid: {error}"))
+                    })?,
+                    supervision.output_original(),
+                    &mut boundary,
+                )
+                .map_err(CliError::CampaignArchive)?;
+            archive
+                .inspect_archived_finding_with_boundary(plan.manifest_id(), finding, &mut boundary)
+                .map_err(CliError::CampaignArchive)?;
+            write_new_record(
+                &staged.join("manifest"),
+                "finding bundle manifest",
+                manifest.as_bytes(),
+            )?;
+            write_new_record(&staged.join("ledger"), "finding bundle ledger", &ledger)?;
+            Ok(())
+        },
+        &mut publication_boundary,
+    )?;
+    supervision.complete()?;
 
     let report = FindingBundleExportReport {
         schema: "crucible.cli.campaign-finding-bundle-export.v2",
@@ -311,11 +414,20 @@ pub(crate) fn export_finding_bundle(
     render_export(&report, format)
 }
 
-fn validate_bundle_entries(directory: &Path) -> Result<(), CliError> {
+fn validate_bundle_entries_with_boundary(
+    directory: &Path,
+    boundary: &mut dyn FnMut() -> Result<
+        (),
+        crucible_daemon::campaign_store_composition::CampaignArchiveBoundaryError,
+    >,
+) -> Result<(), CliError> {
     let allowed = BTreeSet::from(["manifest", "ledger", "archive"]);
     let entries = std::fs::read_dir(directory).map_err(CliError::Io)?;
     let mut found = BTreeSet::new();
     for entry in entries {
+        boundary().map_err(|error| {
+            backend_error(format!("finding bundle inspection canceled: {error}"))
+        })?;
         let entry = entry.map_err(CliError::Io)?;
         let name = entry.file_name();
         let name = name
@@ -334,30 +446,64 @@ fn validate_bundle_entries(directory: &Path) -> Result<(), CliError> {
     if found != allowed.into_iter().map(str::to_owned).collect() {
         return Err(usage_error("finding bundle is incomplete"));
     }
-    validate_archive_tree(&directory.join("archive"))?;
+    validate_archive_tree_with_limits(
+        &directory.join("archive"),
+        ArchivePhysicalLimits::default(),
+        boundary,
+    )?;
     Ok(())
 }
 
-fn validate_archive_tree(root: &Path) -> Result<(), CliError> {
-    let mut pending = vec![root.to_path_buf()];
-    let mut entries_seen = 0_usize;
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(directory).map_err(CliError::Io)? {
-            let entry = entry.map_err(CliError::Io)?;
-            entries_seen += 1;
-            if entries_seen > MAX_ARCHIVE_TREE_ENTRIES {
+fn validate_archive_tree_with_limits(
+    root: &Path,
+    limits: ArchivePhysicalLimits,
+    boundary: &mut dyn FnMut() -> Result<
+        (),
+        crucible_daemon::campaign_store_composition::CampaignArchiveBoundaryError,
+    >,
+) -> Result<(), CliError> {
+    let mut stack = vec![std::fs::read_dir(root).map_err(CliError::Io)?];
+    let mut files = 0_u64;
+    let mut bytes = 0_u64;
+    let mut directories = 0_u64;
+    while let Some(entries) = stack.last_mut() {
+        boundary().map_err(|error| {
+            backend_error(format!("finding bundle tree inspection canceled: {error}"))
+        })?;
+        let Some(entry) = entries.next() else {
+            stack.pop();
+            continue;
+        };
+        let entry = entry.map_err(CliError::Io)?;
+        let metadata = std::fs::symlink_metadata(entry.path()).map_err(CliError::Io)?;
+        if metadata.is_dir() {
+            directories = directories
+                .checked_add(1)
+                .ok_or_else(|| usage_error("finding bundle directory count overflowed"))?;
+            if directories > limits.directories || stack.len() >= limits.depth {
                 return Err(usage_error(
-                    "finding bundle archive tree exceeds its entry limit",
+                    "finding bundle archive exceeds its directory/depth bound",
                 ));
             }
-            let kind = entry.file_type().map_err(CliError::Io)?;
-            if kind.is_dir() {
-                pending.push(entry.path());
-            } else if !kind.is_file() {
+            // One iterator per ancestor bounds discovery memory independently
+            // of directory fanout and the number of RAM page objects.
+            stack.push(std::fs::read_dir(entry.path()).map_err(CliError::Io)?);
+        } else if metadata.is_file() {
+            files = files
+                .checked_add(1)
+                .ok_or_else(|| usage_error("finding bundle file count overflowed"))?;
+            bytes = bytes
+                .checked_add(metadata.len())
+                .ok_or_else(|| usage_error("finding bundle byte count overflowed"))?;
+            if files > limits.files || bytes > limits.bytes {
                 return Err(usage_error(
-                    "finding bundle archive contains a symlink or special file",
+                    "finding bundle archive exceeds its physical object/byte budget",
                 ));
             }
+        } else {
+            return Err(usage_error(
+                "finding bundle archive contains a symlink or special file",
+            ));
         }
     }
     Ok(())
@@ -375,13 +521,17 @@ fn parse_manifest(bytes: &[u8]) -> Result<CampaignArchiveManifestId, CliError> {
         .map_err(|error| usage_error(format!("invalid finding archive identity: {error}")))
 }
 
-fn archive_repository(root: &Path) -> CampaignRepository {
+fn archive_repository(
+    root: &Path,
+    admission: crucible_campaign::CampaignRamAdmission,
+) -> CampaignRepository {
     CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
             "finding-bundle",
             root.join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(root.join("refs"))),
+        admission,
     )
 }
 
@@ -475,6 +625,94 @@ fn render_verification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn physical_limits() -> ArchivePhysicalLimits {
+        ArchivePhysicalLimits {
+            files: 16,
+            bytes: 128,
+            directories: 4,
+            depth: 4,
+        }
+    }
+
+    #[test]
+    fn physical_ram_objects_have_an_independent_finite_admission_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let defaults = ArchivePhysicalLimits::default();
+        assert!(defaults.files > crucible_campaign::MAX_ARCHIVE_INVENTORY_ENTRIES as u64);
+        assert_eq!(defaults.depth, 8);
+        assert_eq!(defaults.directories, 4096);
+
+        let directory = tempfile::tempdir()?;
+        for index in 0..16 {
+            std::fs::write(directory.path().join(index.to_string()), [index])?;
+        }
+        validate_archive_tree_with_limits(directory.path(), physical_limits(), &mut || Ok(()))?;
+
+        let mut limits = physical_limits();
+        limits.files = 15;
+        assert!(
+            validate_archive_tree_with_limits(directory.path(), limits, &mut || Ok(())).is_err()
+        );
+        limits.files = 16;
+        limits.bytes = 15;
+        assert!(
+            validate_archive_tree_with_limits(directory.path(), limits, &mut || Ok(())).is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn directory_discovery_refuses_excess_depth_fanout_and_symlinks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir_all(directory.path().join("one/two"))?;
+        std::fs::create_dir(directory.path().join("three"))?;
+
+        let mut limits = physical_limits();
+        limits.directories = 2;
+        assert!(
+            validate_archive_tree_with_limits(directory.path(), limits, &mut || Ok(())).is_err()
+        );
+        limits.directories = 4;
+        limits.depth = 2;
+        assert!(
+            validate_archive_tree_with_limits(directory.path(), limits, &mut || Ok(())).is_err()
+        );
+
+        std::os::unix::fs::symlink("one", directory.path().join("link"))?;
+        assert!(
+            validate_archive_tree_with_limits(directory.path(), physical_limits(), &mut || Ok(()))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn physical_archive_inspection_observes_the_original_cancellation_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        for index in 0..16 {
+            std::fs::write(directory.path().join(index.to_string()), [])?;
+        }
+        let mut polls = 0;
+        let result = validate_archive_tree_with_limits(
+            directory.path(),
+            physical_limits(),
+            &mut || {
+                polls += 1;
+                if polls == 3 {
+                    Err(crucible_daemon::campaign_store_composition::CampaignArchiveBoundaryError::Canceled)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(polls, 3);
+        Ok(())
+    }
 
     #[test]
     fn bundle_manifest_accepts_only_current_executable_archive_format() {

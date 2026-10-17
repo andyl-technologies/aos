@@ -114,6 +114,44 @@ impl QmpClient<UnixStream> {
             .map_err(|source| QmpError::from_io("connect QMP Unix socket", source))?;
         Self::connect_with_policies(stream, job_poll_policy, io_timeout_policy)
     }
+    /// Connects with target operational authority installed before the greeting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when socket connection, live supervision, greeting
+    /// validation, or capability negotiation fails.
+    pub fn connect_unix_socket_supervised_with_policies(
+        path: impl AsRef<Path>,
+        job_poll_policy: QmpJobPollPolicy,
+        io_timeout_policy: QmpIoTimeoutPolicy,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<Self, QmpError> {
+        let admission = supervisor
+            .begin(crucible_linux_resource::host_supervision::HostOperationClass::Preparation)
+            .map_err(|source| QmpError::OperationalSupervision {
+                operation: "connect QMP Unix socket",
+                message: source.to_string(),
+            })?;
+        #[cfg(target_os = "linux")]
+        let stream = crate::unix_socket_path::connect_supervised(path.as_ref(), &admission)?;
+        #[cfg(not(target_os = "linux"))]
+        let stream = {
+            let _unused = path;
+            return Err(QmpError::from_io(
+                "connect QMP Unix socket",
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "supervised local socket admission requires Linux",
+                ),
+            ));
+        };
+        Self::connect_supervised_with_policies(
+            stream,
+            job_poll_policy,
+            io_timeout_policy,
+            supervisor,
+        )
+    }
 }
 
 impl QemuQmpVmStateControlChannel<UnixStream> {
@@ -140,5 +178,25 @@ impl QemuQmpVmStateControlChannel<UnixStream> {
     ) -> Result<Self, QmpError> {
         QmpClient::connect_unix_socket_with_policies(path, job_poll_policy, io_timeout_policy)
             .map(Self::new)
+    }
+    /// Connects with target operational authority installed before the greeting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when socket connection, live supervision, greeting
+    /// validation, or capability negotiation fails.
+    pub fn connect_unix_socket_supervised_with_policies(
+        path: impl AsRef<Path>,
+        job_poll_policy: QmpJobPollPolicy,
+        io_timeout_policy: QmpIoTimeoutPolicy,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<Self, QmpError> {
+        QmpClient::connect_unix_socket_supervised_with_policies(
+            path,
+            job_poll_policy,
+            io_timeout_policy,
+            supervisor,
+        )
+        .map(Self::new)
     }
 }

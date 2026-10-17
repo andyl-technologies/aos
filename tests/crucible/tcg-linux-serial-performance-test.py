@@ -28,7 +28,7 @@ def sample(command):
     payload = bytearray(40)
     payload[:12] = b"CRUCSPQ2\x02\x00\x28\x00"
     payload[32:40] = (100).to_bytes(8, "little")
-    return {
+    value = {
         "mode": command[1], "milestone": runner.MILESTONE, "milestone_count": 1,
         "qemu": command[2], "plugin": None if command[3] == "-" else command[3],
         "cpu": int(command[7]),
@@ -46,6 +46,23 @@ def sample(command):
         "coverage": "off", "fingerprint": "off", "whitebox": "on", "ram_mib": 256,
         "kernel": command[4], "initrd": command[5],
     }
+    if command[1] == "sim":
+        value.update(
+            schema="crucible.managed-tcg-performance.v1", workload="linux",
+            managed_owner=True, accepted_assignment=True, native_cleanup=True,
+            fingerprint_requests_after_measurement=True, component_failures=0,
+            serial_receipt_roi_seconds=None,
+            ram_prefix_hex="00" * 8, record_hex="00" * 16, sim_saved_registers_hex="00" * 8,
+            request={"sequence": 2, "selectable_id": "flight.ready", "instance_key": "boot",
+                     "raw_icount": 100, "logical_tick": 700},
+            canonical_execution_fingerprint="11" * 32,
+            canonical_ram_blake3="22" * 32,
+            canonical_register_blake3="33" * 32,
+            canonical_device_blake3="44" * 32,
+            serial_hex=b"\nCRUCIBLE_TCG_BOOT_READY_V1\n".hex(),
+        )
+    return value
+
 
 
 class TrialAdmission(unittest.TestCase):
@@ -106,7 +123,7 @@ class TrialAdmission(unittest.TestCase):
             calls += 1
             value = sample(command)
             if calls == 2:
-                value["ram_sha256"] = "11" * 32
+                value["canonical_ram_blake3"] = "55" * 32
             return subprocess.CompletedProcess(command, 0, json.dumps(value), "")
         result, error, count = self.invoke([("sim", "sim")], 3, execute, True)
         self.assertIsInstance(error, AssertionError)

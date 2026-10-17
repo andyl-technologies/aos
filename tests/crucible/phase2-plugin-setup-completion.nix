@@ -12,7 +12,11 @@
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
-  protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  protocol = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-protocol/src/lib.rs
+    ../../crates/crucible-protocol/src/plugin_observation.rs
+    ../../crates/crucible-protocol/src/control_lifecycle.rs
+  ]);
   # The setup-region mmap surface was split out of lib.rs into
   # mapped_setup_region.rs; scan both so the needles survive file moves.
   shmem =

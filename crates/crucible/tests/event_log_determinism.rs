@@ -34,6 +34,7 @@ fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEv
             value,
         })),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -42,6 +43,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn diagnostic_entry(
@@ -56,10 +58,14 @@ fn diagnostic_entry(
         time(ticks),
         SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(name, level, details)),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 #[test]
 fn causal_projection_renumbers_past_observational_interleaving() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let expected = vec![
         rng_entry(0, 1, "causal-projection-a", 11),
         rng_entry(1, 2, "causal-projection-b", 17),
@@ -71,7 +77,8 @@ fn causal_projection_renumbers_past_observational_interleaving() {
         rng_entry(3, 2, "causal-projection-b", 17),
     ];
 
-    let comparison = compare_event_log_determinism(&expected, &reproduced);
+    let comparison = compare_event_log_determinism(&expected, &reproduced)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert_ne!(expected, reproduced);
     assert!(comparison.passes());
@@ -110,6 +117,9 @@ fn causal_projection_renumbers_past_observational_interleaving() {
 
 #[test]
 fn causal_projection_bytes_differ_on_first_causal_payload_change() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let expected = vec![
         rng_entry(0, 1, "causal-projection-diff", 11),
         boundary_entry(1, 2),
@@ -119,7 +129,8 @@ fn causal_projection_bytes_differ_on_first_causal_payload_change() {
         boundary_entry(1, 2),
     ];
 
-    let comparison = compare_event_log_determinism(&expected, &reproduced);
+    let comparison = compare_event_log_determinism(&expected, &reproduced)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let mismatch = comparison
         .mismatch()
         .expect("different causal payload should produce a mismatch");
@@ -140,6 +151,9 @@ fn causal_projection_bytes_differ_on_first_causal_payload_change() {
 
 #[test]
 fn causal_mismatch_reports_first_differing_entry_coordinate() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let expected = vec![
         diagnostic_entry(0, 8, "before", EventLevel::Debug, BTreeMap::new()),
         rng_entry(1, 9, "node-local-random", 31),
@@ -151,7 +165,8 @@ fn causal_mismatch_reports_first_differing_entry_coordinate() {
         boundary_entry(2, 10),
     ];
 
-    let comparison = compare_event_log_determinism(&expected, &reproduced);
+    let comparison = compare_event_log_determinism(&expected, &reproduced)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let mismatch = comparison
         .mismatch()
         .expect("causal payload change should produce a mismatch");
@@ -180,6 +195,9 @@ fn causal_mismatch_reports_first_differing_entry_coordinate() {
 
 #[test]
 fn observational_verbosity_changes_do_not_change_causal_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut quiet_details = BTreeMap::new();
     quiet_details.insert(String::from("polls"), EventAttributeValue::U64(1));
     let mut verbose_details = BTreeMap::new();
@@ -200,8 +218,10 @@ fn observational_verbosity_changes_do_not_change_causal_projection() {
         diagnostic_entry(3, 5, "tracing.bridge", EventLevel::Error, BTreeMap::new()),
     ];
 
-    let quiet_projection = event_log_causal_projection(&quiet);
-    let verbose_projection = event_log_causal_projection(&verbose);
+    let quiet_projection = event_log_causal_projection(&quiet)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
+    let verbose_projection = event_log_causal_projection(&verbose)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert_eq!(quiet_projection.len(), 2);
     assert_eq!(verbose_projection.len(), 2);
@@ -209,11 +229,18 @@ fn observational_verbosity_changes_do_not_change_causal_projection() {
         quiet_projection.canonical_bytes(),
         verbose_projection.canonical_bytes()
     );
-    assert!(compare_event_log_determinism(&quiet, &verbose).passes());
+    assert!(
+        compare_event_log_determinism(&quiet, &verbose)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .passes()
+    );
 }
 
 #[test]
 fn replay_oracle_rejects_fat_checkpoint_with_inconsistent_event_log_offset() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new())
         .unwrap_or_else(|error| panic!("build empty replay-oracle world: {error}"));
     let scenario = world.scenario_def();

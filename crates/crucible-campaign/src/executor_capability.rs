@@ -4,8 +4,8 @@
 //! daemon-epoch-scoped availability:
 //!
 //! ```text
-//! ExecutorDescriptionV1 = version | daemon_epoch | immutable_capabilities
-//! ExecutorCapacityReportV1 = version | daemon_epoch | capability_digest |
+//! ExecutorDescriptionV2 = version | daemon_epoch | immutable_capabilities
+//! ExecutorCapacityReportV2 = version | daemon_epoch | capability_digest |
 //!                            sequence | available_slots | available_resources |
 //!                            materialization_locality
 //! ```
@@ -19,7 +19,11 @@ use crate::{
     ExecutorCompatibilityProfile, ExecutorService, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
 };
 
-const EXECUTOR_CAPABILITY_SCHEMA_VERSION: u32 = 1;
+mod resources;
+
+pub use resources::{ExecutorHostResources, ExecutorResourceBounds};
+
+const EXECUTOR_CAPABILITY_SCHEMA_VERSION: u32 = 2;
 const MAX_QEMU_PROFILES: usize = 32;
 const MAX_STORE_NAMESPACES: usize = 64;
 const MAX_MATERIALIZATION_LOCALITIES: usize = 64;
@@ -113,7 +117,7 @@ pub struct ExecutorCapabilitySet {
     qemu_profiles: BTreeSet<String>,
     materialization: BTreeSet<ExecutorMaterializationCapability>,
     maximum_slots: u32,
-    resource_ceiling: AttemptResourceLimits,
+    resource_bounds: ExecutorResourceBounds,
     store_namespaces: BTreeSet<CampaignHash>,
 }
 
@@ -131,7 +135,7 @@ impl ExecutorCapabilitySet {
         qemu_profiles: BTreeSet<String>,
         materialization: BTreeSet<ExecutorMaterializationCapability>,
         maximum_slots: u32,
-        resource_ceiling: AttemptResourceLimits,
+        resource_bounds: ExecutorResourceBounds,
         store_namespaces: BTreeSet<CampaignHash>,
     ) -> Result<Self, CampaignCodecError> {
         let host_architecture = host_architecture.into();
@@ -165,7 +169,7 @@ impl ExecutorCapabilitySet {
             qemu_profiles,
             materialization,
             maximum_slots,
-            resource_ceiling,
+            resource_bounds,
             store_namespaces,
         };
         codec::ensure_encoded_size(
@@ -206,10 +210,22 @@ impl ExecutorCapabilitySet {
         self.maximum_slots
     }
 
-    /// Returns the maximum resources accepted for one attempt.
+    /// Returns the complete aggregate host capacity shared by all assignments.
     #[must_use]
-    pub const fn resource_ceiling(&self) -> AttemptResourceLimits {
-        self.resource_ceiling
+    pub const fn aggregate_resources(&self) -> ExecutorHostResources {
+        self.resource_bounds.aggregate()
+    }
+
+    /// Returns the conservative complete host reservation for one assignment.
+    #[must_use]
+    pub const fn assignment_resources(&self) -> ExecutorHostResources {
+        self.resource_bounds.assignment()
+    }
+
+    /// Returns the original attempt request ceilings and modeled execution-quanta bound.
+    #[must_use]
+    pub const fn assignment_limits(&self) -> AttemptResourceLimits {
+        self.resource_bounds.attempt_limits()
     }
 
     /// Returns the reachable immutable-store namespaces.
@@ -221,7 +237,7 @@ impl ExecutorCapabilitySet {
     /// Returns the domain-separated digest bound into volatile reports.
     #[must_use]
     pub fn digest(&self) -> CampaignHash {
-        CampaignHash::derive("crucible.executor-capability-set.v1", &codec::encode(self))
+        CampaignHash::derive("crucible.executor-capability-set.v2", &codec::encode(self))
     }
 }
 
@@ -232,7 +248,7 @@ impl Canonical for ExecutorCapabilitySet {
         self.qemu_profiles.encode(encoder);
         self.materialization.encode(encoder);
         self.maximum_slots.encode(encoder);
-        self.resource_ceiling.encode(encoder);
+        self.resource_bounds.encode(encoder);
         self.store_namespaces.encode(encoder);
     }
 
@@ -243,7 +259,7 @@ impl Canonical for ExecutorCapabilitySet {
             decoder.set_bounded(MAX_QEMU_PROFILES, "executor-qemu-profile-count")?,
             decoder.set_bounded(3, "executor-materialization-capability-count")?,
             u32::decode(decoder)?,
-            AttemptResourceLimits::decode(decoder)?,
+            ExecutorResourceBounds::decode(decoder)?,
             decoder.set_bounded(MAX_STORE_NAMESPACES, "executor-store-namespace-count")?,
         )
     }
@@ -385,9 +401,7 @@ pub struct ExecutorCapacityReport {
     capability_digest: CampaignHash,
     sequence: u64,
     available_slots: u32,
-    available_vcpus: u32,
-    available_resident_bytes: u64,
-    available_disk_bytes: u64,
+    available_resources: ExecutorHostResources,
     materialization_locality: BTreeSet<ExecutorMaterializationLocality>,
 }
 
@@ -494,16 +508,12 @@ impl ExecutorCapacityReport {
     ///
     /// Returns [`CampaignCodecError`] when the sequence is zero or the
     /// materialization-locality set is oversized.
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         daemon_epoch: DaemonEpoch,
         capability_digest: CampaignHash,
         sequence: u64,
         available_slots: u32,
-        available_vcpus: u32,
-        available_resident_bytes: u64,
-        available_disk_bytes: u64,
+        available_resources: ExecutorHostResources,
         materialization_locality: BTreeSet<ExecutorMaterializationLocality>,
     ) -> Result<Self, CampaignCodecError> {
         if sequence == 0 {
@@ -522,9 +532,7 @@ impl ExecutorCapacityReport {
             capability_digest,
             sequence,
             available_slots,
-            available_vcpus,
-            available_resident_bytes,
-            available_disk_bytes,
+            available_resources,
             materialization_locality,
         };
         ensure_capability_message_size(&value, "executor-capacity-report-encoded-bytes")?;
@@ -555,22 +563,37 @@ impl ExecutorCapacityReport {
         self.available_slots
     }
 
-    /// Returns currently available virtual CPUs.
+    /// Returns currently available aggregate resources in all eight dimensions.
+    ///
+    /// Each free subset is independently reported. Its remaining metadata and
+    /// staging budgets need not together fit the remaining resident capacity;
+    /// placement must check every dimension of the full assignment vector.
     #[must_use]
-    pub const fn available_vcpus(&self) -> u32 {
-        self.available_vcpus
+    pub const fn available_resources(&self) -> ExecutorHostResources {
+        self.available_resources
     }
 
-    /// Returns currently available resident-memory bytes.
-    #[must_use]
-    pub const fn available_resident_bytes(&self) -> u64 {
-        self.available_resident_bytes
-    }
-
-    /// Returns currently available writable-disk bytes.
-    #[must_use]
-    pub const fn available_disk_bytes(&self) -> u64 {
-        self.available_disk_bytes
+    /// Checks whether one complete assignment fits this authenticated capacity snapshot.
+    ///
+    /// The declared assignment peak is conservative; smaller original attempt
+    /// requests do not justify reducing metadata, staging, task, or descriptor
+    /// reservations. The authoritative executor still rechecks admission when
+    /// an assignment is submitted because a capacity report can become stale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when this report does not validate against
+    /// the supplied description.
+    pub fn can_admit_assignment(
+        &self,
+        description: &ExecutorDescription,
+    ) -> Result<bool, CampaignCodecError> {
+        self.validate_for(description, None)?;
+        Ok(self.available_slots != 0
+            && description
+                .capabilities()
+                .assignment_resources()
+                .fits(self.available_resources))
     }
 
     /// Returns bounded coarse exact/hot locality hints.
@@ -607,11 +630,10 @@ impl ExecutorCapacityReport {
                 reason: "executor capacity sequence did not advance",
             });
         }
-        let ceiling = capabilities.resource_ceiling();
         if self.available_slots > capabilities.maximum_slots()
-            || self.available_vcpus > ceiling.maximum_vcpus()
-            || self.available_resident_bytes > ceiling.maximum_resident_bytes()
-            || self.available_disk_bytes > ceiling.maximum_disk_bytes()
+            || !self
+                .available_resources
+                .fits(capabilities.aggregate_resources())
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "executor capacity exceeds immutable ceiling",
@@ -652,9 +674,7 @@ impl Canonical for ExecutorCapacityReport {
         self.capability_digest.encode(encoder);
         self.sequence.encode(encoder);
         self.available_slots.encode(encoder);
-        self.available_vcpus.encode(encoder);
-        self.available_resident_bytes.encode(encoder);
-        self.available_disk_bytes.encode(encoder);
+        self.available_resources.encode(encoder);
         self.materialization_locality.encode(encoder);
     }
 
@@ -665,9 +685,7 @@ impl Canonical for ExecutorCapacityReport {
             CampaignHash::decode(decoder)?,
             u64::decode(decoder)?,
             u32::decode(decoder)?,
-            u32::decode(decoder)?,
-            u64::decode(decoder)?,
-            u64::decode(decoder)?,
+            ExecutorHostResources::decode(decoder)?,
             decoder.set_bounded(
                 MAX_MATERIALIZATION_LOCALITIES,
                 "executor-materialization-locality-count",
@@ -741,6 +759,23 @@ mod tests {
 
     use super::*;
 
+    fn host_resources(
+        cpu_slots: u64,
+        resident_peak_bytes: u64,
+        backing_peak_bytes: u64,
+    ) -> ExecutorHostResources {
+        ExecutorHostResources {
+            resident_peak_bytes,
+            backing_peak_bytes,
+            metadata_bytes: 32,
+            staging_bytes: 32,
+            paging_io_slots: 8,
+            cpu_slots,
+            task_slots: 16,
+            file_descriptors: 64,
+        }
+    }
+
     fn capabilities() -> ExecutorCapabilitySet {
         let compatibility = ExecutorCompatibilityProfile::new(
             "crucible-v1",
@@ -762,8 +797,13 @@ mod tests {
                 ExecutorMaterializationCapability::ExactRestore,
             ]),
             8,
-            AttemptResourceLimits::new(8, 16 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1_000_000)
-                .expect("resource ceiling"),
+            ExecutorResourceBounds::new(
+                host_resources(8, 16 * 1024 * 1024 * 1024, 64 * 1024 * 1024),
+                host_resources(4, 8 * 1024 * 1024 * 1024, 32 * 1024 * 1024),
+                AttemptResourceLimits::new(4, 8 * 1024 * 1024 * 1024, 32 * 1024 * 1024, 1_000_000)
+                    .expect("original assignment limits"),
+            )
+            .expect("separate aggregate and assignment bounds"),
             BTreeSet::from([CampaignHash::derive(
                 "crucible.test.executor-store-namespace.v1",
                 b"local",
@@ -803,9 +843,7 @@ mod tests {
             description.capabilities().digest(),
             7,
             3,
-            4,
-            8 * 1024 * 1024 * 1024,
-            32 * 1024 * 1024,
+            host_resources(8, 16 * 1024 * 1024 * 1024, 64 * 1024 * 1024),
             BTreeSet::from([locality]),
         )
         .expect("capacity report");
@@ -817,6 +855,15 @@ mod tests {
         report
             .validate_for(&description, Some(6))
             .expect("capacity binds description and cursor");
+        assert!(
+            report
+                .can_admit_assignment(&description)
+                .expect("placement")
+        );
+        assert!(
+            report.available_resources().cpu_slots
+                > description.capabilities().assignment_resources().cpu_slots
+        );
         assert_eq!(
             report.validate_for(&description, Some(7)),
             Err(CampaignCodecError::InvalidValue {
@@ -839,35 +886,92 @@ mod tests {
             watch_request
         );
 
-        assert_eq!(
+        let golden_vectors = [
             CampaignHash::derive(
-                "crucible.test.executor-description-vector.v1",
+                "crucible.test.executor-description-vector.v2",
                 &description_bytes,
             )
             .to_hex(),
-            "add97fb6d82e682a49e5848e22c6ef80c5171d8e58e5a731c85998eb4eb6de05"
-        );
-        assert_eq!(
-            CampaignHash::derive("crucible.test.executor-capacity-vector.v1", &report_bytes,)
+            CampaignHash::derive("crucible.test.executor-capacity-vector.v2", &report_bytes)
                 .to_hex(),
-            "2605bca86ed120fae85a780f35598decd218bd191963b965b9b1a883a233ef99"
-        );
-        assert_eq!(
             CampaignHash::derive(
-                "crucible.test.describe-executor-request-vector.v1",
+                "crucible.test.describe-executor-request-vector.v2",
                 &describe_request,
             )
             .to_hex(),
-            "9b31890265d4e6c828b2c5cc9039b7bf4e05edecccc5ad592375c22b67f4c8cc"
-        );
-        assert_eq!(
             CampaignHash::derive(
-                "crucible.test.watch-executor-capacity-request-vector.v1",
+                "crucible.test.watch-executor-capacity-request-vector.v2",
                 &watch_request_bytes,
             )
             .to_hex(),
-            "247857df117af5ab2197580241b33ff8d7c7d0e2e93e6127ad4faaf1d21dd1c6"
+        ];
+        assert_eq!(
+            golden_vectors,
+            [
+                "08c156ff8c160d100c1d3be0b81a13d391e17be6245ab5a09dff8348840878a7",
+                "e62a9514e744522f836f8524f1a2577a7f673e1a3933b70249422c0b36b082b7",
+                "f7b6022ea644cea661f41e3c8bb148c4db87e3ff7e30d67aed4008721d1581e4",
+                "61a8d9f62bec2ad88b2fa32bdcec07019d6843fce16e6a4c9668ebe90545c641",
+            ]
+            .map(str::to_owned)
         );
+    }
+
+    #[test]
+    fn placement_requires_every_dimension_of_the_full_assignment_peak() {
+        let epoch = DaemonEpoch::from_bytes([0x77; 16]).expect("epoch");
+        let description = ExecutorDescription::new(epoch, capabilities()).expect("description");
+        let assignment = description.capabilities().assignment_resources();
+
+        for dimension in 0..8 {
+            let mut available = assignment;
+            match dimension {
+                0 => available.resident_peak_bytes -= 1,
+                1 => available.backing_peak_bytes -= 1,
+                2 => available.metadata_bytes -= 1,
+                3 => available.staging_bytes -= 1,
+                4 => available.paging_io_slots -= 1,
+                5 => available.cpu_slots -= 1,
+                6 => available.task_slots -= 1,
+                7 => available.file_descriptors -= 1,
+                _ => unreachable!(),
+            }
+            let report = ExecutorCapacityReport::new(
+                epoch,
+                description.capabilities().digest(),
+                1,
+                1,
+                available,
+                BTreeSet::new(),
+            )
+            .expect("capacity snapshot");
+            report
+                .validate_for(&description, None)
+                .expect("valid aggregate availability");
+            assert!(
+                !report
+                    .can_admit_assignment(&description)
+                    .expect("placement")
+            );
+        }
+    }
+
+    #[test]
+    fn static_bounds_refuse_subset_overcharge_and_assignment_above_aggregate() {
+        let aggregate = host_resources(8, 4096, 8192);
+        let assignment = host_resources(1, 1024, 2048);
+        let original = AttemptResourceLimits::new(1, 512, 0, 32).expect("original request");
+        assert!(ExecutorResourceBounds::new(aggregate, assignment, original).is_ok());
+
+        let mut invalid_subset = assignment;
+        invalid_subset.staging_bytes = 1024;
+        assert!(ExecutorResourceBounds::new(aggregate, invalid_subset, original).is_err());
+        let mut excess = assignment;
+        excess.file_descriptors += 1;
+        assert!(ExecutorResourceBounds::new(aggregate, excess, original).is_err());
+
+        let excessive_request = AttemptResourceLimits::new(2, 512, 0, 32).expect("request");
+        assert!(ExecutorResourceBounds::new(aggregate, assignment, excessive_request).is_err());
     }
 
     #[test]
@@ -880,9 +984,7 @@ mod tests {
             description.capabilities().digest(),
             1,
             9,
-            8,
-            1,
-            0,
+            host_resources(8, 1, 0),
             BTreeSet::new(),
         )
         .expect("structural report");
@@ -904,7 +1006,7 @@ mod tests {
         );
 
         let mut bad_version = description.canonical_bytes();
-        bad_version[..4].copy_from_slice(&2_u32.to_be_bytes());
+        bad_version[..4].copy_from_slice(&1_u32.to_be_bytes());
         assert_eq!(
             ExecutorDescription::from_canonical_bytes(&bad_version),
             Err(CampaignCodecError::InvalidValue {
@@ -952,9 +1054,7 @@ mod tests {
             description.capabilities().digest(),
             9,
             1,
-            1,
-            1,
-            0,
+            host_resources(1, 1, 0),
             BTreeSet::new(),
         )
         .expect("capacity report");

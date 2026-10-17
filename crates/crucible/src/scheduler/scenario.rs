@@ -320,7 +320,11 @@ pub(super) fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessS
 
     let pending = ordered_scheduled_events(&scenario.pending_events);
     lines.push(format!("pending_events={}", pending.len()));
-    lines.extend(pending.into_iter().map(scheduled_event_material));
+    lines.extend(
+        pending
+            .into_iter()
+            .map(|event| scheduled_event_material(event).to_string()),
+    );
 
     lines.push(format!(
         "event_sequences={}",
@@ -409,7 +413,7 @@ pub(super) fn vcpu_idle_snapshot_material(snapshot: &SchedulerNodeVcpuIdleSnapsh
     vcpus.sort();
     let mut lines = Vec::new();
     lines.push(String::from("vcpu_idle_snapshot:"));
-    lines.push(scheduler_node_material(&snapshot.node));
+    lines.push(scheduler_node_material(&snapshot.node).to_string());
     lines.push(format!("vcpu_count={}", snapshot.vcpu_count));
     lines.push(format!("vcpu_idle_states={}", vcpus.len()));
     for state in vcpus {
@@ -448,12 +452,12 @@ pub(super) fn world_static_topology_material(topology: &WorldStaticTopology) -> 
     let mut lines = Vec::new();
     lines.push(format!("participants={}", participants.len()));
     for node in participants {
-        lines.push(trigger_node_material("participant", &node));
+        lines.push(trigger_node_material("participant", &node).to_string());
     }
     lines.push(format!("scheduling_nodes={}", scheduling_nodes.len()));
     for node in scheduling_nodes {
         lines.push(String::from("scheduling_node:"));
-        lines.push(scheduler_node_material(&node));
+        lines.push(scheduler_node_material(&node).to_string());
     }
     lines.push(format!("rng_streams={}", rng_streams.len()));
     for stream in rng_streams {
@@ -468,7 +472,7 @@ pub(super) fn world_static_topology_material(topology: &WorldStaticTopology) -> 
     }
     lines.push(format!("bake_nodes={}", bake_nodes.len()));
     for node in bake_nodes {
-        lines.push(trigger_node_material("bake_node", &node));
+        lines.push(trigger_node_material("bake_node", &node).to_string());
     }
     lines.join("\n")
 }
@@ -560,15 +564,6 @@ pub(super) fn topology_change_trigger_label(
     }
 }
 
-pub(super) fn scheduler_node_material(node: &SchedulerNodeId) -> String {
-    format!(
-        "node_name_len={}\nnode_name={}\nnode_kind={}",
-        node.node.name.len(),
-        node.node.name,
-        scheduling_node_kind_label(node.kind),
-    )
-}
-
 pub(super) fn scheduler_lookahead_edge_endpoint_material(
     endpoint: &SchedulerLookaheadEdgeEndpoint,
 ) -> String {
@@ -638,64 +633,6 @@ pub(super) fn exact_local_event_material(event: &ExactLocalEvent) -> String {
     }
 }
 
-pub(super) fn scheduled_event_material(event: &ScheduledEvent) -> String {
-    format!(
-        "event:\n{}\n{}",
-        scheduled_event_key_material(&event.key),
-        scheduled_event_payload_material(&event.payload),
-    )
-}
-
-pub(super) fn scheduled_event_key_material(key: &ScheduledEventKey) -> String {
-    format!(
-        "event_time={}\nevent_consumer:\n{}\nevent_producer:\n{}\nevent_sequence={}",
-        key.virtual_time().ticks,
-        scheduler_node_material(key.consumer()),
-        scheduler_node_material(key.producer()),
-        key.sequence(),
-    )
-}
-
-pub(super) fn scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
-    match payload {
-        ScheduledEventPayload::BackendInput(input) => format!(
-            "payload=backend-input\npayload_node_len={}\npayload_node={}\npayload_bytes={}",
-            input.node.name.len(),
-            input.node.name,
-            hex_bytes(&input.payload),
-        ),
-        ScheduledEventPayload::IoCompletion(completion) => format!(
-            "payload=io-completion\npayload_sub_node:\n{}\npayload_target_len={}\npayload_target={}\npayload_delivery_tick={}\npayload_bytes={}",
-            scheduler_node_material(&completion.sub_node),
-            completion.target.name.len(),
-            completion.target.name,
-            completion.delivery_tick.ticks,
-            hex_bytes(&completion.payload),
-        ),
-        ScheduledEventPayload::Control(operation) => {
-            format!("payload=control\n{}", control_operation_material(operation))
-        }
-    }
-}
-
-pub(super) fn control_operation_material(operation: &ControlOperation) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("control_sequence={}", operation.sequence));
-    lines.push(format!(
-        "control_kind={}",
-        control_operation_kind_label(&operation.kind)
-    ));
-    match &operation.kind {
-        ControlOperationKind::Pause
-        | ControlOperationKind::Resume
-        | ControlOperationKind::Step
-        | ControlOperationKind::Snapshot
-        | ControlOperationKind::Fork
-        | ControlOperationKind::Query => {}
-    }
-    lines.join("\n")
-}
-
 pub(super) fn control_operation_kind_label(kind: &ControlOperationKind) -> &'static str {
     match kind {
         ControlOperationKind::Pause => "pause",
@@ -707,13 +644,4 @@ pub(super) fn control_operation_kind_label(kind: &ControlOperationKind) -> &'sta
     }
 }
 
-pub(super) fn hex_bytes(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
-}
 mod production;

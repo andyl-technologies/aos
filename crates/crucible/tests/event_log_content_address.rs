@@ -31,6 +31,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         VirtualTime { ticks },
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
@@ -94,6 +95,9 @@ fn scheduler_scenario(name: &str) -> SchedulerLivenessScenario {
 
 #[test]
 fn event_log_segments_are_binary_canonical_with_derived_text_view() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut log = EventLog::new();
     let append = log
         .append_entries(vec![boundary_entry(0, 11)])
@@ -126,6 +130,9 @@ fn event_log_segments_are_binary_canonical_with_derived_text_view() {
 
 #[test]
 fn shared_segment_store_deduplicates_identical_segments() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let shared = Arc::new(MemoryDagStore::new());
     let store: Arc<dyn DagStore> = shared.clone();
     let mut left = EventLog::with_segment_store(store.clone());
@@ -158,6 +165,9 @@ fn shared_segment_store_deduplicates_identical_segments() {
 
 #[test]
 fn scheduler_writes_event_log_segments_to_shared_store() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let shared = Arc::new(MemoryDagStore::new());
     let store: Arc<dyn DagStore> = shared.clone();
     let mut scheduler = SingleScheduler::new_with_event_log_segment_store(
@@ -190,6 +200,9 @@ fn scheduler_writes_event_log_segments_to_shared_store() {
 
 #[test]
 fn cloned_event_logs_share_prefixes_and_segment_store_on_fork() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let shared = Arc::new(MemoryDagStore::new());
     let store: Arc<dyn DagStore> = shared.clone();
     let mut parent = EventLog::with_segment_store(store);
@@ -224,6 +237,9 @@ fn cloned_event_logs_share_prefixes_and_segment_store_on_fork() {
 
 #[test]
 fn resumed_event_log_continues_appending_after_stored_offset() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let shared = Arc::new(MemoryDagStore::new());
     let store: Arc<dyn DagStore> = shared.clone();
     let mut first_log = EventLog::with_segment_store(store.clone());
@@ -250,6 +266,9 @@ fn resumed_event_log_continues_appending_after_stored_offset() {
 
 #[test]
 fn temporal_graph_closure_references_stored_event_log_segment_bytes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
@@ -329,6 +348,9 @@ fn temporal_graph_closure_references_stored_event_log_segment_bytes() {
 
 #[test]
 fn thin_replay_rejects_stale_nonzero_event_log_offset() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());

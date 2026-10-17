@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn next_exact_local_event_selects_earliest_timer_or_io() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let events = vec![io_event(12, &node, &disk, b"io-earliest")];
@@ -39,6 +42,9 @@ fn next_exact_local_event_selects_earliest_timer_or_io() {
 
 #[test]
 fn next_exact_local_event_preserves_non_instruction_aligned_io_tick() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let ninep = scheduler_node("node-a", SchedulingNodeKind::NineP);
     let events = vec![io_event_at_virtual_time(14, 14, &node, &ninep, b"ninep")];
@@ -57,6 +63,9 @@ fn next_exact_local_event_preserves_non_instruction_aligned_io_tick() {
 
 #[test]
 fn next_exact_local_event_rejects_inconsistent_io_delivery_time() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let events = vec![io_event_at_virtual_time(9, 7, &node, &disk, b"stale-key")];
@@ -70,6 +79,9 @@ fn next_exact_local_event_rejects_inconsistent_io_delivery_time() {
 
 #[test]
 fn next_exact_local_event_rejects_io_target_mismatch() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let other = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
@@ -88,6 +100,9 @@ fn next_exact_local_event_rejects_io_target_mismatch() {
 
 #[test]
 fn next_exact_local_event_ignores_network_input_and_other_nodes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let peer = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let peer_disk = scheduler_node("node-b", SchedulingNodeKind::Disk);
@@ -104,6 +119,9 @@ fn next_exact_local_event_ignores_network_input_and_other_nodes() {
 
 #[test]
 fn single_scheduler_uses_pending_io_completion_as_exact_local_horizon() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -139,6 +157,9 @@ fn single_scheduler_uses_pending_io_completion_as_exact_local_horizon() {
 
 #[test]
 fn horizon_uses_io_completion_as_exact_local_source() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let horizon = horizon_from_network_lookahead(
         SimInstant { ticks: 10 },

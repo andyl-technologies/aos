@@ -5,10 +5,11 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crucible_protocol::{
-    CODEC_FUZZ_REGRESSION_CORPUS, ControlCodecFuzzOutcome, ControlDirection, ControlTag,
-    FRAME_LENGTH_PREFIX_SIZE, HostMsg, MAX_FRAME_SIZE, PluginMsg, TAG_HELLO, TAG_HELLO_ACK,
-    TAG_QUIT, TAG_SETUP, TAG_SETUP_ACK, control_decode_host_msg, control_decode_plugin_msg,
-    control_encode_host_msg, control_encode_plugin_msg, run_control_codec_fuzz_target,
+    CODEC_FUZZ_REGRESSION_CORPUS, CONTROL_PROTOCOL_VERSION, ControlCodecFuzzOutcome,
+    ControlDirection, ControlTag, FRAME_LENGTH_PREFIX_SIZE, HostMsg, MAX_FRAME_SIZE, PluginMsg,
+    TAG_HELLO, TAG_HELLO_ACK, TAG_QUIT, TAG_SETUP, TAG_SETUP_ACK, control_decode_host_msg,
+    control_decode_plugin_msg, control_encode_host_msg, control_encode_plugin_msg,
+    run_control_codec_fuzz_target,
 };
 
 #[test]
@@ -66,7 +67,7 @@ fn structure_aware_malformed_frames_never_panic() {
 #[test]
 fn structure_aware_directional_adversarial_frames_remain_typed_errors() {
     let host_frame = control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
+        proto_version: 4,
         abi_version: 25,
         slot_index: 0,
         node_count: 1,
@@ -76,7 +77,7 @@ fn structure_aware_directional_adversarial_frames_remain_typed_errors() {
     assert!(host_outcome.plugin.is_err());
 
     let plugin_frame = control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 3,
+        proto_version: 4,
         abi_version: 25,
     });
     let plugin_outcome = run_without_panic(&plugin_frame);
@@ -164,7 +165,7 @@ fn generated_plugin_messages() -> Vec<PluginMsg> {
             abi_version: 0,
         },
         PluginMsg::Hello {
-            proto_version: 3,
+            proto_version: 4,
             abi_version: 25,
         },
         PluginMsg::Hello {
@@ -186,7 +187,7 @@ fn generated_host_messages() -> Vec<HostMsg> {
             node_count: 0,
         },
         HostMsg::HelloAck {
-            proto_version: 3,
+            proto_version: 4,
             abi_version: 25,
             slot_index: 7,
             node_count: 32,
@@ -197,11 +198,19 @@ fn generated_host_messages() -> Vec<HostMsg> {
             slot_index: u32::MAX,
             node_count: u32::MAX,
         },
-        HostMsg::Setup { region_len: 0 },
         HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
+            region_len: 0,
+        },
+        HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
             region_len: 450_560,
         },
         HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
             region_len: u64::MAX,
         },
         HostMsg::Quit,
@@ -237,7 +246,27 @@ fn fuzz_target_reports_directional_success_only_for_registered_direction() {
         ControlTag::Hello,
         ControlTag::HelloAck,
     ] {
-        let frame = structured_frame(tag.wire_value(), tag.payload_len());
+        // Directional success requires a semantically valid current message.
+        // Structured arbitrary payloads remain in the adversarial controls.
+        let frame = match tag {
+            ControlTag::Setup => control_encode_host_msg(&HostMsg::Setup {
+                region_len: 450_560,
+                process_generation: 1,
+                device_digest_workspace: None,
+            }),
+            ControlTag::SetupAck => control_encode_plugin_msg(&PluginMsg::SetupAck { status: 0 }),
+            ControlTag::Quit => control_encode_host_msg(&HostMsg::Quit),
+            ControlTag::Hello => control_encode_plugin_msg(&PluginMsg::Hello {
+                proto_version: CONTROL_PROTOCOL_VERSION,
+                abi_version: 25,
+            }),
+            ControlTag::HelloAck => control_encode_host_msg(&HostMsg::HelloAck {
+                proto_version: CONTROL_PROTOCOL_VERSION,
+                abi_version: 25,
+                slot_index: 0,
+                node_count: 1,
+            }),
+        };
         let outcome = run_without_panic(&frame);
         match tag.direction() {
             ControlDirection::HostToPlugin => {

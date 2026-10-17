@@ -22,6 +22,7 @@ in
           cd source
           mkdir -p performance-driver/src performance-driver/.cargo
           cp ${./tcg-production-performance.rs} performance-driver/src/main.rs
+          cp ${./tcg-managed-performance.rs} performance-driver/src/tcg-managed-performance.rs
           cp crates/Cargo.lock performance-driver/Cargo.lock
 
           cat > performance-driver/Cargo.toml <<'MANIFEST'
@@ -33,12 +34,8 @@ in
           [workspace]
 
           [dependencies]
-          crucible-protocol = { path = "../crates/crucible-protocol" }
-          crucible-shmem = { path = "../crates/crucible-shmem" }
-          libc = "0.2"
           serde_json = "1"
-          sha2 = "0.10"
-          tempfile = "3"
+          libc = "0.2"
           MANIFEST
 
           sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \

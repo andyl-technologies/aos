@@ -10,15 +10,18 @@ use crucible_campaign::{
     CampaignCodecError, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
     ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
-    ExecutorMaterializationLocality, ExecutorResumeService, ExecutorService, ExecutorStatusService,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionRequest,
-    ResumeAttemptExecutionResponse, SubmitAttemptRequest, SubmitAttemptResponse,
-    WatchExecutorCapacityRequest,
+    ExecutorHostResources, ExecutorMaterializationLocality, ExecutorResumeService, ExecutorService,
+    ExecutorStatusService, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptRequest,
+    SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
 
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, LocalExecutorError, LocalExecutorSupervisor,
 };
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 /// Capability-negotiated service over one sole-writer local supervisor.
 pub struct LocalExecutorCapabilityService<L, V> {
@@ -34,7 +37,8 @@ impl<L, V> LocalExecutorCapabilityService<L, V> {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when the daemon epoch, slot ceiling, or
-    /// aggregate CPU/memory/disk/quanta ceilings differ. This fail-closed check
+    /// aggregate or assignment resource vectors, or original request limits
+    /// differ. This fail-closed check
     /// prevents placement from relying on a capability the supervisor does not
     /// enforce.
     pub fn new(
@@ -84,9 +88,11 @@ impl<L, V> LocalExecutorCapabilityService<L, V> {
             self.description.capabilities().digest(),
             self.sequence.max(1),
             availability.slots(),
-            availability.vcpus(),
-            availability.resident_bytes(),
-            availability.disk_bytes(),
+            portable_resources(self.supervisor.host_resource_availability().ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "executor has no complete host resource availability",
+                },
+            )?),
             locality.clone(),
         )?;
         report.validate_for(&self.description, None)?;
@@ -197,9 +203,11 @@ where
             self.description.capabilities().digest(),
             sequence,
             availability.slots(),
-            availability.vcpus(),
-            availability.resident_bytes(),
-            availability.disk_bytes(),
+            portable_resources(self.supervisor.host_resource_availability().ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "executor has no complete host resource availability",
+                },
+            )?),
             self.locality.clone(),
         )?;
         report.validate_for(&self.description, request.after_sequence())?;
@@ -208,7 +216,7 @@ where
     }
 }
 
-fn validate_description<L, V>(
+pub(crate) fn validate_description<L, V>(
     supervisor: &LocalExecutorSupervisor<L, V>,
     description: &ExecutorDescription,
 ) -> Result<(), CampaignCodecError> {
@@ -219,18 +227,44 @@ fn validate_description<L, V>(
     }
     let configured = supervisor.capacity();
     let capabilities = description.capabilities();
-    let advertised = capabilities.resource_ceiling();
+    let (aggregate, assignment) =
+        supervisor
+            .host_resource_capacities()
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "executor has no complete host resource capacities",
+            })?;
+    let limits =
+        supervisor
+            .assignment_resource_limits()
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "executor has no authored assignment limits",
+            })?;
     if capabilities.maximum_slots() != configured.maximum_concurrent_executions()
-        || advertised.maximum_vcpus() != configured.maximum_vcpus()
-        || advertised.maximum_resident_bytes() != configured.maximum_resident_bytes()
-        || advertised.maximum_disk_bytes() != configured.maximum_disk_bytes()
-        || advertised.maximum_execution_quanta() != configured.maximum_execution_quanta()
+        || capabilities.aggregate_resources() != portable_resources(aggregate)
+        || capabilities.assignment_resources() != portable_resources(assignment)
+        || capabilities.assignment_limits() != limits
     {
         return Err(CampaignCodecError::InvalidValue {
             reason: "executor description ceilings do not match supervisor",
         });
     }
     Ok(())
+}
+
+/// Projects an actual actor-owned host vector into the portable component contract.
+pub(crate) const fn portable_resources(
+    resources: crucible_linux_resource::ram_policy::HostResourceVector,
+) -> ExecutorHostResources {
+    ExecutorHostResources {
+        resident_peak_bytes: resources.resident_peak_bytes,
+        backing_peak_bytes: resources.backing_peak_bytes,
+        metadata_bytes: resources.metadata_bytes,
+        staging_bytes: resources.staging_bytes,
+        paging_io_slots: resources.paging_io_slots,
+        cpu_slots: resources.cpu_slots,
+        task_slots: resources.task_slots,
+        file_descriptors: resources.file_descriptors,
+    }
 }
 
 fn validate_request(
@@ -260,8 +294,8 @@ mod tests {
     use crucible_campaign::{
         AssignmentId, AttemptId, AttemptResourceLimits, CampaignHash, CampaignLineageId,
         DaemonEpoch, ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient,
-        ExecutorCompatibilityProfile, ExecutorMaterializationCapability, SubmitAttemptDisposition,
-        SubmitAttemptRequest,
+        ExecutorCompatibilityProfile, ExecutorMaterializationCapability, ExecutorResourceBounds,
+        SubmitAttemptDisposition, SubmitAttemptRequest,
     };
 
     use super::*;
@@ -278,7 +312,7 @@ mod tests {
             capacity(),
         );
         let mut client = ExecutorClient::new(
-            LocalExecutorCapabilityService::new(supervisor, description(epoch))
+            test_support::capability_service(supervisor, description(epoch), 1 << 20)
                 .expect("matching capability facade"),
         );
         let described = client.describe_executor().expect("description");
@@ -287,7 +321,7 @@ mod tests {
             .expect("initial capacity");
         assert_eq!(initial.sequence(), 1);
         assert_eq!(initial.available_slots(), 2);
-        assert_eq!(initial.available_vcpus(), 4);
+        assert_eq!(initial.available_resources().cpu_slots, 4);
 
         let accepted = client
             .submit_attempt(&request(epoch, 0x41))
@@ -301,9 +335,14 @@ mod tests {
             .expect("reserved capacity");
         assert_eq!(reserved.sequence(), 2);
         assert_eq!(reserved.available_slots(), 1);
-        assert_eq!(reserved.available_vcpus(), 3);
-        assert_eq!(reserved.available_resident_bytes(), 3072);
-        assert_eq!(reserved.available_disk_bytes(), 6144);
+        assert_eq!(reserved.available_resources().cpu_slots, 3);
+        assert_eq!(reserved.available_resources().resident_peak_bytes, 6 << 20);
+        assert_eq!(reserved.available_resources().backing_peak_bytes, 6144);
+        assert_eq!(reserved.available_resources().metadata_bytes, 192);
+        assert_eq!(reserved.available_resources().staging_bytes, 192);
+        assert_eq!(reserved.available_resources().paging_io_slots, 7);
+        assert_eq!(reserved.available_resources().task_slots, 14);
+        assert_eq!(reserved.available_resources().file_descriptors, 56);
     }
 
     #[test]
@@ -316,7 +355,7 @@ mod tests {
             capacity(),
         );
         let mut client = ExecutorClient::new(
-            LocalExecutorCapabilityService::new(supervisor, description(epoch))
+            test_support::capability_service(supervisor, description(epoch), 1 << 20)
                 .expect("matching capability facade"),
         );
         let described = client.describe_executor().expect("description");
@@ -357,10 +396,10 @@ mod tests {
             MemoryAssignmentLedger::default(),
             AllowAllAttemptAdmission,
             epoch,
-            ExecutorCapacity::new(1, 4, 4096, 8192, 64).expect("mismatched capacity"),
+            ExecutorCapacity::new(1, 4, 8 << 20, 8192, 64).expect("mismatched capacity"),
         );
         assert!(matches!(
-            LocalExecutorCapabilityService::new(supervisor, description(epoch)),
+            test_support::capability_service(supervisor, description(epoch), 1 << 20),
             Err(CampaignCodecError::InvalidValue {
                 reason: "executor description ceilings do not match supervisor"
             })
@@ -368,7 +407,7 @@ mod tests {
     }
 
     fn capacity() -> ExecutorCapacity {
-        ExecutorCapacity::new(2, 4, 4096, 8192, 64).expect("capacity")
+        ExecutorCapacity::new(2, 4, 8 << 20, 8192, 64).expect("capacity")
     }
 
     fn description(epoch: DaemonEpoch) -> ExecutorDescription {
@@ -389,7 +428,30 @@ mod tests {
                 ExecutorMaterializationCapability::ExactRestore,
             ]),
             2,
-            AttemptResourceLimits::new(4, 4096, 8192, 64).expect("resource ceiling"),
+            ExecutorResourceBounds::new(
+                ExecutorHostResources {
+                    resident_peak_bytes: 8 << 20,
+                    backing_peak_bytes: 8192,
+                    metadata_bytes: 256,
+                    staging_bytes: 256,
+                    paging_io_slots: 8,
+                    cpu_slots: 4,
+                    task_slots: 16,
+                    file_descriptors: 64,
+                },
+                ExecutorHostResources {
+                    resident_peak_bytes: 2 << 20,
+                    backing_peak_bytes: 2048,
+                    metadata_bytes: 64,
+                    staging_bytes: 64,
+                    paging_io_slots: 1,
+                    cpu_slots: 1,
+                    task_slots: 2,
+                    file_descriptors: 8,
+                },
+                AttemptResourceLimits::new(1, 1024, 2048, 64).expect("original assignment limits"),
+            )
+            .expect("authored aggregate and assignment resources"),
             BTreeSet::from([CampaignHash::derive(
                 "crucible.test.local-executor-namespace.v1",
                 b"local",

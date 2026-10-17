@@ -12,6 +12,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+#[path = "support/gc_quota.rs"]
+mod gc_quota;
+
+#[path = "support/input_scope.rs"]
+mod input_scope;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, symlink};
@@ -30,9 +36,8 @@ use crucible_campaign::{
 use crucible_cas::content_store::{
     BlobHandle, CompressedDirectoryBlobBackend, ContentId, DirectoryBlobBackend,
     ImmutableBlobBackend, ObjectKind, PackedBlobBackend, StoreGraph, StoreGraphKeyring,
-    StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
-    StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
-    WriteBackRetentionAdmin,
+    StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphS3Clients, StoreNodeId,
+    StoreNodeSpec, StoreObjectProfilePolicyId, WriteBackRetentionAdmin,
 };
 use crucible_daemon::{DirectoryCampaignGcJournal, UnixPeerCampaignPolicy};
 use rcgen::{
@@ -74,7 +79,7 @@ use service_diagnostics::{
 
 #[test]
 fn packaged_campaign_service_uses_mtls_without_debug_authority() -> Result<(), Box<dyn Error>> {
-    let fixture = FlightFixture::new()?;
+    let fixture = FlightFixture::new_native()?;
     let args = fixture
         .service_command(None)
         .get_args()
@@ -456,26 +461,37 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
         .iter()
         .map(|node| Ok((json_string(node, "id")?, json_string(node, "kind")?)))
         .collect::<Result<BTreeMap<_, _>, Box<dyn Error>>>()?;
-    assert_eq!(
-        node_kinds,
-        BTreeMap::from([
-            (String::from("profile"), String::from("profile-validated")),
-            (
-                String::from("read-cache"),
-                String::from("compressed-directory")
-            ),
-            (String::from("read-source"), String::from("directory")),
-            (String::from("read-through"), String::from("read-through")),
-            (String::from("routed"), String::from("routed")),
-            (String::from("verified"), String::from("verified")),
-            (String::from("write-back"), String::from("write-back")),
-            (String::from("write-destination"), String::from("directory"),),
-            (
-                String::from("write-staging"),
-                String::from("compressed-directory"),
-            ),
-        ])
-    );
+    let mut expected_kinds = BTreeMap::from([
+        (String::from("profile"), String::from("profile-validated")),
+        (
+            String::from("read-cache"),
+            String::from("compressed-directory"),
+        ),
+        (String::from("read-source"), String::from("directory")),
+        (String::from("read-through"), String::from("read-through")),
+        (String::from("routed"), String::from("routed")),
+        (String::from("verified"), String::from("verified")),
+        (String::from("write-back"), String::from("write-back")),
+        (String::from("write-destination"), String::from("directory")),
+        (
+            String::from("write-staging"),
+            String::from("compressed-directory"),
+        ),
+    ]);
+    if std::env::var_os("CRUCIBLE_FLIGHT_STORE_PROJECT").is_some() {
+        for node in [
+            "read-cache",
+            "read-source",
+            "write-staging",
+            "write-destination",
+        ] {
+            let leaf_kind = expected_kinds
+                .insert(String::from(node), String::from("physical-quota"))
+                .ok_or("expected physical node is missing")?;
+            expected_kinds.insert(format!("raw-{node}"), leaf_kind);
+        }
+    }
+    assert_eq!(node_kinds, expected_kinds);
 
     let scenario_text = scenario.encode();
     let ensured = run_json(
@@ -491,9 +507,17 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
         "promote scenario through read-through cache",
     )?;
     assert_eq!(ensured["authenticated"], true);
-    assert!(fixture.read_source().contains(scenario)?);
-    assert!(fixture.read_cache()?.contains(scenario)?);
     service.stop()?;
+    assert!(gc_quota::contains_stopped_leaf(
+        &fixture.read_source_root,
+        scenario,
+        None
+    )?);
+    assert!(gc_quota::contains_stopped_leaf(
+        &fixture.read_cache_root,
+        scenario,
+        Some(MAXIMUM_LOGICAL_OBJECT_BYTES)
+    )?);
 
     let pending_before_gc = fixture.pending_write_back_roots()?;
     assert!(!pending_before_gc.is_empty());
@@ -503,6 +527,7 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
             .all(|(node, _id)| node == "write-back")
     );
     assert!(pending_before_gc.contains(&(String::from("write-back"), policy)));
+    drop(pending_before_gc);
 
     let planned = run_json(
         &mut fixture.base.gc_command_at("plan", &fixture.base.journal),
@@ -521,7 +546,9 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
             }))
     );
     {
-        let journal = DirectoryCampaignGcJournal::open(&fixture.base.journal)?;
+        let mut inspection = gc_quota::inspection(&fixture.base.store, "inspect-planned-gc")?;
+        let operation = inspection.context()?;
+        let journal = DirectoryCampaignGcJournal::open(&fixture.base.journal, &operation)?;
         assert!(journal.roots().iter().any(|root| root == policy));
     }
 
@@ -531,18 +558,28 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     )?;
     assert_eq!(applied["plan"], planned["plan"]);
     assert_eq!(applied["apply_status"], "applied");
-    assert!(!fixture.read_cache()?.contains(scenario)?);
-    assert!(fixture.read_source().contains(scenario)?);
+    assert!(!gc_quota::contains_stopped_leaf(
+        &fixture.read_cache_root,
+        scenario,
+        Some(MAXIMUM_LOGICAL_OBJECT_BYTES)
+    )?);
+    assert!(gc_quota::contains_stopped_leaf(
+        &fixture.read_source_root,
+        scenario,
+        None
+    )?);
     assert!(
         fixture
             .pending_write_back_roots()?
             .contains(&(String::from("write-back"), policy))
     );
 
-    let mut maintained = fixture.start_service_with_maintenance()?;
-    fixture.wait_until_write_back_root_absent(policy, Duration::from_secs(20))?;
-    assert!(fixture.write_destination().contains(policy)?);
-    maintained.stop()?;
+    fixture.flush_write_back_until_root_absent(policy, Duration::from_secs(20))?;
+    assert!(gc_quota::contains_stopped_leaf(
+        &fixture.write_destination_root,
+        policy,
+        None
+    )?);
     assert!(
         !fixture
             .pending_write_back_roots()?
@@ -557,7 +594,10 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     )?;
     assert_eq!(after_maintenance["plan_version"], "v1");
     {
-        let journal = DirectoryCampaignGcJournal::open(&fixture.after_maintenance_gc_journal)?;
+        let mut inspection = gc_quota::inspection(&fixture.base.store, "inspect-maintained-gc")?;
+        let operation = inspection.context()?;
+        let journal =
+            DirectoryCampaignGcJournal::open(&fixture.after_maintenance_gc_journal, &operation)?;
         assert!(!journal.roots().iter().any(|root| root == policy));
     }
 
@@ -627,6 +667,8 @@ struct FlightFixture {
     tls_cert: PathBuf,
     tls_key: PathBuf,
     service_mode: FlightServiceMode,
+    _native_input: Option<input_scope::NativeInputResources>,
+    _native_scope: Option<crucible_session::engine::owned_decode::DecodeScope>,
 }
 
 #[derive(Clone, Copy)]
@@ -662,7 +704,7 @@ impl ComposedFlightFixture {
             &base.store,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "profile"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}
@@ -770,34 +812,36 @@ root = {write_destination_root:?}
             .start_service_command(command, Duration::from_secs(15))
     }
 
-    fn read_cache(&self) -> Result<CompressedDirectoryBlobBackend, Box<dyn Error>> {
-        Ok(CompressedDirectoryBlobBackend::new(
-            "read-cache",
-            &self.read_cache_root,
-            MAXIMUM_LOGICAL_OBJECT_BYTES,
-        )?)
-    }
-
-    fn read_source(&self) -> DirectoryBlobBackend {
-        DirectoryBlobBackend::new("read-source", &self.read_source_root)
-    }
-
-    fn write_destination(&self) -> DirectoryBlobBackend {
-        DirectoryBlobBackend::new("write-destination", &self.write_destination_root)
-    }
-
-    fn pending_write_back_roots(&self) -> Result<BTreeSet<(String, ContentId)>, Box<dyn Error>> {
-        let graph = self.inspection_graph()?;
+    fn pending_write_back_roots(&self) -> Result<InspectedWriteBackRoots, Box<dyn Error>> {
+        let (graph, decoding) = self.inspection_graph()?;
+        let _scope = decoding.enter();
         let mut fence = graph.acquire_write_back_retention_fence()?;
         let mut roots = BTreeSet::new();
         fence.visit_roots(&mut |root| {
+            decoding
+                .charge_btree_entry::<(String, ContentId), ()>()
+                .map_err(
+                    |error| crucible_cas::content_store::StoreError::Supervision {
+                        source: Box::new(error),
+                    },
+                )?;
+            decoding
+                .charge_bytes(root.node().len() as u64)
+                .map_err(
+                    |error| crucible_cas::content_store::StoreError::Supervision {
+                        source: Box::new(error),
+                    },
+                )?;
             roots.insert((root.node().to_owned(), root.id()));
             Ok(())
         })?;
-        Ok(roots)
+        Ok(InspectedWriteBackRoots {
+            roots,
+            _decoding: decoding,
+        })
     }
 
-    fn wait_until_write_back_root_absent(
+    fn flush_write_back_until_root_absent(
         &self,
         id: ContentId,
         timeout: Duration,
@@ -805,6 +849,9 @@ root = {write_destination_root:?}
         let expected = (String::from("write-back"), id);
         let deadline = Instant::now() + timeout;
         loop {
+            let mut maintained = self.start_service_with_maintenance()?;
+            thread::sleep(Duration::from_millis(100));
+            maintained.stop()?;
             if !self.pending_write_back_roots()?.contains(&expected) {
                 return Ok(());
             }
@@ -818,7 +865,44 @@ root = {write_destination_root:?}
         }
     }
 
-    fn inspection_graph(&self) -> Result<StoreGraph, Box<dyn Error>> {
+    fn inspection_graph(
+        &self,
+    ) -> Result<
+        (
+            StoreGraph,
+            crucible_session::engine::owned_decode::DecodeBudget,
+        ),
+        Box<dyn Error>,
+    > {
+        let gc_quota::ComposedInspection {
+            binders,
+            decoding,
+            project: project_id,
+        } = gc_quota::composed_inspection(&self.read_source_root)?;
+        let _scope = decoding.enter();
+        // The fixture has nine logical nodes and four physical wrappers.
+        // Reserve its map geometry and bounded path/name copies before building it.
+        for _ in 0..14 {
+            decoding.charge_btree_entry::<StoreNodeId, StoreNodeSpec>()?;
+        }
+        let path_bytes = [
+            &self.read_cache_root,
+            &self.read_source_root,
+            &self.write_staging_root,
+            &self.write_destination_root,
+            &self.write_back_journal,
+        ]
+        .iter()
+        .try_fold(0_u64, |total, path| {
+            total.checked_add(path.as_os_str().len() as u64)
+        })
+        .ok_or("inspection path size overflow")?;
+        decoding.charge_bytes(
+            path_bytes
+                .checked_mul(4)
+                .and_then(|bytes| bytes.checked_add(4096))
+                .ok_or("inspection graph size overflow")?,
+        )?;
         let read_cache = node_id("read-cache")?;
         let read_source = node_id("read-source")?;
         let read_through = node_id("read-through")?;
@@ -841,7 +925,8 @@ root = {write_destination_root:?}
             routes.insert(kind, read_through.clone());
         }
 
-        let config = crucible_cas::content_store::StoreGraphConfig {
+        let mut config = crucible_cas::content_store::StoreGraphConfig {
+            gc_mark_root: None,
             root: profile.clone(),
             admitted_kinds: BTreeSet::from(all_campaign_object_kinds()),
             nodes: BTreeMap::from([
@@ -899,21 +984,71 @@ root = {write_destination_root:?}
                 ),
             ]),
         };
+        for name in [
+            "read-cache",
+            "read-source",
+            "write-staging",
+            "write-destination",
+        ] {
+            let id = node_id(name)?;
+            let leaf = config
+                .nodes
+                .remove(&id)
+                .ok_or("inspection leaf is missing")?;
+            let raw = node_id(&format!("raw-{name}"))?;
+            config.nodes.insert(raw.clone(), leaf);
+            config.nodes.insert(
+                id,
+                StoreNodeSpec::PhysicalQuota {
+                    child: raw,
+                    policy: crucible_cas::content_store::StorePhysicalQuotaPolicyId::new(
+                        "native/gc-store",
+                    )?,
+                    project_id,
+                    maximum_physical_bytes: 2147483648,
+                    maximum_inodes: 262144,
+                },
+            );
+        }
         let mut profilers = StoreGraphObjectProfilers::new();
         profilers.insert(
             StoreObjectProfilePolicyId::new(CAMPAIGN_OBJECT_PROFILE_POLICY_V1)?,
             Arc::new(CampaignObjectProfiler),
         )?;
 
-        Ok(StoreGraph::build_with_all_capabilities(
+        let graph = StoreGraph::build_with_all_capabilities(
             config,
             &StoreGraphKeyring::new(),
             &StoreGraphNamespaceAuthorizers::new(),
             &profilers,
-            &StoreGraphPhysicalQuotaBinders::new(),
+            &binders,
             &StoreGraphS3Clients::new(),
-        )?)
+            None,
+        )?;
+        Ok((graph, decoding))
     }
+}
+
+/// Keeps inspected root names charged until the final returned set is dropped.
+struct InspectedWriteBackRoots {
+    roots: BTreeSet<(String, ContentId)>,
+    _decoding: crucible_session::engine::owned_decode::DecodeBudget,
+}
+
+impl std::ops::Deref for InspectedWriteBackRoots {
+    type Target = BTreeSet<(String, ContentId)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.roots
+    }
+}
+
+#[cfg(feature = "packaged-midpoint-flight")]
+struct NativeFindingInspection {
+    checkpoints: crucible_daemon::ExactCheckpointStore,
+    backend: Arc<dyn crucible_cas::content_store::ImmutableBlobBackend>,
+    authority: Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>,
+    original: crucible_session::engine::owned_decode::DecodeBudget,
 }
 
 impl FlightFixture {
@@ -921,10 +1056,123 @@ impl FlightFixture {
     fn new_debug_authorized() -> Result<Self, Box<dyn Error>> {
         let mut fixture = Self::new()?;
         fixture.service_mode = FlightServiceMode::Debugger;
+        fixture.install_native_store_policy()?;
+        Ok(fixture)
+    }
+
+    fn install_native_store_policy(&self) -> Result<(), Box<dyn Error>> {
+        let Some(project) = std::env::var_os("CRUCIBLE_FLIGHT_STORE_PROJECT") else {
+            // Argument-only component fixtures never execute this native policy.
+            return Ok(());
+        };
+        let project = project
+            .to_str()
+            .ok_or("native store project is not UTF-8")?
+            .parse::<u32>()?;
+        let refs = self._temporary.path().join("refs");
+        fs::write(
+            &self.store,
+            format!(
+                r#"schema = "crucible.campaign-repository-store"
+version = 3
+root = "bounded-primary"
+admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
+ref_directory = {refs:?}
+physical_quota_policies = ["native/source-store"]
+
+[physical_quota_service]
+lifetime_ms = 2700000
+[physical_quota_service.resources]
+resident_peak_bytes = 134217728
+backing_peak_bytes = 2147483648
+metadata_bytes = 67108864
+staging_bytes = 8388608
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 128
+{roster}
+
+[[nodes]]
+id = "bounded-primary"
+[nodes.spec]
+kind = "physical-quota"
+child = "primary"
+policy = "native/source-store"
+project_id = {project}
+maximum_physical_bytes = 2147483648
+maximum_inodes = 1048576
+
+[[nodes]]
+id = "primary"
+[nodes.spec]
+kind = "directory"
+root = {objects:?}
+"#,
+                objects = self.objects,
+                roster = gc_quota::quota_budget_toml(
+                    "physical_quota_service.host_operation_budgets",
+                    2700000
+                )
+            ),
+        )?;
+        fs::set_permissions(&self.store, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+
+    #[cfg(feature = "packaged-midpoint-flight")]
+    fn inspection_store(&self) -> Result<NativeFindingInspection, Box<dyn Error>> {
+        let input = self
+            ._native_input
+            .as_ref()
+            .ok_or("native finding inspection requires the original source policy")?;
+        let original = input.decoding.clone();
+        original.verify_live()?;
+        let authority = input.authority.clone();
+        let backend = DirectoryBlobBackend::new_with_physical_quota(
+            "midpoint-selection-inspection",
+            &self.objects,
+            authority.clone(),
+        )?;
+        let repository = crucible_campaign::CampaignRepository::new(
+            backend.clone(),
+            crucible_cas::content_store::DirectoryRefBackend::new_with_physical_quota(
+                self._temporary.path().join("refs"),
+                authority.clone(),
+            )?,
+            crucible_campaign::CampaignRamAdmission::Available(original.clone()),
+        );
+        let checkpoints = crucible_daemon::ExactCheckpointStore::new(
+            backend.clone(),
+            1073741824,
+            repository.ram_retention_authority(),
+        )?
+        .with_ram_root_resources(authority.clone());
+        Ok(NativeFindingInspection {
+            checkpoints,
+            backend,
+            authority,
+            original,
+        })
+    }
+
+    fn new_native() -> Result<Self, Box<dyn Error>> {
+        let fixture = Self::new_with_input(Some(input_scope::open()?))?;
+        fixture.install_native_store_policy()?;
         Ok(fixture)
     }
 
     fn new() -> Result<Self, Box<dyn Error>> {
+        let native_input = std::env::var_os("CRUCIBLE_FLIGHT_SOURCE_POLICY")
+            .map(|_| input_scope::open())
+            .transpose()?;
+        Self::new_with_input(native_input)
+    }
+
+    fn new_with_input(
+        native_input: Option<input_scope::NativeInputResources>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let native_scope = native_input.as_ref().map(|input| input.decoding.enter());
         let temporary = tempfile::tempdir()?;
         let root = temporary.path().to_path_buf();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
@@ -1059,7 +1307,7 @@ campaign = "*"
             &store,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "primary"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}
@@ -1087,6 +1335,8 @@ root = {objects:?}
             tls_cert,
             tls_key,
             service_mode: FlightServiceMode::Campaign,
+            _native_input: native_input,
+            _native_scope: native_scope,
         })
     }
 
@@ -1131,6 +1381,7 @@ root = {objects:?}
         mut command: Command,
         timeout: Duration,
     ) -> Result<CampaignServiceChild, Box<dyn Error>> {
+        gc_quota::prepare(&self.store)?;
         let stderr = NamedTempFile::new_in(self._temporary.path())?;
         command
             .stdout(Stdio::piped())
@@ -1195,6 +1446,17 @@ root = {objects:?}
         )
     }
 
+    fn gc_mark_node(&self) -> String {
+        // A malformed fixture is an invalid test input, never another namespace.
+        let text = fs::read_to_string(&self.store)
+            .unwrap_or_else(|error| panic!("read fixture GC mark declaration: {error}"));
+        let deployment = text
+            .parse::<toml::Table>()
+            .unwrap_or_else(|error| panic!("parse fixture GC mark declaration: {error}"));
+        gc_quota::mark_node(&deployment)
+            .unwrap_or_else(|error| panic!("select fixture GC mark namespace: {error}"))
+    }
+
     fn gc_command(&self, operation: &str) -> Command {
         self.gc_command_at(operation, &self.journal)
     }
@@ -1203,6 +1465,10 @@ root = {objects:?}
         let mut command = command(&["--format", "jsonl", "store", "gc", "--state"]);
         command
             .arg(&self.state)
+            .arg("--host-maintenance-timeout-ms")
+            .arg("300000")
+            .arg("--mark-store-node")
+            .arg(self.gc_mark_node())
             .arg("--policy")
             .arg(&self.peer_policy)
             .arg("--store")

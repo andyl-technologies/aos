@@ -33,9 +33,10 @@
     (builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/admission.rs)
   ];
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
-  productionLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
-  productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
-  productionConstruction = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/construction.rs;
+  productionLoop = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
+  productionCapture = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/quantum_loop/checkpoint_snapshot.rs;
+  productionRuntime = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle.rs;
+  productionConstruction = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/construction.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
@@ -59,8 +60,12 @@
         needle = "pub struct QemuExactCheckpointCaptureResult";
       }
       {
-        label = "pinned output descriptor access";
-        needle = "pub fn output_files_mut";
+        label = "pinned device output descriptor access";
+        needle = "pub fn device_output_mut";
+      }
+      {
+        label = "frozen canonical RAM record access";
+        needle = "pub fn paged_record(&self) -> &crucible_ram::RootRecord";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/node/exact_snapshot/capture.rs" qemuNodeExactSnapshotCapture [
@@ -135,11 +140,13 @@
         needle = ''else "bsp-busy-aps-halted";'';
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" productionLoop [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs" productionLoop [
       {
         label = "snapshot control boundary capture";
         needle = "self.capture_exact_checkpoint_set(&configuration)?";
       }
+    ]
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/quantum_loop/checkpoint_snapshot.rs" productionCapture [
       {
         label = "running-node publication capture";
         needle = ".capture_exact_checkpoint_for_publication_guarded(";
@@ -157,17 +164,21 @@
         needle = "hash_exact_checkpoint_open_file_sha256_with_boundary(";
       }
       {
-        label = "captured descriptor handoff";
-        needle = "let (ram_file, device_file) = exact_capture.output_files_mut();";
+        label = "owned device descriptor handoff";
+        needle = "let device_file = exact_capture.device_output_mut();";
+      }
+      {
+        label = "frozen paged RAM root binding";
+        needle = "let expected_record = exact_capture.paged_record().clone();";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" productionRuntime [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle.rs" productionRuntime [
       {
         label = "artifact authentication";
         needle = "failed content authentication";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/construction.rs" productionConstruction [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/construction.rs" productionConstruction [
       {
         label = "restored fingerprint check";
         needle = "restored_fingerprint != expected_fingerprint";
@@ -258,11 +269,13 @@ in
               node_factory::tests::factory_assembles_node_with_exact_snapshot_qmp_control
 
             grep -Fqx PASS "${checkpointDeltaFlight}/result"
-            grep -Fqx 'patched_fixture_exercised=true' \
+            grep -Fqx 'managed_lazy_restore_measurement=cold-launch-through-first-quantum' \
               "${checkpointDeltaFlight}/result"
-            grep -Fqx 'checkpoint_restore_equal=true' \
+            grep -Fqx 'managed_lazy_restore_first_quantum_identity=true' \
               "${checkpointDeltaFlight}/result"
-            grep -Fqx 'direct_delta_reconstruction_equal=true' \
+            grep -Fqx 'managed_lazy_restore_published_ram_root_identity=true' \
+              "${checkpointDeltaFlight}/result"
+            grep -Fqx 'managed_lazy_restore_cleanup_before_discharge=true' \
               "${checkpointDeltaFlight}/result"
             mkdir -p "$out"
             {
@@ -270,7 +283,7 @@ in
               printf 'attr_path=%s\n' "$ATTR_PATH"
               printf 'task_ids=%s\n' "$TASK_IDS"
               printf 'scope=compiled-operation-specific-exact-checkpoint-admission\n'
-              printf 'proven=identity-bound-admission,live-capture-and-restore,descriptor-backed-restore\n'
+              printf 'proven=identity-bound-admission,live-paged-capture-and-restore,cold-first-quantum-identity\n'
             } > "$out/result"
           '';
         }

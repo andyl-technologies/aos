@@ -1,9 +1,9 @@
-//! Checks RFC-0010 determinism review policy.
+//! Checks the determinism review policy.
 //!
 //! The checklist is the human review gate for engine, scheduler, transport,
 //! and ordering-significant host-code changes. These tests keep the canonical
-//! checklist and the lightweight Nix gate aligned with RFC-0010 file 28
-//! section 6 without coupling the policy to a hosting-provider template.
+//! checklist and lightweight Nix gate aligned with the actual review policy
+//! without coupling it to a hosting-provider template.
 
 #![forbid(unsafe_code)]
 

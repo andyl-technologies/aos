@@ -1,7 +1,7 @@
 //! `crucible` is the CLI entry point for the Crucible control plane.
-//! Spec index: RFC-0010 files 23.
+//! Implementation contract: Operator commands for execution, campaigns, debugging, and storage maintenance.
 //! This L4 binary crate remains a thin client over the control, session, and
-//! campaign-service APIs specified by RFC-0010 and RFC-0020.
+//! campaign-service APIs with typed lifecycle and resource contracts.
 //!
 //! Module map: the binary root owns argument dispatch, while command modules
 //! remain transport clients over the session, API, and campaign-service crates.
@@ -157,10 +157,10 @@ const CANONICAL_GATE_NAMES: &[&str] = &[
     disable_help_subcommand = true
 )]
 struct Cli {
-    /// Root entropy (06 §5.3). Overrides CRUCIBLE_SEED.
+    /// Root entropy. Overrides CRUCIBLE_SEED.
     #[arg(long, value_name = "u64|hex", global = true)]
     seed: Option<String>,
-    /// Local backend (20 §10). Default: auto.
+    /// Local backend. Default: auto.
     #[arg(
         long,
         value_enum,
@@ -169,7 +169,7 @@ struct Cli {
         global = true
     )]
     backend: Backend,
-    /// Talk to a daemon (21) instead of running in-process.
+    /// Talk to a daemon instead of running in-process.
     #[arg(long, value_name = "addr", global = true)]
     daemon: Option<String>,
     /// CA certificate used to authenticate an HTTPS daemon.
@@ -184,16 +184,16 @@ struct Cli {
     /// Permit an unauthenticated daemon endpoint on a trusted network.
     #[arg(long, action = ArgAction::SetTrue, global = true, requires = "daemon")]
     trusted_unauthenticated_daemon: bool,
-    /// Patched QEMU system binary (26). Else discovered.
+    /// Patched QEMU system binary. Else discovered.
     #[arg(long, value_name = "path", global = true)]
     qemu: Option<PathBuf>,
-    /// crucible-qemu-plugin cdylib (12, 26). Else discovered.
+    /// crucible-qemu-plugin cdylib. Else discovered.
     #[arg(long, value_name = "path", global = true)]
     plugin: Option<PathBuf>,
-    /// Content-addressed store root (06, 07). Else default.
+    /// Set the content-addressed store root.
     #[arg(long, value_name = "path", global = true)]
     store: Option<PathBuf>,
-    /// Guarded local campaign-executor deployment capability.
+    /// Load deployed host and storage resource limits.
     #[arg(long, value_name = "PATH", global = true)]
     campaign_deployment: Option<PathBuf>,
     /// Trace/report render format. Default: table on a terminal, otherwise jsonl.
@@ -279,20 +279,22 @@ enum Commands {
     Resume(ResumeArgs),
     /// Replay a reproduction artifact, bit-identically.
     Replay(ReplayArgs),
-    /// Drive state-space search over the schedule space (22).
+    /// Drive state-space search over the schedule space.
     Search(SearchArgs),
-    /// Coverage-guided fuzzing over a scenario family (22).
+    /// Coverage-guided fuzzing over a scenario family.
     Fuzz(FuzzArgs),
     /// Cluster, dedup, and minimize discovered failures.
     Triage(CampaignTriageRouteArgs),
     /// Open the time-travel debugger.
     Debug(DebugArgs),
-    /// Run the daemon hosting the API (21).
+    /// Run the daemon hosting the API.
     Serve(ServeArgs),
     /// Inspect and control a lazy campaign through the local daemon.
     Campaign(CampaignArgs),
     /// Inspect or maintain a configured content store.
     Store(StoreArgs),
+    /// Inspect and change authenticated host RAM placement and deadlines.
+    Host(HostArgs),
     /// Generate shell completions.
     Completions(CompletionsArgs),
 }
@@ -447,6 +449,13 @@ enum CampaignFindingBundleCommand {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleExportArgs {
+    /// Admit RAM archives with explicit resources and installed project quotas.
+    #[arg(long, value_name = "PATH")]
+    archive_policy: Option<PathBuf>,
+    /// Bound the complete host planning and transfer lifetime in milliseconds.
+    #[arg(long, default_value_t = 3_600_000, value_name = "ms",
+        value_parser = clap::value_parser!(u64).range(1..))]
+    host_transfer_timeout_ms: u64,
     /// Canonical campaign name.
     #[arg(value_name = "NAME")]
     name: String,
@@ -475,6 +484,9 @@ struct CampaignFindingBundleExportArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleVerifyArgs {
+    /// Admit RAM archives with explicit resources and installed project quotas.
+    #[arg(long, value_name = "PATH")]
+    archive_policy: Option<PathBuf>,
     /// Exported finding bundle directory.
     #[arg(value_name = "DIR")]
     input: PathBuf,
@@ -488,6 +500,9 @@ struct CampaignFindingBundleVerifyArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleMidpointArgs {
+    /// Admit RAM archives with explicit resources and installed project quotas.
+    #[arg(long, value_name = "PATH")]
+    archive_policy: Option<PathBuf>,
     /// Exported finding bundle directory.
     #[arg(value_name = "DIR")]
     input: PathBuf,
@@ -519,6 +534,13 @@ struct CampaignFindingBundleForkWriteArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleBranchArgs {
+    /// Admit RAM archives with explicit resources and installed project quotas.
+    #[arg(long, value_name = "PATH")]
+    archive_policy: Option<PathBuf>,
+    /// Bound the original host lifetime through archive preparation and branch publication.
+    #[arg(long, default_value_t = 3_600_000, value_name = "ms",
+        value_parser = clap::value_parser!(u64).range(1..))]
+    host_transfer_timeout_ms: u64,
     /// Exported finding bundle directory.
     #[arg(value_name = "DIR")]
     input: PathBuf,
@@ -621,6 +643,10 @@ enum CampaignArchiveMode {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArchiveTransferArgs {
+    /// Bound the complete host planning and transfer lifetime in milliseconds.
+    #[arg(long, default_value_t = 3_600_000, value_name = "ms",
+        value_parser = clap::value_parser!(u64).range(1..))]
+    host_transfer_timeout_ms: u64,
     /// Exact durable source campaign state directory.
     #[arg(long, value_name = "path")]
     source_state: PathBuf,
@@ -670,6 +696,10 @@ struct CampaignArchiveTransferArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArchiveInspectArgs {
+    /// Bound complete host archive authentication in milliseconds.
+    #[arg(long, default_value_t = 3_600_000, value_name = "ms",
+        value_parser = clap::value_parser!(u64).range(1..))]
+    host_inspection_timeout_ms: u64,
     /// Exact durable campaign state directory.
     #[arg(long, value_name = "path")]
     state: PathBuf,
@@ -820,6 +850,12 @@ struct StorePlacementRepairArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignStoreGcArgs {
+    /// Select the quota-guarded physical store node that owns GC scratch.
+    #[arg(long, value_name = "NODE")]
+    mark_store_node: String,
+    /// Bound the original host lifetime through marking and journal publication.
+    #[arg(long, value_name = "MILLISECONDS")]
+    host_maintenance_timeout_ms: u64,
     /// Exact durable campaign state directory whose owner lock must be free.
     #[arg(long, value_name = "path")]
     state: PathBuf,
@@ -912,7 +948,7 @@ struct CampaignFixtureArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignFixtureCommand {
-    /// Generate the adaptive network-recovery campaign from RFC-0020.
+    /// Generate the adaptive network-recovery campaign.
     WorkedNetwork(CampaignWorkedNetworkFixtureArgs),
 }
 
@@ -1605,7 +1641,7 @@ struct CampaignUnpinArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct RunArgs {
-    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    /// Scenario file in canonical TOML form or its content hash.
     #[arg(value_name = "SCENARIO", required = true)]
     scenario: Option<String>,
     /// Terminal condition. Default: quiescence.
@@ -1616,7 +1652,7 @@ struct RunArgs {
         default_value_t = RunUntilArg::Quiescence
     )]
     until: RunUntilArg,
-    /// Stop with Timeout past this virtual time (20 §2).
+    /// Stop with Timeout past this virtual time.
     #[arg(long, value_name = "dur", required_if_eq("until", "virtual-time"))]
     max_virtual_time: Option<String>,
     /// Stop with Timeout at this scheduler-quantum boundary.
@@ -1633,7 +1669,7 @@ struct RunArgs {
         default_value_t = RunSaveOnArg::Never
     )]
     save_on: RunSaveOnArg,
-    /// Stream the live status line (20 §9) alongside the trace.
+    /// Stream the live status line alongside the trace.
     #[arg(long, action = ArgAction::SetTrue)]
     watch: bool,
     /// Emit a mock failure artifact for gate testing.
@@ -1674,7 +1710,7 @@ enum RunSaveOnArg {
         .multiple(false)
 ))]
 struct VerifyArgs {
-    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    /// Scenario file in canonical TOML form or its content hash.
     #[arg(value_name = "SCENARIO")]
     scenario: Option<String>,
     /// Number of runs to compare. Default: 2.
@@ -1683,7 +1719,7 @@ struct VerifyArgs {
     /// Run the full hostile host scheduling, clock, core, and I/O matrix.
     #[arg(long, action = ArgAction::SetTrue)]
     adversarial: bool,
-    /// On divergence, run divergence-bisection (24 §5) and print the report.
+    /// On divergence, run divergence-bisection and print the report.
     #[arg(long, action = ArgAction::SetTrue)]
     bisect: bool,
     /// Diff two existing reproduction artifacts instead of running.
@@ -1731,7 +1767,7 @@ impl SaveAtArg {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct SaveArgs {
-    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    /// Scenario file in canonical TOML form or its content hash.
     #[arg(value_name = "SCENARIO", required = true)]
     scenario: Option<String>,
     /// Where to stop and save. Required.
@@ -1742,7 +1778,7 @@ struct SaveArgs {
         required = true
     )]
     at: Option<SaveAtArg>,
-    /// Human label for the savepoint (07).
+    /// Human label for the savepoint.
     #[arg(long, value_name = "name")]
     label: Option<String>,
     /// Coordinate for --at virtual-time.
@@ -1761,10 +1797,10 @@ struct SaveArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ResumeArgs {
-    /// A current portable savepoint handle (07).
+    /// A current portable savepoint handle.
     #[arg(value_name = "SAVEPOINT", required = true)]
     savepoint: Option<String>,
-    /// Terminal condition, as in `run` (§6).
+    /// Terminal condition, as in `run`.
     #[arg(
         long,
         value_enum,
@@ -1772,20 +1808,20 @@ struct ResumeArgs {
         default_value_t = RunUntilArg::Quiescence
     )]
     until: RunUntilArg,
-    /// Stop with Timeout past this virtual time (20 §2).
+    /// Stop with Timeout past this virtual time.
     #[arg(long, value_name = "dur", required_if_eq("until", "virtual-time"))]
     max_virtual_time: Option<String>,
     /// Drive the resumed session interactively (as in `run`).
     #[arg(long, action = ArgAction::SetTrue)]
     interactive: bool,
-    /// Stream the live status line (20 §9).
+    /// Stream the live status line.
     #[arg(long, action = ArgAction::SetTrue)]
     watch: bool,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ReplayArgs {
-    /// A reproduction artifact (06 §7.1) or its content hash.
+    /// A reproduction artifact or its content hash.
     #[arg(value_name = "ARTIFACT")]
     artifact: PathBuf,
     /// Assert the replayed canonical log is byte-identical to this one.
@@ -1794,7 +1830,7 @@ struct ReplayArgs {
     /// Validate a target savepoint handle.
     #[arg(long, value_name = "savepoint")]
     to: Option<String>,
-    /// Bisect this artifact against another (24 §5).
+    /// Bisect this artifact against another.
     #[arg(long, value_name = "other-artifact")]
     bisect: Option<PathBuf>,
     /// Inject and require authenticated bounded host scheduler preemption during live QEMU replay.
@@ -1804,10 +1840,10 @@ struct ReplayArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct SearchArgs {
-    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    /// Scenario file in canonical TOML form or its content hash.
     #[arg(value_name = "SCENARIO", required = true)]
     scenario: Option<String>,
-    /// Frontier expansion strategy (22).
+    /// Frontier expansion strategy.
     #[arg(
         long,
         value_enum,
@@ -1843,16 +1879,16 @@ struct SearchArgs {
         .multiple(false)
 ))]
 struct FuzzArgs {
-    /// A ScenarioFamily (06 §7) to sample.
+    /// A ScenarioFamily to sample.
     #[arg(value_name = "FAMILY")]
     family: Option<String>,
-    /// A ScenarioFamily (06 §7) to sample.
+    /// A ScenarioFamily to sample.
     #[arg(long = "family", value_name = "path|hash")]
     family_flag: Option<String>,
     /// Number of family instances to run.
     #[arg(long, value_name = "n", default_value_t = 1)]
     runs: u64,
-    /// Coverage signal guiding sampling (22).
+    /// Coverage signal guiding sampling.
     #[arg(
         long,
         value_enum,
@@ -2107,7 +2143,7 @@ impl DebugStepGrainArg {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct ServeArgs {
-    /// Address to bind the API (21) on. Required.
+    /// Address to bind the API on. Required.
     #[arg(long, value_name = "addr", required = true)]
     listen: String,
     /// Concurrency cap on live sessions.
@@ -2140,6 +2176,24 @@ struct ServeArgs {
     /// Map a client certificate fingerprint to debugger capabilities.
     #[arg(long, value_name = "sha256=capability,...")]
     debug_role: Vec<String>,
+    /// Grant host RAM and supervision authority to an authenticated certificate fingerprint.
+    #[arg(long, value_name = "HEX64")]
+    host_operator_certificate: Vec<String>,
+    /// Override the deployment's aggregate paging I/O slot capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_paging_io_slots: Option<u64>,
+    /// Override the deployment's aggregate retained host task capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_task_slots: Option<u64>,
+    /// Override the deployment's aggregate retained file descriptor capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_file_descriptors: Option<u64>,
+    /// Override the deployment's aggregate retained metadata capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_metadata_bytes: Option<u64>,
+    /// Override the deployment's aggregate retained staging capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_staging_bytes: Option<u64>,
     /// Host the local CampaignService on this managed Unix socket.
     #[arg(long, value_name = "path")]
     campaign_socket: Option<PathBuf>,
@@ -2265,6 +2319,7 @@ enum CliSubcommand {
     Serve,
     Campaign,
     Store,
+    Host,
     Completions,
 }
 
@@ -2284,6 +2339,7 @@ impl CliSubcommand {
             Commands::Serve(_) => Self::Serve,
             Commands::Campaign(_) => Self::Campaign,
             Commands::Store(_) => Self::Store,
+            Commands::Host(_) => Self::Host,
             Commands::Completions(_) => Self::Completions,
         }
     }
@@ -2303,6 +2359,7 @@ impl CliSubcommand {
             Self::Serve => "serve",
             Self::Campaign => "campaign",
             Self::Store => "store",
+            Self::Host => "host",
             Self::Completions => "completions",
         }
     }
@@ -2320,6 +2377,7 @@ enum CliApiCall {
     WatchAttach,
     SendCommand,
     GetReproduction,
+    HostOperational,
 }
 
 impl CliApiCall {
@@ -2334,6 +2392,7 @@ impl CliApiCall {
         Self::WatchAttach,
         Self::SendCommand,
         Self::GetReproduction,
+        Self::HostOperational,
     ];
 
     const fn control_client_method(self) -> &'static str {
@@ -2348,6 +2407,7 @@ impl CliApiCall {
             Self::WatchAttach => "watch_attach",
             Self::SendCommand => "send_command",
             Self::GetReproduction => "get_reproduction",
+            Self::HostOperational => "host_operational",
         }
     }
 }
@@ -2691,6 +2751,18 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             implements_checkpoint_materialization: false,
             extra_control_capabilities: Vec::new(),
         },
+        Commands::Host(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: vec![CliApiCall::HostOperational],
+            delegated_drivers: vec![CliDelegatedDriver::ControlApi],
+            state_references: vec![CliStateReferenceKind::DaemonConnection],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
         Commands::Store(_) => CliThinWrapperPlan {
             subcommand,
             session_commands: Vec::new(),
@@ -2752,6 +2824,10 @@ mod cli_control;
 mod cli_dispatch;
 #[path = "cli/exploration.rs"]
 mod cli_exploration;
+#[path = "cli/host.rs"]
+mod cli_host;
+#[path = "cli/input_resources.rs"]
+mod cli_input_resources;
 #[path = "cli/planning.rs"]
 mod cli_planning;
 #[path = "cli/replay.rs"]
@@ -2781,6 +2857,7 @@ use cli_campaign::*;
 use cli_control::*;
 use cli_dispatch::*;
 use cli_exploration::*;
+use cli_host::*;
 use cli_planning::*;
 use cli_replay::*;
 use cli_report::*;

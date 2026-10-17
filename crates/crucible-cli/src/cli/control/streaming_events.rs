@@ -13,18 +13,56 @@ pub(crate) async fn observe_next_event(
 ) -> Result<bool, CliError> {
     match tokio::time::timeout(Duration::from_millis(timeout_ms), control.recv_event()).await {
         Ok(Ok(Some(frame))) => {
-            if let Some(event) = coverage_event_from_streaming_frame(&frame)? {
-                coverage_events.push(event);
-            }
+            retain_streaming_event(
+                &frame,
+                streamed_events,
+                streamed_event_frames,
+                coverage_events,
+            )?;
             *streamed_event_cursor = frame.next_cursor.next_sequence;
-            streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
-            streamed_events.push(streaming_event_summary(&frame));
             Ok(false)
         }
         Ok(Ok(None)) => Ok(true),
         Ok(Err(error)) => Err(control_client_error(error)),
         Err(_) => Ok(false),
     }
+}
+
+fn retain_streaming_event(
+    frame: &crucible_api::StreamingEventFrame,
+    summaries: &mut Vec<String>,
+    frames: &mut Vec<Vec<u8>>,
+    coverage: &mut Vec<crucible::ObservableEvent>,
+) -> Result<(), CliError> {
+    use crucible_session::engine::owned_decode::{current_budget, reserve_vec};
+
+    let budget = current_budget()
+        .ok_or_else(|| backend_error("event report requires its original input resources"))?;
+    let bytes = admitted_streaming_event_frame_bytes(frame, &budget)?;
+    // Canonical hex fields bound the diagnostic's escaped fields. Six frame
+    // extents cover its output growth and overlapping escape intermediates.
+    let summary_peak = bytes
+        .len()
+        .checked_mul(6)
+        .ok_or_else(|| backend_error("event summary allocation size overflow"))?;
+    budget
+        .charge_bytes(
+            u64::try_from(summary_peak)
+                .map_err(|_| backend_error("event summary allocation size overflow"))?,
+        )
+        .map_err(|error| backend_error(format!("admit event summary: {error}")))?;
+    reserve_vec(summaries, 1)
+        .map_err(|error| backend_error(format!("admit event summaries: {error}")))?;
+    reserve_vec(frames, 1)
+        .map_err(|error| backend_error(format!("admit event frames: {error}")))?;
+    if let Some(event) = coverage_event_from_streaming_frame(frame)? {
+        reserve_vec(coverage, 1)
+            .map_err(|error| backend_error(format!("admit coverage events: {error}")))?;
+        coverage.push(event);
+    }
+    summaries.push(streaming_event_summary(frame));
+    frames.push(bytes);
+    Ok(())
 }
 
 // crucible-lint: allow rust-allow -- the terminal drain carries the control stream, terminal extent, timeout, decoded events, exact frames, coverage events, and cursor as distinct ownership domains.
@@ -57,12 +95,13 @@ pub(crate) async fn drain_terminal_event_log(
                 *streamed_event_cursor
             )));
         };
-        if let Some(event) = coverage_event_from_streaming_frame(&frame)? {
-            coverage_events.push(event);
-        }
+        retain_streaming_event(
+            &frame,
+            streamed_events,
+            streamed_event_frames,
+            coverage_events,
+        )?;
         *streamed_event_cursor = frame.next_cursor.next_sequence;
-        streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
-        streamed_events.push(streaming_event_summary(&frame));
     }
     Ok(())
 }
@@ -277,7 +316,11 @@ pub(crate) fn coverage_event_from_streaming_frame(
         return Ok(None);
     }
     let string = |name: &str| match frame.event.payload.attribute(name) {
-        Some(OpenSetAttributeValue::String(value)) => Ok(value.clone()),
+        Some(OpenSetAttributeValue::String(value)) => {
+            crucible_session::engine::owned_decode::charge_bytes(value.len() as u64)
+                .map_err(|error| backend_error(format!("admit coverage field: {error}")))?;
+            Ok(value.clone())
+        }
         _ => Err(backend_error(format!(
             "coverage event {} has missing or non-string `{name}` attribute",
             frame.event.sequence
@@ -424,11 +467,12 @@ mod summary_tests {
 
     #[test]
     fn assertion_summary_preserves_agent_diagnostic_fields() {
-        let frame = crucible_api::StreamingEventFrame {
-            generation: 0,
-            cursor: crucible_api::EventLogCursor::new(3),
-            next_cursor: crucible_api::EventLogCursor::new(4),
-            event: crucible_api::OpenSetEventEnvelope {
+        let _scope = crate::tests::component_decode_scope();
+        let frame = crucible_api::StreamingEventFrame::from_owned_fields(
+            0,
+            crucible_api::EventLogCursor::new(3),
+            crucible_api::EventLogCursor::new(4),
+            crucible_api::OpenSetEventEnvelope {
                 sequence: 3,
                 at: crucible_api::OpenSetEventTime {
                     virtual_time_ticks: 40,
@@ -457,7 +501,8 @@ mod summary_tests {
                     .collect(),
                 ),
             },
-        };
+        )
+        .unwrap_or_else(|error| panic!("component event frame: {error}"));
 
         assert_eq!(
             streaming_event_summary(&frame),
@@ -467,11 +512,12 @@ mod summary_tests {
 
     #[test]
     fn effect_summary_preserves_coordinate_source_and_effect_fields() {
-        let frame = crucible_api::StreamingEventFrame {
-            generation: 0,
-            cursor: crucible_api::EventLogCursor::new(7),
-            next_cursor: crucible_api::EventLogCursor::new(8),
-            event: crucible_api::OpenSetEventEnvelope {
+        let _scope = crate::tests::component_decode_scope();
+        let frame = crucible_api::StreamingEventFrame::from_owned_fields(
+            0,
+            crucible_api::EventLogCursor::new(7),
+            crucible_api::EventLogCursor::new(8),
+            crucible_api::OpenSetEventEnvelope {
                 sequence: 7,
                 at: crucible_api::OpenSetEventTime {
                     virtual_time_ticks: 91,
@@ -514,7 +560,8 @@ mod summary_tests {
                     .collect(),
                 ),
             },
-        };
+        )
+        .unwrap_or_else(|error| panic!("component event frame: {error}"));
 
         assert_eq!(
             streaming_event_summary(&frame),
@@ -524,12 +571,13 @@ mod summary_tests {
 
     #[test]
     fn console_summary_redacts_guest_bytes() {
+        let _scope = crate::tests::component_decode_scope();
         let secret = b"token=super-secret".to_vec();
-        let frame = crucible_api::StreamingEventFrame {
-            generation: 0,
-            cursor: crucible_api::EventLogCursor::new(1),
-            next_cursor: crucible_api::EventLogCursor::new(2),
-            event: crucible_api::OpenSetEventEnvelope {
+        let frame = crucible_api::StreamingEventFrame::from_owned_fields(
+            0,
+            crucible_api::EventLogCursor::new(1),
+            crucible_api::EventLogCursor::new(2),
+            crucible_api::OpenSetEventEnvelope {
                 sequence: 1,
                 at: crucible_api::OpenSetEventTime {
                     virtual_time_ticks: 1,
@@ -552,7 +600,8 @@ mod summary_tests {
                     .collect(),
                 ),
             },
-        };
+        )
+        .unwrap_or_else(|error| panic!("component event frame: {error}"));
 
         let summary = streaming_event_summary(&frame);
         assert_eq!(

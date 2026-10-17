@@ -502,3 +502,46 @@ fn payload(frame: &FrameEntry) -> &[u8] {
         Err(error) => panic!("test frame payload should be valid: {error}"),
     }
 }
+
+#[test]
+fn canonical_decode_admits_actual_table_and_payload_before_each_allocation() {
+    let expected = compact_snapshot(&[frame(60, 7, 0, b"payload")]);
+    let bytes = expected.canonical_bytes().expect("canonical fixture");
+    let mut extents = Vec::new();
+    let actual = SpscRingSnapshot::from_canonical_bytes_with_admission(&bytes, 4, |bytes| {
+        extents.push(bytes);
+        Ok(())
+    })
+    .expect("admitted decode");
+
+    assert_eq!(actual, expected);
+    assert_eq!(
+        extents,
+        vec![
+            std::mem::size_of::<crucible_shmem::SnapshotFrameEntry>() as u64,
+            7
+        ]
+    );
+}
+
+#[test]
+fn canonical_decode_stops_at_the_exact_refused_allocation() {
+    let bytes = compact_snapshot(&[frame(60, 7, 0, b"payload"), frame(61, 7, 1, b"later")])
+        .canonical_bytes()
+        .expect("canonical fixture");
+    for refused_call in [1, 2] {
+        let mut callbacks = 0;
+        let failure = SpscRingError::SnapshotPayloadAllocationFailed { len: 7 };
+        let result = SpscRingSnapshot::from_canonical_bytes_with_admission(&bytes, 4, |_| {
+            callbacks += 1;
+            if callbacks == refused_call {
+                Err(failure.clone())
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(result, Err(failure));
+        assert_eq!(callbacks, refused_call);
+    }
+}

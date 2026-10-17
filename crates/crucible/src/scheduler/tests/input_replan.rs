@@ -63,6 +63,9 @@ fn prepared_late_input_run_with_command(
 
 #[test]
 fn original_authorized_preemption_caps_fresh_window_and_is_consumed_once() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, run) = prepared_late_input_run_with_command(Some(20));
     let command = scheduler.preemption_requests[0].clone();
     let input = resolve_due_scheduled_events(
@@ -118,6 +121,9 @@ fn resolve_first_input(scheduler: &mut SingleScheduler, run: &PreparedHostRun) {
 
 #[test]
 fn fresh_windows_retain_original_owner_and_commit_origin_after_two_inputs() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, run) = prepared_late_input_run();
     let original = run.admission.clone();
     let configuration = scheduler.configuration.clone();
@@ -180,6 +186,9 @@ fn fresh_windows_retain_original_owner_and_commit_origin_after_two_inputs() {
 
 #[test]
 fn fresh_branch_cap_tightens_continuation_without_discarding_next_input() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, run) = prepared_late_input_run();
     resolve_first_input(&mut scheduler, &run);
     scheduler
@@ -200,6 +209,9 @@ fn fresh_branch_cap_tightens_continuation_without_discarding_next_input() {
 
 #[test]
 fn unresolved_input_and_reached_mismatch_refuse_before_publication() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, run) = prepared_late_input_run();
     let publications = scheduler.ceiling_publications.len();
     assert!(
@@ -218,6 +230,9 @@ fn unresolved_input_and_reached_mismatch_refuse_before_publication() {
 
 #[test]
 fn changed_prefix_topology_command_and_clock_mapping_refuse_retained_motion() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for change in 0..4 {
         let (mut scheduler, run) = prepared_late_input_run();
         resolve_first_input(&mut scheduler, &run);

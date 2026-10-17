@@ -9,22 +9,24 @@ use crucible::model::{Aggregation, MeasurementDefinition, MetricSource, UnitId};
 use crucible::{EventLog, MarkerId, NodeTemplate, ReadyPoint, WhiteBoxPolicy};
 
 #[test]
-fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
+fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields()
+-> Result<(), Box<dyn std::error::Error>> {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)?;
     let (scenario, configuration) = identities(b"assertion-boundary");
     let unrelated = SchedulerEventLogEntry::assertion_state_observation(
         0,
         VirtualTime { ticks: 1 },
         crucible::AssertionId::from_name("unrelated"),
         AssertionPhase::Violated,
-    );
+    )?;
     let failed = SchedulerEventLogEntry::assertion_state_observation(
         1,
         VirtualTime { ticks: 2 },
         crucible::AssertionId::from_name("target"),
         AssertionPhase::Violated,
-    );
+    )?;
     let entries = vec![unrelated, failed.clone()];
-    let leaf = CrucibleMeasurementReplayEvidence {
+    let leaf = admitted_body(ReplayEvidenceBody {
         scenario,
         configuration,
         definitions: CampaignHash::derive("test.definitions", b"none"),
@@ -36,7 +38,9 @@ fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
             scheduler_quiescent: false,
         },
         stop: CrucibleMeasurementStopEvidence::Campaign,
-    };
+        event_output_custody: None,
+        custody: require_current_custody().map_err(admission)?,
+    })?;
     let hash = CampaignHash::from_bytes(failed.content_hash().bytes);
     let digest = observation_event_prefix_digest(&entries);
     let witness = |prefix_digest, transition_hash, property: &str| {
@@ -55,11 +59,11 @@ fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
     assert!(verify_assertion_failure_boundary(
         &leaf,
         &witness(digest, hash, "target")
-    ));
+    )?);
     assert!(!verify_assertion_failure_boundary(
         &leaf,
         &witness(CampaignHash::derive("forged", b"prefix"), hash, "target")
-    ));
+    )?);
     assert!(!verify_assertion_failure_boundary(
         &leaf,
         &witness(
@@ -67,20 +71,30 @@ fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
             CampaignHash::derive("forged", b"transition"),
             "target"
         )
-    ));
+    )?);
     assert!(!verify_assertion_failure_boundary(
         &leaf,
         &witness(digest, hash, "unrelated")
-    ));
+    )?);
 
     let duplicate = SchedulerEventLogEntry::assertion_state_observation(
         2,
         VirtualTime { ticks: 2 },
         crucible::AssertionId::from_name("target"),
         AssertionPhase::Violated,
-    );
-    let mut duplicate_leaf = leaf.clone();
-    duplicate_leaf.entries.push(duplicate);
+    )?;
+    let mut duplicate_entries = entries.clone();
+    duplicate_entries.push(duplicate);
+    let duplicate_leaf = admitted_body(ReplayEvidenceBody {
+        scenario,
+        configuration,
+        definitions: leaf.definitions(),
+        entries: duplicate_entries,
+        terminal: leaf.terminal().clone(),
+        stop: leaf.stop(),
+        event_output_custody: None,
+        custody: require_current_custody().map_err(admission)?,
+    })?;
     let duplicate_witness = FindingAssertionFailureBoundary::new(
         duplicate_leaf.id().expect("duplicate trace ID"),
         observation_event_prefix_digest(duplicate_leaf.entries()),
@@ -94,7 +108,8 @@ fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
     assert!(!verify_assertion_failure_boundary(
         &duplicate_leaf,
         &duplicate_witness
-    ));
+    )?);
+    Ok(())
 }
 
 fn node(name: &str) -> NodeId {
@@ -165,6 +180,9 @@ fn definitions() -> MeasurementDefinitions {
 }
 
 fn entries() -> Vec<SchedulerEventLogEntry> {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite measurement trace metadata: {error}"));
+
     let worker = node("worker");
     vec![
         SchedulerEventLogEntry::guest_semantic_marker_observation(
@@ -174,7 +192,8 @@ fn entries() -> Vec<SchedulerEventLogEntry> {
             "begin".to_owned(),
             "request-1".to_owned(),
             Vec::new(),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("begin semantic marker: {error}")),
         SchedulerEventLogEntry::guest_measurement_observation(
             1,
             Icount { retired: 2 },
@@ -183,7 +202,8 @@ fn entries() -> Vec<SchedulerEventLogEntry> {
                 measurement: "request".to_owned(),
                 instance: "request-1".to_owned(),
             },
-        ),
+        )
+        .unwrap_or_else(|error| panic!("measurement begin: {error}")),
         SchedulerEventLogEntry::guest_measurement_observation(
             2,
             Icount { retired: 3 },
@@ -194,7 +214,8 @@ fn entries() -> Vec<SchedulerEventLogEntry> {
                 metric: "guest-value".to_owned(),
                 value: GuestMeasurementValue::Unsigned(7),
             },
-        ),
+        )
+        .unwrap_or_else(|error| panic!("measurement sample: {error}")),
         SchedulerEventLogEntry::guest_measurement_observation(
             3,
             Icount { retired: 4 },
@@ -203,7 +224,8 @@ fn entries() -> Vec<SchedulerEventLogEntry> {
                 measurement: "request".to_owned(),
                 instance: "request-1".to_owned(),
             },
-        ),
+        )
+        .unwrap_or_else(|error| panic!("measurement end: {error}")),
         SchedulerEventLogEntry::guest_semantic_marker_observation(
             4,
             Icount { retired: 5 },
@@ -211,7 +233,8 @@ fn entries() -> Vec<SchedulerEventLogEntry> {
             "end".to_owned(),
             "request-1".to_owned(),
             Vec::new(),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("end semantic marker: {error}")),
     ]
 }
 
@@ -284,12 +307,15 @@ fn evidence_encoding_reason(
     result: Result<CrucibleMeasurementReplayEvidence, CrucibleMeasurementError>,
 ) -> String {
     match result {
-        Err(CrucibleMeasurementError::EvidenceEncoding { reason }) => reason,
+        Err(CrucibleMeasurementError::EvidenceEncoding { reason, .. }) => reason,
         other => panic!("expected evidence encoding error, got {other:?}"),
     }
 }
 
 fn invalid_guest_sample(sequence: u64) -> SchedulerEventLogEntry {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite invalid-sample fixture metadata: {error}"));
+
     SchedulerEventLogEntry::guest_measurement_observation(
         sequence,
         Icount { retired: 2 },
@@ -301,6 +327,7 @@ fn invalid_guest_sample(sequence: u64) -> SchedulerEventLogEntry {
             value: GuestMeasurementValue::Unsigned(7),
         },
     )
+    .unwrap_or_else(|error| panic!("structurally valid guest sample: {error}"))
 }
 
 fn with_forged_hash(entry: &SchedulerEventLogEntry) -> SchedulerEventLogEntry {
@@ -331,6 +358,9 @@ fn with_forged_hash(entry: &SchedulerEventLogEntry) -> SchedulerEventLogEntry {
 
 #[test]
 fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite evidence fixture authority: {error}"));
+
     let definitions = definitions();
     let (scenario, configuration) = identities(b"bound");
     let samples = derive_crucible_measurement_samples(&definitions, &entries())
@@ -391,6 +421,9 @@ fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
 
 #[test]
 fn observation_boundary_evidence_uses_v2_and_round_trips_exact_coordinates() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite evidence fixture authority: {error}"));
+
     let definitions = definitions();
     let (scenario, configuration) = identities(b"observation-boundary");
     let entries = entries();
@@ -446,6 +479,9 @@ fn observation_boundary_evidence_uses_v2_and_round_trips_exact_coordinates() {
 
 #[test]
 fn v2_verifier_rejects_missing_or_wrong_binding() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite evidence fixture authority: {error}"));
+
     let definitions = definitions();
     let (scenario, configuration) = identities(b"bound");
     let publication = evaluate_crucible_measurement_publication(
@@ -520,6 +556,9 @@ fn v2_verifier_rejects_missing_or_wrong_binding() {
 
 #[test]
 fn evidence_decode_rejects_noncanonical_unknown_and_unsupported_input() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite evidence fixture authority: {error}"));
+
     let definitions = definitions();
     let (scenario, configuration) = identities(b"decode");
     let evidence = campaign_evidence(
@@ -533,7 +572,7 @@ fn evidence_decode_rejects_noncanonical_unknown_and_unsupported_input() {
     .expect("evidence");
     let bytes = evidence.canonical_bytes().expect("canonical bytes");
 
-    let mut trailing_space = bytes.clone();
+    let mut trailing_space = bytes.to_vec();
     trailing_space.push(b' ');
     assert!(matches!(
         CrucibleMeasurementReplayEvidence::from_canonical_bytes(&trailing_space),
@@ -581,6 +620,9 @@ fn evidence_decode_rejects_noncanonical_unknown_and_unsupported_input() {
 
 #[test]
 fn evidence_decode_rejects_oversized_declared_container_lengths() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite evidence fixture authority: {error}"));
+
     let bytes = empty_evidence(b"declared-container-bounds")
         .canonical_bytes()
         .expect("canonical bytes");
@@ -630,6 +672,9 @@ fn evidence_decode_rejects_oversized_declared_container_lengths() {
 
 #[test]
 fn campaign_stop_is_explicit_and_round_trips() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite evidence fixture authority: {error}"));
+
     let evidence = empty_evidence(b"canonical-golden");
     let bytes = evidence.canonical_bytes().expect("canonical bytes");
     let decoded = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)
@@ -644,6 +689,9 @@ fn campaign_stop_is_explicit_and_round_trips() {
 
 #[test]
 fn effective_byte_limit_precedes_event_log_replay() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite evidence fixture authority: {error}"));
+
     let definitions = MeasurementDefinitions::empty();
     let (scenario, configuration) = identities(b"budget");
     let valid_entries = entries();
@@ -684,6 +732,9 @@ fn effective_byte_limit_precedes_event_log_replay() {
 
 #[test]
 fn authenticated_log_validation_precedes_guest_normalization() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite evidence fixture authority: {error}"));
+
     let definitions = definitions();
     let valid_entries = entries();
     let non_dense = vec![invalid_guest_sample(0), valid_entries[2].clone()];
@@ -712,6 +763,9 @@ fn authenticated_log_validation_precedes_guest_normalization() {
 
 #[test]
 fn guest_vector_protocol_limit_is_checked_before_normalization() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite evidence fixture authority: {error}"));
+
     let metric = MetricDefinition {
         id: MetricId::parse("vector").expect("metric ID"),
         value_type: MetricValueType::IntegerVector {
@@ -728,4 +782,40 @@ fn guest_vector_protocol_limit_is_checked_before_normalization() {
             + 1
     ]);
     assert!(validate_guest_measurement_value(&oversized, &metric).is_err());
+}
+
+#[test]
+fn event_output_custody_preserves_authenticated_evidence_equality() {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .expect("finite original measurement component account");
+    let definitions = definitions();
+    let (scenario, configuration) = identities(b"event-custody-equality");
+    let mut evidence = campaign_evidence(
+        scenario,
+        configuration,
+        &definitions,
+        entries(),
+        terminal(),
+        MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    )
+    .expect("measurement evidence");
+    let mut outputs = CrucibleMeasurementEventCustody::new().expect("original output table");
+    outputs
+        .retain(
+            crucible::EventLogOutputCustody::retain_current().expect("original event output bank"),
+        )
+        .expect("original table admission");
+    Arc::get_mut(&mut evidence.body)
+        .expect("unpublished unique evidence")
+        .event_output_custody = Some(outputs);
+
+    let encoded = evidence.canonical_bytes().expect("canonical evidence");
+    let decoded = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&encoded)
+        .expect("authenticated decoded evidence");
+
+    assert_eq!(evidence, decoded);
+    assert_eq!(
+        evidence.id().expect("produced ID"),
+        decoded.id().expect("decoded ID")
+    );
 }

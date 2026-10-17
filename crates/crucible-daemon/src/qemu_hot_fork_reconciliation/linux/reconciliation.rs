@@ -1,6 +1,7 @@
 //! Ordered source observation, private-resource release, and target cleanup.
 
 use super::*;
+use crate::QemuAttemptResourceGuard;
 
 impl<G> QemuHotForkReconciliationBackend for LinuxQemuHotForkReconciliationBackend<G>
 where
@@ -51,6 +52,16 @@ where
 
     fn observe_child(&mut self) -> Result<QemuHotForkChildObservation, Self::Error> {
         let state = self.process_owner.observe_child()?;
+        if let Some(custody) = &self.ram_custody {
+            custody
+                .observe_process_disposition(&self.node_process_control())
+                .map_err(|source| {
+                    LinuxQemuHotForkReconciliationError::Source(QemuNodeChannelError::new(
+                        "observe retained RAM process disposition",
+                        source.to_string(),
+                    ))
+                })?;
+        }
         qmp_child_observation(state)
     }
 
@@ -117,7 +128,7 @@ where
         // The child's pinned run-directory descriptors go first so the target
         // guard's storage cleanup never races an authority this owner holds.
         self.run_directory = None;
-        self.target.finish().map_err(Into::into)
+        self.target.finish_member().map_err(Into::into)
     }
 
     fn release_source_status(

@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn resolve_quantum_processes_frame_and_io_at_exact_delivery_icount_in_total_order() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let frame_producer = scheduler_node("alpha-frame", SchedulingNodeKind::Vm);
     let disk = scheduler_node("beta-disk", SchedulingNodeKind::Disk);
@@ -62,6 +65,9 @@ fn resolve_quantum_processes_frame_and_io_at_exact_delivery_icount_in_total_orde
 
 #[test]
 fn resolve_due_events_are_independent_of_pending_transport_order() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let other = scheduler_node("other", SchedulingNodeKind::Vm);
     let producer_a = scheduler_node("producer-a", SchedulingNodeKind::Vm);
@@ -104,6 +110,9 @@ fn resolve_due_events_are_independent_of_pending_transport_order() {
 
 #[test]
 fn resolve_rejects_backend_input_with_mismatched_payload_target() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let producer = scheduler_node("producer", SchedulingNodeKind::Vm);
     let mut event = backend_event(4, &consumer, &producer, 0, b"wrong-target");
@@ -122,6 +131,9 @@ fn resolve_rejects_backend_input_with_mismatched_payload_target() {
 
 #[test]
 fn resolve_rejects_late_event_before_advanced_frontier() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let producer = scheduler_node("producer", SchedulingNodeKind::Vm);
     let event = backend_event(3, &consumer, &producer, 0, b"late");
@@ -139,6 +151,9 @@ fn resolve_rejects_late_event_before_advanced_frontier() {
 
 #[test]
 fn single_scheduler_rejects_self_delivery_that_would_be_late() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "resolve-late-self-delivery",
@@ -163,6 +178,9 @@ fn single_scheduler_rejects_self_delivery_that_would_be_late() {
 
 #[test]
 fn resolve_leaves_future_backend_input_unvalidated_until_due() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let producer = scheduler_node("producer", SchedulingNodeKind::Vm);
     let mut event = backend_event(9, &consumer, &producer, 0, b"future-wrong-target");
@@ -180,6 +198,9 @@ fn resolve_leaves_future_backend_input_unvalidated_until_due() {
 
 #[test]
 fn resolve_rejects_io_completion_with_non_exact_delivery_tick() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let disk = scheduler_node("disk", SchedulingNodeKind::Disk);
     let mut pending = vec![io_event_at_virtual_time(

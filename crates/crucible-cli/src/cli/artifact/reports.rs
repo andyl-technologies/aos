@@ -13,6 +13,7 @@ pub(crate) struct ReplayArtifactReport {
     pub(crate) to_savepoint: Option<ReplayToSavepointReport>,
     pub(crate) check: Option<ReplayCheckReport>,
     pub(crate) bisect: Option<ReplayBisectionReport>,
+    pub(crate) _input_custody: Option<crucible_session::engine::owned_decode::DecodeCustody>,
 }
 
 #[derive(Debug)]
@@ -26,7 +27,7 @@ pub(crate) struct ReplayLiveQemuProof {
     pub(crate) fingerprint_stream_digest: String,
     pub(crate) controls: usize,
     pub(crate) host_scheduler_preemption:
-        Option<crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot>,
+        Option<crucible_daemon::BoundedSchedulerPreemptionEvidenceSnapshot>,
 }
 
 #[derive(Debug)]

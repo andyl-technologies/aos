@@ -9,7 +9,7 @@
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::os::unix::ffi::OsStringExt;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -343,6 +343,22 @@ impl AnchoredDirectory {
         maximum: usize,
         operation: &'static str,
     ) -> Result<Vec<OsString>, AnchoredFsError> {
+        let mut names = Vec::new();
+        self.visit_entry_names_bounded(maximum, operation, &mut |name| {
+            names.push(name.to_os_string());
+            true
+        })?;
+        Ok(names)
+    }
+
+    /// Streams names from the retained inode without a whole-directory index.
+    /// Returns false when the visitor stops; excessive inventory remains an error.
+    pub(crate) fn visit_entry_names_bounded(
+        &self,
+        maximum: usize,
+        operation: &'static str,
+        visitor: &mut dyn FnMut(&std::ffi::OsStr) -> bool,
+    ) -> Result<bool, AnchoredFsError> {
         self.verify_path_binding()?;
         let descriptor = openat2(
             &self.directory,
@@ -354,22 +370,26 @@ impl AnchoredDirectory {
         .map_err(|source| errno_error(operation, &self.path, source))?;
         let mut buffer = Vec::<u8>::with_capacity(64 * 1024);
         let mut entries = RawDir::new(descriptor, buffer.spare_capacity_mut());
-        let mut names = Vec::new();
+        let mut visited = 0;
         while let Some(entry) = entries.next() {
             let entry = entry.map_err(|source| errno_error(operation, &self.path, source))?;
             let bytes = entry.file_name().to_bytes();
             if bytes == b"." || bytes == b".." {
                 continue;
             }
-            if names.len() == maximum {
+            if visited == maximum {
                 return Err(AnchoredFsError::InvalidPath {
                     path: self.path.clone(),
                 });
             }
-            names.push(OsString::from_vec(bytes.to_vec()));
+            visited += 1;
+            if !visitor(std::ffi::OsStr::from_bytes(bytes)) {
+                self.verify_path_binding()?;
+                return Ok(false);
+            }
         }
         self.verify_path_binding()?;
-        Ok(names)
+        Ok(true)
     }
 
     /// Opens an existing regular descendant without following symbolic links.

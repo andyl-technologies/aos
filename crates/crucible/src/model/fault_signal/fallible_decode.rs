@@ -240,16 +240,22 @@ where
             values
                 .try_reserve_exact(count)
                 .map_err(|_| serde::de::Error::custom(allocation_message(requested)))?;
-            for _ in 0..count {
-                let value = sequence
-                    .next_element()?
-                    .ok_or_else(|| serde::de::Error::custom("truncated fault-artifact sequence"))?;
+            // Serde's size hint is an allocation hint, not a declared wire
+            // length. The original-account adapter deliberately supplies zero
+            // so a nested visitor cannot preallocate from an untrusted count.
+            while let Some(value) = sequence.next_element()? {
+                if values.len() == values.capacity() {
+                    let additional = values.capacity().max(1);
+                    let requested = u64::try_from(additional)
+                        .ok()
+                        .and_then(|count| count.checked_mul(element_bytes as u64))
+                        .unwrap_or(u64::MAX);
+                    admit_owned_bytes(requested).map_err(serde::de::Error::custom)?;
+                    values
+                        .try_reserve_exact(additional)
+                        .map_err(|_| serde::de::Error::custom(allocation_message(requested)))?;
+                }
                 values.push(value);
-            }
-            if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                return Err(serde::de::Error::custom(
-                    "fault-artifact sequence exceeds its declared length",
-                ));
             }
             Ok(values)
         }
@@ -342,6 +348,33 @@ mod tests {
         let decoded = serde_json::from_str::<FallibleU64Vec>("[1,2]")
             .unwrap_or_else(|error| panic!("streaming JSON sequence should decode: {error}"));
         assert_eq!(decoded.0, vec![1, 2]);
+    }
+
+    #[test]
+    fn original_account_zero_hint_preserves_nonempty_sequence_values() {
+        let _scope = crate::test_support::fixture_decode_scope(64 * 1024)
+            .unwrap_or_else(|error| panic!("finite original account: {error}"));
+        let decoded = crate::owned_decode::from_json_slice::<FallibleU64Vec>(b"[1,2,3]")
+            .unwrap_or_else(|error| panic!("zero allocation hint must preserve values: {error}"));
+        assert_eq!(decoded.0, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn zero_hint_growth_still_enforces_the_authored_artifact_limit() {
+        let _scope = crate::test_support::fixture_decode_scope(64 * 1024)
+            .unwrap_or_else(|error| panic!("finite original account: {error}"));
+        let _guard = DecodeBudgetGuard::enter(FaultResourceLimits {
+            fat_checkpoint_bytes: 8,
+            ..FaultResourceLimits::default()
+        });
+        let error = crate::owned_decode::from_json_slice::<FallibleU64Vec>(b"[1,2]")
+            .err()
+            .unwrap_or_else(|| panic!("second owned slot must exceed the eight-byte limit"));
+        assert!(
+            error
+                .to_string()
+                .contains("crucible-resource-limit|fat_checkpoint_bytes|8|8|8|")
+        );
     }
 
     #[test]

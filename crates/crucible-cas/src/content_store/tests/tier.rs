@@ -53,6 +53,7 @@ fn graph_marks_every_non_write_tier_as_reconstructible_cache() {
     let cache = node_id("cache");
     let source = node_id("source");
     let (_, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -79,12 +80,14 @@ fn graph_marks_every_non_write_tier_as_reconstructible_cache() {
                 cache.clone(),
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1_024,
+                    max_objects: 16,
                 },
             ),
             (
                 source.clone(),
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1_024,
+                    max_objects: 16,
                 },
             ),
         ]),
@@ -113,6 +116,7 @@ fn stopped_owner_repairs_one_physical_copy_from_an_independent_source() {
     let source_root = temporary.path().join("source");
     let target_root = temporary.path().join("target");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: tiered.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
         nodes: BTreeMap::from([
@@ -507,12 +511,12 @@ fn partial_write_through_is_retryable() {
 fn streaming_sources_are_reopenable_and_length_checked() {
     let temp = TempDir::new().expect("temporary directory");
     let store = DirectoryBlobBackend::new("directory", temp.path().join("blobs"));
-    let source = Arc::new(RepeatSource {
+    let source = RepeatSource {
         byte: 0xab,
         logical_length: 4 * 1024 * 1024,
-    });
-    let id = ContentId::for_source(ObjectKind::RamExtent, 1, source.as_ref())
-        .expect("stream source identity");
+    };
+    let id =
+        ContentId::for_source(ObjectKind::RamExtent, 1, &source).expect("stream source identity");
     let source = BlobHandle::new(source);
     let receipt = store
         .put_if_absent(id, &source)
@@ -545,12 +549,12 @@ fn streaming_sources_are_reopenable_and_length_checked() {
         vec![0xab; 16]
     );
 
-    let too_long = Arc::new(MismatchedLengthSource {
+    let too_long = MismatchedLengthSource {
         declared: 2,
         bytes: b"abc",
-    });
+    };
     assert!(matches!(
-        ContentId::for_source(ObjectKind::Trace, 1, too_long.as_ref()),
+        ContentId::for_source(ObjectKind::Trace, 1, &too_long),
         Err(StoreError::InvalidSourceLength { .. })
     ));
     let expected = ContentId::for_bytes(ObjectKind::Trace, 1, b"ab");
@@ -569,10 +573,10 @@ fn streaming_sources_are_reopenable_and_length_checked() {
         Err(StoreError::InvalidSourceLength { .. })
     ));
 
-    let enormous = BlobHandle::new(Arc::new(MismatchedLengthSource {
+    let enormous = BlobHandle::new(MismatchedLengthSource {
         declared: u64::MAX,
         bytes: b"",
-    }));
+    });
     assert!(matches!(
         enormous.read_all(u64::MAX),
         Err(StoreError::Quota)
@@ -588,6 +592,7 @@ fn verification_evidence_bounds_source_passes_through_a_mirror_graph() {
     let directory = node_id("directory");
     let memory = node_id("memory");
     let graph = StoreGraph::build(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([
@@ -619,6 +624,7 @@ fn verification_evidence_bounds_source_passes_through_a_mirror_graph() {
                 memory,
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1024 * 1024,
+                    max_objects: 16,
                 },
             ),
         ]),
@@ -627,11 +633,11 @@ fn verification_evidence_bounds_source_passes_through_a_mirror_graph() {
     let bytes = vec![0x5a; 128 * 1024];
     let opens = Arc::new(AtomicUsize::new(0));
     let bytes_read = Arc::new(AtomicUsize::new(0));
-    let source = BlobHandle::new(Arc::new(CountingSource {
+    let source = BlobHandle::new(CountingSource {
         bytes: Arc::from(bytes.clone()),
         opens: opens.clone(),
         bytes_read: bytes_read.clone(),
-    }));
+    });
     let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &bytes);
     let receipt = graph
         .put_if_absent(id, &source)
@@ -697,11 +703,11 @@ fn changing_and_failing_sources_leave_no_published_object_or_staging_file() {
     let verified = super::composition::VerifiedStore::new("verified", directory.clone());
     let expected_bytes = b"first opening is valid";
     let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, expected_bytes);
-    let source = BlobHandle::new(Arc::new(ChangingSource {
+    let source = BlobHandle::new(ChangingSource {
         opens: AtomicUsize::new(0),
         first: expected_bytes,
         later: b"second opening differs",
-    }));
+    });
     assert!(matches!(
         verified.put_if_absent(id, &source),
         Err(StoreError::Corrupt { .. })
@@ -715,10 +721,10 @@ fn changing_and_failing_sources_leave_no_published_object_or_staging_file() {
 
     let failing_bytes = b"reader fails in the middle";
     let failing_id = ContentId::for_bytes(ObjectKind::Trace, 1, failing_bytes);
-    let failing = BlobHandle::new(Arc::new(FailingSource {
+    let failing = BlobHandle::new(FailingSource {
         bytes: failing_bytes,
         fail_after: 8,
-    }));
+    });
     assert!(matches!(
         directory.put_if_absent(failing_id, &failing),
         Err(StoreError::StreamIo { .. })
@@ -816,16 +822,19 @@ fn closed_store_graph_routes_shared_leaves_and_is_introspectable() {
             metadata_cache,
             StoreNodeSpec::Memory {
                 max_logical_bytes: 1_024,
+                max_objects: 16,
             },
         ),
         (
             ram_cache,
             StoreNodeSpec::Memory {
                 max_logical_bytes: 1_024,
+                max_objects: 16,
             },
         ),
     ]);
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact, ObjectKind::RamExtent]),
         nodes,
@@ -904,6 +913,7 @@ fn durability_policy_enforces_distinct_placements_and_exact_kind_coverage() {
     let second = node_id("second");
     let requirement = DurabilityRequirement::new(2, false).expect("durability requirement");
     let config = |requirement| StoreGraphConfig {
+        gc_mark_root: None,
         root: policy.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([
@@ -964,6 +974,7 @@ fn durability_policy_enforces_distinct_placements_and_exact_kind_coverage() {
     let golden_first = node_id("first");
     let golden_second = node_id("second");
     let golden = StoreGraph::build(StoreGraphConfig {
+        gc_mark_root: None,
         root: golden_policy.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([
@@ -997,10 +1008,11 @@ fn durability_policy_enforces_distinct_placements_and_exact_kind_coverage() {
     .expect("golden durability graph");
     assert_eq!(
         encode_hex(&golden.configuration_id().as_bytes()),
-        "fa61d3d1f852797e8ee40f8147f18cb2c2df1cdad172db82ddda9a968b5b39c5"
+        "6834a35f318b46a44139095370e99ea8337f456706c5580af782965ddf6f585a"
     );
 
     let missing = StoreGraph::build(StoreGraphConfig {
+        gc_mark_root: None,
         root: policy.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([
@@ -1028,6 +1040,7 @@ fn durability_policy_enforces_distinct_placements_and_exact_kind_coverage() {
     ));
 
     let extraneous = StoreGraph::build(StoreGraphConfig {
+        gc_mark_root: None,
         root: policy.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([
@@ -1066,6 +1079,7 @@ fn durability_policy_rejects_duplicate_receipts_and_unadmitted_deferral() {
     let directory = node_id("directory");
     let requirement = DurabilityRequirement::new(2, false).expect("durability requirement");
     let duplicate = StoreGraph::build(StoreGraphConfig {
+        gc_mark_root: None,
         root: policy.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([
@@ -1109,6 +1123,7 @@ fn durability_policy_rejects_duplicate_receipts_and_unadmitted_deferral() {
     let staging = node_id("staging");
     let destination = node_id("destination");
     let deferred_config = |allow_deferred_write| StoreGraphConfig {
+        gc_mark_root: None,
         root: policy.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact, ObjectKind::Finding]),
         nodes: BTreeMap::from([
@@ -1205,6 +1220,7 @@ fn durability_policy_rejects_duplicate_receipts_and_unadmitted_deferral() {
     ));
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: policy.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([
@@ -1222,6 +1238,7 @@ fn durability_policy_rejects_duplicate_receipts_and_unadmitted_deferral() {
                     directory,
                     StoreNodeSpec::Memory {
                         max_logical_bytes: 1_024,
+                        max_objects: 16,
                     },
                 ),
             ]),

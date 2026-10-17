@@ -5,6 +5,8 @@
 //! `setup_complete`, and retains a request before asking QEMU to enter VMStop.
 //! Semantic narrowing and reply selection stay outside the GPL-side process.
 
+pub(super) mod reset;
+
 use crucible_protocol::SelectionReply;
 use crucible_protocol::selectable_catalog_plan::{
     SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
@@ -44,6 +46,7 @@ pub(super) struct LiveSelectableState {
     vmstop_handoff: Arc<super::super::live_callbacks::SelectableVmstopHandoff>,
     reply_input: LiveSelectableReplyShmemConsumer,
     catalog_events_enabled: bool,
+    reset: reset::ResetSettlement,
 }
 
 /// Pinned raw consumer view of the VM-local host-to-plugin reply ring.
@@ -170,6 +173,7 @@ impl LiveSelectableState {
         let (catalog, restore_catalog) = SelectableCatalog::launch_pair_from_plan(plan)?;
         Ok(Self {
             capability,
+            reset: reset::ResetSettlement::default(),
             catalog,
             restore_catalog: Some(restore_catalog),
             force_vcpu_tb_exit,
@@ -330,6 +334,11 @@ impl LiveSelectableState {
 
     /// Swaps the exact preallocated continuation after VMState load.
     pub(super) fn restore_continuation(&mut self) -> Result<(), LiveWhiteboxError> {
+        if self.reset.blocks_restore() {
+            return Err(callback_error(
+                "correlated reset retains the selectable catalog until settlement",
+            ));
+        }
         let restored = self
             .restore_catalog
             .take()

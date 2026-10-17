@@ -1,11 +1,19 @@
 //! Durable 9p device snapshots and canonical codecs.
 
+#[path = "snapshot/fid_seed.rs"]
+mod fid_seed;
+#[path = "snapshot/server_seed.rs"]
+mod server_seed;
+#[path = "snapshot/wire_seed.rs"]
+mod wire_seed;
+
 use super::*;
+use crate::DeviceSnapshotAllocation;
 use crate::ninep::HARD_NINEP_OBJECT_VERSIONS;
 use crate::ninep::server::{FidEntry, FidState};
 use crate::snapshot_codec::{
-    BoundedVec, SnapshotEncodeError, SnapshotResourceError, admit_input, encode_prefixed,
-    map_decode_error,
+    BoundedVec, SnapshotEncodeError, SnapshotResourceError, admit_input,
+    encode_prefixed_with_admission, map_decode_error,
 };
 use crate::subnode::IoCoreSnapshotCodecError;
 use serde::ser::SerializeSeq;
@@ -54,9 +62,36 @@ type SnapshotDirectives =
     BoundedVec<(NinepRequestIdentity, ResolvedNinepRequestDirective), MAX_NINEP_DIRECTIVES>;
 type SnapshotVirtualFids = BoundedVec<(u32, NinepVirtualFid), MAX_NINEP_FIDS>;
 
+/// Borrows the exact allocation callback for the concrete ninep wire tables.
+///
+/// The callback is carried directly into every custom bounded table. The caller
+/// supplies the enclosing parser and retains the accepted allocations' custody;
+/// this seed neither discovers an account nor grants a funded output owner.
+pub struct NinepSnapshotWireSeed<'a, 'callback> {
+    inner: wire_seed::NinepWireSeed<'a, 'callback>,
+}
+
+/// Retains a decoded wire until the device codec validates its continuation.
+///
+/// Its fields are private so an injected parser cannot fabricate device state
+/// or extract the intermediate tables outside the codec's validation route.
+pub struct DecodedNinepSnapshotWire {
+    wire: NinepSnapshotWire,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for NinepSnapshotWireSeed<'_, '_> {
+    type Value = DecodedNinepSnapshotWire;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        self.inner
+            .deserialize(decoder)
+            .map(|wire| DecodedNinepSnapshotWire { wire })
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct NinepSnapshotWire {
+pub(crate) struct NinepSnapshotWire {
     core: SnapshotBytes,
     server: NinepServerWire,
     latency: [u64; 3],
@@ -69,7 +104,7 @@ struct NinepSnapshotWire {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct NinepServerWire {
+pub(crate) struct NinepServerWire {
     msize: u32,
     negotiated: bool,
     fids: SnapshotFids,
@@ -77,7 +112,7 @@ struct NinepServerWire {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FidEntryWire {
+pub(crate) struct FidEntryWire {
     path: SnapshotPath,
     state: FidState,
 }
@@ -183,12 +218,29 @@ impl NinepSnapshot {
         &self,
         maximum: u64,
     ) -> Result<Vec<u8>, NinepSnapshotCodecError> {
+        self.to_canonical_bytes_with_admission(maximum, &mut |_| Ok(()))
+    }
+
+    fn to_canonical_bytes_with_admission(
+        &self,
+        maximum: u64,
+        admit_allocation: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+    ) -> Result<Vec<u8>, NinepSnapshotCodecError> {
         admit_ninep_snapshot_resources(self)?;
         validate_ninep_snapshot(self, maximum)?;
         let wire = NinepSnapshotEncodeWire {
             core: bounded_bytes(
                 self.core
-                    .canonical_bytes_with_limit(maximum.min(MAX_NINEP_SNAPSHOT_BYTES))
+                    .canonical_bytes_with_admission(
+                        maximum.min(MAX_NINEP_SNAPSHOT_BYTES),
+                        &mut |bytes| {
+                            admit_allocation(bytes).map_err(|_| {
+                                IoCoreSnapshotCodecError::Malformed(
+                                    "original validation output refused",
+                                )
+                            })
+                        },
+                    )
                     .map_err(map_io_core_error)?,
                 "9p I/O core bytes",
             )?,
@@ -208,12 +260,13 @@ impl NinepSnapshot {
             virtual_fids: SnapshotVirtualFidsRef(&self.virtual_fids),
             session_epoch: self.session_epoch,
         };
-        encode_prefixed(
+        encode_prefixed_with_admission(
             &wire,
             NINEP_SNAPSHOT_MAGIC,
             "9p snapshot bytes",
             maximum,
             MAX_NINEP_SNAPSHOT_BYTES,
+            admit_allocation,
         )
         .map_err(map_encode_error)
     }
@@ -252,23 +305,109 @@ impl NinepSnapshot {
         let wire: NinepSnapshotWire = ciborium::de::from_reader(payload).map_err(|error| {
             map_decode_error(error).map_or(NinepSnapshotCodecError::Malformed, map_resource_error)
         })?;
+        Self::finish_decoded_wire(bytes, maximum, wire, &mut |_| Ok(()), &mut |_| Ok(()))
+    }
+
+    /// Decodes custom wire tables through a supplied borrowed parser seed.
+    ///
+    /// The parser must use the same saved enclosing account as `admit_table`.
+    /// Each callback receives the checked element-table extent before that
+    /// table's reservation. Nested ordinary serde members are the supplied
+    /// parser's responsibility. The collection callback names each actual map
+    /// insertion and transformed fid table before allocation. Nested codecs,
+    /// validation and canonical output retain their separate purposes.
+    /// This method does not certify complete device allocation payment.
+    ///
+    /// # Errors
+    /// Returns the supplied decoder error or the same structural, resource,
+    /// nested-state and canonical failures as the ordinary codec. An admission
+    /// callback error is a fixed serde relay; its owner retains the typed cause.
+    pub fn from_canonical_bytes_with_wire_decoder<F>(
+        bytes: &[u8],
+        maximum: u64,
+        admit_table: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+        admit_collection: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+        decode: F,
+    ) -> Result<Self, NinepSnapshotCodecError>
+    where
+        F: for<'a, 'callback> FnOnce(
+            &[u8],
+            NinepSnapshotWireSeed<'a, 'callback>,
+        ) -> Result<
+            DecodedNinepSnapshotWire,
+            ciborium::de::Error<std::io::Error>,
+        >,
+    {
+        let payload = bytes
+            .strip_prefix(NINEP_SNAPSHOT_MAGIC)
+            .ok_or(NinepSnapshotCodecError::Version)?;
+        admit_input(
+            bytes,
+            "9p snapshot bytes",
+            maximum,
+            MAX_NINEP_SNAPSHOT_BYTES,
+        )
+        .map_err(map_resource_error)?;
+
+        let admission = std::cell::RefCell::new(&mut *admit_table);
+        let decoded = decode(
+            payload,
+            NinepSnapshotWireSeed {
+                inner: wire_seed::NinepWireSeed {
+                    admission: &admission,
+                },
+            },
+        )
+        .map_err(|error| {
+            map_decode_error(error).map_or(NinepSnapshotCodecError::Malformed, map_resource_error)
+        })?;
+        let admit_table = admission.into_inner();
+        Self::finish_decoded_wire(bytes, maximum, decoded.wire, admit_table, admit_collection)
+    }
+
+    fn finish_decoded_wire(
+        bytes: &[u8],
+        maximum: u64,
+        wire: NinepSnapshotWire,
+        admit_allocation: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+        admit_collection: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+    ) -> Result<Self, NinepSnapshotCodecError> {
         let snapshot = Self {
-            core: IoCoreSnapshot::from_canonical_bytes_with_limit(
+            core: IoCoreSnapshot::from_canonical_bytes_with_admission(
                 wire.core.as_slice(),
                 maximum.min(MAX_NINEP_SNAPSHOT_BYTES),
+                &mut |bytes| {
+                    admit_allocation(bytes).map_err(|_| {
+                        IoCoreSnapshotCodecError::Malformed(
+                            "original device snapshot allocation refused",
+                        )
+                    })
+                },
             )
             .map_err(map_io_core_error)?,
-            server: decode_server(wire.server)?,
+            server: decode_server(wire.server, admit_collection)?,
             latency: NinepLatency::new(wire.latency[0], wire.latency[1], wire.latency[2]),
             require_fault_directives: wire.require_fault_directives,
-            directives: collect_strict(wire.directives.into_inner())?,
+            directives: collect_strict(
+                wire.directives.into_inner(),
+                DeviceSnapshotAllocation::NinepDirective,
+                admit_collection,
+            )?,
             visibility: wire.visibility,
-            virtual_fids: collect_strict(wire.virtual_fids.into_inner())?,
+            virtual_fids: collect_strict(
+                wire.virtual_fids.into_inner(),
+                DeviceSnapshotAllocation::NinepVirtualFid,
+                admit_collection,
+            )?,
             session_epoch: wire.session_epoch,
         };
         admit_ninep_snapshot_resources(&snapshot)?;
         validate_ninep_snapshot(&snapshot, maximum)?;
-        if snapshot.to_canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
+        if snapshot
+            .to_canonical_bytes_with_admission(maximum, admit_allocation)?
+            .as_slice()
+            != bytes
+        {
             return Err(NinepSnapshotCodecError::Noncanonical);
         }
         Ok(snapshot)
@@ -313,31 +452,47 @@ pub enum NinepSnapshotCodecError {
 
 fn collect_strict<K: Ord, V>(
     entries: Vec<(K, V)>,
+    allocation: DeviceSnapshotAllocation,
+    admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
 ) -> Result<BTreeMap<K, V>, NinepSnapshotCodecError> {
     if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
         return Err(NinepSnapshotCodecError::Noncanonical);
     }
-    Ok(entries.into_iter().collect())
+
+    let mut decoded = BTreeMap::new();
+    for (key, value) in entries {
+        admit(allocation).map_err(|_| NinepSnapshotCodecError::Nested)?;
+        decoded.insert(key, value);
+    }
+    Ok(decoded)
 }
 
-fn decode_server(wire: NinepServerWire) -> Result<NinepServerSnapshot, NinepSnapshotCodecError> {
+fn decode_server(
+    wire: NinepServerWire,
+    admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+) -> Result<NinepServerSnapshot, NinepSnapshotCodecError> {
+    let entries = wire.fids.into_inner();
+    admit(DeviceSnapshotAllocation::NinepFidTable {
+        entries: entries.len(),
+    })
+    .map_err(|_| NinepSnapshotCodecError::Nested)?;
+    let mut fids = Vec::new();
+    fids.try_reserve_exact(entries.len())
+        .map_err(|_| NinepSnapshotCodecError::Nested)?;
+    for (fid, entry) in entries {
+        fids.push((
+            fid,
+            FidEntry {
+                path: entry.path.into_inner(),
+                state: entry.state,
+            },
+        ));
+    }
+
     Ok(NinepServerSnapshot {
         msize: wire.msize,
         negotiated: wire.negotiated,
-        fids: wire
-            .fids
-            .into_inner()
-            .into_iter()
-            .map(|(fid, entry)| {
-                (
-                    fid,
-                    FidEntry {
-                        path: entry.path.into_inner(),
-                        state: entry.state,
-                    },
-                )
-            })
-            .collect(),
+        fids,
     })
 }
 

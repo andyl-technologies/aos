@@ -19,10 +19,12 @@ ciborium = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 crucible-campaign = { workspace = true }
 crucible-cas = { workspace = true }
+crucible-ram = { path = "../crucible-ram" }
 crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
 crucible-protocol = { path = "../crucible-protocol" }
-regex = { workspace = true }
+regex-syntax = { workspace = true }
+regex-automata = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -30,6 +32,10 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crucible-linux-resource = { path = "../crucible-linux-resource", default-features = false, features = ["test-support"] }
+crucible-cas = { workspace = true, features = ["test-support"] }
+regex = { workspace = true }
+tempfile = { workspace = true }
 crucible-shmem = { path = "../crucible-shmem" }
 crucible-harness = { path = "../crucible-harness" }
 

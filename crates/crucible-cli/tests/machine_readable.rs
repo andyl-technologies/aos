@@ -12,12 +12,18 @@ use crucible_session::engine as crucible;
 use serde_json::Value;
 use tempfile::TempDir;
 
+#[path = "support/input_scope.rs"]
+mod input_scope;
+
 #[path = "support/machine.rs"]
 mod machine_support;
 use machine_support::*;
 
 #[test]
 fn cli_exit_machine_readable_process_stdout_is_pure_json() -> Result<(), Box<dyn Error>> {
+    let resources = input_scope::open()?;
+    resources.authority.verify()?;
+    let _original = resources.decoding.enter();
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let scenario = temp.path().join("scenario.toml");
@@ -46,6 +52,9 @@ fn cli_exit_machine_readable_process_stdout_is_pure_json() -> Result<(), Box<dyn
 
 #[test]
 fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Error>> {
+    let resources = input_scope::open()?;
+    resources.authority.verify()?;
+    let _original = resources.decoding.enter();
     let temp = TempDir::new()?;
     let trace = temp.path().join("selftest.jsonl");
     let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
@@ -90,6 +99,9 @@ fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Er
 
 #[test]
 fn cli_save_machine_readable_jsonl_rejects_session_owned_export() -> Result<(), Box<dyn Error>> {
+    let resources = input_scope::open()?;
+    resources.authority.verify()?;
+    let _original = resources.decoding.enter();
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let scenario = temp.path().join("scenario.toml");
@@ -128,6 +140,9 @@ fn cli_save_machine_readable_jsonl_rejects_session_owned_export() -> Result<(), 
 #[test]
 fn cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome() -> Result<(), Box<dyn Error>>
 {
+    let resources = input_scope::open()?;
+    resources.authority.verify()?;
+    let _original = resources.decoding.enter();
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let scenario = temp.path().join("scenario.toml");
@@ -191,6 +206,9 @@ fn cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome() -> Result
 #[test]
 fn cli_exit_machine_readable_search_retained_evidence_failure_jsonl_reports_final_outcome()
 -> Result<(), Box<dyn Error>> {
+    let resources = input_scope::open()?;
+    resources.authority.verify()?;
+    let _original = resources.decoding.enter();
     let temp = TempDir::new()?;
     let scenario = temp.path().join("retained-search-scenario.toml");
     let retained_evidence = temp.path().join("retained-evidence.toml");
@@ -235,6 +253,9 @@ fn cli_exit_machine_readable_search_retained_evidence_failure_jsonl_reports_fina
 #[test]
 fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Result<(), Box<dyn Error>>
 {
+    let resources = input_scope::open()?;
+    resources.authority.verify()?;
+    let _original = resources.decoding.enter();
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let scenario = temp.path().join("scenario.toml");
@@ -335,6 +356,9 @@ fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Resul
 #[test]
 fn cli_exit_machine_readable_replay_error_reports_one_failed_outcome() -> Result<(), Box<dyn Error>>
 {
+    let resources = input_scope::open()?;
+    resources.authority.verify()?;
+    let _original = resources.decoding.enter();
     let temp = TempDir::new()?;
     let artifact = temp.path().join("malformed.crucible");
     fs::write(&artifact, "not a reproduction artifact")?;
@@ -355,6 +379,9 @@ fn cli_exit_machine_readable_replay_error_reports_one_failed_outcome() -> Result
 #[test]
 fn cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome()
 -> Result<(), Box<dyn Error>> {
+    let resources = input_scope::open()?;
+    resources.authority.verify()?;
+    let _original = resources.decoding.enter();
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("replay-to-artifacts");
     let fixture = replay_to_savepoint_process_fixture(temp.path())?;

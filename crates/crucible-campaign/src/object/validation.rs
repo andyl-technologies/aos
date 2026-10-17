@@ -4,6 +4,10 @@ use super::*;
 
 impl ObjectEnvelope {
     pub(super) fn validate_record_body(&self) -> Result<(), CampaignCodecError> {
+        // Body reconstruction and its expected child table are borrowed
+        // authentication work; the envelope retains only its original fields.
+        let validation_budget = crucible_cas::owned_decode::current_child_budget()?;
+        let _scope = validation_budget.as_ref().map(|budget| budget.enter());
         if matches!(
             self.record_kind,
             CampaignRecordKind::Policy
@@ -43,6 +47,9 @@ impl ObjectEnvelope {
             }
         }
         let expected = expected_children(self.record_kind, self.envelope.body())?;
+        if let Some(budget) = &validation_budget {
+            budget.check()?;
+        }
         if expected != *self.envelope.children() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "campaign record child table disagrees with its body",

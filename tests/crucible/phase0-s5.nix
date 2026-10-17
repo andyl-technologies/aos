@@ -7,6 +7,10 @@
   linuxResetSource = builtins.readFile ./phase0-s5-linux-reset.S;
   linuxResetLinkerScript = builtins.readFile ./x86-direct-reset.ld;
   rrSwitchQuantum = 4096;
+  ramObserver = pkgs.callPackage ../../pkgs/emulation/crucible-qemu-plugin.nix {
+    nativeConformance = true;
+  };
+  correspondingSource = pkgs.callPackage ../../pkgs/emulation/qemu-crucible-source.nix {};
   # QEMU's 4 GHz TSC advances once per 250 ps. Supply that known rate and
   # skip delay calibration, while the test-only APIC patch supplies its known
   # 1 GHz period. The default waits exhaust sim's 50 ps/instruction boot budget.
@@ -444,7 +448,9 @@ in
                   capture_status,
                   digest_status,
                   ram_bytes,
-                  ram_material_length,
+                  ram_logical_edition,
+                  ram_scope,
+                  ram_root,
                   device_bytes,
                   device_material_length,
                   register_counts
@@ -500,9 +506,10 @@ in
               -chardev file,id=serial0,path="$serial" \
               -serial chardev:serial0 \
               -qmp "unix:$qmp_socket,server=on,wait=off" \
+              -plugin "${ramObserver}/lib/libcrucible_qemu_plugin.so,ram_metadata_budget=268435456" \
               -plugin "$plugin",out="$trace",read="$read_mode",expected_markers=3,vcpus=1,activate-vaddr="$activation_vaddr" \
               -no-shutdown \
-              -no-reboot &
+              -no-reboot 2>"$TMPDIR/ram-observer-$label.log" &
             qemu_pid="$!"
 
             wait_for_socket "$qmp_socket" "$deadline" || fail "$label QMP socket did not appear"
@@ -517,6 +524,10 @@ in
               fail "$label could not quit QEMU after marker pause"
             wait "$qemu_pid" || fail "$label QEMU exited unsuccessfully"
             qemu_pid=""
+            grep -Fq CRUCIBLE-RAM-ORACLE-PASS "$TMPDIR/ram-observer-$label.log" \
+              || fail "$label did not qualify the canonical RAM root"
+            ! grep -Fq CRUCIBLE-RAM-ORACLE-FAIL "$TMPDIR/ram-observer-$label.log" \
+              || fail "$label RAM root disagreed with the native oracle"
           }
 
           assert_read_trace() {
@@ -557,7 +568,10 @@ in
                 and .capture_status == 0
                 and .digest_status == 0
                 and .ram_bytes > 0
-                and .ram_material_length > .ram_bytes
+                and .ram_logical_edition == 1
+                and .ram_scope == 0
+                and (.ram_root | test("^[0-9a-f]{64}$"))
+                and .ram_root != "0000000000000000000000000000000000000000000000000000000000000000"
                 and .device_bytes > 0
                 and .device_material_length > .device_bytes
                 and (.register_counts | type == "array")
@@ -601,7 +615,10 @@ in
                 and .capture_status == 0
                 and .digest_status == 0
                 and .ram_bytes > 0
-                and .ram_material_length > .ram_bytes
+                and .ram_logical_edition == 1
+                and .ram_scope == 0
+                and (.ram_root | test("^[0-9a-f]{64}$"))
+                and .ram_root != "0000000000000000000000000000000000000000000000000000000000000000"
                 and .device_bytes > 0
                 and .device_material_length > .device_bytes
               ))
@@ -688,6 +705,8 @@ in
           cp "$TMPDIR/events-read-a.jsonl" "$out/events-read-a.jsonl"
           cp "$TMPDIR/final-read-a.json" "$out/final-read-a.json"
           cp phase0-s5-virtual-memory-plugin.c "$out/virtual-memory-plugin.c"
+          mkdir -p "$out/share/aos"
+          ln -s ${correspondingSource} "$out/share/aos/qemu-crucible-source"
           {
             echo PASS
             echo spike=guest-virtual-memory-read

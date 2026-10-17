@@ -2,9 +2,15 @@
 
 use super::*;
 
+#[path = "testing_standards/operational_waits.rs"]
+mod operational_waits;
 #[path = "testing_standards/source_inventory.rs"]
 mod source_inventory;
 pub(super) use source_inventory::*;
+#[path = "testing_standards/checked_ram_read.rs"]
+mod checked_ram_read;
+pub(super) use checked_ram_read::failures as checked_ram_read_failures;
+
 pub(super) fn testing_standard_failures(
     targets: &[GateTargetSpec],
     source_overrides: &GateSourceOverrides,
@@ -141,7 +147,9 @@ pub(super) fn flaky_escape_failures(
     test_target: &str,
     content: &str,
 ) -> Vec<String> {
-    let lower = scrub_comments_and_strings(content).to_ascii_lowercase();
+    let code = scrub_comments_and_strings(content);
+    let lower =
+        operational_waits::mask_operational_waits(package, test_target, &code).to_ascii_lowercase();
     FLAKY_ESCAPE_PATTERNS
         .iter()
         .filter(|pattern| {
@@ -380,6 +388,11 @@ pub(super) fn source_shape_failures(
             "production_factory_exposes_no_world_when_second_real_adoption_fails",
             "production_factory_keeps_source_private_until_target_cleanup_retries",
             "production_factory_keeps_source_private_across_repository_publication_retry",
+            "run_atomic_failure_native",
+            "assert_eq!(restored.faults, self.boundary.faults);",
+            "assert_eq!(restored.fingerprints, self.boundary.fingerprints);",
+            "assert!(factory.recover(child).is_ok());",
+            "assert_eq!(available_resources(self.prepared), before);",
         ] {
             if !code.contains(required) {
                 failures.push(format!(
@@ -551,7 +564,9 @@ pub(super) fn standard_for_gate(gate: &str) -> Option<&'static GateTestingStanda
 pub(super) fn package_layer(package: &str) -> Option<Layer> {
     match package {
         "crucible-sim" | "crucible-assert" => Some(Layer::L0),
-        "crucible-shmem" | "crucible-protocol" | "crucible-device" => Some(Layer::L1),
+        "crucible-shmem" | "crucible-protocol" | "crucible-device" | "crucible-ram" => {
+            Some(Layer::L1)
+        }
         "crucible-qemu" | "crucible-qemu-plugin" | "crucible-guest" | "crucible-linux-resource" => {
             Some(Layer::L2)
         }

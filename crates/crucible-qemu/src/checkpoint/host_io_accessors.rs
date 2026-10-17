@@ -83,16 +83,31 @@ impl QemuHostIoCheckpoint {
             return false;
         }
 
-        let mut rebound = other.clone();
-        rebound.execution_binding = self.execution_binding;
-        if let Some(block) = &mut rebound.block {
-            block.execution_binding = self.execution_binding;
-        }
-        if let Some(ninep) = &mut rebound.ninep {
-            ninep.execution_binding = self.execution_binding;
-        }
+        // New aggregate fields must receive an explicit comparison policy.
+        let Self {
+            execution_binding: _,
+            block,
+            ninep,
+            #[cfg(target_os = "linux")]
+            accelerator,
+        } = other;
 
-        self == &rebound
+        let block_equal = match (&self.block, block) {
+            (Some(left), Some(right)) => left.same_device_continuation(right),
+            (None, None) => true,
+            _ => false,
+        };
+        let ninep_equal = match (&self.ninep, ninep) {
+            (Some(left), Some(right)) => left.same_device_continuation(right),
+            (None, None) => true,
+            _ => false,
+        };
+        #[cfg(target_os = "linux")]
+        let accelerator_equal = self.accelerator == *accelerator;
+        #[cfg(not(target_os = "linux"))]
+        let accelerator_equal = true;
+
+        block_equal && ninep_equal && accelerator_equal
     }
 
     fn has_consistent_execution_binding(&self) -> bool {
@@ -103,5 +118,65 @@ impl QemuHostIoCheckpoint {
                 .ninep
                 .as_ref()
                 .is_none_or(|ninep| ninep.execution_binding == self.execution_binding)
+    }
+}
+
+impl super::QemuLiveBlockIoServicerCheckpoint {
+    // Exhaustive destructuring requires new modeled fields to be compared.
+    fn same_device_continuation(&self, other: &Self) -> bool {
+        let Self {
+            execution_binding: _,
+            world_binding,
+            storage_device,
+            region_header,
+            vm_slot,
+            size_bytes,
+            device,
+            requests,
+            responses,
+            frames_processed,
+            frames_delivered,
+        } = other;
+
+        self.world_binding == *world_binding
+            && self.storage_device == *storage_device
+            && self.region_header == *region_header
+            && self.vm_slot == *vm_slot
+            && self.size_bytes == *size_bytes
+            && self.device == *device
+            && self.requests == *requests
+            && self.responses == *responses
+            && self.frames_processed == *frames_processed
+            && self.frames_delivered == *frames_delivered
+    }
+}
+
+impl super::QemuLive9pIoServicerCheckpoint {
+    // Exhaustive destructuring requires new modeled fields to be compared.
+    fn same_device_continuation(&self, other: &Self) -> bool {
+        let Self {
+            execution_binding: _,
+            world_binding,
+            tree,
+            region_header,
+            vm_slot,
+            device,
+            requests,
+            responses,
+            pending_fault_opportunities,
+            frames_processed,
+            frames_delivered,
+        } = other;
+
+        self.world_binding == *world_binding
+            && self.tree == *tree
+            && self.region_header == *region_header
+            && self.vm_slot == *vm_slot
+            && self.device == *device
+            && self.requests == *requests
+            && self.responses == *responses
+            && self.pending_fault_opportunities == *pending_fault_opportunities
+            && self.frames_processed == *frames_processed
+            && self.frames_delivered == *frames_delivered
     }
 }

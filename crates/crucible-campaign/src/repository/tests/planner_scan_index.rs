@@ -82,7 +82,11 @@ fn indexed_pages_match_canonical_order_across_request_shapes_and_restart() {
             scenario_default.id().expect("scenario-default request id"),
         ));
     }
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let head = cold.head("scan-order").expect("cold indexed head");
     let view = head.snapshot().planning_view();
     let index = cold

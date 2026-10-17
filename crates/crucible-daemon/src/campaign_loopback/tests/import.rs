@@ -7,6 +7,7 @@ fn verifier_import_then_create_works_on_a_blank_repository() {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("campaign-create-blank", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")

@@ -16,8 +16,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -141,6 +157,7 @@ in
         script = ''
           tar xf $src
           cd libslirp-v${version}
+          sed -i "1s|^#!/bin/sh|#!$CONFIG_SHELL|" build-aux/git-version-gen
           # libslirp derives its version from git via build-aux/git-version-gen.
           # When building from a tarball, drop the version into .tarball-version
           # so meson reads it instead of failing the git probe.

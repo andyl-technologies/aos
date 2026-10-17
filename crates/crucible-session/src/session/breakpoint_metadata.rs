@@ -164,7 +164,7 @@ impl ConditionLeafOracle for BreakpointHostOracle<'_> {
     }
 }
 
-impl<L> Engine<L> {
+impl<L: QuantumLoop> Engine<L> {
     /// Adds deterministic host predicate and symbol metadata for breakpoints.
     #[must_use]
     pub fn with_breakpoint_host_metadata(mut self, metadata: BreakpointHostMetadata) -> Self {

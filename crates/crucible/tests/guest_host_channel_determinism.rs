@@ -20,6 +20,9 @@ use crucible_protocol::{
 
 #[test]
 fn whitebox_channel_fingerprints_are_identical_with_markers_on_vs_off() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let markers_off = run_channel_material(
         WhiteBoxPolicy::Disabled,
         MarkerMode::Off,
@@ -46,7 +49,8 @@ fn whitebox_channel_fingerprints_are_identical_with_markers_on_vs_off() {
         markers_on.backend_fingerprint
     );
 
-    let comparison = compare_event_log_determinism(&markers_off.event_log, &markers_on.event_log);
+    let comparison = compare_event_log_determinism(&markers_off.event_log, &markers_on.event_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert!(comparison.passes());
     assert_eq!(
         comparison.expected().canonical_bytes(),
@@ -78,6 +82,9 @@ fn whitebox_channel_fingerprints_are_identical_with_markers_on_vs_off() {
 
 #[test]
 fn app_random_compiled_in_zero_requests_is_fingerprint_identical() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let disabled = run_channel_material(
         WhiteBoxPolicy::Disabled,
         MarkerMode::Off,
@@ -98,7 +105,8 @@ fn app_random_compiled_in_zero_requests_is_fingerprint_identical() {
     assert_eq!(disabled.event_log, compiled_in_zero.event_log);
 
     let comparison =
-        compare_event_log_determinism(&disabled.event_log, &compiled_in_zero.event_log);
+        compare_event_log_determinism(&disabled.event_log, &compiled_in_zero.event_log)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert!(comparison.passes());
 }
 
@@ -188,7 +196,9 @@ fn run_channel_material(
     backend
         .fingerprint()
         .map(|backend_fingerprint| ChannelRunMaterial {
-            causal_event_log_fingerprint: event_log_causal_projection(&event_log).content_hash(),
+            causal_event_log_fingerprint: event_log_causal_projection(&event_log)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+                .content_hash(),
             backend_fingerprint,
             event_log,
         })

@@ -295,6 +295,9 @@ fn drive(
 
 #[test]
 fn both_current_consumers_publish_before_any_positive_concurrent_dispatch() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         let mut actor = two_consumers();
         ok(drive(&mut actor, workers));
@@ -313,6 +316,9 @@ fn both_current_consumers_publish_before_any_positive_concurrent_dispatch() {
 
 #[test]
 fn pending_second_consumer_retains_owner_and_retry_does_not_republish_first() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut actor = two_consumers();
     actor.backend_mut().pending_b_once = true;
     let before = actor.loop_impl().configuration.clone();
@@ -331,6 +337,9 @@ fn pending_second_consumer_retains_owner_and_retry_does_not_republish_first() {
 
 #[test]
 fn repeated_consumer_refuses_before_second_publication_or_positive_dispatch() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut actor = two_consumers();
     actor.backend_mut().repeat_a = true;
     assert!(drive(&mut actor, 2).is_err());

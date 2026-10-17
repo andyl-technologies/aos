@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn predicate_used_by_assertion_is_the_trigger_condition_type() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition: Condition = Predicate::all_of(vec![
         Predicate::named("cluster-ready"),
         Predicate::not(Predicate::guest_marker(MarkerId::from_name("unsafe-path"))),
@@ -44,6 +47,9 @@ fn predicate_used_by_assertion_is_the_trigger_condition_type() {
 
 #[test]
 fn trigger_and_assertion_evaluation_use_the_same_predicate_function() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::any_of(vec![
         Predicate::named("quorum-ready"),
         Predicate::not(Predicate::named("leader-missing")),
@@ -65,9 +71,11 @@ fn trigger_and_assertion_evaluation_use_the_same_predicate_function() {
     )])
     .expect("shared condition event graph should build");
     let mut state = EventGraphState::new();
-    let assertion_truth = evaluator(7, &["quorum-ready"]).evaluate_assertion_condition(
-        assertion_predicate(&assertion).expect("assertion carries predicate"),
-    );
+    let assertion_truth = evaluator(7, &["quorum-ready"])
+        .evaluate_assertion_condition(
+            assertion_predicate(&assertion).expect("assertion carries predicate"),
+        )
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     let trigger_firings =
         support::evaluate_graph(&graph, &mut state, evaluator(7, &["quorum-ready"]));
 
@@ -81,6 +89,9 @@ fn trigger_and_assertion_evaluation_use_the_same_predicate_function() {
 
 #[test]
 fn eventually_trigger_and_property_predicates_are_trigger_usable() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let trigger = Predicate::named("request-started");
     let property = Predicate::named("response-committed");
     let assertion = AssertionDef {
@@ -117,6 +128,9 @@ fn eventually_trigger_and_property_predicates_are_trigger_usable() {
 
 #[test]
 fn properties_accept_the_same_compound_condition_shape_as_triggers() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::all_of(vec![
         Predicate::named("disk-idle"),
         Predicate::not(Predicate::named("network-partitioned")),

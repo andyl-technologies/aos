@@ -72,7 +72,11 @@ fn derivation_is_atomic_historical_and_replays_after_later_mutations() {
     assert!(replay.replayed);
     assert_eq!(replay.new_snapshot, derived.new_snapshot);
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let restarted_replay = restarted
         .derive_campaign(
             "derive-source",
@@ -178,7 +182,11 @@ fn nested_derivation_replay_is_bound_to_the_target_founding_edge() {
         .lock()
         .expect("validation checkpoints")
         .clear();
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let restarted_replay = restarted
         .derive_campaign(
             "nested-derive-b",
@@ -262,7 +270,11 @@ fn concurrent_derivation_replays_equal_basis_and_rejects_different_basis() {
     let same_barrier = Arc::new(std::sync::Barrier::new(2));
     let mut same_handles = Vec::new();
     for _ in 0..2 {
-        let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+        let repository = Arc::new(CampaignRepository::new(
+            blobs.clone(),
+            refs.clone(),
+            crate::CampaignRamAdmission::Unavailable,
+        ));
         let barrier = Arc::clone(&same_barrier);
         same_handles.push(std::thread::spawn(move || {
             barrier.wait();
@@ -309,7 +321,11 @@ fn concurrent_derivation_replays_equal_basis_and_rejects_different_basis() {
     let different_barrier = Arc::new(std::sync::Barrier::new(2));
     let mut different_handles = Vec::new();
     for next_policy in policies {
-        let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+        let repository = Arc::new(CampaignRepository::new(
+            blobs.clone(),
+            refs.clone(),
+            crate::CampaignRamAdmission::Unavailable,
+        ));
         let barrier = Arc::clone(&different_barrier);
         different_handles.push(std::thread::spawn(move || {
             barrier.wait();
@@ -421,6 +437,7 @@ fn derivation_source_membership_io_does_not_hold_the_mutation_lock() {
     let repository = Arc::new(CampaignRepository::new(
         blocking.clone(),
         source_repository.refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
     ));
     let worker_repository = Arc::clone(&repository);
     let worker = std::thread::spawn(move || {

@@ -5,6 +5,7 @@
   taskIds ? ["T-CLI-14"],
   openTaskIds ? [],
   dependencies ? [],
+  nativeOfflineIntegration,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -176,6 +177,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.grep
         pkgs.rust
         pkgs.sed
 
@@ -243,7 +245,13 @@ in
               --target-dir "$TMPDIR/crucible-cli-serve-shutdown-target" \
               -p crucible-cli \
               --test serve_process \
-              -- --test-threads=1
+              cleartext_client_requires_explicit_trust_before_connecting \
+              -- --exact --test-threads=1
+            test -f ${nativeOfflineIntegration}/result
+            ${pkgs.grep}/bin/grep -Fxq cli_native_offline_executions=11 ${nativeOfflineIntegration}/result
+            ${pkgs.grep}/bin/grep -Fxq \
+              cli_native_offline_selector_pass=serve_process:serve_process_exits_zero_on_sigterm \
+              ${nativeOfflineIntegration}/result
           '';
         }
         {

@@ -134,10 +134,6 @@
         needle = "pub fn default_rr_preemption";
       }
       {
-        label = "preemption override recording";
-        needle = "pub fn record_preemption_override";
-      }
-      {
         label = "schedule append path";
         needle = "self.configuration = try_step(&self.configuration, decision)?;";
       }
@@ -162,23 +158,35 @@
         needle = "decision_recorder_derives_default_rr_preemption_without_recording_schedule";
       }
       {
-        label = "preemption override coverage marker";
-        needle = "decision_recorder_records_preemption_overrides_in_schedule";
-      }
-      {
         label = "preemption invalid-shape coverage marker";
         needle = "decision_recorder_rejects_invalid_default_preemption_shape";
       }
       {
         label = "preemption overflow coverage marker";
-        needle = "decision_recorder_derives_default_rr_preemption_without_overflow";
+        needle = "decision_recorder_rejects_default_rr_preemption_time_overflow";
       }
       {
         label = "domain-aware resume expected stream";
         needle = "fork_in_domain(&stream.domain, &stream.name)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" modelRust [
+    ++ failuresFor "crates/crucible/src/model.rs and fragments" modelRust [
+      {
+        label = "parent-bound selectable preemption producer";
+        needle = "pub fn preemption_branch_choices";
+      }
+      {
+        label = "typed selection precedes its modeled preemption";
+        needle = "SelectionDecision::new_preemption_branch(&selection, config)";
+      }
+      {
+        label = "preemption producer is authenticated at replay parent";
+        needle = "expected.as_slice() != &decisions[index..index + 2]";
+      }
+      {
+        label = "typed preemption detachment negative coverage";
+        needle = "bare_swap_cannot_detach_a_preemption_from_its_typed_selection";
+      }
       {
         label = "RngStreamId type";
         needle = "pub struct RngStreamId";
@@ -343,7 +351,7 @@ in
             app_random_source=single-seeded-decision-rng
             app_random_stream_fork=per-node-stream-name
             app_random_records=RngDraw+Selection
-            schedule_records=rng-draw,fault-fires,app-random,preemption-override
+            schedule_records=rng-draw,fault-fires,app-random,typed-selection+preemption
             default_preemption=derived-audit-only
             app_random_request_id=caller-supplied
             app_random_override=recorded-value-no-reroll

@@ -1,4 +1,4 @@
-//! Exercises the complete RFC-0020 branch-point model through public APIs.
+//! Exercises the complete campaign branch-point model through public APIs.
 //!
 //! The gate covers parent-scoped branch identity, finite/generated convergence,
 //! lazy request progress, semantic-attempt deduplication, retained causes,
@@ -99,6 +99,7 @@ fn finite_and_generated_sources_converge_and_resume_after_restart() -> Result<()
     let repository = CampaignRepository::with_component_authorities(
         Arc::clone(&blobs),
         Arc::clone(&refs),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         planner_authority.clone(),
         debugger_authority.clone(),
     )?;
@@ -314,6 +315,7 @@ fn finite_and_generated_sources_converge_and_resume_after_restart() -> Result<()
     let restarted = CampaignRepository::with_component_authorities(
         blobs,
         refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         planner_authority,
         debugger_authority,
     )?;
@@ -422,6 +424,7 @@ fn statistical_estimate_only_includes_policy_predeclared_executions() -> Result<
     let repository = CampaignRepository::with_component_authorities(
         Arc::clone(&blobs),
         Arc::clone(&refs),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         planner_authority.clone(),
         debugger_authority.clone(),
     )?;
@@ -839,6 +842,7 @@ fn statistical_estimate_only_includes_policy_predeclared_executions() -> Result<
     let restarted = CampaignRepository::with_component_authorities(
         blobs,
         refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         planner_authority,
         debugger_authority,
     )?;

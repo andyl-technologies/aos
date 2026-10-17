@@ -254,6 +254,7 @@ fn triage_replay_chunk_storage_fails_closed_under_repository_adversaries() {
             ]),
         }),
         repository.refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
     );
     assert!(matches!(
         reordered.load_finding_triage_replay_evidence(ordered_id),
@@ -270,6 +271,7 @@ fn triage_replay_chunk_storage_fails_closed_under_repository_adversaries() {
             redirects: BTreeMap::from([(first_chunk, corrupt_bytes)]),
         }),
         repository.refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
     );
     assert!(
         corrupted
@@ -464,7 +466,11 @@ fn maximum_triage_replay_evidence_survives_gc_and_restart() {
         assert!(blobs.contains(*chunk).expect("chunk presence after GC"));
     }
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let restarted_evidence = restarted
         .load_finding_triage_replay_evidence(evidence_id)
         .expect("load maximum triage replay evidence after restart");

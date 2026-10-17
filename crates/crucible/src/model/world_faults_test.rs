@@ -400,6 +400,13 @@ fn clock_manifests_cover_the_realized_pc_and_virt_sources() {
         .unwrap_or_else(|error| panic!("complete x86 clock manifest should validate: {error}"));
     assert_eq!(x86.clock_sources.len(), 6);
 
+    let mut no_clock_capability = x86.clone();
+    no_clock_capability.clock_sources.clear();
+    no_clock_capability
+        .validate()
+        .unwrap_or_else(|error| panic!("absent clock declarations should validate: {error}"));
+    assert!(no_clock_capability.clock_sources.is_empty());
+
     let mut non_calendar_epoch = x86.clone();
     non_calendar_epoch.clock_sources[0].epoch_ns = 1;
     assert!(non_calendar_epoch.validate().is_err());

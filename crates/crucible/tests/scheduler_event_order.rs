@@ -17,6 +17,9 @@ use crucible::{
 
 #[test]
 fn scheduled_event_keys_order_by_virtual_consumer_producer_sequence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer_a = scheduler_node("consumer-a");
     let consumer_b = scheduler_node("consumer-b");
     let producer_a = scheduler_node("producer-a");
@@ -57,6 +60,9 @@ fn scheduled_event_keys_order_by_virtual_consumer_producer_sequence() {
 
 #[test]
 fn next_scheduled_event_key_allocates_per_producer_consumer_sequence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer_a = scheduler_node("consumer-a");
     let consumer_b = scheduler_node("consumer-b");
     let producer_a = scheduler_node("producer-a");
@@ -103,6 +109,9 @@ fn next_scheduled_event_key_allocates_per_producer_consumer_sequence() {
 
 #[test]
 fn next_scheduled_event_key_keeps_scheduler_node_kinds_independent() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer_vm = scheduler_node("node-a");
     let producer_vm = scheduler_node("node-b");
     let producer_disk = SchedulerNodeId {
@@ -134,6 +143,9 @@ fn next_scheduled_event_key_keeps_scheduler_node_kinds_independent() {
 
 #[test]
 fn next_scheduled_event_key_rejects_sequence_overflow() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let mut sequences = EventSequenceState {
@@ -153,6 +165,9 @@ fn next_scheduled_event_key_rejects_sequence_overflow() {
 
 #[test]
 fn event_sequence_state_is_carried_in_materialized_scheduler_state_hash() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let mut scheduler = SchedulerState::empty();
@@ -174,6 +189,9 @@ fn event_sequence_state_is_carried_in_materialized_scheduler_state_hash() {
 
 #[test]
 fn single_scheduler_allocates_control_event_keys_from_saved_sequence_state() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let control_node = SchedulerNodeId {
         node: node("control-plane"),
         kind: SchedulingNodeKind::ControlPlane,

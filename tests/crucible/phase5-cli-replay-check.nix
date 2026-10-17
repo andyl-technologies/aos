@@ -5,6 +5,7 @@
   taskIds ? ["T-CLI-12"],
   openTaskIds ? [],
   dependencies ? [],
+  nativeOfflineIntegration,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -488,6 +489,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.grep
         pkgs.crucible
         pkgs.rust
         pkgs.sed
@@ -572,20 +574,14 @@ in
               -p crucible-cli \
               cli_help_surface_rejects_unimplemented_future_flags \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
-              -p crucible-cli \
+            test -f ${nativeOfflineIntegration}/result
+            ${pkgs.grep}/bin/grep -Fxq cli_native_offline_executions=11 ${nativeOfflineIntegration}/result
+            for selector in \
               cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
-              -p crucible-cli \
-              cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome \
-              -- --test-threads=1
+              cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome; do
+              ${pkgs.grep}/bin/grep -Fxq "cli_native_offline_selector_pass=machine_readable:$selector" \
+                ${nativeOfflineIntegration}/result
+            done
 
             artifact_dir="$TMPDIR/crucible-live-replay-artifacts"
             store_dir="$TMPDIR/crucible-live-replay-store"

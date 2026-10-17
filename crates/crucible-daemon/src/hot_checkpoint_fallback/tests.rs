@@ -63,6 +63,7 @@ impl FallbackFixture {
         let repository = Arc::new(crucible_campaign::CampaignRepository::new(
             Arc::new(MemoryBlobBackend::new(name, 64 * 1024 * 1024)),
             Arc::new(MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
         ));
         let scenario = crucible::happy_path_scenario()
             .expect("built-in scenario")
@@ -111,8 +112,16 @@ impl FallbackFixture {
             checkpoint_directory.path(),
         ));
         let checkpoints = Arc::new(
-            ExactCheckpointStore::new(checkpoint_backend, 8 * 1024 * 1024)
-                .expect("checkpoint store"),
+            ExactCheckpointStore::new(
+                checkpoint_backend,
+                8 * 1024 * 1024,
+                repository.ram_retention_authority(),
+            )
+            .expect("checkpoint store")
+            .with_ram_root_resources(
+                crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                    .expect("finite component RAM-root credit"),
+            ),
         );
 
         Self {
@@ -318,7 +327,7 @@ fn candidate(byte: u8, score: u64) -> HotCheckpointCandidate {
             .expect("score"),
         HotCheckpointFallback::Exact(
             crucible_campaign::ExactCheckpointId::parse(&format!(
-                "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+                "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
                 encode_hex(&[byte; 32])
             ))
             .expect("checkpoint"),

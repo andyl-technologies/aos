@@ -67,20 +67,23 @@ impl TracingBridge {
     /// event-log entry and best-effort emit the same diagnostic to `tracing`.
     /// Subscriber capture, filtering, and panics are ignored so the bridge does
     /// not let host diagnostics feed back into event-log construction.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns the original metadata or canonical rendering refusal before
+    /// emitting a tracing side effect.
     pub fn mirror_diagnostic(
         &self,
         sequence: u64,
         at: VirtualTime,
         diagnostic: EventDiagnosticPayload,
-    ) -> Option<SchedulerEventLogEntry> {
+    ) -> Result<Option<SchedulerEventLogEntry>, crate::EngineError> {
         if !self.config.enabled {
-            return None;
+            return Ok(None);
         }
 
-        let entry = SchedulerEventLogEntry::diagnostic(sequence, at, diagnostic.clone());
+        let entry = SchedulerEventLogEntry::diagnostic(sequence, at, diagnostic.clone())?;
         let _ = catch_unwind(AssertUnwindSafe(|| emit_tracing_diagnostic(&diagnostic)));
-        Some(entry)
+        Ok(Some(entry))
     }
 }
 

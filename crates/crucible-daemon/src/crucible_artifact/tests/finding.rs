@@ -24,6 +24,7 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
 
@@ -101,6 +102,9 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
 
 #[test]
 fn finding_candidate_preparation_deduplicates_bounded_replay_records_without_writes() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")
         .scenario;
@@ -169,6 +173,7 @@ fn finding_candidate_preparation_deduplicates_bounded_replay_records_without_wri
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let mut truncated = transcript.clone();
     truncated.verification_pass.pop();
@@ -211,6 +216,9 @@ fn finding_candidate_preparation_deduplicates_bounded_replay_records_without_wri
 
 #[test]
 fn finding_replay_retains_nonempty_configuration_target_and_causal_evidence() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")
         .scenario;

@@ -556,6 +556,7 @@
         -chardev file,id=serial0,path="$serial" \
         -serial chardev:serial0 \
         -qmp "unix:$qmp_socket,server=on,wait=off" \
+        -plugin "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-ram-observer.so,ram_metadata_budget=268435456" \
         -plugin "$PLUGIN",out="$trace",cadence="$case_cadence",mem_events=off,vcpus=1 \
         -no-reboot
 
@@ -595,6 +596,7 @@
             -chardev file,id=serial0,path="$serial" \
             -serial chardev:serial0 \
             -qmp "unix:$qmp_socket,server=on,wait=off" \
+            -plugin "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-ram-observer.so,ram_metadata_budget=268435456" \
             -plugin "$PLUGIN",out="$trace",cadence="$case_cadence",mem_events=off,vcpus=1 \
             -no-reboot
           ;;
@@ -608,7 +610,7 @@
         fail "$label launch unexpectedly references crucible-guest"
       fi
 
-      timeout 900 "$@" &
+      timeout 900 "$@" 2>"$TMPDIR/ram-observer-$label.log" &
       qemu_pid="$!"
 
       wait_for_socket "$qmp_socket" || fail "$label QMP socket did not appear"
@@ -616,6 +618,10 @@
       wait_for_guest_done "$serial" || fail "$label did not reach deterministic shutdown marker"
       qmp_quit "$qmp_socket"
       wait_for_qemu_exit "$label"
+      grep -Fq CRUCIBLE-RAM-ORACLE-PASS "$TMPDIR/ram-observer-$label.log" \
+        || fail "$label did not qualify the canonical RAM root"
+      ! grep -Fq CRUCIBLE-RAM-ORACLE-FAIL "$TMPDIR/ram-observer-$label.log" \
+        || fail "$label RAM root disagreed with the native oracle"
 
       jq --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" -e -s '
         [ .[] | select(.final != true) ] as $samples
@@ -623,7 +629,7 @@
         | ($samples | length) >= 1
         and ($finals | length) == 1
         and all($samples[]; (
-          .schema == "crucible.qemu.trace-fingerprint.v7"
+          .schema == "crucible.qemu.trace-fingerprint.v8"
           and .tracked_vcpus == 1
           and .stop_at == 0
           and .sample_register_failures == 0
@@ -643,7 +649,7 @@
           and .register_counts[0] > 0
         ))
         and all($finals[]; (
-          .schema == "crucible.qemu.trace-fingerprint.v7"
+          .schema == "crucible.qemu.trace-fingerprint.v8"
           and .tracked_vcpus == 1
           and .stop_at == 0
           and .sample_register_failures == 1

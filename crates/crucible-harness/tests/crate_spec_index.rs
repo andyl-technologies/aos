@@ -1,8 +1,8 @@
-//! Checks that crate-root docs carry the RFC-0010 spec ownership index.
+//! Checks that crate-root docs state their semantic implementation contracts.
 //!
-//! RFC-0010 file 27 section 6 is the bidirectional crate-to-spec map. This lint
+//! The central specification table is the bidirectional crate-to-spec map. This lint
 //! keeps that table, the executable harness index, and each crate root's
-//! machine-readable `Spec index:` line synchronized.
+//! machine-readable `Implementation contract:` line synchronized.
 
 #![forbid(unsafe_code)]
 
@@ -32,6 +32,15 @@ fn crucible_crate_roots_carry_declared_spec_index() -> Result<(), Box<dyn Error>
             &content,
             &display_repo_path(&root_path),
         ));
+
+        for path in spec.additional_spec_paths {
+            if !root.join(path).is_file() {
+                failures.push(format!(
+                    "{}: missing owning document `{path}`",
+                    spec.package
+                ));
+            }
+        }
 
         for file in spec.spec_files {
             if !rfc_files.contains(*file) {
@@ -73,6 +82,8 @@ fn spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift() {
     let spec = CrateSpecIndexEntry {
         package: "crucible-sim",
         root: "src/lib.rs",
+        descriptive_contract: "Deterministic randomness, counters, and virtual-time primitives",
+        additional_spec_paths: &[],
         spec_files: &["04", "08", "09"],
         supplemental_spec: None,
         section_6_row: true,
@@ -80,7 +91,7 @@ fn spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift() {
     let good_source = r#"
 //! `crucible-sim` owns Crucible's deterministic core primitives.
 //!
-//! Spec index: RFC-0010 files 04, 08, 09.
+//! Implementation contract: Deterministic randomness, counters, and virtual-time primitives.
 
 #![forbid(unsafe_code)]
 "#;
@@ -92,22 +103,31 @@ fn spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift() {
     let wrong_source = r#"
 //! `crucible-sim` owns Crucible's deterministic core primitives.
 //!
-//! Spec index: RFC-0010 files 04, 09.
+//! Implementation contract: Deterministic randomness only.
 
 #![forbid(unsafe_code)]
 "#;
 
     assert!(crate_root_doc_index_failures(&spec, good_source, "synthetic").is_empty());
+    let obsolete_source = good_source.replacen(
+        "//! Implementation contract:",
+        "//! Spec index: RFC-0010 files 04, 08, 09.\n//! Implementation contract:",
+        1,
+    );
+    assert!(contains_finding(
+        &crate_root_doc_index_failures(&spec, &obsolete_source, "synthetic"),
+        "obsolete numeric ownership header",
+    ));
 
     let missing_findings = crate_root_doc_index_failures(&spec, missing_source, "synthetic");
     assert!(
-        contains_finding(&missing_findings, "missing exact spec index"),
+        contains_finding(&missing_findings, "missing exact implementation contract"),
         "missing spec index should be rejected: {missing_findings:?}"
     );
 
     let wrong_findings = crate_root_doc_index_failures(&spec, wrong_source, "synthetic");
     assert!(
-        contains_finding(&wrong_findings, "found `Spec index:`"),
+        contains_finding(&wrong_findings, "found `Implementation contract:`"),
         "wrong spec index should be rejected: {wrong_findings:?}"
     );
 
@@ -150,10 +170,13 @@ fn crate_root_doc_index_failures(
 ) -> Vec<String> {
     let expected = expected_spec_index_line(spec);
     let doc_lines = crate_root_doc_lines(source);
+    if doc_lines.iter().any(|line| line.starts_with("Spec index:")) {
+        return vec![format!("{display_path}: obsolete numeric ownership header")];
+    }
     let spec_index_lines: Vec<&str> = doc_lines
         .iter()
         .copied()
-        .filter(|line| line.starts_with("Spec index:"))
+        .filter(|line| line.starts_with("Implementation contract:"))
         .collect();
 
     if spec_index_lines.as_slice() == [expected.as_str()] {
@@ -162,26 +185,18 @@ fn crate_root_doc_index_failures(
 
     if spec_index_lines.is_empty() {
         vec![format!(
-            "{display_path}: missing exact spec index line `//! {expected}`"
+            "{display_path}: missing exact implementation contract line `//! {expected}`"
         )]
     } else {
         vec![format!(
-            "{display_path}: found `Spec index:` lines [{}], expected exactly `//! {expected}`",
+            "{display_path}: found `Implementation contract:` lines [{}], expected exactly `//! {expected}`",
             spec_index_lines.join(" | ")
         )]
     }
 }
 
 fn expected_spec_index_line(spec: &CrateSpecIndexEntry) -> String {
-    match (spec.spec_files.is_empty(), spec.supplemental_spec) {
-        (true, Some(supplemental)) => format!("Spec index: {supplemental}."),
-        (false, Some(supplemental)) => format!(
-            "Spec index: RFC-0010 files {}; {supplemental}.",
-            spec.spec_files.join(", ")
-        ),
-        (false, None) => format!("Spec index: RFC-0010 files {}.", spec.spec_files.join(", ")),
-        (true, None) => "Spec index: no owning specification.".to_string(),
-    }
+    format!("Implementation contract: {}.", spec.descriptive_contract)
 }
 
 fn crate_root_doc_lines(source: &str) -> Vec<&str> {

@@ -1,6 +1,14 @@
 //! Assertion outcomes, replay, offline checking, evaluation, and lifecycle state.
 
 use super::*;
+
+mod admitted_pass;
+mod checkpoint;
+mod output_copy;
+pub use checkpoint::{
+    HostAssertionCheckpointBytes, HostAssertionCheckpointError, HostAssertionEvaluatorCheckpoint,
+};
+pub(super) mod owned_storage;
 /// Terminal kind for one host-side assertion outcome.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -67,16 +75,17 @@ pub enum PropertyLifecycleState {
 }
 
 /// Current lifecycle state for one assertion in the unified outcome engine.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct HostAssertionLifecycle {
     /// Assertion whose lifecycle state is reported.
     pub assertion: AssertionId,
     /// Current deterministic lifecycle state.
     pub state: PropertyLifecycleState,
+    _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 /// Terminal result for one host-side assertion.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct HostAssertionOutcome {
     /// Assertion that produced the outcome.
     pub assertion: AssertionId,
@@ -93,6 +102,7 @@ pub struct HostAssertionOutcome {
     /// Stable assertion-layer reason.
     pub reason: String,
     evidence: Option<HostAssertionViolationEvidence>,
+    _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -103,7 +113,7 @@ pub(super) struct HostAssertionViolationEvidence {
 }
 
 /// Deterministic violation record derived from the retained event log.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct HostAssertionViolation {
     /// Assertion that failed.
     pub assertion: AssertionId,
@@ -123,6 +133,67 @@ pub struct HostAssertionViolation {
     pub detail: String,
     /// Content-addressed reproduction artifact for this run.
     pub reproduction_artifact: ContentHash,
+    _decode_custody: crate::owned_decode::DecodeCustody,
+}
+
+/// Owning violation fields whose allocations were admitted by their producer.
+///
+/// The fields move into a retained violation without copying. Producers must
+/// reserve their original resource credits before constructing these values.
+#[derive(Debug)]
+pub struct HostAssertionViolationFields {
+    /// Assertion that failed.
+    pub assertion: AssertionId,
+    /// Author-facing assertion message.
+    pub message: String,
+    /// Assertion quantifier or guest marker flavor that failed.
+    pub quantifier: AssertionQuantifierKind,
+    /// Catalog event kind for the event-log site that produced the violation.
+    pub event_kind: String,
+    /// Exact guest instruction count when the site is icount-stamped.
+    pub at_icount: Option<Icount>,
+    /// Exact virtual-time site where the violation was attributed.
+    pub at_virtual_time: VirtualTime,
+    /// Node-local site owner when the deterministic log identifies one.
+    pub node: Option<NodeId>,
+    /// Expected-vs-observed detail drawn from assertion outcome and observed state.
+    pub detail: String,
+    /// Content-addressed reproduction artifact for this run.
+    pub reproduction_artifact: ContentHash,
+}
+
+impl HostAssertionViolation {
+    /// Retains original allocation custody for already admitted owning fields.
+    ///
+    /// # Errors
+    /// Returns a pending original admission refusal without publishing a record.
+    pub fn from_owned_fields(fields: HostAssertionViolationFields) -> Result<Self, EngineError> {
+        owned_storage::check()?;
+        let HostAssertionViolationFields {
+            assertion,
+            message,
+            quantifier,
+            event_kind,
+            at_icount,
+            at_virtual_time,
+            node,
+            detail,
+            reproduction_artifact,
+        } = fields;
+        Ok(Self {
+            assertion,
+            message,
+            quantifier,
+            event_kind,
+            at_icount,
+            at_virtual_time,
+            node,
+            detail,
+            reproduction_artifact,
+            _decode_custody: crate::owned_decode::require_current_custody()
+                .map_err(owned_storage::admission)?,
+        })
+    }
 }
 
 /// Assertion event log produced while replaying one reproduction artifact.
@@ -168,7 +239,7 @@ impl AssertionViolationArtifactReplay {
 }
 
 /// Bisection handoff requested for a non-reproduced assertion violation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AssertionViolationBisectionRequest {
     /// Self-contained reproduction artifact whose replay diverged.
     pub artifact: ContentHash,
@@ -185,6 +256,7 @@ pub struct AssertionViolationBisectionRequest {
     pub first_different_causal_entry: Option<EventLogCausalDivergencePoint>,
     /// Stable reason for invoking `gate:divergence-bisect`.
     pub reason: &'static str,
+    _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 /// Successful replay check for a violation-bearing assertion report.
@@ -199,13 +271,13 @@ pub struct AssertionViolationReplayReport {
     /// Result of replaying the artifact through the reduction oracle.
     pub replay: ReproductionReplay,
     /// Assertion report produced from the originally recorded deterministic log.
-    pub expected: HostAssertionReport,
+    pub expected: std::sync::Arc<HostAssertionReport>,
     /// Assertion report produced from the replayed deterministic log.
-    pub reproduced: HostAssertionReport,
+    pub reproduced: std::sync::Arc<HostAssertionReport>,
 }
 
 /// Localized mismatch between a recorded assertion violation and its replay.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AssertionViolationDivergence {
     /// Self-contained reproduction artifact whose replay diverged.
     pub artifact: ContentHash,
@@ -220,29 +292,64 @@ pub struct AssertionViolationDivergence {
     /// Replayed event-log entry at the first differing prefix position.
     pub reproduced_event: Option<SchedulerEventLogEntry>,
     /// Recorded violation at the first differing violation slot.
-    pub expected_violation: Option<HostAssertionViolation>,
+    pub expected_violation: Option<std::sync::Arc<HostAssertionViolation>>,
     /// Replayed violation at the first differing violation slot.
-    pub reproduced_violation: Option<HostAssertionViolation>,
+    pub reproduced_violation: Option<std::sync::Arc<HostAssertionViolation>>,
     /// Required `gate:divergence-bisect` handoff for this non-reproduction.
     pub bisection: AssertionViolationBisectionRequest,
+    _decode_custody: crate::owned_decode::DecodeCustody,
+}
+
+/// Retains a typed reduction failure and its original diagnostic allocation credit.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AssertionArtifactReplayFailure {
+    source: EngineError,
+    _decode_custody: crate::owned_decode::DecodeCustody,
+}
+
+impl fmt::Display for AssertionArtifactReplayFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.source, formatter)
+    }
+}
+
+impl Error for AssertionArtifactReplayFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Shares scalar replay evidence with its original diagnostic allocation credit.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AssertionReplayEvidence {
+    replay: ReproductionReplay,
+    _decode_custody: crate::owned_decode::DecodeCustody,
+}
+
+impl std::ops::Deref for AssertionReplayEvidence {
+    type Target = ReproductionReplay;
+
+    fn deref(&self) -> &Self::Target {
+        &self.replay
+    }
 }
 
 /// Error returned when assertion violation reproduction fails.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AssertionViolationReplayError {
     /// The artifact's embedded scenario and schedule could not be reduced.
     ArtifactReplay {
         /// Artifact whose reduction failed.
         artifact: ContentHash,
-        /// Stable error text from the reduction oracle.
-        reason: String,
+        /// Original typed reduction failure with retained diagnostic custody.
+        source: std::sync::Arc<AssertionArtifactReplayFailure>,
     },
     /// Replay evidence was reduced from a different artifact tuple.
     ReplayArtifactMismatch {
         /// Artifact replay expected from the checked reproduction artifact.
-        expected: Box<ReproductionReplay>,
+        expected: std::sync::Arc<AssertionReplayEvidence>,
         /// Artifact replay supplied with the reproduced assertion log.
-        reproduced: Box<ReproductionReplay>,
+        reproduced: std::sync::Arc<AssertionReplayEvidence>,
     },
     /// The original retained log did not contain an assertion violation.
     MissingRecordedViolation {
@@ -256,17 +363,17 @@ pub enum AssertionViolationReplayError {
     /// The replay completed but did not reproduce the same violation report.
     Divergence {
         /// Localized assertion-replay divergence.
-        divergence: Box<AssertionViolationDivergence>,
+        divergence: std::sync::Arc<AssertionViolationDivergence>,
     },
 }
 
 impl fmt::Display for AssertionViolationReplayError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ArtifactReplay { reason, .. } => {
+            Self::ArtifactReplay { source, .. } => {
                 write!(
                     formatter,
-                    "assertion violation artifact replay failed: {reason}"
+                    "assertion violation artifact replay failed: {source}"
                 )
             }
             Self::ReplayArtifactMismatch {
@@ -311,8 +418,8 @@ impl Error for AssertionViolationReplayError {
             Self::RecordedAssertionCheck(error) | Self::ReproducedAssertionCheck(error) => {
                 Some(error)
             }
-            Self::ArtifactReplay { .. }
-            | Self::ReplayArtifactMismatch { .. }
+            Self::ArtifactReplay { source, .. } => Some(source.as_ref()),
+            Self::ReplayArtifactMismatch { .. }
             | Self::MissingRecordedViolation { .. }
             | Self::Divergence { .. } => None,
         }
@@ -320,12 +427,13 @@ impl Error for AssertionViolationReplayError {
 }
 
 /// Final host-side assertion report for one run.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct HostAssertionReport {
     outcomes: Vec<HostAssertionOutcome>,
     violations: Vec<HostAssertionViolation>,
     proximities: Vec<HostAssertionProximity>,
     verdict: AssertionRunVerdict,
+    _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 impl HostAssertionReport {
@@ -365,7 +473,7 @@ impl HostAssertionReport {
 /// `Sometimes`, armed-but-undischarged `Eventually`, and expected-reachable
 /// properties that were never reached. The distance is the minimum value observed
 /// along the checked event-log trajectory.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct HostAssertionProximity {
     /// Assertion whose predicate produced this distance.
     pub assertion: AssertionId,
@@ -377,6 +485,7 @@ pub struct HostAssertionProximity {
     pub at: VirtualTime,
     /// Event-log prefix that produced the minimum distance.
     pub event_log_offset: EventLogOffset,
+    _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 /// Replays an assertion violation artifact and verifies bit-identical violations.
@@ -435,17 +544,47 @@ where
     ReproducedOracle: HostAssertionOracle + ?Sized,
 {
     let artifact_id = artifact.id();
-    let replay =
+    // Reserve the fixed shared error envelope before reduction can exhaust its
+    // account. Failure moves its typed cause; formatting creates no owned text.
+    let diagnostic = crate::owned_decode::require_current_child_budget().map_err(|source| {
+        AssertionViolationReplayError::RecordedAssertionCheck(OfflineAssertionCheckError::Engine(
+            Box::new(owned_storage::admission(source)),
+        ))
+    })?;
+    let replay = {
+        let _scope = diagnostic.enter();
+        owned_storage::reserve_arc::<AssertionArtifactReplayFailure>().map_err(|source| {
+            AssertionViolationReplayError::RecordedAssertionCheck(
+                OfflineAssertionCheckError::Engine(Box::new(source)),
+            )
+        })?;
+        for _ in 0..2 {
+            owned_storage::reserve_arc::<AssertionReplayEvidence>().map_err(|source| {
+                AssertionViolationReplayError::RecordedAssertionCheck(
+                    OfflineAssertionCheckError::Engine(Box::new(source)),
+                )
+            })?;
+        }
         artifact
             .replay()
             .map_err(|source| AssertionViolationReplayError::ArtifactReplay {
                 artifact: artifact_id,
-                reason: engine_error_message(&source),
-            })?;
+                source: std::sync::Arc::new(AssertionArtifactReplayFailure {
+                    source,
+                    _decode_custody: diagnostic.custody(),
+                }),
+            })?
+    };
     if reproduced.replay() != &replay {
         return Err(AssertionViolationReplayError::ReplayArtifactMismatch {
-            expected: Box::new(replay),
-            reproduced: Box::new(reproduced.replay().clone()),
+            expected: std::sync::Arc::new(AssertionReplayEvidence {
+                replay,
+                _decode_custody: diagnostic.custody(),
+            }),
+            reproduced: std::sync::Arc::new(AssertionReplayEvidence {
+                replay: reproduced.replay().clone(),
+                _decode_custody: diagnostic.custody(),
+            }),
         });
     }
     let properties = artifact.scenario_form().properties();
@@ -478,33 +617,45 @@ where
         !event_log_causal_projections_match(recorded_log.entries(), reproduced_log.entries());
     if event_logs_differ || expected != reproduced {
         return Err(AssertionViolationReplayError::Divergence {
-            divergence: Box::new(assertion_violation_replay_divergence(
-                artifact_id,
-                artifact.schedule(),
-                properties,
-                world,
-                recorded_log,
-                reproduced_log,
-                &expected,
-                &reproduced,
-            )),
+            divergence: std::sync::Arc::new(
+                assertion_violation_replay_divergence(
+                    artifact_id,
+                    artifact.schedule(),
+                    properties,
+                    world,
+                    recorded_log,
+                    reproduced_log,
+                    &expected,
+                    &reproduced,
+                )
+                .map_err(AssertionViolationReplayError::ReproducedAssertionCheck)?,
+            ),
         });
     }
 
     Ok(AssertionViolationReplayReport {
         artifact: artifact_id,
         replay,
-        expected,
-        reproduced,
+        expected: expected.into_shared().map_err(|source| {
+            AssertionViolationReplayError::RecordedAssertionCheck(
+                OfflineAssertionCheckError::Engine(Box::new(source)),
+            )
+        })?,
+        reproduced: reproduced.into_shared().map_err(|source| {
+            AssertionViolationReplayError::ReproducedAssertionCheck(
+                OfflineAssertionCheckError::Engine(Box::new(source)),
+            )
+        })?,
     })
 }
 
 /// Deterministic trace artifact intended for external formal tooling.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ExternalFormalTraceExport {
     bytes: Vec<u8>,
     content_hash: ContentHash,
     entry_count: u64,
+    _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 impl ExternalFormalTraceExport {
@@ -549,7 +700,11 @@ impl ExternalFormalTraceExporter {
     /// hash-valid scheduler log prefix.
     pub fn export_event_log(
         entries: &[SchedulerEventLogEntry],
-    ) -> Result<ExternalFormalTraceExport, ConditionEvaluationError> {
+    ) -> Result<ExternalFormalTraceExport, OfflineAssertionCheckError> {
+        let child = crate::owned_decode::require_current_child_budget().map_err(|source| {
+            OfflineAssertionCheckError::Engine(Box::new(owned_storage::admission(source)))
+        })?;
+        let _scope = child.enter();
         validate_recorded_event_log_entries(entries)?;
         let entry_count = u64::try_from(entries.len()).map_err(|_| {
             ConditionEvaluationError::NonPrefixEventLogSequence {
@@ -557,12 +712,16 @@ impl ExternalFormalTraceExporter {
                 actual: u64::MAX,
             }
         })?;
-        let bytes = external_formal_trace_bytes(entries);
+        let bytes = external_formal_trace_bytes(entries)
+            .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
         let content_hash = ContentHash::from_bytes(&bytes);
         Ok(ExternalFormalTraceExport {
             bytes,
             content_hash,
             entry_count,
+            _decode_custody: crate::owned_decode::require_current_custody().map_err(|source| {
+                OfflineAssertionCheckError::Engine(Box::new(owned_storage::admission(source)))
+            })?,
         })
     }
 }
@@ -573,13 +732,14 @@ impl ExternalFormalTraceExporter {
 /// [`ConditionEventLogPrefix`] values from recorded [`SchedulerEventLogEntry`]
 /// values and feeds them through [`HostAssertionEvaluator`], so amended property
 /// sets can be graded against retained runs.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct OfflineAssertionChecker {
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     guest_assertion_catalog: Vec<GuestAssertionMarker>,
     code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     terminal_quiescence: Option<SchedulerQuiescence>,
+    _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 impl OfflineAssertionChecker {
@@ -664,7 +824,11 @@ impl OfflineAssertionChecker {
         event_log: &[SchedulerEventLogEntry],
     ) -> Result<HostAssertionReport, OfflineAssertionCheckError> {
         let mut oracle = BlackBoxHostOracle;
-        let recorded = RecordedAssertionLog::from_entries(event_log.to_vec());
+        let offsets = BTreeMap::new();
+        let recorded = RecordedAssertionLogRef {
+            entries: event_log,
+            prefix_offsets: &offsets,
+        };
         self.check_run_internal(properties, &recorded, &mut oracle, false)
     }
 
@@ -702,34 +866,37 @@ impl OfflineAssertionChecker {
     where
         O: HostAssertionOracle + ?Sized,
     {
-        self.check_run_internal(properties, recorded_log, oracle, true)
+        let _original = recorded_log.enter_original_decode();
+        let recorded = RecordedAssertionLogRef {
+            entries: recorded_log.entries(),
+            prefix_offsets: recorded_log.prefix_offsets(),
+        };
+        self.check_run_internal(properties, &recorded, oracle, true)
     }
 
     fn check_run_internal<O>(
         &self,
         properties: &Properties,
-        recorded_log: &RecordedAssertionLog,
+        recorded_log: &RecordedAssertionLogRef<'_>,
         oracle: &mut O,
         require_recorded_offsets: bool,
     ) -> Result<HostAssertionReport, OfflineAssertionCheckError>
     where
         O: HostAssertionOracle + ?Sized,
     {
+        let _original = self._decode_custody.enter();
         let mut evaluator = HostAssertionEvaluator::new(properties)
-            .with_white_box_policies(self.white_box_policies.clone())
-            .with_guest_assertion_catalog(self.guest_assertion_catalog.clone())
-            .with_resolved_code_points(
-                self.code_points
-                    .iter()
-                    .map(|(key, value)| ((key.0.clone(), key.1.clone()), *value)),
-            )
-            .with_resolved_mem_places(
-                self.mem_places
-                    .iter()
-                    .map(|(key, value)| ((key.0.clone(), key.1.clone()), value.clone())),
-            );
-        if let Some(quiescence) = self.terminal_quiescence.clone() {
-            evaluator = evaluator.with_terminal_scheduler_quiescence(quiescence);
+            .and_then(|evaluator| evaluator.with_white_box_policies(&self.white_box_policies))
+            .and_then(|evaluator| {
+                evaluator.with_guest_assertion_catalog(&self.guest_assertion_catalog)
+            })
+            .and_then(|evaluator| evaluator.with_resolved_code_points(&self.code_points))
+            .and_then(|evaluator| evaluator.with_resolved_mem_places(&self.mem_places))
+            .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
+        if let Some(quiescence) = &self.terminal_quiescence {
+            evaluator = evaluator
+                .with_terminal_scheduler_quiescence(quiescence)
+                .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
         }
         let event_log = recorded_log.entries();
         let terminal_prefix_len = event_log.len();
@@ -798,11 +965,15 @@ impl OfflineAssertionChecker {
                 }
                 Err(error) => return Err(error),
             };
-            evaluator.observe_prefix(&prefix, oracle);
+            evaluator
+                .observe_prefix(&prefix, oracle)
+                .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
             pending_enabled_marker = false;
         }
 
-        Ok(evaluator.finalize_prefix(&terminal_prefix, oracle))
+        evaluator
+            .finalize_prefix(&terminal_prefix, oracle)
+            .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))
     }
 }
 
@@ -895,139 +1066,29 @@ fn entry_awaits_atomic_evaluation_boundary(
     }
 }
 
-/// Retained assertion-checking view of a recorded scheduler event log.
-///
-/// Custom host predicate oracles can inspect [`ObservedState::event_log_offset`].
-/// To make those predicates byte-identical online and offline, this value stores
-/// the scheduler entries plus offsets reconstructed from retained event-log
-/// segments using the scheduler's canonical segment and prefix hashing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecordedAssertionLog {
-    pub(super) entries: Vec<SchedulerEventLogEntry>,
-    pub(super) prefix_offsets: BTreeMap<u64, EventLogOffset>,
+/// Borrows an existing log and its offsets without making an owning raw-log copy.
+pub(super) struct RecordedAssertionLogRef<'a> {
+    entries: &'a [SchedulerEventLogEntry],
+    pub(super) prefix_offsets: &'a BTreeMap<u64, EventLogOffset>,
 }
 
-impl RecordedAssertionLog {
-    /// Builds a recorded log from scheduler entries without segment offsets.
-    ///
-    /// This is sufficient for [`OfflineAssertionChecker::check_run`], whose
-    /// default black-box oracle cannot inspect event-log offsets. Custom host
-    /// oracles should use [`Self::from_segments`] so evaluated prefixes carry the
-    /// same offsets the scheduler observed online.
-    #[must_use]
-    pub fn from_entries(entries: Vec<SchedulerEventLogEntry>) -> Self {
-        Self {
-            entries,
-            prefix_offsets: BTreeMap::new(),
-        }
+impl RecordedAssertionLogRef<'_> {
+    pub(super) fn entries(&self) -> &[SchedulerEventLogEntry] {
+        self.entries
     }
-
-    /// Builds a recorded log and appends one terminal quantum evaluation boundary.
-    #[must_use]
-    pub fn from_entries_with_quantum_evaluation_boundary(
-        mut entries: Vec<SchedulerEventLogEntry>,
-        sequence: u64,
-        at: VirtualTime,
-    ) -> Self {
-        entries.push(SchedulerEventLogEntry::evaluation_boundary(
-            sequence,
-            at,
-            SchedulerEvaluationBoundaryKind::Quantum,
-        ));
-        Self::from_entries(entries)
-    }
-
-    /// Builds a recorded log from retained scheduler event-log segments.
-    ///
-    /// Each segment is folded in order with the same canonical segment bytes and
-    /// prefix hash material used by scheduler EMIT. Offsets are recorded at every
-    /// segment boundary, including the zero-entry genesis prefix.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OfflineAssertionCheckError::EventLogSegmentLengthOverflow`] when
-    /// a segment byte length cannot fit in `u64`,
-    /// [`OfflineAssertionCheckError::EventLogByteOffsetOverflow`] when cumulative
-    /// bytes overflow, or [`OfflineAssertionCheckError::EventLogEventCountOverflow`]
-    /// when cumulative event count overflows.
-    pub fn from_segments(
-        segments: impl IntoIterator<Item = Vec<SchedulerEventLogEntry>>,
-    ) -> Result<Self, OfflineAssertionCheckError> {
-        let mut entries = Vec::new();
-        let mut prefix_offsets = BTreeMap::new();
-        let mut prefix = scheduler_event_log_empty_prefix();
-        let mut bytes = 0_u64;
-        let mut events = 0_u64;
-        prefix_offsets.insert(events, EventLogOffset::new(prefix, bytes, events));
-
-        for segment in segments {
-            if segment.is_empty() {
-                continue;
-            }
-            let segment_bytes = scheduler_event_log_segment_bytes(prefix, &segment);
-            let segment_hash = ContentHash::from_bytes(&segment_bytes);
-            let previous_prefix = prefix;
-            let appended_bytes = u64::try_from(segment_bytes.len()).map_err(|_| {
-                OfflineAssertionCheckError::EventLogSegmentLengthOverflow {
-                    segment_len: segment_bytes.len(),
-                }
-            })?;
-            bytes = bytes.checked_add(appended_bytes).ok_or(
-                OfflineAssertionCheckError::EventLogByteOffsetOverflow {
-                    bytes,
-                    appended_bytes,
-                },
-            )?;
-            let appended_events = u64::try_from(segment.len()).map_err(|_| {
-                OfflineAssertionCheckError::EventLogEventCountOverflow {
-                    events,
-                    appended_events: u64::MAX,
-                }
-            })?;
-            events = events.checked_add(appended_events).ok_or(
-                OfflineAssertionCheckError::EventLogEventCountOverflow {
-                    events,
-                    appended_events,
-                },
-            )?;
-            let prefix_material = format!(
-                "previous_prefix={}\nappended_segment={}\nbytes={bytes}\nevents={events}",
-                previous_prefix.to_hex(),
-                segment_hash.to_hex(),
-            );
-            prefix = ContentHash::from_canonical_material(
-                "crucible.scheduler.event-log.prefix.v2",
-                &prefix_material,
-            );
-            prefix_offsets.insert(
-                events,
-                EventLogOffset::with_appended_segment(previous_prefix, bytes, events, segment_hash),
-            );
-            entries.extend(segment);
-        }
-
-        Ok(Self {
-            entries,
-            prefix_offsets,
-        })
-    }
-
-    /// Returns retained scheduler event-log entries.
-    #[must_use]
-    pub fn entries(&self) -> &[SchedulerEventLogEntry] {
-        &self.entries
-    }
-
-    /// Returns the reconstructed event-log offset for `prefix_len`, if retained.
-    #[must_use]
-    pub fn event_log_offset(&self, prefix_len: u64) -> Option<EventLogOffset> {
+    pub(super) fn event_log_offset(&self, prefix_len: u64) -> Option<EventLogOffset> {
         self.prefix_offsets.get(&prefix_len).copied()
     }
 }
 
+mod recorded_log;
+pub use recorded_log::RecordedAssertionLog;
+
 /// Error returned by offline assertion checking.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum OfflineAssertionCheckError {
+    /// An original resource or predicate evaluation refused the assertion pass.
+    Engine(Box<EngineError>),
     /// A recorded scheduler prefix failed condition-prefix validation.
     ConditionEvaluation(ConditionEvaluationError),
     /// A custom-oracle check lacks the exact event-log offset for a prefix.
@@ -1071,6 +1132,7 @@ pub enum OfflineAssertionCheckError {
 impl fmt::Display for OfflineAssertionCheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Engine(source) => fmt::Display::fmt(source, formatter),
             Self::ConditionEvaluation(error) => write!(formatter, "{error}"),
             Self::MissingEventLogOffset { prefix_len } => write!(
                 formatter,
@@ -1112,6 +1174,7 @@ impl fmt::Display for OfflineAssertionCheckError {
 impl Error for OfflineAssertionCheckError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Engine(source) => Some(source.as_ref()),
             Self::ConditionEvaluation(error) => Some(error),
             Self::MissingEventLogOffset { .. }
             | Self::EventLogOffsetMismatch { .. }
@@ -1130,16 +1193,19 @@ impl From<ConditionEvaluationError> for OfflineAssertionCheckError {
 }
 
 /// Streaming host-side assertion evaluator over checked observable state.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct HostAssertionEvaluator {
     states: Vec<HostAssertionState>,
     guest_marker_states: Vec<GuestMarkerAssertionState>,
     once_latches: Vec<Condition>,
-    white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
-    code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
-    mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
-    terminal_quiescence: Option<SchedulerQuiescence>,
+    white_box_policies: std::sync::Arc<BTreeMap<NodeId, WhiteBoxPolicy>>,
+    code_points: std::sync::Arc<BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>>,
+    mem_places: std::sync::Arc<BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>>,
+    terminal_quiescence: Option<std::sync::Arc<SchedulerQuiescence>>,
     last_position: Option<HostAssertionPrefixPosition>,
+    _definition_custody: crate::owned_decode::DecodeCustody,
+    _mutable_custody: crate::owned_decode::DecodeCustody,
+    evaluation_failure: Option<EngineError>,
 }
 
 // Deadline crossing needs only the prior point; checkpoint binding needs its
@@ -1160,383 +1226,114 @@ impl HostAssertionPrefixPosition {
     }
 }
 
-const HOST_ASSERTION_CHECKPOINT_MAGIC: &[u8] = b"crucible.host-assertion-continuation.v2\0";
-const HOST_ASSERTION_CHECKPOINT_MAX_BYTES: usize = 268_435_456;
-
-/// Process-independent continuation of the streaming host assertion evaluator.
-#[derive(Clone, Debug)]
-pub struct HostAssertionEvaluatorCheckpoint {
-    wire: HostAssertionEvaluatorWire,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HostAssertionEvaluatorWire {
-    states: Vec<HostAssertionStateWire>,
-    guest_marker_states: Vec<GuestMarkerAssertionState>,
-    once_latches: Vec<Vec<u8>>,
-    terminal_quiescence: Option<SchedulerQuiescence>,
-    last_prefix: Option<EventLogOffset>,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HostAssertionStateWire {
-    assertion: AssertionId,
-    lifecycle: PropertyLifecycleState,
-    terminal: Option<HostAssertionTerminal>,
-    evaluated: bool,
-    eventually_triggered: bool,
-    eventually_satisfied_at: Option<VirtualTime>,
-    pending_eventually: Vec<EventuallyObligation>,
-    proximity: Option<HostAssertionProximityMinimum>,
-}
-
 impl HostAssertionEvaluator {
-    /// Captures every mutable assertion-evaluation field at the current prefix.
-    #[must_use]
-    pub fn checkpoint(&self) -> HostAssertionEvaluatorCheckpoint {
-        HostAssertionEvaluatorCheckpoint {
-            wire: HostAssertionEvaluatorWire {
-                states: self
-                    .states
-                    .iter()
-                    .map(|state| HostAssertionStateWire {
-                        assertion: state.assertion.id.clone(),
-                        lifecycle: state.lifecycle,
-                        terminal: state.terminal.clone(),
-                        evaluated: state.evaluated,
-                        eventually_triggered: state.eventually_triggered,
-                        eventually_satisfied_at: state.eventually_satisfied_at,
-                        pending_eventually: state.pending_eventually.clone(),
-                        proximity: state.proximity.clone(),
-                    })
-                    .collect(),
-                guest_marker_states: self.guest_marker_states.clone(),
-                once_latches: self
-                    .once_latches
-                    .iter()
-                    .map(Predicate::to_compact_binary)
-                    .collect(),
-                terminal_quiescence: self.terminal_quiescence.clone(),
-                last_prefix: self.last_position.map(|position| position.offset),
-            },
-        }
-    }
-}
-
-impl HostAssertionEvaluatorCheckpoint {
-    /// Encodes the complete assertion continuation canonically.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HostAssertionCheckpointError`] when the checkpoint is malformed
-    /// or exceeds its hard encoded-size ceiling.
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, HostAssertionCheckpointError> {
-        validate_host_assertion_wire(&self.wire)?;
-        let mut payload = Vec::new();
-        ciborium::ser::into_writer(&self.wire, &mut payload)
-            .map_err(|_| HostAssertionCheckpointError::Malformed)?;
-        if payload.len() > HOST_ASSERTION_CHECKPOINT_MAX_BYTES {
-            return Err(HostAssertionCheckpointError::Limit);
-        }
-        let mut bytes = Vec::with_capacity(HOST_ASSERTION_CHECKPOINT_MAGIC.len() + payload.len());
-        bytes.extend_from_slice(HOST_ASSERTION_CHECKPOINT_MAGIC);
-        bytes.extend_from_slice(&payload);
-        Ok(bytes)
-    }
-
-    /// Decodes and validates one canonical assertion continuation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HostAssertionCheckpointError`] for unsupported, malformed,
-    /// noncanonical, or over-limit input.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, HostAssertionCheckpointError> {
-        let payload = bytes
-            .strip_prefix(HOST_ASSERTION_CHECKPOINT_MAGIC)
-            .ok_or(HostAssertionCheckpointError::Version)?;
-        if payload.len() > HOST_ASSERTION_CHECKPOINT_MAX_BYTES {
-            return Err(HostAssertionCheckpointError::Limit);
-        }
-        let wire: HostAssertionEvaluatorWire = ciborium::de::from_reader(payload)
-            .map_err(|_| HostAssertionCheckpointError::Malformed)?;
-        let checkpoint = Self { wire };
-        if checkpoint.canonical_bytes()?.as_slice() != bytes {
-            return Err(HostAssertionCheckpointError::Noncanonical);
-        }
-        Ok(checkpoint)
-    }
-
-    /// Restores this continuation into an evaluator built from the same properties.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HostAssertionCheckpointError`] when assertion identities or the
-    /// current event-log prefix do not match the checkpoint.
-    pub fn restore_into(
-        &self,
-        evaluator: &mut HostAssertionEvaluator,
-        current_prefix: &ConditionEventLogPrefix,
-    ) -> Result<(), HostAssertionCheckpointError> {
-        validate_host_assertion_wire(&self.wire)?;
-        if self.wire.states.len() != evaluator.states.len()
-            || self
-                .wire
-                .states
-                .iter()
-                .zip(&evaluator.states)
-                .any(|(wire, state)| wire.assertion != state.assertion.id)
-            || self.wire.last_prefix.is_some()
-                && self.wire.last_prefix != Some(current_prefix.event_log_offset())
-        {
-            return Err(HostAssertionCheckpointError::Binding);
-        }
-        let once_latches = self
-            .wire
-            .once_latches
-            .iter()
-            .map(|bytes| Predicate::from_compact_binary(bytes))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| HostAssertionCheckpointError::Malformed)?;
-        let mut staged = evaluator.clone();
-        for (state, wire) in staged.states.iter_mut().zip(&self.wire.states) {
-            state.lifecycle = wire.lifecycle;
-            state.terminal = wire.terminal.clone();
-            state.evaluated = wire.evaluated;
-            state.eventually_triggered = wire.eventually_triggered;
-            state.eventually_satisfied_at = wire.eventually_satisfied_at;
-            state.pending_eventually = wire.pending_eventually.clone();
-            state.proximity = wire.proximity.clone();
-        }
-        staged.guest_marker_states = self.wire.guest_marker_states.clone();
-        staged.once_latches = once_latches;
-        staged.terminal_quiescence = self.wire.terminal_quiescence.clone();
-        staged.last_position = self
-            .wire
-            .last_prefix
-            .map(|_| HostAssertionPrefixPosition::from_prefix(current_prefix));
-        *evaluator = staged;
-        Ok(())
-    }
-}
-
-fn validate_host_assertion_wire(
-    wire: &HostAssertionEvaluatorWire,
-) -> Result<(), HostAssertionCheckpointError> {
-    if !wire
-        .states
-        .windows(2)
-        .all(|pair| pair[0].assertion < pair[1].assertion)
-        || !wire
-            .guest_marker_states
-            .windows(2)
-            .all(|pair| pair[0].id < pair[1].id)
-    {
-        return Err(HostAssertionCheckpointError::Noncanonical);
-    }
-    for predicate in &wire.once_latches {
-        Predicate::from_compact_binary(predicate)
-            .map_err(|_| HostAssertionCheckpointError::Malformed)?;
-    }
-    Ok(())
-}
-
-/// Error returned by host-assertion continuation encoding and restore.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostAssertionCheckpointError {
-    /// The envelope semantic version is unsupported.
-    Version,
-    /// The payload is malformed.
-    Malformed,
-    /// The payload is valid but not canonical.
-    Noncanonical,
-    /// The payload exceeds its hard bound.
-    Limit,
-    /// The continuation does not bind to the admitted properties or log prefix.
-    Binding,
-}
-
-impl fmt::Display for HostAssertionCheckpointError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Version => formatter.write_str("unsupported host-assertion checkpoint version"),
-            Self::Malformed => formatter.write_str("malformed host-assertion checkpoint"),
-            Self::Noncanonical => formatter.write_str("noncanonical host-assertion checkpoint"),
-            Self::Limit => formatter.write_str("host-assertion checkpoint exceeds its size limit"),
-            Self::Binding => formatter.write_str("host-assertion checkpoint binding mismatch"),
-        }
-    }
-}
-
-impl Error for HostAssertionCheckpointError {}
-
-impl HostAssertionEvaluator {
-    /// Builds an evaluator for the assertions in canonical property order.
-    #[must_use]
-    pub fn new(properties: &Properties) -> Self {
-        let (states, guest_marker_states) = partition_declared_assertions(properties);
-        Self {
-            states,
-            guest_marker_states,
-            once_latches: Vec::new(),
-            white_box_policies: BTreeMap::new(),
-            code_points: BTreeMap::new(),
-            mem_places: BTreeMap::new(),
-            terminal_quiescence: None,
-            last_position: None,
-        }
-    }
-
-    /// Adds authoritative white-box opt-in policies for guest marker evaluation.
-    #[must_use]
-    pub fn with_white_box_policies(
-        mut self,
-        policies: impl IntoIterator<Item = (NodeId, WhiteBoxPolicy)>,
-    ) -> Self {
-        self.white_box_policies = policies.into_iter().collect();
-        self
-    }
-
-    /// Adds authoritative white-box opt-in policies from a world definition.
-    #[must_use]
-    pub fn with_world_white_box_policies(self, world: &World) -> Self {
-        self.with_white_box_policies(
-            world
-                .vm_nodes()
-                .iter()
-                .map(|node| (node.id.clone(), node.white_box)),
-        )
-    }
-
-    /// Adds catalog-declared guest assertion markers before event-log evaluation.
-    #[must_use]
-    pub fn with_guest_assertion_catalog(
-        mut self,
-        catalog: impl IntoIterator<Item = GuestAssertionMarker>,
-    ) -> Self {
-        for marker in catalog {
-            let _ = guest_marker_assertion_state_for(&mut self.guest_marker_states, &marker);
-        }
-        self
-    }
-
-    /// Adds host-side code point resolutions visible to coverage predicates.
-    #[must_use]
-    pub fn with_resolved_code_points(
-        mut self,
-        code_points: impl IntoIterator<Item = ((NodeId, CodePoint), ResolvedCodePoint)>,
-    ) -> Self {
-        self.code_points = code_points.into_iter().collect();
-        self
-    }
-
-    /// Adds host-side memory place resolutions visible to memory predicates.
-    #[must_use]
-    pub fn with_resolved_mem_places(
-        mut self,
-        mem_places: impl IntoIterator<Item = ((NodeId, MemPlace), ResolvedMemPlace)>,
-    ) -> Self {
-        self.mem_places = mem_places.into_iter().collect();
-        self
-    }
-
-    /// Adds terminal scheduler-quiescence evidence for after-quiescence checks.
-    #[must_use]
-    pub fn with_terminal_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
-        self.terminal_quiescence = Some(quiescence);
-        self
-    }
-
-    /// Observes one checked event-log prefix and returns newly terminal outcomes.
-    pub fn observe_prefix<O>(
+    fn observe_prefix_inner<O>(
         &mut self,
         prefix: &ConditionEventLogPrefix,
         oracle: &mut O,
-    ) -> Vec<HostAssertionOutcome>
+    ) -> Result<Vec<HostAssertionOutcome>, EngineError>
     where
         O: HostAssertionOracle + ?Sized,
     {
-        let mut outcomes = Vec::new();
-        outcomes.extend(self.observe_due_eventually_deadlines(prefix, oracle));
+        let mut outcomes = self.observe_due_eventually_deadlines(prefix, oracle)?;
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
             if let Some(outcome) = observe_host_assertion_state(
                 state,
-                prefix,
+                AssertionObservationSources {
+                    prefix,
+                    white_box_policies: &self.white_box_policies,
+                    code_points: &self.code_points,
+                    mem_places: &self.mem_places,
+                },
                 oracle,
                 once_latches,
-                &self.white_box_policies,
-                &self.code_points,
-                &self.mem_places,
-            ) {
+                &mut self.evaluation_failure,
+            )? {
+                owned_storage::reserve_slot(&mut outcomes)?;
                 outcomes.push(outcome);
             }
         }
-        outcomes.extend(observe_guest_marker_assertions(
+        for outcome in observe_guest_marker_assertions(
             &mut self.guest_marker_states,
             prefix,
             &self.white_box_policies,
-        ));
+        )? {
+            owned_storage::reserve_slot(&mut outcomes)?;
+            outcomes.push(outcome);
+        }
         self.last_position = Some(HostAssertionPrefixPosition::from_prefix(prefix));
+        let _sort = crate::owned_decode::current_budget()
+            .map(|budget| budget.reserve_scratch_array::<HostAssertionOutcome>(outcomes.len()))
+            .transpose()
+            .map_err(owned_storage::admission)?;
         sort_host_assertion_outcomes(&mut outcomes);
-        outcomes
+        Ok(outcomes)
     }
 
     /// Returns current lifecycle states in canonical assertion order.
-    #[must_use]
-    pub fn lifecycle_states(&self) -> Vec<HostAssertionLifecycle> {
-        let mut states = self
-            .states
-            .iter()
-            .map(HostAssertionState::lifecycle)
-            .chain(
-                self.guest_marker_states
-                    .iter()
-                    .map(GuestMarkerAssertionState::lifecycle),
-            )
-            .collect::<Vec<_>>();
-        states.sort_by(|left, right| {
+    ///
+    /// # Errors
+    /// Returns the original resource refusal before publishing copied states.
+    pub fn lifecycle_states(&self) -> Result<Vec<HostAssertionLifecycle>, EngineError> {
+        let _original = self._definition_custody.enter();
+        let child = crate::owned_decode::require_current_child_budget()
+            .map_err(owned_storage::admission)?;
+        let _scope = child.enter();
+        let mut states = Vec::new();
+        for state in &self.states {
+            owned_storage::reserve_slot(&mut states)?;
+            states.push(state.lifecycle()?);
+        }
+        for state in &self.guest_marker_states {
+            owned_storage::reserve_slot(&mut states)?;
+            states.push(state.lifecycle()?);
+        }
+        owned_storage::sort(&mut states, |left, right| {
             left.assertion
                 .cmp(&right.assertion)
                 .then_with(|| left.state.cmp(&right.state))
-        });
-        states
+        })?;
+        owned_storage::check()?;
+        Ok(states)
     }
 
     fn observe_due_eventually_deadlines<O>(
         &mut self,
         prefix: &ConditionEventLogPrefix,
         oracle: &mut O,
-    ) -> Vec<HostAssertionOutcome>
+    ) -> Result<Vec<HostAssertionOutcome>, EngineError>
     where
         O: HostAssertionOracle + ?Sized,
     {
         let Some(previous_position) = self.last_position else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let previous_at = previous_position.point.at().ticks;
         let next_at = prefix.point().at().ticks;
         if next_at <= previous_at {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-
         let mut deadlines = BTreeSet::new();
         for state in &self.states {
             if state.terminal.is_some() {
                 continue;
             }
             for obligation in &state.pending_eventually {
-                if obligation.deadline.ticks > previous_at && obligation.deadline.ticks < next_at {
+                if obligation.deadline.ticks > previous_at
+                    && obligation.deadline.ticks < next_at
+                    && !deadlines.contains(&obligation.deadline)
+                {
+                    crate::owned_decode::charge_btree_set_entry::<VirtualTime>()
+                        .map_err(owned_storage::admission)?;
                     deadlines.insert(obligation.deadline);
                 }
             }
         }
-
         let mut outcomes = Vec::new();
         for deadline in deadlines {
             let Some(deadline_prefix) =
-                prefix.with_facts_through_point(EventEvaluationPoint::assertion_deadline(deadline))
+                prefix.observed_state_at(EventEvaluationPoint::assertion_deadline(deadline))
             else {
                 continue;
             };
@@ -1544,30 +1341,34 @@ impl HostAssertionEvaluator {
             for state in &mut self.states {
                 if let Some(outcome) = observe_eventually_deadline_state(
                     state,
-                    &deadline_prefix,
+                    deadline_prefix,
+                    AssertionObservationSources {
+                        prefix,
+                        white_box_policies: &self.white_box_policies,
+                        code_points: &self.code_points,
+                        mem_places: &self.mem_places,
+                    },
                     oracle,
                     once_latches,
-                    &self.white_box_policies,
-                    &self.code_points,
-                    &self.mem_places,
-                ) {
+                    &mut self.evaluation_failure,
+                )? {
+                    owned_storage::reserve_slot(&mut outcomes)?;
                     outcomes.push(outcome);
                 }
             }
         }
-        outcomes
+        Ok(outcomes)
     }
 
-    /// Finalizes all assertions at the supplied terminal event-log prefix.
-    pub fn finalize_prefix<O>(
+    fn finalize_prefix_inner<O>(
         &mut self,
         prefix: &ConditionEventLogPrefix,
         oracle: &mut O,
-    ) -> HostAssertionReport
+    ) -> Result<HostAssertionReport, EngineError>
     where
         O: HostAssertionOracle + ?Sized,
     {
-        self.observe_prefix(prefix, oracle);
+        self.observe_prefix_inner(prefix, oracle)?;
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
             finalize_host_assertion_state(
@@ -1578,56 +1379,77 @@ impl HostAssertionEvaluator {
                 &self.white_box_policies,
                 &self.code_points,
                 &self.mem_places,
-                self.terminal_quiescence.as_ref(),
-            );
+                self.terminal_quiescence.as_deref(),
+                &mut self.evaluation_failure,
+            )?;
         }
         for state in &mut self.guest_marker_states {
-            finalize_guest_marker_assertion_state(state, prefix.point().at());
+            finalize_guest_marker_assertion_state(state, prefix.point().at())?;
         }
-        let outcomes = self
-            .states
-            .iter()
-            .filter_map(HostAssertionState::outcome)
-            .chain(
-                self.guest_marker_states
-                    .iter()
-                    .filter_map(GuestMarkerAssertionState::outcome),
-            )
-            .collect::<Vec<_>>();
-        let mut outcomes = outcomes;
+        let mut outcomes = Vec::new();
+        for state in &self.states {
+            if let Some(outcome) = state.outcome()? {
+                owned_storage::reserve_slot(&mut outcomes)?;
+                outcomes.push(outcome);
+            }
+        }
+        for state in &self.guest_marker_states {
+            if let Some(outcome) = state.outcome()? {
+                owned_storage::reserve_slot(&mut outcomes)?;
+                outcomes.push(outcome);
+            }
+        }
+        let _sort_outcomes = crate::owned_decode::current_budget()
+            .map(|budget| budget.reserve_scratch_array::<HostAssertionOutcome>(outcomes.len()))
+            .transpose()
+            .map_err(owned_storage::admission)?;
         sort_host_assertion_outcomes(&mut outcomes);
-        let failures = outcomes
+        let mut failures = Vec::new();
+        for outcome in outcomes
             .iter()
             .filter(|outcome| host_assertion_outcome_fails_run(outcome.kind))
-            .map(|outcome| {
-                AssertionVerdictFailure::new(
-                    outcome.assertion.clone(),
-                    outcome.at,
-                    outcome.reason.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let reproduction_artifact = assertion_reproduction_artifact_from_prefix(prefix);
+        {
+            owned_storage::reserve_slot(&mut failures)?;
+            failures.push(AssertionVerdictFailure::new(
+                owned_storage::copy_assertion_id(&outcome.assertion)?,
+                outcome.at,
+                owned_storage::copy_string(&outcome.reason)?,
+            ));
+        }
+        let reproduction_artifact = assertion_reproduction_artifact_from_prefix(prefix)?;
         let violations =
-            host_assertion_violations_from_outcomes(&outcomes, prefix, reproduction_artifact);
-        let mut proximities = self
-            .states
-            .iter()
-            .filter_map(HostAssertionState::proximity)
-            .collect::<Vec<_>>();
+            host_assertion_violations_from_outcomes(&outcomes, prefix, reproduction_artifact)?;
+        let mut proximities = Vec::new();
+        for state in &self.states {
+            if let Some(proximity) = state.proximity()? {
+                owned_storage::reserve_slot(&mut proximities)?;
+                proximities.push(proximity);
+            }
+        }
+        let _sort_proximities = crate::owned_decode::current_budget()
+            .map(|budget| budget.reserve_scratch_array::<HostAssertionProximity>(proximities.len()))
+            .transpose()
+            .map_err(owned_storage::admission)?;
         sort_host_assertion_proximities(&mut proximities);
-        HostAssertionReport {
+        let _sort_failures = crate::owned_decode::current_budget()
+            .map(|budget| budget.reserve_scratch_array::<AssertionVerdictFailure>(failures.len()))
+            .transpose()
+            .map_err(owned_storage::admission)?;
+        owned_storage::check()?;
+        Ok(HostAssertionReport {
             outcomes,
             violations,
             proximities,
             verdict: AssertionRunVerdict::failed(failures),
-        }
+            _decode_custody: crate::owned_decode::require_current_custody()
+                .map_err(owned_storage::admission)?,
+        })
     }
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct HostAssertionState {
-    assertion: AssertionDef,
+    assertion: std::sync::Arc<AssertionDef>,
     lifecycle: PropertyLifecycleState,
     terminal: Option<HostAssertionTerminal>,
     evaluated: bool,
@@ -1637,7 +1459,7 @@ pub(super) struct HostAssertionState {
     proximity: Option<HostAssertionProximityMinimum>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct GuestMarkerAssertionState {
     pub(super) id: AssertionId,
     pub(super) lifecycle: PropertyLifecycleState,
@@ -1654,49 +1476,56 @@ pub(super) struct GuestMarkerAssertionState {
 }
 
 impl GuestMarkerAssertionState {
-    pub(super) fn new(marker: &GuestAssertionMarker) -> Self {
-        Self {
-            id: marker.id.clone(),
+    pub(super) fn new(marker: &GuestAssertionMarker) -> Result<Self, EngineError> {
+        Ok(Self {
+            id: owned_storage::copy_assertion_id(&marker.id)?,
             lifecycle: PropertyLifecycleState::Declared,
-            message: marker.message.clone(),
+            message: owned_storage::copy_string(&marker.message)?,
             kind: marker.kind,
             must_hit: marker.must_hit,
-            details: marker.details.clone(),
-            location: marker.location.clone(),
+            details: owned_storage::copy_json(&marker.details)?,
+            location: owned_storage::copy_string(&marker.location)?,
             observed_true: false,
             last_icount: None,
             last_node: None,
             terminal: None,
             declared_message: None,
-        }
+        })
     }
 
-    fn lifecycle(&self) -> HostAssertionLifecycle {
-        HostAssertionLifecycle {
-            assertion: self.id.clone(),
+    fn lifecycle(&self) -> Result<HostAssertionLifecycle, EngineError> {
+        Ok(HostAssertionLifecycle {
+            assertion: owned_storage::copy_assertion_id(&self.id)?,
             state: self.lifecycle,
-        }
+            _decode_custody: crate::owned_decode::require_current_custody()
+                .map_err(owned_storage::admission)?,
+        })
     }
 
-    fn outcome(&self) -> Option<HostAssertionOutcome> {
-        self.terminal.as_ref().map(|terminal| HostAssertionOutcome {
-            assertion: self.id.clone(),
+    fn outcome(&self) -> Result<Option<HostAssertionOutcome>, EngineError> {
+        let Some(terminal) = &self.terminal else {
+            return Ok(None);
+        };
+        Ok(Some(HostAssertionOutcome {
+            assertion: owned_storage::copy_assertion_id(&self.id)?,
             quantifier: guest_assertion_quantifier_kind(self.kind),
             at: terminal.at,
             kind: terminal.kind,
             lifecycle: terminal.lifecycle,
-            message: self.message.clone(),
-            reason: terminal.reason.clone(),
-            evidence: terminal.evidence.clone(),
-        })
+            message: owned_storage::copy_string(&self.message)?,
+            reason: owned_storage::copy_string(&terminal.reason)?,
+            evidence: owned_storage::copy_json(&terminal.evidence)?,
+            _decode_custody: crate::owned_decode::require_current_custody()
+                .map_err(owned_storage::admission)?,
+        }))
     }
 
     pub(super) fn terminal(
         &mut self,
         kind: HostAssertionOutcomeKind,
         at: VirtualTime,
-        reason: impl Into<String>,
-    ) -> Option<HostAssertionOutcome> {
+        reason: impl fmt::Display,
+    ) -> Result<Option<HostAssertionOutcome>, EngineError> {
         self.terminal_with_evidence(kind, at, reason, None)
     }
 
@@ -1704,19 +1533,21 @@ impl GuestMarkerAssertionState {
         &mut self,
         kind: HostAssertionOutcomeKind,
         at: VirtualTime,
-        reason: impl Into<String>,
+        reason: impl fmt::Display,
         evidence: Option<HostAssertionViolationEvidence>,
-    ) -> Option<HostAssertionOutcome> {
+    ) -> Result<Option<HostAssertionOutcome>, EngineError> {
         if self.terminal.is_some() {
-            return None;
+            return Ok(None);
         }
+        let reason =
+            crate::owned_decode::display_string(&reason).map_err(owned_storage::admission)?;
         let lifecycle = lifecycle_for_outcome_kind(kind);
         self.lifecycle = lifecycle;
         self.terminal = Some(HostAssertionTerminal {
             kind,
             lifecycle,
             at,
-            reason: reason.into(),
+            reason,
             evidence,
         });
         self.outcome()
@@ -1724,9 +1555,10 @@ impl GuestMarkerAssertionState {
 }
 
 impl HostAssertionState {
-    pub(super) fn new(assertion: &AssertionDef) -> Self {
-        Self {
-            assertion: assertion.clone(),
+    pub(super) fn new(assertion: &AssertionDef) -> Result<Self, EngineError> {
+        owned_storage::reserve_arc::<AssertionDef>()?;
+        Ok(Self {
+            assertion: std::sync::Arc::new(assertion.try_clone_admitted()?),
             lifecycle: PropertyLifecycleState::Declared,
             terminal: None,
             evaluated: false,
@@ -1734,35 +1566,42 @@ impl HostAssertionState {
             eventually_satisfied_at: None,
             pending_eventually: Vec::new(),
             proximity: None,
-        }
+        })
     }
 
-    fn lifecycle(&self) -> HostAssertionLifecycle {
-        HostAssertionLifecycle {
-            assertion: self.assertion.id.clone(),
+    fn lifecycle(&self) -> Result<HostAssertionLifecycle, EngineError> {
+        Ok(HostAssertionLifecycle {
+            assertion: owned_storage::copy_assertion_id(&self.assertion.id)?,
             state: self.lifecycle,
-        }
+            _decode_custody: crate::owned_decode::require_current_custody()
+                .map_err(owned_storage::admission)?,
+        })
     }
 
-    fn outcome(&self) -> Option<HostAssertionOutcome> {
-        self.terminal.as_ref().map(|terminal| HostAssertionOutcome {
-            assertion: self.assertion.id.clone(),
+    fn outcome(&self) -> Result<Option<HostAssertionOutcome>, EngineError> {
+        let Some(terminal) = &self.terminal else {
+            return Ok(None);
+        };
+        Ok(Some(HostAssertionOutcome {
+            assertion: owned_storage::copy_assertion_id(&self.assertion.id)?,
             quantifier: property_quantifier_kind(&self.assertion.property),
             at: terminal.at,
             kind: terminal.kind,
             lifecycle: terminal.lifecycle,
-            message: self.assertion.message.clone(),
-            reason: terminal.reason.clone(),
-            evidence: terminal.evidence.clone(),
-        })
+            message: owned_storage::copy_string(&self.assertion.message)?,
+            reason: owned_storage::copy_string(&terminal.reason)?,
+            evidence: owned_storage::copy_json(&terminal.evidence)?,
+            _decode_custody: crate::owned_decode::require_current_custody()
+                .map_err(owned_storage::admission)?,
+        }))
     }
 
     fn terminal(
         &mut self,
         kind: HostAssertionOutcomeKind,
         at: VirtualTime,
-        reason: impl Into<String>,
-    ) -> Option<HostAssertionOutcome> {
+        reason: impl fmt::Display,
+    ) -> Result<Option<HostAssertionOutcome>, EngineError> {
         self.terminal_with_evidence(kind, at, reason, None)
     }
 
@@ -1770,29 +1609,35 @@ impl HostAssertionState {
         &mut self,
         kind: HostAssertionOutcomeKind,
         at: VirtualTime,
-        reason: impl Into<String>,
+        reason: impl fmt::Display,
         evidence: Option<HostAssertionViolationEvidence>,
-    ) -> Option<HostAssertionOutcome> {
+    ) -> Result<Option<HostAssertionOutcome>, EngineError> {
         if self.terminal.is_some() {
-            return None;
+            return Ok(None);
         }
+        let reason =
+            crate::owned_decode::display_string(&reason).map_err(owned_storage::admission)?;
         let lifecycle = lifecycle_for_outcome_kind(kind);
         self.lifecycle = lifecycle;
         self.terminal = Some(HostAssertionTerminal {
             kind,
             lifecycle,
             at,
-            reason: reason.into(),
+            reason,
             evidence,
         });
         self.outcome()
     }
 
     fn observe_proximity(&mut self, prefix: &ConditionEventLogPrefix, distance: u128) {
+        self.observe_proximity_at(prefix.observed_state(), distance);
+    }
+
+    fn observe_proximity_at(&mut self, observed: ObservedState<'_>, distance: u128) {
         let candidate = HostAssertionProximityMinimum {
             distance,
-            at: prefix.point().at(),
-            event_log_offset: prefix.event_log_offset(),
+            at: observed.point().at(),
+            event_log_offset: observed.event_log_offset(),
         };
         let should_replace = match self.proximity.as_ref() {
             Some(current) => candidate.is_better_than(current),
@@ -1803,23 +1648,29 @@ impl HostAssertionState {
         }
     }
 
-    fn proximity(&self) -> Option<HostAssertionProximity> {
-        let terminal = self.terminal.as_ref()?;
+    fn proximity(&self) -> Result<Option<HostAssertionProximity>, EngineError> {
+        let Some(terminal) = self.terminal.as_ref() else {
+            return Ok(None);
+        };
         if !property_proximity_is_reportable(
             &self.assertion.property,
             terminal.kind,
             self.eventually_triggered,
         ) {
-            return None;
+            return Ok(None);
         }
-        let minimum = self.proximity.as_ref()?;
-        Some(HostAssertionProximity {
-            assertion: self.assertion.id.clone(),
+        let Some(minimum) = self.proximity.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(HostAssertionProximity {
+            assertion: owned_storage::copy_assertion_id(&self.assertion.id)?,
             quantifier: property_quantifier_kind(&self.assertion.property),
             distance: minimum.distance,
             at: minimum.at,
             event_log_offset: minimum.event_log_offset,
-        })
+            _decode_custody: crate::owned_decode::require_current_custody()
+                .map_err(owned_storage::admission)?,
+        }))
     }
 }
 
@@ -1864,42 +1715,59 @@ pub(super) struct EventuallyObligation {
     deadline: VirtualTime,
 }
 
-pub(super) fn observe_host_assertion_state<O>(
+/// Borrows immutable observation inputs while a pass stages mutable verdict state.
+struct AssertionObservationSources<'a> {
+    prefix: &'a ConditionEventLogPrefix,
+    white_box_policies: &'a BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &'a BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &'a BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+}
+
+fn observe_host_assertion_state<O>(
     state: &mut HostAssertionState,
-    prefix: &ConditionEventLogPrefix,
+    sources: AssertionObservationSources<'_>,
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
-    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
-    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
-    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
-) -> Option<HostAssertionOutcome>
+    failure: &mut Option<EngineError>,
+) -> Result<Option<HostAssertionOutcome>, EngineError>
 where
     O: HostAssertionOracle + ?Sized,
 {
+    let AssertionObservationSources {
+        prefix,
+        white_box_policies,
+        code_points,
+        mem_places,
+    } = sources;
+
     if state.terminal.is_some() {
-        return None;
+        return Ok(None);
     }
 
     let at = prefix.point().at();
-    let property = state.assertion.property.clone();
+    let assertion = std::sync::Arc::clone(&state.assertion);
+    let property = &assertion.property;
     match property {
         Property::Always { predicate } => {
             if prefix.event_log_offset().events == 0 {
-                return None;
+                return Ok(None);
             }
             state.evaluated = true;
             state.lifecycle = PropertyLifecycleState::Passing;
-            if host_condition_is_true(
-                prefix,
-                &predicate,
-                oracle,
-                once_latches,
-                white_box_policies,
-                code_points,
-                mem_places,
-                None,
+            if admitted_pass::condition_result(
+                host_condition_is_true(
+                    prefix,
+                    predicate,
+                    oracle,
+                    once_latches,
+                    white_box_policies,
+                    code_points,
+                    mem_places,
+                    None,
+                ),
+                failure,
             ) {
-                None
+                Ok(None)
             } else {
                 state.terminal_with_evidence(
                     HostAssertionOutcomeKind::Violated,
@@ -1907,10 +1775,10 @@ where
                     "always predicate was false",
                     Some(condition_violation_evidence(
                         prefix,
-                        &predicate,
+                        predicate,
                         false,
                         white_box_policies,
-                    )),
+                    )?),
                 )
             }
         }
@@ -1918,20 +1786,23 @@ where
             state.evaluated = true;
             state.lifecycle = PropertyLifecycleState::Passing;
             let mut leaf_cache = HostConditionEvaluationCache::new();
-            let satisfied = host_condition_is_true_with_cache(
-                prefix,
-                &predicate,
-                oracle,
-                once_latches,
-                &mut leaf_cache,
-                white_box_policies,
-                code_points,
-                mem_places,
-                None,
+            let satisfied = admitted_pass::condition_result(
+                host_condition_is_true_with_cache(
+                    prefix,
+                    predicate,
+                    oracle,
+                    once_latches,
+                    &mut leaf_cache,
+                    white_box_policies,
+                    code_points,
+                    mem_places,
+                    None,
+                ),
+                failure,
             );
             let distance = host_condition_distance_to_satisfaction(
                 prefix,
-                &predicate,
+                predicate,
                 oracle,
                 once_latches,
                 &mut leaf_cache,
@@ -1948,7 +1819,7 @@ where
                     "sometimes predicate became true",
                 )
             } else {
-                None
+                Ok(None)
             }
         }
         Property::Eventually {
@@ -1961,17 +1832,18 @@ where
                 state,
                 prefix,
                 oracle,
-                &trigger,
-                &property,
-                deadline,
+                trigger,
+                property,
+                *deadline,
                 once_latches,
                 &mut leaf_cache,
                 white_box_policies,
                 code_points,
                 mem_places,
+                failure,
             )
         }
-        Property::AfterQuiescence { .. } => None,
+        Property::AfterQuiescence { .. } => Ok(None),
         Property::Reachable {
             predicate,
             expectation,
@@ -1983,8 +1855,9 @@ where
             white_box_policies,
             code_points,
             mem_places,
-            &predicate,
-            expectation,
+            predicate,
+            *expectation,
+            failure,
         ),
     }
 }
@@ -2003,7 +1876,8 @@ pub(super) fn observe_eventually_assertion<O>(
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
-) -> Option<HostAssertionOutcome>
+    failure: &mut Option<EngineError>,
+) -> Result<Option<HostAssertionOutcome>, EngineError>
 where
     O: HostAssertionOracle + ?Sized,
 {
@@ -2021,7 +1895,7 @@ where
         return state.terminal_with_evidence(
             HostAssertionOutcomeKind::Violated,
             expired.deadline,
-            format!(
+            format_args!(
                 "eventually deadline expired after trigger at {}",
                 expired.triggered_at.ticks
             ),
@@ -2031,25 +1905,29 @@ where
                 property,
                 false,
                 white_box_policies,
-            )),
+            )?),
         );
     }
 
     if !state.eventually_triggered
-        && host_condition_is_true_with_cache(
-            prefix,
-            trigger,
-            oracle,
-            once_latches,
-            leaf_cache,
-            white_box_policies,
-            code_points,
-            mem_places,
-            None,
+        && admitted_pass::condition_result(
+            host_condition_is_true_with_cache(
+                prefix,
+                trigger,
+                oracle,
+                once_latches,
+                leaf_cache,
+                white_box_policies,
+                code_points,
+                mem_places,
+                None,
+            ),
+            failure,
         )
     {
         state.eventually_triggered = true;
         state.lifecycle = PropertyLifecycleState::Failing;
+        owned_storage::reserve_slot(&mut state.pending_eventually)?;
         state.pending_eventually.push(EventuallyObligation {
             triggered_at: at,
             deadline: eventually_deadline(at, deadline),
@@ -2057,16 +1935,19 @@ where
     }
 
     let property_satisfied = !state.pending_eventually.is_empty()
-        && host_condition_is_true_with_cache(
-            prefix,
-            property,
-            oracle,
-            once_latches,
-            leaf_cache,
-            white_box_policies,
-            code_points,
-            mem_places,
-            None,
+        && admitted_pass::condition_result(
+            host_condition_is_true_with_cache(
+                prefix,
+                property,
+                oracle,
+                once_latches,
+                leaf_cache,
+                white_box_policies,
+                code_points,
+                mem_places,
+                None,
+            ),
+            failure,
         );
     if !state.pending_eventually.is_empty() {
         let distance = host_condition_distance_to_satisfaction(
@@ -2099,7 +1980,7 @@ where
         return state.terminal_with_evidence(
             HostAssertionOutcomeKind::Violated,
             expired.deadline,
-            format!(
+            format_args!(
                 "eventually deadline expired after trigger at {}",
                 expired.triggered_at.ticks
             ),
@@ -2109,45 +1990,55 @@ where
                 property,
                 false,
                 white_box_policies,
-            )),
+            )?),
         );
     }
 
-    None
+    Ok(None)
 }
 
-pub(super) fn observe_eventually_deadline_state<O>(
+fn observe_eventually_deadline_state<O>(
     state: &mut HostAssertionState,
-    prefix: &ConditionEventLogPrefix,
+    observed: ObservedState<'_>,
+    sources: AssertionObservationSources<'_>,
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
-    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
-    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
-    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
-) -> Option<HostAssertionOutcome>
+    failure: &mut Option<EngineError>,
+) -> Result<Option<HostAssertionOutcome>, EngineError>
 where
     O: HostAssertionOracle + ?Sized,
 {
-    if state.terminal.is_some() || state.pending_eventually.is_empty() {
-        return None;
-    }
-
-    let Property::Eventually { property, .. } = state.assertion.property.clone() else {
-        return None;
-    };
-    let at = prefix.point().at();
-    state.lifecycle = PropertyLifecycleState::Failing;
-    let mut leaf_cache = HostConditionEvaluationCache::new();
-    if host_condition_is_true_with_cache(
+    let AssertionObservationSources {
         prefix,
-        &property,
-        oracle,
-        once_latches,
-        &mut leaf_cache,
         white_box_policies,
         code_points,
         mem_places,
-        None,
+    } = sources;
+
+    if state.terminal.is_some() || state.pending_eventually.is_empty() {
+        return Ok(None);
+    }
+
+    let assertion = std::sync::Arc::clone(&state.assertion);
+    let Property::Eventually { property, .. } = &assertion.property else {
+        return Ok(None);
+    };
+    let at = observed.point().at();
+    state.lifecycle = PropertyLifecycleState::Failing;
+    let mut leaf_cache = HostConditionEvaluationCache::new();
+    if admitted_pass::condition_result(
+        host_condition_is_true_with_cache(
+            &observed,
+            property,
+            oracle,
+            once_latches,
+            &mut leaf_cache,
+            white_box_policies,
+            code_points,
+            mem_places,
+            None,
+        ),
+        failure,
     ) {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
@@ -2158,8 +2049,8 @@ where
         );
     }
     let distance = host_condition_distance_to_satisfaction(
-        prefix,
-        &property,
+        &observed,
+        property,
         oracle,
         once_latches,
         &mut leaf_cache,
@@ -2168,26 +2059,30 @@ where
         mem_places,
         None,
     );
-    state.observe_proximity(prefix, distance);
+    state.observe_proximity_at(observed, distance);
 
-    let expired = state
+    let Some(expired) = state
         .pending_eventually
         .iter()
         .copied()
-        .find(|obligation| at.ticks >= obligation.deadline.ticks)?;
+        .find(|obligation| at.ticks >= obligation.deadline.ticks)
+    else {
+        return Ok(None);
+    };
     state.terminal_with_evidence(
         HostAssertionOutcomeKind::Violated,
         expired.deadline,
-        format!(
+        format_args!(
             "eventually deadline expired after trigger at {}",
             expired.triggered_at.ticks
         ),
-        Some(condition_violation_evidence(
+        Some(condition_violation_evidence_at(
             prefix,
-            &property,
+            observed.point(),
+            property,
             false,
             white_box_policies,
-        )),
+        )?),
     )
 }
 
@@ -2203,23 +2098,27 @@ pub(super) fn observe_reachability_assertion<O>(
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     predicate: &Condition,
     expectation: ReachabilityExpectation,
-) -> Option<HostAssertionOutcome>
+    failure: &mut Option<EngineError>,
+) -> Result<Option<HostAssertionOutcome>, EngineError>
 where
     O: HostAssertionOracle + ?Sized,
 {
     state.evaluated = true;
     state.lifecycle = PropertyLifecycleState::Passing;
     let mut leaf_cache = HostConditionEvaluationCache::new();
-    let reached = host_condition_is_true_with_cache(
-        prefix,
-        predicate,
-        oracle,
-        once_latches,
-        &mut leaf_cache,
-        white_box_policies,
-        code_points,
-        mem_places,
-        None,
+    let reached = admitted_pass::condition_result(
+        host_condition_is_true_with_cache(
+            prefix,
+            predicate,
+            oracle,
+            once_latches,
+            &mut leaf_cache,
+            white_box_policies,
+            code_points,
+            mem_places,
+            None,
+        ),
+        failure,
     );
     if matches!(expectation, ReachabilityExpectation::Reachable { .. }) {
         let distance = host_condition_distance_to_satisfaction(
@@ -2250,12 +2149,12 @@ where
                 predicate,
                 true,
                 white_box_policies,
-            )),
+            )?),
         ),
         (
             ReachabilityExpectation::Reachable { .. } | ReachabilityExpectation::Unreachable,
             false,
-        ) => None,
+        ) => Ok(None),
     }
 }
 
@@ -2270,15 +2169,18 @@ pub(super) fn finalize_host_assertion_state<O>(
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     terminal_quiescence: Option<&SchedulerQuiescence>,
-) where
+    failure: &mut Option<EngineError>,
+) -> Result<(), EngineError>
+where
     O: HostAssertionOracle + ?Sized,
 {
     if state.terminal.is_some() {
-        return;
+        return Ok(());
     }
 
     let at = prefix.point().at();
-    let property = state.assertion.property.clone();
+    let assertion = std::sync::Arc::clone(&state.assertion);
+    let property = &assertion.property;
     match property {
         Property::Always { .. } => {
             if state.evaluated {
@@ -2286,13 +2188,13 @@ pub(super) fn finalize_host_assertion_state<O>(
                     HostAssertionOutcomeKind::Passed,
                     at,
                     "always predicate stayed true",
-                );
+                )?;
             } else {
                 state.terminal(
                     HostAssertionOutcomeKind::NeverEvaluated,
                     at,
                     "always predicate scope was never evaluated",
-                );
+                )?;
             }
         }
         Property::Sometimes { predicate } => {
@@ -2302,33 +2204,36 @@ pub(super) fn finalize_host_assertion_state<O>(
                 "sometimes predicate never became true",
                 Some(condition_violation_evidence(
                     prefix,
-                    &predicate,
+                    predicate,
                     false,
                     white_box_policies,
-                )),
-            );
+                )?),
+            )?;
         }
         Property::Eventually {
             trigger, property, ..
         } => {
-            finalize_eventually_assertion(state, prefix, &trigger, &property, white_box_policies);
+            finalize_eventually_assertion(state, prefix, trigger, property, white_box_policies)?;
         }
         Property::AfterQuiescence { predicate } => {
-            if host_condition_is_true(
-                prefix,
-                &predicate,
-                oracle,
-                once_latches,
-                white_box_policies,
-                code_points,
-                mem_places,
-                terminal_quiescence,
+            if admitted_pass::condition_result(
+                host_condition_is_true(
+                    prefix,
+                    predicate,
+                    oracle,
+                    once_latches,
+                    white_box_policies,
+                    code_points,
+                    mem_places,
+                    terminal_quiescence,
+                ),
+                failure,
             ) {
                 state.terminal(
                     HostAssertionOutcomeKind::Passed,
                     at,
                     "after-quiescence predicate was true",
-                );
+                )?;
             } else {
                 state.terminal_with_evidence(
                     HostAssertionOutcomeKind::Violated,
@@ -2336,11 +2241,11 @@ pub(super) fn finalize_host_assertion_state<O>(
                     "after-quiescence predicate was false",
                     Some(condition_violation_evidence(
                         prefix,
-                        &predicate,
+                        predicate,
                         false,
                         white_box_policies,
-                    )),
-                );
+                    )?),
+                )?;
             }
         }
         Property::Reachable {
@@ -2353,7 +2258,7 @@ pub(super) fn finalize_host_assertion_state<O>(
                         HostAssertionOutcomeKind::NeverReachedWarn,
                         at,
                         "reachable predicate was never reached",
-                    );
+                    )?;
                 }
                 ReachableDisposition::Fail => {
                     state.terminal_with_evidence(
@@ -2362,11 +2267,11 @@ pub(super) fn finalize_host_assertion_state<O>(
                         "reachable predicate was never reached",
                         Some(condition_violation_evidence(
                             prefix,
-                            &predicate,
+                            predicate,
                             false,
                             white_box_policies,
-                        )),
-                    );
+                        )?),
+                    )?;
                 }
             },
             ReachabilityExpectation::Unreachable => {
@@ -2374,10 +2279,11 @@ pub(super) fn finalize_host_assertion_state<O>(
                     HostAssertionOutcomeKind::Passed,
                     at,
                     "unreachable predicate stayed false",
-                );
+                )?;
             }
         },
     }
+    Ok(())
 }
 
 pub(super) fn finalize_eventually_assertion(
@@ -2386,7 +2292,7 @@ pub(super) fn finalize_eventually_assertion(
     trigger: &Condition,
     property: &Condition,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
-) {
+) -> Result<(), EngineError> {
     let at = prefix.point().at();
     if let Some(expired) = state
         .pending_eventually
@@ -2397,7 +2303,7 @@ pub(super) fn finalize_eventually_assertion(
         state.terminal_with_evidence(
             HostAssertionOutcomeKind::Violated,
             expired.deadline,
-            format!(
+            format_args!(
                 "eventually deadline expired after trigger at {}",
                 expired.triggered_at.ticks
             ),
@@ -2407,8 +2313,8 @@ pub(super) fn finalize_eventually_assertion(
                 property,
                 false,
                 white_box_policies,
-            )),
-        );
+            )?),
+        )?;
     } else if !state.pending_eventually.is_empty() {
         state.terminal_with_evidence(
             HostAssertionOutcomeKind::Violated,
@@ -2419,14 +2325,14 @@ pub(super) fn finalize_eventually_assertion(
                 property,
                 false,
                 white_box_policies,
-            )),
-        );
+            )?),
+        )?;
     } else if let Some(satisfied_at) = state.eventually_satisfied_at {
         state.terminal(
             HostAssertionOutcomeKind::Satisfied,
             satisfied_at,
             "eventually predicate became true",
-        );
+        )?;
     } else if state.eventually_triggered {
         state.terminal_with_evidence(
             HostAssertionOutcomeKind::Violated,
@@ -2437,15 +2343,16 @@ pub(super) fn finalize_eventually_assertion(
                 trigger,
                 true,
                 white_box_policies,
-            )),
-        );
+            )?),
+        )?;
     } else {
         state.terminal(
             HostAssertionOutcomeKind::NeverTriggered,
             at,
             "eventually trigger never fired",
-        );
+        )?;
     }
+    Ok(())
 }
 
 pub(super) fn property_quantifier_kind(property: &Property) -> AssertionQuantifierKind {
@@ -2471,29 +2378,40 @@ pub(super) fn host_assertion_violations_from_outcomes(
     outcomes: &[HostAssertionOutcome],
     prefix: &ConditionEventLogPrefix,
     reproduction_artifact: ContentHash,
-) -> Vec<HostAssertionViolation> {
-    let mut violations = outcomes
+) -> Result<Vec<HostAssertionViolation>, EngineError> {
+    let mut violations = Vec::new();
+    for outcome in outcomes
         .iter()
         .filter(|outcome| host_assertion_outcome_fails_run(outcome.kind))
-        .map(|outcome| {
-            let evidence = outcome
-                .evidence
-                .clone()
-                .unwrap_or_else(|| outcome_point_evidence(prefix, outcome));
-            HostAssertionViolation {
-                assertion: outcome.assertion.clone(),
-                message: outcome.message.clone(),
-                quantifier: outcome.quantifier,
-                event_kind: String::from("assertion_state_changed"),
-                at_icount: evidence.at_icount,
-                at_virtual_time: outcome.at,
-                node: evidence.node.clone(),
-                detail: violation_detail(outcome, &evidence),
-                reproduction_artifact,
+    {
+        let fallback;
+        let evidence = match &outcome.evidence {
+            Some(evidence) => evidence,
+            None => {
+                fallback = outcome_point_evidence(prefix, outcome)?;
+                &fallback
             }
-        })
-        .collect::<Vec<_>>();
-    violations.sort_by(|left, right| {
+        };
+        owned_storage::reserve_slot(&mut violations)?;
+        violations.push(HostAssertionViolation {
+            assertion: owned_storage::copy_assertion_id(&outcome.assertion)?,
+            message: owned_storage::copy_string(&outcome.message)?,
+            quantifier: outcome.quantifier,
+            event_kind: owned_storage::copy_string("assertion_state_changed")?,
+            at_icount: evidence.at_icount,
+            at_virtual_time: outcome.at,
+            node: evidence
+                .node
+                .as_ref()
+                .map(owned_storage::copy_node)
+                .transpose()?,
+            detail: violation_detail(outcome, evidence)?,
+            reproduction_artifact,
+            _decode_custody: crate::owned_decode::require_current_custody()
+                .map_err(owned_storage::admission)?,
+        });
+    }
+    owned_storage::sort(&mut violations, |left, right| {
         left.assertion
             .cmp(&right.assertion)
             .then_with(|| left.quantifier.cmp(&right.quantifier))
@@ -2502,8 +2420,8 @@ pub(super) fn host_assertion_violations_from_outcomes(
             .then_with(|| left.node.cmp(&right.node))
             .then_with(|| left.detail.cmp(&right.detail))
             .then_with(|| left.reproduction_artifact.cmp(&right.reproduction_artifact))
-    });
-    violations
+    })?;
+    Ok(violations)
 }
 
 pub(super) fn assertion_replay_report_for_log_with_oracle<O>(
@@ -2516,9 +2434,9 @@ pub(super) fn assertion_replay_report_for_log_with_oracle<O>(
 where
     O: HostAssertionOracle + ?Sized,
 {
-    let report = OfflineAssertionChecker::new()
-        .with_world_white_box_policies(world)
-        .check_run_with_oracle(properties, recorded_log, oracle)?;
+    let checker = admitted_offline_checker(world)
+        .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
+    let report = checker.check_run_with_oracle(properties, recorded_log, oracle)?;
     Ok(host_assertion_report_with_reproduction_artifact(
         report, artifact,
     ))
@@ -2545,14 +2463,22 @@ pub(super) fn assertion_violation_replay_divergence(
     reproduced_log: &RecordedAssertionLog,
     expected_report: &HostAssertionReport,
     reproduced_report: &HostAssertionReport,
-) -> AssertionViolationDivergence {
-    let event_log_comparison =
-        compare_event_log_determinism(expected_log.entries(), reproduced_log.entries());
-    let event_logs_differ = !event_log_comparison.passes();
-    let event_mismatch = event_log_comparison.mismatch().cloned();
+) -> Result<AssertionViolationDivergence, OfflineAssertionCheckError> {
+    let _original = expected_report._decode_custody.enter();
+    let child = crate::owned_decode::require_current_child_budget().map_err(|source| {
+        OfflineAssertionCheckError::Engine(Box::new(owned_storage::admission(source)))
+    })?;
+    let _scope = child.enter();
+    owned_storage::reserve_arc::<AssertionViolationDivergence>()
+        .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
+    let event_mismatch = first_causal_mismatch(expected_log.entries(), reproduced_log.entries());
+    let event_logs_differ = event_mismatch.is_some();
     let first_different_causal_entry = event_mismatch
         .as_ref()
-        .and_then(|mismatch| mismatch.first_location().cloned());
+        .and_then(|mismatch| mismatch.expected.or(mismatch.reproduced))
+        .map(|(index, entry)| admitted_causal_point(index, entry))
+        .transpose()
+        .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
     let event_prefix = if event_logs_differ {
         first_different_assertion_replay_prefix(expected_log, reproduced_log)
     } else {
@@ -2567,8 +2493,13 @@ pub(super) fn assertion_violation_replay_divergence(
             expected_log,
             reproduced_log,
         ),
-        first_different_causal_entry: first_different_causal_entry.clone(),
+        first_different_causal_entry: first_different_causal_entry
+            .as_ref()
+            .map(admitted_causal_point_copy)
+            .transpose()
+            .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?,
         reason: "assertion violation did not reproduce bit-identically",
+        _decode_custody: child.custody(),
     };
     let expected_prefix_report = assertion_replay_report_for_prefix(
         artifact,
@@ -2576,34 +2507,42 @@ pub(super) fn assertion_violation_replay_divergence(
         world,
         expected_log,
         event_prefix.expected_first_different_event_prefix_len,
-    )
-    .unwrap_or_else(|_| expected_report.clone());
+    )?;
     let reproduced_prefix_report = assertion_replay_report_for_prefix(
         artifact,
         properties,
         world,
         reproduced_log,
         event_prefix.reproduced_first_different_event_prefix_len,
-    )
-    .unwrap_or_else(|_| reproduced_report.clone());
+    )?;
     let (expected_violation, reproduced_violation) = first_differing_violation(
         expected_prefix_report.violations(),
         reproduced_prefix_report.violations(),
     )
-    .unwrap_or_else(|| {
+    .or_else(|| {
         first_differing_violation(expected_report.violations(), reproduced_report.violations())
-            .unwrap_or((None, None))
-    });
+    })
+    .unwrap_or((None, None));
+    let expected_violation = expected_violation
+        .map(|value| value.try_clone_admitted()?.into_shared())
+        .transpose()
+        .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
+    let reproduced_violation = reproduced_violation
+        .map(|value| value.try_clone_admitted()?.into_shared())
+        .transpose()
+        .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
     let expected_event = event_mismatch
         .as_ref()
-        .and_then(|mismatch| mismatch.expected_raw_index)
-        .and_then(|raw_index| expected_log.entries().get(raw_index))
-        .cloned();
+        .and_then(|mismatch| mismatch.expected)
+        .map(|(_, entry)| crate::scheduler::copy_entry_admitted(entry))
+        .transpose()
+        .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
     let reproduced_event = event_mismatch
         .as_ref()
-        .and_then(|mismatch| mismatch.reproduced_raw_index)
-        .and_then(|raw_index| reproduced_log.entries().get(raw_index))
-        .cloned();
+        .and_then(|mismatch| mismatch.reproduced)
+        .map(|(_, entry)| crate::scheduler::copy_entry_admitted(entry))
+        .transpose()
+        .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
     let first_different_icount = first_different_causal_entry
         .as_ref()
         .and_then(|entry| entry.at.retired)
@@ -2618,7 +2557,7 @@ pub(super) fn assertion_violation_replay_divergence(
                 .and_then(|violation| violation.at_icount)
         });
 
-    AssertionViolationDivergence {
+    Ok(AssertionViolationDivergence {
         artifact,
         first_different_prefix_len: event_prefix.expected_first_different_event_prefix_len,
         first_different_icount,
@@ -2628,5 +2567,50 @@ pub(super) fn assertion_violation_replay_divergence(
         expected_violation,
         reproduced_violation,
         bisection,
+        _decode_custody: child.custody(),
+    })
+}
+
+fn admitted_causal_point(
+    index: usize,
+    entry: &SchedulerEventLogEntry,
+) -> Result<EventLogCausalDivergencePoint, EngineError> {
+    Ok(EventLogCausalDivergencePoint {
+        raw_index: index,
+        at: owned_storage::copy_json(&entry.time().stamp)?,
+        source: owned_storage::copy_json(entry.source())?,
+        kind: owned_storage::copy_string(entry.event_payload().kind())?,
+    })
+}
+
+fn admitted_causal_point_copy(
+    point: &EventLogCausalDivergencePoint,
+) -> Result<EventLogCausalDivergencePoint, EngineError> {
+    Ok(EventLogCausalDivergencePoint {
+        raw_index: point.raw_index,
+        at: owned_storage::copy_json(&point.at)?,
+        source: owned_storage::copy_json(&point.source)?,
+        kind: owned_storage::copy_string(&point.kind)?,
+    })
+}
+
+/// Builds the replay checker's sole copied policy table under a retained bank.
+pub(super) fn admitted_offline_checker(
+    world: &World,
+) -> Result<OfflineAssertionChecker, EngineError> {
+    let child =
+        crate::owned_decode::require_current_child_budget().map_err(owned_storage::admission)?;
+    let _scope = child.enter();
+    let mut white_box_policies = BTreeMap::new();
+    for node in world.vm_nodes() {
+        crate::owned_decode::charge_btree_entry::<NodeId, WhiteBoxPolicy>()
+            .map_err(owned_storage::admission)?;
+        white_box_policies.insert(owned_storage::copy_node(&node.id)?, node.white_box);
     }
+    child.check().map_err(owned_storage::admission)?;
+    Ok(OfflineAssertionChecker {
+        white_box_policies,
+        _decode_custody: child.custody(),
+        ..OfflineAssertionChecker::new()
+    })
 }

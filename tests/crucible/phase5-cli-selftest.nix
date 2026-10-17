@@ -6,6 +6,7 @@
   openTaskIds ? [],
   dependencies ? [],
 }: let
+  catalogInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
@@ -274,26 +275,146 @@ in
     };
     deployment = builtins.toFile "selftest-packaged-executor.toml" ''
       schema = "crucible.campaign-packaged-executor"
-      version = 2
+      version = 3
       cgroup_root = "/sys/fs/cgroup/crucible"
       run_root = "/tmp/attempts/run"
       attempt_namespace = "cli-selftest"
       first_project_id = 32000
-      project_id_count = 1
+      project_id_count = 2
       child_user_id = 65534
       child_group_id = 65534
       maximum_tasks = 64
+      maximum_file_descriptors = 1024
+      maximum_locked_bytes = 0
+      maximum_node_host_service_tasks = 4
+      maximum_node_host_service_file_descriptors = 32
+      maximum_node_host_service_resident_bytes = 8388608
+      watcher_service_resident_bytes = 1048576
+      ram_catalog_root = "/tmp/attempts/ram-catalogs"
+      operational_registry_root = "/tmp/attempts/executor-ledger"
+      operational_registry_project_id = 31000
+      operational_registry_maximum_inodes = 65536
+      ram_catalog_project_id = 40000
+      maximum_ram_catalog_inodes = 262144
+      maximum_ram_catalog_sqlite_heap_bytes = 8388608
+      maximum_paging_io_slots = 16
+      maximum_host_task_slots = 1024
+      maximum_host_file_descriptors = 16384
+      maximum_host_metadata_bytes = 536870912
+      maximum_host_staging_bytes = 67108864
       maximum_inodes = 4096
       finish_timeout_ms = 15000
       maximum_slots = 1
-      maximum_vcpus = 1
-      maximum_resident_bytes = 536870912
-      maximum_disk_bytes = 2147483648
-      maximum_execution_quanta = 10000
+      maximum_vcpus = 4
+      maximum_resident_bytes = 1610612736
+      maximum_disk_bytes = 6459228160
+      maximum_execution_quanta = 20000
       maximum_checkpoint_bytes = 1073741824
       worker_count = 1
       host_architecture = "${pkgs.stdenv.hostPlatform.parsed.cpu.name}"
       qemu_profile = "deterministic-tcg-v1"
+
+      [host_operation_budgets.setup]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.quantum]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.page_in]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.writeback]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.fingerprint_initialization]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.fingerprint_update]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.quiescence]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.checkpoint_capture]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.checkpoint_publication]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.restore]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.fork_rearm]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.transfer]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.preparation]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.cleanup]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [operational_registry_resources]
+      resident_peak_bytes = 134217728
+      backing_peak_bytes = 16777216
+      metadata_bytes = 67108864
+      staging_bytes = 8388608
+      paging_io_slots = 1
+      cpu_slots = 1
+      task_slots = 1
+      file_descriptors = 128
+
+      [ram_catalog_resources]
+      resident_peak_bytes = 134217728
+      backing_peak_bytes = 2147483648
+      metadata_bytes = 67108864
+      staging_bytes = 8388608
+      paging_io_slots = 1
+      cpu_slots = 1
+      task_slots = 1
+      file_descriptors = 128
+
+      [retained_template_resources]
+      resident_peak_bytes = 537919488
+      backing_peak_bytes = 2147483648
+      metadata_bytes = 134217728
+      staging_bytes = 16777216
+      paging_io_slots = 1
+      cpu_slots = 1
+      task_slots = 69
+      file_descriptors = 1056
+
+      [assignment_limits]
+      vcpus = 1
+      resident_bytes = 536870912
+      disk_bytes = 2147483648
+      execution_quanta = 10000
+
+      [assignment_resources]
+      resident_peak_bytes = 537919488
+      backing_peak_bytes = 2147483648
+      metadata_bytes = 134217728
+      staging_bytes = 16777216
+      paging_io_slots = 1
+      cpu_slots = 1
+      task_slots = 69
+      file_descriptors = 1056
 
       [operations]
       listener_workers = 4
@@ -313,7 +434,10 @@ in
     vmTest = testing.mkVMTest {
       name = "crucible-phase5-cli-selftest-live-qemu";
       memory = 2048;
+      extraWritableMiB = 8192;
       rootfsDeps = [
+        catalogInstaller
+        pkgs.linux
         pkgs.coreutils
         pkgs.crucible
         pkgs.e2fsprogs
@@ -324,95 +448,121 @@ in
         deployment
       ];
       testScript = ''
-        set -eu
+            set -eu
+            for kernel_config in ${pkgs.linux}/boot/config-*; do
+              ${pkgs.grep}/bin/grep -qx 'CONFIG_USERFAULTFD=y' "$kernel_config"
+            done
+        # This permission is scoped to the disposable qualification VM. It permits
+        # the unprivileged QEMU child to handle kernel-origin faults; no host sysctl
+        # is changed, and a missing kernel facility fails this test.
+        test -e /proc/sys/vm/unprivileged_userfaultfd
+        echo 1 > /proc/sys/vm/unprivileged_userfaultfd
+        test "$(cat /proc/sys/vm/unprivileged_userfaultfd)" = 1
 
-        cleanup_attempt_mount() {
-          ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
-        }
+            # Paging backing belongs on the fixture disk, not /tmp's tmpfs.
+            ${pkgs.util-linux}/bin/mount -o remount,rw /
+            ${pkgs.util-linux}/bin/mount --bind /var/tmp /tmp
+            chmod 1777 /tmp
 
-        trap cleanup_attempt_mount EXIT HUP INT TERM
-        mkdir -p /sys/fs/cgroup
-        ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
-        echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
-        mkdir /sys/fs/cgroup/crucible
-        echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
+            cleanup_attempt_mount() {
+              ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
+            }
 
-        truncate -s 4G /tmp/attempts.img
-        ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project \
-          -E quotatype=prjquota /tmp/attempts.img
-        mkdir /tmp/attempts
-        ${pkgs.util-linux}/bin/mount -o loop,prjquota \
-          /tmp/attempts.img /tmp/attempts
-        mkdir -m 700 /tmp/attempts/run
-        install -m 600 ${deployment} /tmp/executor.toml
+            trap cleanup_attempt_mount EXIT HUP INT TERM
+            mkdir -p /sys/fs/cgroup
+            ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
+            echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
+            mkdir /sys/fs/cgroup/crucible
+            echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
 
-        unset CRUCIBLE_CAMPAIGN_DEPLOYMENT
-        if ${pkgs.crucible}/bin/crucible selftest \
-          > /tmp/missing-deployment.out 2> /tmp/missing-deployment.err; then
-          echo 'production selftest accepted missing guarded host authority'
-          exit 1
-        else
-          missing_deployment_status="$?"
-        fi
-        test "$missing_deployment_status" -eq 4
-        ${pkgs.grep}/bin/grep -Fq \
-          'load guarded selftest host deployment: local QEMU execution requires guarded campaign host authority' \
-          /tmp/missing-deployment.err
+            truncate -s 7G /tmp/attempts.img
+            ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project \
+              -E quotatype=prjquota /tmp/attempts.img
+            mkdir /tmp/attempts
+            ${pkgs.util-linux}/bin/mount -o loop,prjquota \
+              /tmp/attempts.img /tmp/attempts
+            mkdir -m 700 /tmp/attempts/run
+            ${pkgs.coreutils}/bin/timeout -k 5 60 \
+              ${catalogInstaller}/bin/install-catalog-quota \
+              /tmp/attempts /tmp/attempts/ram-catalogs 40000 2147483648 262144 \
+              > /tmp/catalog-quota-install.log
+            cat /tmp/catalog-quota-install.log
+            ${pkgs.grep}/bin/grep -Fxq catalog_quota_survives_installer_drop=true /tmp/catalog-quota-install.log
+            ${pkgs.coreutils}/bin/timeout -k 5 60 \
+              ${catalogInstaller}/bin/install-catalog-quota \
+              /tmp/attempts /tmp/attempts/executor-ledger 31000 16777216 65536 \
+              > /tmp/registry-quota-install.log
+            cat /tmp/registry-quota-install.log
+            ${pkgs.grep}/bin/grep -Fxq catalog_quota_survives_installer_drop=true /tmp/registry-quota-install.log
+            install -m 600 ${deployment} /tmp/executor.toml
 
-        ${pkgs.crucible}/bin/crucible \
-          --artifact-dir /tmp/crucible-cli-selftest-artifacts \
-          --campaign-deployment /tmp/executor.toml \
-          selftest > /tmp/production-selftest.out
+            unset CRUCIBLE_CAMPAIGN_DEPLOYMENT
+            if ${pkgs.crucible}/bin/crucible selftest \
+              > /tmp/missing-deployment.out 2> /tmp/missing-deployment.err; then
+              echo 'production selftest accepted missing guarded host authority'
+              exit 1
+            else
+              missing_deployment_status="$?"
+            fi
+            test "$missing_deployment_status" -eq 4
+            ${pkgs.grep}/bin/grep -Fq \
+              'load guarded selftest host deployment: local QEMU execution requires guarded campaign host authority' \
+              /tmp/missing-deployment.err
 
-        ${pkgs.jq}/bin/jq -r \
-          'select(.kind == "selftest_gate") | .summary' \
-          /tmp/production-selftest.out > /tmp/selftest-gate-rows
+            ${pkgs.crucible}/bin/crucible \
+              --artifact-dir /tmp/crucible-cli-selftest-artifacts \
+              --campaign-deployment /tmp/executor.toml \
+              selftest > /tmp/production-selftest.out
 
-        validate_selftest_gate_rows() {
-          rows="$1"
-          row_pattern='^gate=(gate:single-vm-fingerprint|gate:any-guest|gate:qemu-inert) status=PASS runner=qemu corpus=0 runs-per-entry=5 qemu=blake3:[0-9a-f]{64} live-icount=[1-9][0-9]* live-fingerprint=blake3:[0-9a-f]{64}$'
-          test "$(${pkgs.coreutils}/bin/wc -l < "$rows")" -eq 3 || return 1
-          test "$(${pkgs.grep}/bin/grep -Ec "$row_pattern" "$rows" || true)" -eq 3 \
-            || return 1
-          for gate in \
-            gate:single-vm-fingerprint \
-            gate:any-guest \
-            gate:qemu-inert
-          do
-            test "$(${pkgs.grep}/bin/grep -Ec "^gate=$gate " "$rows" || true)" -eq 1 \
-              || return 1
-          done
-        }
+            ${pkgs.jq}/bin/jq -r \
+              'select(.kind == "selftest_gate") | .summary' \
+              /tmp/production-selftest.out > /tmp/selftest-gate-rows
 
-        validate_selftest_gate_rows /tmp/selftest-gate-rows
+            validate_selftest_gate_rows() {
+              rows="$1"
+              row_pattern='^gate=(gate:single-vm-fingerprint|gate:any-guest|gate:qemu-inert) status=PASS runner=qemu corpus=0 runs-per-entry=5 qemu=blake3:[0-9a-f]{64} live-icount=[1-9][0-9]* live-fingerprint=blake3:[0-9a-f]{64}$'
+              test "$(${pkgs.coreutils}/bin/wc -l < "$rows")" -eq 3 || return 1
+              test "$(${pkgs.grep}/bin/grep -Ec "$row_pattern" "$rows" || true)" -eq 3 \
+                || return 1
+              for gate in \
+                gate:single-vm-fingerprint \
+                gate:any-guest \
+                gate:qemu-inert
+              do
+                test "$(${pkgs.grep}/bin/grep -Ec "^gate=$gate " "$rows" || true)" -eq 1 \
+                  || return 1
+              done
+            }
 
-        cp /tmp/selftest-gate-rows /tmp/duplicate-rows
-        ${pkgs.coreutils}/bin/head -n 1 /tmp/selftest-gate-rows >> /tmp/duplicate-rows
-        if validate_selftest_gate_rows /tmp/duplicate-rows; then
-          echo 'selftest evidence accepted a duplicate gate row'
-          exit 1
-        fi
+            validate_selftest_gate_rows /tmp/selftest-gate-rows
 
-        ${pkgs.sed}/bin/sed \
-          '0,/live-fingerprint=blake3:[0-9a-f]\{64\}/s//live-fingerprint=blake3:0/' \
-          /tmp/selftest-gate-rows > /tmp/short-digest-rows
-        if validate_selftest_gate_rows /tmp/short-digest-rows; then
-          echo 'selftest evidence accepted a short fingerprint digest'
-          exit 1
-        fi
+            cp /tmp/selftest-gate-rows /tmp/duplicate-rows
+            ${pkgs.coreutils}/bin/head -n 1 /tmp/selftest-gate-rows >> /tmp/duplicate-rows
+            if validate_selftest_gate_rows /tmp/duplicate-rows; then
+              echo 'selftest evidence accepted a duplicate gate row'
+              exit 1
+            fi
 
-        cp /tmp/selftest-gate-rows /tmp/non-pass-rows
-        echo 'gate=gate:extra status=FAIL runner=qemu corpus=0 runs-per-entry=5 qemu=blake3:0000000000000000000000000000000000000000000000000000000000000000 live-icount=1 live-fingerprint=blake3:0000000000000000000000000000000000000000000000000000000000000000' \
-          >> /tmp/non-pass-rows
-        if validate_selftest_gate_rows /tmp/non-pass-rows; then
-          echo 'selftest evidence accepted an extra non-PASS gate row'
-          exit 1
-        fi
+            ${pkgs.sed}/bin/sed \
+              '0,/live-fingerprint=blake3:[0-9a-f]\{64\}/s//live-fingerprint=blake3:0/' \
+              /tmp/selftest-gate-rows > /tmp/short-digest-rows
+            if validate_selftest_gate_rows /tmp/short-digest-rows; then
+              echo 'selftest evidence accepted a short fingerprint digest'
+              exit 1
+            fi
 
-        cat /tmp/production-selftest.out
+            cp /tmp/selftest-gate-rows /tmp/non-pass-rows
+            echo 'gate=gate:extra status=FAIL runner=qemu corpus=0 runs-per-entry=5 qemu=blake3:0000000000000000000000000000000000000000000000000000000000000000 live-icount=1 live-fingerprint=blake3:0000000000000000000000000000000000000000000000000000000000000000' \
+              >> /tmp/non-pass-rows
+            if validate_selftest_gate_rows /tmp/non-pass-rows; then
+              echo 'selftest evidence accepted an extra non-PASS gate row'
+              exit 1
+            fi
 
-        ${pkgs.util-linux}/bin/umount /tmp/attempts
-        trap - EXIT HUP INT TERM
+            cat /tmp/production-selftest.out
+
+            ${pkgs.util-linux}/bin/umount /tmp/attempts
+            trap - EXIT HUP INT TERM
       '';
     };
   in

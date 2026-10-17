@@ -1,4 +1,4 @@
-//! `gate:perf-bench` — the RFC-0010 §25 cost-model regression gate.
+//! `gate:perf-bench` measures regressions against the deterministic execution cost model.
 //!
 //! This integration target is the runnable body of `gate:perf-bench`. It drives
 //! the harness cost-model substrate ([`crucible_harness::perf`]) over the

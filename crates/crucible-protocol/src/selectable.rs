@@ -228,7 +228,8 @@ impl SelectableRegister {
             .ok_or(SelectableProtocolError::LengthOverflow)?;
         require_total_bound(total_len)?;
 
-        let mut bytes = vec![0; SELECTABLE_REGISTER_HEADER_BYTES];
+        let mut bytes = Vec::with_capacity(total_len);
+        bytes.resize(SELECTABLE_REGISTER_HEADER_BYTES, 0);
         write_header(
             &mut bytes,
             SelectableMessageKind::Register,
@@ -294,11 +295,12 @@ impl SelectableRegister {
         require_nonempty("domain", &self.domain)?;
         require_nonempty("default_value", &self.default_value)?;
         validate_tags(&self.semantic_tags)?;
-        let _ = self.encode_len()?;
+        let _ = self.encoded_len()?;
         Ok(())
     }
 
-    fn encode_len(&self) -> Result<usize, SelectableProtocolError> {
+    /// Counts the immutable validated registration without serializing it.
+    pub(crate) fn encoded_len(&self) -> Result<usize, SelectableProtocolError> {
         let tags_len = self.semantic_tags.iter().try_fold(0usize, |total, tag| {
             total
                 .checked_add(2 + tag.len())
@@ -421,7 +423,8 @@ impl SelectionRequest {
     /// length cannot fit its fixed-width field.
     pub fn encode(&self) -> Result<Vec<u8>, SelectableProtocolError> {
         let request_end = self.validate()?;
-        let mut bytes = vec![0; SELECTION_REQUEST_HEADER_BYTES];
+        let mut bytes = Vec::with_capacity(self.reply_capacity);
+        bytes.resize(SELECTION_REQUEST_HEADER_BYTES, 0);
         write_header(
             &mut bytes,
             SelectableMessageKind::Request,
@@ -480,6 +483,16 @@ impl SelectionRequest {
         if let Some(domain) = &self.narrowed_domain {
             require_nonempty("narrowed_domain", domain)?;
         }
+        self.request_end()
+    }
+
+    /// Counts the complete immutable reply reservation without serializing it.
+    pub(crate) fn encoded_len(&self) -> Result<usize, SelectableProtocolError> {
+        self.request_end()?;
+        Ok(self.reply_capacity)
+    }
+
+    fn request_end(&self) -> Result<usize, SelectableProtocolError> {
         let request_end = SELECTION_REQUEST_HEADER_BYTES
             .checked_add(self.selectable_id.len())
             .and_then(|value| value.checked_add(self.instance_key.len()))

@@ -107,14 +107,18 @@ fn event_log_with_decision_value(
     let decoy = ObservableEvent::guest_marker(icount(7), node("decoy"), marker_id("decoy"));
     let observed = ObservableEvent::guest_marker(icount(7), node("guest"), marker);
     vec![
-        crucible::test_support::condition_payload_entry_for_test(0, time(0), decision),
-        crucible::test_support::condition_observation_entry_for_test(1, &decoy),
-        crucible::test_support::condition_observation_entry_for_test(2, &observed),
+        crucible::test_support::condition_payload_entry_for_test(0, time(0), decision)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &decoy)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(2, &observed)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             3,
             time(7),
             crucible::SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }
 
@@ -147,15 +151,20 @@ fn event_log_with_diagnostic(marker: MarkerId) -> Vec<crucible::SchedulerEventLo
     let decoy = ObservableEvent::guest_marker(icount(7), node("decoy"), marker_id("decoy"));
     let observed = ObservableEvent::guest_marker(icount(7), node("guest"), marker);
     vec![
-        crucible::test_support::condition_payload_entry_for_test(0, time(0), decision),
-        crucible::test_support::condition_payload_entry_for_test(1, time(0), diagnostic),
-        crucible::test_support::condition_observation_entry_for_test(2, &decoy),
-        crucible::test_support::condition_observation_entry_for_test(3, &observed),
+        crucible::test_support::condition_payload_entry_for_test(0, time(0), decision)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_payload_entry_for_test(1, time(0), diagnostic)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(2, &decoy)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(3, &observed)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             4,
             time(7),
             crucible::SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }
 
@@ -182,6 +191,9 @@ where
 
 #[test]
 fn violation_reproduction_replays_same_artifact_and_violation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(&world);
     let artifact = reproduction_artifact(&world, &properties, 0xa15e_0015);
@@ -208,6 +220,9 @@ fn violation_reproduction_replays_same_artifact_and_violation() {
 
 #[test]
 fn violation_reproduction_ignores_observational_diagnostic_replay_entries() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(&world);
     let artifact = reproduction_artifact(&world, &properties, 0xa15e_0015);
@@ -226,6 +241,9 @@ fn violation_reproduction_ignores_observational_diagnostic_replay_entries() {
 
 #[test]
 fn violation_reproduction_localizes_non_reproduction_as_divergence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(&world);
     let artifact = reproduction_artifact(&world, &properties, 0xa15e_0015);
@@ -264,6 +282,9 @@ fn violation_reproduction_localizes_non_reproduction_as_divergence() {
 
 #[test]
 fn violation_reproduction_bisection_reports_first_differing_causal_entry() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(&world);
     let artifact = reproduction_artifact(&world, &properties, 0xa15e_0015);
@@ -321,6 +342,9 @@ fn violation_reproduction_bisection_reports_first_differing_causal_entry() {
 
 #[test]
 fn violation_reproduction_rejects_logs_without_recorded_violation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(&world);
     let artifact = reproduction_artifact(&world, &properties, 0xa15e_0015);
@@ -339,6 +363,9 @@ fn violation_reproduction_rejects_logs_without_recorded_violation() {
 
 #[test]
 fn violation_reproduction_rejects_replay_from_different_artifact_schedule() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(&world);
     let artifact = reproduction_artifact(&world, &properties, 0xa15e_0015);
@@ -367,6 +394,9 @@ fn violation_reproduction_rejects_replay_from_different_artifact_schedule() {
 
 #[test]
 fn violation_reproduction_with_oracles_preserves_recorded_offsets() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = Properties::from_assertions_for_world(
         &world,

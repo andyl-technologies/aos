@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 per-layer gate-to-test-target map.
+//! Checks the per-layer gate-to-test-target map.
 
 #![forbid(unsafe_code)]
 

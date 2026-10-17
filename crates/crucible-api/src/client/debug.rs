@@ -109,7 +109,7 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_CONTROLLER_ACQUIRE_RPC_PATH,
-                encode_debug_controller_acquire_request(session, holder),
+                self.encode_request(|| encode_debug_controller_acquire_request(session, holder))?,
             )
             .await?;
         let lease = decode_debug_controller_acquire_response(&body)?;
@@ -131,11 +131,13 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_CONTROLLER_RELEASE_RPC_PATH,
-                encode_debug_controller_release_request(
-                    session,
-                    access.generation(),
-                    access.holder(),
-                ),
+                self.encode_request(|| {
+                    encode_debug_controller_release_request(
+                        session,
+                        access.generation(),
+                        access.holder(),
+                    )
+                })?,
             )
             .await?;
         let text = response_text(&body)?;
@@ -167,7 +169,9 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_ATTACH_RPC_PATH,
-                encode_debug_attach_request(session, access.generation(), access.holder(), node),
+                self.encode_request(|| {
+                    encode_debug_attach_request(session, access.generation(), access.holder(), node)
+                })?,
             )
             .await?;
         let text = response_text(&body)?;
@@ -194,7 +198,9 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_GOTO_RPC_PATH,
-                encode_debug_goto_request(session, access.generation(), access.holder(), target)?,
+                self.encode_request(|| {
+                    encode_debug_goto_request(session, access.generation(), access.holder(), target)
+                })?,
             )
             .await?;
         decode_debug_reposition_response(&body, "crucible.rpc/debug-goto-response")?
@@ -216,12 +222,14 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_REVERSE_STEP_RPC_PATH,
-                encode_debug_reverse_step_request(
-                    session,
-                    access.generation(),
-                    access.holder(),
-                    grain,
-                ),
+                self.encode_request(|| {
+                    encode_debug_reverse_step_request(
+                        session,
+                        access.generation(),
+                        access.holder(),
+                        grain,
+                    )
+                })?,
             )
             .await?;
         decode_debug_reposition_response(&body, "crucible.rpc/debug-reverse-step-response")?
@@ -247,12 +255,14 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_REVERSE_CONTINUE_RPC_PATH,
-                encode_debug_reverse_continue_request(
-                    session,
-                    access.generation(),
-                    access.holder(),
-                    condition,
-                ),
+                self.encode_request(|| {
+                    encode_debug_reverse_continue_request(
+                        session,
+                        access.generation(),
+                        access.holder(),
+                        condition,
+                    )
+                })?,
             )
             .await?;
         decode_debug_reposition_response(&body, "crucible.rpc/debug-reverse-continue-response")
@@ -273,7 +283,9 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_RELAY_OPEN_RPC_PATH,
-                encode_debug_relay_open_request(session, access.generation(), access.holder()),
+                self.encode_request(|| {
+                    encode_debug_relay_open_request(session, access.generation(), access.holder())
+                })?,
             )
             .await?;
         let text = response_text(&body)?;
@@ -300,13 +312,16 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_RELAY_WRITE_RPC_PATH,
-                encode_debug_relay_request(
-                    "crucible.rpc/debug-relay-write-request",
-                    session,
-                    access.generation(),
-                    access.holder(),
-                    Some((relay, "data", hex_encode(bytes))),
-                ),
+                self.encode_request(|| {
+                    encode_debug_relay_request(
+                        "crucible.rpc/debug-relay-write-request",
+                        session,
+                        access.generation(),
+                        access.holder(),
+                        relay,
+                        RelayTail::Data(bytes),
+                    )
+                })?,
             )
             .await?;
         let text = response_text(&body)?;
@@ -338,13 +353,16 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_RELAY_READ_RPC_PATH,
-                encode_debug_relay_request(
-                    "crucible.rpc/debug-relay-read-request",
-                    session,
-                    access.generation(),
-                    access.holder(),
-                    Some((relay, "maximum", maximum.to_string())),
-                ),
+                self.encode_request(|| {
+                    encode_debug_relay_request(
+                        "crucible.rpc/debug-relay-read-request",
+                        session,
+                        access.generation(),
+                        access.holder(),
+                        relay,
+                        RelayTail::Maximum(maximum),
+                    )
+                })?,
             )
             .await?;
         decode_debug_relay_read_response(&body)
@@ -365,13 +383,16 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_RELAY_CLOSE_RPC_PATH,
-                encode_debug_relay_request(
-                    "crucible.rpc/debug-relay-close-request",
-                    session,
-                    access.generation(),
-                    access.holder(),
-                    Some((relay, "close", String::new())),
-                ),
+                self.encode_request(|| {
+                    encode_debug_relay_request(
+                        "crucible.rpc/debug-relay-close-request",
+                        session,
+                        access.generation(),
+                        access.holder(),
+                        relay,
+                        RelayTail::Close,
+                    )
+                })?,
             )
             .await?;
         let text = response_text(&body)?;
@@ -405,14 +426,16 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_GUEST_EXCHANGE_RPC_PATH,
-                encode_debug_guest_exchange_request(
-                    session,
-                    access.generation(),
-                    access.holder(),
-                    node,
-                    channel_id,
-                    request,
-                )?,
+                self.encode_request(|| {
+                    encode_debug_guest_exchange_request(
+                        session,
+                        access.generation(),
+                        access.holder(),
+                        node,
+                        channel_id,
+                        request,
+                    )
+                })?,
             )
             .await?;
         let text = response_text(&body)?;
@@ -449,12 +472,14 @@ impl RpcControlClient {
         let body = self
             .post_rpc_body(
                 DEBUG_GUEST_FORK_RPC_PATH,
-                encode_debug_guest_fork_request(
-                    session,
-                    access.generation(),
-                    access.holder(),
-                    node,
-                ),
+                self.encode_request(|| {
+                    encode_debug_guest_fork_request(
+                        session,
+                        access.generation(),
+                        access.holder(),
+                        node,
+                    )
+                })?,
             )
             .await?;
         let text = response_text(&body)?;

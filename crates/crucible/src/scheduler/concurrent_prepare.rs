@@ -5,7 +5,7 @@ use super::*;
 use crate::backend::StepObservation;
 
 /// Output produced by one bounded host-concurrent scheduler round.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SchedulerConcurrentQuantumOutcome {
     /// RUN set selected from the same scheduler boundary before host dispatch.
     pub run_set: SchedulerConcurrentRunSet,
@@ -665,7 +665,7 @@ impl SingleScheduler {
         mut candidate: AdvanceCandidate,
         dispatch_contract: crate::BackendDispatchContract,
     ) -> Result<AdvanceCandidate, SchedulerError> {
-        if dispatch_contract != crate::BackendDispatchContract::ControlV3 {
+        if dispatch_contract != crate::BackendDispatchContract::CeilingControl {
             return Ok(candidate);
         }
         let consumer = &self.nodes[candidate.index];

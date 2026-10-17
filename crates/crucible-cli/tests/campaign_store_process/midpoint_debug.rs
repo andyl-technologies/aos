@@ -91,9 +91,6 @@ pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
 
     let first = run_public_debug_client(&fixture, service.daemon_url(), &snapshot, &finding)?;
     let second = run_public_debug_client(&fixture, service.daemon_url(), &snapshot, &finding)?;
-    let first_selection = validate_public_debug_selection(&fixture, &first, &finding_proof, 2)?;
-    let second_selection = validate_public_debug_selection(&fixture, &second, &finding_proof, 2)?;
-    assert_eq!(first_selection, second_selection);
     assert_eq!(
         first.session_response, second.session_response,
         "exact retry changed checkpoint or session"
@@ -112,7 +109,27 @@ pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
         &finding,
         &finding_proof,
     )?;
-    validate_imported_production_capture_handoff(&fixture, &finding)?;
+    // A fresh investigator must acquire the same installed catalog namespace
+    // after the source process has closed its exclusive authority.
+    service.stop()?;
+    let inspection = fixture.inspection_store()?;
+    let decoding = inspection.original.child()?;
+    let scope = decoding.enter();
+    let first_selection =
+        validate_public_debug_selection(&inspection.checkpoints, &first, &finding_proof, 2)?;
+    let second_selection =
+        validate_public_debug_selection(&inspection.checkpoints, &second, &finding_proof, 2)?;
+    assert_eq!(first_selection, second_selection);
+    validate_failed_property_after_source_stop(
+        &fixture,
+        &inspection,
+        &failure_attempt.observation,
+    )?;
+    validate_imported_production_capture_handoff(&fixture, &inspection, &finding)?;
+    decoding.check()?;
+    drop(scope);
+    drop(decoding);
+    drop(inspection);
     handoff(&fixture, &handoff_snapshot, &finding)?;
 
     println!("public_finding_midpoint_debug=true");
@@ -148,21 +165,50 @@ pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
     Ok(())
 }
 
+fn validate_failed_property_after_source_stop(
+    fixture: &FlightFixture,
+    inspection: &NativeFindingInspection,
+    observation: &str,
+) -> Result<(), Box<dyn Error>> {
+    let repository = crucible_campaign::CampaignRepository::new(
+        inspection.backend.clone(),
+        Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
+            fixture._temporary.path().join("refs"),
+        )),
+        crucible_campaign::CampaignRamAdmission::Available(inspection.original.clone()),
+    );
+    let observation_record =
+        repository.load_observation(crucible_campaign::ObservationId::parse(observation)?)?;
+    let verdicts = repository.load_property_verdict_set(observation_record.properties())?;
+    if verdicts
+        .properties()
+        .get("known-midpoint-failure")
+        .map(|evidence| evidence.verdict())
+        != Some(crucible_campaign::PropertyVerdict::Failed)
+    {
+        return Err(
+            format!("q7 observation did not fail the expected property: {verdicts:?}").into(),
+        );
+    }
+
+    Ok(())
+}
+
 fn validate_imported_production_capture_handoff(
     fixture: &FlightFixture,
+    inspection: &NativeFindingInspection,
     finding: &str,
 ) -> Result<(), Box<dyn Error>> {
     use crucible_campaign::{CampaignArchivePolicy, CampaignFindingTriageReplayRole, FindingId};
     use crucible_cas::content_store::{DirectoryRefBackend, DurabilityRequirement};
 
+    let source_original = inspection.original.child()?;
     let source = crucible_campaign::CampaignRepository::new(
-        Arc::new(DirectoryBlobBackend::new(
-            "midpoint-debug-handoff-source",
-            &fixture.objects,
-        )),
+        inspection.backend.clone(),
         Arc::new(DirectoryRefBackend::new(
             fixture._temporary.path().join("refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Available(source_original.clone()),
     );
     let head = source.head(CAMPAIGN)?;
     let plan = source.plan_campaign_archive(
@@ -173,18 +219,23 @@ fn validate_imported_production_capture_handoff(
     )?;
     source.stage_campaign_archive_metadata(&plan)?;
 
+    let destination_original = inspection.original.child()?;
     let private = tempfile::tempdir()?;
     let imported = crucible_campaign::CampaignRepository::new(
-        Arc::new(DirectoryBlobBackend::new(
+        DirectoryBlobBackend::new_with_physical_quota(
             "midpoint-debug-handoff-private",
             private.path().join("objects"),
-        )),
+            inspection.authority.clone(),
+        )?,
         Arc::new(DirectoryRefBackend::new(private.path().join("refs"))),
+        crucible_campaign::CampaignRamAdmission::Available(destination_original.clone()),
     );
     source.transfer_campaign_archive_objects(
         &imported,
         &plan,
         DurabilityRequirement::new(1, false)?,
+        Some(&source_original),
+        Some(&destination_original),
     )?;
     imported.publish_transferred_campaign("private-midpoint-handoff", None, plan.manifest_id())?;
     drop(source);
@@ -319,11 +370,14 @@ fn compile_lineage(fixture: &FlightFixture, compiled: &Value) -> Result<PathBuf,
     fs::write(
         &input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 26\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = {}\n[protocol_versions]\ncontrol = {}\nshared-memory = {}\n",
             json_string(compiled, "scenario")?,
             json_string(compiled, "scenario_artifact")?,
             json_string(compiled, "genesis")?,
             json_string(compiled, "genesis_artifact")?,
+            crucible_daemon::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
+            crucible_protocol::CONTROL_PROTOCOL_VERSION,
+            crucible_shmem::ABI_VERSION,
         ),
     )?;
     run_json(
@@ -571,7 +625,6 @@ fn drive_fast_q7_failure(
     genesis: &str,
 ) -> Result<AuthenticatedFailureAttempt, Box<dyn Error>> {
     use super::packaged::guest_choice;
-    use crucible_campaign::{ObservationId, PropertyVerdict};
 
     let (discovery_attempt, discovery) =
         guest_choice::wait_for_initial_discovery(fixture, service, genesis)?;
@@ -648,28 +701,6 @@ fn drive_fast_q7_failure(
         return Err("q7 midpoint observation belongs to another attempt".into());
     }
     let observation = json_string(&q7["observation"], "id")?;
-    let repository = crucible_campaign::CampaignRepository::new(
-        Arc::new(DirectoryBlobBackend::new(
-            "midpoint-debug-verdict-inspection",
-            &fixture.objects,
-        )),
-        Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
-            fixture._temporary.path().join("refs"),
-        )),
-    );
-    let observation_record = repository.load_observation(ObservationId::parse(&observation)?)?;
-    let verdicts = repository.load_property_verdict_set(observation_record.properties())?;
-    if verdicts
-        .properties()
-        .get("known-midpoint-failure")
-        .map(|evidence| evidence.verdict())
-        != Some(PropertyVerdict::Failed)
-    {
-        return Err(
-            format!("q7 observation did not fail the expected property: {verdicts:?}").into(),
-        );
-    }
-
     println!("midpoint_attempt={attempt}");
     Ok(AuthenticatedFailureAttempt {
         attempt,
@@ -740,7 +771,9 @@ fn exercise_public_exact_pin_gc_flow(
     )?;
     assert_eq!(planned["operation"], "plan");
     {
-        let journal = DirectoryCampaignGcJournal::open(&fixture.journal)?;
+        let mut inspection = gc_quota::inspection(&fixture.store, "inspect-exact-pinned-gc")?;
+        let operation = inspection.context()?;
+        let journal = DirectoryCampaignGcJournal::open(&fixture.journal, &operation)?;
         assert!(
             journal
                 .roots()
@@ -794,7 +827,9 @@ fn exercise_public_exact_pin_gc_flow(
         "replan GC after public unpin",
     )?;
     assert_eq!(replanned["operation"], "plan");
-    let journal = DirectoryCampaignGcJournal::open(after_unpin_journal)?;
+    let mut inspection = gc_quota::inspection(&fixture.store, "inspect-unpinned-gc")?;
+    let operation = inspection.context()?;
+    let journal = DirectoryCampaignGcJournal::open(after_unpin_journal, &operation)?;
     assert!(
         !journal
             .roots()
@@ -897,6 +932,11 @@ fn validate_replayed_failure_boundary(
         );
     }
     let bundle_id = finding.finding().latest_candidate_bundle();
+    let input = fixture
+        ._native_input
+        .as_ref()
+        .ok_or("midpoint replay inspection requires the original source policy")?;
+    input.decoding.verify_live()?;
     let repository = crucible_campaign::CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
             "midpoint-debug-replay-proof",
@@ -905,6 +945,7 @@ fn validate_replayed_failure_boundary(
         Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
             fixture._temporary.path().join("refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Available(input.decoding.clone()),
     );
     let bundle = repository.load_finding_candidate_bundle(bundle_id)?;
     let triage = bundle
@@ -1055,8 +1096,13 @@ pub(super) fn verify_public_debug_handoff(
         Duration::from_secs(180),
     )?;
     // The product finding may have only its terminal exact checkpoint.
-    let first_selection = validate_public_debug_selection(fixture, &first, finding_proof, 1)?;
-    let second_selection = validate_public_debug_selection(fixture, &second, finding_proof, 1)?;
+    let inspection = fixture.inspection_store()?;
+    let decoding = inspection.original.child()?;
+    let _scope = decoding.enter();
+    let first_selection =
+        validate_public_debug_selection(&inspection.checkpoints, &first, finding_proof, 1)?;
+    let second_selection =
+        validate_public_debug_selection(&inspection.checkpoints, &second, finding_proof, 1)?;
     assert_eq!(first_selection, second_selection);
     assert_eq!(first.session_response, second.session_response);
     assert_eq!(first.stop_reply_class, second.stop_reply_class);
@@ -1275,7 +1321,7 @@ fn parse_campaign_debug_response(line: &str) -> Result<PublicDebugEvidence, Box<
 }
 
 fn validate_public_debug_selection(
-    fixture: &FlightFixture,
+    checkpoints: &crucible_daemon::ExactCheckpointStore,
     evidence: &PublicDebugEvidence,
     finding: &crucible_campaign::GetCampaignFindingObjectResponse,
     minimum_candidates: usize,
@@ -1295,11 +1341,6 @@ fn validate_public_debug_selection(
         );
     }
 
-    let backend = Arc::new(DirectoryBlobBackend::new(
-        "midpoint-debug-selection-proof",
-        &fixture.objects,
-    ));
-    let checkpoints = crucible_daemon::ExactCheckpointStore::new(backend, 1024 * 1024 * 1024)?;
     let loaded = checkpoints.load_attempt_checkpoint(evidence.checkpoint)?;
     if evidence.configuration != loaded.configuration().to_hex() {
         return Err(

@@ -452,6 +452,11 @@ impl<'a> NodeContinuationReader<'a> {
         maximum: u64,
     ) -> Result<Vec<u8>, QemuNodeCheckpointCodecError> {
         let value = self.blob_bounded(role, maximum)?;
+        if let Some(original) = crucible::owned_decode::current_budget() {
+            original
+                .charge_array::<u8>(value.len())
+                .map_err(|_| resource(role, 0, usize_to_u64(value.len()), maximum, maximum))?;
+        }
         let mut owned = Vec::new();
         owned
             .try_reserve_exact(value.len())
@@ -500,3 +505,21 @@ fn resource(
 fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
+
+/// Admits ring storage against the current original without a boundary account.
+pub(super) fn decode_original_ring_snapshot(
+    bytes: &[u8],
+    maximum_frames: usize,
+) -> Result<SpscRingSnapshot, SpscRingError> {
+    SpscRingSnapshot::from_canonical_bytes_with_admission(bytes, maximum_frames, |bytes| {
+        crucible::owned_decode::charge_bytes(bytes).map_err(|_| {
+            SpscRingError::SnapshotByteAllocationFailed {
+                len: usize::try_from(bytes).unwrap_or(usize::MAX),
+            }
+        })
+    })
+}
+
+#[cfg(test)]
+#[path = "node_codec/tests.rs"]
+mod allocation_tests;

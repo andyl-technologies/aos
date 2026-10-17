@@ -41,6 +41,9 @@ use crucible::{
 
 #[test]
 fn gate_guidance_signals_are_fixed_point_readers_only() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let coverage = ContentHash::from_canonical_material("crucible.test.guidance.coverage", "new");
     let input = GuidanceSignalInput {
         coverage_fingerprint: coverage,
@@ -103,6 +106,9 @@ fn gate_guidance_signals_are_fixed_point_readers_only() {
 #[test]
 fn gate_guidance_signals_are_fixed_point_readers_only_in_integrated_search()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("integrated-guidance")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -242,6 +248,9 @@ fn gate_guidance_signals_are_fixed_point_readers_only_in_integrated_search()
 
 #[test]
 fn gate_adaptive_strategy_selection_is_deterministic_and_fair() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let config = AdaptiveStrategyConfig::enabled(
         Seed::from_u64(0xada9),
         vec![
@@ -314,11 +323,17 @@ fn gate_adaptive_strategy_selection_is_deterministic_and_fair() {
 #[test]
 fn gate_adaptive_strategy_selection_is_deterministic_and_fair_in_integrated_campaign()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     run_integrated_adaptive_campaign_gate()
 }
 
 #[test]
 fn gate_guidance_determinism_lint_rejects_float_scores() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let clean = lint_guidance_determinism_source("let score: u64 = reward_micros;");
     let dirty = lint_guidance_determinism_source("let score: f64 = reward as f64;");
 
@@ -329,6 +344,9 @@ fn gate_guidance_determinism_lint_rejects_float_scores() {
 
 #[test]
 fn gate_preemption_branching_records_oracle_validated_children() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("preemption-branching")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -407,6 +425,9 @@ fn gate_preemption_branching_records_oracle_validated_children() -> Result<(), B
 #[test]
 fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = two_single_vcpu_node_world("preemption-por")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -596,6 +617,9 @@ fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
 #[test]
 fn gate_preemption_branching_reordering_requires_fresh_parent_bound_selection()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = two_single_vcpu_node_world("preemption-selection-parent")?;
     let root = Configuration::genesis(world.scenario_def());
     let config_a = single_vcpu_preemption_config("guest-a");
@@ -650,6 +674,9 @@ fn gate_preemption_branching_reordering_requires_fresh_parent_bound_selection()
 
 #[test]
 fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("app-random-branching")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());

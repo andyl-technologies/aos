@@ -4,6 +4,9 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+#[path = "output_support.rs"]
+mod output_support;
+
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, GdbAttachInfo,
     GdbListen, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, ScenarioDefForm,
@@ -91,7 +94,7 @@ async fn destroy_session_does_not_wedge_when_shutdown_is_rejected() {
         "crucible-rejected-shutdown-test",
         vec![catalog_entry()],
         |_scenario: &ScenarioDef, _seed| RejectShutdownLoop,
-    );
+    ).with_decode_budget(crate::output_support::budget());
     let created = control_plane
         .create_session(CreateSessionRequest::scenario_ref(
             "api-lifecycle-scenario",
@@ -154,7 +157,7 @@ async fn create_session_start_paused_false_continues_to_running() {
         "crucible-running-lifecycle-test-server",
         vec![catalog_entry()],
         |_scenario, _seed| RunningLoop::new(),
-    );
+    ).with_decode_budget(crate::output_support::budget());
     let request = CreateSessionRequest::scenario_ref("api-lifecycle-scenario", Seed::from_u64(106))
         .with_start_paused(false);
 
@@ -187,7 +190,7 @@ async fn scenario_ref_create_materializes_the_requested_seed() {
                 .push((scenario.seed(), seed));
             NoopLoop
         },
-    );
+    ).with_decode_budget(crate::output_support::budget());
 
     let created = control_plane
         .create_session(CreateSessionRequest::scenario_ref(
@@ -251,7 +254,7 @@ async fn create_session_accepts_inline_scenario_without_registry_entry() {
         "crucible-lifecycle-test-server",
         Vec::new(),
         |_scenario, _seed| NoopLoop,
-    )
+    ).with_decode_budget(crate::output_support::budget())
     .with_mailbox_capacity(LIFECYCLE_SESSION_MAILBOX_CAPACITY);
     let scenario = generated_scenario(103);
 
@@ -308,7 +311,7 @@ async fn autonomous_actor_failure_publishes_terminal_crash_without_another_comma
         "crucible-lifecycle-test-server",
         vec![catalog_entry()],
         |_scenario, _seed| FailingLoop,
-    );
+    ).with_decode_budget(crate::output_support::budget());
     let created = control_plane
         .create_session(CreateSessionRequest::scenario_ref(
             "api-lifecycle-scenario",

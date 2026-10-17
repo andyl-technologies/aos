@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl MappedSetupRegion {
+impl MappedSetupView {
     /// Returns the acquire-observed host fault-command producer frontier.
     ///
     /// # Errors

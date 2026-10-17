@@ -15,22 +15,70 @@ impl CampaignRepository {
                 namespace, max_bytes,
             )),
             Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+            CampaignRamAdmission::Unavailable,
         )
     }
 
     /// Builds a repository over independently composable blob and ref backends.
+    ///
+    /// RAM admission must come from the caller's existing namespace authority
+    /// before repository construction. `Unavailable` supports repositories that
+    /// never authenticate RAM. Construction does not renew a refused account.
     #[must_use]
-    pub fn new(blobs: Arc<dyn ImmutableBlobBackend>, refs: Arc<dyn MutableRefBackend>) -> Self {
+    pub fn new(
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        refs: Arc<dyn MutableRefBackend>,
+        ram_admission: CampaignRamAdmission,
+    ) -> Self {
         let merkle = MerkleMap::new(blobs.clone());
         Self {
             blobs,
             refs,
             merkle,
+            ram_admission,
             mutation_lock: Mutex::new(()),
             validated_heads: Mutex::new(BTreeMap::new()),
             beam_projection_cache: Mutex::new(None),
             planner_authority: None,
             debugger_authority: None,
+        }
+    }
+
+    /// Returns the saved RAM admission for a reopened repository.
+    ///
+    /// Cloning available admission preserves its original authority, authored
+    /// limit, and prior refusal. It does not capture a current operation.
+    #[must_use]
+    pub fn ram_admission(&self) -> &CampaignRamAdmission {
+        &self.ram_admission
+    }
+
+    pub(in crate::repository) fn verify_ram_admission(
+        &self,
+    ) -> Result<(), CampaignRepositoryError> {
+        if let CampaignRamAdmission::Available(original) = &self.ram_admission {
+            original.verify_live().map_err(|source| {
+                CampaignRepositoryError::Ram(crucible_cas::ram::RamStoreError::from_admission(
+                    original, source,
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn ram_operation_account(
+        &self,
+    ) -> Result<crucible_cas::owned_decode::DecodeBudget, CampaignRepositoryError> {
+        match &self.ram_admission {
+            CampaignRamAdmission::Available(original) => original.child().map_err(|source| {
+                CampaignRepositoryError::Ram(crucible_cas::ram::RamStoreError::from_admission(
+                    original, source,
+                ))
+            }),
+            CampaignRamAdmission::Unavailable => Err(StoreError::Unsupported {
+                capability: "campaign-ram-admission",
+            }
+            .into()),
         }
     }
 
@@ -52,13 +100,14 @@ impl CampaignRepository {
     pub fn with_component_authorities(
         blobs: Arc<dyn ImmutableBlobBackend>,
         refs: Arc<dyn MutableRefBackend>,
+        ram_admission: CampaignRamAdmission,
         planner_authority: PlannerAuthorityKey,
         debugger_authority: DebuggerAuthorityKey,
     ) -> Result<Self, CampaignRepositoryError> {
         if planner_authority.has_same_material(&debugger_authority) {
             return Err(integrity("component-authority-keys-must-be-distinct"));
         }
-        let mut repository = Self::new(blobs, refs);
+        let mut repository = Self::new(blobs, refs, ram_admission);
         repository.planner_authority = Some(planner_authority);
         repository.debugger_authority = Some(debugger_authority);
         Ok(repository)

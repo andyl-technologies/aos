@@ -70,6 +70,8 @@ fn input_event(
 #[test]
 fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation_or_count()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let sender = NodeId {
         name: String::from("sender"),
     };
@@ -163,5 +165,18 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
         authenticated_replay_steps(&wrong_world, configuration, &checkpoint, 1, &receiver, 2,)
             .is_err()
     );
+
+    // Exhaust the same original fixture account after authenticating the log.
+    // A host refusal must preserve its type rather than become a false hash.
+    let budget = crucible::owned_decode::current_budget()
+        .ok_or_else(|| std::io::Error::other("original fixture account is absent"))?;
+    assert!(budget.charge_bytes(u64::MAX).is_err());
+    let error = authenticated_replay_steps(&world, configuration, &checkpoint, 1, &receiver, 2)
+        .err()
+        .ok_or_else(|| std::io::Error::other("exhausted replay metadata must be refused"))?;
+    let QemuVmRealizationError::ModelCopy { source } = error else {
+        panic!("original metadata failure must remain an infrastructure refusal");
+    };
+    assert!(source.downcast_ref::<crucible::EngineError>().is_some());
     Ok(())
 }

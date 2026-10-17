@@ -7,12 +7,16 @@ publish = false
 
 [features]
 default = []
-test-support = ["crucible/test-double"]
+kernel-swap-measurement = []
+test-support = ["crucible/test-double", "crucible-ram/test-support"]
+private-measurement-domain = ["crucible-linux-resource/private-measurement-domain", "crucible-cas/private-measurement-domain"]
 
 [lints]
 workspace = true
 
 [dependencies]
+crucible-cas = { workspace = true }
+crucible-ram = { workspace = true }
 blake3 = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-device = { path = "../crucible-device" }
@@ -20,7 +24,7 @@ crucible-linux-resource = { path = "../crucible-linux-resource", default-feature
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }
-rustix = { workspace = true, features = ["net", "param", "process"] }
+rustix = { workspace = true, features = ["net", "param", "process", "thread"] }
 serde_json = { workspace = true }
 serde = { workspace = true }
 ciborium = { workspace = true }
@@ -30,5 +34,7 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-crucible = { path = "../crucible", features = ["test-double"] }
+crucible-linux-resource = { path = "../crucible-linux-resource", default-features = false, features = ["test-support"] }
+crucible-cas = { workspace = true, features = ["test-support"] }
+crucible = { path = "../crucible", features = ["test-double", "test-support"] }
 rustix = { workspace = true, features = ["time"] }

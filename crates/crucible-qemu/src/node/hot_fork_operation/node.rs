@@ -489,16 +489,28 @@ impl QemuNode {
             })?
             .clone_checkpoint_cancellation()
             .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
+        self.validate_hot_fork_ram_stage(
+            request.template_generation(),
+            request.child_process_contract_generation(),
+            false,
+        )
+        .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
         let parent_state = match self.channels.qmp_machine_control.hot_fork(request) {
             Ok(state) => state,
             Err(QemuHotForkCommandError::Rejected { source }) => {
                 return Err(QemuHotForkLaunchError::Rejected { source });
             }
             Err(QemuHotForkCommandError::Indeterminate { source }) => {
+                if let Some(ram) = &self.hot_fork_ram_stage {
+                    ram.child_created();
+                }
                 self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
                 return Err(QemuHotForkLaunchError::Indeterminate { source });
             }
         };
+        if let Some(ram) = &self.hot_fork_ram_stage {
+            ram.child_created();
+        }
         if let Some(process_contract) = self.hot_fork_child_process_contract_stage.as_mut() {
             process_contract.mark_consumed();
         }
@@ -577,6 +589,27 @@ impl QemuNode {
                     source,
                 }
             })?;
+        if let Some(ram) = &self.hot_fork_ram_stage {
+            ram.bind_process(basis).map_err(|source| {
+                self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+                QemuHotForkLaunchError::ProcessRetention {
+                    parent_state: Box::new(parent_state),
+                    source,
+                }
+            })?;
+        }
+        self.validate_hot_fork_ram_stage(
+            request.template_generation(),
+            request.child_process_contract_generation(),
+            true,
+        )
+        .map_err(|source| {
+            self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+            QemuHotForkLaunchError::EndpointTransfer {
+                parent_state: Box::new(parent_state),
+                source,
+            }
+        })?;
         let diagnostics = self
             .take_hot_fork_child_diagnostic_consumer()
             .map_err(|source| {
@@ -587,6 +620,19 @@ impl QemuNode {
                 }
             })?;
         let host_continuation = QemuHotForkHostContinuation {
+            ram: self
+                .hot_fork_ram_stage
+                .as_mut()
+                .map(|ram| ram.take_continuation())
+                .transpose()
+                .map_err(|source| {
+                    self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+                    QemuHotForkLaunchError::EndpointTransfer {
+                        parent_state: Box::new(parent_state),
+                        source,
+                    }
+                })?
+                .map(Box::new),
             request,
             endpoint: host_endpoint,
             ring_descriptor,

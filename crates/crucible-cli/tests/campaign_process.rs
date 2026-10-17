@@ -71,6 +71,9 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
 
     let scenario_path = write_scenario(root, Action::Pass)?;
 
+    // This measures the shipped CLI from spawn through exit, including its
+    // preparation and cleanup. It never supplies guest time or authority.
+    let host_started = std::time::Instant::now();
     let output = command()
         .args(["--backend", "qemu", "--qemu"])
         .arg(required_path("CRUCIBLE_FLIGHT_QEMU")?)
@@ -85,6 +88,7 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
         .arg(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)
         .env("CRUCIBLE_RUN_STATE_ROOT", &run_state)
         .output()?;
+    let process_host_ns = u64::try_from(host_started.elapsed().as_nanos())?;
     require_success(&output, "campaign-backed default run")?;
 
     let entries = String::from_utf8(output.stdout)?
@@ -216,6 +220,12 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
     }));
 
     println!("\ncampaign_default_run=true");
+    println!("campaign_default_run_process_host_ns={process_host_ns}");
+    println!("campaign_default_run_completed_campaigns=1");
+    println!("campaign_default_run_physical_quanta={}", watch_quanta[2]);
+    println!("campaign_default_run_frontier_ticks={}", watch_frontiers[2]);
+    println!("campaign_default_run_measurement=shipped-cli-spawn-through-exit");
+    println!("campaign_default_run_completion=authenticated-public-campaign");
     Ok(())
 }
 

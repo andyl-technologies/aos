@@ -31,6 +31,9 @@ use crucible::{
 #[test]
 fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(vec![WorldNode {
         id: node("triage-node"),
         arch: NodeTemplate::DEFAULT_ARCH,
@@ -74,20 +77,23 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         0,
         VirtualTime { ticks: 100 },
         SchedulerEvaluationBoundaryKind::Quantum,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let marker_event =
         ObservableEvent::guest_marker(icount(5), node("triage-node"), marker("forbidden"));
     let observed_marker = crucible::test_support::condition_payload_entry_for_test(
         1,
         VirtualTime { ticks: 100 },
         SchedulerEventLogPayload::Observable(marker_event.payload().clone()),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let transition = SchedulerEventLogEntry::assertion_state_observation(
         2,
         VirtualTime { ticks: 100 },
         assertion_id("no-forbidden-marker"),
         AssertionPhase::Violated,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let entries = vec![boundary.clone(), observed_marker, transition.clone()];
     let report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&world)
@@ -100,17 +106,23 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
             .iter()
             .find(|violation| violation.assertion == assertion_id("no-forbidden-marker"))
             .ok_or("missing marker violation")?
-            .clone(),
-    );
+            .try_clone_admitted()
+            .unwrap_or_else(|error| panic!("finite component violation copy: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let terminal_record = FailurePropertyViolationRecord::new(
         violations
             .iter()
             .find(|violation| violation.assertion == assertion_id("eventually-present"))
             .ok_or("missing terminal violation")?
-            .clone(),
-    );
-    for mut record in [marker_record.clone(), terminal_record] {
-        record.violation.reproduction_artifact = finding.artifact.id();
+            .try_clone_admitted()
+            .unwrap_or_else(|error| panic!("finite component violation copy: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
+    for record in [marker_record.clone(), terminal_record] {
+        let mut violation = record.violation.try_clone_admitted()?;
+        violation.reproduction_artifact = finding.artifact.id();
+        let record = FailurePropertyViolationRecord::new(violation)?;
         let log = recorded_event_log_for_finding(&finding, &entries)?;
         let signature =
             FailureSignature::from_recorded_property_violation(&finding, &log, &record)?;
@@ -118,12 +130,15 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
     }
 
     let mut terminal_transition_entries = entries.clone();
-    terminal_transition_entries.push(SchedulerEventLogEntry::assertion_state_observation(
-        3,
-        VirtualTime { ticks: 100 },
-        assertion_id("eventually-present"),
-        AssertionPhase::Violated,
-    ));
+    terminal_transition_entries.push(
+        SchedulerEventLogEntry::assertion_state_observation(
+            3,
+            VirtualTime { ticks: 100 },
+            assertion_id("eventually-present"),
+            AssertionPhase::Violated,
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    );
     let terminal_transition_report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&world)
         .check_run(&properties, &terminal_transition_entries)?;
@@ -132,7 +147,8 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         .iter()
         .find(|violation| violation.assertion == assertion_id("eventually-present"))
         .ok_or("missing terminal transition violation")?
-        .clone();
+        .try_clone_admitted()
+        .unwrap_or_else(|error| panic!("finite component violation copy: {error}"));
     terminal_transition_record.reproduction_artifact = finding.artifact.id();
     let terminal_transition_log =
         recorded_event_log_for_finding(&finding, &terminal_transition_entries)?;
@@ -140,14 +156,16 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         FailureSignature::from_recorded_property_violation(
             &finding,
             &terminal_transition_log,
-            &FailurePropertyViolationRecord::new(terminal_transition_record),
+            &FailurePropertyViolationRecord::new(terminal_transition_record)
+                .unwrap_or_else(|error| panic!("finite component assertion setup: {error}")),
         )?
         .causal_slice_hash
         .is_some()
     );
 
-    let mut marker_record = marker_record;
-    marker_record.violation.reproduction_artifact = finding.artifact.id();
+    let mut marker_violation = marker_record.violation.try_clone_admitted()?;
+    marker_violation.reproduction_artifact = finding.artifact.id();
+    let marker_record = FailurePropertyViolationRecord::new(marker_violation)?;
     let triage = FailureTriageReplayEvidence::new(
         finding.clone(),
         FailureClusterReportFailure::property(marker_record.clone()),
@@ -175,7 +193,8 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
             1,
             VirtualTime { ticks: 100 },
             SchedulerEventLogPayload::Observable(wrong_marker.payload().clone()),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         transition.clone(),
     ];
     let wrong_log = recorded_event_log_for_finding(&finding, &wrong_entries)?;
@@ -194,7 +213,8 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
                 1,
                 VirtualTime { ticks: 100 },
                 SchedulerEventLogPayload::Observable(wrong_icount.payload().clone()),
-            ),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
             transition.clone(),
         ],
     )?;
@@ -212,7 +232,8 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         VirtualTime { ticks: 100 },
         assertion_id("no-forbidden-marker"),
         AssertionPhase::Satisfied,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let wrong_state_log = recorded_event_log_for_finding(
         &finding,
         &[entries[0].clone(), entries[1].clone(), wrong_state],
@@ -231,7 +252,8 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         VirtualTime { ticks: 100 },
         assertion_id("no-forbidden-marker"),
         AssertionPhase::Violated,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let duplicate_log = recorded_event_log_for_finding(
         &finding,
         &[
@@ -254,23 +276,27 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         0,
         VirtualTime { ticks: 50 },
         SchedulerEvaluationBoundaryKind::Quantum,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let earlier_marker = crucible::test_support::condition_payload_entry_for_test(
         1,
         VirtualTime { ticks: 50 },
         SchedulerEventLogPayload::Observable(marker_event.payload().clone()),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let later_boundary = crucible::test_support::condition_boundary_entry_for_test(
         2,
         VirtualTime { ticks: 100 },
         SchedulerEvaluationBoundaryKind::Quantum,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let later_transition = SchedulerEventLogEntry::assertion_state_observation(
         3,
         VirtualTime { ticks: 100 },
         assertion_id("no-forbidden-marker"),
         AssertionPhase::Violated,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let earlier_marker_log = recorded_event_log_for_finding(
         &finding,
         &[
@@ -294,12 +320,14 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         VirtualTime { ticks: 100 },
         assertion_id("no-forbidden-marker"),
         AssertionPhase::Violated,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let reversed_marker = crucible::test_support::condition_payload_entry_for_test(
         2,
         VirtualTime { ticks: 100 },
         SchedulerEventLogPayload::Observable(marker_event.payload().clone()),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let reversed_entries = vec![entries[0].clone(), reversed_transition, reversed_marker];
     let reversed_report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&world)
@@ -326,7 +354,8 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
             1,
             VirtualTime { ticks: 100 },
             SchedulerEventLogPayload::Observable(coincident_marker.payload().clone()),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         entries[2].clone(),
     ];
     let coincident_report = OfflineAssertionChecker::new()
@@ -337,14 +366,16 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         .iter()
         .find(|violation| violation.assertion == assertion_id("no-forbidden-marker"))
         .ok_or("missing coincident marker violation")?
-        .clone();
+        .try_clone_admitted()
+        .unwrap_or_else(|error| panic!("finite component violation copy: {error}"));
     assert_eq!(coincident_record.at_icount, Some(icount(100)));
     coincident_record.reproduction_artifact = finding.artifact.id();
     let coincident_log = recorded_event_log_for_finding(&finding, &coincident_entries)?;
     let coincident_signature = FailureSignature::from_recorded_property_violation(
         &finding,
         &coincident_log,
-        &FailurePropertyViolationRecord::new(coincident_record),
+        &FailurePropertyViolationRecord::new(coincident_record)
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}")),
     )?;
     assert!(
         coincident_signature
@@ -360,6 +391,9 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
 
 #[test]
 fn forged_transition_cannot_substitute_for_an_undeclared_property() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let source = scenario_form()?;
     let empty = ScenarioDefForm::from_components(
         source.world(),
@@ -383,6 +417,9 @@ fn forged_transition_cannot_substitute_for_an_undeclared_property() -> Result<()
 
 #[test]
 fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
     let finding = finding_artifact(
@@ -476,8 +513,12 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         "a retained frame cannot exceed its individual bound"
     );
 
-    let mut oversized_failure = property_violation_record(finding.artifact.id());
-    oversized_failure.violation.detail = "x".repeat(1024 * 1024);
+    let mut oversized_violation = property_violation_record(finding.artifact.id())
+        .violation
+        .try_clone_admitted()?;
+    crucible::owned_decode::charge_array::<u8>(1024 * 1024)?;
+    oversized_violation.detail = "x".repeat(1024 * 1024);
+    let oversized_failure = FailurePropertyViolationRecord::new(oversized_violation)?;
     assert!(
         FailureTriageReplayEvidence::new(
             finding,
@@ -496,6 +537,9 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
 #[test]
 fn paired_divergence_evidence_retains_both_logs_and_recomputes_mismatch()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-divergence", "fail")]);
     let finding = finding_artifact(
@@ -560,6 +604,9 @@ fn paired_divergence_evidence_retains_both_logs_and_recomputes_mismatch()
 
 #[test]
 fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
     let coverage_entries = recorded_event_log(schedule.decisions()[0].clone());
@@ -630,7 +677,8 @@ fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), 
                 node("triage-node"),
                 b"operator-visible noise".to_vec(),
             ),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_payload_entry_for_test(
             2,
             VirtualTime { ticks: 8 },
@@ -639,13 +687,15 @@ fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), 
                     .payload()
                     .clone(),
             ),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::assertion_state_observation(
             3,
             VirtualTime { ticks: 8 },
             assertion_id("no-forbidden-marker"),
             AssertionPhase::Violated,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let noisy_log = recorded_event_log_for_finding(&first, &noisy_entries)?;
     let noisy_record = property_violation_record_for_entries(first.artifact.id(), &noisy_entries);
@@ -670,6 +720,9 @@ fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), 
 
 #[test]
 fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "left")]);
     let finding = finding_artifact(
@@ -712,6 +765,9 @@ fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Er
 #[test]
 fn timeout_signature_keys_stable_budget_domain_not_numeric_counters() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let finding = finding_artifact(
         &scenario,
@@ -720,11 +776,10 @@ fn timeout_signature_keys_stable_budget_domain_not_numeric_counters() -> Result<
         finding_hash("timeout"),
     )?;
     let at = VirtualTime { ticks: 41 };
-    let entries = vec![SchedulerEventLogEntry::execution_budget_exhausted(
-        0,
-        at,
-        "execution-quanta",
-    )];
+    let entries = vec![
+        SchedulerEventLogEntry::execution_budget_exhausted(0, at, "execution-quanta")
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    ];
     let recorded_log = FailureRecordedEventLog::from_causal_entries_and_coverage(
         &finding,
         &entries,
@@ -766,6 +821,9 @@ fn timeout_signature_keys_stable_budget_domain_not_numeric_counters() -> Result<
 #[test]
 fn timeout_signature_validates_boundary_and_normalizes_symmetric_nodes()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let finding = finding_artifact(
         &scenario,
@@ -796,7 +854,8 @@ fn timeout_signature_validates_boundary_and_normalizes_symmetric_nodes()
                 0,
                 time,
                 "execution-quanta",
-            ),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         ];
         let log = FailureRecordedEventLog::from_causal_entries_and_coverage(
             &finding,
@@ -863,6 +922,9 @@ fn timeout_signature_validates_boundary_and_normalizes_symmetric_nodes()
 #[test]
 fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
     let finding = finding_artifact(
@@ -934,7 +996,8 @@ fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
             1,
             VirtualTime { ticks: 5 },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_payload_entry_for_test(
             2,
             VirtualTime { ticks: 8 },
@@ -943,13 +1006,15 @@ fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
                     .payload()
                     .clone(),
             ),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::assertion_state_observation(
             3,
             VirtualTime { ticks: 8 },
             assertion_id("no-forbidden-marker"),
             AssertionPhase::Violated,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let prefailure_out_of_cone_log =
         recorded_event_log_for_finding(&finding, &prefailure_out_of_cone_entries)?;
@@ -978,11 +1043,14 @@ fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
     );
 
     let mut trailing_causal_entries = base_entries.clone();
-    trailing_causal_entries.push(crucible::test_support::condition_boundary_entry_for_test(
-        3,
-        VirtualTime { ticks: 99 },
-        SchedulerEvaluationBoundaryKind::Quantum,
-    ));
+    trailing_causal_entries.push(
+        crucible::test_support::condition_boundary_entry_for_test(
+            3,
+            VirtualTime { ticks: 99 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    );
     let trailing_log = recorded_event_log_for_finding(&finding, &trailing_causal_entries)?;
     let trailing_record =
         property_violation_record_for_entries(finding.artifact.id(), &trailing_causal_entries);
@@ -1011,6 +1079,9 @@ fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
 #[test]
 fn failure_signature_policy_projects_versioned_keys_and_result_identity()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
     let finding = finding_artifact(
@@ -1174,6 +1245,9 @@ fn failure_signature_policy_projects_versioned_keys_and_result_identity()
 
 #[test]
 fn failure_clustering_partitions_and_orders_by_signature_key() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
     let finding = finding_artifact(

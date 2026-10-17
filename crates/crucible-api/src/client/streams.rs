@@ -301,19 +301,27 @@ pub(super) struct RpcStreamingEventReceiver {
     pending_state_updates: VecDeque<StreamingStateUpdateFrame>,
     skipped_events: u64,
     last_state_sequence: Option<u64>,
+    _event_storage: crucible::owned_decode::DecodeScratch,
+    _state_storage: crucible::owned_decode::DecodeScratch,
 }
 
 impl RpcStreamingEventReceiver {
     pub(super) fn new(
         frames: mpsc::Receiver<Result<RpcStreamingFrame, ControlClientError>>,
-    ) -> Self {
-        Self {
+        budget: &crucible::owned_decode::DecodeBudget,
+    ) -> Result<Self, ControlClientError> {
+        let (pending_events, event_storage) =
+            pending_storage(budget, RPC_STREAM_PENDING_FRAME_CAPACITY)?;
+        let (pending_state_updates, state_storage) = pending_storage(budget, 1)?;
+        Ok(Self {
             frames,
-            pending_events: VecDeque::new(),
-            pending_state_updates: VecDeque::new(),
+            pending_events,
+            pending_state_updates,
             skipped_events: 0,
             last_state_sequence: None,
-        }
+            _event_storage: event_storage,
+            _state_storage: state_storage,
+        })
     }
 
     async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
@@ -409,6 +417,29 @@ impl RpcStreamingEventReceiver {
         self.last_state_sequence
             .is_none_or(|delivered| sequence > delivered)
     }
+}
+
+fn pending_storage<T>(
+    budget: &crucible::owned_decode::DecodeBudget,
+    capacity: usize,
+) -> Result<(VecDeque<T>, crucible::owned_decode::DecodeScratch), ControlClientError> {
+    let bytes = capacity
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| {
+            client_output_admission(crate::admitted_output::admission(
+                crucible::owned_decode::DecodeAdmissionError::new(std::fmt::Error),
+            ))
+        })?;
+    let loan = budget
+        .reserve_scratch_bytes(bytes as u64)
+        .map_err(|source| client_output_admission(crate::admitted_output::admission(source)))?;
+    let mut queue = VecDeque::new();
+    queue.try_reserve_exact(capacity).map_err(|source| {
+        client_output_admission(crate::admitted_output::admission(
+            crucible::owned_decode::DecodeAdmissionError::new(source),
+        ))
+    })?;
+    Ok((queue, loan))
 }
 
 #[cfg(test)]

@@ -13,6 +13,9 @@ use crucible::{
 
 #[test]
 fn declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let assertion_id = assertion_id("curl-receives-http-200");
     let properties = properties(
@@ -22,13 +25,16 @@ fn declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome() {
             "curl-receives-http-200 message",
         )],
     );
-    let mut evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
     let marker = guest_marker(42, &assertion_id.name);
-    let outcomes =
-        evaluator.observe_prefix(&observable_prefix(50, vec![marker.clone()]), &mut oracle);
+    let outcomes = evaluator
+        .observe_prefix(&observable_prefix(50, vec![marker.clone()]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].assertion, assertion_id);
@@ -41,9 +47,12 @@ fn declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome() {
     assert!(
         evaluator
             .observe_prefix(&observable_prefix(51, vec![marker.clone()]), &mut oracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
             .is_empty()
     );
-    let report = evaluator.finalize_prefix(&observable_prefix(52, vec![marker]), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(52, vec![marker]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert_eq!(report.outcomes().len(), 1);
     assert_eq!(
         report.outcomes()[0].kind,
@@ -53,6 +62,9 @@ fn declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome() {
 
 #[test]
 fn declared_guest_assertion_rejects_marker_message_drift() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -61,14 +73,18 @@ fn declared_guest_assertion_rejects_marker_message_drift() {
             "authored scenario message",
         )],
     );
-    let mut evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
-    let outcomes = evaluator.observe_prefix(
-        &observable_prefix(42, vec![guest_marker(42, "curl-receives-http-200")]),
-        &mut oracle,
-    );
+    let outcomes = evaluator
+        .observe_prefix(
+            &observable_prefix(42, vec![guest_marker(42, "curl-receives-http-200")]),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].kind, HostAssertionOutcomeKind::Violated);
@@ -78,6 +94,9 @@ fn declared_guest_assertion_rejects_marker_message_drift() {
 
 #[test]
 fn declared_guest_assertion_helpers_cover_every_guest_flavor() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -91,21 +110,30 @@ fn declared_guest_assertion_helpers_cover_every_guest_flavor() {
             AssertionDef::guest_unreachable(assertion_id("unreachable"), "unreachable message"),
         ],
     );
-    let mut evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
-    let outcomes = evaluator.observe_prefix(
-        &observable_prefix(
-            50,
-            vec![
-                guest_marker_with_kind(42, "invariant", GuestAssertionKind::Always, true),
-                guest_marker_with_kind(43, "reachable", GuestAssertionKind::Reachable, true),
-                guest_marker_with_kind(44, "unreachable", GuestAssertionKind::Unreachable, true),
-            ],
-        ),
-        &mut oracle,
-    );
+    let outcomes = evaluator
+        .observe_prefix(
+            &observable_prefix(
+                50,
+                vec![
+                    guest_marker_with_kind(42, "invariant", GuestAssertionKind::Always, true),
+                    guest_marker_with_kind(43, "reachable", GuestAssertionKind::Reachable, true),
+                    guest_marker_with_kind(
+                        44,
+                        "unreachable",
+                        GuestAssertionKind::Unreachable,
+                        true,
+                    ),
+                ],
+            ),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert!(outcomes.iter().any(|outcome| {
         outcome.assertion.name == "reachable" && outcome.kind == HostAssertionOutcomeKind::Satisfied
     }));
@@ -114,7 +142,9 @@ fn declared_guest_assertion_helpers_cover_every_guest_flavor() {
             && outcome.kind == HostAssertionOutcomeKind::Violated
     }));
 
-    let report = evaluator.finalize_prefix(&observable_prefix(51, Vec::new()), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(51, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert!(report.outcomes().iter().any(|outcome| {
         outcome.assertion.name == "invariant" && outcome.kind == HostAssertionOutcomeKind::Passed
     }));

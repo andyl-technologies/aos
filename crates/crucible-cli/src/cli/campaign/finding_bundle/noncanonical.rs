@@ -34,12 +34,24 @@ pub(crate) fn run_finding_bundle_fork_write(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async {
-        let _private_guard = prepared.private;
+    let decoding = prepared.decoding.clone();
+    let workflow_budget = prepared.decoding.clone();
+    let workflow = async move {
+        // Both private sessions close before the original archive service.
+        let midpoint::PreparedFindingBundleMidpoint {
+            archive_admission,
+            imported,
+            report: original_report,
+            private: _private_guard,
+            decoding: _decoding_owner,
+        } = prepared;
         let transport = midpoint::private_midpoint_transport(_private_guard.path())?;
-        let checkpoint_id = prepared.midpoint.checkpoint();
-        let checkpoint_identity = prepared.midpoint.loaded_checkpoint().production_identity();
-        let verify_checkpoints = Arc::clone(&prepared.checkpoints);
+        let checkpoint_id = imported.midpoint().checkpoint();
+        let checkpoint_identity = imported
+            .midpoint()
+            .loaded_checkpoint()
+            .production_identity();
+        let verify_checkpoints = imported.checkpoints();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(CliError::Io)?;
@@ -58,19 +70,11 @@ pub(crate) fn run_finding_bundle_fork_write(
             RpcEndpoint::http2(format!("https://{address}")),
             RpcMutualTlsConfig::from_pem(transport.ca_pem, transport.client_identity_pem),
         )
-        .map_err(control_client_error)?;
-        let sessions = prepared
-            .midpoint
-            .admit_guarded_debug_session_pair(
-                prepared.checkpoints,
-                prepared.lifecycle,
-                prepared.host,
-                prepared.resources,
-            )
-            .await
-            .map_err(|error| {
-                backend_error(format!("finding midpoint pair restore failed: {error}"))
-            })?;
+        .map_err(control_client_error)?
+        .with_decode_budget(decoding.clone());
+        let sessions = imported.admit_debug_session_pair().await.map_err(|error| {
+            backend_error(format!("finding midpoint pair restore failed: {error}"))
+        })?;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let mut server = tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
             listener,
@@ -90,8 +94,11 @@ pub(crate) fn run_finding_bundle_fork_write(
             }
             let proof =
                 prove_register_write(&client, &sessions, &role, midpoint_args, args).await?;
-            let after = load_authenticated_bundle(&midpoint_args.input)?;
-            if prepared.report["archive_manifest"] != json!(after.archive_id.to_string()) {
+            let after = load_authenticated_bundle(
+                archive_admission.input_path(&midpoint_args.input),
+                &archive_admission,
+            )?;
+            if original_report["archive_manifest"] != json!(after.archive_id.to_string()) {
                 return Err(backend_error(
                     "finding bundle changed after private debug write",
                 ));
@@ -105,7 +112,7 @@ pub(crate) fn run_finding_bundle_fork_write(
                 ));
             }
 
-            let mut report = prepared.report;
+            let mut report = original_report;
             report["schema"] = json!("crucible.cli.campaign-finding-bundle-fork-write.v1");
             report["operation"] = json!("fork-finding-bundle-midpoint-register-write");
             report["branch_classification"] = json!("non-canonical");
@@ -170,7 +177,8 @@ pub(crate) fn run_finding_bundle_fork_write(
             teardown_errors.push(format!("relay shutdown: {error}"));
         }
         if teardown_errors.is_empty() {
-            return result;
+            result?;
+            return archive_admission.complete();
         }
         let teardown = teardown_errors.join("; ");
         match result {
@@ -181,7 +189,11 @@ pub(crate) fn run_finding_bundle_fork_write(
                 "{error}; finding fork teardown failed: {teardown}"
             ))),
         }
-    })
+    };
+    runtime.block_on(
+        crucible_api::admit_future(workflow, workflow_budget)
+            .map_err(|error| backend_error(format!("fork workflow admission failed: {error}")))?,
+    )
 }
 
 struct RegisterWriteProof {

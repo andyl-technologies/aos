@@ -18,8 +18,8 @@ use crucible_campaign::{
 use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
 use crate::{
-    ExecutorCapacity, LocalExecutorCapabilityService, LocalExecutorSupervisor,
-    LoopbackExecutorTimeouts, MemoryAssignmentLedger, serve_loopback_executor_component_once,
+    ExecutorCapacity, LocalExecutorSupervisor, LoopbackExecutorTimeouts, MemoryAssignmentLedger,
+    serve_loopback_executor_component_once,
 };
 
 use super::*;
@@ -82,6 +82,7 @@ fn fixture_with_explorer(
         CampaignRepository::with_component_authorities(
             blobs.clone(),
             Arc::new(MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
             planner.clone(),
             debugger,
         )
@@ -164,7 +165,30 @@ fn description(
         BTreeSet::from([String::from("deterministic-tcg")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         2,
-        resources,
+        crucible_campaign::ExecutorResourceBounds::new(
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 4194304,
+                backing_peak_bytes: 2097152,
+                metadata_bytes: 256,
+                staging_bytes: 256,
+                paging_io_slots: 2,
+                cpu_slots: 8,
+                task_slots: 130,
+                file_descriptors: 256,
+            },
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 1048576,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 4,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            resources,
+        )
+        .expect("authored complete fixture resource bounds"),
         BTreeSet::from([CampaignHash::derive("test", b"store")]),
     )
     .expect("executor capabilities");
@@ -177,10 +201,15 @@ fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<(
         MemoryAssignmentLedger::default(),
         AllowAllAttemptAdmission,
         epoch,
-        ExecutorCapacity::new(2, 4, 1024 * 1024, 1024 * 1024, 10_000).expect("executor capacity"),
+        ExecutorCapacity::new(2, 8, 4 * 1024 * 1024, 2 * 1024 * 1024, 10_000)
+            .expect("executor capacity"),
     );
-    let mut service = LocalExecutorCapabilityService::new(supervisor, description(lineage, epoch))
-        .expect("capability service");
+    let mut service = crate::executor_capability::test_support::capability_service(
+        supervisor,
+        description(lineage, epoch),
+        1024 * 1024,
+    )
+    .expect("capability service");
     let (client, mut server) = UnixStream::pair().expect("executor stream pair");
     let worker = thread::spawn(move || {
         serve_loopback_executor_component_once(

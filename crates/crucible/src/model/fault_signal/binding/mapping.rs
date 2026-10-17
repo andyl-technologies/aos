@@ -389,6 +389,8 @@ where
         <Vec<(SignalValue, FaultObjectId)> as serde::Deserialize>::deserialize(deserializer)?;
     let mut transitions = BTreeMap::new();
     for (input, output) in entries {
+        crate::owned_decode::charge_btree_entry::<SignalValue, FaultObjectId>()
+            .map_err(serde::de::Error::custom)?;
         if transitions.insert(input, output).is_some() {
             return Err(serde::de::Error::custom("duplicate state transition input"));
         }
@@ -453,6 +455,10 @@ impl BindingMappingRegistry {
         }
         let mut tables = BTreeMap::new();
         for declaration in transition_tables {
+            crate::owned_decode::charge_btree_entry::<FaultObjectId, StateTransitionTableDeclaration>()
+                .map_err(BindingError::OriginalAdmission)?;
+            crate::owned_decode::charge_array::<u8>(declaration.id.as_str().len())
+                .map_err(BindingError::OriginalAdmission)?;
             if declaration.semantic_version != 1
                 || !matches!(
                     declaration.input,
@@ -463,7 +469,7 @@ impl BindingMappingRegistry {
                 || declaration
                     .transitions
                     .keys()
-                    .any(|request| request.value_type() != Some(declaration.input.clone()))
+                    .any(|request| !request.has_type(&declaration.input))
                 || !declaration
                     .effect
                     .descriptor()
@@ -482,7 +488,11 @@ impl BindingMappingRegistry {
         }
         let mut profiles = BTreeMap::new();
         for mut declaration in service_profiles {
-            declaration.parameters.sort();
+            declaration.parameters.sort_unstable();
+            crate::owned_decode::charge_btree_entry::<FaultObjectId, ServiceProfileDeclaration>()
+                .map_err(BindingError::OriginalAdmission)?;
+            crate::owned_decode::charge_array::<u8>(declaration.id.as_str().len())
+                .map_err(BindingError::OriginalAdmission)?;
             if declaration.semantic_version != 1
                 || declaration.inputs.is_empty()
                 || declaration.inputs.len() > HARD_BINDING_SIGNAL_INPUT_LIMIT
@@ -496,13 +506,11 @@ impl BindingMappingRegistry {
                     .inputs
                     .iter()
                     .any(|input| !input.shape.value_type.is_numeric())
-                || declaration
-                    .inputs
-                    .iter()
-                    .map(|input| &input.role)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    != declaration.inputs.len()
+                || declaration.inputs.iter().enumerate().any(|(index, input)| {
+                    declaration.inputs[..index]
+                        .iter()
+                        .any(|prior| prior.role == input.role)
+                })
                 || declaration
                     .parameters
                     .iter()

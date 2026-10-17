@@ -27,7 +27,7 @@ pub(super) async fn acknowledged_continue_preserves_engine_rejection()
     assert!(matches!(
         received?,
         Err(SessionError::InvalidTransition { state, command })
-            if *state == EngineState::Loaded && *command == SessionCommand::Continue
+            if state == LifecycleStateKind::Loaded && command == SessionCommandKind::Continue
     ));
     assert_eq!(actor.live_status().state_kind, LiveStateKind::Loaded);
     assert_eq!(actor.live_status().quanta_stepped, 0);
@@ -371,6 +371,7 @@ pub(super) async fn state_transition_floor_suppresses_pre_snapshot_frames() {
 
 #[test]
 pub(super) fn event_log_stream_recovers_broadcast_lag_from_the_retained_log() {
+    let _scope = fixture_metadata_scope();
     let event_log = SessionEventLog::new();
     let mut stream = event_log.subscribe(EventLogCursor::new(0));
     let entry_count = usize_to_u64(SESSION_EVENT_LOG_BROADCAST_CAPACITY).saturating_add(257);
@@ -382,9 +383,12 @@ pub(super) fn event_log_stream_recovers_broadcast_lag_from_the_retained_log() {
                 AssertionId::from_name("retained-log-lag-recovery"),
                 AssertionPhase::Satisfied,
             )
+            .unwrap_or_else(|error| panic!("finite fixture event identity: {error}"))
         })
         .collect::<Vec<_>>();
-    event_log.append_entries(&entries);
+    event_log
+        .append_entries(&entries)
+        .unwrap_or_else(|error| panic!("admitted fixture history: {error}"));
 
     let mut observed = Vec::new();
     while let Some(frame) = stream

@@ -1,8 +1,11 @@
-//! Checks the RFC-0010 T-API-6 streaming cursor contract.
+//! Checks bounded streaming cursors and replay-safe cursor advancement.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+#[path = "output_support.rs"]
+mod output_support;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -127,6 +130,10 @@ struct CursorFixture {
 
 impl CursorFixture {
     async fn spawn_loaded(seed: u64) -> Self {
+        let budget = output_support::budget();
+        // Construction is synchronous; the actor restores this same account on
+        // every later poll, and the streaming handle retains it independently.
+        let _scope = budget.enter();
         let scenario = generated_scenario(seed);
         let config = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario);
@@ -138,7 +145,8 @@ impl CursorFixture {
         let event_log = ControlPlaneEventLog::new(event_log_hub.clone());
         let reproduction_log = actor.reproduction_log();
         let state_transitions = actor.state_transition_bus();
-        let actor_task = tokio::spawn(async move { actor.run().await });
+        let actor_task = crucible_api::spawn_admitted_session_actor(actor, budget.clone())
+            .unwrap_or_else(|error| panic!("finite fixture actor admission: {error}"));
         let session = SessionRef::new(SessionId::new(seed), seed, scenario.seed());
         let api = InProcessStreamingSession::new(
             session,
@@ -184,11 +192,14 @@ impl QuantumLoop for CursorLoop {
             event_log_segment_hash: None,
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 }
 
 fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> {
+    let budget = crate::output_support::budget();
+    let _scope = budget.enter();
     let frontier = VirtualTime { ticks: quantum };
     let causal = condition_payload_entry_for_test(
         first_sequence,
@@ -197,7 +208,8 @@ fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> 
             stream: RngStreamId::from_name(format!("cursor-{quantum}")),
             value: quantum,
         })),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite fixture event admission: {error}"));
 
     let mut details = BTreeMap::new();
     details.insert(String::from("quantum"), EventAttributeValue::U64(quantum));
@@ -209,7 +221,8 @@ fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> 
             EventLevel::Info,
             details,
         )),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite fixture event admission: {error}"));
     vec![causal, observational]
 }
 

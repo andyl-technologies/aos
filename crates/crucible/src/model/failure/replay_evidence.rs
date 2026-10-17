@@ -114,7 +114,7 @@ impl FailureTriageReplayEvidence {
         validate_frame_bounds(&recorded_event_frames)?;
 
         let failure = divergence_failure_from_logs(&expected, &reproduced)?;
-        let comparison = compare_event_log_determinism(&expected, &reproduced);
+        let comparison = compare_event_log_determinism(&expected, &reproduced)?;
         let mismatch = comparison.mismatch().ok_or_else(|| {
             scenario_serialization_error("paired divergence logs have equal causal projections")
         })?;
@@ -551,7 +551,7 @@ impl FailureSourceWire {
                 node,
                 detail,
             } => FailureClusterReportFailure::property(FailurePropertyViolationRecord::new(
-                HostAssertionViolation {
+                HostAssertionViolation::from_owned_fields(crate::HostAssertionViolationFields {
                     assertion,
                     message,
                     quantifier,
@@ -561,8 +561,8 @@ impl FailureSourceWire {
                     node,
                     detail,
                     reproduction_artifact,
-                },
-            )),
+                })?,
+            )?),
             Self::Divergence {
                 raw_index,
                 node,
@@ -674,7 +674,7 @@ fn divergence_failure_from_logs(
     expected: &[SchedulerEventLogEntry],
     reproduced: &[SchedulerEventLogEntry],
 ) -> Result<FailureClusterReportFailure, EngineError> {
-    let comparison = compare_event_log_determinism(expected, reproduced);
+    let comparison = compare_event_log_determinism(expected, reproduced)?;
     let mismatch = comparison.mismatch().ok_or_else(|| {
         scenario_serialization_error("paired divergence logs have equal causal projections")
     })?;

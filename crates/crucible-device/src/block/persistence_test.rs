@@ -201,3 +201,32 @@ fn transformation_evidence_retains_every_contributor_until_drained() {
     assert_eq!(graph.drain_transformation_evidence().len(), 2);
     assert!(graph.transformation_evidence().is_empty());
 }
+
+#[test]
+fn restore_slot_admission_follows_graph_checks_and_precedes_collection() {
+    let mut graph = BlockPersistenceGraph::new();
+    graph
+        .admit_request(&[(0, fragment(1, 0, 0)), (1, fragment(1, 1, 512))], 0, &[])
+        .unwrap();
+    let mut purposes = Vec::new();
+    graph
+        .validate_with_admission(&mut |purpose| {
+            purposes.push(purpose);
+            Err("slot set refused")
+        })
+        .unwrap_err();
+    assert_eq!(
+        purposes,
+        [crate::DeviceSnapshotAllocation::ValidationSequences { entries: 2 }]
+    );
+
+    graph.edge_limit = 0;
+    purposes.clear();
+    graph
+        .validate_with_admission(&mut |purpose| {
+            purposes.push(purpose);
+            Err("slot set refused")
+        })
+        .unwrap_err();
+    assert!(purposes.is_empty());
+}

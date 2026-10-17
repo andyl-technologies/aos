@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn rendezvous_cap_uses_next_shared_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let rendezvous =
         SchedulerRendezvous::every(SimDuration { ticks: 5 }).expect("interval is nonzero");
 
@@ -38,6 +41,9 @@ fn rendezvous_cap_uses_next_shared_boundary() {
 
 #[test]
 fn rendezvous_shared_cap_is_frontier_based_not_node_local() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let rendezvous =
         SchedulerRendezvous::every(SimDuration { ticks: 5 }).expect("interval is nonzero");
 
@@ -53,6 +59,9 @@ fn rendezvous_shared_cap_is_frontier_based_not_node_local() {
 
 #[test]
 fn rendezvous_rejects_zero_interval() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let error = SchedulerRendezvous::every(SimDuration { ticks: 0 })
         .expect_err("zero rendezvous interval cannot make progress");
 
@@ -62,6 +71,9 @@ fn rendezvous_rejects_zero_interval() {
 
 #[test]
 fn single_scheduler_rendezvous_caps_without_decision_or_idle() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "rendezvous-cap-no-event",
         8,
@@ -97,6 +109,9 @@ fn single_scheduler_rendezvous_caps_without_decision_or_idle() {
 
 #[test]
 fn empty_rendezvous_quantum_does_not_advance_decision_rng_cursor() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "rendezvous-cap-no-rng",
         8,
@@ -133,6 +148,9 @@ fn empty_rendezvous_quantum_does_not_advance_decision_rng_cursor() {
 
 #[test]
 fn rendezvous_frequency_does_not_change_delivery_order_or_configuration() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let base = SchedulerLivenessScenario::from_canonical_material(

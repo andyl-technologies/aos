@@ -1,6 +1,6 @@
 //! QEMU child shutdown escalation.
 //!
-//! This module owns the host-side ladder fixed by RFC-0010 protocol shutdown:
+//! This module owns the bounded host-side protocol shutdown ladder:
 //! send the plugin `Quit`, issue QMP `quit`, send `SIGTERM`, send `SIGKILL`,
 //! then reap the child. The runner is target-agnostic so unit tests can model
 //! unresponsive guests without spawning QEMU, while [`UnixQemuChildShutdownTarget`]
@@ -403,14 +403,25 @@ where
     }
 }
 
+/// Borrows an actual owned kernel wait handle; process identifiers are insufficient.
+pub(crate) trait OwnedChildWait {
+    fn try_wait_owned(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+}
+
+impl OwnedChildWait for Child {
+    fn try_wait_owned(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.try_wait()
+    }
+}
+
 pub(crate) fn wait_child(
-    child: &mut Child,
+    child: &mut impl OwnedChildWait,
     timeout: Duration,
 ) -> Result<QemuChildWait, QemuShutdownTargetError> {
     let step = Duration::from_millis(1);
     let mut waited = Duration::ZERO;
     loop {
-        match child.try_wait() {
+        match child.try_wait_owned() {
             Ok(Some(_status)) => return Ok(QemuChildWait::Exited),
             Ok(None) if waited >= timeout => return Ok(QemuChildWait::StillRunning),
             Ok(None) => {

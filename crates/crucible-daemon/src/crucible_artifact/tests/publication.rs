@@ -12,6 +12,9 @@ use crucible_campaign::{
 };
 
 fn prepared_finding_triage_logs() -> (Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>) {
+    let _scope = crucible::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite triage fixture metadata: {error}"));
+
     let node = NodeId {
         name: String::from("prepared-finding-triage"),
     };
@@ -21,14 +24,18 @@ fn prepared_finding_triage_logs() -> (Vec<SchedulerEventLogEntry>, Vec<Scheduler
         0,
         at.clone(),
         "execution-quanta",
-    );
+    )
+    .unwrap_or_else(|error| panic!("expected triage entry: {error}"));
     let reproduced =
-        SchedulerEventLogEntry::execution_budget_exhausted_with_time(0, at, "virtual-time");
+        SchedulerEventLogEntry::execution_budget_exhausted_with_time(0, at, "virtual-time")
+            .unwrap_or_else(|error| panic!("reproduced triage entry: {error}"));
     (vec![expected], vec![reproduced])
 }
 
 #[test]
 fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")
         .scenario;
@@ -53,6 +60,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     repository
         .publish_scenario_artifact(
@@ -624,9 +632,13 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             component: "missing measurement replay evidence"
         })
     ));
-    let mut tampered_reduced_leaf = reduced_leaf
+    let reduced_leaf_bytes = reduced_leaf
         .canonical_bytes()
         .expect("encode reduced-candidate leaf");
+    let mut tampered_reduced_leaf = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut tampered_reduced_leaf, reduced_leaf_bytes.len() + 1)
+        .unwrap_or_else(|source| panic!("tampered evidence fixture admission: {source}"));
+    tampered_reduced_leaf.extend_from_slice(&reduced_leaf_bytes);
     tampered_reduced_leaf.push(0);
     assert!(
         executor_store
@@ -1146,6 +1158,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         panic!("finding attempt should be accepted")
     };
     let queued = supervisor.next_queued().expect("queued finding attempt");
+    queued.begin_test_publication();
     let checkpoint_directory = tempfile::tempdir().expect("checkpoint directory");
     let checkpoints = ExactCheckpointStore::new(
         Arc::new(DirectoryBlobBackend::new(
@@ -1153,8 +1166,13 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             checkpoint_directory.path(),
         )),
         1024 * 1024,
+        repository.ram_retention_authority(),
     )
-    .expect("checkpoint store");
+    .expect("checkpoint store")
+    .with_ram_root_resources(
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite component RAM-root credit"),
+    );
     let semantic = PreparedSemanticAttemptResult::new(
         observation_candidate,
         current_measurement_evidence,
@@ -1280,6 +1298,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
 
 #[test]
 fn finding_candidate_publication_waits_for_both_replay_passes() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")
         .scenario;
@@ -1336,6 +1356,7 @@ fn finding_candidate_publication_waits_for_both_replay_passes() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
     let mut calls = 0;

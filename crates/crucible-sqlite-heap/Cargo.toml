@@ -1,0 +1,13 @@
+[package]
+name = "crucible-sqlite-heap"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+libsqlite3-sys = { version = "0.30.1", features = ["bundled_bindings"] }
+thiserror = { workspace = true }

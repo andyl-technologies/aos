@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 T-API-5 open-set payload model.
+//! Checks the extensible canonical API payload model.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
@@ -99,6 +99,8 @@ fn event_payload_conversion_reuses_event_log_catalog() {
 }
 
 fn assert_event_payload_conversion_reuses_event_log_catalog() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite open-set event fixture: {error}"));
     let entry = condition_payload_entry_for_test(
         9,
         VirtualTime { ticks: 17 },
@@ -106,7 +108,8 @@ fn assert_event_payload_conversion_reuses_event_log_catalog() {
             stream: RngStreamId::from_name("api-open-set"),
             value: 41,
         })),
-    );
+    )
+    .unwrap_or_else(|error| panic!("canonical admitted fixture event: {error}"));
 
     let event = open_set_event_envelope_from_entry(&entry);
     assert_eq!(event.sequence, entry.sequence());

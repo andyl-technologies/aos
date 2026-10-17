@@ -72,6 +72,7 @@ pub(super) fn encode_attempt_state(
             execution,
             checkpoint,
             promotion_basis,
+            source_transfer,
             ..
         } => {
             payload.push(6);
@@ -79,6 +80,7 @@ pub(super) fn encode_attempt_state(
             payload.extend_from_slice(&execution.as_bytes());
             push_bytes(&mut payload, checkpoint.to_text().as_bytes());
             encode_checkpoint_promotion_basis(&mut payload, promotion_basis);
+            encode_source_transfer(&mut payload, source_transfer);
         }
         AttemptRuntimeState::CheckpointPromoting {
             daemon_epoch,
@@ -233,6 +235,7 @@ pub(super) fn decode_attempt_state(
             execution,
             checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
             promotion_basis: decode_checkpoint_promotion_basis(&mut cursor)?,
+            source_transfer: decode_source_transfer(&mut cursor)?,
         },
         7 => AttemptRuntimeState::CheckpointPromoting {
             execution_basis,
@@ -278,6 +281,65 @@ pub(super) fn decode_attempt_state(
     }
     cursor.finish()?;
     Ok((key, state))
+}
+
+fn encode_source_transfer(payload: &mut Vec<u8>, transfer: Option<SourceTransferState>) {
+    let Some(transfer) = transfer else {
+        payload.push(0);
+        return;
+    };
+    payload.push(match transfer.phase() {
+        SourceTransferPhase::Prepared => 1,
+        SourceTransferPhase::Canceled => 2,
+        SourceTransferPhase::Released { .. } => 3,
+    });
+    let intent = transfer.intent();
+    payload.extend_from_slice(&intent.operation.as_bytes());
+    payload.extend_from_slice(&intent.destination.as_bytes());
+    payload.extend_from_slice(&intent.namespace.as_bytes());
+    payload.extend_from_slice(&intent.offer_generation.to_be_bytes());
+    payload.extend_from_slice(&intent.durable_placements.to_be_bytes());
+    if let SourceTransferPhase::Released {
+        readiness,
+        ownership_generation,
+    } = transfer.phase()
+    {
+        payload.extend_from_slice(&readiness.as_bytes());
+        payload.extend_from_slice(&ownership_generation.to_be_bytes());
+    }
+}
+
+fn decode_source_transfer(
+    cursor: &mut RecordCursor<'_>,
+) -> Result<Option<SourceTransferState>, AssignmentLedgerError> {
+    let tag = cursor.byte()?;
+    if tag == 0 {
+        return Ok(None);
+    }
+    if !matches!(tag, 1..=3) {
+        return Err(corrupt("source-transfer-phase-tag"));
+    }
+    let intent = SourceTransferIntent {
+        operation: CampaignHash::from_bytes(cursor.fixed()?),
+        destination: DaemonEpoch::from_bytes(cursor.fixed()?)?,
+        namespace: CampaignHash::from_bytes(cursor.fixed()?),
+        offer_generation: u64::from_be_bytes(cursor.fixed()?),
+        durable_placements: u64::from_be_bytes(cursor.fixed()?),
+    };
+    let phase = match tag {
+        1 => SourceTransferPhase::Prepared,
+        2 => SourceTransferPhase::Canceled,
+        3 => SourceTransferPhase::Released {
+            readiness: CampaignHash::from_bytes(cursor.fixed()?),
+            ownership_generation: u64::from_be_bytes(cursor.fixed()?),
+        },
+        _ => return Err(corrupt("source-transfer-phase-tag")),
+    };
+    let state = SourceTransferState { intent, phase };
+    if !state.valid() {
+        return Err(corrupt("source-transfer-invalid-binding"));
+    }
+    Ok(Some(state))
 }
 
 fn encode_optional_finding_candidate(
@@ -601,12 +663,12 @@ pub(super) fn push_bytes(target: &mut Vec<u8>, value: &[u8]) {
     target.extend_from_slice(value);
 }
 
-struct RecordCursor<'a> {
+pub(super) struct RecordCursor<'a> {
     remaining: &'a [u8],
 }
 
 impl<'a> RecordCursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
+    pub(super) const fn new(bytes: &'a [u8]) -> Self {
         Self { remaining: bytes }
     }
 
@@ -619,22 +681,22 @@ impl<'a> RecordCursor<'a> {
         Ok(value)
     }
 
-    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], AssignmentLedgerError> {
+    pub(super) fn fixed<const N: usize>(&mut self) -> Result<[u8; N], AssignmentLedgerError> {
         self.take(N)?
             .try_into()
             .map_err(|_| corrupt("record-fixed-width"))
     }
 
-    fn byte(&mut self) -> Result<u8, AssignmentLedgerError> {
+    pub(super) fn byte(&mut self) -> Result<u8, AssignmentLedgerError> {
         Ok(self.fixed::<1>()?[0])
     }
 
-    fn bytes(&mut self) -> Result<&'a [u8], AssignmentLedgerError> {
+    pub(super) fn bytes(&mut self) -> Result<&'a [u8], AssignmentLedgerError> {
         let length = u32::from_be_bytes(self.fixed()?) as usize;
         self.take(length)
     }
 
-    fn require(&mut self, expected: &[u8]) -> Result<(), AssignmentLedgerError> {
+    pub(super) fn require(&mut self, expected: &[u8]) -> Result<(), AssignmentLedgerError> {
         if self.take(expected.len())? == expected {
             Ok(())
         } else {
@@ -642,7 +704,7 @@ impl<'a> RecordCursor<'a> {
         }
     }
 
-    fn finish(self) -> Result<(), AssignmentLedgerError> {
+    pub(super) fn finish(self) -> Result<(), AssignmentLedgerError> {
         if self.remaining.is_empty() {
             Ok(())
         } else {

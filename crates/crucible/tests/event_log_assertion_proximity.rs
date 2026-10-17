@@ -25,6 +25,9 @@ use crucible::{
 
 #[test]
 fn assertion_proximity_entries_are_observational_and_projected() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let entry = proximity_entry(0, 2, "counter-reaches-ten", 3);
 
     assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
@@ -40,7 +43,11 @@ fn assertion_proximity_entries_are_observational_and_projected() {
     assert_eq!(entry.event_payload().u128("distance"), Some(3));
     assert_eq!(entry.event_payload().u64("distance"), None);
     assert!(entry.class_matches_catalog());
-    assert!(entry.has_valid_content_hash());
+    assert!(
+        entry
+            .has_valid_content_hash()
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+    );
 
     let projection = event_log_assertion_proximity_projection(std::slice::from_ref(&entry));
     assert_eq!(projection.len(), 1);
@@ -65,6 +72,9 @@ fn assertion_proximity_entries_are_observational_and_projected() {
 
 #[test]
 fn assertion_proximity_is_excluded_from_causal_determinism() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let without_proximity = vec![rng_entry(0, 1), boundary_entry(1, 3)];
     let with_proximity = vec![
         rng_entry(0, 1),
@@ -73,14 +83,25 @@ fn assertion_proximity_is_excluded_from_causal_determinism() {
     ];
 
     assert_eq!(
-        event_log_causal_projection(&without_proximity).canonical_bytes(),
-        event_log_causal_projection(&with_proximity).canonical_bytes()
+        event_log_causal_projection(&without_proximity)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .canonical_bytes(),
+        event_log_causal_projection(&with_proximity)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .canonical_bytes()
     );
-    assert!(compare_event_log_determinism(&without_proximity, &with_proximity).passes());
+    assert!(
+        compare_event_log_determinism(&without_proximity, &with_proximity)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .passes()
+    );
 }
 
 #[test]
 fn assertion_proximity_fingerprint_uses_minimum_distance_per_assertion() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let worse = vec![proximity_entry(0, 1, "counter-reaches-ten", 7)];
     let better = vec![proximity_entry(0, 2, "counter-reaches-ten", 3)];
     let same_minimum_later = vec![proximity_entry(0, 99, "counter-reaches-ten", 3)];
@@ -109,6 +130,9 @@ fn assertion_proximity_fingerprint_uses_minimum_distance_per_assertion() {
 
 #[test]
 fn assertion_proximity_minimums_are_bucketed_by_quantifier_and_node() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let sometimes = proximity_entry(0, 1, "shared", 3);
     let eventually_worse =
         proximity_entry_with(1, 2, "shared", AssertionQuantifierKind::Eventually, 9, None);
@@ -158,6 +182,9 @@ fn assertion_proximity_minimums_are_bucketed_by_quantifier_and_node() {
 
 #[test]
 fn assertion_proximity_distance_serializes_losslessly_above_u64_max() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let wide_distance = u128::from(u64::MAX) + 1;
     let entry = proximity_entry(0, 1, "wide-distance", wide_distance);
 
@@ -181,6 +208,9 @@ fn assertion_proximity_distance_serializes_losslessly_above_u64_max() {
 
 #[test]
 fn assertion_proximity_fingerprint_is_checkpoint_feedback_from_log_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let log = vec![
         proximity_entry(0, 1, "counter-reaches-ten", 7),
         proximity_entry(1, 2, "counter-reaches-ten", 3),
@@ -211,6 +241,9 @@ fn assertion_proximity_fingerprint_is_checkpoint_feedback_from_log_projection() 
 
 #[test]
 fn scheduler_appends_report_proximities_to_unified_event_log() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "counter-reaches-ten",
         Property::Sometimes {
@@ -277,6 +310,9 @@ fn scheduler_appends_report_proximities_to_unified_event_log() {
 
 #[test]
 fn graph_cache_snapshot_stamps_checkpoint_assertion_proximity_from_event_log_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
@@ -372,6 +408,7 @@ fn proximity_entry_with(
         node,
     );
     crucible::test_support::condition_observation_entry_for_test(sequence, &event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn assertion(id: &str, property: Property) -> AssertionDef {
@@ -421,6 +458,7 @@ fn memory_sample(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntr
         value,
     );
     crucible::test_support::condition_observation_entry_for_test(sequence, &event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn node(name: &str) -> NodeId {
@@ -442,6 +480,7 @@ fn rng_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
             value: 41,
         })),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -450,6 +489,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn time(ticks: u64) -> VirtualTime {

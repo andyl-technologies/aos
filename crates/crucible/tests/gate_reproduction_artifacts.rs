@@ -19,6 +19,9 @@ use crucible::{
 #[test]
 fn gate_findings_emit_same_artifact_for_interactive_and_search_paths() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("finding-artifact")?;
     let scenario = scenario_form(&world)?;
     let root = Configuration::genesis(scenario.scenario_def());
@@ -85,6 +88,9 @@ fn gate_findings_emit_same_artifact_for_interactive_and_search_paths() -> Result
 
 #[test]
 fn gate_fuzz_and_retained_corpus_artifacts_replay_without_campaign() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let family = fuzz_family()?;
     let fuzz = family.fuzz_coverage_guided(
         CoverageGuidedFuzzConfig::new(Seed::from_u64(0xf17a), 2),
@@ -232,11 +238,13 @@ fn coverage_feedback(
         crucible::test_support::condition_observation_entry_for_test(
             0,
             &ObservableEvent::coverage_block(icount(10), node.clone(), guest_pc, 0x20),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_observation_entry_for_test(
             1,
             &ObservableEvent::coverage_marker(icount(11), node, marker(marker_name)),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     EventLogCoverageFeedback::from_event_log(&log)
 }

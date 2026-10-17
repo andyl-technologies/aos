@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn idle_fast_forward_jumps_to_exact_timer_wake_without_schedule_decision() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-fast-forward-timer",
         8,
@@ -43,6 +46,9 @@ fn idle_fast_forward_jumps_to_exact_timer_wake_without_schedule_decision() {
 
 #[test]
 fn idle_effective_clock_uses_wake_time_and_does_not_constrain_peer_behind_it() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let runner = scheduler_node("runner", SchedulingNodeKind::Vm);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "idle-effective-clock-peer",
@@ -99,6 +105,9 @@ fn idle_effective_clock_uses_wake_time_and_does_not_constrain_peer_behind_it() {
 
 #[test]
 fn idle_fast_forward_uses_earliest_pending_delivery_as_wake() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("idle", SchedulingNodeKind::Vm);
     let producer = scheduler_node("peer", SchedulingNodeKind::Vm);
     let due = backend_event(17, &consumer, &producer, 1, b"wake");
@@ -126,6 +135,9 @@ fn idle_fast_forward_uses_earliest_pending_delivery_as_wake() {
 
 #[test]
 fn idle_fast_forward_clamps_exact_wake_to_time_limit() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-fast-forward-limit",
         8,
@@ -150,6 +162,9 @@ fn idle_fast_forward_clamps_exact_wake_to_time_limit() {
 
 #[test]
 fn idle_without_wake_keeps_current_effective_clock_and_produces_no_advance() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "idle-fast-forward-no-wake",
         8,

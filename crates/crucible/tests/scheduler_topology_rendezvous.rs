@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn activation_rendezvous_caps_at_fault_time_not_fixed_tick() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let activation_time = instant(7);
@@ -51,6 +54,9 @@ fn activation_rendezvous_caps_at_fault_time_not_fixed_tick() {
 
 #[test]
 fn timed_topology_change_applies_after_activation_before_next_pick() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let activation_time = instant(7);
@@ -102,6 +108,9 @@ fn timed_topology_change_applies_after_activation_before_next_pick() {
 
 #[test]
 fn timed_topology_change_continues_after_old_horizon_before_activation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let activation_time = instant(7);
@@ -153,6 +162,9 @@ fn timed_topology_change_continues_after_old_horizon_before_activation() {
 
 #[test]
 fn timed_topology_change_advances_idle_no_wake_node_to_activation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let activation_time = instant(7);
@@ -186,6 +198,9 @@ fn timed_topology_change_advances_idle_no_wake_node_to_activation() {
 
 #[test]
 fn ready_timed_change_keeps_sequence_order_with_immediate_change() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let activation_time = instant(7);
@@ -230,6 +245,9 @@ fn ready_timed_change_keeps_sequence_order_with_immediate_change() {
 
 #[test]
 fn timed_topology_change_waits_until_all_nodes_reach_activation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let alpha = scheduler_node("alpha");
     let beta = scheduler_node("beta");

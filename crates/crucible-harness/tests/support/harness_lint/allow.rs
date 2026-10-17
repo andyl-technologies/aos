@@ -187,7 +187,9 @@ pub(super) fn allow_attribute_rules(normalized: &str) -> Vec<&'static str> {
         for lint in allow_group
             .split(',')
             .map(str::trim)
-            .filter(|lint| !lint.is_empty())
+            // Rust's reason metadata explains the attribute; it does not
+            // authorize another lint suppression.
+            .filter(|lint| !lint.is_empty() && !lint.starts_with("reason="))
         {
             let rule = match lint {
                 "clippy::disallowed_types" => "clippy-disallowed-type",

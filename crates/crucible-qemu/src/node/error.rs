@@ -3,7 +3,8 @@
 use std::fmt;
 use std::time::Duration;
 
-use crucible::BackendError;
+use crucible::{BackendError, BackendOperationalCause, BackendOperationalFailureKind};
+use crucible_linux_resource::host_supervision::{HostOperationState, HostSupervisionError};
 use thiserror::Error;
 
 use crate::{
@@ -111,6 +112,32 @@ impl QemuNodeChannelError {
 /// Reports a failure returned by the scheduler-facing QEMU node wrapper.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuNodeError {
+    /// Capture failed before the separately observed process cleanup.
+    #[error("{source}; checkpoint cleanup refusal: {cleanup:?}")]
+    CheckpointCleanup {
+        /// Initiating failure, retained as the actual typed carrier.
+        #[source]
+        source: Box<QemuNodeError>,
+        /// Secondary cleanup failure; absence means that cleanup succeeded.
+        cleanup: Option<Box<QemuNodeError>>,
+    },
+    /// Capture work failed before its independently checked original postcut.
+    #[cfg(target_os = "linux")]
+    #[error("{source}; checkpoint original postcut: {original_after}")]
+    CheckpointPostcut {
+        /// Initiating node failure, preserved without diagnostic replacement.
+        #[source]
+        source: Box<QemuNodeError>,
+        /// Same retained original's separate post-operation refusal.
+        original_after: HostSupervisionError,
+    },
+    /// The actual checkpoint original or its matched native receiver refused.
+    #[cfg(target_os = "linux")]
+    #[error("checkpoint original refused: {source}")]
+    CheckpointOriginal {
+        /// Typed first cause and independent original postcut.
+        source: super::exact_snapshot::capture_original::CheckpointOriginalError,
+    },
     /// A role-specific child channel failed an operation.
     #[error("{plane} channel operation {operation} failed: {message}")]
     Channel {
@@ -120,6 +147,15 @@ pub enum QemuNodeError {
         operation: &'static str,
         /// Deterministic failure detail.
         message: String,
+    },
+    /// RAM source cleanup failed while its service remains retained.
+    #[error("{operation} failed: {source}")]
+    RamSourceCleanup {
+        /// Cleanup boundary that observed the original source failure.
+        operation: &'static str,
+        /// Same typed worker cause or direct cleanup refusal.
+        #[source]
+        source: crate::QemuAsyncDriverHealthError,
     },
     /// The owned-child shutdown ladder failed.
     #[error("owned QEMU child shutdown failed: {source}")]
@@ -261,6 +297,18 @@ impl QemuNodeError {
         }
     }
 
+    /// Retains a source cleanup cause without replacing its worker allocation.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn from_ram_source_cleanup(
+        operation: &'static str,
+        source: crate::ram_source::QemuRamSourceError,
+    ) -> Self {
+        Self::RamSourceCleanup {
+            operation,
+            source: crate::QemuAsyncDriverHealthError::ram_source(source),
+        }
+    }
+
     /// Attaches scheduler-node context to a shutdown escalation error.
     #[must_use]
     pub const fn from_shutdown(source: QemuShutdownError) -> Self {
@@ -318,6 +366,32 @@ impl QemuNodeError {
 
 impl From<QemuNodeError> for BackendError {
     fn from(error: QemuNodeError) -> Self {
+        let error = match error {
+            QemuNodeError::AsyncDriver {
+                source: QemuAsyncDriverError::OperationalHealth(source),
+            }
+            | QemuNodeError::RamSourceCleanup { source, .. } => {
+                return Self::RetainedOperationalFailure {
+                    kind: source.operational_kind(),
+                    source: source.into_backend_cause(),
+                };
+            }
+            QemuNodeError::AsyncDriver {
+                source: QemuAsyncDriverError::Runtime(runtime),
+            } => {
+                if let Some(source) = runtime.operational_supervision_source() {
+                    return Self::RetainedOperationalFailure {
+                        kind: operational_failure_kind(source),
+                        source: BackendOperationalCause::new(runtime),
+                    };
+                }
+                QemuNodeError::AsyncDriver {
+                    source: QemuAsyncDriverError::Runtime(runtime),
+                }
+            }
+            error => error,
+        };
+
         match error {
             QemuNodeError::ResourceLimit {
                 field,
@@ -336,6 +410,32 @@ impl From<QemuNodeError> for BackendError {
                 message: error.to_string(),
             },
         }
+    }
+}
+
+fn operational_failure_kind(source: HostSupervisionError) -> BackendOperationalFailureKind {
+    match source {
+        HostSupervisionError::DeadlineExpired { .. } => BackendOperationalFailureKind::Expired,
+        HostSupervisionError::Terminal {
+            state: HostOperationState::Canceled,
+        } => BackendOperationalFailureKind::Canceled,
+        HostSupervisionError::Terminal {
+            state: HostOperationState::Expired,
+        } => BackendOperationalFailureKind::Expired,
+        HostSupervisionError::Terminal { .. } | HostSupervisionError::BorrowedOperation => {
+            BackendOperationalFailureKind::Terminal
+        }
+        HostSupervisionError::InvalidBudget
+        | HostSupervisionError::UnboundedInfrastructure { .. } => {
+            BackendOperationalFailureKind::InvalidPolicy
+        }
+        HostSupervisionError::RevisionConflict { .. } => {
+            BackendOperationalFailureKind::RevisionConflict
+        }
+        HostSupervisionError::CapacityExhausted => BackendOperationalFailureKind::CapacityExhausted,
+        HostSupervisionError::IdentityExhausted => BackendOperationalFailureKind::IdentityExhausted,
+        HostSupervisionError::ProgressRegressed => BackendOperationalFailureKind::ProgressRegressed,
+        HostSupervisionError::Unavailable => BackendOperationalFailureKind::Unavailable,
     }
 }
 

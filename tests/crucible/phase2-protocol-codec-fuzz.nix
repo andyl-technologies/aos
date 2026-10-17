@@ -7,7 +7,11 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-protocol/src/lib.rs
+    ../../crates/crucible-protocol/src/plugin_observation.rs
+    ../../crates/crucible-protocol/src/control_lifecycle.rs
+  ]);
   codecFuzzLib = builtins.readFile ../../crates/crucible-protocol/src/codec_fuzz.rs;
   codecFuzzTest = builtins.readFile ../../crates/crucible-protocol/tests/codec_fuzz.rs;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;

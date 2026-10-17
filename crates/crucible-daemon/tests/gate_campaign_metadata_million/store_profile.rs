@@ -159,10 +159,10 @@ impl ImmutableBlobBackend for ProfileBackend {
         }
         drop(measured);
 
-        Ok(BlobHandle::new(Arc::new(ProfileSource {
+        Ok(BlobHandle::new(ProfileSource {
             handle,
             measured: Arc::clone(&self.measured),
-        })))
+        }))
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {

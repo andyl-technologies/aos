@@ -200,7 +200,7 @@ pub enum DeviceError {
 
     /// A computed completion would land in the consumer's past.
     ///
-    /// The fail-loud guard of RFC §15.1.1: a response whose `delivery_icount` is
+    /// A response whose `delivery_icount` is
     /// strictly below the sub-node's current icount can never be delivered at
     /// its exact icount and would corrupt the global `delivery_icount` order
     /// ([IO-31], [IO-34]). The sub-node MUST fail loudly here rather than
@@ -300,7 +300,7 @@ pub enum DeviceError {
 
     /// A network link's base latency is not strictly positive.
     ///
-    /// RFC §15.4.2 / [IO-33]: a link's base latency MUST be strictly positive and
+    /// A link's base latency MUST be strictly positive and
     /// at or above the configured minimum link-latency floor, because the base
     /// latency is exactly what supplies the conservative lookahead bound to the
     /// scheduler ([SCHED-6], [SCHED-20]). A zero-latency link would give a peer
@@ -319,7 +319,7 @@ pub enum DeviceError {
 
     /// A reorder/jitter shift would deliver a frame into the consumer's past.
     ///
-    /// The fail-loud path of RFC §15.4.2 / [IO-34]: a reorder fault is a
+    /// A reorder fault is a
     /// per-frame seeded delivery-icount shift that may move one frame's delivery
     /// past another's, but every resulting `delivery_icount` MUST stay within the
     /// consumer's future at the instant the frame is enqueued ([SHM-35]). A

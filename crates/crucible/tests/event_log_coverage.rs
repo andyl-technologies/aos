@@ -40,6 +40,7 @@ fn icount(retired: u64) -> Icount {
 
 fn observation_entry(sequence: u64, event: &ObservableEvent) -> SchedulerEventLogEntry {
     crucible::test_support::condition_observation_entry_for_test(sequence, event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn rng_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {
@@ -51,6 +52,7 @@ fn rng_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {
             value,
         })),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -59,6 +61,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn diagnostic_entry(sequence: u64, ticks: u64, name: &str) -> SchedulerEventLogEntry {
@@ -71,10 +74,14 @@ fn diagnostic_entry(sequence: u64, ticks: u64, name: &str) -> SchedulerEventLogE
             std::collections::BTreeMap::new(),
         )),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 #[test]
 fn coverage_projection_reads_basic_blocks_and_named_markers_from_one_log() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let block = ObservableEvent::coverage_block(icount(11), node("guest-a"), 0x4000, 0x20);
     let named = ObservableEvent::coverage_marker(icount(12), node("guest-a"), marker("joined"));
     let duplicate_block =
@@ -143,6 +150,9 @@ fn coverage_projection_reads_basic_blocks_and_named_markers_from_one_log() {
 
 #[test]
 fn coverage_entries_project_as_observational_coverage_payloads() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let block = ObservableEvent::coverage_block(icount(21), node("guest-b"), 0x5000, 0x30);
     let named = ObservableEvent::coverage_marker(icount(22), node("guest-b"), marker("ready"));
     let block_entry = observation_entry(0, &block);
@@ -179,6 +189,9 @@ fn coverage_entries_project_as_observational_coverage_payloads() {
 
 #[test]
 fn coverage_fingerprint_is_checkpoint_feedback_from_log_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let block = ObservableEvent::coverage_block(icount(31), node("guest-c"), 0x6000, 0x10);
     let named = ObservableEvent::coverage_marker(icount(32), node("guest-c"), marker("phase-2"));
     let log = vec![observation_entry(0, &block), observation_entry(1, &named)];
@@ -202,6 +215,9 @@ fn coverage_fingerprint_is_checkpoint_feedback_from_log_projection() {
 
 #[test]
 fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
@@ -273,6 +289,9 @@ fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
 
 #[test]
 fn delayed_checkpoint_closure_preserves_cached_coverage_fingerprint() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
@@ -329,6 +348,9 @@ fn delayed_checkpoint_closure_preserves_cached_coverage_fingerprint() {
 
 #[test]
 fn coverage_projection_is_excluded_from_causal_determinism_comparison() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let expected = vec![
         rng_entry(0, 1, 7),
         observation_entry(
@@ -345,7 +367,8 @@ fn coverage_projection_is_excluded_from_causal_determinism_comparison() {
         ),
         boundary_entry(2, 3),
     ];
-    let comparison = compare_event_log_determinism(&expected, &reproduced);
+    let comparison = compare_event_log_determinism(&expected, &reproduced)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert!(comparison.passes());
     assert_ne!(

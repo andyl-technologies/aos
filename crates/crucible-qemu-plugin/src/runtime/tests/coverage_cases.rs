@@ -14,6 +14,8 @@ fn install_coverage_on_owns_callback_model_registration() {
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
 
+    reservation.startup_source_model = Some(fixture.startup_model());
+
     let runtime = install_live_runtime(
         0xC0E0,
         fixture.coverage_args(),
@@ -27,7 +29,12 @@ fn install_coverage_on_owns_callback_model_registration() {
         CALLBACK_MODEL_REGISTERED_PLUGIN_ID.load(Ordering::SeqCst),
         0xC0E0
     );
-    assert!(runtime._callbacks.coverage_is_registered_for_test());
+    assert!(
+        runtime
+            .resources()
+            ._callbacks
+            .coverage_is_registered_for_test()
+    );
     drop(runtime);
     join_host(host);
 }

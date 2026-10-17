@@ -45,6 +45,7 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
                 u64::MAX,
             )),
             Arc::new(MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
         );
         let resolver = RecordingPeerResolver {
             observed: observed_tx,
@@ -131,6 +132,7 @@ fn authenticated_runtime_control_binds_peer_policy_and_exact_response() {
                 u64::MAX,
             )),
             Arc::new(MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
         );
         let resolver = RecordingPeerResolver {
             observed: observed_tx,
@@ -186,6 +188,7 @@ fn authenticated_connection_rejects_an_invalid_request_ceiling_before_policy() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let error = serve_authenticated_repository_campaign_connection_with_controls_limits(
         &mut server,
@@ -286,6 +289,7 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let direct = CampaignClient::new(RepositoryCampaignService::new(&direct_repository, DenyAll));
     assert!(matches!(
@@ -372,6 +376,7 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
         let repository = CampaignRepository::new(
             Arc::new(MemoryBlobBackend::new("campaign-loopback-auth", u64::MAX)),
             Arc::new(MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
         );
         let service = RepositoryCampaignService::new(&repository, DenyAll);
         for _ in 0..13 {
@@ -471,6 +476,7 @@ fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let (campaign, snapshot, _base_finding, base_bundle) =
         crate::campaign_gc::publish_retained_finding_fixture(&repository);
@@ -681,6 +687,7 @@ fn campaign_loopback_client_rejects_cross_request_occurrence_object_response() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let (campaign, snapshot, finding, bundle) =
         crate::campaign_gc::publish_retained_finding_fixture(&repository);

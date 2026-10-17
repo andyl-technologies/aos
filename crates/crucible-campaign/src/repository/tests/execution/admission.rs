@@ -546,7 +546,11 @@ fn admission_policy_binding_rejects_forgery_and_survives_policy_activation() {
             reason: "attempt-admission-retention-policy-mismatch"
         })
     ));
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert!(matches!(
         restarted.verify_campaign_closure(forged_content),
         Err(CampaignRepositoryError::Integrity {

@@ -9,8 +9,8 @@ use crucible_cas::content_envelope::ContentChild;
 
 #[test]
 fn production_exact_closure_schema_matches_current_magic() {
-    assert_eq!(PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION, 9);
-    assert_eq!(MANIFEST_MAGIC, b"crucible.production-exact-closure.v9\0");
+    assert_eq!(PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION, 10);
+    assert_eq!(MANIFEST_MAGIC, b"crucible.production-exact-closure.v10\0");
 }
 
 fn hash(label: &[u8]) -> ContentHash {
@@ -29,6 +29,22 @@ fn fixture() -> (
     ExactCheckpointClosureRecord,
     NodeId,
 ) {
+    let topology = crucible_ram::Topology::new(
+        vec![
+            crucible_ram::RegionDescriptor::new("main", crucible_ram::RegionClass::MutableMain, 1)
+                .unwrap_or_else(|error| panic!("fixture RAM region: {error:?}")),
+        ],
+        crucible_ram::Limits::default(),
+    )
+    .unwrap_or_else(|error| panic!("fixture RAM topology: {error:?}"));
+    let region = &topology.regions()[0];
+    let page = crucible_ram::PageDigest::hash(b"x")
+        .unwrap_or_else(|error| panic!("fixture RAM page: {error:?}"));
+    let digest =
+        crucible_ram::region_tree_digest(region.geometry(), crucible_ram::leaf_digest(page));
+    let ram_record =
+        crucible_ram::RootRecord::new(topology, crucible_ram::Scope::Exact, vec![digest])
+            .unwrap_or_else(|error| panic!("fixture RAM root: {error:?}"));
     let overlay_chunks = vec![hash(b"overlay chunk")];
     let overlay_identity = {
         let extents = vec![ExactCheckpointArtifactExtent {
@@ -63,7 +79,6 @@ fn fixture() -> (
             extents: overlay_identity.1,
         },
         exact_ram: ExactCheckpointRamRecord {
-            parent_closure: None,
             device_content_sha256: hash(b"device sha256"),
             device: ExactCheckpointArtifactRecord {
                 identity: hash(b"device"),
@@ -72,33 +87,31 @@ fn fixture() -> (
                 sparse: false,
                 extents: Vec::new(),
             },
-            layers: vec![ExactCheckpointRamLayerRecord {
-                kind: ExactCheckpointRamKind::Direct,
+            paged: ExactCheckpointPagedRamRecord {
+                root_object: ContentId::for_bytes(
+                    ObjectKind::ExactManifest,
+                    1,
+                    b"RAM root realization",
+                )
+                .encode(),
+                logical_root: ContentHash {
+                    bytes: *ram_record.digest().as_bytes(),
+                },
+                root_record: ram_record.encode(),
                 identity: ExactCheckpointIdentity {
                     checkpoint: hash(b"checkpoint"),
                     target: hash(b"target"),
                     frontier: hash(b"frontier"),
                 },
-                parent: None,
-                topology: hash(b"topology"),
-                ram_regions: 1,
-                ram_records: 1,
-                content_sha256: hash(b"ram sha256"),
-                artifact: ExactCheckpointArtifactRecord {
-                    identity: hash(b"ram"),
-                    length: 1,
-                    chunks: vec![hash(b"ram chunk")],
-                    sparse: false,
-                    extents: Vec::new(),
-                },
-            }],
+            },
         },
         manifest_identity: ContentHash::default(),
     };
     let configuration = hash(b"configuration");
     let fault_checkpoint = hash(b"fault checkpoint");
     target.manifest_identity =
-        exact_checkpoint_target_manifest_identity(configuration, fault_checkpoint, &target);
+        exact_checkpoint_target_manifest_identity(configuration, fault_checkpoint, &target)
+            .expect("finite fixture target identity");
     let mut closure = ExactCheckpointClosureRecord {
         scenario: hash(b"scenario"),
         configuration,
@@ -119,6 +132,7 @@ fn fixture() -> (
         objects: Vec::new(),
     };
     closure.objects = manifest_object_identities(&closure)
+        .expect("finite fixture object roster")
         .into_iter()
         .map(|identity| ExactCheckpointObjectRecord {
             identity,
@@ -206,30 +220,34 @@ fn repository_fixture(closure: &ExactCheckpointClosureRecord) -> RepositoryFixtu
             .to_be_bytes(),
     );
     body.extend_from_slice(&1_u32.to_be_bytes());
-    let envelope = ContentEnvelope::new(
-        ROOT_SCHEMA,
-        ROOT_SCHEMA_VERSION,
-        BTreeSet::from([
-            ContentChild::new(MANIFEST_ROLE, manifest_id)
-                .unwrap_or_else(|error| panic!("fixture manifest child: {error:?}")),
-            ContentChild::new(
-                CHOICE_CLOSURE_ROLE,
-                ContentId::for_bytes(
-                    ObjectKind::Observation,
-                    CHOICE_CLOSURE_SCHEMA_VERSION,
-                    b"CCRC\0\0\0\x01\0\0\0\0",
-                ),
-            )
-            .unwrap_or_else(|error| panic!("fixture choice child: {error:?}")),
-            ContentChild::new(
-                index_role(0).unwrap_or_else(|| panic!("fixture index role")),
-                index_id,
-            )
-            .unwrap_or_else(|error| panic!("fixture index child: {error:?}")),
-        ]),
-        body,
-    )
-    .unwrap_or_else(|error| panic!("fixture root envelope: {error:?}"));
+    let mut children = BTreeSet::from([
+        ContentChild::new(MANIFEST_ROLE, manifest_id)
+            .unwrap_or_else(|error| panic!("fixture manifest child: {error:?}")),
+        ContentChild::new(
+            CHOICE_CLOSURE_ROLE,
+            ContentId::for_bytes(
+                ObjectKind::Observation,
+                CHOICE_CLOSURE_SCHEMA_VERSION,
+                b"CCRC\0\0\0\x01\0\0\0\0",
+            ),
+        )
+        .unwrap_or_else(|error| panic!("fixture choice child: {error:?}")),
+        ContentChild::new(
+            index_role(0).unwrap_or_else(|| panic!("fixture index role")),
+            index_id,
+        )
+        .unwrap_or_else(|error| panic!("fixture index child: {error:?}")),
+    ]);
+    for (ordinal, target) in closure.targets.iter().enumerate() {
+        let ram_root = ContentId::parse(&target.exact_ram.paged.root_object)
+            .unwrap_or_else(|error| panic!("fixture RAM root: {error:?}"));
+        children.insert(
+            ContentChild::new(format!("{RAM_ROOT_ROLE_PREFIX}{ordinal:08x}"), ram_root)
+                .unwrap_or_else(|error| panic!("fixture RAM root child: {error:?}")),
+        );
+    }
+    let envelope = ContentEnvelope::new(ROOT_SCHEMA, ROOT_SCHEMA_VERSION, children, body)
+        .unwrap_or_else(|error| panic!("fixture root envelope: {error:?}"));
     let root = ExactCheckpointId::try_from(envelope.content_id(ObjectKind::ExactManifest))
         .unwrap_or_else(|error| panic!("fixture exact-checkpoint id: {error:?}"));
 
@@ -300,9 +318,11 @@ fn semantic_traversal_reads_a_shared_snapshot_once() {
             closure.configuration,
             closure.fault_checkpoint,
             target,
-        );
+        )
+        .expect("finite fixture target identity");
     }
     closure.objects = manifest_object_identities(&closure)
+        .expect("finite fixture object roster")
         .into_iter()
         .map(|identity| ExactCheckpointObjectRecord {
             identity,
@@ -399,7 +419,7 @@ fn verified_node_binds_outer_and_embedded_replay_identities() {
 
     let other_repository = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        ROOT_SCHEMA_VERSION,
         b"other repository root",
     ))
     .unwrap_or_else(|error| panic!("other repository root: {error:?}"));
@@ -436,21 +456,9 @@ fn target_binding_rejects_root_and_child_transplants() {
 }
 
 #[test]
-fn target_binding_rejects_noncontiguous_ram_chain() {
+fn target_binding_rejects_transplanted_logical_ram_root() {
     let (repository, mut closure, node) = fixture();
-    let direct = closure.targets[0].exact_ram.layers[0].clone();
-    closure.targets[0].exact_ram.parent_closure = Some(hash(b"parent closure"));
-    closure.targets[0]
-        .exact_ram
-        .layers
-        .push(ExactCheckpointRamLayerRecord {
-            kind: ExactCheckpointRamKind::Delta,
-            parent: Some(ExactCheckpointIdentity {
-                checkpoint: hash(b"wrong parent"),
-                ..direct.identity
-            }),
-            ..direct
-        });
+    closure.targets[0].exact_ram.paged.logical_root = hash(b"transplanted logical RAM");
     assign_exact_checkpoint_closure_identity(&mut closure)
         .unwrap_or_else(|error| panic!("mutated root: {error:?}"));
 

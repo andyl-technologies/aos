@@ -45,6 +45,7 @@ fn branch_execution_input(
             8 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     repository
         .publish_choice_domain(&domain)
@@ -271,11 +272,13 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
 
 #[test]
 fn restored_guest_branch_drives_the_selected_configuration_after_replay() {
+    let _metadata_scope = component_metadata_scope();
     assert_restored_branch_drives_selected_configuration(true);
 }
 
 #[test]
 fn restored_branch_drives_the_selected_configuration_after_quantum_replay() {
+    let _metadata_scope = component_metadata_scope();
     assert_restored_branch_drives_selected_configuration(false);
 }
 
@@ -379,6 +382,7 @@ fn assert_restored_branch_drives_selected_configuration(guest: bool) {
 
 #[test]
 fn hot_world_runner_honors_an_inherited_quantum_boundary_without_driving() {
+    let _metadata_scope = component_metadata_scope();
     let completed_quanta = 3;
     let stop = StopCondition::ExecutionQuanta(completed_quanta);
     let scenario = crucible::happy_path_scenario()
@@ -474,6 +478,7 @@ fn hot_world_runner_honors_an_inherited_quantum_boundary_without_driving() {
 
 #[test]
 fn hot_world_runner_materializes_a_discrete_typed_branch_from_its_parent() {
+    let _metadata_scope = component_metadata_scope();
     let keep = AlternativeId::from_hash(CampaignHash::derive("hot-world-discrete", b"keep"));
     let replace = AlternativeId::from_hash(CampaignHash::derive("hot-world-discrete", b"replace"));
     let domain = ChoiceDomain::Discrete(
@@ -508,6 +513,7 @@ fn hot_world_runner_materializes_a_discrete_typed_branch_from_its_parent() {
 
 #[test]
 fn observed_hot_fork_factory_preserves_recovery_ownership_for_quarantine() {
+    let _metadata_scope = component_metadata_scope();
     let input = branch_execution_input(
         ChoiceSource::Scheduler {
             producer: String::from("observed-recovery"),
@@ -560,6 +566,7 @@ fn observed_hot_fork_factory_preserves_recovery_ownership_for_quarantine() {
 
 #[test]
 fn packaged_route_quarantines_a_hot_world_when_terminal_result_preparation_fails() {
+    let _metadata_scope = component_metadata_scope();
     let input = branch_execution_input(
         ChoiceSource::Scheduler {
             producer: String::from("terminal-preparation"),
@@ -639,6 +646,7 @@ fn packaged_route_quarantines_a_hot_world_when_terminal_result_preparation_fails
 
 #[test]
 fn hot_world_runner_materializes_an_unsigned_64_bit_branch_from_its_parent() {
+    let _metadata_scope = component_metadata_scope();
     let domain = ChoiceDomain::Integer(
         IntegerDomain::new(
             1,
@@ -667,6 +675,7 @@ fn hot_world_runner_materializes_an_unsigned_64_bit_branch_from_its_parent() {
 
 #[test]
 fn hot_world_runner_materializes_a_scheduler_source_branch_from_its_parent() {
+    let _metadata_scope = component_metadata_scope();
     let input = branch_execution_input(
         ChoiceSource::Scheduler {
             producer: String::from("delivery-order"),
@@ -682,6 +691,7 @@ fn hot_world_runner_materializes_a_scheduler_source_branch_from_its_parent() {
 
 #[test]
 fn hot_world_runner_materializes_a_guest_branch_and_enqueues_its_exact_reply() {
+    let _metadata_scope = component_metadata_scope();
     let declaration = guest_selectable_declaration();
     let input = branch_execution_input(
         declaration.source().clone(),

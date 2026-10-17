@@ -12,6 +12,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use crate::vm_lifecycle::{
+    hot_fork_adoption_count_for_test,
+    prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
+    prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,
+    reset_hot_fork_adoption_count_for_test,
+};
+use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible::model::MeasurementTerminalState;
 use crucible::{
     Configuration, ContentHash, Decision, EventLog, ExecutionFingerprint, FingerprintSample,
@@ -19,13 +26,6 @@ use crucible::{
     ScenarioSelectables, SchedulerEventLogEntry, SchedulerNodeActivity, SchedulerQuiescence,
     SelectionDecision, World, WorldNodeDef,
 };
-use crucible_api::vm_lifecycle::{
-    hot_fork_adoption_count_for_test,
-    prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
-    prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,
-    reset_hot_fork_adoption_count_for_test,
-};
-use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_campaign::{
     AlternativeId, AssignmentId, Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode,
     BooleanDomain, BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId,
@@ -87,11 +87,17 @@ use crate::{
     reconcile_published_attempt_result, stage_prepared_attempt_result,
 };
 
+#[path = "tests/target_operations.rs"]
+mod target_operations;
+
 #[path = "tests/native_acceptance.rs"]
 mod native_acceptance;
 
 #[path = "tests/world_fork_atomicity.rs"]
 mod world_fork_atomicity;
+
+#[path = "tests/operational.rs"]
+mod operational;
 
 #[cfg(feature = "destructive-recovery-faults")]
 const WORLD_FORK_PREFLIGHT_FAILURE_CHILD_ENVIRONMENT: &str =
@@ -147,7 +153,7 @@ impl QemuAttemptOperationalBoundary for ScriptedWorldGuard {
 }
 
 impl QemuAttemptResourceGuard for ScriptedWorldGuard {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         if !self.terminal {
             self.finishes.fetch_add(1, Ordering::SeqCst);
             self.terminal = true;
@@ -159,7 +165,7 @@ impl QemuAttemptResourceGuard for ScriptedWorldGuard {
             })
             .is_ok()
         {
-            return Err(test_realization_error("scripted target cleanup failure"));
+            return Err((test_realization_error("scripted target cleanup failure")).into());
         }
         Ok(())
     }
@@ -550,6 +556,7 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
             event_log_segment_hash: None,
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::default(),
         })
     }
 
@@ -680,7 +687,8 @@ impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
     fn reconcile_execution_disposition(
         &mut self,
         _disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
 }
@@ -908,7 +916,7 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
             .start_events
             .iter()
             .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
+            .sum::<Result<usize, _>>()?;
         Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
             self.configuration.clone(),
             self.start_events.clone(),
@@ -923,7 +931,8 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
     fn reconcile_execution_disposition(
         &mut self,
         _disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
 }
@@ -1214,6 +1223,7 @@ impl QemuHotForkSourceWorldProvider for CleanupOrderedSourceWorldProvider {
 
 #[test]
 fn source_provider_failure_preserves_its_diagnostic_chain() {
+    let _metadata_scope = component_metadata_scope();
     let input = execution_input();
     let observations = ScriptedWorldObservations::new();
     let run_state = tempfile::tempdir().expect("run state");
@@ -1267,6 +1277,12 @@ impl CrucibleExecutionRunner for RecordingFallbackRunner {
         self.reconciliations.fetch_add(1, Ordering::SeqCst);
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
+}
+
+/// Keeps one explicit component metadata bank alive through all scripted owners.
+fn component_metadata_scope() -> crucible::test_support::FixtureDecodeScope {
+    crucible::test_support::fixture_decode_scope(128 * 1024 * 1024)
+        .expect("finite scripted World/configuration/output metadata bank")
 }
 
 fn test_realization_error(error: impl std::fmt::Display) -> QemuVmRealizationError {
@@ -1379,8 +1395,8 @@ fn prepared_test_source_world(
     source_nodes: Vec<crucible_qemu::QemuNode>,
 ) -> Result<
     (
-        Vec<(NodeId, crucible_api::ProductionVmNodeGeneration)>,
-        crucible_api::ProductionVmHotForkSourceWorld,
+        Vec<(NodeId, crate::ProductionVmNodeGeneration)>,
+        crate::ProductionVmHotForkSourceWorld,
     ),
     crucible_api::LifecycleApiError,
 > {
@@ -1493,14 +1509,10 @@ fn execution_context(
     input: &CrucibleAttemptExecution,
     execution_byte: u8,
 ) -> AttemptExecutionContext {
-    AttemptExecutionContext::new(
+    operational::service_context(
         AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("resources"),
-        ExecutionRetentionIntent::Discard,
-        ExecutionCancellation::default(),
-        ExecutionCheckpointRequest::default(),
-        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+        execution_basis(input, execution_byte),
     )
-    .with_runtime_basis(execution_basis(input, execution_byte))
 }
 
 fn branch_replay_guest_pending(
@@ -1522,3 +1534,6 @@ fn branch_replay_guest_pending(
 mod branch_runner;
 #[path = "tests/reconciliation.rs"]
 mod reconciliation;
+
+pub(crate) use native_acceptance::assert_native_atomic_resources_private;
+pub(crate) use native_acceptance::assert_native_sibling_resources_private;

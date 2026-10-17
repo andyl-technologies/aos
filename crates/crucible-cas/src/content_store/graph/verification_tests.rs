@@ -13,9 +13,10 @@ use super::*;
 #[derive(Clone)]
 struct ScriptedObject {
     inventory_length: u64,
-    source: Arc<ScriptedSource>,
+    source: ScriptedSource,
 }
 
+#[derive(Clone)]
 struct ScriptedSource {
     bytes: Arc<[u8]>,
     declared_length: u64,
@@ -218,12 +219,12 @@ fn scripted_object(
         id,
         ScriptedObject {
             inventory_length,
-            source: Arc::new(ScriptedSource {
+            source: ScriptedSource {
                 bytes: Arc::from(bytes),
                 declared_length,
                 maximum_read,
                 fail_at_eof,
-            }),
+            },
         },
     )
 }
@@ -251,6 +252,7 @@ fn verification_admin(
         })
         .collect();
     StoreGraphAdmin {
+        gc_mark_root: None,
         configuration: StoreGraphConfigurationId([0x31; 32]),
         authority_identity: Arc::new(StoreGraphAuthorityIdentity),
         physical,

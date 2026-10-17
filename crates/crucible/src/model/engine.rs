@@ -5,6 +5,11 @@ use super::*;
 /// An engine-spine error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineError {
+    /// A scoped artifact decoder lost its original resource admission.
+    ArtifactDecodeAdmission {
+        /// Original typed resource or accounting refusal.
+        source: crate::owned_decode::DecodeAdmissionError,
+    },
     /// A cached checkpoint is not a fat loadable snapshot.
     CheckpointNotLoadable {
         /// The checkpoint that cannot be loaded.
@@ -551,6 +556,7 @@ pub enum EngineError {
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ArtifactDecodeAdmission { source } => write!(f, "artifact decode admission refused: {source}"),
             Self::CheckpointNotLoadable { kind, .. } => {
                 write!(
                     f,
@@ -869,7 +875,14 @@ impl fmt::Display for EngineError {
     }
 }
 
-impl Error for EngineError {}
+impl Error for EngineError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ArtifactDecodeAdmission { source } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 pub(super) fn load_snapshot(
     configuration: &Configuration,

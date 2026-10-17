@@ -16,7 +16,7 @@ struct ChildResources {
     root_overlay: (u64, u64),
 }
 
-pub(super) fn assert_live_children_are_physically_private(
+pub(crate) fn assert_live_children_are_physically_private(
     cgroup_root: &Path,
     storage_root: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -71,24 +71,32 @@ pub(super) fn assert_live_children_are_physically_private(
     Ok(())
 }
 
-pub(super) fn assert_live_sibling_lanes_are_physically_private(
-    cgroup_root: &Path,
-    storage_root: &Path,
-    lanes: &[String],
+/// Inspects every admitted sibling's real process-private resources.
+///
+/// # Errors
+/// Rejects incomplete process rosters or shared mutable resource identities.
+pub(crate) fn assert_native_sibling_resources_private(
+    lanes: &[(PathBuf, PathBuf)],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if lanes.is_empty() || lanes.len() > 16 {
+        return Err("native sibling inspection requires one to sixteen actual lanes".into());
+    }
     let mut children = Vec::with_capacity(lanes.len());
-    for lane in lanes {
+    for (cgroup, storage) in lanes {
         let mut processes = BTreeSet::new();
-        collect_cgroup_processes(&cgroup_root.join(lane), &mut processes)?;
+        collect_cgroup_processes(cgroup, &mut processes)?;
         let process_list = processes.into_iter().collect::<Vec<_>>();
         let [pid] = process_list.as_slice() else {
-            return Err(format!("sibling lane {lane} must own exactly one QEMU process").into());
+            return Err(format!(
+                "sibling lane {} must own exactly one QEMU process",
+                cgroup.display()
+            )
+            .into());
         };
-        let child = inspect_child(*pid, &storage_root.join(lane))?;
+        let child = inspect_child(*pid, storage)?;
         assert_private_device_arguments(&child)?;
         children.push(child);
     }
-
     for (index, first) in children.iter().enumerate() {
         for second in &children[index + 1..] {
             if first.pid == second.pid

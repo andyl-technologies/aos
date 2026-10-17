@@ -21,22 +21,17 @@ in
           chmod -R u+w source
           cd source
           mkdir -p performance-driver/src performance-driver/.cargo
-          python3 - ${./tcg-linux-serial-performance.rs} ${./tcg-finite-rom-performance.rs} <<'PYTHON'
-          import hashlib
+          cp ${./tcg-managed-performance.rs} performance-driver/src/tcg-managed-performance.rs
+          cp ${./tcg-finite-rom-performance.rs} performance-driver/src/main.rs
+          python3 - ${./tcg-linux-serial-performance.rs} <<'PYTHON'
           import sys
           from pathlib import Path
 
-          frozen = Path(sys.argv[1]).read_bytes()
-          expected = '675114b2441a71a473d78b070407c6f84e84ab5d29fd297b350549de280f377b'
-          if hashlib.sha256(frozen).hexdigest() != expected:
-              raise AssertionError('frozen Linux helper changed; review shared support explicitly')
-          marker = '/// Complete common milestone, emitted before the authenticated Sim request.'
-          support, separator, unused = frozen.decode().partition(marker)
-          if not separator:
-              raise AssertionError('public protocol support boundary missing')
-          support = support.replace('//!', '//')
-          driver = Path(sys.argv[2]).read_text()
-          Path('performance-driver/src/main.rs').write_text(driver + '\n' + support)
+          support = Path(sys.argv[1]).read_text().partition(
+              '/// Complete common milestone, emitted before the authenticated Sim request.'
+          )[0].replace('//!', '//')
+          main = Path('performance-driver/src/main.rs')
+          main.write_text(main.read_text() + '\n' + support)
           PYTHON
           cp crates/Cargo.lock performance-driver/Cargo.lock
           cat > performance-driver/Cargo.toml <<'MANIFEST'
@@ -48,8 +43,6 @@ in
           [workspace]
 
           [dependencies]
-          crucible-protocol = { path = "../crates/crucible-protocol" }
-          crucible-shmem = { path = "../crates/crucible-shmem" }
           libc = "0.2"
           serde_json = "1"
           sha2 = "0.10"

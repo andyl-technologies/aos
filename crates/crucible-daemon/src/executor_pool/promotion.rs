@@ -36,6 +36,10 @@ use super::{
     retain_forever, supervisor_error_is_retryable,
 };
 
+mod startup;
+pub(crate) use startup::promotion_control_bytes;
+pub(super) use startup::{PromotionThreadCapture, promotion_thread_name};
+
 /// Maximum fixed promotion threads accepted by one local executor pool.
 pub const MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS: usize = 256;
 
@@ -188,10 +192,26 @@ fn classify_repository_failure(error: &CampaignRepositoryError) -> PromotionFail
     }
 }
 
+fn classify_event_identity_failure(error: &crucible::EngineError) -> PromotionFailureClass {
+    match error {
+        crucible::EngineError::ArtifactDecodeAdmission { .. } => PromotionFailureClass::Retryable,
+        _ => PromotionFailureClass::Terminal,
+    }
+}
+
 fn classify_preparation_failure(
     error: &PausedCheckpointPromotionPreparationError,
 ) -> PromotionFailureClass {
     match error {
+        PausedCheckpointPromotionPreparationError::EventIdentity(error) => {
+            classify_event_identity_failure(error)
+        }
+        PausedCheckpointPromotionPreparationError::ReplayProof(error) => match error {
+            crate::QemuFreshModeledDriverError::Configuration(error) => {
+                classify_event_identity_failure(error)
+            }
+            _ => PromotionFailureClass::Terminal,
+        },
         PausedCheckpointPromotionPreparationError::ProductionRestore(error) => {
             classify_restore_failure(error)
         }
@@ -206,6 +226,26 @@ fn classify_preparation_failure(
         }
         PausedCheckpointPromotionPreparationError::Realization(error) => {
             classify_realization_failure(error)
+        }
+        PausedCheckpointPromotionPreparationError::ResourceCleanup(report)
+        | PausedCheckpointPromotionPreparationError::RealizationCleanup {
+            cleanup: report, ..
+        } => {
+            if report.reports_terminal_quarantine() {
+                PromotionFailureClass::Terminal
+            } else {
+                classify_realization_failure(report.error())
+            }
+        }
+        PausedCheckpointPromotionPreparationError::ComparisonCleanup { .. } => {
+            PromotionFailureClass::Terminal
+        }
+        PausedCheckpointPromotionPreparationError::ResourceBegin(report) => {
+            if report.was_quarantined() {
+                PromotionFailureClass::Terminal
+            } else {
+                classify_realization_failure(report.first_error())
+            }
         }
     }
 }
@@ -234,9 +274,23 @@ fn classify_restore_failure(
 
 fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFailureClass {
     match error {
-        QemuVmRealizationError::ExecutorUnavailable { .. } => PromotionFailureClass::Retryable,
+        QemuVmRealizationError::ExecutorUnavailable { .. }
+        | QemuVmRealizationError::ModelCopy { .. } => PromotionFailureClass::Retryable,
+        #[cfg(target_os = "linux")]
+        QemuVmRealizationError::TargetDispatcherRetirement { source } => {
+            if source.is_retryable() {
+                PromotionFailureClass::Retryable
+            } else {
+                PromotionFailureClass::Terminal
+            }
+        }
+        #[cfg(target_os = "linux")]
+        QemuVmRealizationError::NativePoolReturn { .. } => PromotionFailureClass::Retryable,
         QemuVmRealizationError::Canceled { .. } => PromotionFailureClass::Canceled,
-        QemuVmRealizationError::ReapQuarantined { .. }
+        #[cfg(target_os = "linux")]
+        QemuVmRealizationError::HostMemoryLimit { .. } => PromotionFailureClass::Terminal,
+        QemuVmRealizationError::CleanupRetained { .. }
+        | QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }
         | QemuVmRealizationError::Executor { .. }
         | QemuVmRealizationError::InvalidCheckpoint { .. }
@@ -384,6 +438,25 @@ impl PromotionQueue {
         };
         state.active.remove(&key);
         self.space.notify_all();
+    }
+
+    /// Commits stopping while the real promotion queue remains drained.
+    ///
+    /// # Errors
+    /// Refuses queued or active work, an occupied or poisoned queue lock, or
+    /// the supplied same-owner commit without releasing any work resource.
+    pub(super) fn try_stop_quiescent(
+        &self,
+        commit: impl FnOnce() -> Result<(), ()>,
+    ) -> Result<(), ()> {
+        let state = self.state.try_lock().map_err(|_| ())?;
+        if !state.pending.is_empty() || !state.active.is_empty() {
+            return Err(());
+        }
+        commit()?;
+        self.ready.notify_all();
+        self.space.notify_all();
+        Ok(())
     }
 
     pub(super) fn shutdown(&self) {
@@ -779,16 +852,7 @@ fn retire_prepared_native_source<L, V>(
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    loop {
-        match prepared.retire_native_source() {
-            Ok(()) => return,
-            Err(error) if error.is_retryable() => {
-                increment(&shared.counters.promotion_retries);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(_) => retain_forever(shared, prepared),
-        }
-    }
+    retire_promotion_native_source(shared, prepared.into_native_retirement());
 }
 
 fn retire_staged_native_source<L, V>(
@@ -798,14 +862,27 @@ fn retire_staged_native_source<L, V>(
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    retire_promotion_native_source(shared, staged.into_native_retirement());
+}
+
+fn retire_promotion_native_source<L, V>(
+    shared: &SharedExecutor<L, V>,
+    retirement: Option<crate::ProductionExactCheckpointRetirement>,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let Some(retirement) = retirement else {
+        return;
+    };
     loop {
-        match staged.retire_native_source() {
-            Ok(()) => return,
+        match crate::retire_production_exact_checkpoint_catalog(&retirement) {
+            Ok(_) => return,
             Err(error) if error.is_retryable() => {
                 increment(&shared.counters.promotion_retries);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(_) => retain_forever(shared, staged),
+            Err(_) => retain_forever(shared, retirement),
         }
     }
 }
@@ -891,5 +968,128 @@ fn work_execution(work: &CheckpointPromotionRestartWork) -> ExecutionId {
     match work {
         CheckpointPromotionRestartWork::Paused(recovery) => recovery.execution(),
         CheckpointPromotionRestartWork::Staged(recovery) => recovery.execution(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_member_cleanup_cannot_become_promotion_cancellation_or_recovery() {
+        let error = QemuVmRealizationError::CleanupRetained {
+            operation: "finish hot-fork World member",
+        };
+        assert!(matches!(
+            classify_realization_failure(&error),
+            PromotionFailureClass::Terminal
+        ));
+    }
+
+    #[test]
+    fn typed_guard_cleanup_preserves_generic_and_original_reporting_policy() {
+        // Classifier transport only; no native registry or Original is issued.
+        let raw = || QemuVmRealizationError::ExecutorUnavailable {
+            operation: "component cleanup classification",
+            message: String::from("same raw refusal"),
+        };
+        let original_policy = PausedCheckpointPromotionPreparationError::ResourceCleanup(
+            crate::QemuAttemptResourceGuardCleanupFailure::retained(raw()),
+        );
+        let generic_policy = PausedCheckpointPromotionPreparationError::ResourceCleanup(
+            crate::QemuAttemptResourceGuardCleanupFailure::retained(raw()).terminal_category(),
+        );
+
+        assert!(matches!(
+            classify_preparation_failure(&original_policy),
+            PromotionFailureClass::Retryable
+        ));
+        assert!(matches!(
+            classify_preparation_failure(&generic_policy),
+            PromotionFailureClass::Terminal
+        ));
+        let PausedCheckpointPromotionPreparationError::ResourceCleanup(report) = &generic_policy
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            report.error(),
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "component cleanup classification",
+                ..
+            }
+        ));
+        assert!(
+            !report.was_quarantined(),
+            "policy does not manufacture observed custody"
+        );
+
+        let both = PausedCheckpointPromotionPreparationError::RealizationCleanup {
+            first: QemuVmRealizationError::Canceled {
+                operation: "component initiating failure",
+            },
+            cleanup: crate::QemuAttemptResourceGuardCleanupFailure::retained(raw()),
+        };
+        assert!(matches!(
+            classify_preparation_failure(&both),
+            PromotionFailureClass::Retryable
+        ));
+        let PausedCheckpointPromotionPreparationError::RealizationCleanup { first, cleanup } = both
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            first,
+            QemuVmRealizationError::Canceled {
+                operation: "component initiating failure"
+            }
+        ));
+        assert!(matches!(
+            cleanup.error(),
+            QemuVmRealizationError::ExecutorUnavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn comparison_and_typed_cleanup_remain_independent_with_terminal_precedence() {
+        let comparison = QemuVmRealizationError::Canceled {
+            operation: "component comparison",
+        };
+        let cleanup = crate::QemuAttemptResourceGuardCleanupFailure::retained(
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "component cleanup",
+                message: String::from("independent cleanup cause"),
+            },
+        );
+        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = cleanup.error() else {
+            unreachable!()
+        };
+        let address = message.as_ptr();
+        let report = PausedCheckpointPromotionPreparationError::ComparisonCleanup {
+            comparison,
+            cleanup,
+        };
+
+        assert!(matches!(
+            classify_preparation_failure(&report),
+            PromotionFailureClass::Terminal
+        ));
+        let PausedCheckpointPromotionPreparationError::ComparisonCleanup {
+            comparison,
+            cleanup,
+        } = report
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            comparison,
+            QemuVmRealizationError::Canceled {
+                operation: "component comparison"
+            }
+        ));
+        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = cleanup.error() else {
+            unreachable!()
+        };
+        assert_eq!(message.as_ptr(), address);
     }
 }

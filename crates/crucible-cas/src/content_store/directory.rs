@@ -43,7 +43,16 @@ use super::admin::{
 };
 use super::*;
 
+mod checked;
+mod checked_admin;
+mod checked_publication;
+pub(in crate::content_store) mod file_pin;
 mod ref_admin;
+
+pub(in crate::content_store) use checked_publication::Accepted;
+pub use checked_publication::{
+    DirectoryMaintenanceOutcome, DirectoryPublicationOutcome, DirectoryScopeError,
+};
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -63,6 +72,9 @@ const INVENTORY_STATE_DOMAIN: &str = "crucible.content-store.directory-inventory
 const MAX_INVENTORY_STATE_BYTES: u64 = 256;
 const MAX_REF_RECORD_BYTES: u64 = 256;
 
+/// Ordinary and physical-maintenance capabilities of one quota-bound directory.
+pub type DirectoryBlobAuthorities = (Arc<dyn ImmutableBlobBackend>, Arc<dyn BlobStoreAdmin>);
+
 /// Durable loose-object directory backend.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DirectoryBlobBackend {
@@ -71,6 +83,83 @@ pub struct DirectoryBlobBackend {
 }
 
 impl DirectoryBlobBackend {
+    /// Names the isolated GC scratch subtree below inventory administration.
+    ///
+    /// Mark producers join this fixed relative component below their original
+    /// physical namespace. Object inventory excludes administration descendants
+    /// while physical quota still accounts for their durable bytes.
+    pub const GC_MARK_DIRECTORY: &str = ".inventory-admin/gc-marks";
+
+    /// Creates a loose-object facade with retained host-resource and quota custody.
+    ///
+    /// Deferred handles pin descriptor credits, and readers retain separately
+    /// admitted authentication scratch until their final close.
+    ///
+    /// # Errors
+    /// Refuses unavailable quota authority or insufficient original resources.
+    pub fn new_with_physical_quota(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+    ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        Self::new_with_physical_quota_and_admin(name, root, guard).map(|(backend, _)| backend)
+    }
+
+    /// Opens ordinary and maintenance views of the same quota-bound storage.
+    ///
+    /// Both views retain the original quota and resource authority. The admin
+    /// view cannot bypass that wrapper to reach the underlying directory.
+    ///
+    /// # Errors
+    /// Refuses unavailable physical authority, exhausted original resources,
+    /// or invalid directory resource geometry.
+    pub fn new_with_physical_quota_and_admin(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+    ) -> Result<DirectoryBlobAuthorities, StoreError> {
+        let name = name.into();
+        let root = root.into();
+        let costs = Self::quota_resource_costs(&root)?;
+        let resources = guard.reserve_resources(
+            0,
+            (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64
+                + root.capacity() as u64
+                + name.capacity() as u64,
+        )?;
+        let child = Arc::new(Self::new(name.clone(), root));
+        let store =
+            super::physical_quota::PhysicalQuotaStore::new(name, child.clone(), child, guard)?
+                .with_directory_costs(costs)
+                .with_child_resources(resources);
+        let store = Arc::new(store);
+        Ok((store.clone(), store))
+    }
+
+    pub(super) fn quota_resource_costs(
+        root: &Path,
+    ) -> Result<super::physical_quota::DirectoryResourceCosts, StoreError> {
+        let path_bytes = u64::try_from(root.as_os_str().len())
+            .map_err(|_| StoreError::Quota)?
+            .checked_add(256)
+            .ok_or(StoreError::Quota)?;
+        // Eight concurrent path/name buffers, each allowing geometric capacity
+        // growth; two authentication/copy buffers may overlap during a put.
+        let operation_bytes = path_bytes
+            .checked_mul(32)
+            .and_then(|bytes| bytes.checked_add(2 * 64 * 1024))
+            .ok_or(StoreError::Quota)?;
+        Ok(super::physical_quota::DirectoryResourceCosts {
+            source_bytes: (std::mem::size_of::<DirectoryBlobSource>()
+                + std::mem::size_of::<File>()
+                + 4 * std::mem::size_of::<usize>()) as u64
+                + operation_bytes,
+            reader_bytes: (std::mem::size_of::<AuthenticatingFileReader>() as u64 + 64 * 1024)
+                .max(checked::reader_metadata_bytes()),
+            operation_bytes,
+        })
+    }
+
     /// Creates a directory backend rooted at `root`.
     #[must_use]
     pub fn new(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
@@ -111,12 +200,12 @@ impl DirectoryBlobBackend {
             length: logical_length,
         });
         validate_range(logical_length, range)?;
-        let source: Arc<dyn BlobSource> = Arc::new(DirectoryBlobSource {
+        let source = DirectoryBlobSource {
             file,
             id,
             logical_length,
             range,
-        });
+        };
         if range.offset == 0 && range.length == logical_length {
             Ok(BlobHandle::authenticated(id, source))
         } else {
@@ -124,8 +213,26 @@ impl DirectoryBlobBackend {
         }
     }
 
+    pub(super) fn acquire_inventory_fence_initialized<'a>(
+        &'a self,
+        original: crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+        initialize: &mut checked_admin::Initializer<'_>,
+    ) -> Result<CheckedInventoryFence<'a>, StoreError> {
+        checked_admin::acquire_initialized(self, original, boundary, initialize)
+    }
+
     pub(super) fn create_staging(&self, directory: &Path) -> Result<(PathBuf, File), StoreError> {
+        self.create_staging_with_boundary(directory, &mut || Ok(()))
+    }
+
+    pub(super) fn create_staging_with_boundary(
+        &self,
+        directory: &Path,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<(PathBuf, File), StoreError> {
         loop {
+            boundary()?;
             let ordinal = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!(".staging-{}-{ordinal}", std::process::id()));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -267,6 +374,35 @@ fn inject_corrupt_tier_copy(path: &Path) -> Result<(), StoreError> {
 }
 
 impl ImmutableBlobBackend for DirectoryBlobBackend {
+    fn checked_publication_metadata(
+        &self,
+        _kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        Ok(CheckedPublicationMetadata {
+            maximum_placements: 1,
+            maximum_backend_name_bytes: self.name.len(),
+        })
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        checked_publication::publish(self, original, objects, boundary)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked::lookup(self, original, id, range, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -282,6 +418,11 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
             repair_inventory: false,
             planned_delete: false,
         }
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        Ok(())
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -370,6 +511,13 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
 }
 
 impl BlobStoreAdmin for DirectoryBlobBackend {
+    fn acquire_inventory_fence_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedInventoryFence<'_>, StoreError> {
+        checked_admin::acquire(self, boundary)
+    }
+
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         let lock = self.acquire_inventory_lock()?;
         let state = self.load_or_create_inventory_state()?;
@@ -469,7 +617,7 @@ impl BlobInventoryFence for DirectoryBlobInventoryFence<'_> {
         }
 
         let (staging_path, mut staging) = self.backend.create_staging(directory)?;
-        let publish_result = (|| {
+        let publish_result: Result<u64, StoreError> = (|| {
             let authenticated_length = copy_source(id, source, &mut staging)?;
             staging.sync_all().map_err(|source| StoreError::Io {
                 operation: "sync-repair-object-staging",
@@ -818,8 +966,19 @@ impl BlobSource for DirectoryBlobSource {
     }
 }
 
-struct AuthenticatingFileReader {
-    file: Arc<File>,
+// Only these private concrete file owners participate in reader monomorphs.
+trait FileBorrow {
+    fn file(&self) -> Option<&File>;
+}
+
+impl FileBorrow for Arc<File> {
+    fn file(&self) -> Option<&File> {
+        Some(self)
+    }
+}
+
+struct AuthenticatingFileReader<F = Arc<File>> {
+    file: F,
     id: ContentId,
     logical_length: u64,
     range: ByteRange,
@@ -829,8 +988,8 @@ struct AuthenticatingFileReader {
     finalized: bool,
 }
 
-impl AuthenticatingFileReader {
-    fn new(file: Arc<File>, id: ContentId, logical_length: u64, range: ByteRange) -> Self {
+impl<F: FileBorrow> AuthenticatingFileReader<F> {
+    fn new(file: F, id: ContentId, logical_length: u64, range: ByteRange) -> Self {
         Self {
             file,
             id,
@@ -849,7 +1008,15 @@ impl AuthenticatingFileReader {
             let remaining = target - self.scan_offset;
             let limit = usize::try_from(remaining.min(buffer.len() as u64))
                 .map_err(|_| invalid_object_data())?;
-            let read = read_at_retry(&self.file, &mut buffer[..limit], self.scan_offset)?;
+            let file = match self.file.file() {
+                Some(file) => file,
+                None => {
+                    return Err(io::Error::from_raw_os_error(
+                        rustix::io::Errno::BADF.raw_os_error(),
+                    ));
+                }
+            };
+            let read = read_at_retry(file, &mut buffer[..limit], self.scan_offset)?;
             if read == 0 {
                 return Err(invalid_object_data());
             }
@@ -862,7 +1029,15 @@ impl AuthenticatingFileReader {
     fn finalize(&mut self) -> io::Result<()> {
         self.scan_until(self.logical_length)?;
         let mut extra = [0_u8; 1];
-        if read_at_retry(&self.file, &mut extra, self.logical_length)? != 0
+        let file = match self.file.file() {
+            Some(file) => file,
+            None => {
+                return Err(io::Error::from_raw_os_error(
+                    rustix::io::Errno::BADF.raw_os_error(),
+                ));
+            }
+        };
+        if read_at_retry(file, &mut extra, self.logical_length)? != 0
             || *self.hasher.finalize().as_bytes() != self.id.digest()
         {
             return Err(invalid_object_data());
@@ -872,7 +1047,7 @@ impl AuthenticatingFileReader {
     }
 }
 
-impl Read for AuthenticatingFileReader {
+impl<F: FileBorrow> Read for AuthenticatingFileReader<F> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if output.is_empty() || self.finalized {
             return Ok(0);
@@ -882,8 +1057,16 @@ impl Read for AuthenticatingFileReader {
             let remaining = self.range.length - self.output_offset;
             let limit = usize::try_from(remaining.min(output.len() as u64))
                 .map_err(|_| invalid_object_data())?;
+            let file = match self.file.file() {
+                Some(file) => file,
+                None => {
+                    return Err(io::Error::from_raw_os_error(
+                        rustix::io::Errno::BADF.raw_os_error(),
+                    ));
+                }
+            };
             let read = read_at_retry(
-                &self.file,
+                file,
                 &mut output[..limit],
                 self.range.offset + self.output_offset,
             )?;
@@ -915,6 +1098,9 @@ fn invalid_object_data() -> io::Error {
 
 mod refs;
 
-pub use refs::DirectoryRefBackend;
+pub use refs::{DirectoryRefAuthorities, DirectoryRefBackend};
+
+#[cfg(feature = "private-measurement-domain")]
+pub use refs::OriginalDirectoryRefOwner;
 pub(super) use refs::{create_dir_all_durable, directory_receipt, sync_directory};
 use refs::{encode_digest, open_pinned_object};

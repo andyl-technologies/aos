@@ -748,6 +748,7 @@ mod tests {
                 128 * 1024 * 1024,
             )),
             Arc::new(MemoryRefBackend::new()),
+            crate::CampaignRamAdmission::Unavailable,
         );
         let root = ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"empty-root");
         let roots = CampaignRoots {

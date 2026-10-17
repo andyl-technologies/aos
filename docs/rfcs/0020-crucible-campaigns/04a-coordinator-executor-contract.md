@@ -2353,37 +2353,59 @@ reachable store namespace IDs. `WatchCapacity` reports bounded operational
 availability and coarse materialization locality. Capability and locality may
 influence placement but not proposal generation or modeled results.
 
-The initial canonical capability messages are:
+The current canonical capability messages are:
 
 ```text
-DescribeExecutorRequestV1 = version
-ExecutorDescriptionV1 = version | daemon_epoch | immutable_capability_set
+DescribeExecutorRequestV2 = version
+ExecutorDescriptionV2 = version | daemon_epoch | immutable_capability_set
 immutable_capability_set = compatibility_profile | host_architecture |
                            sorted_qemu_profiles | sorted_materialization_paths |
-                           maximum_slots | per_attempt_resource_ceiling |
+                           maximum_slots | aggregate_host_resources |
+                           assignment_host_resources | original_attempt_limits |
                            sorted_store_namespace_ids
 
-WatchExecutorCapacityRequestV1 = version | daemon_epoch | capability_digest |
+host_resources = resident_peak_bytes | backing_peak_bytes | metadata_bytes |
+                 staging_bytes | paging_io_slots | cpu_slots | task_slots |
+                 file_descriptors
+original_attempt_limits = maximum_vcpus | maximum_resident_bytes |
+                          maximum_disk_bytes | maximum_execution_quanta
+
+WatchExecutorCapacityRequestV2 = version | daemon_epoch | capability_digest |
                                  after_sequence?
-ExecutorCapacityReportV1 = version | daemon_epoch | capability_digest |
-                           sequence | available_slots | available_vcpus |
-                           available_resident_bytes | available_disk_bytes |
+ExecutorCapacityReportV2 = version | daemon_epoch | capability_digest |
+                           sequence | available_slots | available_host_resources |
                            sorted_exact_or_hot_locality
 ```
 
 The immutable set MUST include the thin-replay correctness fallback. A locality
 entry may name only exact restore or hot fork; thin replay is not cached
 locality. The local service refuses to start when advertised daemon identity,
-slots, CPU, memory, disk, or per-execution quanta differ from the supervisor's
-enforced configuration. A capacity response MUST match the exact description,
+slots, either complete resource vector, or original request limits differ from
+the supervisor's enforced configuration. Aggregate capacity is distinct from
+the conservative physical reservation for one assignment; the assignment
+vector MUST fit the aggregate vector in every dimension. Metadata and staging
+are independently bounded subsets already included in the complete peaks and
+MUST NOT be added to those peaks again. Original attempt limits retain their
+existing request and deterministic execution-quanta meaning.
+
+A capacity response MUST match the exact description,
 use a fresh strictly increasing daemon-epoch-scoped sequence greater than the
-caller's cursor, remain within configured ceilings, and advertise only a
+caller's cursor, remain within the aggregate ceilings in all eight dimensions,
+and advertise only a
 supported materialization tier. Recomputing a response always allocates a new
 sequence, including when a lagging client polls, so one `(daemon_epoch,
 capability_digest, sequence)` never identifies conflicting report bodies.
 Sequences observed by one client need not be contiguous: other clients may
 consume intervening numbers, and intermediate advisory capacity states may
 coalesce before the next poll.
+Placement MUST compare the full declared assignment vector against each
+available dimension, even when an attempt requests smaller CPU, memory, or disk
+limits. Independently remaining metadata and staging budgets need not together
+fit the remaining resident budget; placement checks all dimensions, and the
+executor rechecks authoritative admission when a request arrives. Global
+availability MUST NOT be clamped to one assignment's bound. Version-one
+capability messages are refused rather than interpreted with missing dimensions.
+
 Direct and Unix-loopback clients apply the same checks. The loopback frame
 remains version 1 and assigns new explicit message-kind tags; unknown tags fail
 closed.

@@ -85,42 +85,6 @@ impl Write for AtomicExactRootOverlayWriter<'_> {
     }
 }
 
-impl Write for AtomicExactRamLayerWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let remaining = self.expected_bytes.saturating_sub(self.written_bytes);
-        let requested = u64::try_from(bytes.len()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "exact RAM input write length cannot be represented",
-            )
-        })?;
-        if requested > remaining {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "exact RAM input write exceeds the declared checkpoint length",
-            ));
-        }
-        let written = self.destination.write(bytes)?;
-        self.verifier.update(&bytes[..written]);
-        self.written_bytes = self
-            .written_bytes
-            .checked_add(u64::try_from(written).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "exact RAM input write count cannot be represented",
-                )
-            })?)
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "exact RAM input write overflow")
-            })?;
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.destination.flush()
-    }
-}
-
 impl AtomicExactDeviceStateWriter<'_> {
     /// Authenticates and seals the complete materialized device state.
     ///
@@ -150,62 +114,6 @@ impl AtomicExactDeviceStateWriter<'_> {
                 binding: self.binding,
                 bytes: self.expected_bytes,
             };
-        Ok(())
-    }
-}
-
-impl AtomicExactRamLayerWriter<'_> {
-    /// Authenticates length, seals the input, and positions it for QMP.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuSpawnError`] when the caller wrote a different length or
-    /// the retained input cannot be flushed, sealed, or positioned.
-    pub(super) fn finish(self) -> Result<(), QemuSpawnError> {
-        if self.written_bytes != self.expected_bytes {
-            return Err(QemuSpawnError::PreparedExactInputIncomplete {
-                expected: self.expected_bytes,
-                actual: self.written_bytes,
-            });
-        }
-        self.verifier.finish()?;
-        let input = self
-            .destination
-            .finish()
-            .map_err(|source| QemuSpawnError::Io {
-                operation: "seal exact RAM input",
-                source,
-            })?;
-        let binding = match &mut self.prepared.exact_checkpoint_materialization {
-            PreparedExactCheckpointMaterialization::Updating {
-                binding,
-                ram_layer_bytes,
-                next_ram_layer,
-                ..
-            } if *next_ram_layer == self.layer_index
-                && ram_layer_bytes.get(self.layer_index) == Some(&self.expected_bytes) =>
-            {
-                *next_ram_layer += 1;
-                *binding
-            }
-            PreparedExactCheckpointMaterialization::Absent
-            | PreparedExactCheckpointMaterialization::Updating { .. }
-            | PreparedExactCheckpointMaterialization::Complete { .. }
-            | PreparedExactCheckpointMaterialization::Claimed { .. } => {
-                return Err(QemuSpawnError::PreparedExactCheckpointNotReady {
-                    path: self.prepared.path.clone(),
-                });
-            }
-        };
-        self.prepared
-            .exact_ram_inputs
-            .push(QemuGuardedExactRamInput {
-                file: input,
-                binding,
-                attempt_binding: Arc::clone(&self.prepared.attempt_binding),
-                layer_index: self.layer_index,
-                expected_bytes: self.expected_bytes,
-            });
         Ok(())
     }
 }

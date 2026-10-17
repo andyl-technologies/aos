@@ -1,31 +1,41 @@
-##! crucible-qemu-plugin — RFC-0010 QEMU plugin cdylib
+##! Crucible QEMU observation and control plugin cdylib
 {
   lib,
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
   fetchCargoVendor,
+  patchCiboriumSeedVendor,
   glib,
   pkg-config,
   qemu-crucible,
   sqlite,
+  python3,
+  stdenv,
+  buildPackages,
+  nativeConformance ? false,
 }: let
   version = "0.1.0";
+  conformanceFlags = lib.optionalString nativeConformance " --features native-conformance";
+  buildPython =
+    if stdenv.isCross
+    then buildPackages.python3
+    else python3;
   src = import ../tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
+  cargoDeps = patchCiboriumSeedVendor (fetchCargoVendor {
     inherit src;
     name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = import ../tools/crucible/_cargo-deps-hash.nix;
-  };
+  });
   cargoArtifactContract = {
-    family = "crucible-gpl-qemu-plugin-release-and-test";
+    family = "crucible-gpl-qemu-plugin-release-and-test" + lib.optionalString nativeConformance "-native-observer";
     nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible sqlite];
     licenseScope = "GPL-2.0-only";
   };
   cargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   cargoArtifacts = mkCargoArtifacts {
-    pname = "crucible-qemu-plugin-artifacts";
+    pname = "crucible-qemu-plugin-artifacts" + lib.optionalString nativeConformance "-native-observer";
     inherit version cargoDeps cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
@@ -34,8 +44,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin${conformanceFlags}"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin${conformanceFlags}"
     ];
     buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
     runtimeDeps = [glib qemu-crucible sqlite];
@@ -43,12 +53,23 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };
-    pname = "crucible-qemu-plugin";
+    pname = "crucible-qemu-plugin" + lib.optionalString nativeConformance "-native-observer";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
@@ -105,13 +126,13 @@ in
     cargoRoot = "crates";
     cargoNextest = true;
 
-    cargoFlags = "-p crucible-qemu-plugin";
-    cargoTestFlags = "-p crucible-qemu-plugin";
+    cargoFlags = "-p crucible-qemu-plugin${conformanceFlags}";
+    cargoTestFlags = "-p crucible-qemu-plugin${conformanceFlags}";
     installBins = false;
     installLibs = false;
     doCheck = true;
 
-    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
+    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite buildPython];
     runtimeDeps = [glib qemu-crucible sqlite];
 
     preBuild = ''
@@ -263,6 +284,14 @@ in
       SPDX-License-Identifier: GPL-2.0-only
       crucible-protocol and crucible-shmem are used under their MIT option.
       LICENSE_SCOPE
+    '';
+
+    # Publish only after stripping, RPATH shrinking and reference scrubbing:
+    # the digest binds the installed artifact, not its compiler intermediate.
+    postFinalize = ''
+      ${buildPython}/bin/python3 ${./crucible-qemu-plugin/installer-layouts.py} --finalize \
+        "$out/lib/libcrucible_qemu_plugin.so" \
+        "$out/nix-support/crucible-installer-control-layouts"
     '';
 
     meta = {

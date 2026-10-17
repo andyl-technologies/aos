@@ -283,6 +283,7 @@
             -serial none \
             -machine pc \
             -accel sim,thread=single \
+            -plugin "${pkgs.qemu-crucible}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
             -icount shift=0,sleep=off,align=off \
             -cpu qemu64 \
             -m 64 \
@@ -662,6 +663,7 @@ in
           -monitor none
           -machine q35
           -accel sim,thread=single
+          -plugin ${pkgs.qemu-crucible}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so
           -icount shift=0,sleep=off,align=off
           -cpu qemu64
           -m 1024
@@ -689,6 +691,7 @@ in
             -monitor none \
             -machine q35 \
             -accel sim,thread=single \
+            -plugin "${pkgs.qemu-crucible}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
             -icount shift=0,sleep=off,align=off \
             -cpu qemu64 \
             -m 1024 \

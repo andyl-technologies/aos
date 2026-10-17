@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn event_log_append_path_feeds_offsets_and_condition_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut log = EventLog::new();
     assert_eq!(log.offset().events, 0);
 
@@ -21,7 +24,8 @@ fn event_log_append_path_feeds_offsets_and_condition_projection() {
         0,
         VirtualTime { ticks: 4 },
         SchedulerEvaluationBoundaryKind::Quantum,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let first_append = log
         .append_entries(vec![first.clone()])
         .expect("first entry should append");
@@ -43,7 +47,8 @@ fn event_log_append_path_feeds_offsets_and_condition_projection() {
         1,
         VirtualTime { ticks: 9 },
         SchedulerEvaluationBoundaryKind::Rendezvous,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let second_append = log
         .append_entries(vec![second.clone()])
         .expect("second entry should append");
@@ -65,12 +70,16 @@ fn event_log_append_path_feeds_offsets_and_condition_projection() {
 
 #[test]
 fn event_log_rejects_non_dense_append_sequence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut log = EventLog::new();
     let entry = crucible::test_support::condition_boundary_entry_for_test(
         7,
         VirtualTime { ticks: 4 },
         SchedulerEvaluationBoundaryKind::Quantum,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     let error = log
         .append_entries(vec![entry])
@@ -90,6 +99,7 @@ fn boundary(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         VirtualTime { ticks },
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn console(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -103,10 +113,14 @@ fn console(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
             b"ready\n".to_vec(),
         ),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 #[test]
 fn incremental_append_preserves_observations_and_cross_batch_timer_cancellation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let timer = TimerId {
         name: String::from("finish"),
     };
@@ -127,13 +141,16 @@ fn incremental_append_preserves_observations_and_cross_batch_timer_cancellation(
         ConditionEvaluationPass::from_log_prefix(initial, |_leaf: crucible::ConditionLeaf<'_>| {
             false
         });
-    let firings = initial_pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
+    let firings = initial_pass
+        .evaluate_event_graph(&graph, &mut EventGraphState::new())
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(firings.len(), 1);
     let firing = crucible::test_support::condition_payload_entry_for_test(
         1,
         VirtualTime { ticks: 3 },
         SchedulerEventLogPayload::TriggerFired(firings.as_slice()[0].clone()),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let application = |sequence, ticks, action| {
         crucible::test_support::condition_payload_entry_for_test(
             sequence,
@@ -146,6 +163,7 @@ fn incremental_append_preserves_observations_and_cross_batch_timer_cancellation(
                 action,
             }),
         )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
     };
     let batches = [
         vec![
@@ -206,16 +224,35 @@ fn incremental_append_preserves_observations_and_cross_batch_timer_cancellation(
         );
         let oracle = |_leaf: crucible::ConditionLeaf<'_>| false;
         let mut cached =
-            ConditionEvaluationPass::from_log_prefix_ref(log.condition_prefix(), oracle);
+            ConditionEvaluationPass::from_log_prefix_ref(log.condition_prefix(), oracle)
+                .unwrap_or_else(|error| panic!("admitted fixture prefix projection: {error}"));
         let mut fresh = ConditionEvaluationPass::from_log_prefix(rebuilt, oracle);
         let condition = Condition::timer(timer.clone());
         let expected = matches!(index, 1 | 3);
-        assert_eq!(cached.evaluate_assertion_condition(&condition), expected);
-        assert_eq!(fresh.evaluate_assertion_condition(&condition), expected);
+        assert_eq!(
+            cached
+                .evaluate_assertion_condition(&condition)
+                .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}")),
+            expected
+        );
+        assert_eq!(
+            fresh
+                .evaluate_assertion_condition(&condition)
+                .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}")),
+            expected
+        );
         let elapsed = log.condition_prefix().point().at().ticks - 3;
         let after = Condition::after(SimDuration { ticks: elapsed }, event.clone());
-        assert!(cached.evaluate_assertion_condition(&after));
-        assert!(fresh.evaluate_assertion_condition(&after));
+        assert!(
+            cached
+                .evaluate_assertion_condition(&after)
+                .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+        );
+        assert!(
+            fresh
+                .evaluate_assertion_condition(&after)
+                .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+        );
     }
     assert_eq!(log.offset().events, 10);
     assert_eq!(log.condition_prefix().event_log_offset(), log.offset());
@@ -223,6 +260,9 @@ fn incremental_append_preserves_observations_and_cross_batch_timer_cancellation(
 
 #[test]
 fn invalid_suffixes_leave_prefix_offsets_and_retained_history_unchanged() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut original = EventLog::new();
     original
         .append_entries(vec![console(0, 10), boundary(1, 10)])
@@ -233,7 +273,8 @@ fn invalid_suffixes_leave_prefix_offsets_and_retained_history_unchanged() {
             name: String::from("guest"),
         }),
         Icount { retired: 12 },
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let valid_observation = console(2, 11);
     let bad_class = crucible::test_support::condition_open_payload_entry_for_test(
         2,
@@ -241,7 +282,8 @@ fn invalid_suffixes_leave_prefix_offsets_and_retained_history_unchanged() {
         SchedulerEventLogClass::Causal,
         valid_observation.event_payload().clone(),
         valid_observation.payload().clone(),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let cases = [
         (vec![boundary(3, 11)], "dense sequence"),
         (
@@ -293,6 +335,9 @@ fn invalid_suffixes_leave_prefix_offsets_and_retained_history_unchanged() {
 
 #[test]
 fn offset_only_continuation_validates_its_suffix_without_requiring_genesis_entries() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let offset = EventLogOffset::new(ContentHash::from_bytes(b"retained-prefix"), 100, 20);
     let mut log = EventLog::from_offset(offset);
     log.append_entries(vec![console(20, 10), boundary(21, 10)])
@@ -300,7 +345,10 @@ fn offset_only_continuation_validates_its_suffix_without_requiring_genesis_entri
     assert_eq!(log.retained_base_events(), 20);
     assert_eq!(log.retained_entries().len(), 2);
     assert_eq!(log.offset().events, 22);
-    let before = log.condition_prefix().clone();
+    let before = log
+        .condition_prefix()
+        .try_clone_admitted()
+        .expect("original fixture admission");
     assert!(log.append_entries(vec![boundary(22, 9)]).is_err());
     assert_eq!(log.condition_prefix(), &before);
     log.append_entries(vec![boundary(22, 11)])
@@ -310,6 +358,9 @@ fn offset_only_continuation_validates_its_suffix_without_requiring_genesis_entri
 
 #[test]
 fn atomic_batch_keeps_earlier_diagnostic_times_visible_at_its_final_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut log = EventLog::new();
     log.append_entries(vec![boundary(0, 10)])
         .expect("initial boundary should append");
@@ -321,7 +372,8 @@ fn atomic_batch_keeps_earlier_diagnostic_times_visible_at_its_final_boundary() {
             crucible::EventLevel::Info,
             std::collections::BTreeMap::new(),
         )),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert!(log.append_entries(vec![diagnostic.clone()]).is_err());
     log.append_entries(vec![diagnostic, boundary(2, 12)])
         .expect("atomic final boundary makes both earlier entries visible");

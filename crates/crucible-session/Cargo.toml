@@ -20,4 +20,5 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+crucible-cas = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }

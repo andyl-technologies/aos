@@ -10,6 +10,13 @@
   focusedAarch64Skip ? false,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
+  ramObserver = pkgs.callPackage ../../pkgs/emulation/crucible-qemu-plugin.nix {
+    nativeConformance = true;
+    qemu-crucible = qemuPackage;
+  };
+  correspondingSource = pkgs.callPackage ../../pkgs/emulation/qemu-crucible-source.nix {
+    qemu-crucible = qemuPackage;
+  };
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
@@ -32,7 +39,7 @@
       }
       {
         label = "canonical instruction evidence";
-        needle = "CRUCINS1";
+        needle = "CRUCINS2";
       }
       {
         label = "canonical exception evidence";
@@ -94,6 +101,7 @@
     pkgs.grep
     pkgs.llvm
     pkgs.pkg-config
+    ramObserver
     qemuPackage
     referenceQemu
   ];
@@ -350,6 +358,7 @@
             -serial none \
             -monitor none \
             -kernel "$guest" \
+            -plugin "${ramObserver}/lib/libcrucible_qemu_plugin.so,ram_metadata_budget=268435456" \
             -plugin "$plugin_args" \
             > "logs/$architecture-$mode-$target.log" 2>&1
           status=$?
@@ -363,6 +372,14 @@
             "logs/$architecture-$mode-$target.log")" -eq 1
           ! grep -q 'Crucible instruction live test failed' \
             "logs/$architecture-$mode-$target.log"
+          ! grep -q CRUCIBLE-RAM-ORACLE-FAIL \
+            "logs/$architecture-$mode-$target.log"
+          case "$mode" in
+            result|result-compose|result-input|result-input-compose|skip|replay)
+              grep -Fq CRUCIBLE-RAM-ORACLE-PASS \
+                "logs/$architecture-$mode-$target.log"
+              ;;
+          esac
         }
 
         ${lib.optionalString focusedResultEvidence ''
@@ -518,6 +535,8 @@
         set -eu
         mkdir -p "$out"
         cp -R logs "$out/"
+        mkdir -p "$out/share/aos"
+        ln -s ${correspondingSource} "$out/share/aos/qemu-crucible-source"
         ${lib.optionalString focusedResultEvidence ''
           {
             echo PASS

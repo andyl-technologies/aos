@@ -103,6 +103,7 @@ fn finite_static_statistical_report_preserves_exact_p_q_after_restart() -> Resul
     let repository = CampaignRepository::with_component_authorities(
         Arc::clone(&blobs),
         Arc::clone(&refs),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         planner_authority.clone(),
         debugger_authority.clone(),
     )?;
@@ -471,6 +472,7 @@ fn finite_static_statistical_report_preserves_exact_p_q_after_restart() -> Resul
     let restarted = CampaignRepository::with_component_authorities(
         blobs,
         refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         planner_authority,
         debugger_authority,
     )?;
@@ -501,7 +503,11 @@ fn finite_static_policy_rejects_support_drift_and_unmodeled_probability_claims()
         8 * 1024 * 1024,
     ));
     let refs: Arc<dyn MutableRefBackend> = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs, refs);
+    let repository = CampaignRepository::new(
+        blobs,
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
         "gate.campaign-statistics.refusal",
         b"scenario",

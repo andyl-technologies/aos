@@ -1,6 +1,8 @@
 //! Resolved directive construction and exact request/phase validation.
 
 use super::*;
+use crate::DeviceSnapshotAllocation;
+use crate::snapshot_allocation::admit_validation;
 
 impl ResolvedBlockFaultDirective {
     /// Builds the exact fault-free directive for `request`.
@@ -147,8 +149,17 @@ impl ResolvedBlockFaultDirective {
         request: &BlockRequest,
         config: &BlockDurabilityConfig,
     ) -> Result<(), DeviceError> {
+        self.validate_for_with_admission(request, config, &mut |_| Ok(()))
+    }
+
+    pub(super) fn validate_for_with_admission(
+        &self,
+        request: &BlockRequest,
+        config: &BlockDurabilityConfig,
+        admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+    ) -> Result<(), DeviceError> {
         let device_length = config.length_bytes;
-        self.validate_static(request.request_id, config)?;
+        self.validate_static_with_admission(request.request_id, config, admit)?;
         if self.request_epoch != request.epoch
             || self.operation != request.op
             || self.offset != request.offset
@@ -168,6 +179,15 @@ impl ResolvedBlockFaultDirective {
         &self,
         request_id: u32,
         config: &BlockDurabilityConfig,
+    ) -> Result<(), DeviceError> {
+        self.validate_static_with_admission(request_id, config, &mut |_| Ok(()))
+    }
+
+    pub(super) fn validate_static_with_admission(
+        &self,
+        request_id: u32,
+        config: &BlockDurabilityConfig,
+        admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
     ) -> Result<(), DeviceError> {
         if (self.reported_capacity_bytes == 0 && config.length_bytes != 0)
             || self.reported_capacity_bytes > config.length_bytes
@@ -192,7 +212,7 @@ impl ResolvedBlockFaultDirective {
             });
         }
         for rule in &self.service_rules {
-            rule.validate()?;
+            rule.validate_with_admission(admit)?;
         }
         if self.retain_completion && !self.duplicate_completions.is_empty() {
             return Err(DeviceError::InvalidBlockFaultDirective {
@@ -396,11 +416,13 @@ impl ResolvedBlockFaultDirective {
         let mut media_contributors = BTreeSet::new();
         for rule in &self.media_rules {
             rule.validate(config.length_bytes)?;
-            if !media_contributors.insert(rule.contributor) {
+            if media_contributors.contains(&rule.contributor) {
                 return Err(DeviceError::InvalidBlockFaultDirective {
                     reason: "media contributor is repeated in one directive",
                 });
             }
+            admit_validation(admit, DeviceSnapshotAllocation::ValidationContributor)?;
+            media_contributors.insert(rule.contributor);
         }
         Ok(())
     }

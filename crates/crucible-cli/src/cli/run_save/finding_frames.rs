@@ -60,19 +60,39 @@ pub(super) fn property_violation_from_frames(
             }),
             None => return Err(backend_error("event frame is missing `stamp-node`")),
         };
-        violations.push(crucible_model::HostAssertionViolation {
-            assertion: assertion.id.clone(),
-            message: assertion.message.clone(),
-            quantifier: assertion.quantifier_kind(),
-            event_kind: String::from("assertion_state_changed"),
-            at_icount,
-            at_virtual_time: crucible::VirtualTime {
-                ticks: at_virtual_time,
-            },
-            node,
-            detail: String::from("assertion entered the Violated state"),
-            reproduction_artifact,
-        });
+        let owned_bytes = assertion
+            .id
+            .name
+            .len()
+            .checked_add(assertion.message.len())
+            .and_then(|bytes| bytes.checked_add("assertion_state_changed".len()))
+            .and_then(|bytes| bytes.checked_add("assertion entered the Violated state".len()))
+            .ok_or_else(|| backend_error("assertion evidence size overflow"))?;
+        crucible_session::engine::owned_decode::charge_bytes(
+            u64::try_from(owned_bytes)
+                .map_err(|_| backend_error("assertion evidence size overflow"))?,
+        )
+        .map_err(|error| backend_error(format!("admit assertion evidence fields: {error}")))?;
+        crucible_session::engine::owned_decode::reserve_vec(&mut violations, 1)
+            .map_err(|error| backend_error(format!("admit assertion evidence storage: {error}")))?;
+        violations.push(
+            crucible_model::HostAssertionViolation::from_owned_fields(
+                crucible_model::HostAssertionViolationFields {
+                    assertion: assertion.id.clone(),
+                    message: assertion.message.clone(),
+                    quantifier: assertion.quantifier_kind(),
+                    event_kind: String::from("assertion_state_changed"),
+                    at_icount,
+                    at_virtual_time: crucible::VirtualTime {
+                        ticks: at_virtual_time,
+                    },
+                    node,
+                    detail: String::from("assertion entered the Violated state"),
+                    reproduction_artifact,
+                },
+            )
+            .map_err(|error| backend_error(format!("admit assertion violation: {error}")))?,
+        );
     }
     violations.sort_by(|left, right| {
         (
@@ -138,6 +158,8 @@ fn canonical_frame_string_attribute(
 }
 
 fn canonical_frame_hex_string(field: &str, value: &str) -> Result<String, CliError> {
+    crucible_session::engine::owned_decode::charge_bytes(value.len() as u64)
+        .map_err(|error| backend_error(format!("admit event field: {error}")))?;
     let bytes = parse_hex_bytes(0, field, value)?;
     String::from_utf8(bytes)
         .map_err(|error| backend_error(format!("event `{field}` is not UTF-8: {error}")))
@@ -150,6 +172,10 @@ mod tests {
     #[test]
     fn property_evidence_reads_exact_stream_frame() -> Result<(), Box<dyn std::error::Error>> {
         use crucible_api::OpenSetAttributeValue::String as Text;
+        let resources = crucible_daemon::component_ram_root_resources()?;
+        let maximum = resources.decoded_metadata_limit()?;
+        let budget = crucible_session::engine::owned_decode::DecodeBudget::for_store(resources)?;
+        let _scope = budget.enter();
 
         let scenario = crucible::happy_path_scenario()?.scenario;
         let assertion = scenario
@@ -157,35 +183,43 @@ mod tests {
             .assertions()
             .first()
             .ok_or_else(|| std::io::Error::other("fixture has no assertion"))?;
-        let frame = crucible_api::StreamingEventFrame {
-            generation: 0,
-            cursor: crucible_api::EventLogCursor::new(4),
-            next_cursor: crucible_api::EventLogCursor::new(5),
-            event: crucible_api::OpenSetEventEnvelope {
-                sequence: 4,
-                at: crucible_api::OpenSetEventTime {
-                    virtual_time_ticks: 17,
-                    stamp_tick: 17,
-                    stamp_retired: Some(23),
-                    stamp_node: Some(String::from("fixture-node")),
+        let frame_for_retired = |stamp_retired| {
+            crucible_api::StreamingEventFrame::from_owned_fields(
+                0,
+                crucible_api::EventLogCursor::new(4),
+                crucible_api::EventLogCursor::new(5),
+                crucible_api::OpenSetEventEnvelope {
+                    sequence: 4,
+                    at: crucible_api::OpenSetEventTime {
+                        virtual_time_ticks: 17,
+                        stamp_tick: 17,
+                        stamp_retired,
+                        stamp_node: Some(String::from("fixture-node")),
+                    },
+                    source: crucible_api::OpenSetEventSource::Node {
+                        node: String::from("fixture-node"),
+                    },
+                    level: crucible::EventLevel::Info,
+                    observational: false,
+                    payload: crucible_api::OpenSetPayload::new(
+                        "crucible.event.assertion_state_changed",
+                        [
+                            (String::from("id"), Text(assertion.id.name.clone())),
+                            (String::from("new_state"), Text(String::from("Violated"))),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    ),
                 },
-                source: crucible_api::OpenSetEventSource::Node {
-                    node: String::from("fixture-node"),
-                },
-                level: crucible::EventLevel::Info,
-                observational: false,
-                payload: crucible_api::OpenSetPayload::new(
-                    "crucible.event.assertion_state_changed",
-                    [
-                        (String::from("id"), Text(assertion.id.name.clone())),
-                        (String::from("new_state"), Text(String::from("Violated"))),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ),
-            },
+            )
+            .unwrap_or_else(|error| panic!("component event frame: {error}"))
         };
+        let frame = frame_for_retired(Some(23));
         let exact_frame = canonical_streaming_event_frame_bytes(&frame);
+        assert_eq!(
+            admitted_streaming_event_frame_bytes(&frame, &budget)?,
+            exact_frame
+        );
         let artifact = crucible::ContentHash::from_bytes(b"property-frame");
         let violation = property_violation_from_frames(
             &scenario,
@@ -203,8 +237,7 @@ mod tests {
         );
         assert_eq!(violation.reproduction_artifact, artifact);
 
-        let mut optional_frame = frame;
-        optional_frame.event.at.stamp_retired = None;
+        let optional_frame = frame_for_retired(None);
         let optional_frame = canonical_streaming_event_frame_bytes(&optional_frame);
         let optional_violation =
             property_violation_from_frames(&scenario, &[optional_frame], artifact)?;
@@ -214,6 +247,11 @@ mod tests {
             .replace("stamp-retired=23", "icount-retired=23")
             .into_bytes();
         assert!(property_violation_from_frames(&scenario, &[obsolete_frame], artifact).is_err());
+
+        // A prior exhaustion remains authoritative before the renderer reserves
+        // its output, even when the same immutable frame was rendered earlier.
+        assert!(budget.charge_bytes(maximum).is_err());
+        assert!(admitted_streaming_event_frame_bytes(&frame, &budget).is_err());
         Ok(())
     }
 }

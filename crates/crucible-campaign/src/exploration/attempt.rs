@@ -30,6 +30,14 @@ pub enum AttemptContinuationInput {
 }
 
 impl AttemptContinuationInput {
+    /// Copies continuation fields under original metadata admission.
+    ///
+    /// # Errors
+    /// Refuses exhausted original resources or invalid canonical fields.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        crate::codec::admitted_clone(self)
+    }
+
     /// Builds a bounded scheduler re-seed input.
     #[must_use]
     pub const fn scheduler_reseed(
@@ -250,6 +258,14 @@ pub struct BranchPath {
 }
 
 impl BranchPath {
+    /// Clones the canonical value with admission before its owned allocations.
+    ///
+    /// # Errors
+    /// Refuses exhausted original metadata authority or invalid canonical data.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        crate::codec::admitted_clone(self)
+    }
+
     /// Builds a bounded branch-point-scoped path.
     ///
     /// An empty path represents genesis discovery. New paths retain each
@@ -265,6 +281,7 @@ impl BranchPath {
                 limit: "branch-path-edge-count",
             });
         }
+        crucible_cas::owned_decode::charge_array::<BranchEdgeId>(segments.len())?;
         let edges = segments.iter().map(|segment| segment.edge()).collect();
         Ok(Self {
             schema_version: BRANCH_PATH_SCHEMA_VERSION,
@@ -418,6 +435,14 @@ pub struct Attempt {
 }
 
 impl Attempt {
+    /// Clones the canonical value with admission before its owned allocations.
+    ///
+    /// # Errors
+    /// Refuses exhausted original metadata authority or invalid canonical data.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        crate::codec::admitted_clone(self)
+    }
+
     /// Builds a semantic attempt.
     ///
     /// # Errors

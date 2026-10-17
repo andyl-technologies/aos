@@ -56,7 +56,9 @@ pub(super) fn guidance_event_log(index: u64) -> Vec<SchedulerEventLogEntry> {
         Some(node("guest-a")),
     );
     vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &coverage),
-        crucible::test_support::condition_observation_entry_for_test(1, &proximity),
+        crucible::test_support::condition_observation_entry_for_test(0, &coverage)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &proximity)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }

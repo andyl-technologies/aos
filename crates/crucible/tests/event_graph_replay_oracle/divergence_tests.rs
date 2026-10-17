@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn event_graph_replay_oracle_rejects_condition_script_schedule_drift() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut artifact = EventGraphReplayArtifact::capture_converged();
     assert!(artifact.condition_script_matches_recorded_schedule());
 
@@ -18,6 +21,9 @@ fn event_graph_replay_oracle_rejects_condition_script_schedule_drift() {
 
 #[test]
 fn event_graph_replay_oracle_localizes_first_differing_firing() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let artifact = EventGraphReplayArtifact::capture_converged();
     let online = replay_event_graph_artifact(&artifact);
     let mut corrupt_recorded_firings = online.trigger_firings.clone();

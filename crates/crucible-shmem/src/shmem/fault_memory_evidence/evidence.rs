@@ -2,12 +2,12 @@
 
 use super::*;
 
-/// Eight-byte magic for version-1 mutation evidence.
-pub const MEMORY_MUTATION_EVIDENCE_MAGIC_V1: [u8; 8] = *b"CRUCMER1";
+/// Eight-byte magic for version-2 mutation evidence with logical RAM roots.
+pub const MEMORY_MUTATION_EVIDENCE_MAGIC_V2: [u8; 8] = *b"CRUCMER2";
 /// Mutation-evidence semantic version.
-pub const MEMORY_MUTATION_EVIDENCE_VERSION_V1: u16 = 1;
+pub const MEMORY_MUTATION_EVIDENCE_VERSION_V2: u16 = 2;
 /// Fixed evidence header size before canonical records and inline bytes.
-pub const MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES: usize = 304;
+pub const MEMORY_MUTATION_EVIDENCE_HEADER_V2_BYTES: usize = 392;
 /// Evidence semantic-version field offset.
 pub const MEMORY_MUTATION_EVIDENCE_VERSION_OFFSET: usize = 8;
 /// Evidence flags field offset.
@@ -54,42 +54,80 @@ pub const MEMORY_MUTATION_EVIDENCE_INVALIDATED_END_OFFSET: usize = 232;
 pub const MEMORY_MUTATION_EVIDENCE_TARGET_NODE_HASH_OFFSET: usize = 240;
 /// Evidence node-fingerprint field offset.
 pub const MEMORY_MUTATION_EVIDENCE_NODE_FINGERPRINT_OFFSET: usize = 272;
+/// Execution-scope logical RAM root before the mutation.
+pub const MEMORY_MUTATION_EVIDENCE_BEFORE_RAM_BLAKE3_OFFSET: usize = 304;
+/// Execution-scope logical RAM root after the mutation.
+pub const MEMORY_MUTATION_EVIDENCE_AFTER_RAM_BLAKE3_OFFSET: usize = 336;
+/// Input execution-scope logical byte count.
+pub const MEMORY_MUTATION_EVIDENCE_BEFORE_RAM_BYTES_OFFSET: usize = 368;
+/// Output execution-scope logical byte count.
+pub const MEMORY_MUTATION_EVIDENCE_AFTER_RAM_BYTES_OFFSET: usize = 376;
+/// Closed logical RAM encoding edition, which must equal one.
+pub const MEMORY_MUTATION_EVIDENCE_RAM_LOGICAL_EDITION_OFFSET: usize = 384;
+/// Closed RAM root scope, which must equal zero for execution.
+pub const MEMORY_MUTATION_EVIDENCE_RAM_ROOT_SCOPE_OFFSET: usize = 388;
 /// Maximum before-byte count inlined together with the same number after bytes.
 pub const MEMORY_MUTATION_EVIDENCE_INLINE_BYTES: u32 = 65_536;
 /// Evidence flag indicating that before and after bytes are present.
 pub const MEMORY_MUTATION_EVIDENCE_FLAG_INLINE_BYTES: u16 = 1 << 0;
 /// Evidence flag indicating that executable translations were invalidated.
 pub const MEMORY_MUTATION_EVIDENCE_FLAG_TB_INVALIDATED: u16 = 1 << 1;
-/// Complete evidence flag mask understood by version 1.
-pub const MEMORY_MUTATION_EVIDENCE_FLAGS_V1_MASK: u16 = (1 << 2) - 1;
+/// Complete evidence flag mask understood by version 2.
+pub const MEMORY_MUTATION_EVIDENCE_FLAGS_V2_MASK: u16 = (1 << 2) - 1;
 /// SHA-256 domain prefix for the exact post-mutation boundary fingerprint.
-pub const MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V1: &[u8] =
-    b"crucible.memory-boundary-fingerprint.v1\0";
+pub const MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V2: &[u8] =
+    b"crucible.memory-boundary-fingerprint.v2\0";
 /// SHA-256 domain prefix for a prepared memory mutation authorization.
-pub const MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V1: &[u8] =
-    b"crucible.memory-mutation-precondition.v1\0";
+pub const MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V2: &[u8] =
+    b"crucible.memory-mutation-precondition.v2\0";
 
-/// Binds a commit to the bytes, transform result, translations, and RAM map
-/// observed by an earlier non-mutating preparation at a frozen boundary.
+/// Holds the frozen byte, mapping, and whole-RAM commitments authorizing a mutation.
+///
+/// The RAM roots use logical encoding edition one and execution scope zero.
+/// This value groups semantic inputs; its Rust layout is not a wire format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryMutationPreconditionBinding {
+    /// SHA-256 of the selected bytes before mutation.
+    pub before_sha256: [u8; 32],
+    /// SHA-256 of the selected bytes after mutation.
+    pub after_sha256: [u8; 32],
+    /// SHA-256 of the canonical virtual-to-physical translations.
+    pub translation_sha256: [u8; 32],
+    /// SHA-256 of the complete flattened RAM mapping generation.
+    pub mapping_generation_sha256: [u8; 32],
+    /// Execution-scope BLAKE3 logical RAM root before mutation.
+    pub before_ram_blake3: [u8; 32],
+    /// Execution-scope BLAKE3 logical RAM root after mutation.
+    pub after_ram_blake3: [u8; 32],
+    /// Logical bytes covered by the input RAM root.
+    pub before_ram_bytes: u64,
+    /// Logical bytes covered by the output RAM root.
+    pub after_ram_bytes: u64,
+}
+
+/// Binds commit to selected bytes, translations, RAM mapping, and whole RAM roots.
+///
+/// The frozen preparation's input and output logical byte counts follow the six
+/// digests as unsigned little-endian integers. Unselected RAM changes invalidate
+/// authorization even when the selected range and its translation are unchanged.
 #[must_use]
-pub fn memory_mutation_precondition_sha256(
-    before_sha256: [u8; 32],
-    after_sha256: [u8; 32],
-    translation_sha256: [u8; 32],
-    mapping_generation_sha256: [u8; 32],
-) -> [u8; 32] {
+pub fn memory_mutation_precondition_sha256(binding: MemoryMutationPreconditionBinding) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V1);
-    hasher.update(before_sha256);
-    hasher.update(after_sha256);
-    hasher.update(translation_sha256);
-    hasher.update(mapping_generation_sha256);
+    hasher.update(MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V2);
+    hasher.update(binding.before_sha256);
+    hasher.update(binding.after_sha256);
+    hasher.update(binding.translation_sha256);
+    hasher.update(binding.mapping_generation_sha256);
+    hasher.update(binding.before_ram_blake3);
+    hasher.update(binding.after_ram_blake3);
+    hasher.update(binding.before_ram_bytes.to_le_bytes());
+    hasher.update(binding.after_ram_bytes.to_le_bytes());
     hasher.finalize().into()
 }
 
 /// Complete, independently verifiable evidence for one memory mutation.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemoryMutationEvidenceV1 {
+pub struct MemoryMutationEvidenceV2 {
     /// Address space mutated by QEMU.
     pub address_space: MemoryMutationAddressSpace,
     /// Transform applied to the before bytes.
@@ -126,13 +164,21 @@ pub struct MemoryMutationEvidenceV1 {
     pub target_node_hash: [u8; 32],
     /// Canonical post-mutation boundary fingerprint.
     pub node_fingerprint: [u8; 32],
+    /// execution-scope BLAKE3 RAM root before the mutation.
+    pub before_ram_blake3: [u8; 32],
+    /// execution-scope BLAKE3 RAM root after the mutation.
+    pub after_ram_blake3: [u8; 32],
+    /// Logical execution-scope RAM bytes covered by the input root.
+    pub before_ram_bytes: u64,
+    /// Logical execution-scope RAM bytes covered by the output root.
+    pub after_ram_bytes: u64,
     /// Before bytes when the length is within the inline bound.
     pub before_bytes: Vec<u8>,
     /// After bytes when the length is within the inline bound.
     pub after_bytes: Vec<u8>,
 }
 
-impl MemoryMutationEvidenceV1 {
+impl MemoryMutationEvidenceV2 {
     /// Returns the canonical translation digest, or zero for GPA evidence.
     ///
     /// # Errors
@@ -170,7 +216,7 @@ impl MemoryMutationEvidenceV1 {
             u32::try_from(dirty_count).map_err(|_source| MemoryMutationEvidenceError::Length)?;
         let inline_len_u32 =
             u32::try_from(inline_len).map_err(|_source| MemoryMutationEvidenceError::Length)?;
-        let length = MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES
+        let length = MEMORY_MUTATION_EVIDENCE_HEADER_V2_BYTES
             .checked_add(
                 translation_count
                     .checked_mul(MEMORY_TRANSLATION_RECORD_V1_BYTES)
@@ -198,9 +244,9 @@ impl MemoryMutationEvidenceV1 {
             flags |= MEMORY_MUTATION_EVIDENCE_FLAG_TB_INVALIDATED;
         }
         let translation_sha = self.translation_sha256()?;
-        let mut bytes = vec![0; MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES];
-        bytes[0..8].copy_from_slice(&MEMORY_MUTATION_EVIDENCE_MAGIC_V1);
-        put_u16(&mut bytes, 8, MEMORY_MUTATION_EVIDENCE_VERSION_V1);
+        let mut bytes = vec![0; MEMORY_MUTATION_EVIDENCE_HEADER_V2_BYTES];
+        bytes[0..8].copy_from_slice(&MEMORY_MUTATION_EVIDENCE_MAGIC_V2);
+        put_u16(&mut bytes, 8, MEMORY_MUTATION_EVIDENCE_VERSION_V2);
         put_u16(&mut bytes, 10, flags);
         put_u16(&mut bytes, 12, self.address_space as u16);
         put_u16(&mut bytes, 14, self.transform as u16);
@@ -222,6 +268,12 @@ impl MemoryMutationEvidenceV1 {
         put_u64(&mut bytes, 232, self.invalidated_end.unwrap_or(0));
         bytes[240..272].copy_from_slice(&self.target_node_hash);
         bytes[272..304].copy_from_slice(&self.node_fingerprint);
+        bytes[304..336].copy_from_slice(&self.before_ram_blake3);
+        bytes[336..368].copy_from_slice(&self.after_ram_blake3);
+        put_u64(&mut bytes, 368, self.before_ram_bytes);
+        put_u64(&mut bytes, 376, self.after_ram_bytes);
+        put_u32(&mut bytes, 384, 1);
+        put_u32(&mut bytes, 388, 0);
         for record in &self.translations {
             bytes.extend_from_slice(&record.encode()?);
         }
@@ -246,15 +298,17 @@ impl MemoryMutationEvidenceV1 {
     /// Returns [`MemoryMutationEvidenceError`] for bad framing, unknown tags,
     /// invalid records, mismatched digests, or inconsistent inline bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, MemoryMutationEvidenceError> {
-        if bytes.len() < MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES
-            || bytes[0..8] != MEMORY_MUTATION_EVIDENCE_MAGIC_V1
-            || read_u16(bytes, 8) != MEMORY_MUTATION_EVIDENCE_VERSION_V1
+        if bytes.len() < MEMORY_MUTATION_EVIDENCE_HEADER_V2_BYTES
+            || bytes[0..8] != MEMORY_MUTATION_EVIDENCE_MAGIC_V2
+            || read_u16(bytes, 8) != MEMORY_MUTATION_EVIDENCE_VERSION_V2
+            || read_u32(bytes, 384) != 1
+            || read_u32(bytes, 388) != 0
             || bytes[60..64].iter().any(|byte| *byte != 0)
         {
             return Err(MemoryMutationEvidenceError::Framing);
         }
         let flags = read_u16(bytes, 10);
-        if flags & !MEMORY_MUTATION_EVIDENCE_FLAGS_V1_MASK != 0 {
+        if flags & !MEMORY_MUTATION_EVIDENCE_FLAGS_V2_MASK != 0 {
             return Err(MemoryMutationEvidenceError::Framing);
         }
         let translation_count = read_u32(bytes, 40) as usize;
@@ -271,7 +325,7 @@ impl MemoryMutationEvidenceV1 {
         {
             return Err(MemoryMutationEvidenceError::Invalidation);
         }
-        let translations_end = MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES
+        let translations_end = MEMORY_MUTATION_EVIDENCE_HEADER_V2_BYTES
             .checked_add(
                 translation_count
                     .checked_mul(MEMORY_TRANSLATION_RECORD_V1_BYTES)
@@ -309,7 +363,7 @@ impl MemoryMutationEvidenceV1 {
         if expected != bytes.len() || expected > HARD_FAULT_PAYLOAD_BYTES as usize {
             return Err(MemoryMutationEvidenceError::Length);
         }
-        let translations = bytes[MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES..translations_end]
+        let translations = bytes[MEMORY_MUTATION_EVIDENCE_HEADER_V2_BYTES..translations_end]
             .as_chunks::<MEMORY_TRANSLATION_RECORD_V1_BYTES>()
             .0
             .iter()
@@ -356,6 +410,10 @@ impl MemoryMutationEvidenceV1 {
                 .then(|| read_u64(bytes, 232)),
             target_node_hash: read_array32(bytes, 240),
             node_fingerprint: read_array32(bytes, 272),
+            before_ram_blake3: read_array32(bytes, 304),
+            after_ram_blake3: read_array32(bytes, 336),
+            before_ram_bytes: read_u64(bytes, 368),
+            after_ram_bytes: read_u64(bytes, 376),
             before_bytes: bytes[dirty_ranges_end..dirty_ranges_end + inline_len].to_vec(),
             after_bytes: bytes[dirty_ranges_end + inline_len..].to_vec(),
         };
@@ -383,6 +441,10 @@ impl MemoryMutationEvidenceV1 {
             self.before_sha256 == [0; 32] || self.after_sha256 == [0; 32]
         };
         if length == 0
+            || self.before_ram_blake3 == [0; 32]
+            || self.after_ram_blake3 == [0; 32]
+            || self.before_ram_bytes == 0
+            || self.before_ram_bytes != self.after_ram_bytes
             || (inline
                 && (length > MEMORY_MUTATION_EVIDENCE_INLINE_BYTES as usize
                     || self.before_bytes.len() != length
@@ -583,7 +645,7 @@ impl MemoryMutationEvidenceV1 {
             memory_translation_sha256(self.vcpu_index, &self.translations)?
         };
         let mut hasher = Sha256::new();
-        hasher.update(MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V1);
+        hasher.update(MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V2);
         hasher.update(self.target_node_hash);
         hasher.update(self.observed_icount.to_le_bytes());
         hasher.update((self.address_space as u16).to_le_bytes());
@@ -599,6 +661,12 @@ impl MemoryMutationEvidenceV1 {
         hasher.update([u8::from(self.invalidated_start.is_some())]);
         hasher.update(self.invalidated_start.unwrap_or(0).to_le_bytes());
         hasher.update(self.invalidated_end.unwrap_or(0).to_le_bytes());
+        hasher.update(self.before_ram_blake3);
+        hasher.update(self.after_ram_blake3);
+        hasher.update(self.before_ram_bytes.to_le_bytes());
+        hasher.update(self.after_ram_bytes.to_le_bytes());
+        hasher.update(1_u32.to_le_bytes());
+        hasher.update(0_u32.to_le_bytes());
         Ok(hasher.finalize().into())
     }
 }

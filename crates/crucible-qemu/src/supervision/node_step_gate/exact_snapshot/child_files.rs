@@ -36,6 +36,7 @@ pub(super) const PROJECT_ID_COUNT: u32 = 2;
 pub(super) const CHILD_USER_ID: u32 = 65534;
 pub(super) const CHILD_GROUP_ID: u32 = 65534;
 pub(super) const MAXIMUM_TASKS: u32 = 64;
+pub(super) const MAXIMUM_FILE_DESCRIPTORS: u64 = 1024;
 pub(super) const MAXIMUM_INODES: u64 = 4096;
 pub(super) const FINISH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Memory an attempt may use beyond the guest-proportional part of its
@@ -710,6 +711,11 @@ pub(super) fn launch_guarded_source_placed(
         CHILD_USER_ID,
         CHILD_GROUP_ID,
         MAXIMUM_TASKS,
+        MAXIMUM_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         MAXIMUM_INODES,
         FINISH_TIMEOUT,
     )
@@ -777,3 +783,11 @@ pub(super) use super::child_support::{
     file_identity, invariant, qmp_operation, realization, verify_child_placement,
     wait_for_child_exit,
 };
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;

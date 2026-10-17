@@ -1,6 +1,8 @@
 //! Retained QEMU-owned hot-fork template preparation transaction.
 
 #[cfg(test)]
+mod borrow_inventory_tests;
+#[cfg(test)]
 mod native_worker_tests;
 mod preparation;
 #[cfg(test)]

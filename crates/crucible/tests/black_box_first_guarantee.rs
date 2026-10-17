@@ -266,7 +266,9 @@ fn run_complete_black_box_scenario(name: &str, world: &World, graph: &EventGraph
         .expect("readiness observations should append");
     segment_bytes.push(ready_observations.segment_bytes);
 
-    let ready = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let ready = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(fired_names(&ready), vec!["wait-ready"]);
     let ready_append = scheduler
         .apply_trigger_firings(&ready)
@@ -274,7 +276,9 @@ fn run_complete_black_box_scenario(name: &str, world: &World, graph: &EventGraph
     segment_bytes.push(ready_append.segment_bytes);
     trigger_log.extend(ready_append.entries);
     segment_bytes.push(append_boundary(&mut scheduler, 40));
-    let timer = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let timer = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(fired_names(&timer), vec!["timer-observed"]);
     let timer_append = scheduler
         .apply_trigger_firings(&timer)
@@ -287,7 +291,9 @@ fn run_complete_black_box_scenario(name: &str, world: &World, graph: &EventGraph
         .expect("convergence observations should append");
     segment_bytes.push(convergence.segment_bytes);
 
-    let pass = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let pass = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(fired_names(&pass), vec!["pass-on-black-box-convergence"]);
     let pass_append = scheduler
         .apply_trigger_firings(&pass)
@@ -325,7 +331,9 @@ fn run_black_box_violation_path(name: &str, world: &World, graph: &EventGraph) -
         .expect("readiness observations should append");
     segment_bytes.push(ready_observations.segment_bytes);
 
-    let ready = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let ready = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(fired_names(&ready), vec!["wait-ready"]);
     let ready_append = scheduler
         .apply_trigger_firings(&ready)
@@ -338,7 +346,9 @@ fn run_black_box_violation_path(name: &str, world: &World, graph: &EventGraph) -
         .expect("violation observations should append");
     segment_bytes.push(violation.segment_bytes);
 
-    let fail = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let fail = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(fired_names(&fail), vec!["fail-on-property-violation"]);
     let fail_append = scheduler
         .apply_trigger_firings(&fail)
@@ -430,6 +440,9 @@ fn properties_have_guest_marker(properties: &Properties) -> bool {
 
 #[test]
 fn complete_black_box_scenario_runs_deterministically_without_guest_marker() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = black_box_world();
     let properties = properties(&world);
     let plan = plan(&world, false);
@@ -454,6 +467,9 @@ fn complete_black_box_scenario_runs_deterministically_without_guest_marker() {
 
 #[test]
 fn black_box_property_violation_fails_deterministically_without_guest_marker() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = black_box_world();
     let plan = plan(&world, false);
     let graph = plan.event_graph();
@@ -467,6 +483,9 @@ fn black_box_property_violation_fails_deterministically_without_guest_marker() {
 
 #[test]
 fn removing_guest_marker_conditions_leaves_functional_graph() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let enriched_world = white_box_world();
     let enriched_graph = graph(&enriched_world, true);
     assert!(graph_has_guest_marker(&enriched_graph));

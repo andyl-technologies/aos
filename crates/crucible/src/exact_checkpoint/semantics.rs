@@ -2,10 +2,7 @@
 
 use std::io::{self, Read};
 
-use super::{
-    ExactCheckpointClosureRecord, ExactCheckpointExecutionSourceError,
-    ExactCheckpointRepositoryBinding,
-};
+use super::{ExactCheckpointClosureRecord, ExactCheckpointExecutionSourceError};
 use crate::ContentHash;
 
 /// The semantic role of one authenticated closure object.
@@ -67,26 +64,19 @@ pub enum ExactCheckpointSemanticObjectRole<'a> {
     },
 }
 
-pub(super) fn visit_authenticated_semantic_objects(
-    repository: &ExactCheckpointRepositoryBinding,
+pub(super) fn visit_authenticated_semantic_objects<R: Read>(
     closure: &ExactCheckpointClosureRecord,
     targets: &[Option<super::ExactCheckpointTargetRecord>],
     byte_limit: u64,
     mut boundary: impl FnMut() -> io::Result<()>,
-    mut open: impl FnMut(ContentHash) -> io::Result<Box<dyn Read + Send>>,
+    mut open: impl FnMut(ContentHash) -> io::Result<R>,
     mut visit: impl FnMut(
         ExactCheckpointSemanticObjectRole<'_>,
         &[u8],
     ) -> io::Result<Option<ContentHash>>,
 ) -> Result<ContentHash, ExactCheckpointExecutionSourceError> {
-    let objects = read_unique_semantic_objects(
-        repository,
-        closure,
-        targets,
-        byte_limit,
-        &mut boundary,
-        &mut open,
-    )?;
+    let objects =
+        read_unique_semantic_objects(closure, targets, byte_limit, &mut boundary, &mut open)?;
     let mut fault_semantic_identity = None;
     {
         let mut deliver = |role, identity| {
@@ -209,15 +199,15 @@ struct AuthenticatedSemanticObject {
     bytes: Vec<u8>,
 }
 
-fn read_unique_semantic_objects(
-    repository: &ExactCheckpointRepositoryBinding,
+fn read_unique_semantic_objects<R: Read>(
     closure: &ExactCheckpointClosureRecord,
     targets: &[Option<super::ExactCheckpointTargetRecord>],
     byte_limit: u64,
     boundary: &mut impl FnMut() -> io::Result<()>,
-    open: &mut impl FnMut(ContentHash) -> io::Result<Box<dyn Read + Send>>,
+    open: &mut impl FnMut(ContentHash) -> io::Result<R>,
 ) -> Result<Vec<AuthenticatedSemanticObject>, ExactCheckpointExecutionSourceError> {
     let semantic_object_count = closure_object_reference_count(closure, targets)?;
+    admit_original_array::<ContentHash>(semantic_object_count)?;
     let mut identities = Vec::new();
     identities
         .try_reserve_exact(semantic_object_count)
@@ -243,23 +233,24 @@ fn read_unique_semantic_objects(
     identities.dedup();
 
     let mut consumed = 0_u64;
+    admit_original_array::<AuthenticatedSemanticObject>(identities.len())?;
     let mut objects = Vec::new();
     objects
         .try_reserve_exact(identities.len())
         .map_err(|_| io::Error::other("allocate semantic object catalog"))?;
     for identity in identities {
-        let length = repository
+        let length = closure
             .objects
             .binary_search_by_key(&identity, |object| object.identity)
             .ok()
-            .and_then(|index| repository.objects.get(index))
+            .and_then(|index| closure.objects.get(index))
             .ok_or_else(|| io::Error::other("semantic object is absent from repository inventory"))?
             .length;
         consumed = consumed
             .checked_add(length)
             .filter(|total| *total <= byte_limit)
             .ok_or_else(|| io::Error::other("semantic object aggregate exceeds its byte limit"))?;
-        let bytes = read_authenticated_object(repository, identity, boundary, open)?;
+        let bytes = read_authenticated_object(closure, identity, boundary, open)?;
         objects.push(AuthenticatedSemanticObject { identity, bytes });
     }
 
@@ -278,21 +269,22 @@ fn closure_object_reference_count(
         .ok_or_else(|| io::Error::other("semantic object reference count overflow").into())
 }
 
-fn read_authenticated_object(
-    repository: &ExactCheckpointRepositoryBinding,
+fn read_authenticated_object<R: Read>(
+    closure: &ExactCheckpointClosureRecord,
     identity: ContentHash,
     boundary: &mut impl FnMut() -> io::Result<()>,
-    open: &mut impl FnMut(ContentHash) -> io::Result<Box<dyn Read + Send>>,
+    open: &mut impl FnMut(ContentHash) -> io::Result<R>,
 ) -> io::Result<Vec<u8>> {
-    let expected = repository
+    let expected = closure
         .objects
         .binary_search_by_key(&identity, |object| object.identity)
         .ok()
-        .and_then(|index| repository.objects.get(index))
+        .and_then(|index| closure.objects.get(index))
         .ok_or_else(|| io::Error::other("semantic object is absent from repository inventory"))?
         .length;
     let length = usize::try_from(expected)
         .map_err(|_| io::Error::other("semantic object length is not representable"))?;
+    admit_original_array::<u8>(length)?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)
@@ -323,4 +315,11 @@ fn read_authenticated_object(
     }
 
     Ok(bytes)
+}
+
+fn admit_original_array<T>(count: usize) -> io::Result<()> {
+    // The original account retains its complete typed first refusal. This
+    // static I/O marker lets the outer paid decoder reconcile that carrier
+    // without formatting or allocating another diagnostic after refusal.
+    crate::owned_decode::charge_array::<T>(count).map_err(|_| io::ErrorKind::OutOfMemory.into())
 }

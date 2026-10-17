@@ -25,6 +25,7 @@ fn boundary(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn world(policy: WhiteBoxPolicy) -> Result<World, crucible::EngineError> {
@@ -48,12 +49,19 @@ fn world(policy: WhiteBoxPolicy) -> Result<World, crucible::EngineError> {
 
 #[test]
 fn empty_checker_authenticates_2004_entries_and_matches_terminal_report() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let entries: Vec<_> = (0..2004)
         .map(|sequence| boundary(sequence, sequence + 1))
         .collect();
     let canonical_bytes: usize = entries
         .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
+        .map(|entry| {
+            entry
+                .canonical_material_len()
+                .unwrap_or_else(|error| panic!("finite component event material: {error}"))
+        })
         .sum();
     let world = world(WhiteBoxPolicy::Disabled)?;
     let properties = Properties::empty();
@@ -65,8 +73,11 @@ fn empty_checker_authenticates_2004_entries_and_matches_terminal_report() -> Tes
     let terminal =
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(entries)?;
     let expected = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
         .with_world_white_box_policies(&world)
-        .finalize_prefix(&terminal, &mut BlackBoxHostOracle);
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .finalize_prefix(&terminal, &mut BlackBoxHostOracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert_eq!(report, expected);
     assert!(report.outcomes().is_empty());
     println!("empty_checker_measurement entries=2004 canonical_material_bytes={canonical_bytes}");
@@ -75,6 +86,9 @@ fn empty_checker_authenticates_2004_entries_and_matches_terminal_report() -> Tes
 
 #[test]
 fn enabled_empty_checker_authenticates_marker_free_runs() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let enabled_world = world(WhiteBoxPolicy::Enabled)?;
     let disabled_world = world(WhiteBoxPolicy::Disabled)?;
     let properties = Properties::empty();
@@ -85,7 +99,11 @@ fn enabled_empty_checker_authenticates_marker_free_runs() -> TestResult {
             .collect();
         let canonical_bytes: usize = entries
             .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
+            .map(|entry| {
+                entry
+                    .canonical_material_len()
+                    .unwrap_or_else(|error| panic!("finite component event material: {error}"))
+            })
             .sum();
 
         let enabled = OfflineAssertionChecker::new()
@@ -106,6 +124,9 @@ fn enabled_empty_checker_authenticates_marker_free_runs() -> TestResult {
 
 #[test]
 fn enabled_empty_checker_matches_published_atomic_batches() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
     let properties = Properties::empty();
@@ -115,11 +136,16 @@ fn enabled_empty_checker_matches_published_atomic_batches() -> TestResult {
         let mut entries = vec![boundary(0, 10)];
         entries.extend((1..count - 1).map(|sequence| {
             crucible::test_support::condition_observation_entry_for_test(sequence, &observation)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
         }));
         entries.push(boundary(count - 1, 10));
         let canonical_bytes: usize = entries
             .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
+            .map(|entry| {
+                entry
+                    .canonical_material_len()
+                    .unwrap_or_else(|error| panic!("finite component event material: {error}"))
+            })
             .sum();
         let published = RecordedAssertionLog::from_segments([entries.clone()])?;
 
@@ -138,6 +164,9 @@ fn enabled_empty_checker_matches_published_atomic_batches() -> TestResult {
 
 #[test]
 fn enabled_empty_checker_matches_a_late_published_atomic_batch() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
     let properties = Properties::empty();
@@ -149,11 +178,16 @@ fn enabled_empty_checker_matches_a_late_published_atomic_batch() -> TestResult {
             .collect();
         entries.extend((count - 3..count - 1).map(|sequence| {
             crucible::test_support::condition_observation_entry_for_test(sequence, &observation)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
         }));
         entries.push(boundary(count - 1, count));
         let canonical_bytes: usize = entries
             .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
+            .map(|entry| {
+                entry
+                    .canonical_material_len()
+                    .unwrap_or_else(|error| panic!("finite component event material: {error}"))
+            })
             .sum();
         let published = RecordedAssertionLog::from_segments([entries.clone()])?;
 
@@ -207,7 +241,8 @@ fn payload_entry(
 ) -> SchedulerEventLogEntry {
     let resolved = matches!(payload, SchedulerEventLogPayload::ResolvedHappening(_));
     let entry =
-        crucible::test_support::condition_payload_entry_for_test(sequence, time(ticks), payload);
+        crucible::test_support::condition_payload_entry_for_test(sequence, time(ticks), payload)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     if resolved {
         crucible::test_support::condition_entry_with_retirement_witness_for_test(
             entry,
@@ -216,6 +251,7 @@ fn payload_entry(
             }),
             Icount { retired: 0 },
         )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
     } else {
         entry
     }
@@ -232,12 +268,16 @@ fn assert_future_at_five(entries: &[SchedulerEventLogEntry]) {
 
 #[test]
 fn empty_checker_requires_the_original_first_atomic_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let observation = ObservableEvent::network_delivered(time(5), None, b"atomic".to_vec());
     for causal in causal_payloads() {
         // A later visible causal entry cannot repair the hidden observable prefix.
         assert_future_at_five(&[
             boundary(0, 10),
-            crucible::test_support::condition_observation_entry_for_test(1, &observation),
+            crucible::test_support::condition_observation_entry_for_test(1, &observation)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
             payload_entry(2, 10, causal.clone()),
             boundary(3, 10),
         ]);
@@ -271,13 +311,16 @@ fn empty_checker_requires_the_original_first_atomic_boundary() {
     let visible = ObservableEvent::network_delivered(time(10), None, b"visible".to_vec());
     assert_future_at_five(&[
         boundary(0, 10),
-        crucible::test_support::condition_observation_entry_for_test(1, &observation),
-        crucible::test_support::condition_observation_entry_for_test(2, &visible),
+        crucible::test_support::condition_observation_entry_for_test(1, &observation)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(2, &visible)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]);
     // A temporally hidden evaluation boundary remains an original refusal.
     assert_future_at_five(&[
         boundary(0, 10),
-        crucible::test_support::condition_observation_entry_for_test(1, &observation),
+        crucible::test_support::condition_observation_entry_for_test(1, &observation)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         boundary(2, 5),
         boundary(3, 10),
     ]);
@@ -285,12 +328,16 @@ fn empty_checker_requires_the_original_first_atomic_boundary() {
 
 #[test]
 fn empty_checker_preserves_causal_batches_offsets_and_authentication() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for causal in causal_payloads() {
         let observation = ObservableEvent::network_delivered(time(10), None, b"visible".to_vec());
         let entries = vec![
             boundary(0, 10),
             payload_entry(1, 5, causal),
-            crucible::test_support::condition_observation_entry_for_test(2, &observation),
+            crucible::test_support::condition_observation_entry_for_test(2, &observation)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
             boundary(3, 10),
         ];
         let checker = OfflineAssertionChecker::new();
@@ -335,6 +382,9 @@ fn empty_checker_preserves_causal_batches_offsets_and_authentication() -> TestRe
 
 #[test]
 fn empty_checker_preserves_terminal_integrity_and_error_precedence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let checker = OfflineAssertionChecker::new();
     let properties = Properties::empty();
     let corrupt = crucible::test_support::condition_entry_with_content_hash_for_test(
@@ -367,6 +417,9 @@ fn empty_checker_preserves_terminal_integrity_and_error_precedence() {
 
 #[test]
 fn empty_checker_preserves_intermediate_future_entry_refusal() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let result = OfflineAssertionChecker::new().check_run(
         &Properties::empty(),
         &[boundary(0, 10), boundary(1, 8), boundary(2, 10)],
@@ -380,10 +433,14 @@ fn empty_checker_preserves_intermediate_future_entry_refusal() {
 
 #[test]
 fn empty_checker_defers_only_unpublished_atomic_observations() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let observation = ObservableEvent::network_delivered(time(5), None, b"retained".to_vec());
     let entries = vec![
         boundary(0, 10),
-        crucible::test_support::condition_observation_entry_for_test(1, &observation),
+        crucible::test_support::condition_observation_entry_for_test(1, &observation)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         boundary(2, 10),
     ];
     let checker = OfflineAssertionChecker::new();
@@ -405,7 +462,7 @@ fn empty_checker_defers_only_unpublished_atomic_observations() -> TestResult {
     assert!(matches!(
         checker.check_run_with_oracle(
             &Properties::empty(),
-            &RecordedAssertionLog::from_entries(vec![]),
+            &RecordedAssertionLog::from_entries(vec![])?,
             &mut BlackBoxHostOracle
         ),
         Err(OfflineAssertionCheckError::MissingEventLogOffset { prefix_len: 0 })
@@ -415,6 +472,9 @@ fn empty_checker_defers_only_unpublished_atomic_observations() -> TestResult {
 
 #[test]
 fn host_assertion_retains_earlier_failure_before_terminal_success() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Disabled)?;
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -432,7 +492,8 @@ fn host_assertion_retains_earlier_failure_before_terminal_success() -> TestResul
     let ack = ObservableEvent::network_delivered(time(2), None, b"ack".to_vec());
     let entries = vec![
         boundary(0, 1),
-        crucible::test_support::condition_observation_entry_for_test(1, &ack),
+        crucible::test_support::condition_observation_entry_for_test(1, &ack)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         boundary(2, 2),
     ];
     let report = OfflineAssertionChecker::new()
@@ -448,6 +509,9 @@ fn host_assertion_retains_earlier_failure_before_terminal_success() -> TestResul
 
 #[test]
 fn guest_catalog_declared_properties_and_whitebox_markers_keep_outcomes() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let marker = GuestAssertionMarker::new(
         AssertionId::from_name("required"),
         "required marker",
@@ -489,7 +553,8 @@ fn guest_catalog_declared_properties_and_whitebox_markers_keep_outcomes() -> Tes
         marker,
     );
     let entries = vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &observation),
+        crucible::test_support::condition_observation_entry_for_test(0, &observation)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         boundary(1, 1),
     ];
     let dynamic = OfflineAssertionChecker::new()
@@ -504,6 +569,9 @@ fn guest_catalog_declared_properties_and_whitebox_markers_keep_outcomes() -> Tes
 
 #[test]
 fn enabled_markers_retain_earlier_violation_before_later_success() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let marker = |ticks, condition| {
         ObservableEvent::guest_assertion_marker(
@@ -526,9 +594,11 @@ fn enabled_markers_retain_earlier_violation_before_later_success() -> TestResult
     let passing = marker(3, true);
     let entries = vec![
         boundary(0, 1),
-        crucible::test_support::condition_observation_entry_for_test(1, &failing),
+        crucible::test_support::condition_observation_entry_for_test(1, &failing)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         boundary(2, 2),
-        crucible::test_support::condition_observation_entry_for_test(3, &passing),
+        crucible::test_support::condition_observation_entry_for_test(3, &passing)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         boundary(4, 3),
     ];
 
@@ -551,6 +621,9 @@ fn enabled_markers_retain_earlier_violation_before_later_success() -> TestResult
 
 #[test]
 fn disabled_and_unknown_node_markers_remain_unobserved() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for (policy, marker_node) in [
         (WhiteBoxPolicy::Disabled, "guest"),
         (WhiteBoxPolicy::Enabled, "unknown"),
@@ -572,7 +645,8 @@ fn disabled_and_unknown_node_markers_remain_unobserved() -> TestResult {
             ),
         );
         let entries = vec![
-            crucible::test_support::condition_observation_entry_for_test(0, &observation),
+            crucible::test_support::condition_observation_entry_for_test(0, &observation)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
             boundary(1, 1),
         ];
 
@@ -587,6 +661,9 @@ fn disabled_and_unknown_node_markers_remain_unobserved() -> TestResult {
 
 #[test]
 fn enabled_checker_preserves_marker_authentication_and_prefix_refusals() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
     let observation = ObservableEvent::guest_assertion_marker(
@@ -605,7 +682,8 @@ fn enabled_checker_preserves_marker_authentication_and_prefix_refusals() -> Test
         ),
     );
     let marker_entry =
-        crucible::test_support::condition_observation_entry_for_test(2, &observation);
+        crucible::test_support::condition_observation_entry_for_test(2, &observation)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let corrupt = crucible::test_support::condition_entry_with_content_hash_for_test(
         marker_entry.clone(),
         ContentHash::from_bytes(b"tampered marker"),
@@ -635,7 +713,7 @@ fn enabled_checker_preserves_marker_authentication_and_prefix_refusals() -> Test
     assert!(matches!(
         checker.check_run_with_oracle(
             &Properties::empty(),
-            &RecordedAssertionLog::from_entries(vec![boundary(0, 1)]),
+            &RecordedAssertionLog::from_entries(vec![boundary(0, 1)])?,
             &mut BlackBoxHostOracle,
         ),
         Err(OfflineAssertionCheckError::MissingEventLogOffset { prefix_len: 1 })
@@ -668,6 +746,7 @@ fn sparse_marker(
 
 fn marker_entry(sequence: u64, marker: &ObservableEvent) -> SchedulerEventLogEntry {
     crucible::test_support::condition_observation_entry_for_test(sequence, marker)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn published_report(
@@ -683,6 +762,9 @@ fn published_report(
 
 #[test]
 fn sparse_markers_match_original_prefix_reports_for_every_kind_and_update() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
     let properties = Properties::empty();
@@ -721,6 +803,9 @@ fn sparse_markers_match_original_prefix_reports_for_every_kind_and_update() -> T
 
 #[test]
 fn sparse_marker_observes_first_visible_atomic_prefix_before_closing_boundary() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
     let marker = sparse_marker(5, GuestAssertionKind::Always, false, false);
@@ -754,6 +839,9 @@ fn sparse_marker_observes_first_visible_atomic_prefix_before_closing_boundary() 
 
 #[test]
 fn sparse_marker_reports_match_at_flight_scale_without_implicit_observations() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let properties = Properties::empty();
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
@@ -773,10 +861,16 @@ fn sparse_marker_reports_match_at_flight_scale_without_implicit_observations() -
         let terminal = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
             entries.clone(),
         )?;
-        let mut original_evaluator =
-            HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
-        original_evaluator.observe_prefix(&marker_prefix, &mut BlackBoxHostOracle);
-        let expected = original_evaluator.finalize_prefix(&terminal, &mut BlackBoxHostOracle);
+        let mut original_evaluator = HostAssertionEvaluator::new(&properties)
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+            .with_world_white_box_policies(&world)
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
+        original_evaluator
+            .observe_prefix(&marker_prefix, &mut BlackBoxHostOracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+        let expected = original_evaluator
+            .finalize_prefix(&terminal, &mut BlackBoxHostOracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
         let report = checker.check_run(&properties, &entries)?;
 
@@ -788,6 +882,9 @@ fn sparse_marker_reports_match_at_flight_scale_without_implicit_observations() -
 
 #[test]
 fn sparse_marker_payload_reapplication_and_late_retirement_keep_terminal_evidence() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
     let retired = ObservableEvent::node_state(
@@ -824,6 +921,9 @@ fn sparse_marker_payload_reapplication_and_late_retirement_keep_terminal_evidenc
 
 #[test]
 fn sparse_marker_preserves_original_invalid_history_and_terminal_error_order() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
     let marker = marker_entry(
@@ -889,6 +989,9 @@ fn sparse_marker_preserves_original_invalid_history_and_terminal_error_order() -
 
 #[test]
 fn sparse_marker_catalog_and_host_assertions_keep_original_every_prefix_path() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world(WhiteBoxPolicy::Enabled)?;
     let marker = sparse_marker(2, GuestAssertionKind::Always, true, false);
     let entries = vec![boundary(0, 1), marker_entry(1, &marker), boundary(2, 3)];

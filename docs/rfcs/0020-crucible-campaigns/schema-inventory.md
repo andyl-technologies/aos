@@ -23,9 +23,9 @@ The untagged-writer review found these independently versioned contracts:
 
 | Format | Source evidence | Registry entry |
 | --- | --- | --- |
-| Durable production lifecycle state | `crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence` writes `run-state.json` with `PRODUCTION_RUN_STATE_VERSION = 2`; `recovery` checks that version before decoding. | `crucible.production-run-state` |
-| Production run ownership lock | `crucible-api::vm_lifecycle` writes and rereads `active-run.lock` across process lifetimes. Its record requires version 1, and the reader rejects unversioned or unsupported records. | `crucible.production-run-lock` |
-| Production network adapter continuation | `crucible-api::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 11` and validates that version on restore. | `crucible.production-network-adapter-checkpoint` |
+| Durable production lifecycle state | `crucible-daemon::vm_lifecycle::quantum_loop::lifecycle::persistence` writes `run-state.json` with `PRODUCTION_RUN_STATE_VERSION = 2`; `recovery` checks that version before decoding. | `crucible.production-run-state` |
+| Production run ownership lock | `crucible-daemon::vm_lifecycle` writes and rereads `active-run.lock` across process lifetimes. Its record requires version 1, and the reader rejects unversioned or unsupported records. | `crucible.production-run-lock` |
+| Production network adapter continuation | `crucible-daemon::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 11` and validates that version on restore. | `crucible.production-network-adapter-checkpoint` |
 | Pending network output | `crucible::backend::io::network_checkpoint` independently encodes and decodes canonical CBOR for each routed frame, with `BACKEND_NETWORK_OUTPUT_VERSION = 2`. | `crucible.execution.backend-network-output` |
 | Scheduler event-log segment | `crucible::scheduler` writes a binary segment with `EVENT_LOG_SEGMENT_BINARY_VERSION = 4`; the exact checkpoint store retains and authenticates segment bytes for resume. | `crucible.execution.event-log-segment` |
 | Scheduler-owned nested continuations | `crucible::device_subnode::checkpoint` encodes and checks `crucible.device-scheduling-subnode.v1`; `crucible::scheduler::runtime_state::network_checkpoint` independently encodes and checks `crucible.scheduler-network.v2`. Both are decoded from the registered single-scheduler continuation. | `crucible.execution.device-scheduling-subnode`, `crucible.execution.scheduler-network` |
@@ -37,7 +37,10 @@ The untagged-writer review found these independently versioned contracts:
 | Native failure-triage replay evidence | `crucible::model::failure::replay_evidence` checks its version-3 binary magic; the daemon independently checks payload schema 3 inside the campaign triage record before decoding. | `crucible.execution.failure-triage-replay-evidence` |
 | QEMU fuzz corpus index and descriptor | `crucible-cli::cli::run_save::qemu_live::fuzz::corpus` separately reads and writes `live-fuzz-corpus.json` and immutable descriptor objects, each with `CORPUS_SCHEMA = 1`. | `crucible.cli.live-fuzz-corpus-index`, `crucible.cli.live-fuzz-corpus-descriptor` |
 | Guest campaign runtime configuration | `modules/services/crucible-campaign.nix` emits `/etc/crucible/campaign-runtime.env` with `aos.crucible.campaign-runtime.v1`; the phase 1 and phase 9 license gates consume this file and its configuration identity. | `aos.crucible.campaign-runtime` |
-| Control-plane RPC | `crucible-api::rpc_abi` encodes the `crucible.rpc/<message-name>` wire vocabulary at `RPC_PROTOCOL_MAJOR = 8`; the client wire model uses that encoder. | `crucible.api.rpc` |
+| Host operational API | `crucible-api::host_operational::codec` strictly uses schema 4. Every configured duration is a positive exact nanosecond value at most `i64::MAX`; observed remaining durations additionally permit zero. Schemas 1 through 3 are refused. The independent RPC envelope retains its own version. | `crucible.host-operational.frame` |
+| Durable host operational history | `crucible-daemon::host_operational_registry::history` strictly writes and validates `HOSTCTL2`, including charged counters, prepared digests and committed schema-4 response bytes. `HOSTCTL1` records refuse in place without migration, deletion or treating a fenced key as absent. | `crucible.host-operational.history` |
+| RAM operational control | `crucible-protocol::ram_control` encodes and strictly decodes `RAM_CONTROL_VERSION = 11`. Initial launch rosters and live policies share fourteen exact nanosecond records: positive poll and optional positive progress/total allowances bounded by `i64::MAX`; absence remains explicit. Versions 9 and 10 are refused without rounding or a second roster. The independent checkpoint-arm request retains the existing one-shot cancellation-descriptor handover and matched original-generation receipt; encoded bytes create no authority. Inventory retains the complete Rust metadata requirement, excluding native metadata and separately issued installer controls from the request. Optional total-residency observations cover completed mapping intervals and authenticated Start, Observe and Stop actions. The partial interval does not claim private RSS, current physical convergence or reservation-release authority. | `crucible.ram-control.frame` |
+| Control-plane RPC | `crucible-api::rpc_abi` encodes the `crucible.rpc/<message-name>` wire vocabulary at `RPC_PROTOCOL_MAJOR = 9`; the client wire model uses that encoder. | `crucible.api.rpc` |
 | Crucible-owned QEMU migration sections | The QEMU patch declares 29 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. The integrated device-continuation change adds `serial/crucible-timing`, `virtio-blk/crucible-backend-wce`, and `virtio/crucible-start-on-kick`, each at version 1. The CMOS `mc146818rtc/crucible-clock` subsection is version 5 to preserve its exact picosecond phase. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
 | Hot-fork template resource stage | The patched QEMU template reporter emits `CrucibleHotForkTemplateResourceStageState.schema-version = 13`; `crucible-qemu::qmp::hot_fork::template::parse` independently checks that nested version while decoding the version-29 template response. | `crucible.qemu.hot-fork.template-resource-stage` |
 | Guest debug transcript | `crucible-cli::cli::triage_debug::debug_terminal` writes a standalone `CRGT` version-1 recording when `--record-transcript` is selected. Its record bodies use the separately registered guest-introspection frame codec. | `crucible.cli.guest-transcript` |
@@ -53,6 +56,15 @@ The untagged-writer review found these independently versioned contracts:
 | Native profile and gate evidence | `_e2e-determinism-native-runner.sh` writes the per-profile records and the local live-QEMU gate result used by release acceptance. | Two `crucible.e2e.*` rows |
 | Phase 9 acceptance evidence | `_phase9-campaign-release-acceptance.sh` verifies the local live-QEMU gate result, exact closure manifest, and required automated gate results before writing the release-acceptance record. | One `aos.crucible.campaign-release-acceptance` row |
 | Release contract inputs | The release-acceptance and gate-matrix TOML contracts each have a schema tag checked by a dedicated gate. They are retained review inputs, not disposable test fixtures. | Two `aos.crucible.*-contract` or inventory rows |
+
+RAM control version 8 keeps operational measurements separate from reservation
+usage and guest identity. An explicit Start admits one fixed bank under the existing
+metadata owner; Observe and Stop use the existing cleanup guard and do not renew
+deadlines. Its six closed rows count actual application syscall returns, including
+partial failures, verification rereads and independent fork copies. Loop durations
+exclude measurement-bank synchronization, hashing, cache-release advice, queueing
+and page installation. These fields do not establish physical disk traffic or
+whole capture, restore or transfer timings. Sampling stays absent until requested.
 
 The following version-looking strings are excluded as independent registry
 rows. They do not create an additional wire or durable schema:
@@ -106,8 +118,10 @@ rows. They do not create an additional wire or durable schema:
   scenario, reproduction, schedule, or checkpoint payloads. Their source tags
   live in `crucible::model::toml`; they do not create a new RFC-0020 contract.
 
-The `crucible-api/src` production `write_all` and `serde_json::{to_*,from_*}`
-paths were reviewed as a bounded source family, excluding test fixtures:
+The following production `write_all` and `serde_json::{to_*,from_*}` paths
+were reviewed as a bounded source family, excluding test fixtures. The VM
+lifecycle paths now live under `crucible-daemon/src`; the debugger transport
+paths remain under `crucible-api/src`:
 
 | Source paths | Classification |
 | --- | --- |
@@ -118,8 +132,8 @@ paths were reviewed as a bounded source family, excluding test fixtures:
 | `vm_lifecycle/checkpoint_store/{storage,sparse}.rs` and `storage/{file_io,copy}.rs` writes | Authenticated copies or sparse reconstruction of existing checkpoint artifacts and content-addressed bytes. Their formats are owned by the corresponding checkpoint and QEMU VM-state registry rows; copying does not introduce a new decoder. |
 | `debug_gateway.rs` frame write and `debug_relay.rs` stream write | The former writes `crucible.debug-gateway.frame` encoded by `crucible-protocol`; the latter forwards opaque debugger stream bytes without a Crucible schema. |
 
-This review is limited to those `crucible-api/src` production calls and the
-`modules/services/crucible-campaign.nix` outputs. That Nix module emits the
+This review is limited to those lifecycle and debugger production calls and
+the `modules/services/crucible-campaign.nix` outputs. That Nix module emits the
 registered `aos.crucible.campaign-runtime` file and the registered
 `crucible.campaign-local-policy` TOML file parsed by
 `crucible-daemon::campaign_policy`; its systemd unit is service-manager
@@ -170,7 +184,7 @@ such as `crucible-network-probe-v1` are test fixture payloads, not standalone
 decoded records. The hand-coded guest doorbell frame in
 `phase5-cli-fuzz-guest.nix` uses the registered white-box doorbell protocol.
 `_nginx-curl-http-200-guest.nix` adds service configuration and init scripts,
-not a Crucible schema. `crucible.qemu.trace-fingerprint.v7` is emitted by the
+not a Crucible schema. `crucible.qemu.trace-fingerprint.v8` is emitted by the
 GPL trace plugin for phase 0/2 test evidence; the Nix gates consume its JSONL
 output, but it is not a production guest input or persisted campaign format.
 
@@ -245,3 +259,41 @@ across API, shared memory, daemon, model, device, QEMU host, and CLI owners.
 
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.
+
+## Host operational duration cutover
+
+The operator API and the RAM control roster now retain the same exact
+nanosecond duration range. Policy poll/progress/total values and configured
+outer-cap allowances are positive; absence still removes an optional allowance.
+Status remaining values may be zero to describe expiration. Remaining values
+are no longer rounded up to milliseconds, and none of these projections renews
+the actual supervisor's original start or progress coordinates. Values beyond
+`i64::MAX` nanoseconds fail explicitly rather than being truncated. The existing
+CLI's explicitly named millisecond flags remain a UI input convention; typed
+API callers can supply exact sub-millisecond durations.
+
+The principal-bound request digest keeps its existing hash domain because it
+already includes the entire strict schema-prefixed canonical request. Changing
+schema 3 to 4 therefore changes all request identities, including operations
+without a duration field. A one-nanosecond allowance change also changes the
+digest, so the same idempotency key cannot silently accept rounded bytes.
+Both the client receipt verifier and the daemon history use this same encoder.
+
+Durable history stays at the same physical paths with journal edition 2.
+Every ordinary mutation syncs its accounting counter before publishing a
+prepared key. A legitimate charged predecessor history therefore has an
+edition-1 counter, and opening it fails closed before admitting another apply.
+The same strict validation covers staged counters and individual key records;
+a predecessor prepared or committed slot is an error, never an absent key.
+Accepted bytes and charges remain on disk. There is no automatic rewrite,
+reset, directory change, release of accepted capacity, or compatibility reader.
+Deployment of this experimental cutover requires a current history incarnation
+provided through the normal ownership lifecycle, while retained predecessor
+history remains available for explicit reconciliation outside this codec.
+
+This changes operator wire bytes, saved response bytes, and request digests.
+Mixed codec editions and existing predecessor histories are intentionally
+unavailable. Schema and journal component controls cover exact 1 ns and 500 us,
+zero/overflow refusal, predecessor refusal, digest separation, and actual disk
+restart/replay/key conflicts. These controls do not qualify running native
+operations or guest behavior.

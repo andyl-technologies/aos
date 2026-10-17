@@ -53,17 +53,20 @@ fn retained_log() -> Vec<SchedulerEventLogEntry> {
             0,
             time(5),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }
 
 fn observation_entry(sequence: u64, event: &ObservableEvent) -> SchedulerEventLogEntry {
     crucible::test_support::condition_observation_entry_for_test(sequence, event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -72,6 +75,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn edge_case_properties() -> Properties {
@@ -134,7 +138,11 @@ fn online_report(
     properties: &Properties,
     event_log: &[SchedulerEventLogEntry],
 ) -> crucible::HostAssertionReport {
-    online_report_with_evaluator(HostAssertionEvaluator::new(properties), event_log)
+    online_report_with_evaluator(
+        HostAssertionEvaluator::new(properties)
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}")),
+        event_log,
+    )
 }
 
 fn online_report_with_evaluator(
@@ -159,7 +167,9 @@ where
                 event_log[..=index].to_vec(),
             )
             .expect("online intermediate assertion prefix should be checked");
-            evaluator.observe_prefix(&prefix, oracle);
+            evaluator
+                .observe_prefix(&prefix, oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
         }
     }
     let terminal_prefix = if event_log.is_empty() {
@@ -169,7 +179,9 @@ where
             .expect("online assertion prefix should be checked")
     };
 
-    evaluator.finalize_prefix(&terminal_prefix, oracle)
+    evaluator
+        .finalize_prefix(&terminal_prefix, oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
 }
 
 fn outcome<'a>(outcomes: &'a [HostAssertionOutcome], assertion: &str) -> &'a HostAssertionOutcome {
@@ -213,6 +225,9 @@ impl HostAssertionPredicate for AssertionEvaluatedOracle {
 
 #[test]
 fn online_and_offline_fold_read_assertion_evaluated_entries_from_one_event_log() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "host-saw-assertion-evaluation",
         "host assertion observes assertion_evaluated log entry",
@@ -240,7 +255,8 @@ fn online_and_offline_fold_read_assertion_evaluated_entries_from_one_event_log()
     let mut online_oracle =
         crucible::test_support::unchecked_host_assertion_oracle_for_test(AssertionEvaluatedOracle);
     let online = online_report_with_oracle(
-        HostAssertionEvaluator::new(&properties),
+        HostAssertionEvaluator::new(&properties)
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}")),
         &event_log,
         &mut online_oracle,
     );
@@ -272,6 +288,9 @@ fn online_and_offline_fold_read_assertion_evaluated_entries_from_one_event_log()
 
 #[test]
 fn online_and_offline_fold_read_assertion_state_changes_from_one_event_log() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![
         assertion(
             "inner-assertion",
@@ -329,6 +348,9 @@ fn online_and_offline_fold_read_assertion_state_changes_from_one_event_log() {
 
 #[test]
 fn online_and_offline_fold_read_white_box_markers_from_one_event_log() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(Vec::new());
     let marker = GuestAssertionMarker::new(
         assertion_id("guest-sometimes"),
@@ -343,7 +365,10 @@ fn online_and_offline_fold_read_white_box_markers_from_one_event_log() {
     let event_log = vec![observation_entry(0, &marker_event), boundary_entry(1, 9)];
     let policies = [(node("guest"), WhiteBoxPolicy::Enabled)];
     let online = online_report_with_evaluator(
-        HostAssertionEvaluator::new(&properties).with_white_box_policies(policies.clone()),
+        HostAssertionEvaluator::new(&properties)
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+            .with_white_box_policies(&policies.clone().into_iter().collect())
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}")),
         &event_log,
     );
     let offline = OfflineAssertionChecker::new()
@@ -367,6 +392,9 @@ fn online_and_offline_fold_read_white_box_markers_from_one_event_log() {
 
 #[test]
 fn online_and_offline_fold_report_distinct_never_outcomes_identically() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = edge_case_properties();
     let event_log = retained_log();
     let online = online_report(&properties, &event_log);
@@ -420,6 +448,9 @@ fn online_and_offline_fold_report_distinct_never_outcomes_identically() {
 
 #[test]
 fn online_and_offline_fold_report_never_evaluated_identically() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "always-empty-scope",
         "empty retained log never enters the always scope",
@@ -446,6 +477,9 @@ fn online_and_offline_fold_report_never_evaluated_identically() {
 
 #[test]
 fn assertion_log_fold_implementation_exposes_distinct_never_taxonomy() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let trigger = concat!(
         include_str!("../src/trigger/assertions.rs"),
         include_str!("../src/trigger/conditions.rs"),

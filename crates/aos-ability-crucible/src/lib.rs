@@ -249,11 +249,16 @@ where
         let transition = event.boundary.transition();
         let key = event.monitor_key()?;
         let prior = self.monitors.get(&key).copied();
-        let observed = self.monitors.get(&MonitorKey {observation: true, ..key.clone()}) == Some(&MonitorState::Terminal);
+        let observed = self.monitors.get(&MonitorKey {
+            observation: true,
+            ..key.clone()
+        }) == Some(&MonitorState::Terminal);
         // Recovery announces the same durable intent again. A current observed
         // result may become durable without another handler dispatch.
         let ordered = event.boundary == BoundaryName::IntentDurable
-            || (event.boundary == BoundaryName::OutcomeDurable && observed && prior == Some(MonitorState::Intent))
+            || (event.boundary == BoundaryName::OutcomeDurable
+                && observed
+                && prior == Some(MonitorState::Intent))
             || prior == transition.expected
             || prior == Some(transition.next)
             || (key.observation && transition.expected.is_none());
@@ -702,6 +707,8 @@ mod tests {
             check_assertion_violation_reproduction, observable_event_from_whitebox_marker_payload,
         };
 
+        let decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)?;
+
         let emitter = CapturingEmitter::default();
         let mut adapter = Adapter::new(
             config(PathBuf::from("/run/aos-instrumentation/controller.sock")),
@@ -738,12 +745,12 @@ mod tests {
         )
         .context("adapter assertion did not map into a host observation")?;
         let entries = vec![
-            crucible::test_support::condition_observation_entry_for_test(0, &mapped),
+            crucible::test_support::condition_observation_entry_for_test(0, &mapped)?,
             crucible::test_support::condition_boundary_entry_for_test(
                 1,
                 VirtualTime { ticks: 7 },
                 crucible::SchedulerEvaluationBoundaryKind::Quantum,
-            ),
+            )?,
         ];
         let recorded = RecordedAssertionLog::from_segments(vec![entries])?;
         let scenario = ScenarioDefForm::from_components(
@@ -764,6 +771,7 @@ mod tests {
             "aos.execution-boundary.ordered"
         );
         assert_eq!(report.replay.artifact, artifact.id());
+        decode_scope.check()?;
         Ok(())
     }
 

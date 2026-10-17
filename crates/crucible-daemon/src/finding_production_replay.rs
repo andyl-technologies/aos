@@ -191,7 +191,7 @@ impl FindingProductionReplayRecipe {
     /// Returns [`FindingProductionReplayCaptureError::InvalidRecipe`] when a
     /// configured execution bound is zero.
     fn from_lifecycle_config(
-        config: &crucible_api::ProductionVmLifecycleConfig,
+        config: &crate::ProductionVmLifecycleConfig,
     ) -> Result<Self, FindingProductionReplayCaptureError> {
         let mut recipe = Self::new(
             config.run_ceiling_ticks(),
@@ -313,11 +313,16 @@ impl FindingProductionReplayExecutionSide {
             .chain(snapshot.event_log_entries())
             .chain(terminal_entry)
             .try_fold(0_usize, |total, entry| {
-                total.checked_add(entry.canonical_material_len()).ok_or(
-                    FindingProductionReplayCaptureError::LimitExceeded {
+                total
+                    .checked_add(entry.canonical_material_len().map_err(|error| {
+                        FindingProductionReplayCaptureError::Model {
+                            operation: "event-identity",
+                            error: Box::new(error),
+                        }
+                    })?)
+                    .ok_or(FindingProductionReplayCaptureError::LimitExceeded {
                         limit: "finding-production-replay-event-bytes",
-                    },
-                )
+                    })
             })?;
         if event_bytes > limits.max_event_bytes_per_side {
             return Err(FindingProductionReplayCaptureError::LimitExceeded {
@@ -395,7 +400,14 @@ fn validate_event_log_parts(
     for (sequence, entry) in prefix.iter().chain(suffix).enumerate() {
         let sequence = u64::try_from(sequence)
             .map_err(|_| FindingProductionReplayCaptureError::InvalidEventLog)?;
-        if entry.sequence() != sequence || !entry.has_valid_content_hash() || entry.at() > frontier
+        if entry.sequence() != sequence
+            || !entry.has_valid_content_hash().map_err(|error| {
+                FindingProductionReplayCaptureError::Model {
+                    operation: "event-identity",
+                    error: Box::new(error),
+                }
+            })?
+            || entry.at() > frontier
         {
             return Err(FindingProductionReplayCaptureError::InvalidEventLog);
         }

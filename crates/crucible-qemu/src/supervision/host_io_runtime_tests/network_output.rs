@@ -36,9 +36,11 @@ enum NetworkOutputTestError {
     ThreadPanicked(&'static str),
 }
 
-fn read_wake(stream: &mut UnixStream) -> Result<(), NetworkOutputTestError> {
+fn read_wake(stream: &mut UnixStream, phase: &'static str) -> Result<(), NetworkOutputTestError> {
     let mut bytes = [0; std::mem::size_of::<u64>()];
-    stream.read_exact(&mut bytes)?;
+    stream
+        .read_exact(&mut bytes)
+        .map_err(|source| std::io::Error::new(source.kind(), format!("{phase}: {source}")))?;
     assert_eq!(u64::from_ne_bytes(bytes), 1);
     Ok(())
 }
@@ -112,7 +114,7 @@ fn network_output_at_unchanged_tick_requires_a_fresh_ring_frontier_and_control_a
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     let mut plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
     let (mut notifications, wake) = UnixStream::pair()?;
-    notifications.set_read_timeout(Some(Duration::from_secs(2)))?;
+    notifications.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
         shmem.as_fd(),
         wake.as_fd(),
@@ -126,16 +128,16 @@ fn network_output_at_unchanged_tick_requires_a_fresh_ring_frontier_and_control_a
         .publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
     plugin.node_slot(0)?.publish_pause_quiesced(1_000, 20)?;
     let host = std::thread::spawn(move || {
-        let result = runtime.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_secs(1));
+        let result = runtime.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_secs(5));
         (runtime, result)
     });
 
     // An acknowledged control republish at the old coordinate cannot create
     // an output stop. The later periodic wake proves polling remains active.
-    read_wake(&mut notifications)?;
+    read_wake(&mut notifications, "initial advance")?;
     plugin.node_slot(0)?.publish_control_boundary(1_000, 20)?;
     let first_ack = plugin.node_slot(0)?.acknowledge_control_boundary();
-    read_wake(&mut notifications)?;
+    read_wake(&mut notifications, "acknowledged old coordinate")?;
     assert_eq!(plugin.node_slot(0)?.snapshot().max_advance_icount, 2_000);
     plugin.node_slot(0)?.publish_control_boundary(1_000, 20)?;
     plugin.node_slot(0)?.acknowledge_control_boundary();
@@ -154,7 +156,7 @@ fn network_output_at_unchanged_tick_requires_a_fresh_ring_frontier_and_control_a
     plugin.node_slot(0)?.publish_pause_quiesced(1_000, 20)?;
     let mut clamped = plugin.node_slot(0)?.snapshot();
     for _ in 0..16 {
-        read_wake(&mut notifications)?;
+        read_wake(&mut notifications, "fresh output clamp")?;
         clamped = plugin.node_slot(0)?.snapshot();
         if clamped.max_advance_icount == 1_000 {
             break;
@@ -196,13 +198,18 @@ fn network_output_at_unchanged_tick_requires_a_fresh_ring_frontier_and_control_a
     plugin
         .node_slot(0)?
         .publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+    // Periodic doorbells occur after sixteen polling iterations. Leave finite
+    // headroom for both fixture threads to service the two real publications
+    // under the full suite's concurrent process tests; an 80ms deadline could
+    // expire before the peer acknowledged the initial request. The stale head
+    // must still time out under this original, unrenewed deadline.
     let host = std::thread::spawn(move || {
-        runtime.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_millis(80))
+        runtime.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_secs(1))
     });
-    read_wake(&mut notifications)?;
+    read_wake(&mut notifications, "stale output advance")?;
     plugin.node_slot(0)?.publish_control_boundary(1_000, 20)?;
     plugin.node_slot(0)?.acknowledge_control_boundary();
-    read_wake(&mut notifications)?;
+    read_wake(&mut notifications, "acknowledged stale output")?;
     assert_eq!(plugin.node_slot(0)?.snapshot().max_advance_icount, 2_000);
     {
         let rings = plugin.node_directed_ring_pair_mut(

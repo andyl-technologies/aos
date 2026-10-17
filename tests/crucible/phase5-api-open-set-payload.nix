@@ -253,7 +253,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API open-set payload gate for ${taskList}";
+      description = "Crucible API open-set payload gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

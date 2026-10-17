@@ -181,6 +181,8 @@ impl CampaignRepository {
                 AttemptStart::AfterAttempt { origin, .. } => Some(origin),
                 AttemptStart::Discover { .. } | AttemptStart::Branch { .. } => None,
             };
+            crucible_cas::owned_decode::reserve_vec(&mut chain, 1)
+                .map_err(CampaignCodecError::from)?;
             chain.push(attempt);
 
             let Some(origin) = origin else {
@@ -476,11 +478,13 @@ impl CampaignRepository {
         let mut opportunities = BTreeMap::<ContentId, Arc<ChoiceOpportunity>>::new();
         let mut declarations = BTreeMap::<ContentId, Arc<SelectableDeclaration>>::new();
         let mut domains = BTreeMap::<ContentId, Arc<ChoiceDomain>>::new();
+        crucible_cas::owned_decode::charge_array::<ResolvedSelection>(ids.len())
+            .map_err(CampaignCodecError::from)?;
         let mut resolved = Vec::with_capacity(ids.len());
 
         for id in ids {
             if let Some(selection) = selections.get(id) {
-                resolved.push(selection.clone());
+                resolved.push(selection.clone_admitted()?);
                 continue;
             }
 
@@ -526,7 +530,14 @@ impl CampaignRepository {
                 if opportunity.id()?.content_id() != opportunity_id {
                     return Err(integrity("choice-opportunity-envelope-shape"));
                 }
-                Arc::new(opportunity)
+                {
+                    crucible_cas::owned_decode::charge_bytes(
+                        (std::mem::size_of::<ChoiceOpportunity>()
+                            + 2 * std::mem::size_of::<usize>()) as u64,
+                    )
+                    .map_err(CampaignCodecError::from)?;
+                    Arc::new(opportunity)
+                }
             };
 
             let declaration_id = opportunity.declaration().content_id();
@@ -551,7 +562,17 @@ impl CampaignRepository {
                 if declaration.id()?.content_id() != declaration_id {
                     return Err(integrity("selectable-envelope-shape"));
                 }
+                crucible_cas::owned_decode::charge_bytes(
+                    (std::mem::size_of::<SelectableDeclaration>()
+                        + 2 * std::mem::size_of::<usize>()) as u64,
+                )
+                .map_err(CampaignCodecError::from)?;
                 let declaration = Arc::new(declaration);
+                crucible_cas::owned_decode::charge_btree_entry::<
+                    ContentId,
+                    Arc<SelectableDeclaration>,
+                >()
+                .map_err(CampaignCodecError::from)?;
                 declarations.insert(declaration_id, Arc::clone(&declaration));
                 declaration
             };
@@ -581,13 +602,21 @@ impl CampaignRepository {
                 if domain.id()?.content_id() != domain_id {
                     return Err(integrity("choice-domain-envelope-shape"));
                 }
+                crucible_cas::owned_decode::charge_bytes(
+                    (std::mem::size_of::<ChoiceDomain>() + 2 * std::mem::size_of::<usize>()) as u64,
+                )
+                .map_err(CampaignCodecError::from)?;
                 let domain = Arc::new(domain);
+                crucible_cas::owned_decode::charge_btree_entry::<ContentId, Arc<ChoiceDomain>>()
+                    .map_err(CampaignCodecError::from)?;
                 domains.insert(domain_id, Arc::clone(&domain));
                 domain
             };
 
             opportunity.validate_references(&declaration, &domain)?;
             selection.validate_resolved_references(&opportunity, &domain)?;
+            crucible_cas::owned_decode::charge_btree_entry::<ContentId, Arc<ChoiceOpportunity>>()
+                .map_err(CampaignCodecError::from)?;
             opportunities.insert(opportunity_id, Arc::clone(&opportunity));
             let selection = ResolvedSelection {
                 selection,
@@ -595,7 +624,9 @@ impl CampaignRepository {
                 declaration,
                 domain,
             };
-            selections.insert(*id, selection.clone());
+            crucible_cas::owned_decode::charge_btree_entry::<SelectionId, ResolvedSelection>()
+                .map_err(CampaignCodecError::from)?;
+            selections.insert(*id, selection.clone_admitted()?);
             resolved.push(selection);
         }
         Ok(resolved)

@@ -7,6 +7,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::DeviceSnapshotAllocation;
+use crate::snapshot_allocation::{admit_validation, insert_validation_entries};
+
 use crate::error::DeviceError;
 
 use super::BlockOp;
@@ -67,6 +70,13 @@ impl ResolvedBlockServiceRule {
     /// Returns [`DeviceError`] when any field is zero/out of bounds, class IDs
     /// or operation codes are noncanonical, or an operation appears twice.
     pub fn validate(&self) -> Result<(), DeviceError> {
+        self.validate_with_admission(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn validate_with_admission(
+        &self,
+        admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+    ) -> Result<(), DeviceError> {
         if self.bytes_per_second == 0
             || self.iops == Some(0)
             || self.queue_depth == 0
@@ -86,12 +96,15 @@ impl ResolvedBlockServiceRule {
                     .operations
                     .windows(2)
                     .any(|pair| pair[0].to_wire() >= pair[1].to_wire())
-                || class
-                    .operations
-                    .iter()
-                    .any(|operation| !operations.insert(operation.to_wire()))
             {
                 return Err(invalid("invalid block service class"));
+            }
+            for operation in &class.operations {
+                if operations.contains(&operation.to_wire()) {
+                    return Err(invalid("invalid block service class"));
+                }
+                admit_validation(admit, DeviceSnapshotAllocation::ValidationOperation)?;
+                operations.insert(operation.to_wire());
             }
         }
         Ok(())
@@ -198,6 +211,40 @@ impl BlockServiceState {
         keys
     }
 
+    pub(crate) fn live_job_keys_with_admission(
+        &self,
+        admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+    ) -> Result<Vec<([u8; 32], u64)>, DeviceError> {
+        let count = self
+            .continuations
+            .values()
+            .try_fold(0usize, |total, continuation| {
+                total
+                    .checked_add(continuation.pending.len())
+                    .and_then(|total| total.checked_add(usize::from(continuation.active.is_some())))
+            })
+            .ok_or_else(|| invalid("service join count overflow"))?;
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationJobArray { entries: count },
+        )?;
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(count)
+            .map_err(|_| invalid("service join allocation failed"))?;
+        for (contributor, continuation) in &self.continuations {
+            keys.extend(
+                continuation
+                    .pending
+                    .keys()
+                    .copied()
+                    .chain(continuation.active.map(|active| active.queued.job.sequence))
+                    .map(|sequence| (*contributor, sequence)),
+            );
+        }
+        keys.sort_unstable();
+        Ok(keys)
+    }
+
     /// Atomically admits one request to every supplied service constraint.
     ///
     /// An empty rule list means unconstrained service. A contributor identity
@@ -293,19 +340,26 @@ impl BlockServiceState {
     /// Returns [`DeviceError`] for malformed rules, queue/accounting mismatch,
     /// invalid active deadlines, or exceeded hard bounds.
     pub fn validate_restore(&self) -> Result<(), DeviceError> {
+        self.validate_restore_with_admission(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn validate_restore_with_admission(
+        &self,
+        admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+    ) -> Result<(), DeviceError> {
         if self.continuations.len() > HARD_BLOCK_SERVICE_RULES
             || self.live_jobs() > HARD_BLOCK_SERVICE_JOBS
         {
             return Err(limit("block_service_state", HARD_BLOCK_SERVICE_JOBS));
         }
         for (contributor, continuation) in &self.continuations {
-            continuation.rule.validate()?;
+            continuation.rule.validate_with_admission(admit)?;
             if *contributor != continuation.rule.contributor {
                 return Err(invalid(
                     "restored block service contributor differs from its key",
                 ));
             }
-            continuation.validate_restore()?;
+            continuation.validate_restore_with_admission(admit)?;
         }
         Ok(())
     }
@@ -471,7 +525,10 @@ impl BlockServiceContinuation {
         None
     }
 
-    fn validate_restore(&self) -> Result<(), DeviceError> {
+    fn validate_restore_with_admission(
+        &self,
+        admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+    ) -> Result<(), DeviceError> {
         let depth = self.pending.len() + usize::from(self.active.is_some());
         if depth > usize::try_from(self.rule.queue_depth).unwrap_or(usize::MAX)
             || self.weighted_cursor >= self.rule.classes.len().max(1)
@@ -488,7 +545,11 @@ impl BlockServiceContinuation {
         {
             return Err(invalid("invalid restored block service continuation"));
         }
-        let mut sequences = self.pending.keys().copied().collect::<BTreeSet<_>>();
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences { entries: depth },
+        )?;
+        let mut sequences = insert_validation_entries(self.pending.keys().copied());
         if let Some(active) = self.active
             && !sequences.insert(active.queued.job.sequence)
         {

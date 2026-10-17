@@ -224,6 +224,20 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    /// Queries real native borrowers under the same original test operation.
+    ///
+    /// # Errors
+    /// Refuses expired authority, unavailable QMP, or a malformed native inventory.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn query_hot_fork_block_barrier_under(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<QmpHotForkBlockBarrierState, QemuNodeChannelError> {
+        self.client
+            .query_block_borrowers_under(guard)
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Reads complete graph and file custody for the original prepared template.
     ///
     /// # Errors

@@ -1,6 +1,6 @@
 //! Event-graph control-flow spine.
 //!
-//! RFC-0010 file 17a defines scenario control flow as a graph of events. This
+//! Scenario control flow is a deterministic graph of events. This
 //! module owns the first, condition-agnostic layer of that model: an [`Event`]
 //! binds an optional [`Condition`] to an [`Action`] and a [`FirePolicy`], while
 //! [`EventGraphState`] is the only local producer of fired actions. The
@@ -15,12 +15,12 @@ use std::ops::Deref;
 
 use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, CodePoint, ContentHash, Decision, DeviceId,
-    EngineError, EventId, EventKey, EventLogOffset, FramePredicate, Icount, IoEventKind, LinkDef,
-    LinkId, MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
+    EngineError, EventId, EventKey, EventLogOffset, FramePredicate, Icount, IoEventKind, LinkId,
+    MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
     Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram,
     ReproductionArtifact, ReproductionReplay, RngStreamId, Schedule, SchedulerNodeId,
     SchedulingNodeKind, SimDuration, TimeConversionError, TimerId, VirtualTime, WhiteBoxPolicy,
-    World, WorldDeviceKind, WorldStaticTopology,
+    World, WorldDeviceKind,
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,
@@ -28,8 +28,7 @@ use crate::scheduler::{
     ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulerQuiescence, TriggerActionApplication,
-    compare_event_log_determinism, scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
-    scheduler_event_log_segment_bytes,
+    scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
 };
 
 /// Shared predicate vocabulary used by both assertions and event triggers.
@@ -45,6 +44,7 @@ mod deadlines;
 mod evaluation;
 mod event_graph;
 mod evidence;
+mod formal_trace;
 mod guest_assertion_declarations;
 mod guest_assertion_observation;
 mod observability;
@@ -56,6 +56,7 @@ pub use conditions::*;
 pub use evaluation::*;
 pub use event_graph::*;
 use evidence::*;
+use formal_trace::{external_formal_trace_bytes, external_formal_trace_hash};
 use guest_assertion_declarations::*;
 use guest_assertion_observation::*;
 pub use observability::*;

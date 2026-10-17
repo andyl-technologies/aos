@@ -17,7 +17,11 @@
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
   ];
-  protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  protocol = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-protocol/src/lib.rs
+    ../../crates/crucible-protocol/src/plugin_observation.rs
+    ../../crates/crucible-protocol/src/control_lifecycle.rs
+  ]);
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 

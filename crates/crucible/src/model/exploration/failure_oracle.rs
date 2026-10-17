@@ -109,7 +109,7 @@ pub struct SearchFailureOracle {
 }
 
 /// One prefix-safe assertion finding evaluated for an exact search configuration.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SearchAssertionFinding {
     pub(in crate::model) fingerprint: ContentHash,
     pub(in crate::model) violation: HostAssertionViolation,

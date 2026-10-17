@@ -66,9 +66,16 @@
   ];
   testScript = ''
     set -eu
-    for option in CFS_BANDWIDTH QUOTA QFMT_V2 QUOTACTL; do
+    for option in USERFAULTFD CFS_BANDWIDTH QUOTA QFMT_V2 QUOTACTL; do
       grep -Fxq "CONFIG_$option=y" ${pkgs.linux}/boot/config-*
     done
+    # This permission is scoped to the disposable qualification VM. It permits
+    # the unprivileged QEMU child to handle kernel-origin faults; no host sysctl
+    # is changed, and a missing kernel facility fails this test.
+    test -e /proc/sys/vm/unprivileged_userfaultfd
+    echo 1 > /proc/sys/vm/unprivileged_userfaultfd
+    test "$(cat /proc/sys/vm/unprivileged_userfaultfd)" = 1
+
     test -s ${guest}/initrd.img
     mkdir -p /sys/fs/cgroup
     if ! ${pkgs.util-linux}/bin/mountpoint -q /sys/fs/cgroup; then

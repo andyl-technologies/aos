@@ -23,6 +23,22 @@ pub(super) fn parse_reproduction_finding_evidence(
     validate_reproduction_finding_field_set(fields, evidence_kind, frames.len())?;
     let item = match evidence_kind {
         "property" => {
+            let encoded_fields = ["assertion_hex", "message_hex", "node_hex", "detail_hex"];
+            let field_bytes =
+                encoded_fields
+                    .iter()
+                    .try_fold("assertion_state_changed".len(), |bytes, key| {
+                        bytes
+                            .checked_add(fields.get(*key).map_or(0, String::len))
+                            .ok_or_else(|| artifact_error("finding evidence size overflow"))
+                    })?;
+            // Hex inputs bound both the decoder's byte buffer and returned UTF-8
+            // allocation. The original source account owns both before parsing.
+            crucible_session::engine::owned_decode::charge_bytes(
+                u64::try_from(field_bytes)
+                    .map_err(|_| artifact_error("finding evidence size overflow"))?,
+            )
+            .map_err(|error| artifact_error(format!("admit finding evidence fields: {error}")))?;
             let assertion =
                 crucible::AssertionId::from_name(parse_hex_string_field(fields, "assertion_hex")?);
             let message = parse_hex_string_field(fields, "message_hex")?;
@@ -33,19 +49,22 @@ pub(super) fn parse_reproduction_finding_evidence(
             let node = parse_optional_hex_string_field(fields, "node_hex")?
                 .map(|name| crucible::NodeId { name });
             let detail = parse_hex_string_field(fields, "detail_hex")?;
-            let violation = crucible_model::HostAssertionViolation {
-                assertion,
-                message,
-                quantifier,
-                event_kind: String::from("assertion_state_changed"),
-                at_icount,
-                at_virtual_time: crucible::VirtualTime {
-                    ticks: at_virtual_time,
+            let violation = crucible_model::HostAssertionViolation::from_owned_fields(
+                crucible_model::HostAssertionViolationFields {
+                    assertion,
+                    message,
+                    quantifier,
+                    event_kind: String::from("assertion_state_changed"),
+                    at_icount,
+                    at_virtual_time: crucible::VirtualTime {
+                        ticks: at_virtual_time,
+                    },
+                    node,
+                    detail,
+                    reproduction_artifact: finding.artifact.id(),
                 },
-                node,
-                detail,
-                reproduction_artifact: finding.artifact.id(),
-            };
+            )
+            .map_err(|error| artifact_error(format!("admit finding violation: {error}")))?;
             triage_property_evidence_for_violation_with_recording(
                 finding,
                 violation,

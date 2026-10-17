@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn gate_basic_block_coverage_is_registration_time_opt_in() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let off = BasicBlockCoverageConfig::new(BasicBlockCoverageMode::Off, 0);
     let off_plan = off
         .registration_plan()
@@ -43,6 +46,9 @@ fn gate_basic_block_coverage_is_registration_time_opt_in() {
 
 #[test]
 fn gate_basic_block_coverage_consumes_tcg_exec_blocks_without_guest_instrumentation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let plan = BasicBlockCoverageConfig::new(BasicBlockCoverageMode::On, 1024)
         .registration_plan()
         .unwrap_or_else(|error| panic!("coverage should register: {error}"));
@@ -86,6 +92,9 @@ fn gate_basic_block_coverage_consumes_tcg_exec_blocks_without_guest_instrumentat
 
 #[test]
 fn gate_basic_block_coverage_has_zero_fingerprint_effect() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new())
         .unwrap_or_else(|error| panic!("build empty coverage world: {error}"));
     let off_config = BasicBlockCoverageConfig::off();
@@ -115,7 +124,11 @@ fn gate_basic_block_coverage_has_zero_fingerprint_effect() {
     assert!(!on_config.requires_guest_instrumentation());
     assert_eq!(off_genesis.id(), on_genesis.id());
     assert_eq!(off_fingerprint, on_fingerprint);
-    assert!(compare_event_log_determinism(&baseline, &with_coverage).passes());
+    assert!(
+        compare_event_log_determinism(&baseline, &with_coverage)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .passes()
+    );
 }
 
 fn execution_fingerprint(configuration: &Configuration) -> ExecutionFingerprint {
@@ -140,6 +153,7 @@ fn time(ticks: u64) -> VirtualTime {
 
 fn observation_entry(sequence: u64, event: &ObservableEvent) -> SchedulerEventLogEntry {
     crucible::test_support::condition_observation_entry_for_test(sequence, event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn rng_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {
@@ -151,6 +165,7 @@ fn rng_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {
             value,
         })),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -159,4 +174,5 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }

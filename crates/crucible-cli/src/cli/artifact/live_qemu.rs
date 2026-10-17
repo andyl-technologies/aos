@@ -613,6 +613,12 @@ fn parse_reproduction_record(
     line_index: usize,
     fields: &[String],
 ) -> Result<crucible_api::ReproductionCommandRecord, CliError> {
+    let fields_bytes = fields[3]
+        .len()
+        .checked_add(fields[5].len())
+        .ok_or_else(|| artifact_error("reproduction record size overflow"))?;
+    crucible_session::engine::owned_decode::charge_bytes(fields_bytes as u64)
+        .map_err(|error| artifact_error(format!("admit reproduction record fields: {error}")))?;
     let command = parse_session_command_kind(line_index, &fields[2])?;
     let command_payload = String::from_utf8(parse_hex_bytes(line_index, "record", &fields[3])?)
         .map_err(|error| {
@@ -644,22 +650,25 @@ fn parse_reproduction_record(
             "unknown reproduction command result",
         ));
     }
-    Ok(crucible_api::ReproductionCommandRecord {
-        sequence: parse_u64(line_index, "record", &fields[1])?,
-        payload: crucible_api::ReproductionCommandPayload {
-            command,
-            command_payload,
-            scheduler_batch: parse_u64(line_index, "record", &fields[4])?,
-            scheduler_control,
+    crucible_api::ReproductionCommandRecord::from_owned_fields(
+        crucible_api::ReproductionCommandRecordFields {
+            sequence: parse_u64(line_index, "record", &fields[1])?,
+            payload: crucible_api::ReproductionCommandPayload {
+                command,
+                command_payload,
+                scheduler_batch: parse_u64(line_index, "record", &fields[4])?,
+                scheduler_control,
+            },
+            virtual_time: crucible::VirtualTime {
+                ticks: parse_u64(line_index, "record", &fields[6])?,
+            },
+            quanta: parse_u64(line_index, "record", &fields[7])?,
+            at_sequence: parse_u64(line_index, "record", &fields[8])?,
+            result: crucible_api::ReproductionCommandResult::Accepted,
+            observational_order: parse_u64(line_index, "record", &fields[10])?,
         },
-        virtual_time: crucible::VirtualTime {
-            ticks: parse_u64(line_index, "record", &fields[6])?,
-        },
-        quanta: parse_u64(line_index, "record", &fields[7])?,
-        at_sequence: parse_u64(line_index, "record", &fields[8])?,
-        result: crucible_api::ReproductionCommandResult::Accepted,
-        observational_order: parse_u64(line_index, "record", &fields[10])?,
-    })
+    )
+    .map_err(|error| artifact_error(format!("admit reproduction record: {error}")))
 }
 
 fn parse_session_command_kind(

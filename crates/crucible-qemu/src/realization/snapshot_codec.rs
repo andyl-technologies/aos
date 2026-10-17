@@ -39,6 +39,28 @@ impl QemuVmSnapshot {
         encode_snapshot(self, fat_checkpoint_bytes)
     }
 
+    /// Decodes two canonical captures and compares their Apache continuations.
+    ///
+    /// Each snapshot is decoded and authenticated under the same authored byte
+    /// ceiling before its complete host/node values are compared. The caller
+    /// retains the input buffers and must admit both decoded owners together.
+    /// This checks component equality, not physical origin, complete World
+    /// state, native CPU/device/RAM equivalence or performance qualification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmSnapshotCodecError`] for either snapshot under the same
+    /// conditions as [`Self::from_canonical_bytes_with_limit`].
+    pub fn compare_host_continuation_bytes(
+        baseline: &[u8],
+        candidate: &[u8],
+        fat_checkpoint_bytes: u64,
+    ) -> Result<bool, QemuVmSnapshotCodecError> {
+        let baseline = Self::from_canonical_bytes_with_limit(baseline, fat_checkpoint_bytes)?;
+        let candidate = Self::from_canonical_bytes_with_limit(candidate, fat_checkpoint_bytes)?;
+        Ok(baseline.same_host_continuation(&candidate))
+    }
+
     /// Decodes and authenticates a complete QEMU exact snapshot.
     ///
     /// # Errors

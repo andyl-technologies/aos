@@ -26,6 +26,10 @@
       expected = "library";
     }
     {
+      package = "crucible-ram";
+      expected = "library";
+    }
+    {
       package = "crucible-device";
       expected = "library";
     }
@@ -75,6 +79,10 @@
     }
     {
       package = "crucible-linux-resource";
+      expected = "library";
+    }
+    {
+      package = "crucible-sqlite-heap";
       expected = "library";
     }
     {

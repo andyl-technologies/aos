@@ -20,17 +20,22 @@ fn time(ticks: u64) -> VirtualTime {
 fn retained_log() -> Vec<SchedulerEventLogEntry> {
     let delivered = ObservableEvent::network_delivered(time(7), None, b"ack".to_vec());
     vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &delivered),
+        crucible::test_support::condition_observation_entry_for_test(0, &delivered)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             time(7),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }
 
 #[test]
 fn formal_trace_export_is_deterministic_trace_bytes_only() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event_log = retained_log();
 
     let first = ExternalFormalTraceExporter::export_event_log(&event_log)
@@ -60,6 +65,9 @@ fn formal_trace_export_is_deterministic_trace_bytes_only() {
 
 #[test]
 fn formal_trace_export_rejects_invalid_recorded_log() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut event_log = retained_log();
     event_log[0] = crucible::test_support::condition_entry_with_content_hash_for_test(
         event_log[0].clone(),
@@ -71,12 +79,17 @@ fn formal_trace_export_rejects_invalid_recorded_log() {
 
     assert!(matches!(
         error,
-        ConditionEvaluationError::InvalidEventLogEntryHash { sequence: 0 }
+        crucible::OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::InvalidEventLogEntryHash { sequence: 0 }
+        )
     ));
 }
 
 #[test]
 fn formal_trace_export_hex_encodes_free_form_strings() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let marker = GuestAssertionMarker::new(
         AssertionId::from_name("assert\nid"),
         "message\nspoof=entry",
@@ -96,7 +109,10 @@ fn formal_trace_export_hex_encodes_free_form_strings() {
         },
         marker,
     );
-    let log = vec![crucible::test_support::condition_observation_entry_for_test(0, &event)];
+    let log = vec![
+        crucible::test_support::condition_observation_entry_for_test(0, &event)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    ];
 
     let export = ExternalFormalTraceExporter::export_event_log(&log)
         .expect("retained marker log should export");
@@ -114,6 +130,9 @@ fn formal_trace_export_hex_encodes_free_form_strings() {
 
 #[test]
 fn formal_trace_export_includes_typed_diagnostic_details() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut details = BTreeMap::new();
     details.insert(String::from("flag"), EventAttributeValue::Bool(true));
     details.insert(String::from("count"), EventAttributeValue::U64(37));
@@ -147,15 +166,18 @@ fn formal_trace_export_includes_typed_diagnostic_details() {
         String::from("severity"),
         EventAttributeValue::Level(EventLevel::Error),
     );
-    let log = vec![crucible::test_support::condition_payload_entry_for_test(
-        0,
-        time(3),
-        SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
-            "diag\nname",
-            EventLevel::Warn,
-            details,
-        )),
-    )];
+    let log = vec![
+        crucible::test_support::condition_payload_entry_for_test(
+            0,
+            time(3),
+            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                "diag\nname",
+                EventLevel::Warn,
+                details,
+            )),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    ];
 
     let export =
         ExternalFormalTraceExporter::export_event_log(&log).expect("diagnostic log should export");
@@ -199,6 +221,9 @@ fn formal_trace_export_includes_typed_diagnostic_details() {
 
 #[test]
 fn formal_trace_export_does_not_add_runtime_formal_evaluator() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let trigger = concat!(
         include_str!("../src/trigger/assertions.rs"),
         include_str!("../src/trigger/evidence.rs"),
@@ -223,24 +248,27 @@ fn formal_trace_export_does_not_add_runtime_formal_evaluator() {
             "formal trace export must include {required}"
         );
     }
-    let external_trace_block = trigger
-        .split("fn external_formal_trace_bytes")
-        .nth(1)
-        .expect("external trace byte helper should exist")
-        .split("fn condition_prefix_from_recorded_log")
-        .next()
-        .expect("external trace helpers should precede recorded log helper");
+    let external_trace_block = concat!(
+        include_str!("../src/trigger/formal_trace.rs"),
+        include_str!("../src/trigger/formal_trace/observable.rs"),
+    );
     for required in [
+        "fn external_formal_trace_bytes",
         "fn external_formal_trace_entry_material",
         "fn external_scheduler_event_log_payload_material",
         "fn external_observable_event_payload_material",
-        "fn external_scheduler_evaluation_boundary_kind_label",
+        "external_scheduler_evaluation_boundary_kind_label(*kind)",
     ] {
         assert!(
             external_trace_block.contains(required),
             "formal trace export helpers must include {required}"
         );
     }
+    assert!(
+        include_str!("../src/trigger/evidence.rs")
+            .contains("fn external_scheduler_evaluation_boundary_kind_label"),
+        "formal trace export must retain the shared canonical boundary labels"
+    );
     for forbidden in [":?", "scheduler_event_log_segment_bytes"] {
         assert!(
             !external_trace_block.contains(forbidden),

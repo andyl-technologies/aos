@@ -174,7 +174,11 @@ fn assert_cold_rejects(
     expected_reason: &'static str,
 ) {
     let forged = forge_branch_request_successor(repository, parent, request);
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let result = cold.validate_complete_head(forged);
     assert!(
         matches!(
@@ -283,7 +287,11 @@ fn scenario_default_request_uses_the_ordinary_snapshot_bound_service_path() {
         }
     );
 
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     cold.validate_complete_head(admitted.new_snapshot.content_id())
         .expect("cold validation accepts admitted exact default");
 }

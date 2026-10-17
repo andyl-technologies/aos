@@ -20,7 +20,11 @@
       }
       {
         label = "worker-owned digest";
-        needle = "let sample = work.captured.digest();";
+        needle = ".captured\n                        .digest()";
+      }
+      {
+        label = "fallible digest precedes publication";
+        needle = ".and_then(|sample| {\n                            slot.get().publish(&sample)";
       }
       {
         label = "worker-owned acknowledgement";
@@ -51,7 +55,7 @@
     grep -Fxq PASS ${productionPluginFlight}/raw-result
     grep -Fxq 'gate=gate:production-rust-plugin-flight' ${productionPluginFlight}/raw-result
     grep -Fxq ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} ${productionPluginFlight}/raw-result
-    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
     grep -Fxq ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"} ${productionPluginFlight}/raw-result
   '';
   verifyScript = ''

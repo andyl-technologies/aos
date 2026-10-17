@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn preemption_within_window_records_decision_and_application_in_total_order() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let runner = scheduler_node("runner");
     let producer = scheduler_node("producer");
     let preemption = interrupt_preemption("runner", 4, 32);
@@ -80,6 +83,9 @@ fn preemption_within_window_records_decision_and_application_in_total_order() {
 
 #[test]
 fn preemption_at_authorized_ceiling_is_allowed() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let preemption = interrupt_preemption("runner", 6, 33);
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
@@ -107,6 +113,9 @@ fn preemption_at_authorized_ceiling_is_allowed() {
 
 #[test]
 fn preemption_waits_for_vm_node_not_same_named_subnode() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let preemption = interrupt_preemption("guest", 4, 34);
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
@@ -161,6 +170,9 @@ fn preemption_waits_for_vm_node_not_same_named_subnode() {
 
 #[test]
 fn preemption_past_authorized_ceiling_fails_without_application() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-past-ceiling",
@@ -197,6 +209,9 @@ fn preemption_past_authorized_ceiling_fails_without_application() {
 
 #[test]
 fn preemption_before_deadline_fails_without_application() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-before-deadline",
@@ -232,6 +247,9 @@ fn preemption_before_deadline_fails_without_application() {
 
 #[test]
 fn multiple_preemptions_for_one_run_fail_before_advance() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-one-command-per-run",
@@ -268,6 +286,9 @@ fn multiple_preemptions_for_one_run_fail_before_advance() {
 
 #[test]
 fn concurrent_preemption_validation_is_all_or_nothing() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-concurrent-all-or-nothing",
@@ -318,6 +339,9 @@ fn concurrent_preemption_validation_is_all_or_nothing() {
 
 #[test]
 fn concurrent_multiple_preemptions_for_one_run_fail_before_any_commit() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-concurrent-multiple-one-run",
@@ -369,6 +393,9 @@ fn concurrent_multiple_preemptions_for_one_run_fail_before_any_commit() {
 
 #[test]
 fn concurrent_preemptions_record_in_commanded_time_order() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let alpha = interrupt_preemption("alpha", 5, 40);
     let beta = interrupt_preemption("beta", 2, 41);
     let mut scheduler = SingleScheduler::new(
@@ -452,6 +479,9 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
 
 #[test]
 fn pending_preemption_blocks_quiescence_until_applied() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let preemption = interrupt_preemption("runner", 1, 36);
     let scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(

@@ -105,8 +105,8 @@
     )
     lines;
 
-  fenceTags = ["text" "rust" "toml" "no_run" "ignore"];
-  doctestedFenceTags = ["rust" "no_run"];
+  fenceTags = ["text" "rust" "toml" "no_run" "ignore" "compile_fail"];
+  doctestedFenceTags = ["rust" "no_run" "compile_fail"];
   leadingBackticks = value: let
     length = builtins.stringLength value;
     count = index:
@@ -354,6 +354,9 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
+    compileFailContent = "//! synthetic\n//! ```compile_fail\n//! let value: u8 = \"invalid\";\n//! ```\n";
+    compileFailFence = rustdocFailuresForContent "crucible-daemon" "crucible-daemon/src/lib.rs" compileFailContent;
+    nonDoctestedCompileFailFence = rustdocFailuresForContent "crucible-cli" "crucible-cli/src/main.rs" compileFailContent;
     hasFinding = needle: findings:
       builtins.any (finding: hasInfix needle finding) findings;
   in
@@ -377,6 +380,12 @@
     ]
     ++ lib.optionals (hasFinding "unsupported rustdoc fence tag" tabTaggedFence) [
       "rustdoc-bar regression failed to parse a tab-separated rustdoc fence tag"
+    ]
+    ++ lib.optionals (hasFinding "unsupported rustdoc fence tag" compileFailFence) [
+      "rustdoc-bar regression failed to accept compile_fail contract examples"
+    ]
+    ++ lib.optionals (!(hasFinding "not covered by cargo test --doc" nonDoctestedCompileFailFence)) [
+      "rustdoc-bar regression failed to reject a non-doctested compile_fail fence"
     ]
     ++ lib.optionals (!(hasFinding "not covered by cargo test --doc" nonDoctestedNoRunFence)) [
       "rustdoc-bar regression failed to reject a non-doctested no_run fence"

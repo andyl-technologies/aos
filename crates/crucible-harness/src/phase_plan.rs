@@ -1,4 +1,4 @@
-//! Phase-gate ordering for RFC-0010.
+//! Phase-gate ordering for deterministic execution qualification.
 //!
 //! The catalog records names once; this plan records every occurrence, including repeated gates.
 
@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::find_gate;
 
-/// A Crucible determinism-test layer from RFC-0010 file 24 section 2.
+/// A Crucible determinism-test layer with an explicit execution scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeterminismLayer {
     /// L0 deterministic runtime and assertion primitives.
@@ -77,13 +77,13 @@ pub const SIM_DOUBLE_AVAILABLE_PHASE: PhasePlanPhase = PhasePlanPhase::Phase1;
 /// Whether an occurrence is a canonical gate or a phase-local aggregate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhaseGateKind {
-    /// The occurrence names a gate from the canonical RFC-0010 gate catalog.
+    /// The occurrence names a gate from the canonical determinism gate catalog.
     CatalogGate,
     /// The occurrence names a phase-local aggregate outside the gate catalog.
     NonCatalogAggregate,
 }
 
-/// One ordered phase-gate occurrence from RFC-0010 file 24 section 13.
+/// One gate occurrence in the ordered implementation plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PhaseGateOccurrence {
     /// The phase whose exit this occurrence guards.
@@ -162,7 +162,7 @@ pub struct LayerGatePrecedenceFailure {
     pub rationale: &'static str,
 }
 
-/// One rung in the advanced-feature dependency ladder from RFC-0010 file 22.
+/// One rung in the advanced-feature dependency ladder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AdvancedFeatureRung {
     /// Exact deterministic replay is the bedrock below every advanced feature.
@@ -358,7 +358,7 @@ const ADVANCED_LADDER_FOUNDATION: &[&str] = &[
     "checks.crucible.phase5.gates.controlResponsive",
 ];
 
-/// ADV checklist ordering required by RFC-0010 file 22 section 22.1.
+/// Required advanced-feature checklist ordering.
 pub const ADVANCED_FEATURE_TASK_ORDER: &[AdvancedFeatureTaskOrder] = &[
     AdvancedFeatureTaskOrder {
         task_id: "T-ADV-1",
@@ -530,7 +530,7 @@ pub const ADVANCED_FEATURE_TASK_ORDER: &[AdvancedFeatureTaskOrder] = &[
     },
 ];
 
-/// The full ordered phase-gate plan from RFC-0010 file 24 section 13.
+/// The complete ordered phase-gate plan.
 pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
     non_catalog_gate(
         PhasePlanPhase::Phase0,

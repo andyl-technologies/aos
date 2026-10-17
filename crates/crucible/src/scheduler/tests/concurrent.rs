@@ -68,7 +68,7 @@ impl TestConcurrentBackend {
 impl SimulationBackend for TestConcurrentBackend {
     fn dispatch_contract(&self) -> crate::BackendDispatchContract {
         if self.control_v3 {
-            crate::BackendDispatchContract::ControlV3
+            crate::BackendDispatchContract::CeilingControl
         } else {
             crate::BackendDispatchContract::PhysicalSource
         }
@@ -229,6 +229,9 @@ impl ConcurrentSimulationBackend for TestConcurrentBackend {
 
 #[test]
 fn concurrent_prepare_is_private_until_canonical_commit() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let nodes = ["node-a", "node-b"]
         .into_iter()
         .map(|name| {
@@ -275,6 +278,9 @@ fn concurrent_prepare_is_private_until_canonical_commit() {
 
 #[test]
 fn choice_pause_prepares_only_the_first_canonical_run_before_backend_execution() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let nodes = ["node-a", "node-b"]
         .into_iter()
         .map(|name| {
@@ -308,6 +314,9 @@ fn choice_pause_prepares_only_the_first_canonical_run_before_backend_execution()
 
 #[test]
 fn choice_free_boot_batches_five_peers_then_returns_to_serial_pause() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let nodes = [
         "router-a",
         "router-b",
@@ -392,6 +401,9 @@ fn choice_free_boot_batches_five_peers_then_returns_to_serial_pause() {
 
 #[test]
 fn concurrent_backend_rejects_zero_workers_before_preparation() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = test_scheduler(
         vec![test_scenario_node(
             "node-a",
@@ -427,6 +439,9 @@ fn concurrent_backend_rejects_zero_workers_before_preparation() {
 
 #[test]
 fn concurrent_backend_failure_leaves_scheduler_uncommitted() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = test_scheduler(
         vec![test_scenario_node(
             "node-a",
@@ -471,6 +486,9 @@ fn concurrent_backend_failure_leaves_scheduler_uncommitted() {
 
 #[test]
 fn concurrent_publication_failure_leaves_logical_state_uncommitted_and_poisons() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     struct InvalidEvidenceBackend(MockSimulationBackend);
 
     impl SimulationBackend for InvalidEvidenceBackend {

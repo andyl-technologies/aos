@@ -280,7 +280,11 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
         .project_beam_planner(&snapshot, &policy)
         .expect("reuse exact-view Beam projection");
     assert!(Arc::ptr_eq(&projection, &cached_projection));
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let restarted_snapshot = restarted
         .read_snapshot(filtered_requested.new_snapshot.content_id())
         .expect("load Beam snapshot after repository restart");
@@ -1291,7 +1295,11 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
         .expect("load accepted planner step");
     assert_eq!(accepted.selected_source(), Some(first_position.source()));
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     restarted
         .validate_complete_head(issued.new_snapshot.content_id())
         .expect("restart validates canonical planner issue");
@@ -1436,6 +1444,7 @@ fn canonical_search_driver_carries_a_first_page_winner_through_restart_and_accep
         CampaignRepository::with_component_authorities(
             Arc::clone(&repository.blobs),
             Arc::clone(&repository.refs),
+            repository.ram_admission().clone(),
             planner_authority.clone(),
             debugger_authority,
         )
@@ -2990,7 +2999,11 @@ fn finite_vector_issue_charges_its_authenticated_closure_delta() {
     let stored_growth = blobs.object_count().expect("new object count") - prior_objects;
     assert!(hot_closure - prior_closure >= stored_growth);
     assert!(hot_closure - prior_closure < MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH);
-    let cold = CampaignRepository::new(blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        blobs.clone(),
+        repository.refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     assert_eq!(
         cold.head(campaign).expect("cold head").snapshot_id(),
         accepted.new_snapshot
@@ -3619,7 +3632,11 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
     expected_segments.push(crate::BranchPathSegment::new(branch_point, edge));
     assert_eq!(path.segments(), expected_segments.as_slice());
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     restarted
         .validate_complete_head(accepted.new_snapshot.content_id())
         .expect("restart-valid nested planner issue");

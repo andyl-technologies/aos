@@ -1,6 +1,6 @@
 //! The network-link sub-node: a directed `A -> B` edge that schedules frames.
 //!
-//! This module owns [`NetLink`], the link sub-node of RFC-0010 §15.4. A link
+//! This module owns [`NetLink`], the scheduled network-link sub-node. A link
 //! carries [`Frame`]s from a source VM node to a destination over the
 //! [`SLOT_NET_ROUTER`] shmem slot: given a frame emitted by the source at icount
 //! `t`, the link computes the destination
@@ -9,7 +9,7 @@
 //!
 //! Unlike the block and 9p sub-nodes (whose completion is an *exact* local
 //! event), the link is **the one source of conservative uncertainty**
-//! (§15.4.2): its base latency supplies the scheduler's lookahead bound, so the
+//! because its base latency supplies the scheduler's lookahead bound. The
 //! link enforces a strictly positive latency floor ([IO-33]), clamps sub-floor
 //! latency faults up to that floor, raises a recompute signal when the
 //! conservative minimum latency bound changes, and fails loudly when a

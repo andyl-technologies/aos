@@ -138,7 +138,7 @@
       }
       {
         label = "plugin sink causal projection empty";
-        needle = "event_log_causal_projection(&sink.entries).is_empty()";
+        needle = "event_log_causal_projection(&sink.entries)\n            .expect(\"admitted causal projection\")\n            .is_empty()";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
@@ -238,7 +238,7 @@
       }
       {
         label = "causal projection empty for markers";
-        needle = "event_log_causal_projection(&append).is_empty()";
+        needle = "event_log_causal_projection(&append)\n            .unwrap_or_else(|error| panic!(\"finite component event-log operation: {error}\"))\n            .is_empty()";
       }
       {
         label = "determinism comparison excludes markers";

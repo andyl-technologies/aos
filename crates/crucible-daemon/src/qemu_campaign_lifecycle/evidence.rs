@@ -19,7 +19,7 @@ use crucible::{
 // crucible-lint: allow host-nondeterminism-state -- the observer forwards scheduler-owned quantum requests and records successful outcomes without selecting modeled state.
 use crucible::{QuantumOutcome, QuantumRequest};
 // crucible-lint: allow host-nondeterminism-state -- replay and fault snapshots remain typed evidence forwarded from the guarded lifecycle.
-use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
+use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 use thiserror::Error;
@@ -526,6 +526,15 @@ where
             .map_err(map_terminal_evidence_inner_failure)
     }
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .try_retire_original(original)
+            .map_err(QemuTerminalEvidenceExecutionRunnerError::Inner)
+    }
+
     fn quarantine_pending_execution(&mut self) {
         self.inner.quarantine_pending_execution();
     }
@@ -548,6 +557,20 @@ where
 {
     type Lifecycle = QemuObservedFreshAttemptLifecycle<F::Lifecycle>;
     type Error = QemuObservedFreshAttemptLifecycleFactoryError<F::Error>;
+
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        let (lifecycle, _, _) = lifecycle.into_recovery_parts();
+        QemuFreshAttemptLifecycleFactory::retire_lifecycle(&mut self.inner, lifecycle)
+            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Inner)
+    }
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        QemuFreshAttemptLifecycleFactory::try_retire_original(&mut self.inner, original)
+            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Inner)
+    }
 
     fn configure_attempt_continuation(
         &mut self,
@@ -628,14 +651,7 @@ fn map_terminal_evidence_inner_failure<E>(
 fn map_terminal_evidence_snapshot_failure<E>(
     error: SchedulerError,
 ) -> AttemptWorkerFailure<QemuTerminalEvidenceExecutionRunnerError<E>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
+    let class = error.operational_failure_class();
     let error = QemuTerminalEvidenceExecutionRunnerError::Evidence(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),

@@ -97,7 +97,7 @@ pub(super) fn encode_destroy_session_response(response: &DestroySessionResponse)
 pub(super) fn encode_get_reproduction_response(response: &GetReproductionResponse) -> String {
     let mut output = String::from("crucible.rpc/get-reproduction-response\n");
     push_session_ref(&mut output, response.session);
-    for command in &response.commands {
+    for command in response.commands.iter() {
         push_wire_line(&mut output, "command", &reproduction_record_wire(command));
     }
     output

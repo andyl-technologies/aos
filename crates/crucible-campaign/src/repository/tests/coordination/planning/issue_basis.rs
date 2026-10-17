@@ -104,7 +104,11 @@ fn issue_fixture() -> IssueFixture {
         publication_fault: Mutex::new(None),
         failed_publication: Mutex::new(Vec::new()),
     });
-    let repository = CampaignRepository::new(backend.clone(), original.refs.clone());
+    let repository = CampaignRepository::new(
+        backend.clone(),
+        original.refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let campaign = CAMPAIGN;
     let genesis = repository
         .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
@@ -304,7 +308,11 @@ fn issue_basis_preserves_complete_journal_and_output_identity() {
         .repository
         .load_planner_step_at(accepted.new_snapshot, accepted.step)
         .expect("hot Issue");
-    let cold = CampaignRepository::new(first.backend.clone(), first.repository.refs.clone());
+    let cold = CampaignRepository::new(
+        first.backend.clone(),
+        first.repository.refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     assert_eq!(
         cold.head(CAMPAIGN).expect("cold head").snapshot_id(),
         accepted.new_snapshot
@@ -482,8 +490,11 @@ fn enlarged_issue_publication_preserves_head_after_partial_write_or_bad_receipt(
         );
         assert_eq!(journal_bytes(&fixture.repository, fixture.snapshot), before);
 
-        let cold =
-            CampaignRepository::new(fixture.backend.clone(), fixture.repository.refs.clone());
+        let cold = CampaignRepository::new(
+            fixture.backend.clone(),
+            fixture.repository.refs.clone(),
+            crate::CampaignRamAdmission::Unavailable,
+        );
         assert_eq!(
             cold.head(CAMPAIGN)
                 .expect("cold unchanged head")

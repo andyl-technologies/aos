@@ -383,7 +383,7 @@ pub enum OpenSetEventSource {
 }
 
 /// Event-log entry shape delivered by API streams.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct OpenSetEventEnvelope {
     /// Dense event-log sequence number.
     pub sequence: u64,
@@ -400,6 +400,11 @@ pub struct OpenSetEventEnvelope {
 }
 
 /// Converts one scheduler event-log entry into its API event envelope.
+///
+/// This ordinary component projection owns copies without operational resource
+/// custody. Live and saved operational output uses
+/// [`StreamingEventFrame::from_entry_admitted`](crate::StreamingEventFrame::from_entry_admitted)
+/// to admit and retain those copies under its original resource authority.
 #[must_use]
 pub fn open_set_event_envelope_from_entry(entry: &SchedulerEventLogEntry) -> OpenSetEventEnvelope {
     let time = entry.time();
@@ -416,6 +421,78 @@ pub fn open_set_event_envelope_from_entry(entry: &SchedulerEventLogEntry) -> Ope
         observational: entry.class() == SchedulerEventLogClass::Observational,
         payload: open_set_payload_from_event_payload(entry.event_payload()),
     }
+}
+
+pub(crate) fn event_envelope_admitted(
+    entry: &SchedulerEventLogEntry,
+) -> Result<OpenSetEventEnvelope, crucible::EngineError> {
+    use crate::admitted_output::{admission, text};
+    let time = entry.time();
+    let source = match entry.source() {
+        EventSource::Scenario { event } => OpenSetEventSource::Scenario {
+            event: text(&event.name)?,
+        },
+        EventSource::Engine => OpenSetEventSource::Engine,
+        EventSource::Node { node } => OpenSetEventSource::Node {
+            node: text(&node.name)?,
+        },
+        EventSource::Guest { node } => OpenSetEventSource::Guest {
+            node: text(&node.name)?,
+        },
+        EventSource::Command { command_id } => OpenSetEventSource::Command {
+            command_id: *command_id,
+        },
+    };
+    let payload = entry.event_payload();
+    let kind = text(&format_args!(
+        "{}{}",
+        OPEN_SET_EVENT_KIND_PREFIX,
+        payload.kind()
+    ))?;
+    let mut attributes = BTreeMap::new();
+    for (name, value) in payload.attributes() {
+        crucible::owned_decode::charge_btree_entry::<String, OpenSetAttributeValue>()
+            .map_err(admission)?;
+        let name = text(name)?;
+        let value = match value {
+            EventAttributeValue::Bool(value) => OpenSetAttributeValue::Bool(*value),
+            EventAttributeValue::U64(value) => OpenSetAttributeValue::Uint(*value),
+            EventAttributeValue::U128(value) => OpenSetAttributeValue::Uint128(*value),
+            EventAttributeValue::String(value) => OpenSetAttributeValue::String(text(value)?),
+            EventAttributeValue::Bytes(value) => {
+                let mut bytes = Vec::new();
+                crucible::owned_decode::reserve_vec(&mut bytes, value.len()).map_err(admission)?;
+                bytes.extend_from_slice(value);
+                OpenSetAttributeValue::Bytes(bytes)
+            }
+            EventAttributeValue::Node(value) => OpenSetAttributeValue::String(text(&value.name)?),
+            EventAttributeValue::Event(value) => OpenSetAttributeValue::String(text(&value.name)?),
+            EventAttributeValue::VirtualTime(value) => OpenSetAttributeValue::Uint(value.ticks),
+            EventAttributeValue::Icount(value) => OpenSetAttributeValue::Uint(value.retired),
+            EventAttributeValue::Level(value) => {
+                OpenSetAttributeValue::String(text(event_level_label(*value))?)
+            }
+        };
+        attributes.insert(name, value);
+    }
+    Ok(OpenSetEventEnvelope {
+        sequence: entry.sequence(),
+        at: OpenSetEventTime {
+            virtual_time_ticks: time.virtual_time.ticks,
+            stamp_tick: time.stamp.tick.ticks,
+            stamp_retired: time.stamp.retired.map(|value| value.retired),
+            stamp_node: time
+                .stamp
+                .node
+                .as_ref()
+                .map(|node| text(&node.name))
+                .transpose()?,
+        },
+        source,
+        level: entry.level(),
+        observational: entry.class() == SchedulerEventLogClass::Observational,
+        payload: OpenSetPayload { kind, attributes },
+    })
 }
 
 /// Event payload received by a client.

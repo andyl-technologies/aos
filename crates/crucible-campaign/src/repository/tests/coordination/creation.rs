@@ -69,7 +69,11 @@ fn campaign_service_creation_replays_the_exact_genesis_after_later_mutation() {
         created.snapshot()
     );
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let restarted_client = crate::CampaignClient::new(crate::RepositoryCampaignService::new(
         &restarted,
         PermitAlice,
@@ -156,7 +160,11 @@ fn concurrent_creation_replays_equal_basis_and_rejects_different_basis() {
     let same_barrier = Arc::new(std::sync::Barrier::new(2));
     let mut same_handles = Vec::new();
     for _ in 0..2 {
-        let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+        let repository = Arc::new(CampaignRepository::new(
+            blobs.clone(),
+            refs.clone(),
+            crate::CampaignRamAdmission::Unavailable,
+        ));
         let request = same_request.clone();
         let barrier = Arc::clone(&same_barrier);
         same_handles.push(std::thread::spawn(move || {
@@ -208,7 +216,11 @@ fn concurrent_creation_replays_equal_basis_and_rejects_different_basis() {
     let different_barrier = Arc::new(std::sync::Barrier::new(2));
     let mut different_handles = Vec::new();
     for request in requests {
-        let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+        let repository = Arc::new(CampaignRepository::new(
+            blobs.clone(),
+            refs.clone(),
+            crate::CampaignRamAdmission::Unavailable,
+        ));
         let barrier = Arc::clone(&different_barrier);
         different_handles.push(std::thread::spawn(move || {
             barrier.wait();

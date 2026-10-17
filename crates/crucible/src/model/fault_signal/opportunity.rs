@@ -20,6 +20,11 @@ pub const FAULT_ID_MAX_BYTES: usize = 96;
 pub struct FaultObjectId(String);
 
 impl FaultObjectId {
+    /// Copies the validated string under the enclosing original resource account.
+    pub(crate) fn try_clone_admitted(&self) -> Result<Self, crate::EngineError> {
+        Ok(Self(crate::model::admitted_clone::copy_string(&self.0)?))
+    }
+
     /// Parses a lower-case, hyphen-separated identifier.
     ///
     /// # Errors

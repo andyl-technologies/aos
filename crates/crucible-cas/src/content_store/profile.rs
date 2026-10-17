@@ -258,12 +258,20 @@ impl ImmutableBlobBackend for ProfileValidatedStore {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         let mut capabilities = self.child.capabilities();
         // Profile derivation consumes the complete canonical source before a
         // range is returned, so range reads remain correct but are not cheap.
         capabilities.streaming_read = false;
         capabilities
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.child.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {

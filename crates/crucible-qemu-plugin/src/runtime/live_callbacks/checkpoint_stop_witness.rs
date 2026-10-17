@@ -189,6 +189,7 @@ impl Notice {
 
 impl LiveVcpuTimeCallbackState {
     /// Binds already-validated setup identity before this callback state is published.
+    #[cfg(test)]
     pub(in crate::runtime) fn attach_stop_caller_identity(
         mut self,
         backing: crucible_shmem::SetupRegionBackingIdentity,

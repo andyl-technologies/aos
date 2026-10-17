@@ -183,6 +183,9 @@ pub(crate) struct PendingObservationResume<L> {
     pub(super) factory: ResumeObservationLoopFactory<L>,
     pub(super) context: ResumeObservationPreparationContext,
     pub(super) permit: ResumeObservationPreparationPermit,
+    // The original account follows the request onto the blocking thread and
+    // remains last so authentication inputs close before their credit.
+    pub(super) decoding: crucible::owned_decode::DecodeBudget,
 }
 
 impl<L> PendingObservationResume<L> {
@@ -191,6 +194,10 @@ impl<L> PendingObservationResume<L> {
     }
 
     pub(crate) fn authenticate(self) -> Result<PreparedObservationResume<L>, LifecycleApiError> {
+        let _scope = self.decoding.enter();
+        self.decoding
+            .check()
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
         let loop_instance = (self.factory)(&self.request, &self.configuration, &self.context)?;
         if self.context.cancellation.is_canceled() {
             return Err(LifecycleApiError::ResumeObservationSource {
@@ -203,6 +210,7 @@ impl<L> PendingObservationResume<L> {
             loop_instance,
             context: self.context,
             _permit: self.permit,
+            decoding: self.decoding,
         })
     }
 }
@@ -213,6 +221,7 @@ pub(crate) struct PreparedObservationResume<L> {
     pub(super) loop_instance: L,
     pub(super) context: ResumeObservationPreparationContext,
     _permit: ResumeObservationPreparationPermit,
+    pub(super) decoding: crucible::owned_decode::DecodeBudget,
 }
 
 impl<L> PreparedObservationResume<L> {

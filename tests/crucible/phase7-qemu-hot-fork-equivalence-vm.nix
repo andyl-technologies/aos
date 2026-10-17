@@ -13,6 +13,7 @@
     inherit pkgs;
     hotForkEquivalence = true;
   };
+  idleGuest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   scenario = pkgs.writeTextFile {
     name = "crucible-e2e-determinism-scenario";
     destination = "/scenario.toml";
@@ -67,6 +68,22 @@
       }
     ];
   };
+  rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
+  pagingKernelSetupScript = import ./_ram-native-kernel-setup.nix {
+    inherit pkgs lib rootImage;
+    nativeQemu = pkgs.qemu-crucible;
+    nativePlugin = pkgs.crucible-qemu-plugin;
+    guest = idleGuest;
+    lanes = ["equivalence-origins-single-1" "equivalence-origins-multi-1" "atomic-preparation"];
+    storageImageBytes = 68719476736;
+    buildGraph = builtins.hashString "sha256" (builtins.concatStringsSep "\n" [
+      pkgs.linux.drvPath
+      pkgs.qemu-crucible.drvPath
+      pkgs.crucible-qemu-plugin.drvPath
+      flight.drvPath
+      rootImage.drvPath
+    ]);
+  };
   cgroupRoot =
     if campaignComposition == null
     then "/sys/fs/cgroup/crucible"
@@ -85,14 +102,13 @@
     set -eu
     cleanup_attempt_mount() {
       ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
+      ${pkgs.util-linux}/bin/umount /var/paging-storage > /dev/null 2>&1 || true
     }
     trap cleanup_attempt_mount EXIT HUP INT TERM
 
-    for option in CFS_BANDWIDTH QUOTA QFMT_V2 QUOTACTL; do
-      ${pkgs.grep}/bin/grep -Fxq "CONFIG_$option=y" ${pkgs.linux}/boot/config-*
-    done
+    ${pagingKernelSetupScript}
+
     mkdir -p /sys/fs/cgroup
-    ${lib.optionalString (campaignComposition == null) "${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup"}
     echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
     mkdir ${cgroupRoot}
     echo '+cpu +memory +pids' > ${cgroupRoot}/cgroup.subtree_control
@@ -249,14 +265,22 @@
       > ${resultPath}
     cat ${resultPath}
     ${pkgs.util-linux}/bin/umount /tmp/attempts
+    ${pkgs.util-linux}/bin/umount /var/paging-storage
     trap - EXIT HUP INT TERM
   '';
   authoritativeGate = testing.mkVMTest {
     name = "crucible-qemu-hot-fork-equivalence";
-    memory = 8192;
+    # Three one-vCPU nodes in four live worlds, plus catalog and registry
+    # services, require fourteen CPU slots. The outer memory and writable image
+    # cover the authored 32-GiB resident and 64-GiB backing envelopes.
+    headlessVcpuCount = 14;
+    memory = 36864;
+    extraWritableMiB = 81920;
     rootfsDeps = [
+      rootImage
       flight
       guest
+      idleGuest
       scenario
       pkgs.crucible
       pkgs.qemu-crucible
@@ -282,6 +306,7 @@ in
       runtimeClosures = [
         flight
         guest
+        idleGuest
         scenario
         pkgs.crucible
         pkgs.qemu-crucible
@@ -291,7 +316,7 @@ in
       # Three 30-minute cases plus a bounded 30-minute boot, setup, and
       # evidence-retention margin.
       timeout = 7200;
-      memoryMiB = 8192;
-      varSizeMiB = 16384;
+      memoryMiB = 36864;
+      varSizeMiB = 81920;
     }
   else authoritativeGate

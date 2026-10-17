@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn multi_vcpu_run_subdivision_uses_fixed_quantum_and_ascending_rotation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("runner");
     let policy = SchedulerRunSubdivisionPolicy::new(node.clone(), 3, 4)
         .expect("RR subdivision policy should be valid");
@@ -61,6 +64,9 @@ fn multi_vcpu_run_subdivision_uses_fixed_quantum_and_ascending_rotation() {
 
 #[test]
 fn concurrent_rr_subdivision_records_one_completed_record_per_outcome() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let alpha = scheduler_node("alpha");
     let beta = scheduler_node("beta");
     let alpha_policy = SchedulerRunSubdivisionPolicy::new(alpha.clone(), 2, 3)
@@ -137,6 +143,9 @@ fn concurrent_rr_subdivision_records_one_completed_record_per_outcome() {
 
 #[test]
 fn failed_resolve_after_run_plan_records_no_rr_subdivision() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let runner = scheduler_node("runner");
     let producer = scheduler_node("producer");
     let mut invalid_event = backend_event(5, &runner, &producer, 0, b"wrong-target");
@@ -180,6 +189,9 @@ fn failed_resolve_after_run_plan_records_no_rr_subdivision() {
 
 #[test]
 fn single_vcpu_subdivision_consumes_whole_budget() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let slices = scheduler_rr_run_subdivision(NodeCounter { ticks: 3 }, 11, 1, 4)
         .expect("single-vCPU RR subdivision should be valid");
 
@@ -188,6 +200,9 @@ fn single_vcpu_subdivision_consumes_whole_budget() {
 
 #[test]
 fn run_subdivision_policy_does_not_publish_extra_ceilings() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let policy = SchedulerRunSubdivisionPolicy::new(scheduler_node("runner"), 2, 3)
         .expect("RR subdivision policy should be valid");
     let mut scheduler = SingleScheduler::new(
@@ -220,6 +235,9 @@ fn run_subdivision_policy_does_not_publish_extra_ceilings() {
 
 #[test]
 fn invalid_rr_policy_rejects_zero_quantum_or_vcpus() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let zero_vcpus = SchedulerRunSubdivisionPolicy::new(scheduler_node("runner"), 0, 4)
         .expect_err("zero vCPUs should be rejected");
     let zero_quantum = SchedulerRunSubdivisionPolicy::new(scheduler_node("runner"), 2, 0)
@@ -237,6 +255,9 @@ fn invalid_rr_policy_rejects_zero_quantum_or_vcpus() {
 
 #[test]
 fn node_without_run_subdivision_policy_records_no_rr_slices() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "rr-subdivision-no-policy",
         8,

@@ -14,6 +14,7 @@ in
       != ".git"
       && base != ".crucible"
       && base != "target"
+      && base != "run-state"
       && pathString != "${repoRootString}/result"
       && (
         pathString
@@ -25,6 +26,7 @@ in
           "${repoRootString}/tests/crucible"
           "${repoRootString}/tests/crucible/fixtures"
           "${repoRootString}/tests/crucible/fixtures/live-qemu-fuzz.family.toml"
+          "${repoRootString}/tests/crucible/fixtures/e2e-determinism.scenario.toml"
           "${repoRootString}/docs"
           "${repoRootString}/docs/rfcs"
           "${repoRootString}/docs/rfcs/0020-crucible-campaigns"

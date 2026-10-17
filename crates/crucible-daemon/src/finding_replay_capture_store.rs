@@ -100,12 +100,22 @@ impl FindingReplayCaptureStore {
     pub fn prepare_set(
         inputs: [FindingReplayCaptureInput; 4],
     ) -> Result<PreparedFindingReplayCaptureSet, FindingReplayCaptureStoreError> {
+        Self::prepare_set_with_boundary(inputs, &mut || Ok(()))
+    }
+
+    /// Derives bounded capture objects while polling the original host operation.
+    pub(crate) fn prepare_set_with_boundary(
+        inputs: [FindingReplayCaptureInput; 4],
+        boundary: &mut dyn FnMut() -> Result<(), FindingReplayCaptureStoreError>,
+    ) -> Result<PreparedFindingReplayCaptureSet, FindingReplayCaptureStoreError> {
+        boundary()?;
         let mut manifests = BTreeMap::new();
         let mut chunks = BTreeMap::new();
         let mut unique_chunk_bytes = 0_u64;
         let mut references = Vec::with_capacity(4);
 
         for input in inputs {
+            boundary()?;
             let (bytes, content_hash) = match input {
                 FindingReplayCaptureInput::Complete {
                     bytes,
@@ -117,7 +127,7 @@ impl FindingReplayCaptureStore {
                 }
             };
 
-            let prepared = match prepare_capture(bytes, content_hash) {
+            let prepared = match prepare_capture(bytes, content_hash, boundary) {
                 Ok(prepared) => prepared,
                 Err(FindingReplayCaptureStoreError::LimitExceeded {
                     limit: "finding-replay-capture-bytes",
@@ -193,19 +203,33 @@ impl FindingReplayCaptureStore {
         guard: &CampaignExecutorPublicationGuard<'_>,
         prepared: &PreparedFindingReplayCaptureSet,
     ) -> Result<(), FindingReplayCaptureStoreError> {
+        Self::publish_set_with_boundary(guard, prepared, &mut || Ok(()))
+    }
+
+    /// Publishes each bounded object under the caller's original host scope.
+    pub(crate) fn publish_set_with_boundary(
+        guard: &CampaignExecutorPublicationGuard<'_>,
+        prepared: &PreparedFindingReplayCaptureSet,
+        boundary: &mut dyn FnMut() -> Result<(), FindingReplayCaptureStoreError>,
+    ) -> Result<(), FindingReplayCaptureStoreError> {
+        boundary()?;
         for (id, source) in &prepared.chunks {
+            boundary()?;
             require_durable_receipt(
                 guard.put_finding_replay_capture_object(*id, source)?,
                 *id,
                 source,
             )?;
+            boundary()?;
         }
         for (id, source) in &prepared.manifests {
+            boundary()?;
             require_durable_receipt(
                 guard.put_finding_replay_capture_object(*id, source)?,
                 *id,
                 source,
             )?;
+            boundary()?;
         }
         Ok(())
     }
@@ -420,10 +444,12 @@ struct PreparedCapture {
 fn prepare_capture(
     bytes: Vec<u8>,
     content_hash: ContentHash,
+    boundary: &mut dyn FnMut() -> Result<(), FindingReplayCaptureStoreError>,
 ) -> Result<PreparedCapture, FindingReplayCaptureStoreError> {
     if bytes.is_empty() {
         return Err(FindingReplayCaptureStoreError::InvalidCapture);
     }
+    boundary()?;
     if ContentHash::from_bytes(&bytes) != content_hash {
         return Err(FindingReplayCaptureStoreError::CaptureHashMismatch);
     }
@@ -436,6 +462,7 @@ fn prepare_capture(
     let mut children = BTreeSet::new();
     let mut chunks = BTreeMap::new();
     for (index, chunk) in bytes.chunks(MAX_CAPTURE_CHUNK_BYTES).enumerate() {
+        boundary()?;
         if index >= MAX_CAPTURE_CHUNKS {
             return Err(FindingReplayCaptureStoreError::LimitExceeded {
                 limit: "finding-replay-capture-chunk-count",
@@ -447,6 +474,7 @@ fn prepare_capture(
             .entry(id)
             .or_insert_with(|| BlobHandle::from_bytes(chunk.to_vec()));
     }
+    boundary()?;
     let body = encode_manifest(content_hash, bytes.len() as u64, children.len())?;
     let envelope = ContentEnvelope::new(
         CAPTURE_MANIFEST_SCHEMA,
@@ -580,6 +608,9 @@ fn require_durable_receipt(
 /// Failure to prepare, publish, or load a portable capture closure.
 #[derive(Debug, Error)]
 pub enum FindingReplayCaptureStoreError {
+    /// The original operational scope canceled or expired before completion.
+    #[error(transparent)]
+    Supervision(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
     /// Complete capture bytes are empty.
     #[error("finding replay capture is empty")]
     InvalidCapture,

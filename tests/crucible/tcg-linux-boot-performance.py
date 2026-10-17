@@ -1,37 +1,16 @@
-"""Compare matched production QEMU/plugins through authenticated Linux readiness.
+"""Compare current admitted production plugins at authenticated Linux readiness.
 
-The primary interval begins immediately before QEMU spawn and ends at the
-plugin's exact flight.ready VMStop. QEMU/plugin startup, public-protocol
-handshake, firmware, kernel decompression and kernel/PID 1 boot are included.
-Protocol buffer allocation and stopped register/memory capture are excluded.
-The direct launch omits the production launcher's filesystem/cgroup isolation.
-All variants use the same frozen stock kernel and diskless initramfs bytes.
-
-Build the driver with the existing phase2.tcgProductionPerformanceDriver check
-and the guest with phase2-qemu-live-plugin-quantum-guest.nix, using AOS tools and
-local builders. Build every real plugin from its frozen source with the same
-AOS release compiler and the matching QEMU identity environment fields:
-CRUCIBLE_QEMU_BUILD_ID=qemu_build_id,
-CRUCIBLE_QEMU_ATOMIC_PATCH_HASH=qemu_atomic_patch_hash,
-CRUCIBLE_SHMEM_HEADER_HASH=qemu_shmem_header_hash.
-Pass explicit matching --qemu LABEL=PATH and --plugin LABEL=PATH artifacts.
-The first label is the comparison baseline; name common prerequisite fixes
-explicitly, rather than labeling a modified control as unmodified origin/master.
-All attempts, timing samples and SHA256 identities are retained. A failed trial
-stops the campaign with its exit status and diagnostic streams preserved;
-successful runs are never silently substituted for failed attempts.
-One label permits a
-threshold-free repeated semantic qualification of the packaged fixture.
-
-The device projection manifest proves schema coverage, not device-state values.
-The stopped register, physical-memory, marker and actual timer witnesses carry
-the state comparison. Coverage and fingerprint hooks default to production off;
---fingerprint on names a separate preset and does not imply a captured sample.
+Each Sim sample runs in the isolated quota/UFFD kernel under a real accepted
+assignment. The primary interval begins at native spawn and ends at the exact
+flight.ready stop. Canonical BLAKE scope roots and timer evidence are validated
+separately after timing. Historical flat-memory hashes remain historical;
+legacy fixture validators below are used only by their component tests.
 """
 
 import argparse
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -45,6 +24,14 @@ WITNESS_KEYS = (
     "timer_witness", "device_projection_manifest",
 )
 
+
+
+def managed_oracle():
+    path = Path(__file__).with_name("tcg-managed-performance-oracle.py")
+    spec = importlib.util.spec_from_file_location("managed_performance_oracle", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 def labeled_paths(arguments):
     """Resolve explicitly paired local artifact labels."""
@@ -183,7 +170,7 @@ def main():
     parser.add_argument("--cpu", type=int, required=True)
     parser.add_argument("--host-cpu", type=int)
     parser.add_argument("--ram-mib", type=int, default=256)
-    parser.add_argument("--fingerprint", choices=["off", "on"], default="off")
+    parser.add_argument("--fingerprint", choices=["on"], default="on")
     parser.add_argument("--baseline-revision")
     parser.add_argument("--candidate-revision")
     args = parser.parse_args()
@@ -242,7 +229,10 @@ def main():
             results["attempts"].append(attempt)
             (args.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
 
-            completed = subprocess.run(command, text=True, capture_output=True, check=False)
+            trial_environment = dict(os.environ)
+            trial_environment["CRUCIBLE_TCG_TRIAL_INDEX"] = str(repeat * len(labels) + labels.index(label))
+            completed = subprocess.run(command, text=True, capture_output=True, check=False,
+                                       env=trial_environment)
             (directory / "stdout.log").write_text(completed.stdout)
             (directory / "stderr.log").write_text(completed.stderr)
             attempt.update(exit_status=completed.returncode,
@@ -256,12 +246,12 @@ def main():
                 sample = json.loads(completed.stdout)
                 sample.update(label=label, repeat=repeat, command=command)
                 (directory / "result.json").write_text(json.dumps(sample, indent=2) + "\n")
-                witness = require_ready_witness(sample, args.ram_mib)
+                witness = managed_oracle().require_witness(sample, "linux", args.ram_mib)
                 if expected is None:
                     expected = witness
-                    results["negative_controls"] = readiness_negative_controls(sample, args.ram_mib)
+                    results["negative_controls"] = managed_oracle().negative_controls(sample, "linux", args.ram_mib)
                 if witness != expected:
-                    differences = [key for key in WITNESS_KEYS if witness[key] != expected[key]]
+                    differences = [key for key in managed_oracle().WITNESS_KEYS if witness[key] != expected[key]]
                     raise AssertionError(f"Linux state witness changed: {label}, repeat {repeat}: {differences}")
             except (ValueError, KeyError, AssertionError) as error:
                 attempt.update(outcome="invalid_witness", error=str(error))
@@ -279,7 +269,7 @@ def main():
     results["distributions"] = {
         label: {
             key: distribution([sample[key] for sample in results["samples"] if sample["label"] == label])
-            for key in ("seconds", "boot_seconds", "startup_seconds", "user_seconds", "system_seconds")
+            for key in ("seconds", "boot_seconds", "startup_seconds")
         }
         for label in labels
     }

@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crucible::{ContentHash, EventLogOffset, NodeId};
 // crucible-lint: allow host-nondeterminism-state -- assembly authenticates an unchanged captured world against its exact child roster; host timing cannot edit the continuation.
-use crucible_api::vm_lifecycle::{
+use crate::vm_lifecycle::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkWorldContinuation,
 };
 use crucible_qemu::QemuProcessIdentity;
@@ -28,7 +28,10 @@ use crate::{
 };
 
 mod lifecycle;
-pub(crate) use lifecycle::QemuHotForkProductionLifecycleContext;
+pub(crate) use lifecycle::{
+    HotForkInstallationRetirementError, HotForkLifecycleInstallError,
+    QemuHotForkProductionLifecycleContext, RetainedHotForkInstallation,
+};
 pub use lifecycle::{QemuProductionHotForkRetainedLineage, QemuProductionHotForkWorldLifecycle};
 
 /// Unforgeable process-local identity of one atomic world assembly attempt.

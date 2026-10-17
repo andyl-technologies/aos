@@ -1,0 +1,41 @@
+{
+  "architecture": "x86_64",
+  "canonical_preimages_verified_against_production": true,
+  "cpu_flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpuid_fault cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx_vnni avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd amd_ppin cppc arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid bus_lock_detect movdiri movdir64b overflow_recov succor smca fsrm avx512_vp2intersect flush_l1d debug_swap amd_lbr_pmc_freeze",
+  "cpu_model": "AMD EPYC 9755 128-Core Processor",
+  "host_blake3": {
+    "assembly_and_avx512": "disabled by pure feature",
+    "crate": "blake3",
+    "detected_platform": "AVX2",
+    "features": [
+      "std",
+      "pure"
+    ],
+    "path": "workspace-selected pure Rust implementation; SIMD intrinsics enabled by runtime detection",
+    "simd_degree": 8,
+    "version": "1.8.5"
+  },
+  "limitations": [
+    "Warm host-side in-process hashing only; no I/O, pager, whole-VM or memory-peak qualification.",
+    "Native C fingerprinting backend was not timed; these results do not cover that implementation.",
+    "Batch storage and ancestor sets are preallocated; persistent-tree allocation, metadata COW, concurrency and tracking costs are excluded.",
+    "No processor affinity or frequency isolation; samples describe this run and are not a general performance guarantee.",
+    "BLAKE3 is the selected pure host implementation; SHA-256 is an offline comparison with runtime acceleration when detected."
+  ],
+  "method": "segmented domain-preserving updates; union of changed-page ancestor paths; prebuilt inputs and dense node storage; each declared dirty page changes its first byte every round",
+  "offline_sha256": {
+    "crate": "sha2",
+    "features": [
+      "default",
+      "compress"
+    ],
+    "path": "x86 SHA/SSE2/SSSE3/SSE4.1 runtime-selected intrinsics",
+    "version": "0.10.9"
+  },
+  "operating_system": "linux",
+  "profile": "release",
+  "samples_per_workload": 5,
+  "schema": "crucible.ram.offline-hash-measurements",
+  "unix_time_seconds": 1791302415,
+  "version": 1
+}

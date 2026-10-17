@@ -129,7 +129,7 @@ fn ready_capture_status_remains_bound_after_a_later_selection_snapshot() {
     };
     let checkpoint = crate::ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"retained-exact-root",
     ))
     .expect("checkpoint");
@@ -975,7 +975,7 @@ fn repository_adapter_authorizes_before_repository_access() {
     let repository = CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("campaign-service-test", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
-    );
+     crate::CampaignRamAdmission::Unavailable,);
     let service = RepositoryCampaignService::new(&repository, DenyAll);
     let list = ListCampaignsRequest::new(
         CampaignPrincipal::new("operator:alice").expect("principal"),

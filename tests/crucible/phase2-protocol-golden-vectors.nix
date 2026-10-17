@@ -7,7 +7,11 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-protocol/src/lib.rs
+    ../../crates/crucible-protocol/src/plugin_observation.rs
+    ../../crates/crucible-protocol/src/control_lifecycle.rs
+  ]);
   goldenLib = builtins.readFile ../../crates/crucible-protocol/src/golden_vectors.rs;
   goldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
@@ -31,7 +35,7 @@
     ++ failuresFor "crates/crucible-protocol/src/golden_vectors.rs" goldenLib [
       {
         label = "literal frozen protocol version";
-        needle = "pub const GOLDEN_VECTOR_PROTOCOL_VERSION: u32 = 3;";
+        needle = "pub const GOLDEN_VECTOR_PROTOCOL_VERSION: u32 = 5;";
       }
       {
         label = "regeneration rule";
@@ -75,11 +79,17 @@
       }
       {
         label = "current version in Hello bytes";
-        needle = "frame: &[0, 0, 0, 9, 0xF0, 0, 0, 0, 3, 0, 0, 0, 1]";
+        needle = "frame: &[0, 0, 0, 9, 0xF0, 0, 0, 0, 5, 0, 0, 0, 1]";
       }
       {
         label = "Setup payload bytes";
-        needle = "frame: &[0, 0, 0, 9, 0x01, 0, 0, 0, 0, 0, 6, 0xE0, 0]";
+        needle = builtins.concatStringsSep "\n" [
+          "frame: &["
+          "            0, 0, 0, 57, 1, 0, 0, 0, 0, 0, 6, 224, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,"
+          "            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,"
+          "            0, 0, 0, 0,"
+          "        ]"
+        ];
       }
       {
         label = "Quit bytes";

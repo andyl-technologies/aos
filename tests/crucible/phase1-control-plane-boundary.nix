@@ -49,7 +49,7 @@
     direct ++ target;
 
   allowedEntrypoints = ["crucible-api" "crucible-session" "crucible-daemon"];
-  # RFC-0020 04a: the daemon owns the sole-writer actor and the local
+  # The daemon owns the sole-writer actor and the local
   # executor, so it hosts the engine directly like the session actor.
   engineHosts = ["crucible-session" "crucible-daemon"];
   # Crates below the engine: data models, stores, protocols, and QEMU

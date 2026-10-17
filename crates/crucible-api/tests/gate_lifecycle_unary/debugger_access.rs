@@ -92,7 +92,8 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
         },
     ));
     let client = RpcControlClient::new(RpcEndpoint::http2(format!("http://{address}")))
-        .unwrap_or_else(|error| panic!("test RPC client should build: {error}"));
+        .unwrap_or_else(|error| panic!("test RPC client should build: {error}"))
+        .with_decode_budget(crate::output_support::budget());
     let scenario = crucible::happy_path_scenario()
         .unwrap_or_else(|error| panic!("happy-path scenario should build: {error}"))
         .scenario;

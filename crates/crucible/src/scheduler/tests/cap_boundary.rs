@@ -201,6 +201,9 @@ fn request(scheduler: &SingleScheduler) -> QuantumRequest {
 
 #[test]
 fn cap_negotiation_keeps_original_owner_across_each_strictly_tighter_wave() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         let scheduler = scheduler();
         let request = request(&scheduler);
@@ -235,6 +238,9 @@ fn cap_negotiation_keeps_original_owner_across_each_strictly_tighter_wave() {
 
 #[test]
 fn cap_readmission_failure_is_cleanup_only_without_step_floor_or_retry() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = scheduler();
     let configuration = scheduler.configuration().clone();
     let offset = scheduler.event_log().offset();
@@ -276,6 +282,9 @@ fn cap_readmission_failure_is_cleanup_only_without_step_floor_or_retry() {
 
 #[test]
 fn same_looser_or_zero_cap_cannot_republish_scheduler_authority() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = scheduler();
     let initial = scheduler
         .prepare_host_concurrent_quantum_limited(request(&scheduler), 1)
@@ -299,6 +308,9 @@ fn same_looser_or_zero_cap_cannot_republish_scheduler_authority() {
 
 #[test]
 fn negotiated_motion_rejoins_canonical_peer_stop_before_semantic_publication() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         let scheduler = test_scheduler(
             ["a", "b"]
@@ -359,6 +371,9 @@ fn negotiated_motion_rejoins_canonical_peer_stop_before_semantic_publication() {
 
 #[test]
 fn moved_or_stale_admission_refuses_before_new_motion() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for stale in [false, true] {
         let scheduler = scheduler();
         let mut backend = CapBackend::new(&[20]);

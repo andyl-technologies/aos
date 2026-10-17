@@ -79,7 +79,7 @@ pub enum SignaturePolicyLevel {
 
 /// Versioned selector for failure-signature key fields.
 ///
-/// The policy is closed over the four RFC0010 levels and records the schema
+/// The policy is closed over four failure-signature levels and records the schema
 /// version plus coverage-class bucketing algorithm in every key projection and
 /// triage result identity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

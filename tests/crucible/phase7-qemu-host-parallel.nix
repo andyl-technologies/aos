@@ -10,19 +10,19 @@
   campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler/event_log/backend_loop.rs;
-  lifecycle = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
-  lifecycleConfig = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/config.rs;
+  scheduler = builtins.readFile ../../crates/crucible/src/scheduler/event_log/backend_loop/host_concurrent.rs;
+  lifecycle = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
+  lifecycleConfig = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/config.rs;
   nodeSet = builtins.readFile ../../crates/crucible-qemu/src/node_set.rs;
   concurrentNodeSet = builtins.readFile ../../crates/crucible-qemu/src/node_set/concurrent.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor hasInfix;
 
   failures =
-    failuresFor "crates/crucible/src/scheduler/event_log/backend_loop.rs" scheduler [
+    failuresFor "crates/crucible/src/scheduler/event_log/backend_loop/host_concurrent.rs" scheduler [
       {
         label = "speculative scheduler preparation";
-        needle = ".prepare_concurrent_quantum(request)?";
+        needle = ".prepare_host_concurrent_quantum_for_contract(";
       }
       {
         label = "backend completion precedes scheduler commit";
@@ -37,13 +37,13 @@
         needle = "self.network_output_interceptor = staged_interceptor;";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" lifecycle [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs" lifecycle [
       {
         label = "production lifecycle concurrent dispatch";
         needle = "crucible_session::drive_engine_concurrent_quantum(";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/config.rs" lifecycleConfig [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/config.rs" lifecycleConfig [
       {
         label = "operational host dispatch ceiling";
         needle = "pub const fn maximum_host_workers";
@@ -78,7 +78,7 @@
     grep -Fxq PASS ${productionPluginFlight}/raw-result
     grep -Fxq 'gate=gate:production-rust-plugin-flight' ${productionPluginFlight}/raw-result
     grep -Fxq ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} ${productionPluginFlight}/raw-result
-    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
     grep -Fxq ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"} ${productionPluginFlight}/raw-result
   '';
   verifyScript = ''

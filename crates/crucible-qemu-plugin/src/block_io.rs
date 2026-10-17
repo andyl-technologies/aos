@@ -104,6 +104,17 @@ struct PendingBlockDelivery {
     quarantine: Option<BlockIoError>,
 }
 
+// Preparation transfers only decoded response and scalar identity back to poll.
+// The original full frame remains in the already-owned pending delivery slot.
+enum PreparedBlockPoll {
+    Finished(BlockPoll),
+    Ready {
+        token: BlockRequestToken,
+        response: BlockResponse,
+        expected: FrameDeliveryKey,
+    },
+}
+
 impl PluginBlockIo {
     /// Builds block callback state from the directed rings selected at registration.
     ///
@@ -623,13 +634,103 @@ impl PluginBlockIo {
     where
         D: BlockGuestCompletion + ?Sized,
     {
+        let (token, response, expected) =
+            match self.prepare_response(freeze, slot, inbound_ring, current_icount, token)? {
+                PreparedBlockPoll::Finished(result) => return Ok(result),
+                PreparedBlockPoll::Ready {
+                    token,
+                    response,
+                    expected,
+                } => (token, response, expected),
+            };
+        let delivered = self
+            .pending_delivery
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| pending.delivered);
+        if !delivered {
+            if let Err(source) = deliver.complete_block_response(&response) {
+                return Ok(BlockPoll::Retry {
+                    token,
+                    source: BlockIoError::GuestCompletion {
+                        request_id: response.request_id(),
+                        source,
+                    },
+                });
+            }
+            if let Some(pending) = self.pending_delivery.borrow_mut().as_mut() {
+                pending.delivered = true;
+            }
+        }
+
+        let dequeued =
+            PluginShmemOrdering::dequeue_inbound_frame(inbound_ring.header, inbound_ring.entries)
+                .map_err(|source| BlockIoError::RingDequeue {
+                    ring_index: self.inbound_ring_index,
+                    source,
+                });
+        let Some(dequeued) = (match dequeued {
+            Ok(dequeued) => dequeued,
+            Err(source) => return Ok(BlockPoll::Retry { token, source }),
+        }) else {
+            return Ok(self.quarantine(
+                token,
+                BlockIoError::DequeuedUnexpectedFrame {
+                    ring_index: self.inbound_ring_index,
+                    expected,
+                    actual: None,
+                },
+            ));
+        };
+        let same_head = self
+            .pending_delivery
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| same_response_frame(&pending.frame, &dequeued));
+        if !same_head {
+            return Ok(self.quarantine(
+                token,
+                BlockIoError::DequeuedUnexpectedFrame {
+                    ring_index: self.inbound_ring_index,
+                    expected,
+                    actual: Some(dequeued.delivery_key()),
+                },
+            ));
+        }
+
+        self.completed_identities
+            .borrow_mut()
+            .record(response.identity());
+        // Dequeue and guest delivery are irreversible. A failed final wake
+        // cannot turn the consumed original token into a recoverable retry.
+        let release = match freeze.complete_request(slot, token.device_token) {
+            Ok(release) => release,
+            Err(_) => std::process::abort(),
+        };
+        self.pending_delivery.replace(None);
+        Ok(BlockPoll::Completed { response, release })
+    }
+
+    // A copied ring head enters the existing pending owner before guest delivery.
+    // Returning first also closes every RefCell borrow before external callbacks.
+    fn prepare_response(
+        &self,
+        freeze: &mut PluginDeviceIoFreeze,
+        slot: &NodeSlot,
+        inbound_ring: &BlockInboundRing<'_>,
+        current_icount: u64,
+        token: BlockRequestToken,
+    ) -> Result<PreparedBlockPoll, BlockIoError> {
         if token.block_owner_id != self.owner_id {
             let source = BlockIoError::RequestForDifferentBlockOwner {
                 expected_owner_id: self.owner_id,
                 actual_owner_id: token.block_owner_id,
                 identity: token.identity,
             };
-            return Ok(BlockPoll::Retry { token, source });
+            return Ok(PreparedBlockPoll::Finished(BlockPoll::Retry {
+                token,
+                source,
+            }));
         }
         self.check_inbound_ring(inbound_ring)?;
         if let Some(source) = self
@@ -638,7 +739,10 @@ impl PluginBlockIo {
             .as_ref()
             .and_then(|pending| pending.quarantine.clone())
         {
-            return Ok(BlockPoll::Quarantined { token, source });
+            return Ok(PreparedBlockPoll::Finished(BlockPoll::Quarantined {
+                token,
+                source,
+            }));
         }
 
         let head = match peek_head_frame(inbound_ring) {
@@ -648,7 +752,7 @@ impl PluginBlockIo {
                     self.pending_delivery.borrow().as_ref().and_then(|pending| {
                         pending.delivered.then(|| pending.frame.delivery_key())
                     });
-                return Ok(match expected {
+                return Ok(PreparedBlockPoll::Finished(match expected {
                     Some(expected) => self.quarantine(
                         token,
                         BlockIoError::DequeuedUnexpectedFrame {
@@ -658,7 +762,7 @@ impl PluginBlockIo {
                         },
                     ),
                     None => BlockPoll::NotReady { token },
-                });
+                }));
             }
             Err(source) => {
                 let delivered = self
@@ -666,11 +770,11 @@ impl PluginBlockIo {
                     .borrow()
                     .as_ref()
                     .is_some_and(|pending| pending.delivered);
-                return Ok(if delivered {
+                return Ok(PreparedBlockPoll::Finished(if delivered {
                     self.quarantine(token, source)
                 } else {
                     BlockPoll::Retry { token, source }
-                });
+                }));
             }
         };
         let staged_head = self.pending_delivery.borrow().as_ref().map(|pending| {
@@ -683,7 +787,7 @@ impl PluginBlockIo {
         });
         if let Some((identity, expected, same_head, delivered)) = staged_head {
             if identity != token.identity {
-                return Ok(BlockPoll::NotReady { token });
+                return Ok(PreparedBlockPoll::Finished(BlockPoll::NotReady { token }));
             }
             if !same_head {
                 let source = BlockIoError::DequeuedUnexpectedFrame {
@@ -691,15 +795,15 @@ impl PluginBlockIo {
                     expected,
                     actual: Some(head.delivery_key()),
                 };
-                return Ok(if delivered {
+                return Ok(PreparedBlockPoll::Finished(if delivered {
                     self.quarantine(token, source)
                 } else {
                     BlockPoll::Retry { token, source }
-                });
+                }));
             }
         }
         if head.delivery_icount > current_icount {
-            return Ok(BlockPoll::NotReady { token });
+            return Ok(PreparedBlockPoll::Finished(BlockPoll::NotReady { token }));
         }
 
         if head.src_node != self.block_slot {
@@ -742,7 +846,7 @@ impl PluginBlockIo {
                 | BlockResponseStatus::DuplicateIgnored
                 | BlockResponseStatus::DuplicateProtocolError
         ) {
-            return Ok(BlockPoll::NotReady { token });
+            return Ok(PreparedBlockPoll::Finished(BlockPoll::NotReady { token }));
         }
         if response.identity() != token.identity {
             let expected_request_id = token.identity.request_id;
@@ -759,87 +863,35 @@ impl PluginBlockIo {
             .borrow()
             .ensure_record_capacity(response.identity(), self.completed_history_limits)
         {
-            return Ok(BlockPoll::Retry { token, source });
+            return Ok(PreparedBlockPoll::Finished(BlockPoll::Retry {
+                token,
+                source,
+            }));
         }
         if let Err(source) = freeze.completion_current(
             &token.device_token,
             crate::DeviceIoRequestOutcome::Completed,
         ) {
-            return Ok(BlockPoll::Retry {
+            return Ok(PreparedBlockPoll::Finished(BlockPoll::Retry {
                 token,
                 source: BlockIoError::DeviceIoFreeze { source },
-            });
+            }));
         }
 
+        let expected = head.delivery_key();
         if self.pending_delivery.borrow().is_none() {
             self.pending_delivery.replace(Some(PendingBlockDelivery {
-                frame: head.clone(),
+                frame: head,
                 response: response.clone(),
                 delivered: false,
                 quarantine: None,
             }));
         }
-        let delivered = self
-            .pending_delivery
-            .borrow()
-            .as_ref()
-            .is_some_and(|pending| pending.delivered);
-        if !delivered {
-            if let Err(source) = deliver.complete_block_response(&response) {
-                return Ok(BlockPoll::Retry {
-                    token,
-                    source: BlockIoError::GuestCompletion {
-                        request_id: response.request_id(),
-                        source,
-                    },
-                });
-            }
-            if let Some(pending) = self.pending_delivery.borrow_mut().as_mut() {
-                pending.delivered = true;
-            }
-        }
-
-        let dequeued =
-            PluginShmemOrdering::dequeue_inbound_frame(inbound_ring.header, inbound_ring.entries)
-                .map_err(|source| BlockIoError::RingDequeue {
-                    ring_index: self.inbound_ring_index,
-                    source,
-                });
-        let Some(dequeued) = (match dequeued {
-            Ok(dequeued) => dequeued,
-            Err(source) => return Ok(BlockPoll::Retry { token, source }),
-        }) else {
-            return Ok(self.quarantine(
-                token,
-                BlockIoError::DequeuedUnexpectedFrame {
-                    ring_index: self.inbound_ring_index,
-                    expected: head.delivery_key(),
-                    actual: None,
-                },
-            ));
-        };
-        if !same_response_frame(&dequeued, &head) {
-            return Ok(self.quarantine(
-                token,
-                BlockIoError::DequeuedUnexpectedFrame {
-                    ring_index: self.inbound_ring_index,
-                    expected: head.delivery_key(),
-                    actual: Some(dequeued.delivery_key()),
-                },
-            ));
-        }
-
-        self.completed_identities
-            .borrow_mut()
-            .record(response.identity());
-        // Dequeue and guest delivery are irreversible. A failed final wake
-        // cannot turn the consumed original token into a recoverable retry.
-        let release = match freeze.complete_request(slot, token.device_token) {
-            Ok(release) => release,
-            Err(_) => std::process::abort(),
-        };
-        self.pending_delivery.replace(None);
-        Ok(BlockPoll::Completed { response, release })
+        Ok(PreparedBlockPoll::Ready {
+            token,
+            response,
+            expected,
+        })
     }
 
     fn quarantine(&self, token: BlockRequestToken, source: BlockIoError) -> BlockPoll {

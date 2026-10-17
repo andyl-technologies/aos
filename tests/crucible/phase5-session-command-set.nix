@@ -125,7 +125,7 @@
       }
       {
         label = "terminal rejected reply completion";
-        needle = "self.engine.invalid_transition(command.clone())";
+        needle = "let error = self.engine.invalid_transition(&command);\n                    command.complete_error(error);";
       }
       {
         label = "reply payload success test";

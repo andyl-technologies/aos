@@ -73,10 +73,23 @@
     )
     packages;
 
+  containsPhysicalSlotCapacity = content:
+    builtins.elem "MAX_NODES" (
+      builtins.filter builtins.isString (builtins.split "[^A-Za-z0-9_]+" content)
+    );
+
+  identifierScannerFailures =
+    lib.optionals
+    (!(containsPhysicalSlotCapacity "use crucible_shmem::MAX_NODES;"))
+    ["physical slot capacity identifier scanner missed a true escape"]
+    ++ lib.optionals
+    (containsPhysicalSlotCapacity "pub const QMP_HOT_FORK_SOURCE_GRAPH_MAX_NODES: u32 = 4096;")
+    ["physical slot capacity identifier scanner confused a dependency-graph bound"];
+
   maxNodesEscapeFailures =
     lib.concatMap (
       source:
-        lib.optionals (hasInfix "MAX_NODES" (builtins.readFile source.path)) [
+        lib.optionals (containsPhysicalSlotCapacity (builtins.readFile source.path)) [
           "crates/${source.package}/${source.display}: MAX_NODES escaped crucible-shmem"
         ]
     )
@@ -90,7 +103,7 @@
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 30;";
+        needle = "pub const ABI_VERSION: u32 = 33;";
       }
       {
         label = "physical slot capacity";
@@ -169,8 +182,8 @@
         needle = "pub const NODE_SLOT_SIZE";
       }
       {
-        label = "node slot pad offset";
-        needle = "NODE_SLOT_PAD0_OFFSET == 39";
+        label = "node slot advance-stop condition offset";
+        needle = "NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET == 39";
       }
       {
         label = "node slot logical-time raw offset";
@@ -347,6 +360,7 @@
         needle = "shmemRegionLayout = import ./phase2-shmem-region-layout.nix";
       }
     ]
+    ++ identifierScannerFailures
     ++ maxNodesEscapeFailures;
 in
   if failures != []

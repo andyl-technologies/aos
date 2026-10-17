@@ -51,9 +51,26 @@ where
 /// exact durable placement or authentication step fails.
 pub fn publish_staged_checkpoint_result(
     store: &ExactCheckpointStore,
-    staged: StagedCheckpointResult,
+    mut staged: StagedCheckpointResult,
 ) -> Result<PublishedCheckpointResult, CheckpointResultPublicationError> {
-    let publication = match store.publish_attempt_checkpoint(&staged.prepared.checkpoint) {
+    let guard = match staged.queued().publication_guard() {
+        Ok(guard) => guard,
+        Err(source) => {
+            return Err(CheckpointResultPublicationError {
+                staged: Box::new(staged),
+                source: source.into(),
+            });
+        }
+    };
+    let mut boundary = || {
+        guard
+            .wait_slice()
+            .map(|_| ())
+            .map_err(ExactCheckpointStoreError::from)
+    };
+    let publication = match store
+        .publish_attempt_checkpoint_with_boundary(&staged.prepared.checkpoint, &mut boundary)
+    {
         Ok(publication) => publication,
         Err(source) => {
             return Err(CheckpointResultPublicationError {
@@ -62,7 +79,19 @@ pub fn publish_staged_checkpoint_result(
             });
         }
     };
-    if let Err(source) = staged.prepared.checkpoint.retire_native_source() {
+    if let Err(source) = boundary() {
+        return Err(CheckpointResultPublicationError {
+            staged: Box::new(staged),
+            source,
+        });
+    }
+    if let Err(source) = staged.prepared.checkpoint.retire_native_source(store) {
+        return Err(CheckpointResultPublicationError {
+            staged: Box::new(staged),
+            source,
+        });
+    }
+    if let Err(source) = boundary() {
         return Err(CheckpointResultPublicationError {
             staged: Box::new(staged),
             source,
@@ -370,6 +399,7 @@ pub fn recover_prepared_attempt_result(
             result: PreparedAttemptResultOwner::Journal(Box::new(journal)),
             observation,
             finding_candidate,
+            recovery_metadata: Default::default(),
         },
     )))
 }
@@ -495,6 +525,7 @@ fn prepare_pending_attempt_result<W>(
         result: PreparedAttemptResultOwner::Volatile(Box::new(result)),
         observation,
         finding_candidate,
+        recovery_metadata: Default::default(),
     })
 }
 
@@ -667,10 +698,26 @@ pub fn publish_prepared_attempt_result(
     exact_authenticator: &dyn FindingExactCheckpointAuthenticator,
     staged: Box<StagedAttemptResult>,
 ) -> Result<PublishedAttemptResult, AttemptResultPublicationError> {
-    if let Err(source) = publish_prepared_semantic_attempt_result(
+    let guard = match staged.prepared.queued().publication_guard() {
+        Ok(guard) => guard,
+        Err(source) => {
+            return Err(AttemptResultPublicationError {
+                staged,
+                source: source.into(),
+            });
+        }
+    };
+    let mut boundary = || {
+        guard
+            .wait_slice()
+            .map(|_| ())
+            .map_err(AttemptResultPublicationFailure::from)
+    };
+    if let Err(source) = publish_prepared_semantic_attempt_result_with_boundary(
         store,
         exact_authenticator,
         staged.prepared.result(),
+        &mut boundary,
     ) {
         return Err(AttemptResultPublicationError { staged, source });
     }
@@ -698,7 +745,24 @@ pub(crate) fn publish_prepared_semantic_attempt_result(
     exact_authenticator: &dyn FindingExactCheckpointAuthenticator,
     result: &PreparedSemanticAttemptResult,
 ) -> Result<ObservationId, AttemptResultPublicationFailure> {
+    publish_prepared_semantic_attempt_result_with_boundary(
+        store,
+        exact_authenticator,
+        result,
+        &mut || Ok(()),
+    )
+}
+
+/// Publishes bounded semantic leaves while retaining original operational coordinates.
+fn publish_prepared_semantic_attempt_result_with_boundary(
+    store: &CampaignExecutorStore,
+    exact_authenticator: &dyn FindingExactCheckpointAuthenticator,
+    result: &PreparedSemanticAttemptResult,
+    boundary: &mut dyn FnMut() -> Result<(), AttemptResultPublicationFailure>,
+) -> Result<ObservationId, AttemptResultPublicationFailure> {
+    boundary()?;
     for evidence in result.measurement_replay_evidence() {
+        boundary()?;
         let expected = match evidence.id() {
             Ok(expected) => expected,
             Err(source) => return Err(AttemptResultPublicationFailure::Measurement(source)),
@@ -708,11 +772,16 @@ pub(crate) fn publish_prepared_semantic_attempt_result(
             Err(source) => return Err(AttemptResultPublicationFailure::Measurement(source)),
         };
         store.publish_executor_trace_leaf(expected, evidence.schema_version(), &bytes)?;
+        boundary()?;
     }
+    boundary()?;
     let observation = store.publish_observation_candidate(result.observation())?;
+    boundary()?;
     if let Some(finding) = result.finding() {
         finding.publish_for_executor(store, exact_authenticator)?;
+        boundary()?;
     }
+    boundary()?;
     Ok(observation)
 }
 

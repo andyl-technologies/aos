@@ -29,26 +29,31 @@ impl<'a> From<&'a CrucibleMeasurementReplayEvidence> for EvidenceWireRef<'a> {
     fn from(value: &'a CrucibleMeasurementReplayEvidence) -> Self {
         Self {
             schema_version: value.schema_version(),
-            scenario: value.scenario,
-            configuration: value.configuration,
-            definitions: value.definitions,
-            entries: &value.entries,
-            terminal: TerminalStateRef::from(&value.terminal),
-            stop: value.stop,
+            scenario: value.body.scenario,
+            configuration: value.body.configuration,
+            definitions: value.body.definitions,
+            entries: &value.body.entries,
+            terminal: TerminalStateRef::from(&value.body.terminal),
+            stop: value.body.stop,
         }
     }
 }
 
-impl From<EvidenceWireV2> for CrucibleMeasurementReplayEvidence {
-    fn from(value: EvidenceWireV2) -> Self {
-        Self {
+impl EvidenceWireV2 {
+    pub(super) fn into_evidence(
+        self,
+    ) -> Result<CrucibleMeasurementReplayEvidence, CrucibleMeasurementError> {
+        let value = self;
+        admitted_body(ReplayEvidenceBody {
             scenario: value.scenario,
             configuration: value.configuration,
             definitions: value.definitions,
             entries: value.entries.0,
             terminal: value.terminal.into(),
             stop: value.stop,
-        }
+            event_output_custody: None,
+            custody: require_current_custody().map_err(admission)?,
+        })
     }
 }
 
@@ -129,6 +134,7 @@ impl<'de> Visitor<'de> for BoundedEntriesVisitor {
             if entries.len() == MAX_MEASUREMENT_EVENT_ENTRIES {
                 return Err(de::Error::invalid_length(entries.len() + 1, &self));
             }
+            crucible::owned_decode::reserve_vec(&mut entries, 1).map_err(de::Error::custom)?;
             entries.push(entry);
         }
         Ok(BoundedEntries(entries))
@@ -176,6 +182,8 @@ impl<'de> Visitor<'de> for BoundedNodeIcountsVisitor {
             if counters.len() == MAX_MEASUREMENT_TERMINAL_NODES {
                 return Err(de::Error::invalid_length(counters.len() + 1, &self));
             }
+            crucible::owned_decode::charge_btree_entry::<NodeId, Icount>()
+                .map_err(de::Error::custom)?;
             if counters.insert(node, icount).is_some() {
                 return Err(de::Error::custom("duplicate terminal node counter"));
             }
@@ -199,13 +207,13 @@ pub(super) fn measure_canonical_bytes(
     value: &CrucibleMeasurementReplayEvidence,
     maximum_bytes: usize,
 ) -> Result<usize, CrucibleMeasurementError> {
-    if value.entries.len() > MAX_MEASUREMENT_EVENT_ENTRIES {
+    if value.entries().len() > MAX_MEASUREMENT_EVENT_ENTRIES {
         return Err(crucible::model::MeasurementEvaluationError::LimitExceeded {
             limit: "measurement-event-entries",
         }
         .into());
     }
-    if value.terminal.node_icounts.len() > MAX_MEASUREMENT_TERMINAL_NODES {
+    if value.terminal().node_icounts.len() > MAX_MEASUREMENT_TERMINAL_NODES {
         return Err(crucible::model::MeasurementEvaluationError::LimitExceeded {
             limit: "measurement-terminal-nodes",
         }
@@ -218,9 +226,7 @@ pub(super) fn measure_canonical_bytes(
     if let Some(actual) = counter.exceeded_at {
         return Err(CrucibleMeasurementError::EvidenceTooLarge { actual, maximum });
     }
-    result.map_err(|error| CrucibleMeasurementError::EvidenceEncoding {
-        reason: error.to_string(),
-    })?;
+    result.map_err(|error| ownership::encoding_error(&error))?;
     Ok(counter.length)
 }
 

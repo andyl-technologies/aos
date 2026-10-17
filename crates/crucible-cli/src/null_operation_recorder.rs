@@ -11,7 +11,7 @@ pub(super) fn execute_cli_dispatch_plan(
 ) -> Result<(), CliError> {
     if !plan.proves_t_cli_2() {
         return Err(CliError::Backend(
-            "CLI invocation violates the RFC-0010 thin-wrapper contract".to_string(),
+            "CLI invocation added an effect outside its selected application operation".to_string(),
         ));
     }
 

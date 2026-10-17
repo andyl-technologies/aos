@@ -4,6 +4,7 @@ use super::*;
 
 #[test]
 fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario_path = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -70,6 +71,8 @@ fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box
         acknowledged_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
         reproduction_commands: Vec::new(),
         watch_statuses: Vec::new(),
+        input_custody: crucible_session::engine::owned_decode::current_custody(),
+        output_custody: Vec::new(),
     };
     let outcome = finish_run_workflow_outcome(
         &plan_cli_invocation(&cli),

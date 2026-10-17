@@ -1,6 +1,6 @@
 //! Plugin-side inertness assertions for sim-off QEMU launches.
 //!
-//! RFC-0010 PLUG-49 splits `gate:qemu-inert` across the host launch boundary
+//! The `gate:qemu-inert` contract spans the host launch boundary
 //! and the plugin boundary. The full real-QEMU corpus proves patched QEMU is
 //! behaviorally identical to upstream with simulation disabled. This module
 //! records the plugin half: if simulation mode is off, the plugin must have no

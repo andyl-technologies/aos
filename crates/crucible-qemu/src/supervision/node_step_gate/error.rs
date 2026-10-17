@@ -7,6 +7,39 @@ use thiserror::Error;
 /// Error returned by the live [`QemuNode`] bounded-step gate.
 #[derive(Debug, Error)]
 pub enum QemuLiveNodeStepGateError {
+    /// Enabled fingerprinting has no issued prebirth workspace owner.
+    #[error("fingerprint startup requires an issued device-digest workspace")]
+    DeviceDigestWorkspaceUnavailable,
+    /// The same original native account refused the fixed launch purpose.
+    #[cfg(target_os = "linux")]
+    #[error("original native launch account refused: {source}")]
+    OriginalNativeAccount {
+        /// The actual original account or supervision refusal.
+        #[source]
+        source: crate::OriginalActorAccountError,
+    },
+    /// The retained physical owner refused its actual process contract.
+    #[cfg(target_os = "linux")]
+    #[error("installed native process contract refused: {source}")]
+    OriginalNativeContract {
+        /// The actual initiating process-owner refusal.
+        #[source]
+        source: crate::QemuVmRealizationError,
+    },
+    /// The paid same-slot error control retains the first launch and postcut.
+    #[cfg(target_os = "linux")]
+    #[error("original native fresh launch refused: {source}")]
+    OriginalNativeLaunch {
+        /// The same existing shared control retained by the external slot.
+        #[source]
+        source: std::sync::Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>,
+    },
+    /// The original prebirth startup owner or cancellation role refused.
+    #[error(transparent)]
+    PluginStartup(#[from] crate::spawn::PluginStartupError),
+    /// A live operational budget or original-start outer cap refused progress.
+    #[error(transparent)]
+    HostSupervision(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
     /// A caller requested a runtime trace outside the finite admission range.
     #[error("runtime trace budget {requested} must be within 1..={maximum} bytes")]
     InvalidRuntimeTraceBudget {
@@ -94,6 +127,14 @@ pub enum QemuLiveNodeStepGateError {
     HostSetup {
         /// Underlying host-setup error.
         source: QemuHostPluginSetupError,
+    },
+    /// A pre-CPU RAM controller exchange or inventory admission failed.
+    #[error("{operation} failed: {source}")]
+    RamAdmission {
+        /// Startup phase whose original failure is retained.
+        operation: &'static str,
+        /// Original authenticated transport, supervision, or admission cause.
+        source: crucible_protocol::ram_control::RamControlError,
     },
     /// The diagnostic path did not name the descriptor-pinned launch directory.
     #[error(

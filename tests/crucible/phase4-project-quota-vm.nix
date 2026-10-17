@@ -60,13 +60,14 @@ in
       mkdir /tmp/quota-root
       ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/quota.img /tmp/quota-root
       ${pkgs.coreutils}/bin/timeout -k 5 60 \
-        ${probe}/bin/project-quota-flight /tmp/quota-root > /tmp/quota-result
+        ${probe}/bin/project-quota-flight /tmp/quota-root ${pkgs.e2fsprogs}/bin/chattr > /tmp/quota-result
       cat /tmp/quota-result
       grep -Fxq PASS /tmp/quota-result
       grep -Fxq bytes_quota_enforced=true /tmp/quota-result
       grep -Fxq inodes_quota_enforced=true /tmp/quota-result
       grep -Fxq nonempty_release_retains_authority=true /tmp/quota-result
       grep -Fxq cleared_project_ids_reusable=true /tmp/quota-result
+      grep -Fxq persistent_descendant_audit_and_lease_enforced=true /tmp/quota-result
       ${pkgs.util-linux}/bin/umount /tmp/quota-root
     '';
   }

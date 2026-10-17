@@ -34,7 +34,7 @@
         needle = "The fleet-visible content-addressed store is the **same seam**";
       }
       {
-        label = "DCE no RFC-0007 dependency";
+        label = "DCE has no shared-store dependency";
         needle = "documented text, not a";
       }
     ]
@@ -69,7 +69,7 @@
       }
       {
         label = "standalone no RFC dependency";
-        needle = "no RFC-0007 dependency exists";
+        needle = "no ratchet dependency exists";
       }
     ]
     ++ forbiddenFor "crates/crucible-cas/Cargo.toml" casManifest [

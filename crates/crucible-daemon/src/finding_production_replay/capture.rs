@@ -172,6 +172,7 @@ pub enum FindingProductionReplayCaptureError {
         /// Closed model operation that failed.
         operation: &'static str,
         /// Typed engine failure.
+        #[source]
         error: Box<crucible::EngineError>,
     },
     /// The authenticated campaign choice closure is invalid.
@@ -295,7 +296,7 @@ pub(crate) fn capture_finding_replay_lifecycle_objects_with_budget(
         ));
     }
     let mut objects = match signal_store {
-        Some(store) => match crucible_api::collect_signal_artifact_objects_with_budget(
+        Some(store) => match crate::collect_signal_artifact_objects_with_budget(
             plan,
             store,
             limits.max_lifecycle_bytes,
@@ -400,7 +401,12 @@ pub(super) fn selected_side(
         [_] => Ok(FindingProductionReplaySelectedSide::Observed),
         [expected, reproduced] => {
             let comparison =
-                compare_event_log_determinism(&expected.event_log, &reproduced.event_log);
+                compare_event_log_determinism(&expected.event_log, &reproduced.event_log).map_err(
+                    |error| FindingProductionReplayCaptureError::Model {
+                        operation: "event-projection",
+                        error: Box::new(error),
+                    },
+                )?;
             let mismatch = comparison
                 .mismatch()
                 .ok_or(FindingProductionReplayCaptureError::PairedSidesDoNotDiverge)?;
@@ -549,7 +555,12 @@ pub(super) fn validate_execution_side(
     let mut event_bytes = 0usize;
     for entry in &side.event_log {
         event_bytes = event_bytes
-            .checked_add(entry.canonical_material_len())
+            .checked_add(entry.canonical_material_len().map_err(|error| {
+                FindingProductionReplayCaptureError::Model {
+                    operation: "event-identity",
+                    error: Box::new(error),
+                }
+            })?)
             .ok_or(FindingProductionReplayCaptureError::LimitExceeded {
                 limit: "finding-production-replay-event-bytes",
             })?;
@@ -654,7 +665,7 @@ pub(super) fn validate_lifecycle_objects(
     }
 
     let mut expected =
-        crucible_api::collect_signal_artifact_objects(scenario.plan().fault_signals(), &memory)
+        crate::collect_signal_artifact_objects(scenario.plan().fault_signals(), &memory)
             .map_err(FindingProductionReplayCaptureError::SignalArtifacts)?;
     for node in scenario.world().io_nodes() {
         let identity = match &node.kind {

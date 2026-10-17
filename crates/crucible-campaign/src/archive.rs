@@ -4,14 +4,18 @@
 //! the source closure into selected and omitted objects. Inventory pages name
 //! objects in their bodies rather than as generic envelope children. This is
 //! the explicit boundary that permits a partial archive to retain an object
-//! without claiming that every descendant of that object is present.
+//! without claiming that every descendant of that object is present. Complete
+//! RAM images use a separate canonical root inventory: every selected image is
+//! authenticated and transferred through its bounded RAM tree, and GC treats
+//! its root transitively. RAM catalogs and pages never enter direct inventories.
 //!
 //! ```text
-//! CampaignArchiveManifestV1
+//! CampaignArchiveManifestV2
 //!   source snapshot + policy + exact-checkpoint selections
-//!   selected-page-00000000 -> CampaignArchiveInventoryPageV1(Selected, entries...)
-//!   omitted-page-00000000  -> CampaignArchiveInventoryPageV1(Omitted, entries...)
+//!   selected-page-00000000 -> CampaignArchiveInventoryPageV2(Selected, entries...)
+//!   omitted-page-00000000  -> CampaignArchiveInventoryPageV2(Omitted, entries...)
 //!   selected/omitted counts + ordered-entry digests
+//!   sorted complete RAM roots -> independently authenticated RAM graphs
 //! ```
 
 use std::collections::BTreeSet;
@@ -47,7 +51,7 @@ pub trait CampaignArchiveCheckpointResolver {
     ) -> Result<ExactCheckpointId, crate::CampaignRepositoryError>;
 }
 
-const ARCHIVE_SCHEMA_VERSION: u32 = 1;
+const ARCHIVE_SCHEMA_VERSION: u32 = 2;
 
 /// Maximum direct object entries carried by one archive inventory page.
 pub const MAX_ARCHIVE_INVENTORY_PAGE_ENTRIES: usize = 4_096;
@@ -384,6 +388,7 @@ pub struct CampaignArchiveManifest {
     policy: CampaignArchivePolicy,
     checkpoint_selections: Vec<CampaignArchiveCheckpointSelection>,
     retained_roots: Vec<ContentId>,
+    ram_roots: Vec<ContentId>,
     selected_pages: Vec<CampaignArchiveInventoryPageId>,
     omitted_pages: Vec<CampaignArchiveInventoryPageId>,
     selected_count: u64,
@@ -397,6 +402,7 @@ pub(crate) struct CampaignArchiveManifestBasis<'a> {
     pub(crate) policy: CampaignArchivePolicy,
     pub(crate) checkpoint_selections: Vec<CampaignArchiveCheckpointSelection>,
     pub(crate) retained_roots: Vec<ContentId>,
+    pub(crate) ram_roots: Vec<ContentId>,
     pub(crate) selected_pages: Vec<CampaignArchiveInventoryPageId>,
     pub(crate) omitted_pages: Vec<CampaignArchiveInventoryPageId>,
     pub(crate) selected: &'a [ArchiveObjectEntry],
@@ -415,6 +421,7 @@ impl CampaignArchiveManifest {
             policy: basis.policy,
             checkpoint_selections: basis.checkpoint_selections,
             retained_roots: basis.retained_roots,
+            ram_roots: basis.ram_roots,
             selected_pages: basis.selected_pages,
             omitted_pages: basis.omitted_pages,
             selected_count,
@@ -452,6 +459,16 @@ impl CampaignArchiveManifest {
     #[must_use]
     pub fn retained_roots(&self) -> &[ContentId] {
         &self.retained_roots
+    }
+
+    /// Returns selected complete RAM roots outside the direct page inventory.
+    ///
+    /// Each root occurs in the selected generic inventory. Its complete bounded
+    /// tree is authenticated and transferred separately, and remains a
+    /// transitive GC root for the lifetime of the archive.
+    #[must_use]
+    pub fn ram_roots(&self) -> &[ContentId] {
+        &self.ram_roots
     }
 
     /// Returns selected inventory pages in ordinal order.
@@ -566,6 +583,15 @@ impl CampaignArchiveManifest {
         {
             return Err(invalid("archive retained roots are not strictly ordered"));
         }
+        if self.ram_roots.len() > MAX_ARCHIVE_INVENTORY_ENTRIES
+            || self.ram_roots.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.ram_roots.iter().any(|root| {
+                root.kind() != crucible_cas::content_store::ObjectKind::ExactManifest
+                    || root.schema_version() != 1
+            })
+        {
+            return Err(invalid("archive RAM roots are invalid or unordered"));
+        }
         let total = self
             .selected_count
             .checked_add(self.omitted_count)
@@ -586,6 +612,7 @@ impl Canonical for CampaignArchiveManifest {
         self.policy.encode(encoder);
         self.checkpoint_selections.encode(encoder);
         self.retained_roots.encode(encoder);
+        self.ram_roots.encode(encoder);
         self.selected_pages.encode(encoder);
         self.omitted_pages.encode(encoder);
         self.selected_count.encode(encoder);
@@ -601,6 +628,7 @@ impl Canonical for CampaignArchiveManifest {
             policy: CampaignArchivePolicy::decode(decoder)?,
             checkpoint_selections: Vec::<CampaignArchiveCheckpointSelection>::decode(decoder)?,
             retained_roots: Vec::<ContentId>::decode(decoder)?,
+            ram_roots: Vec::<ContentId>::decode(decoder)?,
             selected_pages: Vec::<CampaignArchiveInventoryPageId>::decode(decoder)?,
             omitted_pages: Vec::<CampaignArchiveInventoryPageId>::decode(decoder)?,
             selected_count: u64::decode(decoder)?,
@@ -611,12 +639,16 @@ impl Canonical for CampaignArchiveManifest {
     }
 }
 
-/// Profiler-derived aggregate archive report.
+/// Profiler-derived aggregate report for a direct archive inventory.
+///
+/// Complete RAM images are represented by their typed root objects here. Their
+/// descendant catalogs and pages are authenticated and transferred separately;
+/// transfer reports count their actual copied bytes and objects.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CampaignArchiveReport {
     /// Number of represented objects.
     pub objects: u64,
-    /// Total authenticated logical bytes.
+    /// Authenticated logical bytes in direct inventory objects.
     pub logical_bytes: u64,
     /// Bytes classified as campaign metadata.
     pub metadata_bytes: u64,
@@ -724,6 +756,7 @@ pub struct CampaignArchivePlan {
     pub(crate) page_envelopes: Vec<crate::ObjectEnvelope>,
     pub(crate) selected: Vec<ArchiveObjectEntry>,
     pub(crate) omitted: Vec<ArchiveObjectEntry>,
+    pub(crate) ram_bindings: Vec<(ExactCheckpointId, ContentId)>,
 }
 
 impl CampaignArchivePlan {
@@ -751,10 +784,27 @@ impl CampaignArchivePlan {
         &self.omitted
     }
 
+    /// Returns selected complete RAM roots in canonical storage identity order.
+    #[must_use]
+    pub fn ram_roots(&self) -> &[ContentId] {
+        self.manifest.ram_roots()
+    }
+
+    /// Returns authenticated whole-world to RAM root associations.
+    ///
+    /// These bindings let the bounded RAM transfer authenticate every offered
+    /// image against the world root selected by this archive. They contain no
+    /// page or descendant inventory.
+    #[must_use]
+    pub fn ram_root_bindings(&self) -> &[(ExactCheckpointId, ContentId)] {
+        &self.ram_bindings
+    }
+
     /// Returns every object protected while this plan is being transferred.
     ///
     /// The inventory includes selected campaign objects plus canonical page and
-    /// manifest objects. It is sorted and duplicate free.
+    /// manifest objects. RAM roots protect their descendants transitively; no
+    /// page catalog is flattened here. The inventory is sorted and duplicate free.
     #[must_use]
     pub fn transfer_objects(&self) -> Vec<(ContentId, u64)> {
         let mut objects = self

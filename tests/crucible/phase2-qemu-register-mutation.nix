@@ -137,6 +137,8 @@ in
               -I${qemuPackage}/include/qemu \
               -I${qemuPackage}/include \
               $(pkg-config --cflags glib-2.0) \
+              -DCRUCIBLE_FIXTURE_RESIDENT_OWNER \
+              -I${qemuPackage}/share/aos/crucible/native-tests \
               ${patchedPluginSource}/crucible-register.c \
               -o crucible-register.so \
               $(pkg-config --libs glib-2.0)

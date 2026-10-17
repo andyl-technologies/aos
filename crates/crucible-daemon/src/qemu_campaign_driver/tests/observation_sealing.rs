@@ -4,6 +4,8 @@ use super::*;
 
 #[test]
 fn matching_observation_does_not_mutate_configuration_with_a_default_guest_reply() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, node) = input_with_guest_selectable(StopCondition::Observation(
         ObservationCondition::SchedulerQuiescent,
     ));
@@ -51,6 +53,8 @@ fn matching_observation_does_not_mutate_configuration_with_a_default_guest_reply
 
 #[test]
 fn matching_observation_rejects_a_nonadvancing_quantum_coordinate() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::Observation(
         ObservationCondition::SchedulerQuiescent,
     ));
@@ -104,12 +108,15 @@ fn pending_assertion_observation() -> QemuFreshPendingObservation {
     let configuration = starting_configuration(&input);
     let mut log = EventLog::new();
     let matching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            0,
-            VirtualTime { ticks: 1 },
-            assertion,
-            AssertionPhase::Violated,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                0,
+                VirtualTime { ticks: 1 },
+                assertion,
+                AssertionPhase::Violated,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("matching assertion segment");
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::from([Ok(outcome(
@@ -173,6 +180,8 @@ fn assert_observation_boundary_rejected(pending: QemuFreshPendingObservation) {
 
 #[test]
 fn observation_seal_rejects_a_bytes_only_offset_mutation() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let mut pending = pending_assertion_observation();
     let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
         panic!("fixture must stop on an observation")
@@ -194,6 +203,8 @@ fn observation_seal_rejects_a_bytes_only_offset_mutation() {
 
 #[test]
 fn observation_seal_rejects_an_empty_segment_with_a_nonempty_prefix() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let mut pending = pending_assertion_observation();
     let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
         panic!("fixture must stop on an observation")
@@ -215,6 +226,8 @@ fn observation_seal_rejects_an_empty_segment_with_a_nonempty_prefix() {
 
 #[test]
 fn observation_seal_rejects_a_forged_prefix_with_a_coherent_segment() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let mut pending = pending_assertion_observation();
     let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
         panic!("fixture must stop on an observation")
@@ -225,7 +238,8 @@ fn observation_seal_rejects_a_forged_prefix_with_a_coherent_segment() {
         VirtualTime { ticks: 1 },
         AssertionId::from_name("safety"),
         AssertionPhase::Violated,
-    );
+    )
+    .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     let forged_prefix = ContentHash::from_bytes(b"forged observation prefix");
     let mut forged_log = EventLog::from_offset(EventLogOffset::new(forged_prefix, 0, 0));
     let forged = forged_log
@@ -250,6 +264,8 @@ fn observation_seal_rejects_a_forged_prefix_with_a_coherent_segment() {
 
 #[test]
 fn observation_seal_rejects_shifted_quantum_coordinates() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let mut pending = pending_assertion_observation();
     let ModeledStop::ObservationReached { proof, .. } = &mut pending.stop else {
         panic!("fixture must stop on an observation")
@@ -276,6 +292,8 @@ fn observation_seal_rejects_shifted_quantum_coordinates() {
 
 #[test]
 fn terminal_run_projects_offline_property_verdicts() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
     let input = input_for_scenario(fixture.scenario.clone(), StopCondition::Terminal);
     let configuration = starting_configuration(&input);
@@ -335,6 +353,8 @@ fn terminal_run_projects_offline_property_verdicts() {
 
 #[test]
 fn terminal_failure_preserves_grouped_reasons_in_scheduler_order() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
     let input = input_for_scenario(fixture.scenario.clone(), StopCondition::Terminal);
     let configuration = starting_configuration(&input);
@@ -381,6 +401,8 @@ fn terminal_failure_preserves_grouped_reasons_in_scheduler_order() {
 
 #[test]
 fn empty_terminal_failure_is_rejected() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     assert!(matches!(
         modeled_terminal_stop(QuantumTerminalVerdict::Failed(Vec::new())),
         Err(QemuFreshModeledDriverError::EmptyScenarioFailure)
@@ -389,6 +411,8 @@ fn empty_terminal_failure_is_rejected() {
 
 #[test]
 fn non_dense_final_drain_is_rejected_before_candidate_construction() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::EventCount(1));
     let configuration = starting_configuration(&input);
     let mut log = EventLog::new();
@@ -422,7 +446,8 @@ fn non_dense_final_drain_is_rejected_before_candidate_construction() {
         Icount { retired: 2 },
         node("node-a"),
         MarkerId::from_name("late"),
-    );
+    )
+    .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
 
     let error = driver
         .seal(pending, vec![invalid])
@@ -436,15 +461,22 @@ fn non_dense_final_drain_is_rejected_before_candidate_construction() {
 
 #[test]
 fn retained_event_material_is_byte_bounded_before_append() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let entry = SchedulerEventLogEntry::guest_marker_observation(
         0,
         Icount { retired: 1 },
         node("node-a"),
         MarkerId::from_name("bounded"),
-    );
+    )
+    .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     let mut event_log = Vec::new();
     let mut retained_bytes = MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES
-        .checked_sub(entry.canonical_material_len())
+        .checked_sub(
+            entry
+                .canonical_material_len()
+                .unwrap_or_else(|source| panic!("fixture boundary admission: {source}")),
+        )
         .expect("entry fits configured bound")
         + 1;
 
@@ -462,6 +494,8 @@ fn retained_event_material_is_byte_bounded_before_append() {
 
 #[test]
 fn retained_choices_share_contracts_and_charge_unique_records_once() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDefId::from_hash(CampaignHash::derive("fresh-driver-test", b"scenario"));
     let first = choice_discovery_named(scenario, "first");
     let second = choice_discovery_named(scenario, "second");

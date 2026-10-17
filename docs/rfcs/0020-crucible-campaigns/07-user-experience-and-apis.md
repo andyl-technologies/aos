@@ -837,7 +837,7 @@ crucible serve --listen 127.0.0.1:0 --trusted-unauthenticated-bind \
 
 The socket, state, and policy paths are an all-or-none profile. Without
 `--campaign-store`, the daemon uses the state directory's `objects` and `refs`
-children. With that option, the strict current version-two deployment selects
+children. With that option, the strict current version-three deployment selects
 a composed immutable graph and exactly one local or strong-CAS remote ref
 namespace without creating those default children. The daemon uses its exact
 effective UID/GID as the filesystem and peer-policy owner, takes one durable
@@ -862,7 +862,7 @@ same state-root lock. A volatile blob or ref implementation fails admission.
 The shipped `crucible serve` profile now binds local directory, compressed,
 encrypted, packed, verified, routed, tiered, read-through, write-through,
 write-back, durability-policy, metrics, logical/physical quota, namespaced, and
-campaign-profile nodes through the sole current version-two file. That schema
+campaign-profile nodes through the sole current version-three file. That schema
 also binds exact HTTPS S3 endpoints, bounded SDK workers, reloading owner-only
 credential files, S3 graph leaves, and an optional strong-CAS remote ref
 namespace. It checks the exact endpoint capability set and segment-disjoint
@@ -885,7 +885,7 @@ attempts, interrupts connections, and joins both connection and semantic
 workers. Terminal semantic worker failure closes the listener instead of
 leaving an apparently live but unusable socket. Dropping the unserved owner
 retains the socket namespace until the same semantic join completes. In
-daemon-packaged mode a strict version-two deployment file fixes aggregate
+daemon-packaged mode a strict version-three deployment file fixes aggregate
 capacity, worker count, cgroup/run roots, project-ID range, child credential,
 checkpoint ceiling, exact compatibility profile, and the complete bounded
 listener/coordinator operational policy before the endpoint is exposed. One

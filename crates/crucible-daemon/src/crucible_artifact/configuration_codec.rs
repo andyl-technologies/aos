@@ -14,7 +14,9 @@ pub fn encode_crucible_scenario_artifact(
     ScenarioArtifact::new(
         campaign_scenario_id(scenario.id()),
         CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5,
-        scenario.to_compact_binary(),
+        scenario
+            .to_compact_binary_admitted()
+            .map_err(|source| owned_model_error("scenario encoding", source))?,
     )
     .map_err(Into::into)
 }
@@ -71,14 +73,18 @@ pub fn encode_crucible_configuration_artifact(
     let scenario = decode_crucible_scenario_artifact(scenario_artifact)?;
     let configuration = Configuration {
         def: scenario.scenario_def(),
-        schedule: schedule.clone(),
+        schedule: schedule
+            .try_clone_admitted()
+            .map_err(|source| owned_model_error("schedule clone", source))?,
     };
     ConfigurationArtifact::new(
         scenario_artifact.scenario(),
         scenario_artifact.id()?,
         campaign_configuration_id(configuration.id()),
         CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4,
-        schedule.to_compact_binary(),
+        schedule
+            .to_compact_binary_admitted()
+            .map_err(|source| owned_model_error("schedule encoding", source))?,
     )
     .map_err(Into::into)
 }
@@ -202,13 +208,18 @@ pub(crate) fn decode_crucible_configuration_artifact_with_owned_candidate(
     let configuration =
         decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
     let mut retained = Vec::new();
-    let replay =
-        resolve_selection_decisions(scenario, &configuration, artifact, None, |ids, _| {
-            retained = store
-                .resolve_selections_with_owned_candidate(ids, owned)
-                .map_err(CrucibleArtifactError::SelectionRepository)?;
-            Ok(retained.clone())
-        })?;
+    let replay = resolve_selection_decisions(scenario, &configuration, artifact, |ids| {
+        retained = store
+            .resolve_selections_with_owned_candidate(ids, owned)
+            .map_err(CrucibleArtifactError::SelectionRepository)?;
+        crucible::owned_decode::charge_array::<ResolvedSelection>(retained.len())
+            .map_err(CampaignCodecError::from)?;
+        retained
+            .iter()
+            .map(ResolvedSelection::clone_admitted)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    })?;
     Ok((configuration, replay, retained))
 }
 
@@ -220,43 +231,11 @@ fn decode_crucible_configuration_artifact_with_resolver(
 ) -> Result<(Configuration, SignalFaultCampaignReplayPlan), CrucibleArtifactError> {
     let configuration =
         decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
-    let replay =
-        resolve_selection_decisions(scenario, &configuration, artifact, None, |ids, _| {
-            resolver
-                .resolve_configuration_selections(ids)
-                .map_err(Into::into)
-        })?;
-    Ok((configuration, replay))
-}
-
-pub(crate) fn decode_crucible_configuration_artifact_with_signal_fault_replay_guarded(
-    scenario: &ScenarioDefForm,
-    scenario_artifact: &ScenarioArtifact,
-    artifact: &ConfigurationArtifact,
-    store: &CampaignExecutorStore,
-    retained_memory_guard: Option<&mut RetainedConfigurationMemoryGuard<'_>>,
-) -> Result<(Configuration, SignalFaultCampaignReplayPlan), CrucibleArtifactError> {
-    let configuration =
-        decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
-    let replay = resolve_selection_decisions(
-        scenario,
-        &configuration,
-        artifact,
-        retained_memory_guard,
-        |ids, selection_resolution_limit| match selection_resolution_limit {
-            Some(maximum_canonical_bytes) => store
-                .resolve_selections_with_canonical_byte_limit(ids, maximum_canonical_bytes)
-                .map_err(|error| match error {
-                    CampaignRepositoryError::SelectionResolutionBudgetExceeded { .. } => {
-                        CrucibleArtifactError::ResourceLimit {
-                            resource: "selected-origin-decoded-resident-bytes",
-                        }
-                    }
-                    error => CrucibleArtifactError::SelectionRepository(error),
-                }),
-            None => store.resolve_selections(ids).map_err(Into::into),
-        },
-    )?;
+    let replay = resolve_selection_decisions(scenario, &configuration, artifact, |ids| {
+        resolver
+            .resolve_configuration_selections(ids)
+            .map_err(Into::into)
+    })?;
     Ok((configuration, replay))
 }
 
@@ -335,14 +314,10 @@ fn resolve_selection_decisions<R>(
     scenario: &ScenarioDefForm,
     configuration: &Configuration,
     artifact: &ConfigurationArtifact,
-    retained_memory_guard: Option<&mut RetainedConfigurationMemoryGuard<'_>>,
     resolve: R,
 ) -> Result<SignalFaultCampaignReplayPlan, CrucibleArtifactError>
 where
-    R: FnOnce(
-        &[SelectionId],
-        Option<usize>,
-    ) -> Result<Vec<ResolvedSelection>, CrucibleArtifactError>,
+    R: FnOnce(&[SelectionId]) -> Result<Vec<ResolvedSelection>, CrucibleArtifactError>,
 {
     let mut selections = Vec::new();
     let mut campaign_branch_count = 0usize;
@@ -351,6 +326,8 @@ where
             continue;
         };
         let selection = decision.selection()?;
+        crucible::owned_decode::reserve_vec(&mut selections, 1)
+            .map_err(CampaignCodecError::from)?;
         selections.push((index, selection));
         if selections.len() > MAX_CONFIGURATION_SELECTION_DECISIONS {
             return Err(CrucibleArtifactError::SelectionResolutionLimit);
@@ -372,23 +349,26 @@ where
     if branch_prefix_bytes > MAX_CONFIGURATION_BRANCH_PREFIX_BYTES {
         return Err(CrucibleArtifactError::SelectionResolutionLimit);
     }
-    let selection_resolution_limit = retained_memory_guard
-        .map(|guard| guard(configuration, campaign_branch_count))
-        .transpose()?;
     if selections.is_empty() {
         if configuration.schedule.decisions().iter().any(|decision| {
             matches!(decision, Decision::Override(override_decision) if override_decision.point.key.starts_with("signal-fault/"))
         }) {
             return Err(CrucibleArtifactError::UnboundSignalFaultOverride);
         }
-        return Ok(SignalFaultCampaignReplayPlan::empty(configuration.clone()));
+        return Ok(SignalFaultCampaignReplayPlan::empty(
+            configuration
+                .try_clone_admitted()
+                .map_err(|source| owned_model_error("replay configuration clone", source))?,
+        ));
     }
 
+    crucible::owned_decode::charge_array::<SelectionId>(selections.len())
+        .map_err(CampaignCodecError::from)?;
     let selection_ids = selections
         .iter()
         .map(|(_, selection)| selection.id())
         .collect::<Result<Vec<_>, _>>()?;
-    let resolved = resolve(&selection_ids, selection_resolution_limit)?;
+    let resolved = resolve(&selection_ids)?;
     let mut signal_fault_branches = Vec::new();
     let mut network_fault_branches = Vec::new();
     let mut covered_signal_fault_overrides = BTreeSet::new();
@@ -407,7 +387,10 @@ where
             SelectionOrigin::CampaignBranch { .. } => {
                 let parent = Configuration {
                     def: configuration.def.clone(),
-                    schedule: configuration.schedule.prefix(index)?,
+                    schedule: configuration
+                        .schedule
+                        .prefix_admitted(index)
+                        .map_err(|source| owned_model_error("configuration prefix", source))?,
                 };
                 selection.validate_branch_replay(
                     resolved.opportunity(),
@@ -437,8 +420,12 @@ where
                         return Err(CrucibleArtifactError::SignalFaultScheduleMismatch);
                     }
                     if branch.decisions().len() == 2 {
+                        crucible::owned_decode::charge_btree_set_entry::<usize>()
+                            .map_err(CampaignCodecError::from)?;
                         covered_signal_fault_overrides.insert(index + 1);
                     }
+                    crucible::owned_decode::reserve_vec(&mut signal_fault_branches, 1)
+                        .map_err(CampaignCodecError::from)?;
                     signal_fault_branches.push(branch);
                 }
                 if matches!(
@@ -453,7 +440,10 @@ where
                         resolved.opportunity(),
                         resolved.domain(),
                     )?;
-                    network_fault_branches.push(selectable.resolve_branch(&selection)?);
+                    let branch = selectable.resolve_branch(&selection)?;
+                    crucible::owned_decode::reserve_vec(&mut network_fault_branches, 1)
+                        .map_err(CampaignCodecError::from)?;
+                    network_fault_branches.push(branch);
                 }
             }
             SelectionOrigin::ModelSample(_) => {
@@ -479,9 +469,24 @@ where
     {
         return Err(CrucibleArtifactError::UnboundSignalFaultOverride);
     }
-    SignalFaultCampaignReplayPlan::new(configuration.clone(), signal_fault_branches)?
-        .with_network_branches(network_fault_branches)
-        .map_err(Into::into)
+    SignalFaultCampaignReplayPlan::new(
+        configuration
+            .try_clone_admitted()
+            .map_err(|source| owned_model_error("replay configuration clone", source))?,
+        signal_fault_branches,
+    )?
+    .with_network_branches(network_fault_branches)
+    .map_err(Into::into)
+}
+
+fn owned_model_error(
+    artifact: &'static str,
+    source: crucible::EngineError,
+) -> CrucibleArtifactError {
+    CrucibleArtifactError::InvalidPayload {
+        artifact,
+        source: Box::new(source),
+    }
 }
 
 fn require_schema(

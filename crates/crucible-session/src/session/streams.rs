@@ -27,11 +27,29 @@ pub struct SessionEventLogFrame {
     /// Cursor position immediately after this entry.
     pub next_cursor: EventLogCursor,
     /// Full causal or observational event-log entry.
-    pub entry: SchedulerEventLogEntry,
+    pub entry: Arc<crucible::AdmittedSchedulerEventLogEntry>,
 }
 
 impl SessionEventLogFrame {
-    pub(super) fn new(entry: SchedulerEventLogEntry, generation: u64) -> Self {
+    /// Copies an entry under its original authority for shared stream delivery.
+    ///
+    /// # Errors
+    /// Refuses missing authority or allocation admission before returning a frame.
+    pub fn from_entry_admitted(
+        generation: u64,
+        cursor: EventLogCursor,
+        next_cursor: EventLogCursor,
+        entry: &SchedulerEventLogEntry,
+    ) -> Result<Self, EngineError> {
+        Ok(Self {
+            generation,
+            cursor,
+            next_cursor,
+            entry: entry.try_clone_admitted()?.into_shared()?,
+        })
+    }
+
+    fn new_shared(entry: Arc<crucible::AdmittedSchedulerEventLogEntry>, generation: u64) -> Self {
         let sequence = entry.sequence();
         Self {
             generation,
@@ -76,7 +94,7 @@ pub struct SessionEventLog {
 
 #[derive(Debug)]
 pub(super) struct SessionEventLogInner {
-    entries: Mutex<Vec<SchedulerEventLogEntry>>,
+    entries: Mutex<LoanedVec<Arc<crucible::AdmittedSchedulerEventLogEntry>>>,
     generation: AtomicU64,
     generation_start: AtomicU64,
     tail: broadcast::Sender<SessionEventLogFrame>,
@@ -89,7 +107,7 @@ impl SessionEventLog {
         let (tail, _) = broadcast::channel(SESSION_EVENT_LOG_BROADCAST_CAPACITY);
         Self {
             inner: Arc::new(SessionEventLogInner {
-                entries: Mutex::new(Vec::new()),
+                entries: Mutex::new(LoanedVec::default()),
                 generation: AtomicU64::new(0),
                 generation_start: AtomicU64::new(0),
                 tail,
@@ -148,7 +166,6 @@ impl SessionEventLog {
                 next_cursor,
                 replay_tail: current_tail,
                 replay_exhausted: false,
-                backlog: VecDeque::new(),
                 receiver,
             },
         )
@@ -184,21 +201,32 @@ impl SessionEventLog {
         }
     }
 
-    pub(super) fn append_entries(&self, entries: &[SchedulerEventLogEntry]) {
+    pub(super) fn append_entries(
+        &self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), EngineError> {
         if entries.is_empty() {
-            return;
+            return Ok(());
         }
-
+        let mut staged = LoanedVec::default();
+        staged.reserve(entries.len())?;
+        for entry in entries {
+            staged.push_reserved(entry.try_clone_admitted()?.into_shared()?);
+        }
         let generation = self.generation();
-        let frames = entries
-            .iter()
-            .cloned()
-            .map(|entry| SessionEventLogFrame::new(entry, generation))
-            .collect::<Vec<_>>();
-        self.lock_entries().extend(entries.iter().cloned());
-        for frame in frames {
-            let _ = self.inner.tail.send(frame);
+        let mut retained = self.lock_entries();
+        retained.reserve(staged.len())?;
+        for entry in staged.iter() {
+            retained.push_reserved(entry.clone());
         }
+        drop(retained);
+        for entry in staged.iter() {
+            let _ = self
+                .inner
+                .tail
+                .send(SessionEventLogFrame::new_shared(entry.clone(), generation));
+        }
+        Ok(())
     }
 
     pub(super) fn truncate_to_len(&self, len: usize) {
@@ -220,42 +248,67 @@ impl SessionEventLog {
         EventLogCursor::new(self.inner.generation_start.load(Ordering::Acquire))
     }
 
-    pub(super) fn lock_entries(&self) -> std::sync::MutexGuard<'_, Vec<SchedulerEventLogEntry>> {
+    pub(super) fn lock_entries(
+        &self,
+    ) -> std::sync::MutexGuard<'_, LoanedVec<Arc<crucible::AdmittedSchedulerEventLogEntry>>> {
         match self.inner.entries.lock() {
             Ok(entries) => entries,
             Err(poisoned) => poisoned.into_inner(),
         }
     }
 
-    fn current_cursor_for(entries: &[SchedulerEventLogEntry]) -> EventLogCursor {
+    fn current_cursor_for(
+        entries: &[Arc<crucible::AdmittedSchedulerEventLogEntry>],
+    ) -> EventLogCursor {
         entries
             .last()
             .map(|entry| EventLogCursor::new(entry.sequence().saturating_add(1)))
             .unwrap_or_default()
     }
 
-    fn replay_batch_from(
+    fn replay_frame_from(
         &self,
         cursor: EventLogCursor,
         replay_tail: EventLogCursor,
         generation: u64,
-    ) -> VecDeque<SessionEventLogFrame> {
+    ) -> Option<SessionEventLogFrame> {
         let entries = self.lock_entries();
         let start = entries.partition_point(|entry| entry.sequence() < cursor.next_sequence);
-        entries
-            .iter()
-            .skip(start)
-            .take_while(|entry| entry.sequence() < replay_tail.next_sequence)
-            .take(SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)
-            .cloned()
-            .map(|entry| SessionEventLogFrame::new(entry, generation))
-            .collect()
+        let entry = entries.get(start)?;
+        (entry.sequence() < replay_tail.next_sequence)
+            .then(|| SessionEventLogFrame::new_shared(entry.clone(), generation))
     }
 }
 
 impl Default for SessionEventLog {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Admitted point-in-time reproduction entries and their original resource custody.
+#[derive(Debug)]
+pub struct AdmittedSessionReproductionSnapshot {
+    entries: Vec<SessionControlLogEntry>,
+    custody: crucible::owned_decode::DecodeCustody,
+}
+
+impl AdmittedSessionReproductionSnapshot {
+    /// Borrows the copied reproduction entries while retaining their credits.
+    #[must_use]
+    pub fn entries(&self) -> &[SessionControlLogEntry] {
+        &self.entries
+    }
+
+    /// Transfers entries and custody to a caller retaining both through final drop.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<SessionControlLogEntry>,
+        crucible::owned_decode::DecodeCustody,
+    ) {
+        (self.entries, self.custody)
     }
 }
 
@@ -274,10 +327,71 @@ impl SessionReproductionLog {
         }
     }
 
-    /// Returns a point-in-time copy of the recorded command stream.
-    #[must_use]
-    pub fn snapshot(&self) -> Vec<SessionControlLogEntry> {
-        self.lock_entries().clone()
+    /// Copies the command stream after admitting its concrete owned fields.
+    ///
+    /// The snapshot holds a fresh account under the caller's original authority;
+    /// dropping earlier snapshots releases their credits independently.
+    ///
+    /// # Errors
+    /// Refuses missing original authority, resource exhaustion or allocation
+    /// failure before returning any partially copied snapshot.
+    pub fn snapshot_admitted(&self) -> Result<AdmittedSessionReproductionSnapshot, EngineError> {
+        use crucible::owned_decode;
+        let budget = owned_decode::require_current_child_budget()
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        let _scope = budget.enter();
+        let custody = budget.custody();
+        let original = self.lock_entries();
+        let mut entries = Vec::new();
+        owned_decode::reserve_vec(&mut entries, original.len())
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        for entry in original.iter() {
+            let payload = match &entry.payload {
+                SessionControlPayload::CommandKind { command } => {
+                    SessionControlPayload::CommandKind { command: *command }
+                }
+                SessionControlPayload::Fork { from } => SessionControlPayload::Fork { from: *from },
+                SessionControlPayload::SetBreakpoint { spec } => {
+                    SessionControlPayload::SetBreakpoint {
+                        spec: BreakpointSpec {
+                            predicate: spec.predicate.try_clone_admitted()?,
+                            disposition: match &spec.disposition {
+                                BreakpointDisposition::Suspend => BreakpointDisposition::Suspend,
+                                BreakpointDisposition::Trace => BreakpointDisposition::Trace,
+                                BreakpointDisposition::Action(action) => {
+                                    BreakpointDisposition::Action(action.try_clone_admitted()?)
+                                }
+                            },
+                            policy: spec.policy,
+                        },
+                    }
+                }
+                SessionControlPayload::RemoveBreakpoint { id } => {
+                    SessionControlPayload::RemoveBreakpoint { id: *id }
+                }
+                SessionControlPayload::CreateSavepoint { label } => {
+                    SessionControlPayload::CreateSavepoint {
+                        label: owned_decode::display_string(label)
+                            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?,
+                    }
+                }
+            };
+            entries.push(SessionControlLogEntry {
+                sequence: entry.sequence,
+                command: entry.command,
+                payload,
+                frontier: entry.frontier,
+                quanta: entry.quanta,
+                event_log_sequence_before: entry.event_log_sequence_before,
+                result: entry.result,
+                scheduler_batch: entry.scheduler_batch,
+                scheduler_control: entry.scheduler_control.clone(),
+            });
+        }
+        budget
+            .check()
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        Ok(AdmittedSessionReproductionSnapshot { entries, custody })
     }
 
     /// Returns the number of recorded boundary controls.
@@ -325,11 +439,18 @@ pub mod test_support {
     use crate::SessionEventLog;
 
     /// Appends event-log entries to a session event-log hub for integration tests.
+    ///
+    /// # Panics
+    /// Panics if the finite component metadata account cannot be installed or
+    /// the entries cannot be appended under that account.
     pub fn append_event_log_entries_for_test(
         hub: &SessionEventLog,
         entries: &[SchedulerEventLogEntry],
     ) {
-        hub.append_entries(entries);
+        let _scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite component stream metadata: {error}"));
+        hub.append_entries(entries)
+            .unwrap_or_else(|error| panic!("admitted component stream entries: {error}"));
     }
 
     /// Truncates a session event-log hub to `len` entries for integration tests.
@@ -346,7 +467,6 @@ pub struct SessionEventLogStream {
     next_cursor: EventLogCursor,
     replay_tail: EventLogCursor,
     replay_exhausted: bool,
-    backlog: VecDeque<SessionEventLogFrame>,
     receiver: broadcast::Receiver<SessionEventLogFrame>,
 }
 
@@ -423,7 +543,6 @@ impl SessionEventLogStream {
         if frame.generation > self.generation {
             self.generation = frame.generation;
             self.replay_exhausted = true;
-            self.backlog.clear();
         } else if frame.cursor.next_sequence < self.next_cursor.next_sequence {
             return None;
         }
@@ -435,36 +554,29 @@ impl SessionEventLogStream {
     fn resume_from_retained_log(&mut self) {
         self.replay_tail = self.hub.current_cursor();
         self.replay_exhausted = false;
-        self.backlog.clear();
     }
 
-    /// Refills the drained replay backlog and pops the next non-stale frame,
-    /// returning `None` when it is exhausted and the tail should be consulted.
+    /// Shares one retained entry without allocating a replay staging queue.
     fn take_ready_backlog_frame(&mut self) -> Option<SessionEventLogFrame> {
-        loop {
-            let hub_generation = self.hub.generation();
-            if hub_generation > self.generation {
-                self.generation = hub_generation;
-                self.next_cursor = self.next_cursor.min(self.hub.generation_start_cursor());
-                self.replay_tail = self.hub.current_cursor();
-                self.replay_exhausted = false;
-                self.backlog.clear();
-            }
-            if self.backlog.is_empty() && !self.replay_exhausted {
-                self.backlog =
-                    self.hub
-                        .replay_batch_from(self.next_cursor, self.replay_tail, self.generation);
-                self.replay_exhausted = self.backlog.is_empty();
-            }
-            let frame = self.backlog.pop_front()?;
-            if frame.generation < self.generation
-                || frame.cursor.next_sequence < self.next_cursor.next_sequence
-            {
-                continue;
-            }
-            self.next_cursor = frame.next_cursor;
-            return Some(frame);
+        let hub_generation = self.hub.generation();
+        if hub_generation > self.generation {
+            self.generation = hub_generation;
+            self.next_cursor = self.next_cursor.min(self.hub.generation_start_cursor());
+            self.replay_tail = self.hub.current_cursor();
+            self.replay_exhausted = false;
         }
+        if self.replay_exhausted {
+            return None;
+        }
+        let frame = self
+            .hub
+            .replay_frame_from(self.next_cursor, self.replay_tail, self.generation);
+        if let Some(frame) = &frame {
+            self.next_cursor = frame.next_cursor;
+        } else {
+            self.replay_exhausted = true;
+        }
+        frame
     }
 }
 
@@ -596,3 +708,7 @@ impl SessionStateTransitionStream {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "streams/admission_tests.rs"]
+pub(crate) mod admission_tests;

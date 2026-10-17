@@ -1,7 +1,6 @@
 //! Scheduling sub-nodes: the L3 seam that drives L1 I/O devices from the scheduler.
 //!
-//! Spec index: RFC-0010 file 15 (I/O sub-nodes) §15.1, file 08 (scheduling)
-//! §8.4.1, §8.9.4.
+//! Implementation contract: exact I/O completion delivery and deterministic scheduler horizons.
 //!
 //! This module is the integration capstone that wires the `crucible-device` (L1)
 //! block and 9p exact-completion sub-nodes into the
@@ -793,14 +792,14 @@ impl DeviceSchedulingSubNode {
 
     /// DELIVERs every completion due at or before `consumer_icount` in canonical
     /// order, emitting [`IoCompletion`] events and the fault decisions they drew
-    /// (RFC-0010 [SCHED-29], [SCHED-30], §8.9.4).
+    /// without changing their exact delivery coordinates.
     ///
     /// A completion is **made visible at exactly its `delivery_icount`** — never
     /// at the consumer's later frontier — in the `(delivery_icount, src_node,
     /// seq)` total order ([IO-10], [SCHED-15]), independent of host or transport
     /// timing (Contract B). Each delivered completion contributes its buffered
     /// fault [`Decision`]s, in delivery order, so the recorded schedule is
-    /// appended in the §8.6 total order ([SCHED-30]). Future completions stay in
+    /// appended in the same delivery order. Future completions stay in
     /// flight at their exact icounts.
     ///
     /// Returns the `(event, decisions)` pairs in delivery order.

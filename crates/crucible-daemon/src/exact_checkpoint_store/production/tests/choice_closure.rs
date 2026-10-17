@@ -11,7 +11,7 @@ fn production_root_requires_choice_child_even_when_no_selections_exist() {
         ContentHash::from_bytes(b"missing choice configuration"),
         64 * 1024 * 1024,
     )
-    .expect("prepare v5 root with empty choices");
+    .expect("prepare v6 root with empty choices");
     let bytes = prepared
         .root_source
         .read_all(MAX_PRODUCTION_ROOT_BYTES)
@@ -39,9 +39,16 @@ fn production_root_requires_choice_child_even_when_no_selections_exist() {
 
 #[test]
 fn production_choice_child_survives_store_reopen_and_rejects_malformed_preparation() {
+    let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
+        crucible_cas::content_store::MemoryRefBackend::new(),
+    ));
     let backend = Arc::new(DurableMemoryBackend::new());
-    let store = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
-        .expect("admit production store");
+    let store = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024, ram_retention.clone())
+        .expect("admit production store")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        );
     let prepared = prepare_production_source(
         Arc::new(memory_source(1)),
         ContentHash::from_bytes(b"reopened choice closure"),
@@ -49,15 +56,19 @@ fn production_choice_child_survives_store_reopen_and_rejects_malformed_preparati
         ContentHash::from_bytes(b"reopened choice configuration"),
         64 * 1024 * 1024,
     )
-    .expect("prepare v5 root");
+    .expect("prepare v6 root");
     let root = store
         .publish_production_closure(&prepared)
         .expect("publish root-bound choices")
         .root();
     drop(store);
 
-    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)
+    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024, ram_retention)
         .expect("reopen production store")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        )
         .load_production_closure(root)
         .expect("load choice closure through authenticated root");
     assert_eq!(

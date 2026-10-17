@@ -8,11 +8,17 @@ use super::{
 };
 use std::collections::BTreeMap;
 
+mod hex_stream;
+mod material_stream;
+pub(crate) use hex_stream::HexMaterialWriter;
+pub(super) use material_stream::material_string;
+pub(crate) use material_stream::{canonical_display_len, hash_material};
+
 pub(super) fn content_hash_from_canonical_material(domain: &str, material: &str) -> ContentHash {
     content_hash_from_canonical_material_bytes(domain, material.as_bytes())
 }
 
-pub(super) fn content_hash_from_canonical_material_bytes(
+pub(crate) fn content_hash_from_canonical_material_bytes(
     domain: &str,
     material: &[u8],
 ) -> ContentHash {
@@ -86,8 +92,9 @@ pub(super) fn materialized_state_hash(
 }
 
 fn write_schedule(hasher: &mut MaterialHasher, schedule: &Schedule) {
-    hasher.write_u64(schedule.decisions().len() as u64);
-    for decision in schedule.decisions() {
+    let decisions = schedule.decisions();
+    hasher.write_u64(decisions.len() as u64);
+    for decision in decisions {
         write_decision(hasher, decision);
     }
 }
@@ -454,28 +461,11 @@ impl MaterialHasher {
     }
 
     fn write_hex_bytes(&mut self, bytes: &[u8]) {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-
         let encoded_length = (bytes.len() as u64).wrapping_mul(2);
         self.write_u64(encoded_length);
-
-        let mut word = [0; 8];
-        let mut word_length = 0;
-        for byte in bytes {
-            for nibble in [byte >> 4, byte & 0x0f] {
-                word[word_length] = HEX[usize::from(nibble)];
-                word_length += 1;
-                if word_length == word.len() {
-                    self.mix_word(u64::from_le_bytes(word));
-                    word = [0; 8];
-                    word_length = 0;
-                }
-            }
-        }
-        if word_length != 0 {
-            self.mix_word(u64::from_le_bytes(word));
-        }
-
+        let mut word = hex_stream::HexWord::new();
+        word.write(self, bytes);
+        word.finish(self);
         self.bytes_written = self.bytes_written.wrapping_add(encoded_length);
     }
 

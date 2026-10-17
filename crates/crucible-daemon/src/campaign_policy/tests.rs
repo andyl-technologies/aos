@@ -45,6 +45,12 @@ fn policy_binds_effective_credentials_without_trusting_pid() {
             .expect("reused identity"),
         operator
     );
+    assert!(policy.matches_identity(UnixPeerCampaignIdentity::new(1000, 100), &operator));
+    assert!(!policy.matches_identity(UnixPeerCampaignIdentity::new(1001, 100), &operator));
+    assert!(!policy.matches_identity(
+        UnixPeerCampaignIdentity::new(1000, 100),
+        &principal("other")
+    ));
     assert_eq!(
         policy.resolve_campaign_principal(credentials(10, 1001, 100)),
         Err(CampaignAuthorizationError::Unauthorized)

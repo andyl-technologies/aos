@@ -37,15 +37,16 @@ pub(super) fn target_fields(
         ),
         ResolvedFaultTarget::MemoryRange {
             node,
-            address_space,
             guest_address,
             vcpu,
             length_bytes,
+            ..
         } => (
             node.as_str().to_owned(),
             NodeFaultTargetKindV1::Memory,
             vec![
-                id_field(T1, address_space),
+                // Node ownership is independent of the GVA/GPA coordinate flag.
+                NodeFaultFieldV1::hash(T1, crate::qemu_fault_target_hash(node.as_str())),
                 NodeFaultFieldV1::u64(T2, *guest_address),
                 NodeFaultFieldV1::boolean(T3, vcpu.is_some()),
                 NodeFaultFieldV1::u32(T4, vcpu.unwrap_or(0)),

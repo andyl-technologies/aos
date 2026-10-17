@@ -392,7 +392,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 CLI thin-wrapper gate for ${taskList}";
+      description = "Crucible CLI thin-wrapper gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

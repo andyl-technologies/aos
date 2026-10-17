@@ -3,7 +3,7 @@
 use super::*;
 
 /// Scheduler changes produced while settling network frames at one boundary.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct BackendNetworkSettlement {
     pub(super) decisions: Vec<Decision>,
     pub(super) configuration: Option<Configuration>,

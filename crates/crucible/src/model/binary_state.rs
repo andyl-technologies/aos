@@ -1,28 +1,111 @@
 //! Canonical binary writer and checkpoint/materialized-state codec.
 
 use super::*;
+
+#[cfg(test)]
+mod admission_tests;
+
 const MAX_SELECTION_DECISION_BYTES: usize = 4 * 1024;
+const MAX_BINARY_DECODE_NESTING: usize = 128;
+
+pub(super) fn artifact_decode_error(context: &str, error: impl std::fmt::Display) -> EngineError {
+    if let Some(budget) = crate::owned_decode::current_budget()
+        && let Err(source) = budget.check()
+    {
+        return EngineError::ArtifactDecodeAdmission { source };
+    }
+    scenario_serialization_error(format!("{context}: {error}"))
+}
+
 pub(super) struct ScenarioBinaryWriter {
     pub(super) bytes: Vec<u8>,
+    count: usize,
+    limit: Option<usize>,
+    counting: bool,
+    failed: bool,
 }
 
 impl ScenarioBinaryWriter {
     pub(super) fn new(magic: &[u8]) -> Self {
         let mut bytes = Vec::with_capacity(magic.len().saturating_add(256));
         bytes.extend_from_slice(magic);
-        Self { bytes }
+        Self {
+            bytes,
+            count: magic.len(),
+            limit: None,
+            counting: false,
+            failed: false,
+        }
+    }
+
+    /// Counts borrowed codec output before admitting and reserving its exact buffer.
+    pub(super) fn encode_admitted(
+        magic: &[u8],
+        render: impl Fn(&mut Self),
+    ) -> Result<Vec<u8>, EngineError> {
+        let mut counter = Self {
+            bytes: Vec::new(),
+            count: magic.len(),
+            limit: None,
+            counting: true,
+            failed: false,
+        };
+        render(&mut counter);
+        if counter.failed {
+            return Err(scenario_serialization_error(
+                "canonical binary size overflow",
+            ));
+        }
+        crate::owned_decode::charge_array::<u8>(counter.count)
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(counter.count).map_err(|source| {
+            EngineError::ArtifactDecodeAdmission {
+                source: crate::owned_decode::DecodeAdmissionError::new(source),
+            }
+        })?;
+        bytes.extend_from_slice(magic);
+        let mut writer = Self {
+            bytes,
+            count: magic.len(),
+            limit: Some(counter.count),
+            counting: false,
+            failed: false,
+        };
+        render(&mut writer);
+        if writer.failed || writer.count != counter.count {
+            return Err(scenario_serialization_error(
+                "canonical binary changed between passes",
+            ));
+        }
+        Ok(writer.bytes)
+    }
+
+    fn write_bytes(&mut self, value: &[u8]) {
+        let Some(count) = self.count.checked_add(value.len()) else {
+            self.failed = true;
+            return;
+        };
+        if self.limit.is_some_and(|limit| count > limit) {
+            self.failed = true;
+            return;
+        }
+        self.count = count;
+        if !self.counting && !self.failed {
+            self.bytes.extend_from_slice(value);
+        }
     }
 
     pub(super) fn write_u8(&mut self, value: u8) {
-        self.bytes.push(value);
+        self.write_bytes(&[value]);
     }
 
     pub(super) fn write_u32(&mut self, value: u32) {
-        self.bytes.extend_from_slice(&value.to_le_bytes());
+        self.write_bytes(&value.to_le_bytes());
     }
 
     pub(super) fn write_u64(&mut self, value: u64) {
-        self.bytes.extend_from_slice(&value.to_le_bytes());
+        self.write_bytes(&value.to_le_bytes());
     }
 
     pub(super) fn write_count(&mut self, count: usize) {
@@ -31,16 +114,16 @@ impl ScenarioBinaryWriter {
 
     pub(super) fn write_string(&mut self, value: &str) {
         self.write_count(value.len());
-        self.bytes.extend_from_slice(value.as_bytes());
+        self.write_bytes(value.as_bytes());
     }
 
     pub(super) fn write_binary_blob(&mut self, value: &[u8]) {
         self.write_count(value.len());
-        self.bytes.extend_from_slice(value);
+        self.write_bytes(value);
     }
 
     pub(super) fn write_hash(&mut self, hash: ContentHash) {
-        self.bytes.extend_from_slice(&hash.bytes);
+        self.write_bytes(&hash.bytes);
     }
 
     pub(super) fn write_optional_blob_ref(&mut self, reference: Option<ContentAddressedBlobRef>) {
@@ -54,7 +137,7 @@ impl ScenarioBinaryWriter {
     }
 
     pub(super) fn write_seed(&mut self, seed: Seed) {
-        self.bytes.extend_from_slice(&seed.bytes());
+        self.write_bytes(&seed.bytes());
     }
 
     pub(super) fn finish(self) -> Vec<u8> {
@@ -65,9 +148,61 @@ impl ScenarioBinaryWriter {
 pub(super) struct ScenarioBinaryReader<'a> {
     pub(super) bytes: &'a [u8],
     pub(super) offset: usize,
+    nesting: usize,
 }
 
 impl<'a> ScenarioBinaryReader<'a> {
+    /// Bounds recursive syntax independently of the artifact's byte allowance.
+    pub(super) fn with_nesting<T>(
+        &mut self,
+        decode: impl FnOnce(&mut Self) -> Result<T, EngineError>,
+    ) -> Result<T, EngineError> {
+        if self.nesting >= MAX_BINARY_DECODE_NESTING {
+            return Err(scenario_serialization_error(
+                "binary syntax nesting exceeds decoder stack limit",
+            ));
+        }
+        self.nesting += 1;
+        let result = decode(self);
+        self.nesting -= 1;
+        result
+    }
+
+    /// Reserves an exact typed collection within the current decode authority.
+    pub(super) fn allocate_vec<T>(&self, count: usize) -> Result<Vec<T>, EngineError> {
+        crate::owned_decode::charge_array::<T>(count)
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(count).map_err(|source| {
+            scenario_serialization_error(format!("reserve decoded collection: {source}"))
+        })?;
+        Ok(values)
+    }
+
+    pub(super) fn admit_box<T>(&self) -> Result<(), EngineError> {
+        crate::owned_decode::charge_array::<T>(1)
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+    }
+
+    fn admit_map_entries<K, V>(
+        &self,
+        _map: &BTreeMap<K, V>,
+        count: usize,
+    ) -> Result<(), EngineError> {
+        for _ in 0..count {
+            crate::owned_decode::charge_btree_entry::<K, V>()
+                .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn read_owned_blob(&mut self, label: &'static str) -> Result<Vec<u8>, EngineError> {
+        let bytes = self.read_binary_blob(label)?;
+        let mut owned = self.allocate_vec::<u8>(bytes.len())?;
+        owned.extend_from_slice(bytes);
+        Ok(owned)
+    }
+
     pub(super) fn new(bytes: &'a [u8], magic: &[u8]) -> Result<Self, EngineError> {
         if !bytes.starts_with(magic) {
             return Err(scenario_serialization_error("binary magic mismatch"));
@@ -75,6 +210,7 @@ impl<'a> ScenarioBinaryReader<'a> {
         Ok(Self {
             bytes,
             offset: magic.len(),
+            nesting: 0,
         })
     }
 
@@ -153,9 +289,17 @@ impl<'a> ScenarioBinaryReader<'a> {
                 "binary string exceeds serialized string limit",
             ));
         }
-        let bytes = self.read_exact(len)?.to_vec();
-        String::from_utf8(bytes)
-            .map_err(|source| scenario_serialization_error(format!("invalid UTF-8: {source}")))
+        let bytes = self.read_exact(len)?;
+        let text = std::str::from_utf8(bytes)
+            .map_err(|source| scenario_serialization_error(format!("invalid UTF-8: {source}")))?;
+        crate::owned_decode::charge_array::<u8>(len)
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        let mut owned = String::new();
+        owned.try_reserve_exact(len).map_err(|source| {
+            scenario_serialization_error(format!("reserve decoded string: {source}"))
+        })?;
+        owned.push_str(text);
+        Ok(owned)
     }
 
     pub(super) fn read_binary_blob(
@@ -215,7 +359,7 @@ pub(super) fn write_scenario_form_binary(
     write_plan_binary(&form.plan, writer);
     write_properties_binary(&form.properties, writer);
     writer.write_binary_blob(form.measurements.canonical_bytes());
-    writer.write_binary_blob(&form.selectables.canonical_bytes());
+    writer.write_binary_blob(form.selectables.canonical_body());
     writer.write_seed(form.seed);
     writer.write_u64(form.app_random_draw_cap);
 }
@@ -229,11 +373,9 @@ pub(super) fn read_scenario_form_binary(
     let properties = read_properties_binary(&world, reader)?;
     let bytes = reader
         .read_binary_blob_bounded("measurement definitions", MAX_MEASUREMENT_DEFINITION_BYTES)?;
-    let definitions =
-        serde_json::from_slice::<Vec<MeasurementDefinition>>(bytes).map_err(|error| {
-            scenario_serialization_error(format!(
-                "decode canonical measurement definitions: {error}"
-            ))
+    let definitions = crate::owned_decode::from_json_slice::<Vec<MeasurementDefinition>>(bytes)
+        .map_err(|error| {
+            artifact_decode_error("decode canonical measurement definitions", error)
         })?;
     let measurements =
         MeasurementDefinitions::from_decoded_definitions(&world, &plan, &properties, definitions)?;
@@ -249,15 +391,15 @@ pub(super) fn read_scenario_form_binary(
     let selectables = ScenarioSelectables::from_canonical_bytes(&world, bytes)?;
     let seed = reader.read_seed()?;
     let app_random_draw_cap = reader.read_u64()?;
-    let form = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
-        &world,
-        &plan,
-        &properties,
-        &measurements,
+    let form = ScenarioDefForm::from_owned_components(
+        world,
+        plan,
+        properties,
+        measurements,
+        selectables,
         seed,
         app_random_draw_cap,
-    )?
-    .with_selectables(selectables)?;
+    )?;
     validate_serialized_id("scenario", expected, form.id())?;
     Ok(form)
 }
@@ -275,11 +417,14 @@ pub(super) fn read_schedule_binary(
 ) -> Result<Schedule, EngineError> {
     let expected = reader.read_hash()?;
     let count = reader.read_collection_count("schedule.decision")?;
-    let mut decisions = Vec::with_capacity(count);
+    let mut decisions = reader.allocate_vec(count)?;
     for _ in 0..count {
         decisions.push(read_decision_binary(reader)?);
     }
-    let schedule = Schedule { decisions };
+    let schedule = Schedule {
+        decisions,
+        _decode_custody: crate::owned_decode::current_custody().unwrap_or_default(),
+    };
     validate_serialized_id("schedule", expected, schedule.content_hash())?;
     Ok(schedule)
 }
@@ -419,6 +564,7 @@ pub(super) fn read_node_icounts_binary(
 ) -> Result<BTreeMap<NodeId, Icount>, EngineError> {
     let count = reader.read_collection_count("checkpoint.node-icount")?;
     let mut node_icounts = BTreeMap::new();
+    reader.admit_map_entries(&node_icounts, count)?;
     for _ in 0..count {
         node_icounts.insert(
             NodeId {
@@ -483,7 +629,7 @@ pub(super) fn read_materialized_state_binary(
     let decision_rng = read_decision_rng_state_binary(reader)?;
     let event_log = read_event_log_offset_binary(reader)?;
     let segment_count = reader.read_collection_count("materialized-state.event-log-segment")?;
-    let mut event_log_segments = Vec::with_capacity(segment_count);
+    let mut event_log_segments = reader.allocate_vec(segment_count)?;
     for _ in 0..segment_count {
         event_log_segments.push(reader.read_hash()?);
     }
@@ -516,6 +662,7 @@ pub(super) fn read_vm_snapshots_binary(
 ) -> Result<BTreeMap<NodeId, VmSnapshotRef>, EngineError> {
     let count = reader.read_collection_count("materialized-state.vm-snapshot")?;
     let mut snapshots = BTreeMap::new();
+    reader.admit_map_entries(&snapshots, count)?;
     for _ in 0..count {
         let node = NodeId {
             name: reader.read_string()?,
@@ -548,6 +695,7 @@ pub(super) fn read_device_overlays_binary(
 ) -> Result<BTreeMap<DeviceId, DeviceOverlayDelta>, EngineError> {
     let count = reader.read_collection_count("materialized-state.device-overlay")?;
     let mut overlays = BTreeMap::new();
+    reader.admit_map_entries(&overlays, count)?;
     for _ in 0..count {
         let device = DeviceId {
             name: reader.read_string()?,
@@ -585,6 +733,7 @@ pub(super) fn read_node_blobs_binary(
 ) -> Result<BTreeMap<NodeId, NodeBlobRef>, EngineError> {
     let count = reader.read_collection_count("checkpoint.node-blob")?;
     let mut node_blobs = BTreeMap::new();
+    reader.admit_map_entries(&node_blobs, count)?;
     for _ in 0..count {
         node_blobs.insert(
             NodeId {
@@ -645,6 +794,7 @@ pub(super) fn read_device_rng_state_binary(
 ) -> Result<DeviceRngState, EngineError> {
     let count = reader.read_collection_count("device-rng-state.stream")?;
     let mut streams = BTreeMap::new();
+    reader.admit_map_entries(&streams, count)?;
     for _ in 0..count {
         streams.insert(
             read_rng_stream_binary(reader)?,
@@ -672,6 +822,7 @@ pub(super) fn read_decision_rng_state_binary(
 ) -> Result<DecisionRngState, EngineError> {
     let count = reader.read_collection_count("decision-rng-state.stream")?;
     let mut positions = BTreeMap::new();
+    reader.admit_map_entries(&positions, count)?;
     for _ in 0..count {
         positions.insert(
             read_rng_stream_binary(reader)?,
@@ -773,6 +924,7 @@ pub(super) fn read_scheduler_state_binary(
 ) -> Result<SchedulerState, EngineError> {
     let horizon_count = reader.read_collection_count("scheduler-state.horizon")?;
     let mut horizons = BTreeMap::new();
+    reader.admit_map_entries(&horizons, horizon_count)?;
     for _ in 0..horizon_count {
         horizons.insert(
             NodeId {
@@ -786,12 +938,13 @@ pub(super) fn read_scheduler_state_binary(
 
     let pending_count = reader.read_collection_count("scheduler-state.pending-frame-node")?;
     let mut pending_frames = BTreeMap::new();
+    reader.admit_map_entries(&pending_frames, pending_count)?;
     for _ in 0..pending_count {
         let node = NodeId {
             name: reader.read_string()?,
         };
         let frame_count = reader.read_collection_count("scheduler-state.pending-frame")?;
-        let mut frames = Vec::with_capacity(frame_count);
+        let mut frames = reader.allocate_vec(frame_count)?;
         for _ in 0..frame_count {
             frames.push(PendingFrame {
                 source: NodeId {
@@ -810,6 +963,7 @@ pub(super) fn read_scheduler_state_binary(
     let network_cursor_count =
         reader.read_collection_count("scheduler-state.network-link-cursor")?;
     let mut network_link_cursors = BTreeMap::new();
+    reader.admit_map_entries(&network_link_cursors, network_cursor_count)?;
     for _ in 0..network_cursor_count {
         network_link_cursors.insert(
             DeviceId {
@@ -822,7 +976,7 @@ pub(super) fn read_scheduler_state_binary(
                 inflight: {
                     let count =
                         reader.read_collection_count("scheduler-state.network-link-inflight")?;
-                    let mut inflight = Vec::with_capacity(count);
+                    let mut inflight = reader.allocate_vec(count)?;
                     for _ in 0..count {
                         inflight.push(NetworkLinkPendingFrame {
                             sequence: reader.read_u32()?,
@@ -841,6 +995,7 @@ pub(super) fn read_scheduler_state_binary(
 
     let sequence_count = reader.read_collection_count("scheduler-state.event-sequence")?;
     let mut event_sequences = EventSequenceState::empty();
+    reader.admit_map_entries(&event_sequences.next, sequence_count)?;
     for _ in 0..sequence_count {
         event_sequences.next.insert(
             EventSequenceKey {
@@ -853,19 +1008,20 @@ pub(super) fn read_scheduler_state_binary(
     let topology_epoch = reader.read_u64()?;
     let effective_topology_edge_count =
         reader.read_collection_count("scheduler-state.effective-topology-edge")?;
-    let mut effective_topology_edges = Vec::with_capacity(effective_topology_edge_count);
+    let mut effective_topology_edges = reader.allocate_vec(effective_topology_edge_count)?;
     for _ in 0..effective_topology_edge_count {
         effective_topology_edges.push(read_scheduler_lookahead_edge_binary(reader)?);
     }
     let pending_topology_change_count =
         reader.read_collection_count("scheduler-state.pending-topology-change")?;
-    let mut pending_topology_changes = Vec::with_capacity(pending_topology_change_count);
+    let mut pending_topology_changes = reader.allocate_vec(pending_topology_change_count)?;
     for _ in 0..pending_topology_change_count {
         pending_topology_changes.push(read_scheduler_topology_change_binary(reader)?);
     }
 
     let timer_count = reader.read_collection_count("scheduler-state.timer")?;
     let mut timers = TimerRegistry::empty();
+    reader.admit_map_entries(&timers.timers, timer_count)?;
     for _ in 0..timer_count {
         timers.timers.insert(
             TimerId {
@@ -890,7 +1046,7 @@ pub(super) fn read_scheduler_state_binary(
 
     let pending_device_decision_count =
         reader.read_collection_count("scheduler-state.pending-device-decision")?;
-    let mut pending_device_decisions = Vec::with_capacity(pending_device_decision_count);
+    let mut pending_device_decisions = reader.allocate_vec(pending_device_decision_count)?;
     for _ in 0..pending_device_decision_count {
         pending_device_decisions.push(read_decision_binary(reader)?);
     }
@@ -1017,7 +1173,7 @@ pub(super) fn read_scheduler_topology_change_binary(
     let count = reader.read_collection_count("scheduler-state.topology-change-effect")?;
     let effect = match effect_tag {
         0 | 1 | 3 => {
-            let mut edges = Vec::with_capacity(count);
+            let mut edges = reader.allocate_vec(count)?;
             for _ in 0..count {
                 edges.push(read_scheduler_lookahead_edge_binary(reader)?);
             }
@@ -1033,7 +1189,7 @@ pub(super) fn read_scheduler_topology_change_binary(
             }
         }
         2 => {
-            let mut endpoints = Vec::with_capacity(count);
+            let mut endpoints = reader.allocate_vec(count)?;
             for _ in 0..count {
                 endpoints.push(SchedulerLookaheadEdgeEndpoint::new(
                     read_scheduler_node_id_binary(reader)?,
@@ -1074,12 +1230,12 @@ pub(super) fn read_search_frontier_choices_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<SearchFrontierChoices, EngineError> {
     let count = reader.read_collection_count("scheduler-state.search-frontier-choice")?;
-    let mut choices = Vec::with_capacity(count);
+    let mut choices = reader.allocate_vec(count)?;
     for _ in 0..count {
         let decision = read_decision_binary(reader)?;
         let decision_count =
             reader.read_collection_count("scheduler-state.search-frontier-choice.decision")?;
-        let mut decisions = Vec::with_capacity(decision_count);
+        let mut decisions = reader.allocate_vec(decision_count)?;
         for _ in 0..decision_count {
             decisions.push(read_decision_binary(reader)?);
         }
@@ -1088,11 +1244,47 @@ pub(super) fn read_search_frontier_choices_binary(
             decisions,
         });
     }
-    let decisions = choices
-        .iter()
-        .map(|choice| choice.decision.clone())
-        .collect();
+    let mut decisions = reader.allocate_vec(choices.len())?;
+    for choice in &choices {
+        admit_decision_clone(&choice.decision)?;
+        decisions.push(choice.decision.clone());
+    }
     Ok(SearchFrontierChoices { choices, decisions })
+}
+
+fn admit_decision_clone(decision: &Decision) -> Result<(), EngineError> {
+    let admit = |bytes| {
+        crate::owned_decode::charge_array::<u8>(bytes)
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+    };
+    match decision {
+        Decision::DeliveryOrder(order) => {
+            crate::owned_decode::charge_array::<EventKey>(order.order.len())
+                .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+            for event in &order.order {
+                admit(event.consumer.node.name.len())?;
+                admit(event.producer.node.name.len())?;
+            }
+        }
+        Decision::RngDraw(draw) => {
+            admit(draw.stream.domain.len())?;
+            admit(draw.stream.name.len())?;
+        }
+        Decision::Override(decision) => {
+            admit(decision.point.key.len())?;
+            admit(decision.choice.name.len())?;
+        }
+        Decision::Preemption(decision) => admit(decision.node.name.len())?,
+        Decision::Selection(selection) => {
+            admit(selection.canonical_bytes().len())?;
+            if let Some(config) = selection.preemption_config() {
+                crate::owned_decode::charge_array::<PreemptionBranchConfig>(1)
+                    .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+                admit(config.node.name.len())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn write_checkpoint_metadata_binary(
@@ -1111,6 +1303,7 @@ pub(super) fn read_checkpoint_metadata_binary(
 ) -> Result<CheckpointMeta, EngineError> {
     let count = reader.read_collection_count("checkpoint.metadata-label")?;
     let mut labels = BTreeMap::new();
+    reader.admit_map_entries(&labels, count)?;
     for _ in 0..count {
         labels.insert(reader.read_string()?, reader.read_string()?);
     }
@@ -1175,7 +1368,7 @@ pub(super) fn read_decision_binary(
                 ticks: reader.read_u64()?,
             };
             let count = reader.read_collection_count("decision.delivery-order.event")?;
-            let mut order = Vec::with_capacity(count);
+            let mut order = reader.allocate_vec(count)?;
             for _ in 0..count {
                 order.push(EventKey {
                     virtual_time: VirtualTime {
@@ -1402,7 +1595,7 @@ pub(super) fn read_world_binary(
 ) -> Result<World, EngineError> {
     let id = reader.read_hash()?;
     let node_count = reader.read_collection_count("world.node")?;
-    let mut nodes = Vec::with_capacity(node_count);
+    let mut nodes = reader.allocate_vec(node_count)?;
     for _ in 0..node_count {
         nodes.push(match reader.read_u8()? {
             0 => WorldNodeDef::Vm(read_world_node_binary(reader)?),
@@ -1412,7 +1605,7 @@ pub(super) fn read_world_binary(
         });
     }
     let link_count = reader.read_collection_count("world.link")?;
-    let mut links = Vec::with_capacity(link_count);
+    let mut links = reader.allocate_vec(link_count)?;
     for _ in 0..link_count {
         links.push(read_link_binary(reader)?);
     }
@@ -1420,14 +1613,13 @@ pub(super) fn read_world_binary(
     let topology = if topology_bytes.is_empty() {
         WorldFaultTopology::default()
     } else {
-        serde_json::from_slice(topology_bytes).map_err(|source| {
-            scenario_serialization_error(format!("decode world fault topology: {source}"))
-        })?
+        crate::owned_decode::from_json_slice(topology_bytes)
+            .map_err(|source| artifact_decode_error("decode world fault topology", source))?
     };
     let world = World::from_recorded_node_defs_and_links(id, nodes, links)?
         .with_fault_topology(topology)
-        .map_err(|error| scenario_serialization_error(error.to_string()))?;
-    validate_serialized_id("world", id, serialized_world_identity(&world))?;
+        .map_err(|error| artifact_decode_error("admit world fault topology", error))?;
+    validate_serialized_id("world", id, serialized_world_identity(&world)?)?;
     Ok(world)
 }
 
@@ -1675,11 +1867,16 @@ pub(super) fn read_plan_binary(
     assertions: impl IntoIterator<Item = AssertionId>,
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Plan, EngineError> {
-    read_plan_binary_inner(
-        world,
-        Some(assertions.into_iter().collect::<Vec<_>>()),
-        reader,
-    )
+    let mut references = Vec::new();
+    for assertion in assertions {
+        crate::owned_decode::charge_array::<AssertionId>(4)
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        references.try_reserve(1).map_err(|source| {
+            scenario_serialization_error(format!("reserve declared assertion references: {source}"))
+        })?;
+        references.push(assertion);
+    }
+    read_plan_binary_inner(world, Some(references), reader)
 }
 
 pub(super) fn read_plan_binary_for_scenario(
@@ -1696,20 +1893,23 @@ pub(super) fn read_plan_binary_inner(
 ) -> Result<Plan, EngineError> {
     let id = reader.read_hash()?;
     let count = reader.read_collection_count("plan.event")?;
-    let mut events = Vec::with_capacity(count);
+    let mut events = reader.allocate_vec(count)?;
     for _ in 0..count {
         events.push(read_event_binary(reader)?);
     }
-    let assertions = assertions.unwrap_or_else(|| event_graph_assertion_references(&events));
+    let assertions = match assertions {
+        Some(assertions) => assertions,
+        None => event_graph_assertion_references(&events)?,
+    };
     let graph = EventGraph::from_unchecked_events_for_model(events);
     let plan = Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?;
     let fault_signals =
         FaultSignalPlan::from_wire_bytes(reader.read_binary_blob("plan.fault_signals")?)
-            .map_err(|error| scenario_serialization_error(error.to_string()))?;
+            .map_err(|error| artifact_decode_error("decode fault signal plan", error))?;
     fault_signals
         .validate_for_world(world)
-        .map_err(|error| scenario_serialization_error(error.to_string()))?;
-    let plan = plan.with_fault_signals(fault_signals);
+        .map_err(|error| artifact_decode_error("validate fault signal plan", error))?;
+    let plan = plan.with_fault_signals(fault_signals)?;
     validate_serialized_id("plan", id, plan.content_hash())?;
     Ok(plan)
 }

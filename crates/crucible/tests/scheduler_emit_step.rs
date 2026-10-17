@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let frame_producer = scheduler_node("producer", SchedulingNodeKind::Vm);
     let second_producer = scheduler_node("producer-b", SchedulingNodeKind::Vm);
@@ -112,6 +115,9 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
 
 #[test]
 fn step_advances_schedule_and_event_log_prefix_across_quanta() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node_a = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let node_b = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
@@ -160,6 +166,9 @@ fn step_advances_schedule_and_event_log_prefix_across_quanta() {
 
 #[test]
 fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let producer = scheduler_node("producer", SchedulingNodeKind::Vm);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -226,6 +235,9 @@ fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
 
 #[test]
 fn liveness_report_includes_deterministic_event_log_hashes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let first = check_scheduler_liveness(report_scenario()).expect("first run should terminate");
     let second = check_scheduler_liveness(report_scenario()).expect("second run should terminate");
 
@@ -239,6 +251,9 @@ fn liveness_report_includes_deterministic_event_log_hashes() {
 
 #[test]
 fn no_progress_quantum_does_not_append_polling_boundary_entries() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "emit-step-no-progress-poll",
         8,

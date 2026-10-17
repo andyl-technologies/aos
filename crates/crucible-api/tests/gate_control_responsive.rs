@@ -4,6 +4,9 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+#[path = "output_support.rs"]
+mod output_support;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -152,17 +155,23 @@ fn gate_control_responsive_requires_required_operations_to_apply() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn gate_control_plane_event_log_stream_api_subscribes_without_mutation() {
-    let scenario = generated_scenario(43);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let observed_control = Arc::new(Mutex::new(Vec::new()));
-    let engine = Engine::new(
-        config,
-        graph,
-        SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
-    );
-    let (sender, receiver) = mpsc::channel(4);
-    let actor = SessionActor::new(engine, receiver);
+    let budget = output_support::budget();
+    let actor = {
+        let _scope = budget.enter();
+        let scenario = generated_scenario(43);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let observed_control = Arc::new(Mutex::new(Vec::new()));
+        let engine = Engine::new(
+            config,
+            graph,
+            SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
+        );
+        let (sender, receiver) = mpsc::channel(4);
+        let actor = SessionActor::new(engine, receiver);
+        (actor, sender)
+    };
+    let (actor, sender) = actor;
     let live = actor.live_snapshot();
     let before_subscribe = live.read();
     let api_event_log = ControlPlaneEventLog::new(actor.event_log());
@@ -175,7 +184,8 @@ async fn gate_control_plane_event_log_stream_api_subscribes_without_mutation() {
     assert_eq!(stream.cursor(), EventLogCursor::default());
     assert_eq!(after_subscribe, before_subscribe);
 
-    let actor_task = tokio::spawn(async move { actor.run().await });
+    let actor_task = crucible_api::spawn_admitted_session_actor(actor, budget)
+        .expect("finite actor poll admission");
     send_command(&sender, SessionCommand::Start).await;
     send_command(&sender, SessionCommand::Continue).await;
     wait_until_running(&live).await;
@@ -234,19 +244,25 @@ struct RunningSimDoubleControlPlane {
 
 impl RunningSimDoubleControlPlane {
     async fn spawn() -> Self {
-        let scenario = generated_scenario(41);
-        let config = Configuration::genesis(scenario.clone());
-        let graph = graph_with_baked_genesis(&scenario);
-        let observed_control = Arc::new(Mutex::new(Vec::new()));
-        let engine = Engine::new(
-            config,
-            graph,
-            SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
-        );
-        let (sender, receiver) = mpsc::channel(16);
-        let actor = SessionActor::new(engine, receiver);
+        let budget = output_support::budget();
+        let (actor, sender, observed_control) = {
+            let _scope = budget.enter();
+            let scenario = generated_scenario(41);
+            let config = Configuration::genesis(scenario.clone());
+            let graph = graph_with_baked_genesis(&scenario);
+            let observed_control = Arc::new(Mutex::new(Vec::new()));
+            let engine = Engine::new(
+                config,
+                graph,
+                SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
+            );
+            let (sender, receiver) = mpsc::channel(16);
+            let actor = SessionActor::new(engine, receiver);
+            (actor, sender, observed_control)
+        };
         let live = actor.live_snapshot();
-        let actor_task = tokio::spawn(async move { actor.run().await });
+        let actor_task = crucible_api::spawn_admitted_session_actor(actor, budget)
+            .expect("finite actor poll admission");
 
         send_command(&sender, SessionCommand::Start).await;
         send_command(&sender, SessionCommand::Continue).await;
@@ -359,6 +375,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
                 self.event_log_events,
             ),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::retain_current()?,
         })
     }
 
@@ -392,6 +409,8 @@ fn complete_sim_double_setup(backend: &mut SimDouble) {
 
     let setup = control_encode_host_msg(&HostMsg::Setup {
         region_len: backend.shmem_layout().region_size,
+        process_generation: 1,
+        device_digest_workspace: None,
     });
     match backend.accept_host_control_frame(&setup) {
         Ok(Some(_setup_ack)) => {}
@@ -447,12 +466,14 @@ impl SimDoubleQuantumLoop {
                     EventLevel::Debug,
                     BTreeMap::new(),
                 )),
-            ),
+            )
+            .expect("finite diagnostic event admission"),
             crucible::test_support::condition_boundary_entry_for_test(
                 base.saturating_add(1),
                 VirtualTime { ticks: self.quanta },
                 crucible::SchedulerEvaluationBoundaryKind::Quantum,
-            ),
+            )
+            .expect("finite boundary event admission"),
         ];
         self.event_log_events = self.event_log_events.saturating_add(2);
         entries

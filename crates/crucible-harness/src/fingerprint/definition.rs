@@ -8,7 +8,7 @@
 use super::hasher::FingerprintHasher;
 
 /// The version tag folded into every execution-fingerprint definition digest.
-pub const EXECUTION_FINGERPRINT_DEFINITION_VERSION: &str = "crucible-execution-fingerprint-v2";
+pub const EXECUTION_FINGERPRINT_DEFINITION_VERSION: &str = "crucible-execution-fingerprint-v3";
 
 /// The stable hash algorithm tag used by the fingerprint combiner.
 pub const FINGERPRINT_HASH_ALGORITHM: &str = "crucible-stable-fingerprint-hash-v1";
@@ -17,7 +17,7 @@ pub const FINGERPRINT_HASH_ALGORITHM: &str = "crucible-stable-fingerprint-hash-v
 pub const REGISTER_DIGEST_ALGORITHM: &str = "host-observed-architectural-register-digest-v1";
 
 /// The memory sub-digest algorithm expected from host observation.
-pub const MEMORY_DIGEST_ALGORITHM: &str = "host-observed-full-guest-memory-digest-v1";
+pub const MEMORY_DIGEST_ALGORITHM: &str = "host-observed-logical-ram-blake3-execution-root-v1";
 
 /// The device-state sub-digest algorithm expected from host observation.
 pub const DEVICE_DIGEST_ALGORITHM: &str = "host-observed-device-state-digest-v1";

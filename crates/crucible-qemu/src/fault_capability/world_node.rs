@@ -361,11 +361,16 @@ impl QemuFaultCapabilityRequirement {
             })
             .collect::<Vec<_>>();
         clock_rows.sort_by(|left, right| left.id.cmp(&right.id));
-        let clock_manifest = FaultClockCapabilityManifestV2 {
-            architecture: scope,
-            rows: clock_rows,
+        let clock_manifest = if clock_rows.is_empty() {
+            None
+        } else {
+            let manifest = FaultClockCapabilityManifestV2 {
+                architecture: scope,
+                rows: clock_rows,
+            };
+            manifest.encode()?;
+            Some(manifest)
         };
-        clock_manifest.encode()?;
         let accelerator_manifest = if node.accelerators.is_empty() {
             None
         } else {
@@ -419,7 +424,7 @@ impl QemuFaultCapabilityRequirement {
         target.exact_register_manifest = Some(manifest.clone());
         target.exact_interrupt_manifest = interrupt_manifest.clone();
         target.exact_hardware_error_manifest = hardware_error_manifest.clone();
-        target.exact_clock_manifest = Some(clock_manifest.clone());
+        target.exact_clock_manifest = clock_manifest.clone();
         target.exact_accelerator_manifest = accelerator_manifest.clone();
         if accelerator_manifest.is_some() {
             requirement.rows.extend(accelerator_capability_rows());
@@ -428,7 +433,7 @@ impl QemuFaultCapabilityRequirement {
             Some(&manifest),
             interrupt_manifest.as_ref(),
             hardware_error_manifest.as_ref(),
-            Some(&clock_manifest),
+            clock_manifest.as_ref(),
             accelerator_manifest.as_ref(),
         )?;
         requirement.digest = fault_capability_manifest_digest(&requirement.rows)?;

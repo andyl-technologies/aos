@@ -302,6 +302,8 @@ fn whitebox_doorbell_reads_guest_memory_via_api_and_stamps_current_icount() {
 
 #[test]
 fn whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink() {
+    let _origin = crucible::test_support::fixture_decode_scope(4 * 1024 * 1024)
+        .expect("component marker sink requires original metadata authority");
     let doorbell = PluginWhiteboxDoorbell::new(
         PluginSwitch::On,
         WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
@@ -355,7 +357,11 @@ fn whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink() {
         entry.event_payload().string("assertion"),
         Some("guest.ready")
     );
-    assert!(crucible::event_log_causal_projection(&sink.entries).is_empty());
+    assert!(
+        crucible::event_log_causal_projection(&sink.entries)
+            .expect("admitted causal projection")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1506,7 +1512,8 @@ impl WhiteboxMarkerSink for EngineEventLogMarkerSink {
             .event_log
             .next_sequence(0)
             .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
-        let entry = crucible::test_support::condition_observation_entry_for_test(sequence, &event);
+        let entry = crucible::test_support::condition_observation_entry_for_test(sequence, &event)
+            .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
         let append = self
             .event_log
             .append_entries(vec![entry])
@@ -1533,7 +1540,8 @@ impl WhiteboxMarkerSink for EngineEventLogMarkerSink {
             .event_log
             .next_sequence(0)
             .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
-        let entry = crucible::test_support::condition_observation_entry_for_test(sequence, &event);
+        let entry = crucible::test_support::condition_observation_entry_for_test(sequence, &event)
+            .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
         let append = self
             .event_log
             .append_entries(vec![entry])

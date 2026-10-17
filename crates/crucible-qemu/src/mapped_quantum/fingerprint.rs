@@ -7,12 +7,12 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 const BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN: &str =
-    "crucible.qemu.black-box-execution-fingerprint.v1";
+    "crucible.qemu.black-box-execution-fingerprint.v2";
 
-pub(crate) fn black_box_execution_fingerprint(
-    node: &crucible::NodeId,
+/// Checks the exact sample returned to an identity or raw-sample caller.
+pub(crate) fn validate_black_box_fingerprint_sample(
     sample: &FingerprintSample,
-) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
+) -> Result<(), QemuNodeChannelError> {
     sample
         .validate()
         .map_err(|source| QemuNodeChannelError::new("execution_fingerprint", source.to_string()))?;
@@ -44,6 +44,15 @@ pub(crate) fn black_box_execution_fingerprint(
             "black-box fingerprint sample contains incomplete component evidence",
         ));
     }
+
+    Ok(())
+}
+
+pub(crate) fn black_box_execution_fingerprint(
+    node: &crucible::NodeId,
+    sample: &FingerprintSample,
+) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
+    validate_black_box_fingerprint_sample(sample)?;
 
     let mut material = vec![
         format!("node={}", node.name),

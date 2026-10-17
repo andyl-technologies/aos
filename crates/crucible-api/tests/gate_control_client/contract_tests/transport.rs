@@ -6,7 +6,7 @@ use super::*;
 async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     let (in_process, _actor) = in_process_client_fixture();
     let rpc_server = spawn_http2_hello_server().await;
-    let rpc = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
+    let rpc = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint())).map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("HTTP/2 RPC client should build: {error}"));
 
     assert_control_client_trait(&in_process);

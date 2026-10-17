@@ -27,6 +27,11 @@
       inVm = false;
     }
     {
+      package = "crucible-ram";
+      layer = 1;
+      inVm = false;
+    }
+    {
       package = "crucible-device";
       layer = 1;
       inVm = false;
@@ -53,6 +58,11 @@
     }
     {
       package = "crucible-linux-resource";
+      layer = 2;
+      inVm = false;
+    }
+    {
+      package = "crucible-sqlite-heap";
       layer = 2;
       inVm = false;
     }
@@ -126,6 +136,10 @@
     {
       from = "crucible-qemu";
       to = "crucible";
+    }
+    {
+      from = "crucible-qemu";
+      to = "crucible-cas";
     }
   ];
   isHostAdapterUpwardEdgeException = edge:
@@ -233,6 +247,10 @@
         to = "crucible";
       }
       {
+        from = "crucible-ram";
+        to = "crucible-qemu";
+      }
+      {
         from = "crucible-qemu-plugin";
         to = "crucible-sim";
       }
@@ -254,6 +272,7 @@
   in
     if
       hasFinding "upward dependency"
+      && hasFinding "upward dependency `crucible-ram`"
       && hasFinding "in-VM L2 crate"
       && hasFinding "test-only"
       && hasFinding "dependency cycle"
@@ -285,10 +304,10 @@ in
             check=checks.crucible.phase1.crateLayerGraph
             gate=gate:harness-lint
             tasks=T-ARCH-2,T-CRATE-3
-            runtime_crates=18
+            runtime_crates=${toString (builtins.length runtimeSpecs)}
             test_only_crates=1
             upward_edges=0
-            host_adapter_upward_edge_exceptions=1
+            host_adapter_upward_edge_exceptions=${toString (builtins.length hostAdapterUpwardEdgeExceptions)}
             dependency_cycles=0
             in_vm_non_l1_direct_edges=0
             RESULT

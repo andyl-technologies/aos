@@ -100,7 +100,7 @@ pub(crate) fn validate_backend_execution_evidence(
         Ok(())
     } else {
         Err(CliError::Backend(
-            "executed backend identity does not match the selected RFC-0010 route".to_string(),
+            "executed backend identity does not match the selected command route".to_string(),
         ))
     }
 }

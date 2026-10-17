@@ -480,6 +480,7 @@
         ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
           -machine pc-q35-9.2 \
           -accel sim,thread=single \
+          -plugin "${pkgs.qemu-crucible}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
           -icount shift=0,sleep=off,align=off,rr_switch_quantum=4096 \
           -S \
           -display none \

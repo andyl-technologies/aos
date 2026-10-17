@@ -21,7 +21,11 @@ fn campaign_model_public_repository_flight_is_exact() -> Result<(), Box<dyn Erro
         64 * 1024 * 1024,
     ));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let scenario =
         ScenarioDefId::from_hash(CampaignHash::derive("gate.campaign-model", b"scenario"));
@@ -210,7 +214,11 @@ fn campaign_model_public_repository_flight_is_exact() -> Result<(), Box<dyn Erro
         continued.new_snapshot
     );
 
-    let restarted = CampaignRepository::new(blobs, refs);
+    let restarted = CampaignRepository::new(
+        blobs,
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let rebuilt = restarted.head("derived")?;
     assert_eq!(rebuilt.snapshot_id(), derived_paused.new_snapshot);
     assert_eq!(rebuilt.snapshot().parent(), Some(derived.new_snapshot));

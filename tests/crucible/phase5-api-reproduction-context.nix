@@ -274,7 +274,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API reproduction-context gate for ${taskList}";
+      description = "Crucible API reproduction-context gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

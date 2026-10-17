@@ -1,6 +1,70 @@
 //! Fully admitted binding contracts and signal/effect compatibility validation.
 
 use super::*;
+
+fn admit_name_copy(name: &str) -> Result<(), BindingError> {
+    crate::owned_decode::charge_array::<u8>(name.len()).map_err(BindingError::OriginalAdmission)
+}
+
+fn admit_type_copy(value: &SignalValueType) -> Result<(), BindingError> {
+    match value {
+        SignalValueType::Enum(schema) | SignalValueType::Event(schema) => {
+            admit_name_copy(schema.as_str())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn admit_value_copy(value: &SignalValue) -> Result<(), BindingError> {
+    match value {
+        SignalValue::Enum { schema, variant } => {
+            admit_name_copy(schema.as_str())?;
+            admit_name_copy(variant.as_str())
+        }
+        SignalValue::Event { schema, payload } => {
+            admit_name_copy(schema.as_str())?;
+            crate::owned_decode::charge_array::<u8>(payload.len())
+                .map_err(BindingError::OriginalAdmission)
+        }
+        SignalValue::Bytes(bytes) => crate::owned_decode::charge_array::<u8>(bytes.len())
+            .map_err(BindingError::OriginalAdmission),
+        SignalValue::Vector2(values) | SignalValue::Vector3(values) => {
+            crate::owned_decode::charge_array::<SignalValue>(values.len())
+                .map_err(BindingError::OriginalAdmission)?;
+            for value in values {
+                admit_value_copy(value)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn admit_transition_copy(value: &StateTransitionTableDeclaration) -> Result<(), BindingError> {
+    admit_name_copy(value.id.as_str())?;
+    admit_name_copy(value.default_transition.as_str())?;
+    admit_type_copy(&value.input)?;
+    for (request, output) in &value.transitions {
+        crate::owned_decode::charge_btree_entry::<SignalValue, FaultObjectId>()
+            .map_err(BindingError::OriginalAdmission)?;
+        admit_value_copy(request)?;
+        admit_name_copy(output.as_str())?;
+    }
+    Ok(())
+}
+
+fn admit_service_copy(value: &ServiceProfileDeclaration) -> Result<(), BindingError> {
+    admit_name_copy(value.id.as_str())?;
+    crate::owned_decode::charge_array::<ServiceProfileInput>(value.inputs.len())
+        .map_err(BindingError::OriginalAdmission)?;
+    crate::owned_decode::charge_array::<MappedEffectParameter>(value.parameters.len())
+        .map_err(BindingError::OriginalAdmission)?;
+    for input in &value.inputs {
+        admit_name_copy(input.role.as_str())?;
+        admit_type_copy(&input.shape.value_type)?;
+    }
+    Ok(())
+}
 /// One fully admitted signal-to-effect binding.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -90,18 +154,20 @@ impl FaultBinding {
         if signals.len() > HARD_BINDING_SIGNAL_INPUT_LIMIT {
             return Err(BindingError::TooManySignals);
         }
-        signals.sort();
+        signals.sort_unstable();
         if signals.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(BindingError::DuplicateSignal);
         }
-        let shapes = signals
-            .iter()
-            .map(|signal| {
+        let mut shapes = Vec::new();
+        crate::owned_decode::reserve_vec(&mut shapes, signals.len())
+            .map_err(BindingError::OriginalAdmission)?;
+        for signal in &signals {
+            shapes.push(
                 program
                     .exported_shape(signal)
-                    .ok_or_else(|| BindingError::MissingSignal(signal.clone()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                    .ok_or_else(|| BindingError::MissingSignal(signal.clone()))?,
+            );
+        }
         let opportunity_sampling = sampling == BindingSampling::AtOpportunity
             || matches!(
                 &sampling,
@@ -128,20 +194,26 @@ impl FaultBinding {
         }
         validate_mapping(&mapping, &shapes, effect.kind(), effect.lifetime())?;
         mapping_registry.validate_mapping(&mapping, &shapes, effect.kind())?;
-        let transition_declaration = match &mapping {
-            BindingMapping::StateTransition { transition_table } => mapping_registry
-                .transition_tables
-                .get(transition_table)
-                .cloned(),
+        let transition = match &mapping {
+            BindingMapping::StateTransition { transition_table } => {
+                mapping_registry.transition_tables.get(transition_table)
+            }
             _ => None,
         };
-        let service_declaration = match &mapping {
-            BindingMapping::ServiceProfile { service_profile } => mapping_registry
-                .service_profiles
-                .get(service_profile)
-                .cloned(),
+        let service = match &mapping {
+            BindingMapping::ServiceProfile { service_profile } => {
+                mapping_registry.service_profiles.get(service_profile)
+            }
             _ => None,
         };
+        if let Some(declaration) = transition {
+            admit_transition_copy(declaration)?;
+        }
+        if let Some(declaration) = service {
+            admit_service_copy(declaration)?;
+        }
+        let transition_declaration = transition.cloned();
+        let service_declaration = service.cloned();
         if let (BindingSearchPolicy::BranchTransition { candidates }, Some(declaration)) =
             (&search, &transition_declaration)
             && candidates.iter().any(|candidate| {
@@ -328,9 +400,12 @@ impl FaultBinding {
 
     /// Encodes and hashes every executable field using the versioned wire form.
     pub(crate) fn contract_digest(&self) -> Result<ContentHash, serde_json::Error> {
-        let mut material = b"crucible.fault-binding-contract.json.v1\0".to_vec();
-        material.extend_from_slice(&serde_json::to_vec(self)?);
-        Ok(ContentHash::from_bytes(&material))
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"crucible.fault-binding-contract.json.v1\0");
+        serde_json::to_writer(&mut hasher, self)?;
+        Ok(ContentHash {
+            bytes: *hasher.finalize().as_bytes(),
+        })
     }
 
     pub(crate) fn materialize_fixed(
@@ -419,10 +494,10 @@ pub(super) fn validate_mapping(
         } => {
             let shape = exactly_one()?;
             if !shape.value_type.is_numeric()
-                || threshold.value_type().as_ref() != Some(&shape.value_type)
+                || !threshold.has_type(&shape.value_type)
                 || clear_threshold
                     .as_ref()
-                    .is_some_and(|value| value.value_type().as_ref() != Some(&shape.value_type))
+                    .is_some_and(|value| !value.has_type(&shape.value_type))
                 || lifetime != EffectLifetime::Persistent
             {
                 return Err(BindingError::MappingShape);
@@ -442,13 +517,13 @@ pub(super) fn validate_mapping(
                 || points.windows(2).any(|pair| pair[0].input >= pair[1].input)
                 || points
                     .iter()
-                    .any(|point| point.input.value_type().as_ref() != Some(&input.value_type))
+                    .any(|point| !point.input.has_type(&input.value_type))
             {
                 return Err(BindingError::InvalidPiecewiseMapping);
             }
             let output_type = points[0]
                 .output
-                .value_type()
+                .scalar_type()
                 .ok_or(BindingError::MappingShape)?;
             let output_shape = SignalShape {
                 value_type: output_type.clone(),
@@ -457,7 +532,7 @@ pub(super) fn validate_mapping(
             };
             if points
                 .iter()
-                .any(|point| point.output.value_type() != Some(output_type.clone()))
+                .any(|point| !point.output.has_type(&output_type))
                 || !parameter.accepts(&output_shape)
                 || !parameter.belongs_to(effect)
             {

@@ -430,7 +430,8 @@ mod tests {
 
     #[test]
     fn projects_authenticated_marker_identity_without_guest_details()
-    -> Result<(), serde_json::Error> {
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crate::tests::component_decode_scope();
         let trace = ResolvedEffectTrace {
             mode: FaultReplayMode::LockedEffect,
             work_items: Vec::new(),
@@ -448,7 +449,7 @@ mod tests {
                 key: String::from("payload"),
                 value: GuestMeasurementValue::Enumerated(String::from("do-not-publish")),
             }],
-        );
+        )?;
 
         let projected = project_attempt_effect_evidence(
             Some(String::from("trace-id")),
@@ -478,8 +479,9 @@ mod tests {
     }
 
     #[test]
-    fn projects_route_details_and_unsigned_samples_in_event_order() -> Result<(), serde_json::Error>
-    {
+    fn projects_route_details_and_unsigned_samples_in_event_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crate::tests::component_decode_scope();
         let node = NodeId {
             name: String::from("traffic-west"),
         };
@@ -496,7 +498,7 @@ mod tests {
                 },
             )
         };
-        let success = sample(0, 1, "traffic_success_packets", 7);
+        let success = sample(0, 1, "traffic_success_packets", 7)?;
         let route = SchedulerEventLogEntry::guest_semantic_marker_observation(
             1,
             Icount { retired: 2 },
@@ -513,9 +515,9 @@ mod tests {
                     value: GuestMeasurementValue::Unsigned(42),
                 },
             ],
-        );
+        )?;
         let route_hash = route.content_hash().to_hex();
-        let loss = sample(2, 3, "traffic_loss_packets", 2);
+        let loss = sample(2, 3, "traffic_loss_packets", 2)?;
 
         let projected = project_attempt_effect_evidence(
             None,
@@ -558,9 +560,10 @@ mod tests {
 
     #[test]
     fn caps_public_metric_samples_while_retaining_the_total_count()
-    -> Result<(), std::num::TryFromIntError> {
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crate::tests::component_decode_scope();
         let events = (0..=MAX_PROJECTED_ITEMS)
-            .map(|index| -> Result<_, std::num::TryFromIntError> {
+            .map(|index| -> Result<_, Box<dyn std::error::Error>> {
                 let sequence = u64::try_from(index)?;
                 Ok(SchedulerEventLogEntry::guest_measurement_observation(
                     sequence,
@@ -574,7 +577,7 @@ mod tests {
                         metric: String::from("traffic_success_packets"),
                         value: GuestMeasurementValue::Unsigned(sequence),
                     },
-                ))
+                )?)
             })
             .collect::<Result<Vec<_>, _>>()?;
 

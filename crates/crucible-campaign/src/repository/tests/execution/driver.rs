@@ -217,7 +217,11 @@ fn claimable_attempt_pages_are_bounded_snapshot_bound_and_restart_rebuildable() 
     let (rebuilt_snapshot, rebuilt) = collect(&repository, "claimable-attempts", 3);
     assert_eq!(rebuilt_snapshot, observed.new_snapshot);
     assert!(rebuilt.is_empty());
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let (restart_snapshot, restart_claimable) = collect(&restarted, "claimable-attempts", 2);
     assert_eq!(restart_snapshot, observed.new_snapshot);
     assert_eq!(restart_claimable, rebuilt);
@@ -494,6 +498,7 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
     let restarted_repository = Arc::new(CampaignRepository::new(
         repository.blobs.clone(),
         repository.refs.clone(),
+        repository.ram_admission().clone(),
     ));
     let mut restarted = CampaignExecutorDriver::new(
         restarted_repository,
@@ -696,6 +701,7 @@ fn persistent_fault_repository(root: &Path) -> CampaignRepository {
             root.join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(root.join("authority"))),
+        crate::CampaignRamAdmission::Unavailable,
     )
 }
 

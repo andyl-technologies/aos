@@ -22,6 +22,9 @@ use crucible::{
 
 #[test]
 fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-target-resolver")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -41,7 +44,8 @@ fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn E
                 assertion_id("still-ok"),
                 AssertionPhase::Satisfied,
             ),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         condition_observation_entry_for_test(
             9,
             &ObservableEvent::assertion_state_changed(
@@ -49,7 +53,8 @@ fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn E
                 assertion_id("first-failure"),
                 AssertionPhase::Violated,
             ),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
 
     let by_at = graph.debug_resolve_target(
@@ -181,20 +186,26 @@ fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn E
 
 #[test]
 fn at_failure_requires_assertion_violation_event() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-target-resolver-no-failure")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
     let first = try_step(&root, override_decision("debug/target", "first"))?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
     graph.record_thin_checkpoint(&first)?;
-    let event_log = vec![condition_observation_entry_for_test(
-        7,
-        &ObservableEvent::assertion_state_changed(
-            VirtualTime { ticks: 1 },
-            assertion_id("still-ok"),
-            AssertionPhase::Satisfied,
-        ),
-    )];
+    let event_log = vec![
+        condition_observation_entry_for_test(
+            7,
+            &ObservableEvent::assertion_state_changed(
+                VirtualTime { ticks: 1 },
+                assertion_id("still-ok"),
+                AssertionPhase::Satisfied,
+            ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    ];
 
     let error = graph
         .debug_resolve_target(
@@ -293,4 +304,5 @@ fn open_assertion_violation_entry(sequence: u64) -> crucible::SchedulerEventLogE
             BTreeMap::new(),
         )),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }

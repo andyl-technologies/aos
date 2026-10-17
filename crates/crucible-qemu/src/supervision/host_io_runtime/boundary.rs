@@ -8,6 +8,8 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn outbound_write_index(&mut self) -> Result<u64, QemuAsyncDriverRuntimeError> {
         let rings = self
             .region
+            .as_mut()
+            .ok_or_else(region_missing)?
             .node_directed_ring_pair_mut(
                 self.vm_slot,
                 self.vm_slot,
@@ -34,6 +36,8 @@ impl QemuLiveHostIoRuntime {
         }
         let rings = self
             .region
+            .as_mut()
+            .ok_or_else(region_missing)?
             .node_directed_ring_pair_mut(
                 self.vm_slot,
                 self.vm_slot,
@@ -66,6 +70,8 @@ impl QemuLiveHostIoRuntime {
         // coherent publication, rather than rejecting a valid newer event.
         let observed = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot();
@@ -121,6 +127,8 @@ impl QemuLiveHostIoRuntime {
             .and_then(QemuLiveAcceleratorServicer::next_completion_icount);
         let deadline = [block, ninep, accelerator].into_iter().flatten().min();
         self.region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .store_device_completion_deadline_tick(deadline.unwrap_or(0));

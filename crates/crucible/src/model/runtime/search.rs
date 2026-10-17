@@ -518,13 +518,13 @@ fn search_assertion_finding_from_report(
         .violations()
         .iter()
         .find(|violation| violation.assertion == outcome.assertion)
-        .cloned()
         .ok_or_else(|| {
             unified_operation_evidence_mismatch(
                 "search-assertion-evaluation",
                 "failure-outcome-without-violation",
             )
-        })?;
+        })?
+        .try_clone_admitted()?;
     violation.reproduction_artifact = ContentHash::default();
     Ok(Some(SearchAssertionFinding {
         fingerprint: search_assertion_outcome_fingerprint(configuration.id(), outcome),

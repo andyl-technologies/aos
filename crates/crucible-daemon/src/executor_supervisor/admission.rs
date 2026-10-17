@@ -61,7 +61,7 @@ where
             )
             .map_err(Into::into);
         }
-        if !self.capacity.supports(request.resources()) {
+        if !self.supports_assignment(request.resources()) {
             return ResumeAttemptExecutionResponse::new(
                 request,
                 ResumeAttemptExecutionDisposition::Rejected {
@@ -292,6 +292,7 @@ where
         let AttemptRuntimeState::Paused {
             execution: prior_execution,
             checkpoint,
+            source_transfer: None,
             ..
         } = current
         else {
@@ -377,7 +378,7 @@ where
         request: &SubmitAttemptRequest,
         admission: ValidatedSubmitAdmission,
     ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
-        if !self.capacity.supports(request.resources()) {
+        if !self.supports_assignment(request.resources()) {
             return self.persist_response(
                 request,
                 SubmitAttemptDisposition::Rejected {
@@ -442,6 +443,7 @@ where
                 execution_basis: current_basis,
                 execution,
                 checkpoint,
+                source_transfer: None,
                 ..
             }) if current_basis == execution_basis => {
                 return self.persist_response(
@@ -807,6 +809,7 @@ where
                     Some(AttemptRuntimeState::Paused {
                         execution: source_execution,
                         checkpoint: source_checkpoint,
+                        source_transfer: None,
                         ..
                     }) => AttemptExecutionOrigin::SelectedSavepoint {
                         certificate: selection,

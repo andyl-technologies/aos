@@ -30,9 +30,11 @@ use super::{
     SelectableReplyDisposition, SelectableReplyService,
 };
 
+mod reset_abandonment;
+
 /// Absolute implementation ceiling for declarations in one node catalog.
 pub const SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS: usize = 4_096;
-/// Absolute implementation ceiling for completed requests in one node run.
+/// Absolute implementation ceiling for attempted requests in one node run.
 pub const SELECTABLE_CATALOG_HARD_MAX_REQUESTS: u64 = 1_000_000;
 
 const _: () =
@@ -382,6 +384,9 @@ pub struct SelectableCatalog {
     completed_requests: BTreeMap<String, u64>,
     total_completed_requests: u64,
     last_completed_request_sequence: Option<u64>,
+    abandoned_requests: BTreeMap<String, u64>,
+    total_abandoned_requests: u64,
+    last_abandoned_request_sequence: Option<u64>,
     pending: Option<SelectablePendingRequest>,
     pending_boundary_sealed: bool,
 }
@@ -414,6 +419,9 @@ impl SelectableCatalog {
             completed_requests: BTreeMap::new(),
             total_completed_requests: 0,
             last_completed_request_sequence: None,
+            abandoned_requests: BTreeMap::new(),
+            total_abandoned_requests: 0,
+            last_abandoned_request_sequence: None,
             pending: None,
             pending_boundary_sealed: false,
         })
@@ -471,6 +479,9 @@ impl SelectableCatalog {
         catalog.completed_requests = continuation.completed_requests().clone();
         catalog.total_completed_requests = continuation.total_completed_requests();
         catalog.last_completed_request_sequence = continuation.last_completed_request_sequence();
+        catalog.abandoned_requests = continuation.abandoned_requests().clone();
+        catalog.total_abandoned_requests = continuation.total_abandoned_requests();
+        catalog.last_abandoned_request_sequence = continuation.last_abandoned_request_sequence();
         if let Some(pending) = continuation.pending() {
             let declaration = catalog
                 .expectation
@@ -549,6 +560,10 @@ impl SelectableCatalog {
             self.completed_requests.clone(),
             self.last_completed_request_sequence,
             pending,
+        )?
+        .with_abandoned_requests(
+            self.abandoned_requests.clone(),
+            self.last_abandoned_request_sequence,
         )?;
         SelectableCatalogPlan::new(limits, declarations, continuation)
     }
@@ -692,9 +707,10 @@ impl SelectableCatalog {
 
     /// Retains one exact request before semantic narrowing and selection.
     ///
-    /// Request sequences must strictly increase across completed requests. One
-    /// request remains pending until [`Self::complete_request`] validates its
-    /// exact reply; callers can checkpoint [`Self::pending_request`] meanwhile.
+    /// Request sequences strictly increase across completed and reset-abandoned
+    /// attempts. The pending request consumes one allowance until an exact reply
+    /// or authenticated reset abandonment settles it; callers can checkpoint
+    /// [`Self::pending_request`] meanwhile.
     ///
     /// # Errors
     ///
@@ -727,7 +743,8 @@ impl SelectableCatalog {
         }
         require_increasing_sequence(
             "request",
-            self.last_completed_request_sequence,
+            self.last_completed_request_sequence
+                .max(self.last_abandoned_request_sequence),
             request.sequence(),
         )?;
         let selectable_id = request.selectable_id();
@@ -736,17 +753,28 @@ impl SelectableCatalog {
                 selectable_id: selectable_id.to_owned(),
             });
         }
-        if self.total_completed_requests >= self.limits.total_requests() {
+        let attempted = self
+            .total_completed_requests
+            .checked_add(self.total_abandoned_requests)
+            .ok_or(SelectableCatalogError::RequestCountOverflow)?;
+        if attempted >= self.limits.total_requests() {
             return Err(SelectableCatalogError::TotalRequestLimitExceeded {
                 maximum: self.limits.total_requests(),
             });
         }
-        let completed = self
+        let attempted_for_selectable = self
             .completed_requests
             .get(selectable_id)
             .copied()
-            .unwrap_or(0);
-        if completed >= self.limits.requests_per_selectable() {
+            .unwrap_or(0)
+            .checked_add(
+                self.abandoned_requests
+                    .get(selectable_id)
+                    .copied()
+                    .unwrap_or(0),
+            )
+            .ok_or(SelectableCatalogError::RequestCountOverflow)?;
+        if attempted_for_selectable >= self.limits.requests_per_selectable() {
             return Err(SelectableCatalogError::SelectableRequestLimitExceeded {
                 selectable_id: selectable_id.to_owned(),
                 maximum: self.limits.requests_per_selectable(),

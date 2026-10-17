@@ -60,12 +60,7 @@ pub fn dequeue_fault_result_with_buffer(
         Ok(header)
     });
 
-    arena_header
-        .read_cursor
-        .store(slot.reservation_end, Ordering::Release);
-    ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
-
-    Ok(BufferedFaultResultPoll::Ready(match decoded {
+    let owned = match decoded {
         Ok(header) => DequeuedFaultResult::Valid {
             header: Box::new(header),
             payload: payload_buffer,
@@ -74,7 +69,16 @@ pub fn dequeue_fault_result_with_buffer(
             command_sequence,
             error,
         },
-    }))
+    };
+
+    // The reused payload buffer and newly allocated header must both belong
+    // to the output before the producer can reuse the shared reservation.
+    arena_header
+        .read_cursor
+        .store(slot.reservation_end, Ordering::Release);
+    ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
+
+    Ok(BufferedFaultResultPoll::Ready(owned))
 }
 
 fn copy_reserved_payload_into(

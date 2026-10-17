@@ -366,6 +366,7 @@ in
               -initrd "$INITRAMFS" \
               -append "$append" \
               -serial "file:$serial" \
+              -plugin "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-ram-observer.so,ram_metadata_budget=268435456" \
               -plugin "$PLUGIN,out=$trace,cadence=25000000,stop_at=25000000,mem_events=off,vcpus=1" \
               -no-reboot \
               -no-shutdown
@@ -415,6 +416,10 @@ in
               || fail "$label omitted the relocated kernel text anchor"
             grep -q '"observed_icount":25000000' "$trace" \
               || fail "$label terminal fingerprint missed the exact horizon"
+            grep -Fq CRUCIBLE-RAM-ORACLE-PASS "$TMPDIR/stderr-$label.log" \
+              || fail "$label did not qualify the canonical RAM root"
+            ! grep -Fq CRUCIBLE-RAM-ORACLE-FAIL "$TMPDIR/stderr-$label.log" \
+              || fail "$label RAM root disagreed with the native oracle"
 
             if [ "$label" = randomized-b ]; then
               bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
@@ -428,7 +433,7 @@ in
               select(.observed_icount == 26000000)
               | del(.process_argv_digest)
               | select(
-                  .schema == "crucible.qemu.trace-fingerprint.v7"
+                  .schema == "crucible.qemu.trace-fingerprint.v8"
                   and .sample_register_failures == 0
                   and .register_read_failures == 0
                   and .device_state_failures == 0

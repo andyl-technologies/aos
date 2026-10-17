@@ -104,12 +104,17 @@ impl WorldNodeRegister {
         if bit_count == 0 || end > self.width_bits {
             return false;
         }
-        let Some(mask) = decode_world_mask(&self.writable_mask_hex) else {
+        if !self.writable_mask_hex.len().is_multiple_of(2)
+            || !self
+                .writable_mask_hex
+                .bytes()
+                .all(|byte| world_hex_nibble(byte).is_some())
+        {
             return false;
-        };
+        }
         (first_bit..end).all(|bit| {
             let byte = (bit / 8) as usize;
-            mask.get(byte)
+            world_mask_byte(&self.writable_mask_hex, byte)
                 .is_some_and(|value| value & (1_u8 << (bit % 8)) != 0)
         })
     }
@@ -436,6 +441,10 @@ impl WorldNodeFaultCapabilities {
                     && register.per_vcpu,
                 "node register capability",
             )?;
+            crate::owned_decode::charge_btree_set_entry::<u32>()
+                .map_err(WorldFaultTopologyError::OriginalAdmission)?;
+            crate::owned_decode::charge_btree_set_entry::<&str>()
+                .map_err(WorldFaultTopologyError::OriginalAdmission)?;
             require(
                 numeric_ids.insert(register.numeric_id)
                     && register_names.insert(register.name.as_str()),
@@ -487,32 +496,34 @@ impl WorldNodeFaultCapabilities {
                 }),
                 "node register masks",
             )?;
-            let decoded_masks = masks
-                .map(|mask| decode_world_mask(mask))
-                .into_iter()
-                .collect::<Option<Vec<_>>>();
+            let writable = masks[0].bytes().any(|byte| byte != b'0');
             require(
-                decoded_masks.is_some_and(|masks| {
-                    let writable = masks[0].iter().any(|byte| *byte != 0);
-                    (0..register.width_bits).all(|bit| {
-                        let byte = (bit / 8) as usize;
-                        let mask = 1_u8 << (bit % 8);
-                        masks.iter().filter(|value| value[byte] & mask != 0).count() == 1
-                    }) && (register.width_bits..register.width_bits.div_ceil(8) * 8).all(|bit| {
-                        let byte = (bit / 8) as usize;
-                        let mask = 1_u8 << (bit % 8);
-                        masks.iter().all(|value| value[byte] & mask == 0)
-                    }) && if writable {
-                        (register.impulse || register.persistent)
-                            && register.vmstate
-                            && !register.model_phases.is_empty()
-                    } else {
-                        !register.impulse
-                            && !register.persistent
-                            && register.model_phases.is_empty()
-                            && register.side_effects.is_empty()
-                    }
-                }),
+                (0..register.width_bits).all(|bit| {
+                    let byte = (bit / 8) as usize;
+                    let mask = 1_u8 << (bit % 8);
+                    masks
+                        .iter()
+                        .filter(|value| {
+                            world_mask_byte(value, byte).is_some_and(|value| value & mask != 0)
+                        })
+                        .count()
+                        == 1
+                }) && (register.width_bits..register.width_bits.div_ceil(8) * 8).all(|bit| {
+                    let byte = (bit / 8) as usize;
+                    let mask = 1_u8 << (bit % 8);
+                    masks.iter().all(|value| {
+                        world_mask_byte(value, byte).is_some_and(|value| value & mask == 0)
+                    })
+                }) && if writable {
+                    (register.impulse || register.persistent)
+                        && register.vmstate
+                        && !register.model_phases.is_empty()
+                } else {
+                    !register.impulse
+                        && !register.persistent
+                        && register.model_phases.is_empty()
+                        && register.side_effects.is_empty()
+                },
                 "node register mask partition",
             )?;
         }
@@ -699,7 +710,8 @@ impl WorldNodeFaultCapabilities {
             )?;
         }
         hard_count(&self.hardware_errors, "node hardware-error manifest", 4_096)?;
-        require(!self.clock_sources.is_empty(), "node clock manifest")?;
+        // An empty declaration grants no modeled clock-fault capability.
+        // Every declared source still requires its complete validated contract.
         for source in &self.clock_sources {
             let architecture_matches = match self.architecture {
                 WorldNodeArchitecture::X86_64 => matches!(
@@ -791,19 +803,12 @@ impl WorldNodeFaultCapabilities {
     }
 }
 
-fn decode_world_mask(value: &str) -> Option<Vec<u8>> {
-    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
-    if !remainder.is_empty() {
-        return None;
-    }
-    pairs
-        .iter()
-        .map(|pair| {
-            let high = world_hex_nibble(pair[0])?;
-            let low = world_hex_nibble(pair[1])?;
-            Some((high << 4) | low)
-        })
-        .collect()
+fn world_mask_byte(value: &str, index: usize) -> Option<u8> {
+    let first = index.checked_mul(2)?;
+    let pair = value.as_bytes().get(first..first.checked_add(2)?)?;
+    let high = world_hex_nibble(pair[0])?;
+    let low = world_hex_nibble(pair[1])?;
+    Some((high << 4) | low)
 }
 
 const fn world_hex_nibble(value: u8) -> Option<u8> {

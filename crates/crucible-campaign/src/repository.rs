@@ -61,7 +61,10 @@ const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 /// object limits independently bound the authenticated objects in that chain.
 pub const MAX_CAMPAIGN_SNAPSHOT_ANCESTRY: usize = 1_250_001;
 const MAX_SNAPSHOT_ANCESTRY: usize = MAX_CAMPAIGN_SNAPSHOT_ANCESTRY;
-/// Maximum unique object-position work charged to one authenticated closure.
+/// Maximum unique campaign metadata work charged to one authenticated closure.
+///
+/// Complete RAM graphs use independently bounded CAS traversal; explicit full
+/// inventory collectors additionally charge every returned RAM object.
 pub const MAX_CAMPAIGN_CLOSURE_OBJECTS: usize = 64_000_000;
 const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 /// Maximum source positions served by one coordinator planner page.
@@ -402,6 +405,19 @@ mod executor;
 pub use executor::{CampaignExecutorPublicationGuard, CampaignExecutorStore};
 
 impl ResolvedSelection {
+    /// Clones selection bytes under admission while sharing authenticated records.
+    ///
+    /// # Errors
+    /// Refuses the original metadata allowance or invalid canonical selection.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        Ok(Self {
+            selection: crate::codec::admitted_clone(&self.selection)?,
+            opportunity: Arc::clone(&self.opportunity),
+            declaration: Arc::clone(&self.declaration),
+            domain: Arc::clone(&self.domain),
+        })
+    }
+
     /// Returns the authenticated recorded selection.
     #[must_use]
     pub const fn selection(&self) -> &Selection {
@@ -436,6 +452,9 @@ pub enum CampaignRepositoryError {
     /// An immutable or mutable store operation failed.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// Authenticated paged-RAM transfer or retention failed.
+    #[error(transparent)]
+    Ram(#[from] crucible_cas::ram::RamStoreError),
     /// Canonical campaign bytes failed validation.
     #[error(transparent)]
     Codec(#[from] CampaignCodecError),
@@ -504,10 +523,16 @@ impl CampaignRepositoryError {
     pub fn executor_rejection(&self) -> ExecutorRejection {
         match self {
             Self::Store(error) => store_executor_rejection(error),
+            Self::Ram(error) => ram_executor_rejection(error),
             Self::Merkle(crate::CampaignStoreError::Store(error)) => {
                 store_executor_rejection(error)
             }
-            Self::NotFound | Self::Poisoned => ExecutorRejection::UnavailableInput,
+            Self::NotFound
+            | Self::Poisoned
+            | Self::Codec(CampaignCodecError::DecodeAdmission(_))
+            | Self::Codec(CampaignCodecError::Envelope(
+                crucible_cas::content_envelope::ContentEnvelopeError::DecodeAdmission(_),
+            )) => ExecutorRejection::UnavailableInput,
             Self::Budget(_)
             | Self::Codec(_)
             | Self::SelectionResolutionBudgetExceeded { .. }
@@ -523,14 +548,56 @@ impl CampaignRepositoryError {
     }
 }
 
-fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
+fn ram_executor_rejection(error: &crucible_cas::ram::RamStoreError) -> ExecutorRejection {
+    use crucible_cas::ram::RamStoreError;
+
     match error {
+        RamStoreError::Boundary(cause) => ram_executor_rejection(
+            cause
+                .first_boundary()
+                .unwrap_or_else(|| cause.storage_failure()),
+        ),
+        RamStoreError::Store(error) => store_executor_rejection(error),
+        RamStoreError::Canceled | RamStoreError::Limit(_) => ExecutorRejection::UnavailableInput,
+        _ => ExecutorRejection::Incompatible,
+    }
+}
+
+fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
+    match error.original_failure() {
+        StoreError::RamValidation { source } => ram_executor_rejection(source.storage_failure()),
+        StoreError::RamReadBoundary { source } => ram_executor_rejection(
+            source
+                .first_boundary()
+                .unwrap_or_else(|| source.storage_failure()),
+        ),
+        StoreError::RamReadValidation { source } => {
+            ram_executor_rejection(source.first_validation())
+        }
+        StoreError::RamReadContinuation { source } => {
+            ram_executor_rejection(source.first_failure())
+        }
+        StoreError::RamBoundary { .. } | StoreError::CompositeBoundary { .. } => {
+            ExecutorRejection::Incompatible
+        }
         StoreError::NotFound { .. }
         | StoreError::Quota
         | StoreError::Unavailable
         | StoreError::Poisoned { .. }
         | StoreError::Io { .. }
-        | StoreError::StreamIo { .. } => ExecutorRejection::UnavailableInput,
+        | StoreError::Supervision { .. }
+        | StoreError::StreamIo { .. }
+        | StoreError::DecodeAdmission { .. }
+        | StoreError::Allocation { .. }
+        | StoreError::SqliteDiagnostic { .. }
+        | StoreError::DirectoryScope { .. }
+        | StoreError::PackedScope { .. }
+        | StoreError::MemoryScope { .. }
+        | StoreError::AdministrativeScope { .. }
+        | StoreError::CompositeScope { .. }
+        | StoreError::ProviderDiagnostic { .. }
+        | StoreError::SqliteHeap { .. }
+        | StoreError::SqliteScope { .. } => ExecutorRejection::UnavailableInput,
         StoreError::Unauthorized => ExecutorRejection::Unauthorized,
         StoreError::Corrupt { .. }
         | StoreError::InvalidId
@@ -546,11 +613,37 @@ fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
     }
 }
 
+/// Declares the original namespace admission available for repository RAM work.
+///
+/// Available admission is supplied before repository construction. Every RAM
+/// operation derives a disposable child; the saved parent is never replaced or
+/// used as a cumulative page ledger. Memory-only repositories explicitly lack
+/// RAM authority and fail closed when RAM authentication is requested.
+#[derive(Clone)]
+pub enum CampaignRamAdmission {
+    /// Retains the genuine namespace account used by all RAM operations.
+    Available(crucible_cas::owned_decode::DecodeBudget),
+    /// Grants no RAM retention, read, or publication authority.
+    Unavailable,
+}
+
+impl CampaignRamAdmission {
+    /// Borrows the saved original account without renewing its admission.
+    #[must_use]
+    pub fn original(&self) -> Option<&crucible_cas::owned_decode::DecodeBudget> {
+        match self {
+            Self::Available(original) => Some(original),
+            Self::Unavailable => None,
+        }
+    }
+}
+
 /// Repository and sole-writer transaction boundary for local campaigns.
 pub struct CampaignRepository {
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
     merkle: MerkleMap,
+    ram_admission: CampaignRamAdmission,
     mutation_lock: Mutex<()>,
     // Immutable heads are promoted only after a complete validation or from a
     // validated parent through one of the repository's exact owner mutations.
@@ -566,7 +659,7 @@ pub struct CampaignRepository {
 
 struct RepositoryMutationGuard<'a> {
     _local: MutexGuard<'a, ()>,
-    _publication: Box<dyn RefPublicationGuard + 'a>,
+    _publication: Box<dyn RefPublicationGuard>,
 }
 
 /// Shared guard that excludes destructive ref inventory during a read handoff.
@@ -575,11 +668,17 @@ struct RepositoryMutationGuard<'a> {
 /// the exclusive ref-inventory side of the backend lifecycle lock while a
 /// caller performs an authenticated read and transfers retention ownership to
 /// another fenced subsystem.
-pub struct CampaignRepositoryGcExclusionGuard<'a> {
-    _publication: Box<dyn RefPublicationGuard + 'a>,
+pub struct CampaignRepositoryGcExclusionGuard {
+    _publication: Box<dyn RefPublicationGuard>,
 }
 
 impl CampaignRepository {
+    /// Selects this repository's authoritative GC namespace for RAM readers.
+    #[must_use]
+    pub fn ram_retention_authority(&self) -> crucible_cas::ram::RamRetentionAuthority {
+        crucible_cas::ram::RamRetentionAuthority::new(Arc::clone(&self.refs))
+    }
+
     /// Excludes destructive ref inventory for a cross-subsystem read handoff.
     ///
     /// Callers acquire this guard before any later subsystem fence, matching
@@ -592,7 +691,7 @@ impl CampaignRepository {
     /// publication lifecycle guard.
     pub fn acquire_gc_exclusion_guard(
         &self,
-    ) -> Result<CampaignRepositoryGcExclusionGuard<'_>, CampaignRepositoryError> {
+    ) -> Result<CampaignRepositoryGcExclusionGuard, CampaignRepositoryError> {
         Ok(CampaignRepositoryGcExclusionGuard {
             _publication: self.refs.acquire_publication_guard()?,
         })
@@ -617,6 +716,7 @@ mod ancestry;
 mod attempt_closure;
 mod budget;
 mod closure;
+pub use closure::CampaignStorageClosure;
 #[cfg(feature = "test-support")]
 pub use closure::CampaignValidationCheckpointMetrics;
 mod discovery;
@@ -710,6 +810,17 @@ struct ValidatedAttempt {
     origin_depth: usize,
 }
 
+impl ValidatedAttempt {
+    fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        Ok(Self {
+            attempt: self.attempt.clone_admitted()?,
+            path: self.path,
+            lineage: self.lineage,
+            origin_depth: self.origin_depth,
+        })
+    }
+}
+
 impl ChoiceValidationCache {
     fn get(&self, key: &(ContentId, ContentId)) -> Option<CampaignHash> {
         self.contracts.get(key).copied()
@@ -723,6 +834,15 @@ impl ChoiceValidationCache {
             && let Some(evicted) = self.insertion_order.pop_front()
         {
             self.contracts.remove(&evicted);
+        }
+        if crucible_cas::owned_decode::charge_btree_entry::<(ContentId, ContentId), CampaignHash>()
+            .is_err()
+            || crucible_cas::owned_decode::charge_array::<(ContentId, ContentId)>(
+                2 * (self.insertion_order.len() + 4),
+            )
+            .is_err()
+        {
+            return;
         }
         self.contracts.insert(key, contract);
         self.insertion_order.push_back(key);
@@ -740,6 +860,15 @@ impl ChoiceValidationCache {
             && let Some(evicted) = self.objective_insertion_order.pop_front()
         {
             self.objective_contracts.remove(&evicted);
+        }
+        if crucible_cas::owned_decode::charge_btree_entry::<CampaignPolicyId, CampaignHash>()
+            .is_err()
+            || crucible_cas::owned_decode::charge_array::<CampaignPolicyId>(
+                2 * (self.objective_insertion_order.len() + 4),
+            )
+            .is_err()
+        {
+            return;
         }
         self.objective_contracts.insert(policy, contract);
         self.objective_insertion_order.push_back(policy);

@@ -11,6 +11,12 @@ impl ResolvedFaultTarget {
         material
     }
 
+    /// Borrows the exact stable target material without allocating a buffer.
+    #[must_use]
+    pub fn canonical_display(&self) -> impl std::fmt::Display + '_ {
+        TargetDisplay(self)
+    }
+
     /// Returns the exact byte length of the stable target identity material.
     #[must_use]
     pub fn canonical_material_length(&self) -> usize {
@@ -251,4 +257,29 @@ fn append_hash_text_bytes(material: &mut Vec<u8>, hash: &ContentHash) {
         material.push(HEX[usize::from(byte & 0x0f)]);
     }
     material.push(b';');
+}
+
+struct TargetDisplay<'a>(&'a ResolvedFaultTarget);
+
+impl std::fmt::Display for TargetDisplay<'_> {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut result = Ok(());
+        self.0.emit_canonical(|fragment| {
+            if result.is_err() {
+                return;
+            }
+            result = match fragment {
+                TargetCanonicalFragment::Raw(value) => output.write_str(value),
+                TargetCanonicalFragment::Text(value) => write!(output, "{}:{value};", value.len()),
+                TargetCanonicalFragment::Integer(value) => write!(output, "{value};"),
+                TargetCanonicalFragment::Hash(hash) => output.write_str("64:").and_then(|()| {
+                    for byte in hash.bytes {
+                        write!(output, "{byte:02x}")?;
+                    }
+                    output.write_str(";")
+                }),
+            };
+        });
+        result
+    }
 }

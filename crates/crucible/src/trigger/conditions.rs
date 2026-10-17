@@ -3,6 +3,8 @@
 use super::*;
 
 mod append;
+pub(super) mod owned_prefix;
+pub(in crate::trigger) use owned_prefix::copy_prefix_offsets;
 mod host_oracle;
 
 pub(crate) use host_oracle::SearchScheduleNamedPredicateHostOracle;
@@ -923,8 +925,19 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
     /// Returns whether a `Once` predicate has already latched true.
     fn once_condition_is_latched(&self, condition: &Condition) -> bool;
 
-    /// Records that a `Once` predicate has latched true.
-    fn latch_once_condition(&mut self, condition: &Condition);
+    /// Returns whether evaluation commits latches rather than borrowing a read-only view.
+    fn records_once_latches(&self) -> bool {
+        true
+    }
+
+    /// Admits destination storage before committing a pass's moved Once latches.
+    ///
+    /// # Errors
+    /// Refuses the original allocation allowance before latch state changes.
+    fn prepare_once_latches(&mut self, additional: usize) -> Result<(), EngineError>;
+
+    /// Records a pre-admitted moved predicate that has latched true.
+    fn latch_once_condition(&mut self, condition: Condition);
 
     /// Resolves an authored code point using host-side symbol metadata.
     fn resolve_code_point(&self, _node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
@@ -953,8 +966,17 @@ pub(super) mod condition_evaluator_sealed {
 }
 
 /// Error returned when constructing a deterministic condition-evaluation prefix.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ConditionEvaluationError {
+    /// A canonical event identity could not be rendered under its original account.
+    CanonicalIdentity {
+        /// Original typed canonical rendering failure.
+        source: std::sync::Arc<EngineError>,
+        /// Keeps the admitted error envelope alive through its last reader.
+        custody: crate::owned_decode::DecodeCustody,
+    },
+    /// Original metadata admission refused before diagnostic allocation.
+    OriginalAdmission(crate::owned_decode::DecodeAdmissionError),
     /// A scheduler event-log prefix contained no entries.
     EmptyEventLogPrefix,
     /// A scheduler event-log entry does not continue the dense prefix sequence.
@@ -1008,12 +1030,20 @@ pub enum ConditionEvaluationError {
         expected: EventLogTickStamp,
         /// Icount stamp recorded by the event-log entry.
         actual: EventLogTickStamp,
+        /// Retains the original authority until owned diagnostic names close.
+        #[doc(hidden)]
+        _decode_custody: crate::owned_decode::DecodeCustody,
     },
 }
 
 impl fmt::Display for ConditionEvaluationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CanonicalIdentity { source, .. } => write!(formatter, "{source}"),
+            Self::OriginalAdmission(source) => write!(
+                formatter,
+                "condition diagnostic admission refused: {source}"
+            ),
             Self::EmptyEventLogPrefix => write!(
                 formatter,
                 "scheduler event-log prefix must contain at least one entry"
@@ -1058,6 +1088,7 @@ impl fmt::Display for ConditionEvaluationError {
                 kind,
                 expected,
                 actual,
+                ..
             } => write!(
                 formatter,
                 "black-box observation {kind:?} at event-log entry {sequence} has icount stamp {actual:?}, expected {expected:?}"
@@ -1066,10 +1097,41 @@ impl fmt::Display for ConditionEvaluationError {
     }
 }
 
-impl Error for ConditionEvaluationError {}
+impl Error for ConditionEvaluationError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::CanonicalIdentity { source, .. } => Some(source.as_ref()),
+            Self::OriginalAdmission(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl From<EngineError> for ConditionEvaluationError {
+    fn from(source: EngineError) -> Self {
+        match source {
+            EngineError::ArtifactDecodeAdmission { source } => Self::OriginalAdmission(source),
+            source => {
+                let custody = match crate::owned_decode::require_current_custody() {
+                    Ok(custody) => custody,
+                    Err(error) => return Self::OriginalAdmission(error),
+                };
+                let bytes = (std::mem::size_of::<EngineError>()
+                    + 2 * std::mem::size_of::<usize>()) as u64;
+                if let Err(error) = crate::owned_decode::charge_bytes(bytes) {
+                    return Self::OriginalAdmission(error);
+                }
+                Self::CanonicalIdentity {
+                    source: std::sync::Arc::new(source),
+                    custody,
+                }
+            }
+        }
+    }
+}
 
 /// Observable event-log prefix visible at one deterministic evaluation point.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ConditionEventLogPrefix {
     pub(super) point: EventEvaluationPoint,
     pub(super) base_sequence: u64,
@@ -1082,6 +1144,9 @@ pub struct ConditionEventLogPrefix {
     pub(super) event_firings: BTreeMap<EventId, VirtualTime>,
     pub(super) timer_fires: BTreeMap<TimerId, VirtualTime>,
     pub(super) ordering_facts: Vec<ObservedOrderingFact>,
+    pub(super) _append_custodies: Vec<crate::owned_decode::DecodeCustody>,
+    pub(super) _array_custodies: [crate::owned_decode::DecodeCustody; 4],
+    pub(super) _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 impl ConditionEventLogPrefix {
@@ -1100,6 +1165,9 @@ impl ConditionEventLogPrefix {
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
             ordering_facts: Vec::new(),
+            _append_custodies: Vec::new(),
+            _array_custodies: Default::default(),
+            _decode_custody: crate::owned_decode::DecodeCustody::default(),
         }
     }
 
@@ -1171,7 +1239,7 @@ impl ConditionEventLogPrefix {
     ) -> Result<Self, ConditionEvaluationError> {
         entries.push(SchedulerEventLogEntry::evaluation_boundary(
             sequence, at, kind,
-        ));
+        )?);
         Self::from_scheduler_event_log_entries_with_base(entries, 0).map(|prefix| {
             prefix.with_event_log_offset(EventLogOffset::new(ContentHash::default(), 0, sequence))
         })
@@ -1195,7 +1263,7 @@ impl ConditionEventLogPrefix {
         Self::from_scheduler_event_log_entries_with_base(
             vec![SchedulerEventLogEntry::evaluation_boundary(
                 sequence, at, kind,
-            )],
+            )?],
             sequence,
         )
         .map(|prefix| {
@@ -1230,44 +1298,44 @@ impl ConditionEventLogPrefix {
         self
     }
 
-    pub(crate) fn with_point(mut self, point: EventEvaluationPoint) -> Self {
-        self.point = point;
-        self
-    }
-
-    pub(crate) fn with_facts_through_point(&self, point: EventEvaluationPoint) -> Option<Self> {
-        let through = point.at().ticks;
+    /// Borrows the checked history visible through an earlier evaluation point.
+    ///
+    /// Raw log order determines all slice bounds, including nonzero segment
+    /// bases. The original prefix offset table binds the selected position.
+    pub(crate) fn observed_state_at(
+        &self,
+        point: EventEvaluationPoint,
+    ) -> Option<ObservedState<'_>> {
         let entries = self
             .scheduler_entries
             .iter()
-            .take_while(|entry| entry.at().ticks <= through)
-            .cloned()
-            .collect::<Vec<_>>();
-        let prefix_len = u64::try_from(entries.len()).ok()?;
-        if entries.is_empty() {
-            let mut prefix = Self::genesis();
-            if !self.prefix_offsets.is_empty() {
-                let prefix_events = self.base_sequence.checked_add(prefix_len)?;
-                prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
+            .take_while(|entry| entry.at().ticks <= point.at().ticks);
+        let mut count = 0u64;
+        let mut events = 0usize;
+        let mut facts = 0usize;
+        for entry in entries {
+            count = count.checked_add(1)?;
+            match entry.payload() {
+                SchedulerEventLogPayload::Observable(_) => events = events.checked_add(1)?,
+                SchedulerEventLogPayload::ResolvedHappening(_)
+                | SchedulerEventLogPayload::Decision(Decision::DeliveryOrder(_)) => {
+                    facts = facts.checked_add(1)?
+                }
+                _ => {}
             }
-            return Some(
-                prefix
-                    .with_base_sequence(self.base_sequence)
-                    .with_prefix_offsets(self.prefix_offsets.clone())
-                    .with_point(point),
-            );
         }
-        let prefix_events = self.base_sequence.checked_add(prefix_len)?;
-        let mut prefix =
-            Self::from_scheduler_event_log_entries_with_base(entries, self.base_sequence).ok()?;
-        if !self.prefix_offsets.is_empty() {
-            prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
-        }
-        Some(
-            prefix
-                .with_prefix_offsets(self.prefix_offsets.clone())
-                .with_point(point),
-        )
+        let sequence = self.base_sequence.checked_add(count)?;
+        let offset = if self.prefix_offsets.is_empty() {
+            EventLogOffset::new(ContentHash::default(), 0, sequence)
+        } else {
+            *self.prefix_offsets.get(&sequence)?
+        };
+        Some(ObservedState {
+            point,
+            event_log_offset: offset,
+            observable_events: self.observable_events.get(..events)?,
+            ordering_facts: self.ordering_facts.get(..facts)?,
+        })
     }
 
     /// Returns the deterministic evaluation point this prefix is visible at.

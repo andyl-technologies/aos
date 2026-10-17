@@ -39,9 +39,8 @@ in
           == ".git"
           || base == ".direnv"
           || base == ".worktrees"
-          || base == "result"
-          || lib.hasPrefix "result-" base
           || base == "target"
+          || base == "run-state"
           || lib.hasPrefix "target-" base
         );
       # Cargo builds need the workspace, JSON fixtures included by Rust tests,

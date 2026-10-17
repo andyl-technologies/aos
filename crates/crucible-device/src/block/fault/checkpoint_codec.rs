@@ -1,8 +1,10 @@
 //! Canonical, bounded block-fault continuation codec.
 
 use super::*;
+use crate::DeviceSnapshotAllocation;
 use crate::snapshot_codec::{
-    SnapshotEncodeError, SnapshotResourceError, admit_input, encode_prefixed, map_decode_error,
+    SnapshotEncodeError, SnapshotResourceError, admit_input, encode_prefixed_with_admission,
+    map_decode_error,
 };
 
 /// Maximum canonical byte length of one persisted block-fault continuation.
@@ -32,15 +34,24 @@ impl BlockFaultState {
         &self,
         maximum: u64,
     ) -> Result<Vec<u8>, BlockFaultStateCodecError> {
+        self.to_canonical_bytes_with_admission(maximum, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn to_canonical_bytes_with_admission(
+        &self,
+        maximum: u64,
+        admit_output: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+    ) -> Result<Vec<u8>, BlockFaultStateCodecError> {
         if self.observation_mutation_active {
             return Err(BlockFaultStateCodecError::Invalid);
         }
-        encode_prefixed(
+        encode_prefixed_with_admission(
             self,
             BLOCK_FAULT_STATE_MAGIC,
             "block fault-state bytes",
             maximum,
             MAX_BLOCK_FAULT_STATE_BYTES,
+            admit_output,
         )
         .map_err(map_encode_error)
     }
@@ -70,6 +81,40 @@ impl BlockFaultState {
         device_length: u64,
         maximum: u64,
     ) -> Result<Self, BlockFaultStateCodecError> {
+        Self::from_canonical_bytes_with_decoder(
+            bytes,
+            device_length,
+            maximum,
+            &mut |_| Ok(()),
+            &mut |_| Ok(()),
+            |payload| ciborium::de::from_reader(payload),
+        )
+    }
+
+    /// Decodes nested fault state through the enclosing owner's parser.
+    ///
+    /// The supplied parser retains its original account and typed refusal
+    /// separately from this codec's fixed relay. The output callback admits
+    /// the counted canonical validation buffer before reservation. Restore
+    /// validation collection requests name each temporary storage birth. Other
+    /// nested parsers, diagnostic payloads and returned-owner controls still
+    /// require their own custody.
+    ///
+    /// # Errors
+    /// Returns a fixed malformed relay for a supplied parser failure, or the
+    /// same version, resource, restore and canonical failures as
+    /// [`Self::from_canonical_bytes_with_limit`].
+    pub fn from_canonical_bytes_with_decoder<F>(
+        bytes: &[u8],
+        device_length: u64,
+        maximum: u64,
+        admit_output: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+        admit_validation: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+        decode: F,
+    ) -> Result<Self, BlockFaultStateCodecError>
+    where
+        F: FnOnce(&[u8]) -> Result<Self, ciborium::de::Error<std::io::Error>>,
+    {
         let payload = bytes
             .strip_prefix(BLOCK_FAULT_STATE_MAGIC)
             .ok_or(BlockFaultStateCodecError::Version)?;
@@ -80,13 +125,17 @@ impl BlockFaultState {
             MAX_BLOCK_FAULT_STATE_BYTES,
         )
         .map_err(map_resource_error)?;
-        let state: Self = ciborium::de::from_reader(payload).map_err(|error| {
+        let state = decode(payload).map_err(|error| {
             map_decode_error(error).map_or(BlockFaultStateCodecError::Malformed, map_resource_error)
         })?;
         state
-            .validate_restore(device_length)
+            .validate_restore_with_admission(device_length, admit_validation)
             .map_err(|_| BlockFaultStateCodecError::Invalid)?;
-        if state.to_canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
+        if state
+            .to_canonical_bytes_with_admission(maximum, admit_output)?
+            .as_slice()
+            != bytes
+        {
             return Err(BlockFaultStateCodecError::Noncanonical);
         }
         Ok(state)

@@ -449,7 +449,11 @@ fn conflicted_successors_are_never_promoted_as_validated_heads() {
     let (fixture_repository, lineage, policy, blobs) = counted_fixture();
     drop(fixture_repository);
     let refs = Arc::new(ConflictAfterCreateRefBackend::new());
-    let repository = CampaignRepository::new(blobs, refs.clone());
+    let repository = CampaignRepository::new(
+        blobs,
+        refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let genesis = repository
         .create("checkpoint-conflict", &lineage, &policy, &BTreeMap::new())
         .expect("create");

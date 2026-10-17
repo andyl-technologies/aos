@@ -11,6 +11,9 @@ use crate::{QemuCoverageError, QemuNodeChannelError, QemuQuantumError};
 /// Reports a failure while binding a mapped QEMU quantum hot path.
 #[derive(Debug, Error)]
 pub enum QemuMappedQuantumShmemHotPathError {
+    /// A real boundary action retains the immutable command producer frontier.
+    #[error("fault command frontier remains retained by a boundary action")]
+    ActionFrontierRetained,
     /// The mapped shared-memory region could not expose the requested node rings.
     #[error("mapped QEMU quantum shared-memory access failed")]
     RegionAccess {

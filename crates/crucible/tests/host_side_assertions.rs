@@ -90,12 +90,14 @@ fn payload_prefix(
     payload: SchedulerEventLogPayload,
 ) -> crucible::ConditionEventLogPrefix {
     crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-        crucible::test_support::condition_payload_entry_for_test(0, time(ticks), payload),
+        crucible::test_support::condition_payload_entry_for_test(0, time(ticks), payload)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             time(ticks),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ])
     .expect("payload test prefix should be checked")
 }
@@ -124,6 +126,9 @@ where
 
 #[test]
 fn host_side_assertions_grade_all_five_quantifiers_in_black_box_mode() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![
         assertion(
             "always-no-forbidden-frame",
@@ -183,15 +188,22 @@ fn host_side_assertions_grade_all_five_quantifiers_in_black_box_mode() {
     let ack = ObservableEvent::network_delivered(time(12), None, b"raft ack".to_vec());
     let coverage = ObservableEvent::coverage_block(icount(15), node("db-0"), 0x4000, 0x20);
     let exited = ObservableEvent::node_state(time(20), node("db-0"), NodeLifecycle::Exited);
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
-    evaluator.observe_prefix(&observable_prefix(1, Vec::new()), &mut oracle);
-    evaluator.observe_prefix(&observable_prefix(10, vec![request.clone()]), &mut oracle);
-    let satisfied = evaluator.observe_prefix(
-        &observable_prefix(12, vec![request.clone(), ack.clone()]),
-        &mut oracle,
-    );
+    evaluator
+        .observe_prefix(&observable_prefix(1, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .observe_prefix(&observable_prefix(10, vec![request.clone()]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let satisfied = evaluator
+        .observe_prefix(
+            &observable_prefix(12, vec![request.clone(), ack.clone()]),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert_outcome(
         &satisfied,
         "sometimes-ack",
@@ -202,14 +214,18 @@ fn host_side_assertions_grade_all_five_quantifiers_in_black_box_mode() {
         "eventually-request-acks",
         HostAssertionOutcomeKind::Satisfied,
     );
-    evaluator.observe_prefix(
-        &observable_prefix(15, vec![request.clone(), ack.clone(), coverage.clone()]),
-        &mut oracle,
-    );
-    let report = evaluator.finalize_prefix(
-        &observable_prefix(20, vec![request, ack, coverage, exited]),
-        &mut oracle,
-    );
+    evaluator
+        .observe_prefix(
+            &observable_prefix(15, vec![request.clone(), ack.clone(), coverage.clone()]),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(
+            &observable_prefix(20, vec![request, ack, coverage, exited]),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(report.outcomes().len(), 5);
@@ -246,6 +262,9 @@ fn host_side_assertions_grade_all_five_quantifiers_in_black_box_mode() {
 
 #[test]
 fn host_side_assertions_preserve_once_latches_across_prefixes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "sometimes-exit-after-ack",
         "exit happens after the ack was seen",
@@ -261,11 +280,16 @@ fn host_side_assertions_preserve_once_latches_across_prefixes() {
     )]);
     let ack = ObservableEvent::network_delivered(time(12), None, b"raft ack".to_vec());
     let exited = ObservableEvent::node_state(time(20), node("db-0"), NodeLifecycle::Exited);
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
-    evaluator.observe_prefix(&observable_prefix(12, vec![ack.clone()]), &mut oracle);
-    let report = evaluator.finalize_prefix(&observable_prefix(20, vec![ack, exited]), &mut oracle);
+    evaluator
+        .observe_prefix(&observable_prefix(12, vec![ack.clone()]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(20, vec![ack, exited]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_outcome(
@@ -281,6 +305,9 @@ fn host_side_assertions_preserve_once_latches_across_prefixes() {
 
 #[test]
 fn host_side_assertions_report_failures_and_warnings_without_guest_cooperation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![
         assertion(
             "always-no-forbidden-frame",
@@ -375,29 +402,38 @@ fn host_side_assertions_report_failures_and_warnings_without_guest_cooperation()
     let request =
         ObservableEvent::console_output(time(3), node("db-0"), b"request started\n".to_vec());
     let forbidden_coverage = ObservableEvent::coverage_block(icount(4), node("db-0"), 0x5000, 0x20);
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
-    evaluator.observe_prefix(&observable_prefix(2, vec![forbidden.clone()]), &mut oracle);
-    evaluator.observe_prefix(
-        &observable_prefix(3, vec![forbidden.clone(), request.clone()]),
-        &mut oracle,
-    );
-    evaluator.observe_prefix(
-        &observable_prefix(
-            4,
-            vec![
-                forbidden.clone(),
-                request.clone(),
-                forbidden_coverage.clone(),
-            ],
-        ),
-        &mut oracle,
-    );
-    let report = evaluator.finalize_prefix(
-        &observable_prefix(10, vec![forbidden, request, forbidden_coverage]),
-        &mut oracle,
-    );
+    evaluator
+        .observe_prefix(&observable_prefix(2, vec![forbidden.clone()]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .observe_prefix(
+            &observable_prefix(3, vec![forbidden.clone(), request.clone()]),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .observe_prefix(
+            &observable_prefix(
+                4,
+                vec![
+                    forbidden.clone(),
+                    request.clone(),
+                    forbidden_coverage.clone(),
+                ],
+            ),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(
+            &observable_prefix(10, vec![forbidden, request, forbidden_coverage]),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert!(report.verdict().is_failed());
     assert_eq!(report.verdict().failures().len(), 6);
@@ -463,6 +499,9 @@ fn host_side_assertions_report_failures_and_warnings_without_guest_cooperation()
 
 #[test]
 fn host_named_predicates_receive_read_only_observed_state() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = named_properties(vec![assertion(
         "named-ordering",
         "ordering fact is visible to host predicate",
@@ -478,7 +517,8 @@ fn host_named_predicates_receive_read_only_observed_state() {
             order: vec![order],
         })),
     );
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle =
         linted_host_oracle(
             |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
@@ -489,7 +529,9 @@ fn host_named_predicates_receive_read_only_observed_state() {
             },
         );
 
-    let outcomes = evaluator.observe_prefix(&prefix, &mut oracle);
+    let outcomes = evaluator
+        .observe_prefix(&prefix, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].assertion.name, "named-ordering");
@@ -498,6 +540,9 @@ fn host_named_predicates_receive_read_only_observed_state() {
 
 #[test]
 fn host_assertion_evaluator_avoids_host_time_rng_and_unordered_maps() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let trigger = concat!(
         include_str!("../src/trigger/assertions.rs"),
         include_str!("../src/trigger/evaluation.rs"),

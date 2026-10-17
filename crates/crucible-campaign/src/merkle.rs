@@ -16,6 +16,8 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{CampaignCodecError, CampaignHash, CampaignRecordKind, ChildReference, ObjectEnvelope};
 
 mod bulk;
+mod checked_batch;
+mod checked_lookup;
 
 const MERKLE_NODE_SCHEMA_VERSION: u32 = 1;
 const MAX_PAGE_ITEMS: usize = 10_000;
@@ -29,7 +31,7 @@ const MAX_PAGE_PROOF_NODES: usize = (MAX_PROVEN_PAGE_ITEMS + 2) * DIGEST_NIBBLES
 const MAX_PAGE_PROOF_BYTES: usize = 60 * 1024 * 1024;
 const MAX_LOOKUP_PROOF_NODES: usize = DIGEST_NIBBLES as usize + 1;
 const MAX_LOOKUP_PROOF_BYTES: usize = MAX_LOOKUP_PROOF_NODES * MAX_MERKLE_NODE_ENVELOPE_BYTES;
-const MAX_MERKLE_NODE_ENVELOPE_BYTES: usize = 64 * 1024;
+use crucible_cas::content_store::MAX_MERKLE_NODE_ENVELOPE_BYTES;
 // Keep each publication within the durable SQLite leaf's atomic-batch bounds.
 const MAX_NODE_PUBLICATION_BATCH: usize = 64;
 const MAX_NODE_PUBLICATION_BYTES: u64 = 4 * 1024 * 1024;

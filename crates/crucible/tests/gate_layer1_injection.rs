@@ -1,6 +1,6 @@
 //! Checks `gate:layer1-injection` (Contract B) on the scheduler RESOLVE path.
 //!
-//! RFC-0010 file 24 [HARN-8] / file 15 [IO-2], [IO-9]: the tick at which a
+//! The tick at which a
 //! cross-node injection is observed by the receiving node MUST be a pure function
 //! of `(virtual_time, node_id, sequence)`, independent of how the host interleaves
 //! producers or how finely it slices RUN into quanta. This gate drives a real
@@ -281,6 +281,9 @@ fn observed_at_exact_tick(event: &ScheduledEvent) -> Option<ObservedInjection> {
 
 #[test]
 fn gate_layer1_injection_run_twice_is_byte_identical_across_host_conditions() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let seed = Seed::from_u64(0x1a1e_c742);
     let serial = run(seed, HostCondition::Serial);
     let concurrent = run(seed, HostCondition::Concurrent);
@@ -312,6 +315,9 @@ fn gate_layer1_injection_run_twice_is_byte_identical_across_host_conditions() {
 
 #[test]
 fn gate_layer1_injection_observes_each_injection_at_its_independently_computed_tick() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // The teeth ([IO-2], [DET-19]): each injection's observed tick must EQUAL an
     // tick computed INDEPENDENTLY from the request + modeled latency — pinned to
     // the device arithmetic, not recomputed from the delivery the gate is checking.
@@ -350,6 +356,9 @@ fn gate_layer1_injection_observes_each_injection_at_its_independently_computed_t
 
 #[test]
 fn gate_layer1_injection_exact_tick_is_invariant_under_host_condition() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // The anti-freeze-time guarantee ([IO-4], [DET-19]): the disk completion's
     // exact tick is a pure function of the request + modeled latency, so driving
     // under either host condition yields the SAME observed tick.
@@ -383,6 +392,9 @@ fn disk_completion_ticks(record: RunRecord) -> Vec<u64> {
 
 #[test]
 fn gate_layer1_injection_late_delivery_fails_loud() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // The fail-loud half of the gate: a peer frame whose delivery tick is in the
     // consumer's PAST when the consumer is advanced must be rejected by the
     // scheduler's lookahead guard ([SCHED-31]), never delivered late. We arm a
@@ -464,6 +476,9 @@ fn drive_until_error(scheduler: &mut SingleScheduler) -> SchedulerError {
 /// not a magic number divorced from the block latency.
 #[test]
 fn gate_layer1_injection_disk_completion_tick_matches_the_device_model() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // 1000ns base plus 8ns payload latency equals 1,008,000 exact ticks.
     assert_eq!(expected_disk_completion_tick(0, 8), 1_008_000);
 }

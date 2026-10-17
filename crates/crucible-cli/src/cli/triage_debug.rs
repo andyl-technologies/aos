@@ -15,12 +15,12 @@ mod ledger_format;
 mod triage;
 
 pub(crate) use debug_relay::{plan_debug_invocation, run_remote_debug_relay};
-pub(crate) use debug_terminal::parse_debug_reverse_condition;
 pub(crate) use debug_terminal::run_private_unix_debug_relay_with_client_async;
 #[cfg(test)]
 pub(crate) use debug_terminal::{
     GUEST_TRANSCRIPT_HEADER, GuestTranscriptDirection, GuestTranscriptWriter,
 };
+pub(crate) use debug_terminal::{parse_debug_reverse_condition, parse_debug_session_ref};
 #[cfg(test)]
 pub(crate) use ledger_format::ledger_hex;
 pub(crate) use ledger_format::{format_content_hash_ref, write_reproduction_findings_ledger};

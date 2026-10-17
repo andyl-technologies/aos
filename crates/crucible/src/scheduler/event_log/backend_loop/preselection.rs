@@ -16,7 +16,7 @@ pub(super) struct BackendPendingPreselection {
     pub(super) rng_evidence: Vec<BackendRngEvidence>,
     /// Observations projected and stamped at their original poll boundary.
     pub(super) observations: Vec<ObservableEvent>,
-    pub(super) outcome: QuantumOutcome,
+    pub(super) outcome: Arc<QuantumOutcome>,
     pub(super) handed_off: bool,
     pub(super) selected: Option<SelectionDecision>,
     pub(super) selected_decision_count: usize,
@@ -128,7 +128,10 @@ where
     ) -> Result<QuantumOutcome, SchedulerError> {
         self.pending_network_outputs = pending.pending_network_outputs;
         self.pending_observations = pending.pending_observations;
-        let mut outcome = pending.outcome;
+        let mut outcome = match Arc::try_unwrap(pending.outcome) {
+            Ok(outcome) => outcome,
+            Err(shared) => shared.try_clone_admitted()?,
+        };
         let (reported_decisions, reported_events) = if pending.selected.is_some() {
             (
                 pending.selected_decision_count,
@@ -185,7 +188,7 @@ where
         outcome.decisions.extend(decisions);
         outcome.discovered_choices.extend(discoveries);
         outcome.configuration = configuration;
-        append_to_outcome(&mut outcome, append);
+        append_to_outcome(&mut outcome, append)?;
 
         for output in pending.remaining_unintercepted_outputs {
             let mut outputs = vec![output];
@@ -197,7 +200,7 @@ where
                 &mut outputs,
             )?;
             for append in appends {
-                append_to_outcome(&mut outcome, append);
+                append_to_outcome(&mut outcome, append)?;
             }
             if outputs.is_empty() {
                 continue;
@@ -208,7 +211,7 @@ where
             outcome.decisions.extend(decisions);
             outcome.discovered_choices.extend(discoveries);
             outcome.configuration = configuration;
-            append_to_outcome(&mut outcome, append);
+            append_to_outcome(&mut outcome, append)?;
         }
 
         if !pending.rng_evidence.is_empty() {
@@ -218,7 +221,7 @@ where
             outcome.decisions.extend(decisions);
             outcome.discovered_choices.extend(discoveries);
             outcome.configuration = configuration;
-            append_to_outcome(&mut outcome, append);
+            append_to_outcome(&mut outcome, append)?;
         }
         self.pending_observations.extend(pending.observations);
         self.pending_observations.sort_by_key(ObservableEvent::at);
@@ -233,7 +236,7 @@ where
             let append = self
                 .loop_impl
                 .append_backend_observations_at_boundary(observations, outcome.frontier)?;
-            append_to_outcome(&mut outcome, append);
+            append_to_outcome(&mut outcome, append)?;
         }
         // The reservation carries its RUN context for admission, but reporting
         // that context again would duplicate physical application receipts.
@@ -382,12 +385,22 @@ impl<B, I> BackendQuantumLoop<SingleScheduler, B, I> {
             &selected,
             || Ok(()),
         )?;
-        pending.outcome.configuration = selected;
-        pending
-            .outcome
+        if Arc::strong_count(&pending.outcome) != 1 {
+            pending.outcome = pending
+                .outcome
+                .try_clone_admitted()?
+                .into_shared_admitted()?;
+        }
+        let outcome = Arc::get_mut(&mut pending.outcome).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("preselection output remained shared after admitted copy"),
+            }
+        })?;
+        outcome.configuration = selected;
+        outcome
             .decisions
             .push(Decision::Selection(selection.clone()));
-        append_to_outcome(&mut pending.outcome, append.clone());
+        append_to_outcome(outcome, append.try_clone_admitted()?)?;
         pending.selected_decision_count = pending.outcome.decisions.len();
         pending.selected_event_count = pending.outcome.event_log_entries.len();
         pending.selected = Some(selection);
@@ -411,10 +424,10 @@ impl<B, I> BackendQuantumLoop<SingleScheduler, B, I> {
     }
 }
 
-pub(super) fn append_to_outcome(outcome: &mut QuantumOutcome, append: SchedulerEventLogAppend) {
-    outcome.event_log_entries.extend(append.entries);
-    outcome.event_log_segment_bytes = append.segment_bytes;
-    outcome.event_log_segment_text = append.segment_text;
-    outcome.event_log_segment_hash = append.segment_hash;
-    outcome.event_log_offset = append.offset;
+pub(super) fn append_to_outcome(
+    outcome: &mut QuantumOutcome,
+    append: SchedulerEventLogAppend,
+) -> Result<(), SchedulerError> {
+    outcome.merge_event_log_append(append)?;
+    Ok(())
 }

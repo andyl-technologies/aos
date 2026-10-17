@@ -53,6 +53,7 @@ in
               -L ${pkgs.qemu-crucible}/share/qemu \
               -nodefaults -no-user-config -display none \
               -machine q35 -accel sim,thread=single \
+              -plugin "${pkgs.qemu-crucible}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -icount shift=0,sleep=off,align=off,rr_switch_quantum=4096 \
               -cpu qemu64 -m 64 -smp 2 \
               -rtc base=2026-01-01T00:00:00,clock=vm \

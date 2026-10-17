@@ -1,22 +1,17 @@
-"""Interleave matched production-plugin/QEMU pairs at exact shared-memory grants.
+"""Interleave admitted production plugins at exact BIOS instruction horizons.
 
-Build the public-protocol host driver with tcg-production-performance-driver.nix.
-Build each real plugin with the same release profile and that QEMU package's
-CRUCIBLE_QEMU_BUILD_ID, CRUCIBLE_QEMU_ATOMIC_PATCH_HASH and
-CRUCIBLE_SHMEM_HEADER_HASH. The package identity marker supplies these values.
-Pass the resulting binaries with matching --qemu LABEL=PATH and --plugin
-LABEL=PATH arguments. All execution and evidence collection occur locally.
-
-The measured interval starts immediately before QMP cont and ends when the
-public slot publishes the granted logical tick. Handshake, mapping allocation,
-QMP setup, stop, and state capture are outside that interval. The production
-plugin's coverage, fingerprint and whitebox observations are disabled.
+Every managed row uses the original full-vector accepted assignment in an
+isolated quota/UFFD kernel. Native spawn-to-stop timing and current canonical
+BLAKE scope witnesses are retained. The independent arithmetic register/RAM-prefix oracle is checked through
+fixed admitted post-stop read-only windows. Historical
+physical-memory SHA256 rows belong to a different measurement contract.
 """
 
 import argparse
 import hashlib
-import json
+import importlib.util
 import os
+import json
 from pathlib import Path
 import runpy
 import statistics
@@ -24,7 +19,6 @@ import subprocess
 
 oracle = runpy.run_path(str(Path(__file__).with_name("tcg-performance.py")))
 reference_state = oracle["reference_state"]
-require_reference = oracle["require_reference"]
 
 
 def labeled_paths(arguments):
@@ -96,16 +90,20 @@ def main():
                     str(args.driver), str(qemu[label]), str(plugins[label]),
                     str(bios), str(horizon), str(directory), str(args.cpu),
                 ]
-                sample = json.loads(subprocess.check_output(command, text=True))
+                trial_environment = dict(os.environ)
+                trial_environment['CRUCIBLE_TCG_TRIAL_INDEX'] = str(
+                    (0 if workload == 'ram' else args.repetitions) * len(labels)
+                    + repeat * len(labels) + labels.index(label)
+                )
+                sample = json.loads(subprocess.check_output(command, text=True, env=trial_environment))
                 sample.update(label=label, repeat=repeat, command=command)
-                witness = {
-                    key: sample[key]
-                    for key in (
-                        "raw_icount", "logical_tick", "registers",
-                        "ram_sha256", "ram_prefix_hex", "status",
-                    )
-                }
-                require_reference({"witness": witness}, horizon, loop_instructions)
+                oracle_path = Path(__file__).with_name('tcg-managed-performance-oracle.py')
+                spec = importlib.util.spec_from_file_location('managed_performance_oracle', oracle_path)
+                managed = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(managed)
+                witness = managed.require_bios_reference(sample, horizon, loop_instructions)
+                if sample['raw_icount'] != horizon or sample['logical_tick'] != horizon * 50:
+                    raise AssertionError('managed BIOS did not reach its exact authored horizon')
                 if expected is None:
                     expected = witness
                 if witness != expected:
@@ -113,6 +111,7 @@ def main():
                         f"state witness changed: {workload}, {label}, repeat {repeat}"
                     )
                 samples.append(sample)
+                directory.mkdir(parents=True, exist_ok=True)
                 (directory / "result.json").write_text(json.dumps(sample, indent=2) + "\n")
                 print(json.dumps({
                     "workload": workload, "label": label, "repeat": repeat,

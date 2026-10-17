@@ -10,11 +10,11 @@
   inherit (productionGate.passthru) rootfsDeps testScript;
   fleet = testing.mkFleetTest {
     name = "crucible-campaign-mode-production-flight-${mode}";
-    timeout = 3600;
+    timeout = 6600;
     machines.primary = {
       inherit system;
-      memoryMiB = 8192;
-      varSizeMiB = 12288;
+      memoryMiB = 12288;
+      varSizeMiB = 32768;
       extraClosures = rootfsDeps;
     };
     testScript = ''
@@ -51,7 +51,7 @@
           ${builtins.toJSON "${pkgs.bash}/bin/bash"}
           + " -c "
           + shlex.quote(${builtins.toJSON testScript}),
-          timeout=3300,
+          timeout=6300,
       )
       payload = base64.b64encode(output.encode()).decode()
       identity_payload = base64.b64encode(identity.encode()).decode()

@@ -10,6 +10,7 @@ over the defaults below. Third-party files retain their existing licenses.
 | --- | --- |
 | Original AOS code without a more specific notice | Apache-2.0 |
 | `crucible-protocol` and `crucible-shmem` | MIT OR Apache-2.0 |
+| `crucible-ram` logical RAM codecs, digests, and observation epochs | MIT OR Apache-2.0 |
 | `crucible-qemu-plugin` | GPL-2.0-only |
 | `crucible-debug-gateway` | GPL-2.0-only |
 | `crucible-qemu-trace-plugin` | GPL-2.0-only |
@@ -32,7 +33,9 @@ setup and control plane, and shared memory is the high-throughput data plane.
 The protocol is an interoperability contract, not a shared implementation.
 
 `crucible-protocol` and `crucible-shmem` contain protocol and transport
-definitions used on both sides of that process boundary. Their permissive
+definitions used on both sides of that process boundary. `crucible-ram`
+contains portable logical RAM codecs, digests, and observation epochs; it has
+no QEMU callbacks, host storage authority, or native address types. Their permissive
 `MIT OR Apache-2.0` license lets independently licensed peers implement the same
 contract. This does not change the license of either peer.
 

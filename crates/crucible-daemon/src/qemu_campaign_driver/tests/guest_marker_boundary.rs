@@ -33,6 +33,8 @@ fn bounded_marker(name: &str) -> StopCondition {
 
 #[test]
 fn selected_guest_marker_stops_before_the_completion_action() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, marker_node) = input_with_guest_selectable(bounded_marker(SELECTED_MARKER));
     let graph = marker_graph(input.scenario().world());
     let mut log = EventLog::new();
@@ -47,8 +49,11 @@ fn selected_guest_marker_stops_before_the_completion_action() {
         log.condition_prefix(),
         |_: crucible::ConditionLeaf<'_>| false,
     )
+    .unwrap_or_else(|error| panic!("admitted fixture prefix projection: {error}"))
     .with_world_white_box_policies(input.scenario().world());
-    let firings = pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut EventGraphState::new())
+        .unwrap_or_else(|error| panic!("guest marker fixture evaluation: {error}"));
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "single.selected");
     assert_eq!(firings[0].action(), &Action::Group(Vec::new()));
@@ -88,6 +93,8 @@ fn selected_guest_marker_stops_before_the_completion_action() {
 
 #[test]
 fn completion_action_pass_preempts_the_same_quantum_marker_stop() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, marker_node) = input_with_guest_selectable(bounded_marker(COMPLETION_MARKER));
     let graph = marker_graph(input.scenario().world());
     let mut log = EventLog::new();
@@ -102,8 +109,11 @@ fn completion_action_pass_preempts_the_same_quantum_marker_stop() {
         log.condition_prefix(),
         |_: crucible::ConditionLeaf<'_>| false,
     )
+    .unwrap_or_else(|error| panic!("admitted fixture prefix projection: {error}"))
     .with_world_white_box_policies(input.scenario().world());
-    let firings = pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut EventGraphState::new())
+        .unwrap_or_else(|error| panic!("guest marker fixture evaluation: {error}"));
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "single.complete");
     assert_eq!(firings[0].action(), &Action::Pass);

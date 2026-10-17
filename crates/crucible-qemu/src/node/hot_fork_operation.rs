@@ -60,6 +60,22 @@ impl QemuHotForkChildProcessBasis {
 
 /// Process owner that authenticates and retains one successful hot-fork child.
 pub trait QemuHotForkChildProcessOwner {
+    /// Retains a child through the exact selected member of an aggregate owner.
+    ///
+    /// Single owners preserve their existing authenticated route. Aggregate
+    /// owners must select the retained node rather than copy one child's
+    /// contract across the World. The coordinate itself issues no authority.
+    ///
+    /// # Errors
+    /// Refuses an unknown member or actual child ownership authentication.
+    fn retain_hot_fork_child_for_node(
+        &mut self,
+        _node: &crucible::NodeId,
+        basis: QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        self.retain_hot_fork_child(basis)
+    }
+
     /// Nonduplicable authority retained in the successful launch token.
     type Authority;
 
@@ -102,6 +118,7 @@ pub struct QemuHotForkHostContinuation {
     pub(super) console_spool: Option<QemuConsoleObservationSpool>,
     pub(super) node_state: QemuHotForkNodeStateContinuation,
     pub(super) checkpoint_cancellation: OwnedFd,
+    pub(super) ram: Option<Box<QemuHotForkRamContinuation>>,
 }
 
 impl std::fmt::Debug for QemuHotForkHostContinuation {
@@ -113,6 +130,19 @@ impl std::fmt::Debug for QemuHotForkHostContinuation {
             .field("endpoint_stage", &self.endpoint_stage)
             .field("host_io_binding", &self.host_io_binding)
             .finish_non_exhaustive()
+    }
+}
+
+impl QemuHotForkHostContinuation {
+    /// Retains physical RAM custody in the outer child reconciliation owner.
+    ///
+    /// This clone grants no native process or release authority. The outer
+    /// owner supplies its authenticated process-control loan after actual reap.
+    #[must_use]
+    pub fn ram_launch_custody(&self) -> Option<crate::QemuRamLaunchCustody> {
+        self.ram.as_ref().map(|ram| crate::QemuRamLaunchCustody {
+            cleanup: ram.cleanup.clone(),
+        })
     }
 }
 

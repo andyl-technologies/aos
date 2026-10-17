@@ -23,8 +23,8 @@ use crucible::model::{
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::{
     DequeuedFaultEvent, FaultClockEvidenceV2, FaultEventOutcomeV1, FaultExceptionEvidenceV1,
-    FaultInstructionEvidenceV1, FaultRegisterMutationEvidenceV1, FaultTerminalEvidenceV1,
-    MemoryMutationEvidenceV1,
+    FaultInstructionEvidenceV2, FaultRegisterMutationEvidenceV1, FaultTerminalEvidenceV1,
+    MemoryMutationEvidenceV2,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -49,7 +49,7 @@ use fallible_clone::{
 };
 
 /// Complete resumable state for the production fault runtime.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ProductionFaultRuntimeCheckpoint {
     /// Signal evaluator, binding, canonical adapter, replay, and search state.
     runtime: Option<FaultRuntimeCheckpoint>,
@@ -83,7 +83,7 @@ pub struct ProductionFaultRuntimeCheckpoint {
 }
 
 /// Complete host/scheduler network continuation paired with QEMU snapshots.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionNetworkStateCheckpoint {
     identity: ContentHash,
     scheduler: SchedulerNetworkCheckpoint,
@@ -435,6 +435,7 @@ pub struct ProductionFaultRuntime {
     qemu_action_commits: QemuActionMap<CommittedQemuActionEvidence>,
     qemu_active_rule_ids: QemuActionSet,
     pending_qemu_observations: Vec<FaultObservation>,
+    memory_service_evidence: memory_service_evidence::MemoryServiceEvidence,
     pending_qemu_events: PendingQemuEventMap,
     pending_node_lifecycle: Vec<QemuNodeLifecycleDecision>,
     pending_node_boot: Vec<NodeId>,
@@ -468,6 +469,11 @@ pub(crate) use evaluation::map_fault_event_drain_error;
 use evaluation::runtime_collection_reservation;
 #[path = "production_fault_runtime/evidence.rs"]
 mod evidence;
+#[path = "production_fault_runtime/memory_service_evidence.rs"]
+mod memory_service_evidence;
+pub use memory_service_evidence::{
+    MEMORY_SERVICE_EVIDENCE_RESIDENT_BYTES, QemuMemoryServiceOccurrence,
+};
 
 use checkpoint_identity::*;
 pub(crate) use evidence::*;

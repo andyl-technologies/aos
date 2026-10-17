@@ -21,7 +21,19 @@ pub struct CampaignExecutorStore {
 /// operational root. It does not expose the backend or mutable campaign refs.
 pub struct CampaignExecutorPublicationGuard<'a> {
     repository: &'a CampaignRepository,
-    _gc_exclusion: CampaignRepositoryGcExclusionGuard<'a>,
+    _gc_exclusion: CampaignRepositoryGcExclusionGuard,
+}
+
+impl CampaignExecutorPublicationGuard<'_> {
+    /// Transfers the same inventory exclusion into an owned retention guard.
+    ///
+    /// The immutable-publication interface closes when this value is consumed.
+    /// The returned guard retains its existing ref-inventory ordering without
+    /// acquiring another lock, so a pending GC writer cannot deadlock a handoff.
+    #[must_use]
+    pub fn into_gc_exclusion(self) -> CampaignRepositoryGcExclusionGuard {
+        self._gc_exclusion
+    }
 }
 
 impl CampaignExecutorStore {
@@ -31,9 +43,28 @@ impl CampaignExecutorStore {
         Self { repository }
     }
 
+    /// Projects the original storage metadata authority without creating capacity.
+    ///
+    /// # Errors
+    /// Refuses an unadmitted or ambiguous backend origin.
+    pub fn metadata_resources(
+        &self,
+    ) -> Result<
+        Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>,
+        crucible_cas::content_store::StoreError,
+    > {
+        self.repository.blob_backend().metadata_resources()
+    }
+
+    /// Selects the execution owner's authoritative GC namespace for RAM readers.
+    #[must_use]
+    pub fn ram_retention_authority(&self) -> crucible_cas::ram::RamRetentionAuthority {
+        self.repository.ram_retention_authority()
+    }
+
     /// Excludes destructive GC while one attempt may use unpublished CAS roots.
     ///
-    /// An exact terminal restart publishes a local v9 root for immediate
+    /// An exact terminal restart publishes an exact root for immediate
     /// restore while it remains outside durable campaign references.
     /// The caller retains this guard across execution, including every paused
     /// successor launch, so GC cannot remove objects between semantic decode
@@ -44,7 +75,7 @@ impl CampaignExecutorStore {
     /// Returns a repository error if shared ref-inventory exclusion is unavailable.
     pub fn acquire_execution_gc_exclusion_guard(
         &self,
-    ) -> Result<CampaignRepositoryGcExclusionGuard<'_>, CampaignRepositoryError> {
+    ) -> Result<CampaignRepositoryGcExclusionGuard, CampaignRepositoryError> {
         self.repository.acquire_gc_exclusion_guard()
     }
 

@@ -18,6 +18,9 @@ use crucible::{
 
 #[test]
 fn non_canonical_debug_branch_marks_and_preserves_canonical_run() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-non-canonical")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -28,11 +31,14 @@ fn non_canonical_debug_branch_marks_and_preserves_canonical_run() -> Result<(), 
     graph.materialize_checkpoint(&second)?;
     let replay_before = graph.replay(&second)?;
     let attach = graph.debug_attach(&attach_request(&second)?)?;
-    let canonical_event_log = vec![condition_payload_entry_for_test(
-        7,
-        VirtualTime { ticks: 2 },
-        SchedulerEventLogPayload::Decision(override_decision("debug/log", "canonical")),
-    )];
+    let canonical_event_log = vec![
+        condition_payload_entry_for_test(
+            7,
+            VirtualTime { ticks: 2 },
+            SchedulerEventLogPayload::Decision(override_decision("debug/log", "canonical")),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    ];
 
     let request = DebugNonCanonicalBranchRequest::new(
         second.clone(),
@@ -129,6 +135,9 @@ fn non_canonical_debug_branch_marks_and_preserves_canonical_run() -> Result<(), 
 
 #[test]
 fn operator_controlled_continue_branches_without_guest_edit_script() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-non-canonical-continue")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -167,6 +176,9 @@ fn operator_controlled_continue_branches_without_guest_edit_script() -> Result<(
 
 #[test]
 fn non_canonical_debug_branch_requires_matching_trigger_evidence() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-non-canonical-invalid")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());

@@ -329,6 +329,20 @@ pub struct QemuFreshPendingObservation {
     terminal_at: VirtualTime,
     completed_quanta: u64,
     attempt_event_count: usize,
+    event_custody: crucible::owned_decode::DecodeCustody,
+    event_output_custody: Option<crate::crucible_measurement::CrucibleMeasurementEventCustody>,
+}
+
+fn retain_event_custody()
+-> Result<crucible::owned_decode::DecodeCustody, AttemptWorkerFailure<QemuFreshModeledDriverError>>
+{
+    crucible::owned_decode::require_current_custody()
+        .map_err(|source| {
+            QemuFreshModeledDriverError::Configuration(EngineError::ArtifactDecodeAdmission {
+                source,
+            })
+        })
+        .map_err(AttemptWorkerFailure::Retryable)
 }
 
 impl QemuFreshPendingObservation {
@@ -404,11 +418,15 @@ impl QemuFindingCandidateTriageInputs {
     pub(crate) fn from_replay_determinism_mismatch(
         expected: &Self,
         reproduced: &Self,
-    ) -> Option<(Self, bool)> {
+    ) -> Result<Option<(Self, bool)>, EngineError> {
         let comparison =
-            compare_event_log_determinism(&expected.causal_entries, &reproduced.causal_entries);
-        let mismatch = comparison.mismatch()?;
-        let point = mismatch.first_location()?;
+            compare_event_log_determinism(&expected.causal_entries, &reproduced.causal_entries)?;
+        let Some(mismatch) = comparison.mismatch() else {
+            return Ok(None);
+        };
+        let Some(point) = mismatch.first_location() else {
+            return Ok(None);
+        };
         let selected = if mismatch.expected_location.is_some() {
             expected
         } else {
@@ -420,7 +438,7 @@ impl QemuFindingCandidateTriageInputs {
             divergence_entry_summary(mismatch.reproduced_entry.as_ref()),
         );
 
-        Some((
+        Ok(Some((
             Self {
                 failures: vec![FailureClusterReportFailure::divergence(divergence)],
                 causal_entries: selected.causal_entries.clone(),
@@ -432,7 +450,7 @@ impl QemuFindingCandidateTriageInputs {
                 )),
             },
             std::ptr::eq(selected, expected),
-        ))
+        )))
     }
 
     #[cfg(test)]
@@ -528,16 +546,19 @@ impl QemuFindingCandidateBoundaryEvidence {
     }
 
     /// Replaces ordinary failure inputs when the same candidate replay diverged.
-    pub(crate) fn compare_against_expected_replay(mut self, expected: &Self) -> Self {
+    pub(crate) fn compare_against_expected_replay(
+        mut self,
+        expected: &Self,
+    ) -> Result<Self, EngineError> {
         if !self.triage.failures.is_empty() {
-            return self;
+            return Ok(self);
         }
         let reproduced_coverage = self.replay.coverage().clone();
         if let Some((divergence, selected_expected)) =
             QemuFindingCandidateTriageInputs::from_replay_determinism_mismatch(
                 &expected.triage,
                 &self.triage,
-            )
+            )?
         {
             if selected_expected {
                 self.replay = expected.replay.clone();
@@ -547,7 +568,7 @@ impl QemuFindingCandidateBoundaryEvidence {
             self.triage = divergence;
             self.paired_reproduced_coverage = Some(reproduced_coverage);
         }
-        self
+        Ok(self)
     }
 }
 
@@ -664,7 +685,8 @@ impl QemuSavepointReplayProof {
     ) -> Result<Self, QemuFreshModeledDriverError> {
         let event_count = u64::try_from(entries.len())
             .map_err(|_| QemuFreshModeledDriverError::SavepointReplayProof)?;
-        let causal = crucible::event_log_causal_projection(entries);
+        let causal = crucible::event_log_causal_identity(entries)
+            .map_err(QemuFreshModeledDriverError::Configuration)?;
         Ok(Self {
             configuration: configuration.id(),
             completed_quanta,
@@ -672,8 +694,8 @@ impl QemuSavepointReplayProof {
             event_count,
             event_digest: savepoint_event_prefix_digest(entries),
             causal_digest: causal.content_hash(),
-            causal_bytes: causal.canonical_bytes().len(),
-            causal_events: causal.len(),
+            causal_bytes: causal.canonical_bytes(),
+            causal_events: causal.events(),
             event_log_offset: None,
             attempt_event_count: None,
         })
@@ -748,16 +770,19 @@ impl QemuSavepointReplayProof {
     }
 
     /// Returns whether one restored checkpoint has this exact modeled boundary.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns the original event identity admission or rendering failure.
     pub fn matches_checkpoint(
         self,
         configuration: &Configuration,
         scheduler: &crucible::SingleSchedulerCheckpoint,
-    ) -> bool {
+    ) -> Result<bool, EngineError> {
         // The live replay offset authenticates the ordered segment chain,
         // encoded byte count, and event count. Flat retained entries alone
         // cannot reconstruct segment boundaries or their prefix hash.
-        scheduler.event_log_offset().events == self.event_count
+        Ok(scheduler.event_log_offset().events == self.event_count
             && self
                 .event_log_offset
                 .is_none_or(|offset| offset == scheduler.event_log_offset())
@@ -767,7 +792,7 @@ impl QemuSavepointReplayProof {
                 scheduler.frontier(),
                 scheduler.retained_event_log_base_events(),
                 scheduler.retained_event_log_entries(),
-            )
+            )?)
     }
 
     /// Returns the cumulative scheduler work required to reconstruct the boundary.
@@ -783,20 +808,20 @@ impl QemuSavepointReplayProof {
         frontier: VirtualTime,
         event_base: u64,
         entries: &[SchedulerEventLogEntry],
-    ) -> bool {
+    ) -> Result<bool, EngineError> {
         let Ok(event_count) = u64::try_from(entries.len()) else {
-            return false;
+            return Ok(false);
         };
-        let causal = crucible::event_log_causal_projection(entries);
-        self.configuration == configuration.id()
+        let causal = crucible::event_log_causal_identity(entries)?;
+        Ok(self.configuration == configuration.id()
             && self.completed_quanta == completed_quanta
             && self.frontier == frontier
             && event_base == 0
             && self.event_count == event_count
             && self.event_digest == savepoint_event_prefix_digest(entries)
             && self.causal_digest == causal.content_hash()
-            && self.causal_bytes == causal.canonical_bytes().len()
-            && self.causal_events == causal.len()
+            && self.causal_bytes == causal.canonical_bytes()
+            && self.causal_events == causal.events())
     }
 }
 
@@ -895,11 +920,15 @@ impl QemuSelectedResumeBoundary {
         completed_quanta: u64,
         frontier: VirtualTime,
         entries: &[SchedulerEventLogEntry],
-    ) -> bool {
-        self.configuration == *configuration
-            && self
-                .proof
-                .matches_boundary(configuration, completed_quanta, frontier, 0, entries)
+    ) -> Result<bool, EngineError> {
+        Ok(self.configuration == *configuration
+            && self.proof.matches_boundary(
+                configuration,
+                completed_quanta,
+                frontier,
+                0,
+                entries,
+            )?)
     }
 
     fn was_passed(&self, completed_quanta: u64, frontier: VirtualTime) -> bool {
@@ -1523,6 +1552,10 @@ fn drive_modeled_attempt_inner(
         mut terminal_quiescence,
         terminal_verdict,
     ) = materialization.into_parts();
+    let mut event_output_custody =
+        crate::crucible_measurement::CrucibleMeasurementEventCustody::new()
+            .map_err(QemuFreshModeledDriverError::Configuration)
+            .map_err(AttemptWorkerFailure::Retryable)?;
     let authoritative_quanta = lifecycle.completed_quanta();
     if completed_quanta != authoritative_quanta {
         return Err(AttemptWorkerFailure::Terminal(
@@ -1552,7 +1585,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop,
                 event_log,
@@ -1563,6 +1599,8 @@ fn drive_modeled_attempt_inner(
                 terminal_at,
                 completed_quanta,
                 attempt_event_count: observed_event_count,
+                event_custody: retain_event_custody()?,
+                event_output_custody: Some(event_output_custody),
             },
         );
     }
@@ -1580,15 +1618,23 @@ fn drive_modeled_attempt_inner(
             QemuFreshModeledDriverError::SelectedResumeBeyondAttemptStop,
         ));
     }
-    if replay_target.is_some_and(|target| {
-        target.matches(&configuration, completed_quanta, terminal_at, &event_log)
-    }) {
+    if replay_target
+        .map(|target| target.matches(&configuration, completed_quanta, terminal_at, &event_log))
+        .transpose()
+        .map_err(|source| {
+            AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Configuration(source))
+        })?
+        .unwrap_or(false)
+    {
         require_settled_network(lifecycle)?;
         return modeled_stop_outcome(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: ModeledStop::ReplayBoundary,
                 event_log,
@@ -1599,6 +1645,8 @@ fn drive_modeled_attempt_inner(
                 terminal_at,
                 completed_quanta,
                 attempt_event_count: observed_event_count,
+                event_custody: retain_event_custody()?,
+                event_output_custody: Some(event_output_custody),
             },
         );
     }
@@ -1618,7 +1666,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: initial_stop,
                 event_log,
@@ -1629,6 +1680,8 @@ fn drive_modeled_attempt_inner(
                 terminal_at,
                 completed_quanta,
                 attempt_event_count: observed_event_count,
+                event_custody: retain_event_custody()?,
+                event_output_custody: Some(event_output_custody),
             },
         );
     }
@@ -1657,7 +1710,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
@@ -1668,6 +1724,8 @@ fn drive_modeled_attempt_inner(
                 terminal_at,
                 completed_quanta,
                 attempt_event_count: observed_event_count,
+                event_custody: retain_event_custody()?,
+                event_output_custody: Some(event_output_custody),
             },
         );
     }
@@ -1690,15 +1748,23 @@ fn drive_modeled_attempt_inner(
         ))?;
     append_event_entries(&mut event_log, &mut event_log_bytes, initial_reply_entries)
         .map_err(AttemptWorkerFailure::Terminal)?;
-    if replay_target.is_some_and(|target| {
-        target.matches(&configuration, completed_quanta, terminal_at, &event_log)
-    }) {
+    if replay_target
+        .map(|target| target.matches(&configuration, completed_quanta, terminal_at, &event_log))
+        .transpose()
+        .map_err(|source| {
+            AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Configuration(source))
+        })?
+        .unwrap_or(false)
+    {
         require_settled_network(lifecycle)?;
         return modeled_stop_outcome(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: ModeledStop::ReplayBoundary,
                 event_log,
@@ -1709,6 +1775,8 @@ fn drive_modeled_attempt_inner(
                 terminal_at,
                 completed_quanta,
                 attempt_event_count: observed_event_count,
+                event_custody: retain_event_custody()?,
+                event_output_custody: Some(event_output_custody),
             },
         );
     }
@@ -1720,7 +1788,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
@@ -1731,6 +1802,8 @@ fn drive_modeled_attempt_inner(
                 terminal_at,
                 completed_quanta,
                 attempt_event_count: observed_event_count,
+                event_custody: retain_event_custody()?,
+                event_output_custody: Some(event_output_custody),
             },
         );
     }
@@ -1749,7 +1822,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
@@ -1760,6 +1836,8 @@ fn drive_modeled_attempt_inner(
                 terminal_at,
                 completed_quanta,
                 attempt_event_count: observed_event_count,
+                event_custody: retain_event_custody()?,
+                event_output_custody: Some(event_output_custody),
             },
         );
     }
@@ -1882,8 +1960,11 @@ fn drive_modeled_attempt_inner(
                     },
                 ))?;
             configuration = append_quantum(
-                &mut event_log,
-                &mut event_log_bytes,
+                event_log_retention::RetainedQuantumLog {
+                    entries: &mut event_log,
+                    bytes: &mut event_log_bytes,
+                    custody: &mut event_output_custody,
+                },
                 &mut discoveries,
                 &mut terminal_quiescence,
                 &mut terminal_at,
@@ -1895,7 +1976,10 @@ fn drive_modeled_attempt_inner(
                 lifecycle,
                 context,
                 QemuFreshPendingObservation {
-                    input: input.clone(),
+                    input: input
+                        .try_clone_admitted()
+                        .map_err(QemuFreshModeledDriverError::from)
+                        .map_err(AttemptWorkerFailure::Retryable)?,
                     configuration,
                     stop: ModeledStop::ReplayBoundary,
                     event_log,
@@ -1906,6 +1990,8 @@ fn drive_modeled_attempt_inner(
                     terminal_at,
                     completed_quanta,
                     attempt_event_count,
+                    event_custody: retain_event_custody()?,
+                    event_output_custody: Some(event_output_custody),
                 },
             );
         }
@@ -1978,8 +2064,11 @@ fn drive_modeled_attempt_inner(
                 if stop.primary().accepts_next_choice()
         );
         configuration = append_quantum(
-            &mut event_log,
-            &mut event_log_bytes,
+            event_log_retention::RetainedQuantumLog {
+                entries: &mut event_log,
+                bytes: &mut event_log_bytes,
+                custody: &mut event_output_custody,
+            },
             &mut discoveries,
             &mut terminal_quiescence,
             &mut terminal_at,
@@ -1987,13 +2076,23 @@ fn drive_modeled_attempt_inner(
             outcome,
         )?;
         if let Some(target) = replay_target {
-            if target.matches(&configuration, completed_quanta, terminal_at, &event_log) {
+            if target
+                .matches(&configuration, completed_quanta, terminal_at, &event_log)
+                .map_err(|source| {
+                    AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Configuration(
+                        source,
+                    ))
+                })?
+            {
                 require_settled_network(lifecycle)?;
                 return modeled_stop_outcome(
                     lifecycle,
                     context,
                     QemuFreshPendingObservation {
-                        input: input.clone(),
+                        input: input
+                            .try_clone_admitted()
+                            .map_err(QemuFreshModeledDriverError::from)
+                            .map_err(AttemptWorkerFailure::Retryable)?,
                         configuration,
                         stop: ModeledStop::ReplayBoundary,
                         event_log,
@@ -2004,6 +2103,8 @@ fn drive_modeled_attempt_inner(
                         terminal_at,
                         completed_quanta,
                         attempt_event_count: observed_event_count,
+                        event_custody: retain_event_custody()?,
+                        event_output_custody: Some(event_output_custody),
                     },
                 );
             }
@@ -2042,7 +2143,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop,
                 event_log,
@@ -2053,6 +2157,8 @@ fn drive_modeled_attempt_inner(
                 terminal_at,
                 completed_quanta,
                 attempt_event_count: observed_event_count,
+                event_custody: retain_event_custody()?,
+                event_output_custody: Some(event_output_custody),
             },
         );
     }
@@ -2259,14 +2365,7 @@ fn checkpoint_is_ready(
 fn classify_scheduler_error(
     error: SchedulerError,
 ) -> AttemptWorkerFailure<QemuFreshModeledDriverError> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
+    let class = error.operational_failure_class();
     let error = QemuFreshModeledDriverError::Scheduler(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
@@ -2596,7 +2695,8 @@ fn retain_modeled_timeout(
                 pending.terminal_at.max(entry.at())
             });
         let marker =
-            SchedulerEventLogEntry::execution_budget_exhausted(sequence, boundary, budget_name);
+            SchedulerEventLogEntry::execution_budget_exhausted(sequence, boundary, budget_name)
+                .map_err(QemuFreshModeledDriverError::Configuration)?;
         append_event_entries(
             &mut pending.event_log,
             &mut pending.event_log_bytes,

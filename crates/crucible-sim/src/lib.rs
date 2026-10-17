@@ -1,17 +1,17 @@
 //! `crucible-sim` owns Crucible's deterministic core primitives.
 //!
-//! Spec index: RFC-0010 files 04, 08, 09.
+//! Implementation contract: Deterministic randomness, counters, and virtual-time primitives.
 //!
 //! This L0 crate owns seeded decision streams, ordered collections,
 //! deterministic selection, virtual-time arithmetic, and the content-addressing
-//! primitives described by the indexed RFC-0010 files.
+//! primitives with explicit deterministic state.
 //! It intentionally has no QEMU, transport, scheduler-policy, or wall-clock
 //! surface.
 //!
 //! Module map: [`contract_a`] owns the isolated single-VM Contract A driver; the
 //! crate root owns [`StableHasher`], [`StableDigest`], [`DecisionRng`],
 //! [`DecisionStream`], and the content-addressing primitives;
-//! future modules will split ordered selection and virtual-time arithmetic.
+//! `contract_a` exposes the bounded single-VM execution driver and counter checks.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

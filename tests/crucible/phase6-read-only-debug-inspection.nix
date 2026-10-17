@@ -81,11 +81,11 @@
       }
       {
         label = "causal projection before";
-        needle = "let causal_event_log_before = event_log_causal_projection(event_log);";
+        needle = "let causal_event_log_before = event_log_causal_projection(event_log)?;";
       }
       {
         label = "causal projection after";
-        needle = "let causal_event_log_after = event_log_causal_projection(&event_log_with_observations);";
+        needle = "let causal_event_log_after = event_log_causal_projection(&event_log_with_observations)?;";
       }
       {
         label = "observational diagnostic generation";

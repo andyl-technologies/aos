@@ -1,4 +1,4 @@
-# Authenticates the RFC 10.4 host-time ratio and million-admission evidence.
+# Authenticates host-time ratios and million-admission performance evidence.
 {
   pkgs,
   nativeScaling,

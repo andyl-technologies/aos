@@ -110,6 +110,7 @@ fn verifier_backed_store_imports_complete_lineage_artifacts() {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("crucible-artifact-import", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
 
@@ -167,6 +168,7 @@ fn resolved_app_random_model_sample_is_verified_before_execution() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     repository
         .publish_choice_domain(selectable.domain())
@@ -193,12 +195,10 @@ fn resolved_app_random_model_sample_is_verified_before_execution() {
 }
 
 #[test]
-fn selected_decode_refuses_a_large_domain_that_exceeds_its_remaining_budget() {
+fn selection_resolution_refuses_a_domain_above_its_canonical_byte_limit() {
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")
         .scenario;
-    let scenario_artifact =
-        encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
     let selected = AlternativeId::from_hash(CampaignHash::derive(
         "crucible.test.large-selected-domain.v1",
         &0_u32.to_be_bytes(),
@@ -248,13 +248,10 @@ fn selected_decode_refuses_a_large_domain_that_exceeds_its_remaining_budget() {
         SelectionOrigin::Default,
     )
     .expect("default selection");
-    let schedule =
-        Schedule::empty().appended(Decision::Selection(SelectionDecision::new(&selection)));
-    let artifact = encode_crucible_configuration_artifact(&scenario_artifact, &schedule)
-        .expect("configuration artifact");
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("large-selected-domain", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     repository
         .publish_choice_domain(&domain)
@@ -269,22 +266,15 @@ fn selected_decode_refuses_a_large_domain_that_exceeds_its_remaining_budget() {
         .publish_selection(&selection)
         .expect("publish selection");
     let store = CampaignExecutorStore::new(repository);
-    let mut guard = |_configuration: &Configuration, _branches: usize| Ok(64 * 1024);
-
-    let error = decode_crucible_configuration_artifact_with_signal_fault_replay_guarded(
-        &scenario,
-        &scenario_artifact,
-        &artifact,
-        &store,
-        Some(&mut guard),
-    )
-    .expect_err("large resolution closure must fit the selected decode budget");
-
+    let error = store
+        .resolve_selections_with_canonical_byte_limit(
+            &[selection.id().expect("selection identity")],
+            64 * 1024,
+        )
+        .expect_err("large domain exceeds the explicit canonical-byte limit");
     assert!(matches!(
         error,
-        CrucibleArtifactError::ResourceLimit {
-            resource: "selected-origin-decoded-resident-bytes"
-        }
+        CampaignRepositoryError::SelectionResolutionBudgetExceeded { .. }
     ));
 }
 
@@ -320,6 +310,7 @@ fn nested_signal_fault_selections_resolve_to_one_exact_ordered_plan() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     publish_signal_selection(&repository, &first_selectable, &first_selection);
     publish_signal_selection(&repository, &second_selectable, &second_selection);
@@ -397,6 +388,7 @@ fn network_fault_selections_survive_configuration_artifact_restart() {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("network-choice-artifact", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let parent = Configuration::genesis(scenario.scenario_def());
     let selectable = crucible::NetworkFaultSelectable::next(

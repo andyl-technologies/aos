@@ -1174,6 +1174,7 @@ fn completion_and_cancellation_races_are_idempotent() {
         epoch,
         capacity,
     );
+    assert_eq!(supervisor.native_completed_transitions(), 0);
     let completed_request = request(0x21, 0x41, epoch, resources(1, 2048, 4096));
     let completed_response = supervisor
         .submit_attempt(&completed_request)
@@ -1197,6 +1198,7 @@ fn completion_and_cancellation_races_are_idempotent() {
             .expect("first completion"),
         CompletionOutcome::Completed
     );
+    assert_eq!(supervisor.native_completed_transitions(), 1);
     assert_eq!(
         supervisor
             .complete_execution(
@@ -1207,6 +1209,7 @@ fn completion_and_cancellation_races_are_idempotent() {
             .expect("completion replay"),
         CompletionOutcome::AlreadyCompleted
     );
+    assert_eq!(supervisor.native_completed_transitions(), 1);
     assert!(matches!(
         supervisor.complete_execution(
             execution_key(&completed_request),
@@ -1270,6 +1273,7 @@ fn completion_and_cancellation_races_are_idempotent() {
             .disposition(),
         SubmitAttemptDisposition::Accepted { .. }
     ));
+    assert_eq!(supervisor.native_completed_transitions(), 1);
 }
 
 #[test]
@@ -2271,7 +2275,7 @@ fn execution_key(request: &SubmitAttemptRequest) -> AttemptExecutionKey {
     AttemptExecutionKey::for_request(request)
 }
 
-fn request(
+pub(super) fn request(
     assignment_byte: u8,
     attempt_byte: u8,
     epoch: DaemonEpoch,
@@ -2383,7 +2387,7 @@ fn selected_savepoint_request(
     .expect("selected savepoint request")
 }
 
-fn lineage(byte: u8) -> CampaignLineageId {
+pub(super) fn lineage(byte: u8) -> CampaignLineageId {
     CampaignLineageId::parse(&typed_content_id(
         "crucible.campaign.lineage",
         "campaign-fact",
@@ -2422,11 +2426,11 @@ fn campaign_fact(byte: u8) -> CampaignFactId {
     .expect("campaign fact")
 }
 
-fn resources(vcpus: u32, resident: u64, disk: u64) -> AttemptResourceLimits {
+pub(super) fn resources(vcpus: u32, resident: u64, disk: u64) -> AttemptResourceLimits {
     AttemptResourceLimits::new(vcpus, resident, disk, 32).expect("resources")
 }
 
-fn daemon_epoch(byte: u8) -> DaemonEpoch {
+pub(super) fn daemon_epoch(byte: u8) -> DaemonEpoch {
     DaemonEpoch::from_bytes([byte; 16]).expect("daemon epoch")
 }
 
@@ -2448,9 +2452,9 @@ fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
     .expect("finding candidate")
 }
 
-fn checkpoint(byte: u8) -> ExactCheckpointId {
+pub(super) fn checkpoint(byte: u8) -> ExactCheckpointId {
     ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("checkpoint")
@@ -2468,4 +2472,58 @@ fn encode_hex(bytes: &[u8]) -> String {
         encoded.push(HEX[(byte & 0x0f) as usize] as char);
     }
     encoded
+}
+
+mod host_resources;
+
+#[test]
+fn synchronous_queue_claim_preserves_an_earlier_accepted_request() {
+    let epoch = daemon_epoch(0x6a);
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(2, 2, 8192, 16384, 128).expect("two genuine queue slots"),
+    );
+    let first = request(0x41, 0x51, epoch, resources(1, 2048, 4096));
+    let second = request(0x42, 0x52, epoch, resources(1, 2048, 4096));
+    assert!(matches!(
+        supervisor
+            .submit_attempt(&first)
+            .expect("accept first")
+            .disposition(),
+        SubmitAttemptDisposition::Accepted { .. }
+    ));
+    assert!(matches!(
+        supervisor
+            .submit_attempt(&second)
+            .expect("accept second")
+            .disposition(),
+        SubmitAttemptDisposition::Accepted { .. }
+    ));
+
+    let before = supervisor.queued.clone();
+    assert!(
+        supervisor
+            .next_queued_for(second.request_digest())
+            .is_none()
+    );
+    assert_eq!(supervisor.queued, before);
+    assert!(
+        supervisor
+            .active
+            .values()
+            .all(|active| !active.worker_in_flight)
+    );
+
+    let first_token = supervisor
+        .next_queued_for(first.request_digest())
+        .expect("canonical first claim");
+    assert_eq!(first_token.request(), &first);
+    assert!(supervisor.next_queued_for(first.request_digest()).is_none());
+    let second_token = supervisor
+        .next_queued_for(second.request_digest())
+        .expect("canonical second claim");
+    assert_eq!(second_token.request(), &second);
+    assert!(supervisor.next_queued().is_none());
 }

@@ -165,6 +165,14 @@ pub enum StopCondition {
 }
 
 impl StopCondition {
+    /// Copies canonical stop conditions after original metadata admission.
+    ///
+    /// # Errors
+    /// Refuses exhausted original resources or invalid canonical fields.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        crate::codec::admitted_clone(self)
+    }
+
     /// Composes an attempt's primary boundary with a campaign-policy deadline.
     ///
     /// # Errors

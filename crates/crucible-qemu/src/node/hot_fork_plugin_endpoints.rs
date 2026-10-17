@@ -159,6 +159,19 @@ impl QemuHotForkPluginHostEndpoint {
 }
 
 impl QemuPluginIpcControlChannel for QemuHotForkPluginHostEndpoint {
+    fn send_quit_supervised(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.control
+            .host_send_quit_with_writer(|stream, frame| {
+                crate::plugin_control::write_supervised_control_frame(stream, frame, guard)
+            })
+            .map_err(|source| {
+                QemuNodeChannelError::new("send supervised hot-fork Quit", source.to_string())
+            })
+    }
+
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.control.host_send_quit().map_err(|source| {
             QemuNodeChannelError::new("send hot-fork plugin control Quit", source.to_string())
@@ -856,14 +869,8 @@ mod eventfd_identity_tests {
 
     #[test]
     fn accepts_kernel_id_zero_as_one_based_token() -> std::io::Result<()> {
-        assert_eq!(
-            eventfd_identity_token_from_fdinfo("eventfd-id: 0\n")?,
-            1
-        );
-        assert_eq!(
-            eventfd_identity_token_from_fdinfo("eventfd-id: 7\n")?,
-            8
-        );
+        assert_eq!(eventfd_identity_token_from_fdinfo("eventfd-id: 0\n")?, 1);
+        assert_eq!(eventfd_identity_token_from_fdinfo("eventfd-id: 7\n")?, 8);
         Ok(())
     }
 

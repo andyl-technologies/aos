@@ -19,6 +19,8 @@ use crucible_campaign::{
 use crucible_cas::content_store::ContentId;
 
 mod evidence;
+pub(crate) use evidence::CrucibleMeasurementEventCustody;
+pub(crate) use evidence::boundary_error;
 
 pub(crate) use evidence::{
     observation_event_prefix_digest, verified_assertion_transition,
@@ -27,10 +29,11 @@ pub(crate) use evidence::{
 
 pub use evidence::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
-    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementPublication,
-    CrucibleMeasurementReplayEvidence, CrucibleMeasurementStopEvidence,
-    CrucibleObservationBoundaryEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
-    derive_crucible_measurement_samples, evaluate_crucible_measurement_publication,
+    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementEvidenceBytes,
+    CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence,
+    CrucibleMeasurementStopEvidence, CrucibleObservationBoundaryEvidence,
+    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, derive_crucible_measurement_samples,
+    evaluate_crucible_measurement_publication,
     evaluate_crucible_observation_measurement_publication, verify_crucible_measurement_publication,
 };
 
@@ -66,6 +69,8 @@ pub enum CrucibleMeasurementError {
     EvidenceEncoding {
         /// Stable serializer or parser detail.
         reason: String,
+        /// Retains the original allocation credit for the owning diagnostic.
+        custody: crucible::owned_decode::DecodeCustody,
     },
     /// Decoded evidence was valid CBOR but not its unique canonical encoding.
     #[error("Crucible measurement evidence is not canonically encoded")]
@@ -91,6 +96,8 @@ pub enum CrucibleMeasurementError {
         sequence: u64,
         /// Stable validation detail.
         reason: String,
+        /// Retains original credit for the protocol diagnostic.
+        custody: crucible::owned_decode::DecodeCustody,
     },
     /// The retained definition identity differs from the supplied scenario component.
     #[error("Crucible measurement definition identity does not match the campaign record")]

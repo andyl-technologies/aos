@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn scheduler_actor_drains_message_control_inbox_at_quantum_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (handle, mut actor) = scheduler_actor();
     handle
         .queue_control(control(2, ControlOperationKind::Query))
@@ -64,6 +67,9 @@ fn scheduler_actor_drains_message_control_inbox_at_quantum_boundary() {
 
 #[test]
 fn scheduler_actor_nonrandom_progress_does_not_advance_rng_cursor() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (handle, mut actor) = scheduler_actor();
     let before = actor_snapshot(&handle, &mut actor);
     assert!(before.decision_rng_cursor.positions.is_empty());
@@ -86,6 +92,9 @@ fn scheduler_actor_nonrandom_progress_does_not_advance_rng_cursor() {
 
 #[test]
 fn scheduler_actor_state_snapshot_is_read_only() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (handle, mut actor) = scheduler_actor();
     let mut snapshot = actor_snapshot(&handle, &mut actor);
     snapshot.node_counters[0].1 = NodeCounter { ticks: 99 };
@@ -98,6 +107,9 @@ fn scheduler_actor_state_snapshot_is_read_only() {
 
 #[test]
 fn scheduler_actor_rejects_non_frontier_message() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (handle, mut actor) = scheduler_actor();
     let wrong = Configuration::genesis(crucible::ScenarioDef::from_canonical_material(
         "crucible.scheduler-actor.wrong",

@@ -1,4 +1,4 @@
-//! Checks RFC-0010 T-WL-1 in-guest workload model invariants.
+//! Checks in-guest workload model invariants.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

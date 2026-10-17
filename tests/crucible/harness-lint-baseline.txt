@@ -27,9 +27,8 @@ confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from no
 confinement	crates/crucible-qemu/src/linux_cgroup.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
 confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	const		4
 confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	enum		2
-confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	fn		18
+confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	fn		17
 confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	struct		9
-confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	use		1
 confinement	crates/crucible-qemu/src/live_plugin_gate/support.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	4
 confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	const		5
 confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	enum		1
@@ -39,9 +38,9 @@ error-logging	crates/crucible-api/src/server.rs	stringly error	Result<_, String>
 error-logging	crates/crucible-api/src/server/debug_reposition.rs	stringly error	Result<_, String>		4
 error-logging	crates/crucible-api/src/server/debug_wire.rs	stringly error	Result<_, String>		10
 error-logging	crates/crucible-api/src/server/query_wire.rs	stringly error	Result<_, String>		1
-error-logging	crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs	stringly error	Result<_, String>		1
-error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs	stringly error	Result<_, String>		2
-error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence/recovery.rs	stringly error	Result<_, String>		2
+error-logging	crates/crucible-daemon/src/vm_lifecycle/checkpoint_store.rs	stringly error	Result<_, String>		1
+error-logging	crates/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs	stringly error	Result<_, String>		2
+error-logging	crates/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence/recovery.rs	stringly error	Result<_, String>		2
 error-logging	crates/crucible-daemon/src/assignment_ledger.rs	erased error	dyn Error		3
 error-logging	crates/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	stringly error	Result<_, String>		1
 error-logging	crates/crucible-daemon/src/qemu_hot_fork_world_factory.rs	stringly error	Result<_, String>		7

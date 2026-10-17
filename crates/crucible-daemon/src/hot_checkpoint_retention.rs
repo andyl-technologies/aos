@@ -303,15 +303,29 @@ pub struct DirectoryHotCheckpointFallbackRetentionStore {
     inner: Arc<DirectoryHotCheckpointFallbackRetentionInner>,
 }
 
+#[cfg(feature = "private-measurement-domain")]
+mod original;
+
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original::{OriginalHotCheckpointRetentionOwner, OriginalRetentionError};
+
 struct DirectoryHotCheckpointFallbackRetentionInner {
     root: PathBuf,
     writer_lock: File,
     lifecycle: RwLock<()>,
     records: Mutex<BTreeMap<HotCheckpointFallbackSlot, HotCheckpointFallbackRecord>>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_release: Option<original::OriginalWriterRelease>,
 }
 
 impl Drop for DirectoryHotCheckpointFallbackRetentionInner {
     fn drop(&mut self) {
+        #[cfg(feature = "private-measurement-domain")]
+        if self.original_release.is_some() {
+            // The external original owner performs a checked unlock; ordinary
+            // last-body Drop cannot replace its uncertain physical retirement.
+            return;
+        }
         // A fork can retain this open-file description until exec closes it.
         // Release ownership when the final store owner ends so an inherited or
         // duplicated descriptor cannot extend the catalog's writer lease.
@@ -353,6 +367,8 @@ impl DirectoryHotCheckpointFallbackRetentionStore {
                 writer_lock,
                 lifecycle: RwLock::new(()),
                 records: Mutex::new(records),
+                #[cfg(feature = "private-measurement-domain")]
+                original_release: None,
             }),
         })
     }
@@ -389,6 +405,8 @@ impl DirectoryHotCheckpointFallbackRetentionStore {
                 writer_lock,
                 lifecycle: RwLock::new(()),
                 records: Mutex::new(records),
+                #[cfg(feature = "private-measurement-domain")]
+                original_release: None,
             }),
         })
     }

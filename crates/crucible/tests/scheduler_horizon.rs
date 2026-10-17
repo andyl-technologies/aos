@@ -13,6 +13,9 @@ use crucible::{
 
 #[test]
 fn scheduler_horizon_adds_network_lookahead_to_current_time() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon = horizon_from_network_lookahead(
         SimInstant { ticks: 30 },
         finite_lookahead(7),
@@ -33,6 +36,9 @@ fn scheduler_horizon_adds_network_lookahead_to_current_time() {
 
 #[test]
 fn scheduler_horizon_uses_exact_local_event_without_conservative_slack() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon = horizon_from_network_lookahead(
         SimInstant { ticks: 30 },
         finite_lookahead(10),
@@ -55,6 +61,9 @@ fn scheduler_horizon_uses_exact_local_event_without_conservative_slack() {
 
 #[test]
 fn scheduler_horizon_is_unbounded_without_network_or_local_event() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon = horizon_from_network_lookahead(
         SimInstant { ticks: 30 },
         NetworkLookahead::Infinite,
@@ -66,6 +75,9 @@ fn scheduler_horizon_is_unbounded_without_network_or_local_event() {
 
 #[test]
 fn scheduler_horizon_exact_local_event_bounds_infinite_network() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon = horizon_from_network_lookahead(
         SimInstant { ticks: 30 },
         NetworkLookahead::Infinite,
@@ -88,6 +100,9 @@ fn scheduler_horizon_exact_local_event_bounds_infinite_network() {
 
 #[test]
 fn single_scheduler_uses_current_time_plus_network_lookahead() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "horizon-current-plus-lookahead",
         8,
@@ -109,6 +124,9 @@ fn single_scheduler_uses_current_time_plus_network_lookahead() {
 
 #[test]
 fn single_scheduler_caps_unbounded_network_horizon_at_time_limit() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "horizon-infinite-network-time-limit",
         8,

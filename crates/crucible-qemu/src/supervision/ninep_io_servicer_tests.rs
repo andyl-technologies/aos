@@ -11,6 +11,29 @@ use super::*;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn hot_fork_reader_rejects_duplicate_source_inode_before_checkpoint()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, mut servicer) = transaction_fixture();
+    let duplicate = source.try_clone()?;
+    let before = servicer.begin_transaction()?;
+
+    let rejected = servicer.clone_hot_fork_continuation(
+        duplicate.as_fd(),
+        source.metadata()?.len(),
+        ContentHash::from_bytes(&[3; 32]),
+    );
+
+    assert!(matches!(
+        rejected,
+        Err(QemuLive9pIoServicerError::SourceMappingAlias)
+    ));
+    assert_eq!(servicer.begin_transaction()?, before);
+    let (private, _) = transaction_fixture();
+    servicer.validate_private_hot_fork_reader(private.as_fd())?;
+    Ok(())
+}
+
 fn transaction_fixture() -> (fs::File, QemuLive9pIoServicer) {
     let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("allocate test region: {error}"));
