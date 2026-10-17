@@ -5,10 +5,12 @@
 
 use super::*;
 use crate::campaign_process::{ExecutorWorkerRetirementError, retire_control_bodies};
+use crucible_api::LifecycleApiError;
 use crucible_linux_resource::host_supervision::{
     HostOperationBudget, HostOperationBudgets, HostOperationClass, HostOperationGuard,
     HostOperationState, HostOperationSupervisor,
 };
+use std::cell::Cell;
 use std::fs::{self, File};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
@@ -165,23 +167,36 @@ fn closed_body_preserves_first_work_controls_and_post_reports()
     drop(body.member.take());
     let post = expire_same_cleanup(&supervisor, &original);
     let work = original.wait_slice().unwrap_err();
+    let effects = Cell::new(0);
+    let observations = Cell::new(0);
     // The actual directory is closed; no Main or lifecycle queue exists here.
     let controls = retire_control_bodies(
         &original,
         || {
+            effects.set(effects.get() + 1);
             workers
                 .try_retire_original(&original)
                 .map_err(ExecutorWorkerRetirementError::Worker)
         },
-        || Ok(()),
         || {
+            effects.set(effects.get() + 1);
+            Ok(())
+        },
+        || {
+            observations.set(observations.get() + 1);
             workers
                 .verify_retired()
                 .map_err(ExecutorWorkerRetirementError::Worker)
         },
-        || Ok(()),
+        || {
+            observations.set(observations.get() + 1);
+            Ok(())
+        },
     )
     .unwrap_err();
+    assert_eq!(effects.get(), 0);
+    assert_eq!(observations.get(), 2);
+    assert_eq!(controls.original_before(), Some(work));
     assert!(controls.physically_closed());
     let control_post = controls.original_post();
 
@@ -214,6 +229,167 @@ fn closed_body_preserves_first_work_controls_and_post_reports()
     assert_eq!(actual, Some(post));
     assert!(cell.lock().unwrap().is_none());
     assert!(dropped.load(Ordering::Acquire));
+    Ok(())
+}
+
+#[test]
+fn deadline_expiry_during_worker_step_preserves_queued_file_and_first_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    let workers = crate::executor_pool::PreparedExecutorWorkers::unissued_component_custody(vec![
+        FileWorker {
+            _file: tempfile::tempfile()?,
+        },
+    ]);
+    // This is a component-owned File, not an authenticated Main or queue grant.
+    let queued = Mutex::new(Some(tempfile::tempfile()?));
+    let descriptor = queued.lock().unwrap().as_ref().unwrap().as_raw_fd();
+    let identity = queued.lock().unwrap().as_ref().unwrap().metadata()?;
+    let worker_effects = Cell::new(0);
+    let queue_effects = Cell::new(0);
+    let observations = Cell::new(0);
+
+    let controls = retire_control_bodies(
+        &original,
+        || {
+            worker_effects.set(worker_effects.get() + 1);
+            expire_same_cleanup(&supervisor, &original);
+            workers
+                .try_retire_original(&original)
+                .map_err(ExecutorWorkerRetirementError::Worker)
+        },
+        || {
+            queue_effects.set(queue_effects.get() + 1);
+            drop(queued.lock().unwrap().take());
+            Ok(())
+        },
+        || {
+            observations.set(observations.get() + 1);
+            workers
+                .verify_retired()
+                .map_err(ExecutorWorkerRetirementError::Worker)
+        },
+        || {
+            observations.set(observations.get() + 1);
+            if queued.lock().unwrap().is_some() {
+                Err(LifecycleApiError::ConstructionCustodyUnavailable)
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap_err();
+
+    let post = original.wait_slice().unwrap_err();
+    assert_eq!(worker_effects.get(), 1);
+    assert_eq!(queue_effects.get(), 0);
+    assert_eq!(observations.get(), 2);
+    assert!(!controls.physically_closed());
+    assert_eq!(controls.original_before(), None);
+    assert_eq!(controls.original_post(), Some(post));
+    let first = std::error::Error::source(&controls)
+        .unwrap()
+        .downcast_ref::<ExecutorWorkerRetirementError>();
+    assert!(matches!(
+        first,
+        Some(ExecutorWorkerRetirementError::Worker(
+            crate::executor_pool::WorkerRetirementRefusal::Original(first)
+        )) if *first == post
+    ));
+    let retained = fs::metadata(format!("/proc/self/fd/{descriptor}"))?;
+    assert_eq!(
+        (retained.dev(), retained.ino()),
+        (identity.dev(), identity.ino())
+    );
+    assert!(queued.lock().unwrap().is_some());
+    Ok(())
+}
+
+#[test]
+fn queue_effect_failure_and_deadline_expiry_allow_actual_closed_body_return()
+-> Result<(), Box<dyn std::error::Error>> {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    let workers = crate::executor_pool::PreparedExecutorWorkers::unissued_component_custody(vec![
+        FileWorker {
+            _file: tempfile::tempfile()?,
+        },
+    ]);
+    workers.try_retire_original(&original)?;
+    let cell = body_cell()?;
+    let dropped = cell.lock().unwrap().as_ref().unwrap().dropped.clone();
+    let outside_lock = cell.lock().unwrap().as_ref().unwrap().outside_lock.clone();
+    let worker_effects = Cell::new(0);
+    let queue_effects = Cell::new(0);
+    let observations = Cell::new(0);
+
+    let controls = retire_control_bodies(
+        &original,
+        || {
+            worker_effects.set(worker_effects.get() + 1);
+            workers
+                .try_retire_original(&original)
+                .map_err(ExecutorWorkerRetirementError::Worker)
+        },
+        || {
+            queue_effects.set(queue_effects.get() + 1);
+            drop(cell.lock().unwrap().as_mut().unwrap().member.take());
+            expire_same_cleanup(&supervisor, &original);
+            Err(LifecycleApiError::ConstructionCustodyUnavailable)
+        },
+        || {
+            observations.set(observations.get() + 1);
+            workers
+                .verify_retired()
+                .map_err(ExecutorWorkerRetirementError::Worker)
+        },
+        || {
+            observations.set(observations.get() + 1);
+            if cell.lock().unwrap().as_ref().unwrap().physically_closed() {
+                Ok(())
+            } else {
+                Err(LifecycleApiError::ConstructionCustodyUnavailable)
+            }
+        },
+    )
+    .unwrap_err();
+
+    let post = original.wait_slice().unwrap_err();
+    assert_eq!(worker_effects.get(), 1);
+    assert_eq!(queue_effects.get(), 1);
+    assert_eq!(observations.get(), 2);
+    assert!(controls.physically_closed());
+    assert_eq!(controls.original_before(), None);
+    assert_eq!(controls.original_post(), Some(post));
+    assert_eq!(
+        std::error::Error::source(&controls)
+            .unwrap()
+            .downcast_ref::<LifecycleApiError>(),
+        Some(&LifecycleApiError::ConstructionCustodyUnavailable),
+    );
+
+    let report = finish_retained_construction(
+        cell.lock().unwrap(),
+        Body::physically_closed,
+        &FIRST,
+        None,
+        Some(controls),
+        Some(post),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        report,
+        RetainedExecutorRetirementError::Cleanup {
+            controls: Some(ref controls),
+            post: Some(actual),
+            ..
+        } if controls.physically_closed() && actual == post
+    ));
+    assert!(cell.lock().unwrap().is_none());
+    assert!(dropped.load(Ordering::Acquire));
+    assert!(outside_lock.load(Ordering::Acquire));
+    assert!(original.wait_slice().is_err());
     Ok(())
 }
 

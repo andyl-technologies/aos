@@ -188,6 +188,32 @@ with 43 ignored probes, in 358.60 seconds; both workspace/all-target checks pass
 The durable Main producer still needs to adopt this borrowed core before Source
 startup, so these results do not qualify native activation or VM performance.
 
+Worker and lifecycle retirement now checks its same saved Cleanup before and
+after each worker/queue effect. A refused entry or post stops subsequent effects;
+final physical observations still run and preserve independent work and post
+causes. Controls use real retained files to prove a deadline cannot close the
+next queued body and that an already closed body can still be destroyed outside
+its containing mutex. Outer cancellation alone remains compatible with cleanup.
+
+Checked checkpoint-slot operations use nonblocking access and distinguish busy,
+poisoned and occupied storage. A refused restoration returns the same selected
+root instead of overwriting another root or dropping the incoming owner. These
+operations are ready for the durable producer; existing consuming callers still
+need the coordinated cutover before the old slot operations can be removed.
+
+Hot-fork reconciliation handles now share their expected node roster with the
+actual reconciliation map. Cloning a child handle no longer copies the entire
+roster, and membership validation compares ordered keys without building a
+temporary set. Successful reconciliation removes both entries under the same
+mutex, then destroys the completed child outside that lock. Three controls cover
+shared membership, poison and missing child receipts. This removes redundant
+metadata copies; complete Target heap funding, native activation and measured
+VM performance parity remain unqualified. The combined private daemon library
+passes all 1,742 tests, with 43 ignored probes, in 311.90 seconds. Default and
+private workspace/all-target checks pass. Engineering hygiene has five passes;
+testing standards has 34 passes and its unchanged operational-source classifier
+failure. These local component checks do not complete the consuming cutover.
+
 Replay preparation now selects the actual node for its installed issuer,
 generation directories, child contract and failed-child retention. The same
 node passes through the existing operational checks; no descriptor is cloned

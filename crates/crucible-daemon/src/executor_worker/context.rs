@@ -11,6 +11,50 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+/// Refuses a checked one-shot selected-checkpoint slot operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum SelectedCheckpointSlotError {
+    /// Another operation still borrows this same selection slot.
+    #[error("selected checkpoint slot is busy")]
+    Busy,
+    /// A prior unwind left this same slot uncertain.
+    #[error("selected checkpoint slot is poisoned")]
+    Poisoned,
+    /// Restoration cannot replace an independently retained selection.
+    #[error("selected checkpoint slot is occupied")]
+    Occupied,
+}
+
+fn try_selection_slot<T>(
+    slot: &Mutex<Option<T>>,
+) -> Result<std::sync::MutexGuard<'_, Option<T>>, SelectedCheckpointSlotError> {
+    slot.try_lock().map_err(|error| match error {
+        std::sync::TryLockError::WouldBlock => SelectedCheckpointSlotError::Busy,
+        std::sync::TryLockError::Poisoned(_) => SelectedCheckpointSlotError::Poisoned,
+    })
+}
+
+fn try_take_selection<T>(
+    slot: &Mutex<Option<T>>,
+) -> Result<Option<T>, SelectedCheckpointSlotError> {
+    Ok(try_selection_slot(slot)?.take())
+}
+
+fn try_restore_selection<T>(
+    slot: &Mutex<Option<T>>,
+    selected: T,
+) -> Result<(), (T, SelectedCheckpointSlotError)> {
+    let mut slot = match try_selection_slot(slot) {
+        Ok(slot) => slot,
+        Err(refusal) => return Err((selected, refusal)),
+    };
+    if slot.is_some() {
+        return Err((selected, SelectedCheckpointSlotError::Occupied));
+    }
+    *slot = Some(selected);
+    Ok(())
+}
+
 /// Operational limits, control state, and restore root for one guest execution.
 ///
 /// This context is deliberately separate from [`AttemptExecutionInput`]. It
@@ -227,6 +271,36 @@ impl AttemptExecutionContext {
         self.retention_policy
     }
 
+    /// Takes the actual one-shot selection without waiting on a contended slot.
+    ///
+    /// # Errors
+    /// Returns a typed busy or poisoned refusal without changing the slot.
+    pub(crate) fn try_take_selected_checkpoint(
+        &self,
+    ) -> Result<
+        Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+        SelectedCheckpointSlotError,
+    > {
+        try_take_selection(&self.selected_checkpoint)
+    }
+
+    /// Restores the same selection only into its genuinely empty original slot.
+    ///
+    /// # Errors
+    /// Returns the unchanged selection with busy, poisoned or occupied refusal.
+    pub(crate) fn try_restore_selected_checkpoint(
+        &self,
+        selected: crate::executor_supervisor::SelectedExactCheckpointRoot,
+    ) -> Result<
+        (),
+        (
+            crate::executor_supervisor::SelectedExactCheckpointRoot,
+            SelectedCheckpointSlotError,
+        ),
+    > {
+        try_restore_selection(&self.selected_checkpoint, selected)
+    }
+
     pub(crate) fn take_selected_checkpoint(
         &self,
     ) -> Option<crate::executor_supervisor::SelectedExactCheckpointRoot> {
@@ -234,8 +308,7 @@ impl AttemptExecutionContext {
     }
 
     pub(crate) fn selected_checkpoint_authorizes(&self, checkpoint: ExactCheckpointId) -> bool {
-        self.selected_checkpoint
-            .lock()
+        try_selection_slot(&self.selected_checkpoint)
             .map(|selected| {
                 selected
                     .as_ref()
@@ -717,6 +790,47 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn checked_selection_slot_preserves_same_box_on_busy_poison_and_occupied() {
+        let slot = Mutex::new(None::<Box<u64>>);
+        let owner = Box::new(7);
+        let pointer = std::ptr::from_ref(owner.as_ref());
+        let borrowed = slot.lock().unwrap();
+
+        assert_eq!(
+            try_take_selection(&slot),
+            Err(SelectedCheckpointSlotError::Busy)
+        );
+        let (owner, reason) = try_restore_selection(&slot, owner).unwrap_err();
+        assert_eq!(reason, SelectedCheckpointSlotError::Busy);
+        assert_eq!(std::ptr::from_ref(owner.as_ref()), pointer);
+        assert!(borrowed.is_none());
+        drop(borrowed);
+
+        let occupied = Box::new(11);
+        let occupied_pointer = std::ptr::from_ref(occupied.as_ref());
+        try_restore_selection(&slot, occupied).unwrap();
+        let (owner, reason) = try_restore_selection(&slot, owner).unwrap_err();
+        assert_eq!(reason, SelectedCheckpointSlotError::Occupied);
+        assert_eq!(std::ptr::from_ref(owner.as_ref()), pointer);
+        let occupied = try_take_selection(&slot).unwrap().unwrap();
+        assert_eq!(std::ptr::from_ref(occupied.as_ref()), occupied_pointer);
+        assert!(try_take_selection(&slot).unwrap().is_none());
+
+        let _ = std::panic::catch_unwind(|| {
+            let _borrow = slot.lock().unwrap();
+            panic!("poison the actual selection mutex");
+        });
+        assert_eq!(
+            try_take_selection(&slot),
+            Err(SelectedCheckpointSlotError::Poisoned)
+        );
+        let (owner, reason) = try_restore_selection(&slot, owner).unwrap_err();
+        assert_eq!(reason, SelectedCheckpointSlotError::Poisoned);
+        assert_eq!(std::ptr::from_ref(owner.as_ref()), pointer);
+        assert!(slot.lock().unwrap_err().into_inner().is_none());
+    }
 
     #[test]
     fn semantic_projection_cannot_increase_the_admitted_service_quantum_ceiling() {

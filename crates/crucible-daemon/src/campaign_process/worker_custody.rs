@@ -2,7 +2,7 @@
 
 use super::*;
 use crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose;
-use crucible_linux_resource::host_supervision::HostOperationGuard;
+use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
 
 pub(crate) fn install_executor_worker_custody(
     main: &Arc<AuthenticatedNativeSlotPurpose>,
@@ -80,6 +80,7 @@ fn refusal(message: &'static str) -> crucible_qemu::QemuVmRealizationError {
 #[derive(Debug)]
 pub struct ExecutorControlRetirementError {
     admission: Option<crucible_linux_resource::host_services::process_birth::ServiceBirthError>,
+    before: Option<HostSupervisionError>,
     workers: Option<ExecutorWorkerRetirementError>,
     lifecycle: Option<crucible_api::LifecycleApiError>,
     post: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
@@ -92,6 +93,13 @@ impl ExecutorControlRetirementError {
         self.physically_closed
     }
 
+    /// Returns the first refused effect entry under the same saved Original.
+    #[cfg(test)]
+    pub(crate) fn original_before(&self) -> Option<HostSupervisionError> {
+        self.before
+    }
+
+    /// Returns the first independent post refusal, including the final observation.
     pub(crate) fn original_post(
         &self,
     ) -> Option<crucible_linux_resource::host_supervision::HostSupervisionError> {
@@ -103,8 +111,8 @@ impl std::fmt::Display for ExecutorControlRetirementError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "Main cleanup admission: {:?}; workers: {:?}; lifecycle: {:?}; independent post: {:?}",
-            self.admission, self.workers, self.lifecycle, self.post
+            "Main cleanup admission: {:?}; before effect: {:?}; workers: {:?}; lifecycle: {:?}; independent post: {:?}",
+            self.admission, self.before, self.workers, self.lifecycle, self.post
         )
     }
 }
@@ -118,6 +126,9 @@ impl std::error::Error for ExecutorControlRetirementError {
             return Some(cause);
         }
         if let Some(cause) = &self.lifecycle {
+            return Some(cause);
+        }
+        if let Some(cause) = &self.before {
             return Some(cause);
         }
         self.post
@@ -155,32 +166,68 @@ pub(crate) fn retire_control_bodies(
     observe_workers: impl FnOnce() -> Result<(), ExecutorWorkerRetirementError>,
     observe_lifecycles: impl FnOnce() -> Result<(), crucible_api::LifecycleApiError>,
 ) -> Result<(), ExecutorControlRetirementError> {
-    let mut workers = retire_workers().err();
-    let mut lifecycle = drain_lifecycles().err();
-    if let Err(error) = retire_workers() {
+    let mut before = None;
+    let mut post = None;
+    let mut workers = run_retirement_step(original, &mut before, &mut post, &mut retire_workers);
+    let mut lifecycle =
+        run_retirement_step(original, &mut before, &mut post, &mut drain_lifecycles);
+    if let Some(error) = run_retirement_step(original, &mut before, &mut post, &mut retire_workers)
+    {
         workers.get_or_insert(error);
     }
-    if let Err(error) = drain_lifecycles() {
+    if let Some(error) =
+        run_retirement_step(original, &mut before, &mut post, &mut drain_lifecycles)
+    {
         lifecycle.get_or_insert(error);
     }
 
     // A historical drain error cannot change the independently observed state
-    // of the actual bodies. Neither observation executes another cleanup cut.
+    // of the actual bodies. Even a refused Original permits these factual
+    // observations; neither executes another cleanup cut or renews authority.
     let workers_closed = observe_workers().is_ok();
     let lifecycle_closed = observe_lifecycles().is_ok();
     let physically_closed = workers_closed && lifecycle_closed;
-    let post = original.wait_slice().err();
-    if workers.is_none() && lifecycle.is_none() && post.is_none() && physically_closed {
+    let final_post = original.wait_slice().err();
+    let post = post.or(final_post);
+    if before.is_none()
+        && workers.is_none()
+        && lifecycle.is_none()
+        && post.is_none()
+        && physically_closed
+    {
         Ok(())
     } else {
         Err(ExecutorControlRetirementError {
             admission: None,
+            before,
             workers,
             lifecycle,
             post,
             physically_closed,
         })
     }
+}
+
+/// Checks each actual effect and preserves its result before the independent post.
+fn run_retirement_step<E>(
+    original: &HostOperationGuard,
+    before: &mut Option<HostSupervisionError>,
+    post: &mut Option<HostSupervisionError>,
+    attempt: &mut impl FnMut() -> Result<(), E>,
+) -> Option<E> {
+    // An uncertain post cannot authorize another physical step, even if a later
+    // observation succeeds. Existing owners remain available to their caller.
+    if before.is_some() || post.is_some() {
+        return None;
+    }
+    if let Err(first) = original.wait_slice() {
+        *before = Some(first);
+        return None;
+    }
+
+    let result = attempt();
+    *post = original.wait_slice().err();
+    result.err()
 }
 
 pub(crate) fn verify_executor_workers_retired(
@@ -246,6 +293,7 @@ pub(crate) fn try_retire_executor_controls_for_main(
         .retained_cleanup()
         .map_err(|cause| ExecutorControlRetirementError {
             admission: Some(cause),
+            before: None,
             workers: None,
             lifecycle: None,
             post: None,
