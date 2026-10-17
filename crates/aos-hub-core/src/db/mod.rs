@@ -25659,6 +25659,7 @@ fn oci_release_root_statements(
                     | "source"
                     | "license"
                     | "provenance"
+                    | "deployment"
                     | "signature"
             ),
             "signed container evidence kind is invalid"
@@ -27554,6 +27555,7 @@ requires-features = ["image-artifact-contract-v1"]
             ContainerReleaseDescriptorRole::Source,
             ContainerReleaseDescriptorRole::License,
             ContainerReleaseDescriptorRole::Provenance,
+            ContainerReleaseDescriptorRole::Deployment,
             ContainerReleaseDescriptorRole::Signature,
         ];
         for (ordinal, role) in required_roles.into_iter().enumerate() {
@@ -27649,10 +27651,12 @@ requires-features = ["image-artifact-contract-v1"]
         let closure_layer_digest = required_descriptors[1].digest.clone();
         let evidence_kinds = [
             "closure",
+            "abilities",
             "sbom",
             "source",
             "license",
             "provenance",
+            "deployment",
             "signature",
         ];
         let evidence = evidence_kinds
@@ -27767,7 +27771,7 @@ requires-features = ["image-artifact-contract-v1"]
             .unwrap();
         assert_eq!(provenance.package, "aos");
         assert_eq!(provenance.closure_members.len(), 1);
-        assert_eq!(provenance.evidence.len(), 6);
+        assert_eq!(provenance.evidence.len(), 8);
         assert!(provenance
             .evidence
             .iter()
@@ -27819,7 +27823,7 @@ requires-features = ["image-artifact-contract-v1"]
             vec!["1.0.0", "2.0.0"]
         );
         assert_eq!(all_provenance.items[1].closure_members.len(), 1);
-        assert_eq!(all_provenance.items[1].evidence.len(), 6);
+        assert_eq!(all_provenance.items[1].evidence.len(), 8);
         let epoch_after_shared_root: i64 = db
             .backend
             .query_opt(
