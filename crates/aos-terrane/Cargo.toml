@@ -13,5 +13,8 @@ toml.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 terrane-fs.workspace = true
 
+[dev-dependencies]
+tokio.workspace = true
+
 [lints]
 workspace = true

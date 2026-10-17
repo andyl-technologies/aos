@@ -8809,21 +8809,25 @@ accepted by these component reviews.
 The fresh-only bucket enrollment producer now passes source review after fixing
 special-file classification before readable opens. It retains the actual creator
 event, original exclusion and complete bounded inode preimages; its nine tests
-remain unrun. Native administrative claim and setter consumers are still pending.
+remain unrun. Native administrative claim and setter consumers now pass source
+review, including complete first-claim preimages, preflight before effects and
+phase-aware administrative ancestor membership. Native qualification is pending.
 Manifest recovery's resource-custody layer also passes source review, including
 cancelled effects and adopted-body retention before fallible completion. Actual
 publisher response correlation now passes source review; owner dispatch and
 runtime qualification remain pending. The cache proof
 image now builds and verifies its three actual executables and retained guest
 supervisor. Earlier guest attempts stopped before actor cases because that script
-was absent from the guest closure. Corrected guest execution reaches actual quota
-provisioning and privileged helper readiness, then stops before component cases
-when the unprivileged publisher reports a permission error. Source diagnosis
-identifies private files created without the inode write permission required by
-the fs-verity enable ioctl. The correction must preserve closed writable
-descriptors and final read-only custody; no capability is added to the publisher.
-The native initial-enrollment scaffold and administrative consumer are under
-review and implementation respectively. The shared glue dependency now names
+was absent from the guest closure. Corrections preserve closed writable
+descriptors through real fs-verity enable and final read-only custody, and use
+the native retained-inode syscall to set listener permissions. Corrected guest
+execution passes actual provisioning, helper and publisher preparation, empty
+recovery and eight cold-record or namespace refusal controls. Cancellation
+stops at a broken quota connection; its strict completion assertion and later
+quota-exhaustion and exclusivity cases remain unqualified. The first-enrollment
+fixture uses the existing vendored Tokio runtime as a development dependency;
+its actual two-owner creator-to-setter execution is still pending.
+The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
 native and glue edges. All 632 external dependencies remain unchanged; every
 affected vendor hash is reproduced from local staging and the exact new lock.
