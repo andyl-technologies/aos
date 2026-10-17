@@ -2196,7 +2196,8 @@ language-neutral guest opportunity coordinates from RFC 02. A `NextChoice`
 attempt retains the complete declaration/domain/opportunity discovery without
 replying. Other discovery execution records and returns the declared default.
 Those executor-produced selections are published with the observation candidate
-and bound as schema-v12 observation children. Candidate validation
+and bound through the observation's produced-selection map, keyed by the
+selected opportunity. Candidate validation
 requires each selection to resolve against one exact opportunity discovered by
 the same attempt, rejects repeated opportunity selection, and enforces the
 existing aggregate choice-record byte bound before publication. This makes the
@@ -2216,9 +2217,10 @@ hashing of variable-sized decisions. The adapter returns immediately after that
 scan when no selections exist. Repository resolution and prefix authentication
 begin only after both bounds pass, preventing canonical maximum-sized schedules
 from turning persistent schedule-prefix construction into quadratic work. The
-repository resolves the accepted IDs as one batch with a 128 MiB aggregate
-unique-canonical-record-body limit; identical selections and shared
-opportunity/declaration/domain dependencies are decoded once and reused.
+repository then streams the accepted IDs through one selection resolver in
+schedule order (RFC 02); shared declaration and domain dependencies are
+decoded once while they fit its bounded cache. A selected-origin restore
+bounds the resolver's resident decoded records by its memory reservation.
 
 A mutable compare-and-swap error may be commit-indeterminate because rename
 precedes directory fsync. The supervisor reloads the exact state, and a
@@ -2270,9 +2272,15 @@ newly-discovered choice records, and observation bundle plus every
 already-published dependency. Each discovery carries its exact
 `SelectableDeclarationV1`, `ChoiceDomainV1`, and `ChoiceOpportunityV1`; the
 repository requires their content-derived IDs and copied semantic contract to
-agree before publication. One candidate carries at most 65,530 discoveries and
-at most 128 MiB of unique canonical declaration, domain, and opportunity
-bodies. Shared records are charged once. An invalid bundle writes nothing.
+agree before publication. One candidate carries at most 128 MiB of unique
+canonical declaration, domain, opportunity, and produced-selection bodies;
+shared records are charged once. This is the operational bound on one
+attempt's resident choice material. No count bound applies: the observation
+commits to the discoveries and selections through two paged maps (RFC 01), and
+the candidate holds both in canonical key order so the repository rebuilds the
+committed roots with one streaming pass each. An invalid bundle writes no
+bundle member; a root mismatch found while rebuilding leaves only unreachable
+map nodes.
 After the durable publishing root exists, the repository publishes those
 immutable content-addressed records without advancing a campaign ref. Only the
 coordinator may subsequently incorporate the authenticated observation through
@@ -2912,7 +2920,7 @@ The driver retains the attempt event log as sealed segments plus an open tail
 under the storage limit of
 [`15-segmented-event-log.md`](15-segmented-event-log.md); no whole-log entry or
 byte bound applies. Assertion evaluation is the bounded fold of that chapter.
-It deduplicates at most 65,530
+It deduplicates
 self-contained discovered-choice bundles by exact opportunity identity, shares
 equal declaration/domain values by content identity, and enforces the candidate
 format's 128 MiB aggregate unique-record bound while discoveries arrive. After

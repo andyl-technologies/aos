@@ -196,7 +196,7 @@ pub(crate) fn choice_index_anchor_key() -> CampaignHash {
 }
 
 pub(crate) fn choice_index_order_key(opportunity: ChoiceOpportunityId) -> CampaignHash {
-    CampaignHash::from_bytes(opportunity.content_id().digest())
+    crate::observation::choice_set_key(opportunity)
 }
 
 pub(crate) fn frontier_index_anchor_key() -> CampaignHash {

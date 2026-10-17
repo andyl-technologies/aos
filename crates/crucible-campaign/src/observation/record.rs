@@ -13,8 +13,8 @@ pub struct Observation {
     measurements: MeasurementSetId,
     properties: PropertyVerdictSetId,
     coverage: CoverageProjectionId,
-    discovered_choices: BTreeSet<ChoiceOpportunityId>,
-    produced_selections: BTreeSet<SelectionId>,
+    discovered_choices: MerkleMapRoot,
+    produced_selections: MerkleMapRoot,
     resolved_effect_trace: Option<ContentId>,
 }
 
@@ -55,12 +55,6 @@ impl ObservationOutcome {
 }
 
 impl Observation {
-    /// Builds one bounded canonical attempt observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid stop outcome, too many discovered
-    /// choices, or an oversized encoded record.
     /// Builds the outcome portion accepted by [`Self::new`].
     #[must_use]
     pub const fn outcome(
@@ -83,17 +77,26 @@ impl Observation {
         )
     }
 
-    /// Builds one bounded canonical attempt observation.
+    /// Builds one canonical attempt observation.
+    ///
+    /// The discovered opportunities become one paged Merkle set keyed by
+    /// opportunity identity. The observation retains only that set's root, so
+    /// its encoded size does not grow with the number of discoveries.
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid stop outcome, too many discovered
-    /// choices, or an oversized encoded record.
+    /// Returns an error for an invalid stop outcome, a choice set whose root
+    /// cannot be derived, or an oversized encoded record.
     pub fn new(
         attempt: AttemptId,
         outcome: ObservationOutcome,
         discovered_choices: BTreeSet<ChoiceOpportunityId>,
     ) -> Result<Self, CampaignCodecError> {
+        let discovered_choices = super::derive_choice_set_root(
+            discovered_choices
+                .into_iter()
+                .map(|opportunity| (choice_set_key(opportunity), opportunity.content_id())),
+        )?;
         Self::validate(Self {
             attempt,
             child: outcome.child,
@@ -104,7 +107,7 @@ impl Observation {
             properties: outcome.properties,
             coverage: outcome.coverage,
             discovered_choices,
-            produced_selections: BTreeSet::new(),
+            produced_selections: super::empty_choice_set_root()?,
             resolved_effect_trace: None,
         })
     }
@@ -132,14 +135,18 @@ impl Observation {
 
     /// Attaches the nonempty selection closure produced by this attempt.
     ///
+    /// Each entry maps the selected discovered opportunity to its selection.
+    /// Keying the set by opportunity makes "at most one selection per
+    /// opportunity" a structural property of the paged set.
+    ///
     /// # Errors
     ///
     /// Returns an error after a nonempty selection closure was already
-    /// attached, or when the combined choice-reference count or encoded
-    /// observation exceeds its fixed bound.
+    /// attached, when more selections than discoveries are supplied, or when
+    /// the set root cannot be derived.
     pub(crate) fn with_produced_selections(
         mut self,
-        produced_selections: BTreeSet<SelectionId>,
+        produced_selections: BTreeMap<ChoiceOpportunityId, SelectionId>,
     ) -> Result<Self, CampaignCodecError> {
         if !self.produced_selections.is_empty() {
             return Err(CampaignCodecError::InvalidValue {
@@ -149,7 +156,10 @@ impl Observation {
         if produced_selections.is_empty() {
             return Ok(self);
         }
-        self.produced_selections = produced_selections;
+        self.produced_selections =
+            super::derive_choice_set_root(produced_selections.into_iter().map(
+                |(opportunity, selection)| (choice_set_key(opportunity), selection.content_id()),
+            ))?;
         Self::validate(self)
     }
 
@@ -169,19 +179,12 @@ impl Observation {
                 reason: "observation stop proof disagrees with child configuration",
             });
         }
-        if value.discovered_choices.len() > MAX_DISCOVERED_CHOICES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "observation-discovered-choice-count",
-            });
-        }
-        if value
-            .discovered_choices
-            .len()
-            .checked_add(value.produced_selections.len())
-            .is_none_or(|count| count > MAX_DISCOVERED_CHOICES)
-        {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "observation-choice-reference-count",
+        // Every produced selection resolves one distinct discovered
+        // opportunity. Repositories check membership against both sets; the
+        // advertised counts already exclude a larger produced set.
+        if value.produced_selections.entry_count() > value.discovered_choices.entry_count() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation produces more selections than it discovers",
             });
         }
         codec::ensure_encoded_size(&value, MAX_RECORD_BYTES, "observation-encoded-bytes")?;
@@ -236,16 +239,23 @@ impl Observation {
         self.coverage
     }
 
-    /// Returns discovered choice opportunities in canonical identity order.
+    /// Returns the paged set of discovered choice opportunities.
+    ///
+    /// Keys are [`choice_set_key`] of each opportunity; values are the
+    /// opportunity content identities. Ascending key order is canonical
+    /// opportunity-identity order.
     #[must_use]
-    pub const fn discovered_choices(&self) -> &BTreeSet<ChoiceOpportunityId> {
-        &self.discovered_choices
+    pub const fn discovered_choices(&self) -> MerkleMapRoot {
+        self.discovered_choices
     }
 
-    /// Returns selections produced while continuing through discovered choices.
+    /// Returns the paged set of selections produced through discovered choices.
+    ///
+    /// Keys are [`choice_set_key`] of each selected opportunity; values are
+    /// the selection content identities.
     #[must_use]
-    pub const fn produced_selections(&self) -> &BTreeSet<SelectionId> {
-        &self.produced_selections
+    pub const fn produced_selections(&self) -> MerkleMapRoot {
+        self.produced_selections
     }
 
     /// Returns the exact retained canonical resolved-effect trace, when present.
@@ -294,32 +304,18 @@ impl Observation {
             ("measurements".to_owned(), self.measurements.content_id()),
             ("properties".to_owned(), self.properties.content_id()),
             ("coverage".to_owned(), self.coverage.content_id()),
+            (
+                "discovered-choices".to_owned(),
+                self.discovered_choices.content_id(),
+            ),
+            (
+                "produced-selections".to_owned(),
+                self.produced_selections.content_id(),
+            ),
         ];
         if let Some(trace) = self.resolved_effect_trace {
             children.push(("resolved-effect-trace".to_owned(), trace));
         }
-        children.extend(
-            self.discovered_choices
-                .iter()
-                .enumerate()
-                .map(|(index, choice)| {
-                    (
-                        format!("discovered-choice.{index:04x}"),
-                        choice.content_id(),
-                    )
-                }),
-        );
-        children.extend(
-            self.produced_selections
-                .iter()
-                .enumerate()
-                .map(|(index, selection)| {
-                    (
-                        format!("produced-selection.{index:04x}"),
-                        selection.content_id(),
-                    )
-                }),
-        );
         children
     }
 
@@ -358,14 +354,8 @@ impl Canonical for Observation {
         let measurements = MeasurementSetId::decode(decoder)?;
         let properties = PropertyVerdictSetId::decode(decoder)?;
         let coverage = CoverageProjectionId::decode(decoder)?;
-        let discovered_choices = decoder.set_bounded(
-            MAX_DISCOVERED_CHOICES,
-            "observation-discovered-choice-count",
-        )?;
-        let produced_selections = decoder.set_bounded(
-            MAX_DISCOVERED_CHOICES,
-            "observation-produced-selection-count",
-        )?;
+        let discovered_choices = MerkleMapRoot::decode(decoder)?;
+        let produced_selections = MerkleMapRoot::decode(decoder)?;
         let resolved_effect_trace = Option::<ContentId>::decode(decoder)?;
         Self::validate(Self {
             attempt,

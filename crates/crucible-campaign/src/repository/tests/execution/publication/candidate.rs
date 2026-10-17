@@ -40,7 +40,7 @@ fn authenticated_trace_chunks_follow_the_observed_attempt_and_exact_snapshot() {
             base.properties(),
             base.coverage(),
         ),
-        base.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &base),
     )
     .expect("observation")
     .with_resolved_effect_trace(effect)
@@ -202,7 +202,7 @@ fn forged_assertion_boundary_fails_closed_at_executor_publication() {
             property_id,
             base.coverage(),
         ),
-        base.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &base),
     )
     .expect("assertion observation");
     let published = repository
@@ -456,7 +456,7 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
             candidate.observation().properties(),
             candidate.observation().coverage(),
         ),
-        candidate.observation().discovered_choices().clone(),
+        candidate_discovered_ids(&candidate),
     )
     .expect("produced-selection observation");
     let selection_candidate = ObservationCandidate::new(
@@ -486,7 +486,7 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
             candidate.observation().properties(),
             candidate.observation().coverage(),
         ),
-        candidate.observation().discovered_choices().clone(),
+        candidate_discovered_ids(&candidate),
     )
     .expect("next-choice observation");
     let next_choice_candidate = ObservationCandidate::new(
@@ -535,7 +535,14 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
         .expect("candidate with produced selection");
     assert_eq!(
         produced_candidate.observation().produced_selections(),
-        &BTreeSet::from([produced_selection.id().expect("produced selection id")])
+        crate::observation::derive_choice_set_root([(
+            choice_set_key(produced_selection.opportunity()),
+            produced_selection
+                .id()
+                .expect("produced selection id")
+                .content_id(),
+        )])
+        .expect("produced selection set root")
     );
     assert!(matches!(
         produced_candidate.with_produced_selections(Vec::new()),
@@ -547,9 +554,10 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
     mismatched_candidate.observation = mismatched_candidate
         .observation
         .clone()
-        .with_produced_selections(BTreeSet::from([produced_selection
-            .id()
-            .expect("produced selection id")]))
+        .with_produced_selections(BTreeMap::from([(
+            produced_selection.opportunity(),
+            produced_selection.id().expect("produced selection id"),
+        )]))
         .expect("mismatched candidate observation");
     assert!(matches!(
         repository.validate_observation_candidate(&mismatched_candidate),
@@ -637,10 +645,9 @@ fn invalid_executor_candidate_is_rejected_before_any_bundle_write() {
         repository
             .load_coverage_projection(observation.coverage())
             .expect("candidate coverage"),
-        observation
-            .discovered_choices()
-            .iter()
-            .map(|id| choice_discovery_fixture(&repository, *id))
+        discovered_choice_ids(&repository, &observation)
+            .into_iter()
+            .map(|id| choice_discovery_fixture(&repository, id))
             .collect(),
         observation,
     )

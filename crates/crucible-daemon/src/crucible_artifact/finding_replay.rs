@@ -1099,10 +1099,8 @@ mod tests {
             .expect("publish selection");
         let id = selection.id().expect("selection ID");
         CampaignExecutorStore::new(repository)
-            .resolve_selections(&[id])
+            .resolve_selection(id)
             .expect("resolve selection closure")
-            .pop()
-            .expect("one resolved selection")
     }
 
     fn unsigned_replay(

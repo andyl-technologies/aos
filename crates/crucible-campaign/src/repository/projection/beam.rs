@@ -260,7 +260,7 @@ impl CampaignRepository {
             return Err(integrity("beam-source-observation-is-not-canonical"));
         }
         if observation.child_content() != parent
-            || !observation.discovered_choices().contains(&opportunity)
+            || !self.observation_discovers(&observation, opportunity)?
         {
             return Err(integrity("beam-frontier-parent-observation-mismatch"));
         }

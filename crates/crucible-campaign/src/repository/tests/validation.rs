@@ -1452,7 +1452,7 @@ fn generated_observation_with_coverage(
             properties,
             coverage,
         ),
-        BTreeSet::from([opportunity]),
+        stored_choice_set(repository, BTreeSet::from([opportunity])),
     )
     .expect("progressive observation")
 }

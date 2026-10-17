@@ -15,20 +15,10 @@ fn observation_growth_bound_rebases_and_remains_restart_readable() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, observation) =
         admitted_observation_fixture(&repository, &lineage, &policy, "observation-growth");
-    assert_eq!(
-        observation_successor_growth(
-            crate::observation::MAX_DISCOVERED_CHOICES,
-            crate::exploration::MAX_BRANCH_PATH_EDGES,
-            true,
-            true,
-            MAX_FEEDBACK_FRONTIER_UPDATES,
-        )
-        .expect("maximum observation growth"),
-        MAX_OBSERVATION_SUCCESSOR_GROWTH
-    );
-    let growth =
-        observation_successor_growth(observation.discovered_choices().len(), 0, false, true, 0)
-            .expect("fixture observation growth");
+    let discovered = usize::try_from(observation.discovered_choices().entry_count())
+        .expect("fixture discovered-choice count");
+    let growth = observation_successor_growth(discovered, 0, false, true, 0)
+        .expect("fixture observation growth");
     repository
         .validated_heads
         .lock()
@@ -47,7 +37,9 @@ fn observation_growth_bound_rebases_and_remains_restart_readable() {
         .get(&accepted.new_snapshot.content_id())
         .expect("rebased observation checkpoint")
         .closure_objects;
-    assert!(checkpoint_objects < MAX_OBSERVATION_SUCCESSOR_GROWTH);
+    // A rebased checkpoint holds a fresh full-validation count, below the
+    // cumulative count the parent checkpoint carried.
+    assert!(checkpoint_objects < MAX_CAMPAIGN_CLOSURE_OBJECTS - growth);
 
     repository
         .validated_heads
@@ -87,7 +79,7 @@ fn observation_evidence_preflight_rejects_nested_invalid_records_without_writes(
             observation.properties(),
             observation.coverage(),
         ),
-        observation.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &observation),
     )
     .expect("structurally valid nested observation");
     let nested_id = nested.id().expect("nested observation id");
@@ -275,7 +267,7 @@ fn strict_observations_commit_in_global_admission_order() {
             first_observation.properties(),
             first_observation.coverage(),
         ),
-        BTreeSet::from([second_request.opportunity()]),
+        stored_choice_set(&repository, BTreeSet::from([second_request.opportunity()])),
     )
     .expect("second observation");
 

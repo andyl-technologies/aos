@@ -25,12 +25,11 @@ use crucible::{
 use crucible_campaign::{
     AssertionViolationWitness, AttemptStartMode, BoundedStopProof, CampaignCodecError,
     CampaignHash, ChoiceDiscovery, ChoiceDomainId, ChoiceOpportunityId, ConfigurationArtifact,
-    ConfigurationId, CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES,
-    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, Observation, ObservationCandidate,
-    ObservationCondition, ObservationEventLogProof, ObservationQuantumBoundary,
-    ObservationStopProof, ObservationStopSatisfaction, PolicyTimeoutKind, PropertyEvidence,
-    PropertyVerdict, PropertyVerdictSet, SelectableId, Selection, SelectionOrigin, StopCondition,
-    StopOutcome,
+    ConfigurationId, CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, Observation,
+    ObservationCandidate, ObservationCondition, ObservationEventLogProof,
+    ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
+    PolicyTimeoutKind, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, SelectableId,
+    Selection, SelectionOrigin, StopCondition, StopOutcome,
 };
 use crucible_cas::content_store::ContentId;
 use crucible_protocol::SelectionReply;

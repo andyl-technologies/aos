@@ -456,14 +456,19 @@ of one exact indexed finding: its representative observation and original
 reproduction artifact. It rejects a mismatched finding, dependency kind,
 configuration artifact, or reproduction fingerprint before reporting the
 stable signature, causal identities, occurrence projection, modeled stop,
-evidence-set IDs, replay configuration, and payload profile.
+evidence-set IDs, replay configuration, and payload profile. Both explanation
+reports (`crucible.cli.campaign-finding-explanation.v2` and
+`crucible.cli.campaign-attempt-explanation.v6`) name an observation's
+discovered choices by the root and entry count of its paged discovered-choice
+map rather than listing every opportunity; `choices` pages the campaign's
+discovered opportunities.
 `explain-attempt` first authenticates the immutable attempt start and path,
 execution-basis cause and ordinal, branch selection and proposal provenance
 when present, plus a canonical completion or proved absence. For a completed
 attempt, it then reads the observation-linked measurement event leaf and any
 resolved-effect leaf through separately authorized, 1 MiB trace chunks. The
 client verifies the complete content ID before decoding either leaf. Its
-`crucible.cli.campaign-attempt-explanation.v4` JSON includes a bounded
+attempt-explanation JSON includes a bounded
 `effect_evidence` object with schema
 `crucible.cli.campaign-attempt-effect-evidence.v2`: up to 4096 applied network
 records, guest semantic marker identities, typed route observations, and

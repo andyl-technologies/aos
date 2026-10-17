@@ -1349,7 +1349,7 @@ mod tests {
                 .expect("proposal ID"),
             AttemptId::from_content_id(content_id(ObjectKind::CampaignFact, 9, label))
                 .expect("attempt ID"),
-            ObservationId::from_content_id(content_id(ObjectKind::Observation, 14, label))
+            ObservationId::from_content_id(content_id(ObjectKind::Observation, 15, label))
                 .expect("observation ID"),
             BranchPathId::from_content_id(content_id(ObjectKind::CampaignFact, 2, label))
                 .expect("path ID"),
@@ -1660,7 +1660,7 @@ mod tests {
                 .expect("shared attempt ID");
         let observation = ObservationId::from_content_id(content_id(
             ObjectKind::Observation,
-            14,
+            15,
             "shared-observation",
         ))
         .expect("shared observation ID");
@@ -1719,7 +1719,7 @@ mod tests {
         );
         assert_eq!(
             estimate.estimate_event(&BTreeSet::from([ObservationId::from_content_id(
-                content_id(ObjectKind::Observation, 14, "unknown-observation",)
+                content_id(ObjectKind::Observation, 15, "unknown-observation",)
             )
             .expect("unknown observation ID")])),
             Err(CampaignCodecError::InvalidValue {

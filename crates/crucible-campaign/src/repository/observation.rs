@@ -24,6 +24,9 @@ struct ObservationProjection {
 }
 
 mod candidate_validation;
+mod choice_sets;
+
+pub use choice_sets::{DiscoveredChoices, ProducedSelections};
 mod direct_selection;
 mod strict_order;
 
@@ -63,6 +66,7 @@ impl CampaignRepository {
                 return Err(integrity("observation-selection-publication-id-mismatch"));
             }
         }
+        self.publish_candidate_choice_sets(candidate)?;
         let child = self.put_configuration_artifact(candidate.child())?;
         let measurements = self.put_measurement_set(candidate.measurements())?;
         let properties = self.put_property_verdict_set(candidate.properties())?;
@@ -322,7 +326,8 @@ impl CampaignRepository {
         )?;
         let next_content = self.put_snapshot(&next)?;
         let closure_growth_upper = observation_successor_growth(
-            observation.discovered_choices().len(),
+            usize::try_from(observation.discovered_choices().entry_count())
+                .map_err(|_| integrity("observation-successor-growth-overflow"))?,
             projection.credits.len(),
             projection.direct_selection.is_some(),
             projection.indexed_path.is_some(),
@@ -512,7 +517,10 @@ impl CampaignRepository {
                 observation.child_content().content_id(),
             );
         }
-        for choice_id in observation.discovered_choices() {
+        // The discovered set is read page by page. Its key order is also the
+        // nested choice index's key order, so index upserts are its entries.
+        let mut choice_index_upserts = BTreeMap::new();
+        self.for_each_discovered_choice(observation, |choice_id| {
             let choice = self.read_opportunity_cached(choice_id.content_id(), choice_cache)?;
             graph.insert(
                 map_key_content("graph.choice-opportunity", choice_id.content_id()),
@@ -521,22 +529,22 @@ impl CampaignRepository {
             graph.insert(
                 branch_point_opportunity_key(
                     choice.branch_point_id(observation.child()),
-                    *choice_id,
+                    choice_id,
                 ),
                 choice_id.content_id(),
             );
-        }
+            if maintain_choice_index {
+                choice_index_upserts
+                    .insert(choice_index_order_key(choice_id), choice_id.content_id());
+            }
+            Ok(())
+        })?;
         self.validate_compatible_upserts(roots.graph, &graph, "observation-graph-conflict")?;
-        let mut choice_index_upserts = BTreeMap::new();
-        if maintain_choice_index && !observation.discovered_choices().is_empty() {
+        if !choice_index_upserts.is_empty() {
             let choice_index = self
                 .merkle
                 .get(roots.graph, choice_index_anchor_key())?
                 .unwrap_or(MerkleMap::empty_content_id()?);
-            for choice_id in observation.discovered_choices() {
-                choice_index_upserts
-                    .insert(choice_index_order_key(*choice_id), choice_id.content_id());
-            }
             self.validate_compatible_upserts(
                 choice_index,
                 &choice_index_upserts,

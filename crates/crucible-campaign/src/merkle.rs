@@ -78,6 +78,43 @@ impl MerkleMapRoot {
     pub const fn entry_count(self) -> u64 {
         self.entry_count
     }
+
+    /// Returns whether the root names the canonical empty map.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.entry_count == 0
+    }
+}
+
+// A record that embeds a root commits to its node identity and advertised
+// count. Decoding checks only the shape; readers authenticate the node and
+// its count against the store before trusting either.
+impl Canonical for MerkleMapRoot {
+    fn encode(&self, encoder: &mut Encoder) {
+        Canonical::encode(&self.content_id, encoder);
+        self.entry_count.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let content_id = ContentId::decode(decoder)?;
+        let entry_count = u64::decode(decoder)?;
+        let empty =
+            MerkleMap::empty_content_id().map_err(|_| CampaignCodecError::InvalidValue {
+                reason: "merkle empty-root identity is unavailable",
+            })?;
+        if content_id.kind() != ObjectKind::MerkleNode
+            || content_id.schema_version() != empty.schema_version()
+            || (entry_count == 0) != (content_id == empty)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "merkle root reference is malformed",
+            });
+        }
+        Ok(Self {
+            content_id,
+            entry_count,
+        })
+    }
 }
 
 /// One stable, bounded page from a snapshot-bound Merkle map scan.

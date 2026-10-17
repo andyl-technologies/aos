@@ -49,7 +49,7 @@ use crate::{
     StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
     SubmitAttemptResponse, SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
 };
-use crate::{BranchAcceptanceCount, BranchAcceptanceSummary};
+use crate::{BranchAcceptanceCount, BranchAcceptanceSummary, choice_set_key};
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 /// Bounds the number of snapshots authenticated in one campaign ancestry.
@@ -67,10 +67,6 @@ const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 pub const MAX_PLANNER_SCAN_PAGE_ITEMS: u32 = 10_000;
 const MAX_VALIDATED_HEADS: usize = 1_024;
 const MAX_CHOICE_VALIDATION_CACHE_ENTRIES: usize = 65_536;
-const MAX_SELECTION_RESOLUTION_RECORDS: usize = 4_096;
-const MAX_SELECTION_RESOLUTION_BYTES: usize = 128 * 1024 * 1024;
-const _: () =
-    assert!(MAX_CHOICE_VALIDATION_CACHE_ENTRIES >= crate::observation::MAX_DISCOVERED_CHOICES);
 const MAX_SIMPLE_SUCCESSOR_GROWTH: usize = 1_024;
 const MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH: usize = 4_000_000;
 // One observation may wake at most this many indexed feedback continuations.
@@ -88,16 +84,6 @@ const MERKLE_UPDATE_NODE_UPPER: usize = 64;
 const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 16;
 const OBSERVATION_PER_CHOICE_OWNER_UPSERTS: usize = 4;
 const OBSERVATION_DIRECT_SELECTION_UPSERTS: usize = 3;
-const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((OBSERVATION_PER_CHOICE_OWNER_UPSERTS
-    * crate::observation::MAX_DISCOVERED_CHOICES
-    + OBSERVATION_FIXED_OWNER_UPSERTS
-    + OBSERVATION_DIRECT_SELECTION_UPSERTS)
-    * MERKLE_UPDATE_NODE_UPPER)
-    + (crate::exploration::MAX_BRANCH_PATH_EDGES * ((2 * MERKLE_UPDATE_NODE_UPPER) + 1))
-    + (MAX_FEEDBACK_FRONTIER_UPDATES * (MERKLE_UPDATE_NODE_UPPER + 1))
-    + MERKLE_UPDATE_NODE_UPPER
-    + (2 * MERKLE_UPDATE_NODE_UPPER)
-    + 1;
 
 /// Authenticated current value of one named campaign ref.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -345,9 +331,11 @@ pub struct ChoiceDiscovery {
 }
 
 /// Maximum aggregate canonical bytes for unique choice records in one candidate.
+///
+/// This bounds the executor's resident choice material while one attempt's
+/// discoveries are held in memory. The observation itself carries only paged
+/// set roots, so no count bound follows from its encoding.
 pub const MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES: usize = 128 * 1024 * 1024;
-/// Maximum number of choice discoveries carried by one candidate.
-pub const MAX_OBSERVATION_CHOICE_DISCOVERIES: usize = crate::observation::MAX_DISCOVERED_CHOICES;
 
 fn charge_choice_discovery_record(
     charged_records: &mut BTreeSet<ContentId>,
@@ -387,6 +375,9 @@ pub struct ObservationCandidate {
     measurements: MeasurementSet,
     properties: PropertyVerdictSet,
     coverage: CoverageProjection,
+    // Parallel ascending identities of `discovered_choices`, kept so lookups
+    // and set derivation do not rehash every opportunity body.
+    discovered_ids: Vec<ChoiceOpportunityId>,
     discovered_choices: Vec<ChoiceDiscovery>,
     produced_selections: Vec<Selection>,
     choice_material_bytes: usize,
@@ -404,8 +395,11 @@ pub struct ResolvedSelection {
 }
 
 mod executor;
+mod selection_resolver;
 
 pub use executor::{CampaignExecutorPublicationGuard, CampaignExecutorStore};
+pub use observation::{DiscoveredChoices, ProducedSelections};
+pub use selection_resolver::SelectionResolver;
 
 impl ResolvedSelection {
     /// Returns the authenticated recorded selection.
@@ -873,9 +867,6 @@ fn observation_successor_growth(
         })
         .and_then(|nodes| nodes.checked_add(1))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
-    if growth > MAX_OBSERVATION_SUCCESSOR_GROWTH {
-        return Err(integrity("observation-successor-growth-exceeds-schema"));
-    }
     Ok(growth)
 }
 

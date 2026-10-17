@@ -1918,7 +1918,11 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
             retained.properties(),
             retained.coverage(),
         ),
-        retained.discovered_choices().clone(),
+        candidate
+            .discovered_opportunities()
+            .iter()
+            .copied()
+            .collect(),
     )
     .expect("observation with retained measurement trace");
     let expected = crate::evaluate_crucible_objectives(
@@ -2123,7 +2127,11 @@ fn recover_complete_prepared_journal(
             observation.properties(),
             observation.coverage(),
         ),
-        observation.discovered_choices().clone(),
+        candidate
+            .discovered_opportunities()
+            .iter()
+            .copied()
+            .collect(),
     )
     .expect("observation with raw measurement evidence");
     let candidate = ObservationCandidate::new(

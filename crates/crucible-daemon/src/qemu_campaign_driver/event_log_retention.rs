@@ -90,11 +90,6 @@ impl RetainedChoiceDiscoveries {
             }
             return Ok(());
         }
-        if self.discoveries.len() == MAX_OBSERVATION_CHOICE_DISCOVERIES {
-            return Err(QemuFreshModeledDriverError::LimitExceeded {
-                limit: "fresh-campaign-discovered-choice-count",
-            });
-        }
         self.charge(
             opportunity.content_id(),
             discovery.opportunity().canonical_bytes().len(),

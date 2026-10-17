@@ -266,12 +266,13 @@ impl CampaignRepository {
             }
             self.blobs.read(trace, None)?.read_all(64 * 1024 * 1024)?;
         }
-        for choice in observation.discovered_choices() {
+        self.for_each_discovered_choice(observation, |choice| {
             let choice = self.read_opportunity_cached(choice.content_id(), choice_cache)?;
             if choice.scenario() != child.scenario() {
                 return Err(integrity("observation-choice-scenario-mismatch"));
             }
-        }
+            Ok(())
+        })?;
         self.validate_observation_produced_selections(observation, &child)?;
         if observation.stop().reached_next_choice() && observation.discovered_choices().is_empty() {
             return Err(integrity("next-choice-observation-has-no-choice"));

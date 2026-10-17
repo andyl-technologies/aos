@@ -211,7 +211,7 @@ crucible.campaign.expansion-credit	1	crucible-campaign::exploration	campaign-fac
 crucible.campaign.measurement-set	2	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.coverage-projection	1	crucible-campaign::observation	projection	gate:campaign-replay,gate:content-address
-crucible.campaign.observation	14	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address
+crucible.campaign.observation	15	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address
 crucible.campaign.objective-evaluation	2	crucible-campaign::objective	observation	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.ranking-explanation	2	crucible-campaign::objective	projection	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fact	gate:campaign-model,gate:campaign-replay,gate:content-address
@@ -265,7 +265,7 @@ crucible.cli.campaign-archive-inspection	1	crucible-cli::cli::campaign::archive	
 crucible.cli.campaign-archive-plan	1	crucible-cli::cli::campaign::archive	cli-output	gate:campaign-store-composition
 crucible.cli.campaign-archive-transfer	1	crucible-cli::cli::campaign::archive	cli-output	gate:campaign-store-composition
 crucible.cli.campaign-attempt-effect-evidence	2	crucible-cli::cli::campaign::explain::effect_evidence	cli-output	gate:campaign-replay
-crucible.cli.campaign-attempt-explanation	5	crucible-cli::cli::campaign::explain	cli-output	gate:campaign-component-contract
+crucible.cli.campaign-attempt-explanation	6	crucible-cli::cli::campaign::explain	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-choice-object	2	crucible-cli::cli::campaign::object	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-choice-value	1	crucible-cli::cli::campaign::choice_value	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-compare	1	crucible-cli::cli::campaign::snapshot	cli-output	gate:campaign-component-contract
@@ -276,7 +276,7 @@ crucible.cli.campaign-finding-bundle-export	2	crucible-cli::cli::campaign::findi
 crucible.cli.campaign-finding-bundle-fork-write	1	crucible-cli::cli::campaign::finding_bundle::noncanonical	cli-output	gate:campaign-replay
 crucible.cli.campaign-finding-bundle-midpoint	1	crucible-cli::cli::campaign::finding_bundle::midpoint	cli-output	gate:campaign-replay
 crucible.cli.campaign-finding-bundle-verification	2	crucible-cli::cli::campaign::finding_bundle	cli-output	gate:campaign-replay
-crucible.cli.campaign-finding-explanation	1	crucible-cli::cli::campaign::explain	cli-output	gate:campaign-component-contract
+crucible.cli.campaign-finding-explanation	2	crucible-cli::cli::campaign::explain	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-fixture	1	crucible-cli::cli::campaign::fixture	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-head	2	crucible-cli::cli::campaign	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-import-validation	1	crucible-cli::cli::verify_serve::campaign_import	cli-output	gate:campaign-component-contract

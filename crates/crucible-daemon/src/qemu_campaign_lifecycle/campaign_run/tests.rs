@@ -1950,14 +1950,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
     assert_eq!(starts.load(Ordering::Relaxed), 1);
     let campaign = completed.campaign().clone();
     let observation_id = completed.terminal().id();
-    let selection_id = completed
-        .terminal()
-        .observation()
-        .produced_selections()
-        .iter()
-        .next()
-        .copied()
-        .expect("terminal observation selection");
+    let terminal_observation = completed.terminal().observation().clone();
     let expected_configuration = completed.terminal_configuration().clone();
     let orphan_bytes = b"guarded-campaign-run-unreachable-after-terminal";
     let orphan =
@@ -1969,6 +1962,11 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
 
     let (repository, _) = default_run_repository::<io::Error>(graph.clone(), refs.clone())
         .expect("reopen campaign repository for GC planning");
+    let selection_id = repository
+        .produced_selections(&terminal_observation)
+        .next()
+        .expect("terminal observation selection")
+        .expect("read terminal observation selection");
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open assignment ledger");
     let prepared = plan_single_host_campaign_gc(
         &repository,

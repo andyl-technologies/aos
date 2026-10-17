@@ -162,7 +162,7 @@ fn run_http_exchange_with_console(
         println!("{prefix}_campaign_started=true");
         let explanation = wait_for_http_completion(&fixture, &mut service, &mut processes, server)?;
         if explanation["observation"]["stop"] != "terminal-success"
-            || explanation["observation"]["discovered_choices"] != serde_json::json!([])
+            || explanation["observation"]["discovered_choice_count"] != serde_json::json!(0)
         {
             return Err(format!("HTTP exchange did not complete cleanly: {explanation}").into());
         }

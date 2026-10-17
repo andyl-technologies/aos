@@ -24,8 +24,7 @@ use crucible_api::{
 use crucible_campaign::{
     AttemptContinuationInput, AttemptStartMode, CampaignHash, ChoiceDiscovery, ChoiceOpportunityId,
     ChoiceSource, ConfigurationArtifact, ConfigurationId, ExactCheckpointId,
-    MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, SelectionOrigin,
-    StopCondition,
+    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, SelectionOrigin, StopCondition,
 };
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
@@ -1722,13 +1721,6 @@ impl QemuFreshStartMaterialization {
             return Err(GuestSelectableError::Campaign(
                 crucible_campaign::CampaignCodecError::InvalidValue {
                     reason: "replayed guest selectable changed an existing opportunity",
-                },
-            ));
-        }
-        if self.replayed_discoveries.len() == MAX_OBSERVATION_CHOICE_DISCOVERIES {
-            return Err(GuestSelectableError::Campaign(
-                crucible_campaign::CampaignCodecError::LimitExceeded {
-                    limit: "finding-replay-choice-discovery-count",
                 },
             ));
         }

@@ -2442,14 +2442,16 @@ where
                     .all_candidates
                     .ok_or(GuardedDefaultCampaignInvariantError::MissingChoice)?;
                 let mut expected_snapshot = snapshot;
-                for opportunity in observation.discovered_choices() {
+                for opportunity in context.repository.discovered_choices(&observation) {
+                    let opportunity =
+                        opportunity.map_err(GuardedDefaultCampaignRunError::Repository)?;
                     match exploration_branch_request(
                         context.repository,
                         exploration,
                         all_candidates,
                         observation_id,
                         &observation,
-                        *opportunity,
+                        opportunity,
                     )? {
                         ExplorationBranchDecision::Request {
                             request: branch,
@@ -2490,11 +2492,12 @@ where
                 planner_no_work_snapshot = None;
                 continue;
             }
-            let opportunity_id = observation
-                .discovered_choices()
-                .iter()
+            let opportunity_id = context
+                .repository
+                .discovered_choices(&observation)
                 .next()
-                .copied()
+                .transpose()
+                .map_err(GuardedDefaultCampaignRunError::Repository)?
                 .ok_or(GuardedDefaultCampaignInvariantError::MissingChoice)?;
             if branch_request_count >= DEFAULT_RUN_MAX_CHOICES as usize {
                 return Err(GuardedDefaultCampaignInvariantError::ChoiceLimit.into());

@@ -2263,10 +2263,7 @@ fn next_choice_retains_the_complete_discovery_bundle() {
         candidate.observation().stop(),
         &StopOutcome::Reached(StopCondition::NextChoice)
     );
-    assert_eq!(
-        candidate.observation().discovered_choices(),
-        &BTreeSet::from([opportunity])
-    );
+    assert_eq!(candidate.discovered_opportunities(), &[opportunity]);
     assert_eq!(candidate.discovered_choices().len(), 1);
 }
 
@@ -2347,12 +2344,7 @@ fn next_choice_does_not_republish_a_selection_in_its_authenticated_start() {
     );
     assert!(candidate.produced_selections().is_empty());
     assert_eq!(candidate.discovered_choices().len(), 2);
-    assert!(
-        candidate
-            .observation()
-            .discovered_choices()
-            .contains(&next_choice.opportunity().id().expect("next choice id"))
-    );
+    assert!(candidate.discovers(next_choice.opportunity().id().expect("next choice id")));
 }
 
 #[test]
@@ -2414,12 +2406,7 @@ fn next_choice_preserves_settled_defaults_before_the_unresolved_choice() {
             .iter()
             .all(|selection| selection.opportunity() != unresolved_opportunity)
     );
-    assert!(
-        candidate
-            .observation()
-            .discovered_choices()
-            .contains(&unresolved_opportunity)
-    );
+    assert!(candidate.discovers(unresolved_opportunity));
 }
 
 #[test]
@@ -2520,10 +2507,7 @@ fn next_choice_publishes_the_live_signal_fault_frontier_at_its_exact_parent() {
         candidate.observation().stop(),
         &StopOutcome::Reached(StopCondition::NextChoice)
     );
-    assert_eq!(
-        candidate.observation().discovered_choices(),
-        &BTreeSet::from([opportunity])
-    );
+    assert_eq!(candidate.discovered_opportunities(), &[opportunity]);
     let [discovery] = candidate.discovered_choices() else {
         panic!("exactly one signal-fault choice must be published")
     };

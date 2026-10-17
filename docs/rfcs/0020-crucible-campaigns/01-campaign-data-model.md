@@ -779,7 +779,7 @@ pub enum AttemptAdmissionRole {
 }
 
 pub struct Observation {
-    pub schema_version: u32, // exact current schema v13
+    pub schema_version: u32, // exact current schema v15
     pub attempt: AttemptId,
     pub child: ConfigurationId,
     pub child_content: ConfigurationArtifactId,
@@ -788,20 +788,36 @@ pub struct Observation {
     pub measurements: MeasurementSetId,
     pub properties: PropertyVerdictSetId,
     pub coverage: CoverageProjectionId,
-    pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
-    pub produced_selections: CanonicalSet<SelectionId>,
+    pub discovered_choices: MerkleMapRoot, // opportunity key -> ChoiceOpportunityId
+    pub produced_selections: MerkleMapRoot, // selected opportunity key -> SelectionId
     pub resolved_effect_trace: Option<ContentId>,
 }
 ```
 
-Observation schema v14 is the sole current encoding. It carries the current
-stop outcome plus the bounded canonical set of selections produced while execution
-continued through choices discovered by that attempt. Each selection must
-resolve to exactly one of the observation's discovered opportunities, and no
-opportunity may be selected twice. The selection IDs are envelope children, so
-the accepted observation roots the complete replay closure. The combined
-discovered-opportunity and produced-selection count cannot exceed the
-envelope's 65,529 variable-child allowance. An optional schema-1 trace leaf
+Observation schema v15 is the sole current encoding. Its choice material is
+paged: the opportunities an attempt discovered and the selections it produced
+while continuing through them are two Merkle maps, and the observation encodes
+only each map's root identity and entry count. Both maps use the
+order-preserving key of an opportunity, its raw content digest, which is also
+the key of the snapshot graph's nested choice index:
+
+```text
+discovered-choices  : digest(opportunity) -> opportunity content ID
+produced-selections : digest(selected opportunity) -> selection content ID
+```
+
+Each root is one envelope child, so the observation's size and child count do
+not grow with the number of choices and no envelope-derived count bound
+applies. Each selection must resolve to one of the observation's discovered
+opportunities; keying the produced map by opportunity makes "no opportunity is
+selected twice" structural, and a `NextChoice` observation leaves a discovery
+unresolved exactly when the produced map is smaller than the discovered one.
+Readers page both maps with ordinary bounded scans and compare the walked
+entry count with the committed count. Through the two roots the accepted
+observation still roots the complete replay closure. The resident bound on
+one attempt's choice material is operational: the executor's candidate charges
+at most 128 MiB of unique canonical choice records, as section 04a states.
+An optional schema-1 trace leaf
 retains the canonical resolved effects from the same completed attempt. Its
 content identity is an observation child; producer and public reader decode
 the bounded trace against the Crucible fault contract. Any other observation schema is
@@ -903,8 +919,9 @@ semantic attempt when stop and other execution inputs also match. Requests with
 different stop conditions still share the edge but may admit distinct attempts.
 The semantic child identity and exact child artifact are both present: graph
 deduplication uses the former, while closure validation and replay retain the
-latter. Measurement, property, coverage, path, and discovered-choice records
-are exact children of the observation envelope.
+latter. Measurement, property, coverage, and path records and the roots of
+the discovered-choice and produced-selection maps are exact children of the
+observation envelope.
 This is campaign-knowledge deduplication, not a loss of audit history.
 
 A finite source is bounded by the request even when the selectable's legal

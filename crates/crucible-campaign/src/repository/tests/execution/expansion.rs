@@ -167,7 +167,10 @@ fn exercise_intervention_guidance_ordering(
             properties,
             coverage,
         ),
-        BTreeSet::from([operator_request.opportunity()]),
+        stored_choice_set(
+            &repository,
+            BTreeSet::from([operator_request.opportunity()]),
+        ),
     )
     .expect("intervention-guidance observation");
     let observed = repository
@@ -596,7 +599,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             properties,
             coverage,
         ),
-        BTreeSet::from([first_request.opportunity()]),
+        stored_choice_set(&repository, BTreeSet::from([first_request.opportunity()])),
     )
     .expect("finite expansion observation");
     let observed = repository
@@ -690,7 +693,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             properties,
             coverage,
         ),
-        BTreeSet::from([first_request.opportunity()]),
+        stored_choice_set(&repository, BTreeSet::from([first_request.opportunity()])),
     )
     .expect("finite expansion conflicting observation");
     let conflict = repository
@@ -913,7 +916,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             properties,
             nested_coverage,
         ),
-        BTreeSet::from([first_request.opportunity()]),
+        stored_choice_set(&repository, BTreeSet::from([first_request.opportunity()])),
     )
     .expect("nested observation");
     let nested_observed = repository

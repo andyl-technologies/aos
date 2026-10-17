@@ -144,7 +144,7 @@ fn ready_capture_status_remains_bound_after_a_later_selection_snapshot() {
     .expect("paused capture");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        14,
+        15,
         b"pending-choice",
     ))
     .expect("observation");

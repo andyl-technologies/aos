@@ -3,7 +3,7 @@
 // crucible-lint: allow panic-shortcut -- canonical fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
@@ -39,7 +39,7 @@ fn observation_v14_binds_one_resolved_effect_trace_as_a_retained_child() {
         .expect("trace attachment");
 
     assert_eq!(observation.resolved_effect_trace(), Some(trace));
-    assert_eq!(observation.schema_version(), 14);
+    assert_eq!(observation.schema_version(), 15);
     assert!(
         observation
             .content_children()
@@ -211,6 +211,12 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     let outcome = StopOutcome::ObservationReached(Box::new(proof.clone()));
     assert!(outcome.reaches(&stop));
     assert!(!StopOutcome::Reached(stop.clone()).reaches(&stop));
+    let discovered = stored_id!(
+        ChoiceOpportunityId,
+        ObjectKind::CampaignFact,
+        1,
+        "observation-stop-opportunity"
+    );
     let observation = Observation::new(
         attempt.id().expect("attempt ID"),
         Observation::outcome(
@@ -222,10 +228,10 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
             properties,
             coverage,
         ),
-        BTreeSet::new(),
+        BTreeSet::from([discovered]),
     )
     .expect("observation-stop observation");
-    assert_eq!(observation.schema_version(), 14);
+    assert_eq!(observation.schema_version(), 15);
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes())
             .expect("observation round trip"),
@@ -258,9 +264,9 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         "observation-stop-selection"
     );
     let selection_observation = observation
-        .with_produced_selections(BTreeSet::from([selection]))
+        .with_produced_selections(BTreeMap::from([(discovered, selection)]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 14);
+    assert_eq!(selection_observation.schema_version(), 15);
 
     let discovery = DiscoveryRequest::new(
         CampaignCommandId::from_hash(CampaignHash::derive(

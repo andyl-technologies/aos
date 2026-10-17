@@ -327,7 +327,7 @@ fn forced_duplicate_resampling_policy(
                         .ok()?,
                         ObservationId::from_content_id(content_id(
                             ObjectKind::Observation,
-                            14,
+                            15,
                             &format!("forced-observation-{coordinate}"),
                         ))
                         .ok()?,

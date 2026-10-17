@@ -153,7 +153,10 @@ pub(super) fn exercise_beam_out_of_order_completion(
             properties_id,
             coverage,
         ),
-        BTreeSet::from([first_continuation.opportunity()]),
+        stored_choice_set(
+            &repository,
+            BTreeSet::from([first_continuation.opportunity()]),
+        ),
     )
     .expect("first observation");
     let second_observation = Observation::new(
@@ -167,7 +170,10 @@ pub(super) fn exercise_beam_out_of_order_completion(
             properties_id,
             coverage,
         ),
-        BTreeSet::from([second_continuation.opportunity()]),
+        stored_choice_set(
+            &repository,
+            BTreeSet::from([second_continuation.opportunity()]),
+        ),
     )
     .expect("second observation");
 

@@ -99,8 +99,8 @@ impl CampaignRepository {
         let candidate = (ordinal, observation_content);
         let mut upserts = BTreeMap::new();
         let mut incumbents = BTreeMap::<ContentId, AdmissionOrdinal>::new();
-        for opportunity in observation.discovered_choices() {
-            let key = choice_source_key(observation.child_content(), *opportunity);
+        self.for_each_discovered_choice(observation, |opportunity| {
+            let key = choice_source_key(observation.child_content(), opportunity);
             let claims_slot = match self.merkle.get(index, key)? {
                 None => true,
                 Some(current) => {
@@ -118,7 +118,8 @@ impl CampaignRepository {
             if claims_slot {
                 upserts.insert(key, observation_content);
             }
-        }
+            Ok(())
+        })?;
         Ok(upserts)
     }
 

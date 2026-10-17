@@ -87,11 +87,14 @@ impl ChoiceDiscovery {
 impl ObservationCandidate {
     /// Builds one executor-produced immutable result bundle.
     ///
+    /// Discoveries are held in canonical opportunity-identity order, which is
+    /// also the key order of the observation's paged discovered-choice set.
+    ///
     /// # Errors
     ///
-    /// Returns an error when discovered records exceed the observation count or
-    /// aggregate-byte bound, contain duplicate opportunity IDs, disagree with
-    /// one another, or do not exactly match the observation's choice set.
+    /// Returns an error when discovered records exceed the aggregate-byte
+    /// bound, contain duplicate opportunity IDs, disagree with one another, or
+    /// do not exactly derive the observation's discovered-choice root.
     pub fn new(
         child: ConfigurationArtifact,
         measurements: MeasurementSet,
@@ -116,7 +119,8 @@ impl ObservationCandidate {
     /// # Errors
     ///
     /// Returns an error under the same structural bounds as [`Self::new`], or
-    /// when the recorded selection bodies do not exactly match the observation.
+    /// when the recorded selection bodies do not exactly derive the
+    /// observation's produced-selection root.
     pub fn from_recorded_parts(
         child: ConfigurationArtifact,
         measurements: MeasurementSet,
@@ -149,20 +153,29 @@ impl ObservationCandidate {
         observation: Observation,
         allow_recorded_selection_ids: bool,
     ) -> Result<Self, CampaignCodecError> {
-        if discovered_choices.len() > MAX_OBSERVATION_CHOICE_DISCOVERIES {
+        let mut identified = discovered_choices
+            .into_iter()
+            .map(|discovery| {
+                discovery
+                    .opportunity
+                    .id()
+                    .map(|opportunity| (opportunity, discovery))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        identified.sort_unstable_by_key(|(opportunity, _)| *opportunity);
+        if identified.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "observation candidate has too many discovered choices",
+                reason: "observation candidate contains duplicate choice opportunities",
             });
         }
-        let mut discovered_ids = BTreeSet::new();
+
         let mut shared_declarations: BTreeMap<SelectableId, Arc<SelectableDeclaration>> =
             BTreeMap::new();
         let mut shared_domains: BTreeMap<ChoiceDomainId, Arc<ChoiceDomain>> = BTreeMap::new();
         let mut validated_contracts = BTreeMap::new();
         let mut charged_records = BTreeSet::new();
         let mut charged_bytes = 0usize;
-        let mut discovered_choices = discovered_choices;
-        for discovery in &mut discovered_choices {
+        for (opportunity, discovery) in &mut identified {
             let declaration = discovery.opportunity.declaration();
             let domain = discovery.opportunity.domain();
             let contract = discovery.opportunity.reference_contract_hash();
@@ -179,12 +192,6 @@ impl ObservationCandidate {
                         .validate_references(&discovery.declaration, &discovery.domain)?;
                     validated_contracts.insert((declaration, domain), contract);
                 }
-            }
-            let opportunity = discovery.opportunity.id()?;
-            if !discovered_ids.insert(opportunity) {
-                return Err(CampaignCodecError::InvalidValue {
-                    reason: "observation candidate contains duplicate choice opportunities",
-                });
             }
             if let Some(existing) = shared_declarations.get(&declaration) {
                 discovery.declaration = Arc::clone(existing);
@@ -215,7 +222,14 @@ impl ObservationCandidate {
                 || discovery.opportunity.canonical_bytes().len(),
             )?;
         }
-        if &discovered_ids != observation.discovered_choices() {
+
+        let (discovered_ids, discovered_choices): (Vec<_>, Vec<_>) = identified.into_iter().unzip();
+        let discovered_root = crate::observation::derive_choice_set_root(
+            discovered_ids
+                .iter()
+                .map(|opportunity| (choice_set_key(*opportunity), opportunity.content_id())),
+        )?;
+        if discovered_root != observation.discovered_choices() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observation candidate choice bodies differ from observation IDs",
             });
@@ -230,6 +244,7 @@ impl ObservationCandidate {
             measurements,
             properties,
             coverage,
+            discovered_ids,
             discovered_choices,
             produced_selections: Vec::new(),
             choice_material_bytes: charged_bytes,
@@ -266,13 +281,16 @@ impl ObservationCandidate {
 
     /// Attaches selections produced from discoveries during this execution.
     ///
+    /// Selections are held in the key order of the observation's paged
+    /// produced-selection set: ascending selected-opportunity identity.
+    ///
     /// # Errors
     ///
     /// Returns an error after a nonempty attachment, for duplicate selections,
     /// when a `NextChoice` attachment resolves every discovered opportunity,
     /// for a selection without its exact discovered opportunity and domain,
-    /// for invalid provenance, or for choice material beyond the observation
-    /// count or aggregate-byte bound.
+    /// for invalid provenance, or for choice material beyond the aggregate-byte
+    /// bound.
     pub fn with_produced_selections(
         self,
         selections: Vec<Selection>,
@@ -290,39 +308,31 @@ impl ObservationCandidate {
                 reason: "observation candidate already carries produced selections",
             });
         }
-        if selections.len() > MAX_OBSERVATION_CHOICE_DISCOVERIES {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "observation candidate has too many produced selections",
-            });
-        }
-        let discoveries = self
-            .discovered_choices
-            .iter()
-            .map(|discovery| {
-                discovery
-                    .opportunity()
-                    .id()
-                    .map(|opportunity| (opportunity, discovery))
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+        let mut keyed = BTreeMap::new();
         let mut selection_ids = BTreeSet::new();
-        let mut selected_opportunities = BTreeSet::new();
-        for selection in &selections {
-            if !selection_ids.insert(selection.id()?) {
+        for selection in selections {
+            let selection_id = selection.id()?;
+            if !selection_ids.insert(selection_id) {
                 return Err(CampaignCodecError::InvalidValue {
                     reason: "observation candidate contains duplicate produced selections",
                 });
             }
-            if !selected_opportunities.insert(selection.opportunity()) {
+            if keyed
+                .insert(selection.opportunity(), (selection_id, selection))
+                .is_some()
+            {
                 return Err(CampaignCodecError::InvalidValue {
                     reason: "observation candidate selects one discovered opportunity more than once",
                 });
             }
-            let discovery = discoveries.get(&selection.opportunity()).ok_or(
-                CampaignCodecError::InvalidValue {
-                    reason: "produced selection has no matching discovered opportunity",
-                },
-            )?;
+        }
+        for (opportunity, (_, selection)) in &keyed {
+            let discovery =
+                self.discovery(*opportunity)
+                    .ok_or(CampaignCodecError::InvalidValue {
+                        reason: "produced selection has no matching discovered opportunity",
+                    })?;
             selection.validate_resolved_references(discovery.opportunity(), discovery.domain())?;
             self.choice_material_bytes = self
                 .choice_material_bytes
@@ -336,24 +346,48 @@ impl ObservationCandidate {
                 });
             }
         }
+        // Every key names a distinct discovered opportunity, so equal counts
+        // mean the attachment resolved every discovery.
         if self.observation.stop().reached_next_choice()
-            && discoveries
-                .keys()
-                .all(|opportunity| selected_opportunities.contains(opportunity))
+            && keyed.len() == self.discovered_choices.len()
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "next-choice observation has no unresolved choice",
             });
         }
+
+        let produced = keyed
+            .iter()
+            .map(|(opportunity, (selection, _))| (*opportunity, *selection))
+            .collect::<BTreeMap<_, _>>();
         if attach_to_observation {
-            self.observation = self.observation.with_produced_selections(selection_ids)?;
-        } else if self.observation.produced_selections() != &selection_ids {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "produced selection bodies differ from observation IDs",
-            });
+            self.observation = self.observation.with_produced_selections(produced)?;
+        } else {
+            let produced_root = crate::observation::derive_choice_set_root(produced.iter().map(
+                |(opportunity, selection)| (choice_set_key(*opportunity), selection.content_id()),
+            ))?;
+            if self.observation.produced_selections() != produced_root {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "produced selection bodies differ from observation IDs",
+                });
+            }
         }
-        self.produced_selections = selections;
+        self.produced_selections = keyed
+            .into_values()
+            .map(|(_, selection)| selection)
+            .collect();
         Ok(self)
+    }
+
+    /// Finds one carried discovery by its opportunity identity.
+    ///
+    /// Discoveries are sorted by identity at construction, so this is a binary
+    /// search over the parallel identity list rather than a second index.
+    pub(super) fn discovery(&self, opportunity: ChoiceOpportunityId) -> Option<&ChoiceDiscovery> {
+        self.discovered_ids
+            .binary_search(&opportunity)
+            .ok()
+            .and_then(|index| self.discovered_choices.get(index))
     }
 
     /// Returns the exact child configuration artifact.
@@ -381,16 +415,54 @@ impl ObservationCandidate {
     }
 
     /// Returns exact declaration/domain/opportunity records discovered by the
-    /// execution.
+    /// execution, in ascending opportunity-identity order.
     #[must_use]
     pub fn discovered_choices(&self) -> &[ChoiceDiscovery] {
         &self.discovered_choices
     }
 
-    /// Returns selections produced while continuing through discovered choices.
+    /// Returns selections produced while continuing through discovered choices,
+    /// in ascending selected-opportunity order.
     #[must_use]
     pub fn produced_selections(&self) -> &[Selection] {
         &self.produced_selections
+    }
+
+    /// Returns the identities of the carried discoveries, in the same order as
+    /// [`Self::discovered_choices`].
+    #[must_use]
+    pub fn discovered_opportunities(&self) -> &[ChoiceOpportunityId] {
+        &self.discovered_ids
+    }
+
+    /// Returns whether the candidate carries a discovery of `opportunity`.
+    #[must_use]
+    pub fn discovers(&self, opportunity: ChoiceOpportunityId) -> bool {
+        self.discovered_ids.binary_search(&opportunity).is_ok()
+    }
+
+    /// Returns whether `id` names a discovered opportunity or produced selection.
+    ///
+    /// These are the choice records the observation owns through its paged
+    /// sets rather than as direct envelope children.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a produced selection identity cannot be derived.
+    pub fn carries_choice_record(&self, id: ContentId) -> Result<bool, CampaignCodecError> {
+        if self
+            .discovered_ids
+            .binary_search_by(|opportunity| opportunity.content_id().cmp(&id))
+            .is_ok()
+        {
+            return Ok(true);
+        }
+        for selection in &self.produced_selections {
+            if selection.id()?.content_id() == id {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Returns the canonical observation that binds every bundle member.

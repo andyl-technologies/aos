@@ -201,7 +201,7 @@ fn observations_publish_exact_roots_replay_and_retain_determinism_conflicts() {
             observation.properties(),
             observation.coverage(),
         ),
-        observation.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &observation),
     )
     .expect("conflicting observation");
     let conflict_id = conflict.id().expect("conflict id");
@@ -263,10 +263,9 @@ fn executor_candidate_publication_is_immutable_and_does_not_advance_the_campaign
         repository
             .load_coverage_projection(observation.coverage())
             .expect("candidate coverage"),
-        observation
-            .discovered_choices()
-            .iter()
-            .map(|id| choice_discovery_fixture(&repository, *id))
+        discovered_choice_ids(&repository, &observation)
+            .into_iter()
+            .map(|id| choice_discovery_fixture(&repository, id))
             .collect(),
         observation.clone(),
     )
@@ -327,7 +326,7 @@ fn campaign_report_counts_distinct_findings_from_one_observation() {
             properties,
             base_observation.coverage(),
         ),
-        base_observation.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &base_observation),
     )
     .expect("observation with two failed properties");
     let observed = repository

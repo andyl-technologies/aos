@@ -756,15 +756,15 @@ fn validate_pair(
         Some(FindingTarget::Configuration(target)) if target != child => {
             return Err(inconsistent("finding configuration target"));
         }
-        Some(FindingTarget::ChoiceOpportunity(target))
-            if !observed.discovered_choices().contains(&target) =>
-        {
+        Some(FindingTarget::ChoiceOpportunity(target)) if !observation.discovers(target) => {
             return Err(inconsistent("finding choice target"));
         }
         _ => {}
     }
 
-    let mut owned = BTreeSet::from([
+    // The observation owns its fixed records directly and its choice records
+    // through the paged sets whose bodies this candidate carries.
+    let owned = BTreeSet::from([
         observed.attempt().content_id(),
         child.content_id(),
         observed.path().content_id(),
@@ -772,20 +772,10 @@ fn validate_pair(
         observed.properties().content_id(),
         observed.coverage().content_id(),
     ]);
-    owned.extend(
-        observed
-            .discovered_choices()
-            .iter()
-            .map(|id| id.content_id()),
-    );
-    owned.extend(
-        observed
-            .produced_selections()
-            .iter()
-            .map(|id| id.content_id()),
-    );
-    if !signature.causal_evidence().is_subset(&owned) {
-        return Err(inconsistent("finding causal evidence"));
+    for evidence in signature.causal_evidence() {
+        if !owned.contains(evidence) && !observation.carries_choice_record(*evidence)? {
+            return Err(inconsistent("finding causal evidence"));
+        }
     }
     Ok(())
 }

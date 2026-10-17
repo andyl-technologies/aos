@@ -185,7 +185,10 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
             properties_id,
             coverage,
         ),
-        BTreeSet::from([selected_continuation.opportunity()]),
+        stored_choice_set(
+            &repository,
+            BTreeSet::from([selected_continuation.opportunity()]),
+        ),
     )
     .expect("selected observation");
     let filtered_observation = Observation::new(
@@ -199,7 +202,10 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
             properties_id,
             coverage,
         ),
-        BTreeSet::from([filtered_continuation.opportunity()]),
+        stored_choice_set(
+            &repository,
+            BTreeSet::from([filtered_continuation.opportunity()]),
+        ),
     )
     .expect("filtered observation");
     let selected_observed = repository
@@ -1935,7 +1941,7 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
             properties,
             coverage,
         ),
-        BTreeSet::from([guided.opportunity()]),
+        stored_choice_set(&repository, BTreeSet::from([guided.opportunity()])),
     )
     .expect("completed observation");
     let observed = repository
@@ -3469,7 +3475,7 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
             first_observation.properties(),
             first_observation.coverage(),
         ),
-        first_observation.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &first_observation),
     )
     .expect("second convergent observation");
     let second_observed = repository
@@ -3480,8 +3486,7 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
         )
         .expect("publish second convergent observation");
 
-    let opportunity_id = *first_observation
-        .discovered_choices()
+    let opportunity_id = *discovered_choice_ids(&repository, &first_observation)
         .first()
         .expect("nested opportunity id");
     let opportunity = repository

@@ -21,9 +21,9 @@ use crucible_campaign::{
 
 const CAMPAIGN_EXPLANATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-explanation.v1";
 const CAMPAIGN_FINDING_EXPLANATION_REPORT_SCHEMA: &str =
-    "crucible.cli.campaign-finding-explanation.v1";
+    "crucible.cli.campaign-finding-explanation.v2";
 const CAMPAIGN_ATTEMPT_EXPLANATION_REPORT_SCHEMA: &str =
-    "crucible.cli.campaign-attempt-explanation.v5";
+    "crucible.cli.campaign-attempt-explanation.v6";
 
 #[derive(Debug, Serialize)]
 pub(super) struct CampaignExplanationReport {
@@ -125,7 +125,10 @@ struct CampaignExplainedObservation {
     measurements: String,
     properties: String,
     coverage: String,
-    discovered_choices: Vec<String>,
+    // The discovered opportunities are a paged set; the report names its
+    // root and size rather than listing every member.
+    discovered_choice_set: String,
+    discovered_choice_count: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -855,11 +858,8 @@ fn explained_observation(
         measurements: observation.measurements().to_string(),
         properties: observation.properties().to_string(),
         coverage: observation.coverage().to_string(),
-        discovered_choices: observation
-            .discovered_choices()
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
+        discovered_choice_set: observation.discovered_choices().content_id().encode(),
+        discovered_choice_count: observation.discovered_choices().entry_count(),
     })
 }
 

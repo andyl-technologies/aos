@@ -163,7 +163,11 @@ fn observation_with_measurements(
             retained.properties(),
             retained.coverage(),
         ),
-        retained.discovered_choices().clone(),
+        candidate
+            .discovered_opportunities()
+            .iter()
+            .copied()
+            .collect(),
     )
     .expect("observation with replacement measurements");
     ObservationCandidate::new(
