@@ -1,0 +1,82 @@
+# Local AOS Hub hybrid delivery
+
+Build, test and deploy the Hub from a trusted local AOS environment. GitHub
+Actions and CI are not part of the delivery or qualification procedure. Use the
+[hybrid deployment runbook](../docs/maintainers/aos-hub-hybrid-deployment.md) for
+the Worker-fronted Native service and the
+[manual Worker deployment runbook](../docs/maintainers/aos-hub-deployment.md) for
+Workers-only serving.
+
+`application-project.nix` remains the application-owned Native deployment
+intent. Runtime identities, PostgreSQL and protected credential files must be
+selected and provisioned separately. The declaration does not create resources,
+initialize state or establish a successful serving revision.
+
+## Local build and qualification
+
+Pin one exact source commit and retain the actual image, source and qualification
+receipts. The existing local targets remain available:
+
+```sh
+nix-build -A containerImages.aos-hub.ociIndex --no-out-link
+nix-build -A containerImages.aos-hub.evidence --no-out-link
+nix-build -A containerImages.aos-hub.checks.reproducibility --no-out-link
+nix-build -A checks.fleet.hub-native-container --no-out-link
+nix-build -A checks.fleet.hub-hybrid --no-out-link
+```
+
+Run targeted Native process, Worker runtime and fleet checks using matching
+source-built AOS tools and artifacts. Preserve failures and pending gates;
+successful image construction or TCP readiness alone does not qualify the
+Worker/Native pair or its provider paths.
+
+The local artifact inventory/scanning sources and `pkgs.grype`/`pkgs.syft`
+packages remain available. Use an independently fetched, SHA-256-pinned
+vulnerability database and retain its integrity, schema and age checks. Empty
+package recognition or zero findings does not establish complete coverage or
+runtime qualification.
+
+## Deployment and publisher status
+
+Follow the operator runbooks to install protected configuration and match the
+Worker's deployment identity, storage attachment, Native origin and shared
+ingress/storage keys. Qualify the actual installed source and unchanged runtime
+before enabling independently accepted provider work.
+
+`aos-delivery prove-source --source-proof local --source-sha FULL_SHA` observes
+the exact clean registered checkout. Its closed source branches are
+`refs/heads/master` and `refs/heads/dplecki/hub-hybrid-topology`; the ref is
+derived from the actual symbolic HEAD rather than a caller-supplied value.
+It requires the registered repository origin, exact HEAD and branch SHA, and no
+tracked, staged, untracked or ignored files. Keep build inputs and outputs
+outside that checkout.
+Its JSON records the observed repository/ref, commit, tree and Git archive digest;
+it grants no CI identity, provider qualification or publication authority.
+A feature-branch proof remains a feature-branch identity, never a master proof.
+The bundle's `sourceRef` matches its actual local proof. Switching between the
+two admitted branches during proof or bundle construction is refused even when
+both branch tips name the same commit.
+
+Select the same explicit mode for local bundle construction:
+
+```text
+aos-delivery bundle --source-proof local --source-sha FULL_SHA \
+  --declaration PROJECT_JSON --image IMAGE_OUTPUT --evidence EVIDENCE_OUTPUT \
+  --cataloger SYFT_BINARY --scanner GRYPE_BINARY \
+  --database-status ACTUAL_DATABASE_STATUS_JSON --output NEW_BUNDLE_TAR
+```
+
+The declaration is the evaluated `deployment/application-project.nix`. The
+existing OCI closure, build evidence, package recognition, real scanner and
+database gates still apply. Source proof is rechecked after scanning and before
+packing. The output is one exclusively created USTAR file, not a directory or
+deployment receipt. Local provenance uses its own API version and source proof;
+it contains no workflow ref/run ID. Existing v2 repository/owner IDs remain
+configured registration fields; they are not locally observed remote identity
+or caller authorization.
+
+The legacy source mode remains the default. Upload, reconciliation and watch
+retain their strict legacy caller/authentication checks and accept no local-mode
+flag. Their former Actions transport is retired from this local procedure. Do
+not fabricate workflow environment values. No local release submission or
+backend acceptance is claimed by successful bundle construction.

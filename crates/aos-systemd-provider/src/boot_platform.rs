@@ -16,7 +16,9 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::boot_storage::with_writable_boot;
-use crate::image_profile::{BOOT_ROOT, IMAGE_PROFILE, PayloadSource, private_directory};
+use crate::image_profile::{
+    BOOT_ROOT, IMAGE_PROFILE, PayloadSource, private_directory, validate_measurement_sidecars,
+};
 use crate::recovery::{RecoveryEvidence, RecoveryPayload};
 
 const RETENTION_ROOT: &str = "rollout-retention";
@@ -1042,12 +1044,24 @@ fn promote_staged_payload(
     let mut sidecars = Vec::new();
     for suffix in [".measurement", ".measurement.sig"] {
         let sidecar = PathBuf::from(format!("{}{suffix}", source.display()));
+        let metadata = match fs::symlink_metadata(&sidecar) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
         ensure!(
-            fs::symlink_metadata(&sidecar)?.is_file(),
+            metadata.is_file(),
             "staged measurement sidecar is not regular"
         );
         sidecars.push((suffix, fs::read(sidecar)?));
     }
+    validate_measurement_sidecars(
+        &source,
+        sidecars.iter().any(|(suffix, _)| *suffix == ".measurement"),
+        sidecars
+            .iter()
+            .any(|(suffix, _)| *suffix == ".measurement.sig"),
+    )?;
 
     // Recovery is independently durable even when replay finds consumed tries.
     if let Some((recovery, payload)) = &recovery_payload {
@@ -1787,6 +1801,39 @@ mod tests {
             recovery: Some(recovery),
         };
         (boot, profile, evidence)
+    }
+
+    #[test]
+    fn unmeasured_candidate_promotion_accepts_no_sidecars_but_refuses_partial_pairs() {
+        let directory = tempfile::tempdir().unwrap();
+        let (boot, profile, mut evidence) = paired_promotion_fixture(directory.path());
+        let source = profile.join("candidates/2/candidate.efi");
+        let uki = recovery_pe("B");
+        fs::write(&source, &uki).unwrap();
+        evidence.uki_sha256 = Some(Sha256Digest::of_bytes(&uki).to_string());
+        evidence.uki_byte_size = Some(uki.len() as u64);
+        let measurement = PathBuf::from(format!("{}.measurement", source.display()));
+        let signature = PathBuf::from(format!("{}.measurement.sig", source.display()));
+        fs::remove_file(&signature).unwrap();
+
+        assert!(promote_staged_payload(&evidence, &boot, &profile, false).is_err());
+        assert!(!boot.join(&evidence.installed_entry).exists());
+        fs::remove_file(measurement).unwrap();
+
+        promote_staged_payload(&evidence, &boot, &profile, false).unwrap();
+
+        assert_eq!(fs::read(boot.join(&evidence.installed_entry)).unwrap(), uki);
+        for suffix in [".measurement", ".measurement.sig"] {
+            assert!(
+                !boot
+                    .join(format!("{}{suffix}", evidence.installed_entry))
+                    .exists()
+            );
+        }
+        assert!(
+            boot.join(&evidence.recovery.as_ref().unwrap().uki_path)
+                .exists()
+        );
     }
 
     #[test]

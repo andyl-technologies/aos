@@ -1,16 +1,16 @@
 //! Exact provider inventory and conditional-delete capability persistence.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_oci_types::Sha256Digest;
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::OCI_GC_MAX_INVENTORY_OBJECTS;
 use super::inventory_model::{
     inventory_entry_statements, validate_capability_input, validate_inventory_page,
 };
-use super::OCI_GC_MAX_INVENTORY_OBJECTS;
 use crate::backend::Statement;
-use crate::db::{validate_key_bytes, Database};
+use crate::db::{Database, validate_key_bytes};
 
 /// Observed conditional-delete capability for one immutable binding revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +119,8 @@ pub struct OciProviderInventoryGenerationRecord {
     pub completed_at: Option<i64>,
     /// Optimistic-concurrency version.
     pub resource_version: i64,
+    /// Bounded canonical partial object observation; never provider authority.
+    pub object_progress: Option<super::inventory_progress::OciInventoryProgress>,
 }
 
 /// Input for beginning one provider enumeration generation.
@@ -158,6 +160,9 @@ pub struct OciProviderInventoryEntryInput {
     pub byte_size: u64,
     /// Strong provider entity tag used by conditional deletion.
     pub strong_etag: String,
+    /// Provider upload incarnation observed throughout hashing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_version: Option<String>,
 }
 
 /// One lease-fenced provider listing page and its durable continuation.
@@ -225,6 +230,27 @@ pub struct OciProviderInventoryPlacement {
     pub binding_write_revision: i64,
 }
 
+/// One ready registry or cache placement selected to observe delete semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalDeleteProbePlacement {
+    /// Placement id.
+    pub placement_id: i64,
+    /// Stable placement name.
+    pub placement_name: String,
+    /// Current placement optimistic-concurrency version.
+    pub placement_resource_version: i64,
+    /// Current placement writer-spec version.
+    pub placement_write_spec_version: i64,
+    /// Current ready/complete observation version.
+    pub placement_observation_version: i64,
+    /// Current binding id.
+    pub binding_id: i64,
+    /// Current binding resource version.
+    pub binding_resource_version: i64,
+    /// Current immutable writer revision.
+    pub binding_write_revision: i64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistedInventoryDigestEntry {
@@ -233,6 +259,8 @@ struct PersistedInventoryDigestEntry {
     observed_hash: String,
     byte_size: u64,
     strong_etag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -253,7 +281,7 @@ struct ChainedInventoryCheckpoint<'a> {
 }
 
 impl Database {
-    /// Lists ready registry placements whose current delete capability is due.
+    /// Lists ready registry or cache placements whose delete capability is due.
     ///
     /// At most one deterministic placement is returned for each exact binding
     /// writer revision, because the capability is shared by that immutable
@@ -267,7 +295,7 @@ impl Database {
         &self,
         now: i64,
         limit: u32,
-    ) -> Result<Vec<OciProviderInventoryPlacement>> {
+    ) -> Result<Vec<ConditionalDeleteProbePlacement>> {
         if now < 0 || limit == 0 || limit > 100 {
             bail!("OCI conditional-delete due selector is invalid");
         }
@@ -279,7 +307,7 @@ impl Database {
         let oldest = now.saturating_sub(super::OCI_GC_MAX_INVENTORY_AGE_SECONDS / 2);
         self.backend
             .query(
-                "SELECT placement.registry_id, placement.id, placement.name,
+                "SELECT placement.id, placement.name,
                         placement.resource_version, placement.write_spec_version,
                         observation.observation_version, placement.binding_id,
                         binding.resource_version, write_state.current_write_revision
@@ -289,7 +317,7 @@ impl Database {
                  JOIN bindings binding ON binding.id = placement.binding_id
                  JOIN binding_write_state write_state
                    ON write_state.binding_id = binding.id
-                 WHERE placement.registry_id IS NOT NULL
+                 WHERE (placement.registry_id IS NOT NULL OR placement.cache_id IS NOT NULL)
                    AND placement.desired_state <> 'offline'
                    AND observation.state = 'ready'
                    AND observation.completeness = 'complete'
@@ -299,7 +327,7 @@ impl Database {
                      JOIN surface_placement_observations candidate_observation
                        ON candidate_observation.placement_id = candidate.id
                      WHERE candidate.binding_id = placement.binding_id
-                       AND candidate.registry_id IS NOT NULL
+                       AND (candidate.registry_id IS NOT NULL OR candidate.cache_id IS NOT NULL)
                        AND candidate.desired_state <> 'offline'
                        AND candidate_observation.state = 'ready'
                        AND candidate_observation.completeness = 'complete')
@@ -325,16 +353,15 @@ impl Database {
             .await?
             .iter()
             .map(|row| {
-                Ok(OciProviderInventoryPlacement {
-                    registry_id: row.get(0)?,
-                    placement_id: row.get(1)?,
-                    placement_name: row.get(2)?,
-                    placement_resource_version: row.get(3)?,
-                    placement_write_spec_version: row.get(4)?,
-                    placement_observation_version: row.get(5)?,
-                    binding_id: row.get(6)?,
-                    binding_resource_version: row.get(7)?,
-                    binding_write_revision: row.get(8)?,
+                Ok(ConditionalDeleteProbePlacement {
+                    placement_id: row.get(0)?,
+                    placement_name: row.get(1)?,
+                    placement_resource_version: row.get(2)?,
+                    placement_write_spec_version: row.get(3)?,
+                    placement_observation_version: row.get(4)?,
+                    binding_id: row.get(5)?,
+                    binding_resource_version: row.get(6)?,
+                    binding_write_revision: row.get(7)?,
                 })
             })
             .collect()
@@ -465,7 +492,7 @@ impl Database {
                         takeover_count,
                         started_at, observed_at,
                         completed_at, resource_version,
-                        purge_fence_resource_version
+                        purge_fence_resource_version, object_progress
                  FROM oci_provider_inventory_generations
                  WHERE state IN('collecting', 'sealing')
                    AND collector_lease_expires_at <= ?1
@@ -504,10 +531,10 @@ impl Database {
                    AND EXISTS (SELECT 1 FROM binding_write_revisions revision
                      WHERE revision.binding_id = ?1 AND revision.revision = ?2)
                    AND (?7 = 'invalid'
-                     OR (?4 IS NULL AND ?5 IS NULL
+                     OR (CAST(?4 AS VARCHAR) IS NULL AND CAST(?5 AS BIGINT) IS NULL
                        AND EXISTS (SELECT 1 FROM bindings local_binding
                          WHERE local_binding.id = ?1
-                           AND local_binding.kind IN('local_fs', 'deployment_r2')))
+                           AND local_binding.kind IN ('local_fs', 'deployment_r2')))
                      OR EXISTS (SELECT 1 FROM binding_credential_heads head
                        JOIN binding_credential_revisions credential
                          ON credential.binding_id = head.binding_id
@@ -541,7 +568,7 @@ impl Database {
                   AND revision.revision = ?2
                  WHERE binding.id = ?1 AND binding.resource_version = ?3
                    AND (?7 = 'invalid'
-                     OR (?4 IS NULL AND ?5 IS NULL AND binding.kind IN('local_fs', 'deployment_r2'))
+                     OR (CAST(?4 AS VARCHAR) IS NULL AND CAST(?5 AS BIGINT) IS NULL AND binding.kind IN ('local_fs', 'deployment_r2'))
                      OR EXISTS (SELECT 1 FROM binding_credential_heads head
                        JOIN binding_credential_revisions credential
                          ON credential.binding_id = head.binding_id
@@ -799,6 +826,38 @@ impl Database {
                 page_digest: &page_digest_string,
             })?);
         let lease_expires_at = input.now.saturating_add(input.lease_seconds);
+        let prior_progress = current
+            .object_progress
+            .as_ref()
+            .map(|value| value.encode().map(String::into_bytes))
+            .transpose()?;
+        if let Some(progress) = &current.object_progress {
+            progress.validate_for(&current)?;
+            let object = &progress.object;
+            let entry = input
+                .entries
+                .first()
+                .context("partial inventory page lost its sole entry")?;
+            let observed_hash = object.sha_state()?.final_digest()?;
+            if input.entries.len() != 1
+                || input.last_listed_key.as_deref() != Some(object.object_key.as_str())
+                || input.next_provider_cursor != progress.next_provider_cursor
+                || object.next_offset != object.expected_size
+                || entry.object_key != object.object_key
+                || entry.object_digest.to_string() != object.object_digest
+                || entry.observed_hash != observed_hash
+                || observed_hash != entry.object_digest
+                || entry.byte_size != object.expected_size
+                || entry.strong_etag != object.strong_etag
+                || entry.provider_version != object.provider_version
+            {
+                bail!("inventory page differs from its completed durable object");
+            }
+        }
+        let prior_progress_value = prior_progress
+            .map(crate::value::Value::Bytes)
+            .unwrap_or(crate::value::Value::Null);
+
         let mut statements = inventory_entry_statements(
             &input.generation_id,
             &input.collector_id,
@@ -810,6 +869,7 @@ impl Database {
             Statement::new(
                 "UPDATE oci_provider_inventory_generations
                  SET checkpoint_ordinal = ?5, provider_cursor = ?6,
+                     object_progress = NULL,
                      checkpoint_last_key = ?7, checkpoint_digest = ?8,
                      checkpoint_page_digest = ?9,
                      object_count = object_count + ?10,
@@ -821,8 +881,10 @@ impl Database {
                    AND collector_lease_expires_at > ?4 AND state = 'collecting'
                    AND checkpoint_ordinal = ?13
                    AND (provider_cursor = ?14
-                     OR (provider_cursor IS NULL AND ?14 IS NULL))
-                   AND object_count + ?10 <= ?15",
+                     OR (provider_cursor IS NULL AND CAST(?14 AS VARCHAR) IS NULL))
+                   AND object_count + ?10 <= ?15
+                   AND resource_version = ?16
+                   AND (object_progress = ?17 OR (object_progress IS NULL AND ?17 IS NULL))",
                 vals![
                     input.generation_id,
                     input.collector_id,
@@ -838,7 +900,9 @@ impl Database {
                     lease_expires_at,
                     i64::try_from(input.expected_checkpoint_ordinal)?,
                     input.expected_provider_cursor,
-                    i64::try_from(OCI_GC_MAX_INVENTORY_OBJECTS)?
+                    i64::try_from(OCI_GC_MAX_INVENTORY_OBJECTS)?,
+                    current.resource_version,
+                    prior_progress_value
                 ],
             )
             .expecting(1),
@@ -878,6 +942,7 @@ impl Database {
                    AND collector_claim_token = ?3
                    AND collector_lease_expires_at > ?4
                    AND checkpoint_ordinal = ?5 AND provider_cursor IS NULL
+                   AND object_progress IS NULL
                    AND state = 'collecting'",
                 &vals![
                     input.generation_id,
@@ -910,6 +975,7 @@ impl Database {
             }
             if current.checkpoint_ordinal != input.expected_checkpoint_ordinal
                 || current.provider_cursor.is_some()
+                || current.object_progress.is_some()
             {
                 bail!("OCI provider inventory completion checkpoint conflicts");
             }
@@ -918,7 +984,7 @@ impl Database {
             .backend
             .query(
                 "SELECT object_key, object_digest, observed_hash, byte_size,
-                        strong_etag, classification
+                        strong_etag, classification, provider_version
                  FROM oci_provider_inventory_entries
                  WHERE generation_id = ?1 ORDER BY object_key LIMIT ?2",
                 &vals![
@@ -946,6 +1012,7 @@ impl Database {
                 observed_hash: row.get(2)?,
                 byte_size,
                 strong_etag: row.get(4)?,
+                provider_version: row.get(6)?,
             });
         }
         let digest = Sha256Digest::digest(&serde_json::to_vec(&digest_entries)?);
@@ -970,6 +1037,7 @@ impl Database {
                        AND collector_lease_expires_at > ?8
                        AND state = 'sealing'
                        AND checkpoint_ordinal = ?10 AND provider_cursor IS NULL
+                       AND object_progress IS NULL
                        AND object_count = ?4 AND byte_count = ?5
                        AND EXISTS (SELECT 1 FROM oci_registry_state registry_state
                          WHERE registry_state.registry_id =
@@ -1017,25 +1085,29 @@ impl Database {
                      SELECT placement_id, registry_id, id, ?2
                      FROM oci_provider_inventory_generations
                      WHERE id = ?1 AND state = 'complete'
-                     ON CONFLICT(placement_id) DO UPDATE SET
-                       registry_id = excluded.registry_id,
-                       generation_id = excluded.generation_id,
-                       updated_at = excluded.updated_at
-                     WHERE (SELECT observed_at
-                              FROM oci_provider_inventory_generations
-                             WHERE id = oci_provider_inventory_heads.generation_id)
-                           < (SELECT observed_at
-                                FROM oci_provider_inventory_generations
-                               WHERE id = excluded.generation_id)
-                        OR ((SELECT observed_at
-                               FROM oci_provider_inventory_generations
-                              WHERE id = oci_provider_inventory_heads.generation_id)
-                            = (SELECT observed_at
-                                 FROM oci_provider_inventory_generations
-                                WHERE id = excluded.generation_id)
-                            AND oci_provider_inventory_heads.generation_id
-                              < excluded.generation_id)",
+                     ON CONFLICT(placement_id) DO NOTHING",
                     vals![input.generation_id, input.now],
+                )
+                .unchecked(),
+                // Separate the initial insertion from the monotonic update:
+                // MariaDB has no conditional WHERE on an upsert. Both remain
+                // inside the fenced completion transaction, and one matching
+                // row is required even when this generation was just inserted.
+                Statement::new(
+                    "UPDATE oci_provider_inventory_heads
+                     SET generation_id = ?1, updated_at = ?2
+                     WHERE placement_id = (SELECT placement_id
+                       FROM oci_provider_inventory_generations
+                       WHERE id = ?1 AND state = 'complete')
+                       AND registry_id = (SELECT registry_id
+                         FROM oci_provider_inventory_generations WHERE id = ?1)
+                       AND (generation_id = ?1
+                         OR (SELECT observed_at FROM oci_provider_inventory_generations
+                              WHERE id = oci_provider_inventory_heads.generation_id) < ?3
+                         OR ((SELECT observed_at FROM oci_provider_inventory_generations
+                               WHERE id = oci_provider_inventory_heads.generation_id) = ?3
+                           AND generation_id < ?1))",
+                    vals![input.generation_id, input.now, input.observed_at],
                 )
                 .expecting(1),
             ])
@@ -1069,7 +1141,7 @@ impl Database {
                         takeover_count,
                         started_at, observed_at,
                         completed_at, resource_version,
-                        purge_fence_resource_version
+                        purge_fence_resource_version, object_progress
                  FROM oci_provider_inventory_generations WHERE id = ?1",
                 &vals![generation_id],
             )
@@ -1109,7 +1181,7 @@ impl Database {
                         inventory.checkpoint_digest, inventory.takeover_count,
                         inventory.started_at, inventory.observed_at,
                         inventory.completed_at, inventory.resource_version,
-                        inventory.purge_fence_resource_version
+                        inventory.purge_fence_resource_version, inventory.object_progress
                  FROM oci_provider_inventory_heads head
                  JOIN oci_provider_inventory_generations inventory
                    ON inventory.id = head.generation_id
@@ -1154,7 +1226,7 @@ impl Database {
                         takeover_count,
                         started_at, observed_at,
                         completed_at, resource_version,
-                        purge_fence_resource_version
+                        purge_fence_resource_version, object_progress
                  FROM oci_provider_inventory_generations
                  WHERE placement_id = ?1 AND state IN('collecting', 'sealing')",
                 &vals![placement_id],
@@ -1184,7 +1256,7 @@ impl Database {
                         provider_cursor, checkpoint_last_key, checkpoint_digest,
                         takeover_count, started_at, observed_at,
                         completed_at, resource_version,
-                        purge_fence_resource_version
+                        purge_fence_resource_version, object_progress
                  FROM oci_provider_inventory_generations
                  WHERE registry_id = ?1 AND placement_id = ?2
                    AND collector_id = ?3 AND idempotency_key = ?4",
@@ -1380,5 +1452,13 @@ pub(super) fn row_to_inventory_generation(
         observed_at: row.get(25)?,
         completed_at: row.get(26)?,
         resource_version: row.get(27)?,
+        object_progress: row
+            .get::<Option<Vec<u8>>>(29)?
+            .map(|bytes| {
+                let encoded = std::str::from_utf8(&bytes)
+                    .map_err(|_| anyhow::anyhow!("persisted OCI progress is not UTF-8"))?;
+                super::inventory_progress::OciInventoryProgress::decode(encoded)
+            })
+            .transpose()?,
     })
 }

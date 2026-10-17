@@ -481,50 +481,73 @@ impl Database {
         state: &str,
     ) -> Result<String> {
         let now = unix_now();
+        // A first narinfo usage must serialize with metadata publication even
+        // when no usage row exists yet. Other consumers keep their own rules.
+        let locks = if purpose == "narinfo" && consumer.kind == "binary_cache" {
+            vec![CheckedStatement::exact(
+                "UPDATE binary_caches SET updated_at = updated_at WHERE stable_id = ?1",
+                vals![consumer.stable_id],
+                1,
+            )]
+        } else {
+            Vec::new()
+        };
         if let Some(current) = current {
             self.backend
-                .checked_batch(&[CheckedStatement::exact(
-                    "UPDATE signing_key_usages
+                .checked_batch(
+                    &[
+                        locks.clone(),
+                        vec![CheckedStatement::exact(
+                            "UPDATE signing_key_usages
                         SET signing_key_id = ?4, signing_key_generation = ?5, state = ?6,
                             resource_version = resource_version + 1, updated_at = ?7
                       WHERE consumer_stable_id = ?1 AND purpose = ?2
                         AND resource_version = ?3",
-                    vals![
-                        consumer.stable_id,
-                        purpose,
-                        current.resource_version,
-                        signing_key_id,
-                        signing_key_generation,
-                        state,
-                        now
-                    ],
-                    1,
-                )])
+                            vals![
+                                consumer.stable_id,
+                                purpose,
+                                current.resource_version,
+                                signing_key_id,
+                                signing_key_generation,
+                                state,
+                                now
+                            ],
+                            1,
+                        )],
+                    ]
+                    .concat(),
+                )
                 .await?;
             return Ok(current.stable_id.clone());
         }
         let stable_id = format!("signing-usage:{}", Uuid::new_v4().simple());
         self.backend
-            .checked_batch(&[Statement::new(
-                "INSERT INTO signing_key_usages
+            .checked_batch(
+                &[
+                    locks,
+                    vec![Statement::new(
+                        "INSERT INTO signing_key_usages
                  (stable_id, consumer_stable_id, consumer_kind, consumer_scope_key, consumer_name,
                   purpose, signing_key_id, signing_key_generation, state, resource_version,
                   created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?10)",
-                vals![
-                    stable_id,
-                    consumer.stable_id,
-                    consumer.kind,
-                    consumer.scope_key,
-                    consumer.name,
-                    purpose,
-                    signing_key_id,
-                    signing_key_generation,
-                    state,
-                    now
-                ],
+                        vals![
+                            stable_id,
+                            consumer.stable_id,
+                            consumer.kind,
+                            consumer.scope_key,
+                            consumer.name,
+                            purpose,
+                            signing_key_id,
+                            signing_key_generation,
+                            state,
+                            now
+                        ],
+                    )
+                    .expecting(1)],
+                ]
+                .concat(),
             )
-            .expecting(1)])
             .await?;
         Ok(stable_id)
     }

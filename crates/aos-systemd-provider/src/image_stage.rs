@@ -20,7 +20,9 @@ use sha2::{Digest, Sha256};
 
 use crate::boot_storage::with_writable_boot;
 use crate::executable::validate_store_executable;
-use crate::image_profile::{BOOT_ROOT, IMAGE_PROFILE, candidate_path, private_directory};
+use crate::image_profile::{
+    BOOT_ROOT, IMAGE_PROFILE, candidate_path, private_directory, validate_measurement_sidecars,
+};
 use crate::recovery::{RecoveryEvidence, validate_uki_identity};
 
 #[path = "image_stage/copy_up.rs"]
@@ -304,31 +306,29 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
         identity.slot != active.slot && identity.root_hash == string(root, "root_hash")?,
         "target UKI does not bind the opposite slot and authenticated root"
     );
-    let measurement = artifact_path(
-        &artifacts,
-        normal
-            .get("measurement")
-            .context("target UKI lacks measurement evidence")?,
-    )?;
-    let signature = artifact_path(
-        &artifacts,
-        normal
-            .get("measurement_signature")
-            .context("target UKI lacks measurement signature")?,
-    )?;
-    for (path, key) in [
-        (&measurement, "measurement"),
-        (&signature, "measurement_signature"),
-    ] {
-        let value = normal
-            .get(key)
-            .context("target UKI lacks measurement evidence")?;
-        verify_path(
-            path,
-            integer(value, "size_bytes")?,
-            string(value, "sha256")?,
-        )?;
-    }
+    let measurement = normal.get("measurement").filter(|value| !value.is_null());
+    let signature = normal
+        .get("measurement_signature")
+        .filter(|value| !value.is_null());
+    validate_measurement_sidecars(&uki_path, measurement.is_some(), signature.is_some())?;
+    let sidecars = match (measurement, signature) {
+        (Some(measurement), Some(signature)) => {
+            let measurement_path = artifact_path(&artifacts, measurement)?;
+            let signature_path = artifact_path(&artifacts, signature)?;
+            for (path, value) in [
+                (&measurement_path, measurement),
+                (&signature_path, signature),
+            ] {
+                verify_path(
+                    path,
+                    integer(value, "size_bytes")?,
+                    string(value, "sha256")?,
+                )?;
+            }
+            Some((measurement_path, signature_path))
+        }
+        _ => None,
+    };
 
     let devices = discover_devices(&tools.blkid)?;
     let destination = &devices[&format!("root-{target}")];
@@ -406,8 +406,9 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
         Path::new(IMAGE_PROFILE),
         request.generation,
         &uki_path,
-        &measurement,
-        &signature,
+        sidecars
+            .as_ref()
+            .map(|(measurement, signature)| (measurement.as_path(), signature.as_path())),
         recovery.as_ref(),
     )?;
     let mut receipt = json!({
@@ -764,18 +765,17 @@ fn publish_candidate(
     profile: &Path,
     generation: u32,
     uki: &Path,
-    measurement: &Path,
-    signature: &Path,
+    sidecars: Option<(&Path, &Path)>,
     recovery: Option<&PreparedRecovery>,
 ) -> Result<()> {
     candidate_path(generation)?;
     let candidates = private_directory(profile, "candidates")?;
     let destination = private_directory(&candidates, &generation.to_string())?;
-    let mut sources = vec![
-        (uki, "candidate.efi".to_string()),
-        (measurement, "candidate.efi.measurement".to_string()),
-        (signature, "candidate.efi.measurement.sig".to_string()),
-    ];
+    let mut sources = vec![(uki, "candidate.efi".to_string())];
+    if let Some((measurement, signature)) = sidecars {
+        sources.push((measurement, "candidate.efi.measurement".to_string()));
+        sources.push((signature, "candidate.efi.measurement.sig".to_string()));
+    }
     if let Some(recovery) = recovery {
         let copy = recovery.evidence.copy.to_ascii_lowercase();
         sources.push((&recovery.uki, format!("recovery-{copy}.efi")));
@@ -1152,7 +1152,7 @@ mod tests {
         fs::write(&source, b"pinned artifact").unwrap();
         let profile = temp.path().join("profile");
         fs::create_dir(&profile).unwrap();
-        publish_candidate(&profile, 2, &source, &source, &source, None).unwrap();
+        publish_candidate(&profile, 2, &source, Some((&source, &source)), None).unwrap();
         let hidden = profile.join(candidate_path(2).unwrap());
         assert_eq!(fs::read(&hidden).unwrap(), b"pinned artifact");
         assert!(!temp.path().join("EFI/Linux").exists());
@@ -1207,7 +1207,14 @@ mod tests {
         fs::write(generation.join(".recovery-b.conf.tmp"), b"partial entry").unwrap();
 
         for _ in 0..2 {
-            publish_candidate(temp.path(), 2, &normal, &normal, &normal, Some(&recovery)).unwrap();
+            publish_candidate(
+                temp.path(),
+                2,
+                &normal,
+                Some((&normal, &normal)),
+                Some(&recovery),
+            )
+            .unwrap();
         }
 
         assert_eq!(
@@ -1236,8 +1243,8 @@ mod tests {
         let generation = private_directory(&candidates, "2").unwrap();
         fs::write(generation.join(".candidate.efi.tmp"), b"partial").unwrap();
 
-        publish_candidate(temp.path(), 2, &source, &source, &source, None).unwrap();
-        publish_candidate(temp.path(), 2, &source, &source, &source, None).unwrap();
+        publish_candidate(temp.path(), 2, &source, Some((&source, &source)), None).unwrap();
+        publish_candidate(temp.path(), 2, &source, Some((&source, &source)), None).unwrap();
 
         for name in [
             "candidate.efi",

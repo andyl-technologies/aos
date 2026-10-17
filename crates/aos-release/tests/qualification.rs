@@ -386,7 +386,13 @@ fn contract_identity_is_its_rust_canonical_encoding() {
         .unwrap()
     );
     let text = String::from_utf8(encoded).unwrap();
-    for key in ["\"production_only\"", "\"thresholds\"", "\"configuration\""] {
+    assert!(
+        contract
+            .requirements
+            .iter()
+            .any(|requirement| requirement.production_only)
+    );
+    for key in ["\"thresholds\"", "\"configuration\""] {
         assert!(!text.contains(key), "contract encoding carries {key}");
     }
 }

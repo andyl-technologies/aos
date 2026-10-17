@@ -27,7 +27,10 @@ transfer = [
     "dep:url",
 ]
 
+direct-upload = ["transfer", "dep:aos-proto-types", "dep:base64", "dep:md-5"]
+
 [dependencies]
+aos-proto-types = { workspace = true, optional = true }
 aos-ability-model = { workspace = true }
 
 # HTTP
@@ -44,6 +47,8 @@ futures-util = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 digest = { version = "0.10", optional = true }
 hex = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+md-5 = { workspace = true, optional = true }
 
 # S3
 aws-sdk-s3 = { workspace = true, optional = true }
@@ -59,6 +64,8 @@ tokio-util = { workspace = true, optional = true }
 # Serialization (for auth token refresh)
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true }
+rusqlite = { workspace = true, features = ["limits"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 
 # Error handling
 anyhow = { workspace = true }
@@ -71,4 +78,6 @@ tempfile = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The loopback HTTP fixture does not construct a TLS trust store.
+aws-smithy-http-client = { version = "1.1.12", default-features = false, features = ["default-client"] }
 tempfile = { workspace = true }

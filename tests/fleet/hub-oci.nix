@@ -1766,32 +1766,34 @@ in {
         "192.168.50.11:8443"
     )
     print("Pulling public and authenticated OCI references", flush=True)
+    # The guest agent mirrors output to serial. Avoid replaying an animated
+    # progress display while preserving the real pulls and unpacking.
     consumer.succeed(
-        "${nerdctl} pull --platform linux/amd64 hub:8443/aos:latest",
+        "${nerdctl} pull --quiet --platform linux/amd64 hub:8443/aos:latest",
         timeout=900,
     )
     consumer.succeed(
-        "${nerdctl} pull --platform linux/amd64 hub:8443/aos:stable",
+        "${nerdctl} pull --quiet --platform linux/amd64 hub:8443/aos:stable",
         timeout=900,
     )
     consumer.succeed(
-        "${nerdctl} pull --platform linux/amd64 hub:8443/aos:multi",
+        "${nerdctl} pull --quiet --platform linux/amd64 hub:8443/aos:multi",
         timeout=900,
     )
     consumer.succeed(
-        "${nerdctl} pull --platform linux/arm64 hub:8443/aos:multi",
+        "${nerdctl} pull --quiet --platform linux/arm64 hub:8443/aos:multi",
         timeout=900,
     )
     consumer.succeed(
-        f"${nerdctl} pull --platform linux/amd64 hub:8443/aos@{root_digest}",
+        f"${nerdctl} pull --quiet --platform linux/amd64 hub:8443/aos@{root_digest}",
         timeout=900,
     )
     consumer.succeed(
-        "${nerdctl} pull --platform linux/amd64 192.168.50.11:8443/aos:private",
+        "${nerdctl} pull --quiet --platform linux/amd64 192.168.50.11:8443/aos:private",
         timeout=900,
     )
     consumer.succeed(
-        f"${nerdctl} pull --platform linux/amd64 "
+        f"${nerdctl} pull --quiet --platform linux/amd64 "
         f"192.168.50.11:8443/aos@{root_digest}",
         timeout=900,
     )
@@ -2302,6 +2304,30 @@ in {
     )))["data"]["tags"]
     namespaced_tag = next(item for item in tags if item["tag"] == "namespaced")
     assert namespaced_tag["digest"] == root_digest, namespaced_tag
+
+    # Signed publication requires the target channel's complete partition set.
+    # Create and index that channel before publishing through the namespace.
+    publisher_apr(f"""
+        {APR} channel init namespaced-stable {shlex.quote(signed_release)} \\
+          --registry containers --key-id initial
+        git -C {REGISTRY_DIR} switch namespaced-stable
+        rm -rf /var/tmp/container-namespaced-channel-surface
+        {APR} origin upload --registry containers \\
+          --upload-url file:///var/tmp/container-namespaced-channel-surface
+        {APR} verify --registry containers
+        git -C {REGISTRY_DIR} switch {AUTHORING_BRANCH}
+    """)
+    indexed = json.loads(publisher.succeed(
+        hub_command(
+            "registry publish upload acme/containers",
+            release_bearer,
+            "--root /var/tmp/container-namespaced-channel-surface",
+        ),
+        timeout=900,
+    ))["data"]
+    assert indexed["state"] == "ready", indexed
+    token = browser_session_token()
+
     namespaced_publish = json.loads(publisher.succeed(
         f"HOME=/var/lib/aos-oci-publisher {AOS} "
         "--json --progress off --color never container publish aos "
@@ -2397,8 +2423,14 @@ in {
     consumer.fail(
         f"{CURL} -fsS {PRIVATE_OCI}/v2/acme/containers-private/aos/tags/list"
     )
+    # Distribution requests require a repository-scoped OCI token, rather
+    # than the Hub access token used by the CLI's credential exchange.
+    private_pull_token = repository_token(
+        consumer, PRIVATE_OCI, "192.168.50.11:8443",
+        "acme/containers-private/aos", "pull", client_secret,
+    )
     consumer.succeed(
-        f"{CURL} -fsS -H {shlex.quote(f'Authorization: Bearer {client_bearer}')} "
+        f"{CURL} -fsS -H {shlex.quote(f'Authorization: Bearer {private_pull_token}')} "
         f"{PRIVATE_OCI}/v2/acme/containers-private/aos/tags/list | {JQ} -e "
         + shlex.quote('.name == "acme/containers-private/aos"')
     )
@@ -2561,7 +2593,7 @@ in {
     assert any(
         "OCI repositories" in reason for reason in readiness["blocking_reasons"]
     ), readiness
-    status, refused = publisher.execute(hub_command(
+    status, refused_stdout, refused_stderr = publisher.execute(hub_command(
         "registry delete acme/containers",
         token,
         " ".join([
@@ -2570,6 +2602,7 @@ in {
             "--idempotency-key hub-oci-delete-blocked-apply --yes --wait",
         ]),
     ) + " 2>&1")
+    refused = (refused_stdout + refused_stderr).decode("utf-8", errors="replace")
     assert status != 0, refused
     assert "failed_precondition" in refused and "OCI repositories" in refused, refused
     publisher.succeed(hub_command("registry show acme/containers", token))

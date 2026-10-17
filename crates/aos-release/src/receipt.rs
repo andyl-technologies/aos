@@ -18,7 +18,13 @@ use crate::digest::Sha256Digest;
 use crate::evidence::GateResult;
 use crate::registry::registry_policy;
 
+pub mod historical;
 mod surface;
+
+pub use historical::{
+    ChannelReceiptV1, PublicationReceiptV1, QualificationReceiptV1,
+    SIGNED_RECEIPT_V1, SignedReceiptEnvelopeV1,
+};
 
 pub use surface::{CHANNEL_RECEIPT, ChannelReceipt, PUBLICATION_RECEIPT, PublicationReceipt};
 

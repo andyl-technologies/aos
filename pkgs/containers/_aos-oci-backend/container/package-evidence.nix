@@ -8,6 +8,7 @@
   lib,
   pkgs,
   packageNames ? pkgs.packageNames,
+  additionalPackages ? [],
   overrides ? [],
 }: let
   discard = value:
@@ -172,7 +173,10 @@
       };
     })
     overrides;
-  entries = packageEntries ++ overrideEntries;
+  additionalEntries = lib.concatLists (lib.imap (index: package:
+    entriesForPackage "container-runtime-${toString index}" package)
+  additionalPackages);
+  entries = packageEntries ++ additionalEntries ++ overrideEntries;
 
   sourcePaths =
     uniqueByPath (builtins.concatMap (entry: entry.sourceValues) entries);

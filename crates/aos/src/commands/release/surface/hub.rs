@@ -58,6 +58,9 @@ impl HubSurface {
         HubAccessArgs {
             hub: Some(self.planned.origin.clone()),
             token: self.token.clone(),
+            direct_provider_policy: None,
+            direct_upload_journal: None,
+            new_direct_upload_run: false,
         }
     }
 

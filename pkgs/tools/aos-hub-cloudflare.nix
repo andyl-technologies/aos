@@ -26,106 +26,272 @@
   aos-hub-worker-dist,
   miniflare,
   nodejs,
+  python3,
   bash,
+  observationTools ? null,
 }:
-mkDerivation {
-  platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-    target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-    role = "public-package";
-  };
-  pname = "aos-hub-cloudflare";
-  qualification.packageProbe = lib.qualification.commandProbe {
-    "primary" = {
-      "artifacts" = [];
-      "expected" = "The command returns success and documents Usage.";
-      "files" = {};
-      "input" = "The packaged aos-hub-cloudflare command-line interface.";
-      "operation" = "Request its offline help text.";
-      "steps" = [
+assert observationTools == null || observationTools.passthru.selectedNativeArtifact == toString aos-hub;
+assert observationTools == null || observationTools.passthru.selectedWorkerArtifact == toString aos-hub-worker-dist;
+  mkDerivation {
+    platformSupport = {
+      build = [
         {
-          "argv" = [
-            "@python@"
-            "-c"
-            "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-hub\",\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Usage\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"aos-hub-cloudflare operation passed\")\n"
-          ];
-          "exit_code" = 0;
-          "stderr" = {
-            "exact" = "";
-          };
-          "stdout" = {
-            "exact" = "aos-hub-cloudflare operation passed\n";
-          };
+          abi = ["gnu"];
+          os = ["linux"];
         }
       ];
-    };
-    "badInput" = {
-      "artifacts" = [];
-      "expected" = "The command rejects the unsupported option before performing its main operation.";
-      "files" = {};
-      "input" = "A aos-hub-cloudflare invocation containing an unsupported command-line option.";
-      "operation" = "Parse the unknown option without starting a service or contacting a remote endpoint.";
-      "steps" = [
+      host = [
         {
-          "argv" = [
-            "@python@"
-            "-c"
-            "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-hub\",\"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-hub-cloudflare rejected invalid input\\n\")\nraise SystemExit(7)\n"
-          ];
-          "exit_code" = 7;
-          "observes_rejection" = true;
-          "stderr" = {
-            "exact" = "aos-hub-cloudflare rejected invalid input\n";
-          };
-          "stdout" = {
-            "exact" = "";
-          };
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
         }
       ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
     };
-  };
+    pname = "aos-hub-cloudflare";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command returns success and documents Usage.";
+        "files" = {};
+        "input" = "The packaged aos-hub-cloudflare command-line interface.";
+        "operation" = "Request its offline help text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-hub\",\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Usage\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"aos-hub-cloudflare operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-hub-cloudflare operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported option before performing its main operation.";
+        "files" = {};
+        "input" = "A aos-hub-cloudflare invocation containing an unsupported command-line option.";
+        "operation" = "Parse the unknown option without starting a service or contacting a remote endpoint.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-hub\",\"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-hub-cloudflare rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-hub-cloudflare rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
 
-  version = "0.1.0";
+    version = "0.1.0";
 
-  # The wrapper bakes these store paths into the launcher and `exec`s/reads them
-  # at runtime, so they must survive the scrub phase (which nukes any store ref
-  # not reachable from a declared output / runtime / propagated dep). The wasm
-  # dist is copied into `$out` itself, so it needs no runtime ref.
-  runtimeDeps = [aos-hub miniflare nodejs bash];
+    # The wrapper bakes these store paths into the launcher and `exec`s/reads them
+    # at runtime, so they must survive the scrub phase (which nukes any store ref
+    # not reachable from a declared output / runtime / propagated dep). The wasm
+    # dist is copied into `$out` itself, so it needs no runtime ref.
+    runtimeDeps =
+      [aos-hub miniflare nodejs python3 bash]
+      ++ (
+        if observationTools == null
+        then []
+        else [observationTools]
+      );
 
-  phases = [
-    {
-      name = "install";
-      script = ''
-        mkdir -p "$out/bin" "$out/share/aos-hub/worker"
-        cp ${aos-hub-worker-dist}/shim.mjs ${aos-hub-worker-dist}/index.wasm \
-          "$out/share/aos-hub/worker/"
-        # The static-asset bundle Cloudflare serves from its CDN edge (the
-        # `[assets]` directory the generated wrangler.toml points at). Copied
-        # writable so `wrangler deploy`'s asset manifest pass can stat it.
-        cp -r ${aos-hub-worker-dist}/assets "$out/share/aos-hub/worker/assets"
-        chmod -R u+w "$out/share/aos-hub/worker/assets"
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin" "$out/share/aos-hub/worker"
+          cp ${aos-hub-worker-dist}/shim.mjs ${aos-hub-worker-dist}/index.wasm \
+            "$out/share/aos-hub/worker/"
+          cp ${./aos-hub-direct-sdk-conformance.mjs} \
+            "$out/share/aos-hub/direct-sdk-conformance.mjs"
+          cp ${./aos-hub-direct-qualification.mjs} \
+            "$out/share/aos-hub/direct-qualification.mjs"
+          cp ${./aos-hub-direct-staged-races.mjs} \
+            "$out/share/aos-hub/direct-staged-races.mjs"
+          cp ${./aos-hub-hosted-workload.py} "$out/share/aos-hub/hosted-workload.py"
+          cp ${./aos-hub-hosted-read.py} "$out/share/aos-hub/hosted-read.py"
+          cp ${./aos-hub-hosted-read.md} "$out/share/aos-hub/hosted-read.md"
+          mkdir -p "$out/share/aos-hub/hosted-capture"
+          # Individual Nix source paths have store-prefixed names; the tools load
+          # these assets and parsers by their original filenames.
+          cp ${./aos-hub-hosted-capture/capture.mjs} \
+            "$out/share/aos-hub/hosted-capture/capture.mjs"
+          cp ${./aos-hub-hosted-capture/sink.mjs} \
+            "$out/share/aos-hub/hosted-capture/sink.mjs"
+          cp ${./aos-hub-hosted-capture/baseline-proxy.mjs} \
+            "$out/share/aos-hub/hosted-capture/baseline-proxy.mjs"
+          cp ${./aos-hub-hosted-capture/origin-capture.mjs} \
+            "$out/share/aos-hub/hosted-capture/origin-capture.mjs"
+          cp ${./aos-hub-hosted-capture/storage-shim.mjs} \
+            "$out/share/aos-hub/hosted-capture/storage-shim.mjs"
+          cp ${./aos-hub-hosted-capture/render.py} \
+            "$out/share/aos-hub/hosted-capture/render.py"
+          # Measure the selected source-built dependency; the renderer also checks
+          # its canonical immutable executable and exact hash before validation.
+          ${python3}/bin/python3 -B -E - "$out/share/aos-hub/hosted-capture/node-tool.json" <<'PYTHON'
+          import hashlib
+          import json
+          import pathlib
+          import sys
 
-        # Hand-rolled wrapper (AOS has no nixpkgs makeWrapper). The unquoted
-        # heredoc bakes the literal `$out` store path and the Nix-interpolated
-        # tool paths; `\$@`/`\$PATH` stay literal for runtime expansion.
-        cat > "$out/bin/aos-hub" <<EOF
-        #!${bash}/bin/bash
-        export AOS_HUB_WORKER_DIST="$out/share/aos-hub/worker"
-        export AOS_HUB_WRANGLER="${miniflare}/bin/wrangler"
-        export PATH="${nodejs}/bin:\$PATH"
-        exec ${aos-hub}/bin/aos-hub "\$@"
-        EOF
-        chmod +x "$out/bin/aos-hub"
-      '';
-    }
-  ];
+          node = pathlib.Path("${nodejs}/bin/node").resolve(strict=True)
+          digest = hashlib.sha256()
+          with node.open("rb") as executable:
+              for chunk in iter(lambda: executable.read(1024 * 1024), b""):
+                  digest.update(chunk)
+          with open(sys.argv[1], "x") as output:
+              json.dump({"file": str(node), "sha256": digest.hexdigest()}, output)
+              output.write("\n")
+          PYTHON
+          mkdir -p "$out/share/aos-hub/hosted-measurements"
+          cp ${../../tests/fleet/_hub-direct-publisher.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-publisher.py"
+          cp ${../../tests/fleet/_hub-direct-sparse-publisher.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-sparse-publisher.py"
+          cp ${../../tests/fleet/_hub-perf.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-perf.py"
+          cp ${../../tests/fleet/_hub-direct-runtime-observations.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-runtime-observations.py"
+          cp ${../../tests/fleet/_hub-direct-observations.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-observations.py"
+          cp ${../../tests/fleet/_hub-direct-read-parity.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-read-parity.py"
+          # The static-asset bundle Cloudflare serves from its CDN edge (the
+          # `[assets]` directory the generated wrangler.toml points at). Copied
+          # writable so `wrangler deploy`'s asset manifest pass can stat it.
+          cp -r ${aos-hub-worker-dist}/assets "$out/share/aos-hub/worker/assets"
+          chmod -R u+w "$out/share/aos-hub/worker/assets"
 
-  passthru.evidenceSources = [./aos-hub-cloudflare.nix];
-  meta = {
-    description = "aos-hub packaged with wrangler + the Worker wasm dist as a Cloudflare installer";
-    homepage = "https://github.com/andyl-technologies/aos";
-    license = "MIT";
-  };
-}
+          # Hand-rolled wrapper (AOS has no nixpkgs makeWrapper). The unquoted
+          # heredoc bakes the literal `$out` store path and the Nix-interpolated
+          # tool paths; `\$@`/`\$PATH` stay literal for runtime expansion.
+          cat > "$out/bin/aos-hub" <<EOF
+          #!${bash}/bin/bash
+          export AOS_HUB_WORKER_DIST="$out/share/aos-hub/worker"
+          export AOS_HUB_WRANGLER="${miniflare}/bin/wrangler"
+          export PATH="${nodejs}/bin:\$PATH"
+          exec ${aos-hub}/bin/aos-hub "\$@"
+          EOF
+          chmod +x "$out/bin/aos-hub"
+          ln -s ${aos-hub}/bin/aos-hub-direct-review "$out/bin/aos-hub-direct-review"
+          ln -s ${aos-hub}/bin/aos-hub-provider-conformance "$out/bin/aos-hub-provider-conformance"
+
+          ${
+            if observationTools == null
+            then ""
+            else ''
+              # Explicit helper selection pins the actual Native and Worker tuple.
+              # Linking tools installs no capture, producer flag or acceptance.
+              ln -s ${observationTools}/bin/aos-native-body-observer "$out/bin/aos-native-body-observer"
+              ln -s ${observationTools}/bin/aos-native-body-auth "$out/bin/aos-native-body-auth"
+              ln -s ${observationTools}/bin/aos-hosted-byte-assessment "$out/bin/aos-hosted-byte-assessment"
+              ln -s ${observationTools}/bin/aos-observation-private-wrapper "$out/bin/aos-observation-private-wrapper"
+            ''
+          }
+
+          cat > "$out/bin/aos-hub-direct-sdk-conformance" <<EOF
+          #!${bash}/bin/bash
+          exec ${nodejs}/bin/node "$out/share/aos-hub/direct-sdk-conformance.mjs" "\$@"
+          EOF
+          chmod +x "$out/bin/aos-hub-direct-sdk-conformance"
+          cat > "$out/bin/aos-hub-direct-qualification" <<EOF
+          #!${bash}/bin/bash
+          exec ${nodejs}/bin/node "$out/share/aos-hub/direct-qualification.mjs" "\$@"
+          EOF
+          chmod +x "$out/bin/aos-hub-direct-qualification"
+          cat > "$out/bin/aos-hub-direct-staged-races" <<EOF
+          #!${bash}/bin/bash
+          exec ${nodejs}/bin/node "$out/share/aos-hub/direct-staged-races.mjs" "\$@"
+          EOF
+          chmod +x "$out/bin/aos-hub-direct-staged-races"
+          cat > "$out/bin/aos-hub-hosted-workload" <<EOF
+          #!${bash}/bin/bash
+          exec ${python3}/bin/python3 "$out/share/aos-hub/hosted-workload.py" "\$@" \
+            --library-dir "$out/share/aos-hub/hosted-measurements"
+          EOF
+          chmod +x "$out/bin/aos-hub-hosted-workload"
+          cat > "$out/bin/aos-hub-hosted-read" <<EOF
+          #!${bash}/bin/bash
+          exec ${python3}/bin/python3 -B -E "$out/share/aos-hub/hosted-read.py" "\$@" \
+            --library-dir "$out/share/aos-hub/hosted-measurements"
+          EOF
+          chmod +x "$out/bin/aos-hub-hosted-read"
+          cat > "$out/bin/aos-hub-hosted-capture-render" <<EOF
+          #!${bash}/bin/bash
+          if [ "\$#" -ne 1 ]; then
+            printf '%s\n' 'usage: aos-hub-hosted-capture-render SELECTION.json' >&2
+            exit 2
+          fi
+          exec ${python3}/bin/python3 -B -E "$out/share/aos-hub/hosted-capture/render.py" \
+            --selection "\$1" --node-tool-file "$out/share/aos-hub/hosted-capture/node-tool.json"
+          EOF
+          chmod +x "$out/bin/aos-hub-hosted-capture-render"
+        '';
+      }
+    ];
+
+    passthru.evidenceSources = [
+      ./aos-hub-cloudflare.nix
+      ./aos-hub-direct-sdk-conformance.mjs
+      ./aos-hub-direct-qualification.mjs
+      ./aos-hub-direct-staged-races.mjs
+      ./aos-hub-hosted-workload.py
+      ./aos-hub-hosted-read.py
+      ./aos-hub-hosted-read-tests.py
+      ./aos-hub-hosted-read.md
+      ./aos-hub-hosted-capture/capture.mjs
+      ./aos-hub-hosted-capture/sink.mjs
+      ./aos-hub-hosted-capture/baseline-proxy.mjs
+      ./aos-hub-hosted-capture/origin-capture.mjs
+      ./aos-hub-hosted-capture/storage-shim.mjs
+      ./aos-hub-hosted-capture/render.py
+      ../../tests/fleet/_hub-direct-publisher.py
+      ../../tests/fleet/_hub-direct-sparse-publisher.py
+      ../../tests/fleet/_hub-perf.py
+      ../../tests/fleet/_hub-direct-runtime-observations.py
+      ../../tests/fleet/_hub-direct-observations.py
+      ../../tests/fleet/_hub-direct-read-parity.py
+    ];
+
+    meta = {
+      description = "aos-hub packaged with wrangler + the Worker wasm dist as a Cloudflare installer";
+      homepage = "https://github.com/andyl-technologies/aos";
+      license = "MIT";
+    };
+  }

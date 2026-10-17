@@ -42,6 +42,8 @@ use async_trait::async_trait;
 use serde::Serialize;
 use url::Url;
 
+mod upload;
+
 use super::readback;
 use super::{
     ChannelAdvance, ChannelExpectation, PublicationRequest, PublishedSurface, SignedReceipt,
@@ -137,40 +139,49 @@ impl StaticSurface {
         selected: &[&RegistryPublicationObjectInput],
         printer: &Printer,
     ) -> Result<()> {
-        let mut ordered = selected.to_vec();
-        ordered.sort_by_key(|object| (upload_rank(object), object.path.clone()));
-        let total = ordered.len();
-        for (index, object) in ordered.into_iter().enumerate() {
-            let immutable = object.kind != "mutable_pointer";
-            if immutable && self.holds_identical(object).await? {
-                continue;
-            }
-            let snapshot = named_snapshot(pinned, object)?;
-            if immutable {
-                aos_package::registry::transport::RegistryStorage::new(self.backend.as_ref())
-                    .put_object(&object.path, snapshot.path(), &object.sha256)
-                    .await?;
-            } else {
-                self.backend
-                    .put_static_file(
-                        &object.path,
-                        snapshot.path(),
-                        Some(&object.media_type),
-                        Some(MUTABLE_CACHE_CONTROL),
-                        None,
-                        Some(&object.sha256),
-                    )
-                    .await
-                    .with_context(|| format!("uploading static surface object {}", object.path))?;
-            }
-            if (index + 1) % 1000 == 0 {
-                printer.info(&format!(
-                    "Uploaded {}/{total} static surface objects",
-                    index + 1
-                ));
-            }
+        upload::ordered(
+            selected,
+            |object| self.upload_one(pinned, object),
+            |completed| {
+                if completed % 1000 == 0 {
+                    printer.info(&format!(
+                        "Uploaded {completed}/{} static surface objects",
+                        selected.len()
+                    ));
+                }
+            },
+        )
+        .await
+    }
+
+    /// Keeps each snapshot alive through the existing backend's completed PUT.
+    async fn upload_one(
+        &self,
+        pinned: &PinnedPublication,
+        object: &RegistryPublicationObjectInput,
+    ) -> Result<()> {
+        let immutable = object.kind != "mutable_pointer";
+        if immutable && self.holds_identical(object).await? {
+            return Ok(());
         }
-        Ok(())
+        let snapshot = named_snapshot(pinned, object)?;
+        if immutable {
+            aos_package::registry::transport::RegistryStorage::new(self.backend.as_ref())
+                .put_object(&object.path, snapshot.path(), &object.sha256)
+                .await
+        } else {
+            self.backend
+                .put_static_file(
+                    &object.path,
+                    snapshot.path(),
+                    Some(&object.media_type),
+                    Some(MUTABLE_CACHE_CONTROL),
+                    None,
+                    Some(&object.sha256),
+                )
+                .await
+        }
+        .with_context(|| format!("uploading static surface object {}", object.path))
     }
 
     async fn holds_identical(&self, object: &RegistryPublicationObjectInput) -> Result<bool> {
@@ -793,6 +804,77 @@ mod tests {
                 "info/refs",
                 "HEAD"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn immutable_backend_conflict_preserves_bytes_and_withholds_head() {
+        use sha2::{Digest as _, Sha256};
+
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(source.path().join("objects/aa")).unwrap();
+        std::fs::create_dir_all(destination.path().join("objects/aa")).unwrap();
+        std::fs::write(source.path().join("objects/aa/object"), b"admitted object").unwrap();
+        std::fs::write(source.path().join("HEAD"), b"new head").unwrap();
+        std::fs::write(
+            destination.path().join("objects/aa/object"),
+            b"foreign object",
+        )
+        .unwrap();
+        std::fs::write(destination.path().join("HEAD"), b"old head").unwrap();
+        let object = RegistryPublicationObjectInput {
+            path: "objects/aa/object".into(),
+            kind: "immutable".into(),
+            byte_size: 15,
+            sha256: hex::encode(Sha256::digest(b"admitted object")),
+            media_type: "application/octet-stream".into(),
+        };
+        let head = RegistryPublicationObjectInput {
+            path: "HEAD".into(),
+            kind: "mutable_pointer".into(),
+            byte_size: 8,
+            sha256: hex::encode(Sha256::digest(b"new head")),
+            media_type: "text/plain".into(),
+        };
+        let pinned = PinnedPublication {
+            request: aos_remote::hub_types::BeginRegistryPublicationRequest {
+                objects: vec![object.clone(), head.clone()],
+                ..Default::default()
+            },
+            root: std::fs::File::open(source.path()).unwrap().into(),
+        };
+        let origin = Url::from_directory_path(destination.path())
+            .unwrap()
+            .to_string();
+        let surface = StaticSurface::connect(
+            PlannedSurface {
+                role: SurfaceRole::Production,
+                kind: SurfaceKind::Static,
+                origin,
+                readback_origin: None,
+                identity: "conditional-backend".into(),
+            },
+            "example/registry",
+            &aos_cache::backend::AuthOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let error = surface
+            .upload(&pinned, &[&head, &object], &Printer::new(0, true, false))
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("conflict"));
+        assert_eq!(
+            std::fs::read(destination.path().join("objects/aa/object")).unwrap(),
+            b"foreign object"
+        );
+        assert_eq!(
+            std::fs::read(destination.path().join("HEAD")).unwrap(),
+            b"old head"
         );
     }
 

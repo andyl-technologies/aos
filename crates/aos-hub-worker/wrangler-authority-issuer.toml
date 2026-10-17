@@ -1,0 +1,35 @@
+# Dedicated issuer script template. Deploying it alone enables nothing: the
+# operator must explicitly accept a qualified timing profile and configure all
+# permanent identities plus separate publisher/renewal secrets and signing seed.
+# No R2, HubDb, provider credentials, queue or website bindings belong here.
+name = "aos-hub-authority-issuer"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-09-23"
+
+[vars]
+HUB_RUNTIME_ROLE = "authority_issuer"
+# HUB_AUTHORITY_CLOCK_ACCEPTANCE = "operator_qualified"
+# HUB_AUTHORITY_TIMING_PROFILE = '<exact reviewed LeaseTimingProfile JSON>'
+# HUB_AUTHORITY_CLOCK_UNCERTAINTY_SECS = '<qualified nonzero decimal seconds>'
+# HUB_AUTHORITY_ISSUER_RESOURCE_ID = '<permanent namespace identity>'
+# HUB_AUTHORITY_REGISTRY_OBJECT_ID = '<externally retained actual fixed ledger DO ID>'
+# HUB_AUTHORITY_ISSUER_NAMESPACE_PROBE_ID = '<actual ID for issuer-namespace-probe-v1>'
+# HUB_AUTHORITY_ISSUER_RUNTIME_ID = '<dedicated immutable script identity>'
+# HUB_AUTHORITY_ISSUER_KEY_ID = '<externally pinned key id>'
+# HUB_EXTERNAL_GUARD_NAMESPACE_ID = '<permanent object guard namespace>'
+# HUB_EXTERNAL_STORAGE_EXECUTOR_ID = '<immutable executor identity>'
+# Secret HUB_AUTHORITY_PUBLISHER_KEY: Native publisher and issuer only.
+# Secret HUB_AUTHORITY_RENEWAL_KEY: separately authorized renewal callers.
+# Secret HUB_AUTHORITY_ISSUER_SEED: lowercase hex32bytes, issuer only.
+
+[[durable_objects.bindings]]
+name = "HYBRID_AUTHORITY_STATE"
+class_name = "HybridAuthorityState"
+
+[[durable_objects.bindings]]
+name = "HYBRID_AUTHORITY_ISSUERS"
+class_name = "HybridAuthorityIssuer"
+
+[[migrations]]
+tag = "authority-issuer-v1"
+new_sqlite_classes = ["HybridAuthorityState", "HybridAuthorityIssuer"]

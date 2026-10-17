@@ -1,5 +1,5 @@
--- Retires provider-plan assertions while preserving enrollment and replay protection.
-CREATE TABLE native_ability_deployment_reporters(
+-- Enrolls Native deployment reporters without changing the immutable baseline.
+CREATE TABLE ability_deployment_reporters(
   registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
   deployment KEYTEXT128 NOT NULL,
   principal_kind KEYTEXT32 NOT NULL,
@@ -40,13 +40,5 @@ CREATE TABLE native_ability_deployment_reporters(
   CHECK(canonical_json IS NULL OR (length(canonical_json) > 0 AND length(canonical_json) <= 33554432))
 );
 
-INSERT INTO native_ability_deployment_reporters(
-  registry_id, deployment, principal_kind, principal_id, principal_ref, active,
-  resource_version, current_sequence, last_mutation_plan_id
-)
-SELECT registry_id, deployment, principal_kind, principal_id, principal_ref, active,
-       resource_version, current_sequence, last_mutation_plan_id
-FROM ability_deployment_reporters;
-
-DROP TABLE ability_deployment_reporters;
-ALTER TABLE native_ability_deployment_reporters RENAME TO ability_deployment_reporters;
+CREATE INDEX ability_deployment_overlay_anchor
+ON ability_deployment_reporters(registry_id, registry_commit, package_name, package_version, platform, active, expires_at);

@@ -14,7 +14,7 @@
 //!   [`ExportTrailer::write_import_stream`], the framing words that
 //!   `nix-store --import` expects around each path).
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use anyhow::{Context, Result};
 
@@ -175,11 +175,28 @@ impl ExportTrailer {
     ///
     /// Returns an error if any write to `w` fails.
     pub fn write_import_stream<W: Write>(&self, w: &mut W, nar_data: &[u8]) -> Result<()> {
+        self.write_import_stream_from(w, &mut std::io::Cursor::new(nar_data))
+    }
+
+    /// Streams a single-path import from a reader without buffering the NAR.
+    ///
+    /// The framing and metadata match [`Self::write_import_stream`]. The caller
+    /// supplies an already authenticated archive; this method copies its bytes
+    /// until EOF and does not interpret or verify its contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the archive or writing the stream fails.
+    pub fn write_import_stream_from<W: Write, R: Read + ?Sized>(
+        &self,
+        w: &mut W,
+        nar: &mut R,
+    ) -> Result<()> {
         // Path-follows marker.
         w.write_all(&1u64.to_le_bytes())
             .context("writing import path marker")?;
         // The NAR archive.
-        w.write_all(nar_data).context("writing NAR data")?;
+        std::io::copy(nar, w).context("writing NAR data")?;
         // magic + path + references + deriver + signatures.
         self.write_to(w)?;
         // End-of-stream marker.
@@ -209,6 +226,74 @@ fn write_nix_string_to<W: Write>(w: &mut W, s: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_import_preserves_export_framing_and_metadata() {
+        let payload = b"archive bytes";
+        let references = vec!["/nix/store/def456-glibc".to_owned()];
+        let path = "/nix/store/abc123-hello";
+        let deriver = Some("/nix/store/ghi789-hello.drv");
+        let trailer = ExportTrailer::new(path, references.clone(), deriver.map(str::to_owned));
+
+        let mut actual = Vec::new();
+        trailer
+            .write_import_stream_from(&mut actual, &mut std::io::Cursor::new(payload))
+            .unwrap();
+
+        let mut expected = 1_u64.to_le_bytes().to_vec();
+        expected.extend(build_export(payload, path, &references, deriver).unwrap());
+        expected.extend(0_u64.to_le_bytes());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn streamed_import_reads_large_payload_in_bounded_chunks() {
+        struct GeneratedArchive {
+            remaining: usize,
+        }
+
+        impl Read for GeneratedArchive {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                assert!(buffer.len() <= 64 * 1024);
+                let count = buffer.len().min(self.remaining);
+                buffer[..count].fill(0x5a);
+                self.remaining -= count;
+                Ok(count)
+            }
+        }
+
+        let mut archive = GeneratedArchive {
+            remaining: 8 * 1024 * 1024,
+        };
+        let trailer = ExportTrailer::new("/nix/store/abc123-large", Vec::new(), None);
+
+        trailer
+            .write_import_stream_from(&mut std::io::sink(), &mut archive)
+            .unwrap();
+
+        assert_eq!(archive.remaining, 0);
+    }
+
+    #[test]
+    fn streamed_import_does_not_append_trailer_after_read_failure() {
+        struct FailedArchive;
+
+        impl Read for FailedArchive {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("archive read failed"))
+            }
+        }
+
+        let trailer = ExportTrailer::new("/nix/store/abc123-broken", Vec::new(), None);
+        let mut output = Vec::new();
+
+        assert!(
+            trailer
+                .write_import_stream_from(&mut output, &mut FailedArchive)
+                .is_err()
+        );
+        assert_eq!(output, 1_u64.to_le_bytes());
+    }
 
     #[test]
     fn export_has_magic() {

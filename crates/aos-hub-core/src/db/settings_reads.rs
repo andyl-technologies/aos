@@ -86,10 +86,9 @@ impl Database {
         page_size: u32,
         after_id: &str,
     ) -> Result<DeliveryIdentityPage<RouteRecord>> {
-        let (registry, cache) = surface.ids();
-        let scope_predicate = match surface {
-            SurfaceTarget::Registry(_) => "r.registry_id = ?1",
-            SurfaceTarget::BinaryCache(_) => "r.cache_id = ?2",
+        let (scope_predicate, surface_id) = match surface {
+            SurfaceTarget::Registry(id) => ("r.registry_id = ?1", id),
+            SurfaceTarget::BinaryCache(id) => ("r.cache_id = ?1", id),
         };
         let limit = i64::from(if page_size == 0 {
             50
@@ -104,10 +103,10 @@ impl Database {
             r.endpoint_id, r.endpoint_generation, r.base_path, r.registry_id, r.cache_id,
             r.mode, r.enabled, r.resource_version, r.created_at, r.updated_at
             FROM routes r JOIN route_heads h ON h.route_id = r.id
-            WHERE {scope_predicate} AND r.id > ?3
-            ORDER BY r.id LIMIT ?4"
+            WHERE {scope_predicate} AND r.id > ?2
+            ORDER BY r.id LIMIT ?3"
                 ),
-                &vals![registry, cache, after_id, limit + 1],
+                &vals![surface_id, after_id, limit + 1],
             )
             .await?;
         let mut records = rows
@@ -158,7 +157,7 @@ impl Database {
                         g.observed_generation, g.reconciliation_state, g.reconciliation_error,
                         g.resource_version, g.created_at, g.updated_at
                    FROM gateways g
-                  WHERE (g.owner_scope_key = ?1 OR (?4 AND EXISTS (
+                  WHERE (g.owner_scope_key = ?1 OR (?4 = 1 AND EXISTS (
                       SELECT 1 FROM gateway_revision_route_scopes grant_record
                        WHERE grant_record.gateway_id = g.id
                          AND grant_record.generation = g.desired_generation

@@ -52,16 +52,18 @@ pub(super) fn assemble(
     }
 
     let layout = root.join("layout");
-    let roots = vec![
+    let mut roots = vec![
         &release.oci.index,
         &release.nix.closure,
-        &release.evidence.abilities,
         &release.evidence.sbom,
         &release.evidence.source,
         &release.evidence.license,
         &release.evidence.provenance,
         &release.evidence.signature,
     ];
+    roots.extend(release.evidence.abilities.as_ref());
+    roots.extend(release.evidence.deployment.as_ref());
+
     let mut graph = BTreeMap::new();
     for descriptor in roots {
         visit(&layout, descriptor, &mut graph)?;

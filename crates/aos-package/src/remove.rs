@@ -135,6 +135,8 @@ async fn run_inner(
         confirm(printer)?;
     }
 
+    crate::install::native::validate_package_envelopes(&installed, &[])?;
+
     let profile = Profile::open(config.scope)?;
 
     // Step 7: Create new generation, copying roots except removed ones.
@@ -255,6 +257,8 @@ pub async fn run_autoremove(
     if !yes && !config.settings.assume_yes {
         confirm(printer)?;
     }
+
+    crate::install::native::validate_package_envelopes(&installed, &[])?;
 
     let profile = Profile::open(config.scope)?;
 

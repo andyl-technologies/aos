@@ -303,6 +303,12 @@ class ChromePipe:
 
     @staticmethod
     def _tracks_request(url):
+        # Navigation failures can happen before any console asset or RPC runs.
+        # Record only the path and timing, never login bodies or query values.
+        path = urllib.parse.urlsplit(url).path
+        if path in {"/", "/login", "/login/password", "/logout"} or path.startswith("/-/"):
+            return True
+
         return any(marker in url for marker in (
             "/_assets/hub-console",
             "/aos.hub.v1.",
@@ -316,7 +322,7 @@ class ChromePipe:
         return round((end - start) * 1000, 3)
 
     def request_timing_report(self):
-        """Returns nonsecret asset and RPC timing records in request order."""
+        """Returns nonsecret navigation, asset and RPC timings in request order."""
         fields = (
             "path",
             "method",
@@ -506,7 +512,8 @@ class HubSettingsSmoke:
             time.sleep(0.05)
         raise AssertionError(f"timed out waiting for {description}")
 
-    def navigate(self, path):
+    def wait_for_page_requests(self, destination):
+        """Waits for ordinary page reads before leaving the current document."""
         # Finish the current page's reads before ordinary full navigation. The
         # explicit cancellation test uses a held response and an SPA link.
         deadline = time.monotonic() + self.timeout
@@ -520,7 +527,10 @@ class HubSettingsSmoke:
             if not pending:
                 break
             if time.monotonic() >= deadline:
-                raise AssertionError(f"page requests did not finish before navigating to {path}")
+                raise AssertionError(f"page requests did not finish before navigating to {destination}")
+
+    def navigate(self, path):
+        self.wait_for_page_requests(path)
 
         url = urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
         self.chrome.call("Page.navigate", {"url": url})
@@ -1093,6 +1103,7 @@ class HubSettingsSmoke:
             self.check(self.chrome.evaluate("performance.timeOrigin") == origin, "branding titles update without reloading SPA navigation")
             self.check(self.chrome.evaluate("document.title") == f"Branding — {trial['Site title']}", "back navigation restores the branded page title")
 
+            self.wait_for_page_requests("/")
             self.chrome.call("Page.navigate", {"url": self.base_url + "/"})
             self.wait_for("location.pathname === '/' && document.readyState === 'complete' && document.querySelector('.brand') !== null", "public browse page")
             self.check(self.chrome.evaluate("document.title").endswith(" — " + trial["Site title"]), "public browse uses the configured tab title")
@@ -1238,6 +1249,20 @@ class HubSettingsSmoke:
         self.assert_settings_page("registry overview")
         self.check(
             self.chrome.evaluate(
+                "document.body.textContent.includes("
+                "\"Publish and index the first release to edit the registry's committed metadata.\")"
+            ),
+            "empty registry explains its first-publication prerequisite",
+        )
+        self.check(
+            not any(
+                request.get("path") == "/aos.hub.v1.RegistryService/GetRegistryMetadata"
+                for request in self.chrome.request_timing_report()
+            ),
+            "empty registry avoids requesting unavailable committed metadata",
+        )
+        self.check(
+            self.chrome.evaluate(
                 "Array.from(document.querySelectorAll('.overview-actions a'))"
                 ".some(link => link.textContent.trim() === 'View containers')"
             ),
@@ -1336,6 +1361,28 @@ class HubSettingsSmoke:
         self.chrome.drain_events(0.25)
 
     def report(self, failure=None):
+        failure_page = None
+        if failure is not None:
+            try:
+                # Capture headings and structural state, excluding form values,
+                # cookies, session metadata, and response bodies.
+                failure_page = self.chrome.evaluate("""
+                    (() => ({
+                        path: location.pathname,
+                        title: document.title,
+                        readyState: document.readyState,
+                        headings: Array.from(document.querySelectorAll('h1, h2'))
+                            .slice(0, 20).map(element => element.textContent.slice(0, 200)),
+                        messages: Array.from(document.querySelectorAll('.workflow-message p'))
+                            .slice(0, 10).map(element => element.textContent.slice(0, 500)),
+                        mainClass: document.querySelector('main')?.className ?? null,
+                        scopeHeaders: document.querySelectorAll('.scope-header').length,
+                        workflowStacks: document.querySelectorAll('.workflow-stack').length,
+                    }))()
+                """)
+            except Exception as error:
+                failure_page = {"diagnosticFailure": str(error)[:300]}
+
         return {
             "baseUrl": self.base_url,
             "checks": self.checks,
@@ -1348,6 +1395,7 @@ class HubSettingsSmoke:
             "expectedNetworkCancellations": self.chrome.expected_cancellations,
             "requestTimings": self.chrome.request_timing_report(),
             "requestTimingSummary": self.chrome.request_timing_summary(),
+            "failurePage": failure_page,
             "failure": str(failure) if failure is not None else None,
         }
 

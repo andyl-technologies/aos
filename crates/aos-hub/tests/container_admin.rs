@@ -5,9 +5,7 @@ use std::sync::Arc;
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{
-    Database, OciRegistryPurgeFenceAction, PlanOciGc, PlanOciRegistryPurgeFence, TokenAuth,
-};
+use aos_hub::db::{Database, OciRegistryPurgeFenceAction, PlanOciGc, PlanOciRegistryPurgeFence};
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use aos_proto_types as pb;
@@ -64,17 +62,19 @@ impl RunningHub {
             .registry_authorization_scope(registry_id)
             .await
             .unwrap();
-        self.keys
-            .mint(
-                &TokenAuth {
-                    token_id: token_id.to_string(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::parse(&scope),
-                    permissions,
-                },
-                900,
+        let (_, secret) = self
+            .db
+            .create_token(
+                Principal::user(user_id),
+                &scope,
+                &permissions,
+                Some(token_id),
+                None,
             )
-            .unwrap()
+            .await
+            .unwrap();
+        let auth = self.db.validate_token(&secret).await.unwrap().unwrap();
+        self.keys.mint(&auth, 900).unwrap()
     }
 
     async fn response<Req>(

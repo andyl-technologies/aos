@@ -90,10 +90,31 @@ pub(crate) async fn validate_candidate(
         let pack_index_object = keymap::is_git_pack_index_path(&pointer.path);
         let current = if encoded_object || pack_index_object {
             None
+        } else if bundle_name.is_some() {
+            // Only the predecessor hash is needed for encoded bundles; the
+            // prepared replacement is validated below without fetching the old body.
+            let evidence = surface
+                .inventory_evidence_bounded(&pointer.path, pointer_limit as u64)
+                .await?;
+            if let Some(evidence) = &evidence {
+                ensure!(
+                    evidence.size >= 0 && evidence.size as u64 <= pointer_limit as u64,
+                    "prepared bundle predecessor exceeds its semantic limit"
+                );
+            }
+            let current_hash = evidence
+                .as_ref()
+                .map(|evidence| format!("sha256:{}", hex::encode(evidence.sha256)));
+            ensure!(
+                current_hash == pointer.expected_sha256,
+                "stage publication pointer '{}' changed since preparation",
+                pointer.path
+            );
+            None
         } else {
             surface.fetch_bounded(&pointer.path, pointer_limit).await?
         };
-        if !encoded_object && !pack_index_object {
+        if !encoded_object && !pack_index_object && bundle_name.is_none() {
             let current_hash = current
                 .as_ref()
                 .map(|bytes| format!("sha256:{}", hex::encode(Sha256::digest(bytes))));
@@ -114,18 +135,16 @@ pub(crate) async fn validate_candidate(
         } else if pack_index_object {
             let pack_path = pack_index::companion_pack_path(&pointer.path)
                 .context("invalid staged pack index path")?;
-            ensure!(
-                inventory.contains_key(pack_path.as_str()),
-                "staged pack index has no verified companion pack"
-            );
-            let pack = surface
-                .fetch_bounded(
-                    &pack_path,
-                    usize::try_from(pack_index::MAX_PUBLISHED_PACK_BYTES)?,
-                )
-                .await?
-                .context("staged companion pack is unavailable")?;
-            pack_index::validate_against_pack(&pointer.path, &pointer.bytes, &pack)?;
+            let companion = inventory
+                .get(pack_path.as_str())
+                .context("staged pack index has no verified companion pack")?;
+            let expected = companion
+                .sha256
+                .strip_prefix("sha256:")
+                .context("staged companion SHA-256 is malformed")?;
+            surface
+                .verify_git_pack_index(&pointer.path, &pointer.bytes, Some(expected))
+                .await?;
         } else if let Some(bundle_name) = bundle_name {
             validate_git_bundle(bundle_name, &pointer.bytes, &prepared)?;
         } else if pointer.path == "HEAD" {

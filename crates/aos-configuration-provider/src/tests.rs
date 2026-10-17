@@ -17,6 +17,38 @@ fn run(action: &str, document: &Value, state: &Path) -> Result<Value> {
 }
 
 #[test]
+fn resolved_generation_prerequisite_preserves_strict_file_input() {
+    let root = TempDir::new().unwrap();
+    let state = root.path().join("state");
+    let mut invocation = document(root.path(), "configured");
+    invocation["input"]["configurationGeneration"] =
+        "/nix/store/00000000000000000000000000000000-configuration-generation".into();
+
+    assert_eq!(
+        run("observe", &invocation, &state).unwrap()["status"],
+        "absent"
+    );
+    run("apply", &invocation, &state).unwrap();
+    assert_eq!(
+        run("observe", &invocation, &state).unwrap()["status"],
+        "current"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("example")).unwrap(),
+        "configured"
+    );
+
+    invocation["input"]["configurationGeneration"] = json!({"unresolved": true});
+    assert!(run("observe", &invocation, &state).is_err());
+    invocation["input"]
+        .as_object_mut()
+        .unwrap()
+        .remove("configurationGeneration");
+    invocation["input"]["unexpected"] = true.into();
+    assert!(run("apply", &invocation, &state).is_err());
+}
+
+#[test]
 fn updates_metadata_and_rejects_foreign_edits() {
     let root = TempDir::new().unwrap();
     let state = root.path().join("state");

@@ -395,29 +395,42 @@ mod tests {
     }
 
     #[test]
-    fn native_report_migration_preserves_enrollment_and_replay_fence() {
-        const NATIVE_REPORT_MIGRATION_VERSION: usize = 8;
-        let migration_index = NATIVE_REPORT_MIGRATION_VERSION - 1;
-
+    fn native_report_migration_creates_enrollment_with_a_replay_fence() {
+        let migration_index = super::super::MIGRATIONS.len() - 1;
         let connection = rusqlite::Connection::open_in_memory().unwrap();
-        for migration in super::super::MIGRATIONS.iter().take(migration_index) {
+        for migration in &super::super::MIGRATIONS[..migration_index] {
             connection.execute_batch(migration).unwrap();
         }
-        connection.execute("INSERT INTO ability_deployment_reporters(
-            registry_id,deployment,principal_kind,principal_id,principal_ref,active,resource_version,current_sequence,last_mutation_plan_id,
-            registry_commit,package_name,package_version,platform,manifest_sha256,package_digest,canonical_json,reported_at,received_at,expires_at)
-            VALUES(42,'production','user',1,'reporter',1,7,99,'enrolled','old','sample','1','x86_64-linux','old','old',X'7B7D',100,100,160)",[]).unwrap();
 
         connection
             .execute_batch(super::super::MIGRATIONS[migration_index])
             .unwrap();
-        let (version,sequence,report):(i64,i64,Option<Vec<u8>>)=connection.query_row(
-            "SELECT resource_version,current_sequence,canonical_json FROM ability_deployment_reporters",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        connection
+            .execute(
+                "INSERT INTO ability_deployment_reporters(
+                registry_id,deployment,principal_kind,principal_id,principal_ref,
+                active,resource_version,current_sequence,last_mutation_plan_id)
+             VALUES(42,'production','user',1,'reporter',1,7,99,'enrolled')",
+                [],
+            )
+            .unwrap();
+        let (version, sequence, report): (i64, i64, Option<Vec<u8>>) = connection.query_row(
+            "SELECT resource_version,current_sequence,canonical_json FROM ability_deployment_reporters",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
 
         assert_eq!(version, 7);
         assert_eq!(sequence, 99);
         assert!(report.is_none());
-        connection.execute("UPDATE ability_deployment_reporters SET document_sha256=NULL,transaction_sha256=NULL",[]).unwrap();
+        assert!(
+            connection
+                .execute(
+                    "UPDATE ability_deployment_reporters SET current_sequence=-1",
+                    [],
+                )
+                .is_err()
+        );
     }
 
     #[tokio::test]

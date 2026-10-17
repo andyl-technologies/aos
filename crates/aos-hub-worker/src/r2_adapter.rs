@@ -34,6 +34,8 @@ pub struct R2ListObject {
     pub size: u64,
     /// Provider-issued strong entity tag.
     pub etag: String,
+    /// Opaque identity of this particular upload at the key.
+    pub version: String,
 }
 
 /// Provider identity returned by one body-free R2 metadata lookup.
@@ -43,6 +45,8 @@ pub struct R2HeadObject {
     pub size: u64,
     /// Provider-issued strong entity tag.
     pub etag: String,
+    /// Opaque identity of this particular upload at the key.
+    pub version: String,
 }
 
 /// Narrow raw operations implemented by the real `worker::Bucket` adapter.
@@ -108,9 +112,13 @@ where
         let Some(object) = self.adapter.head(key).await? else {
             return Ok(None);
         };
-        strong_if_match_etag(&object.etag)
+        anyhow::ensure!(
+            aos_hub_core::storage_work::valid_provider_version(&object.version),
+            "R2 head {key} returned an invalid upload version"
+        );
+        let etag = strong_if_match_etag(&object.etag)
             .with_context(|| format!("R2 head {key} returned an invalid strong ETag"))?;
-        Ok(Some(object))
+        Ok(Some(R2HeadObject { etag, ..object }))
     }
 
     /// Deletes one object only while its provider identity still matches the
@@ -175,10 +183,11 @@ where
         {
             bail!("invalid R2 listing request");
         }
-        let page = self.adapter.list(prefix, cursor, limit).await?;
+        let mut page = self.adapter.list(prefix, cursor, limit).await?;
         if page.objects.len() > limit
             || page.objects.iter().any(|object| {
                 object.key.is_empty()
+                    || !aos_hub_core::storage_work::valid_provider_version(&object.version)
                     || aos_hub_core::surface_write::strong_if_match_etag(&object.etag).is_err()
             })
             || page.cursor.as_ref().is_some_and(|value| {
@@ -187,6 +196,9 @@ where
             || (page.cursor.is_some() && page.cursor.as_deref() == cursor)
         {
             bail!("invalid R2 listing response");
+        }
+        for object in &mut page.objects {
+            object.etag = aos_hub_core::surface_write::strong_if_match_etag(&object.etag)?;
         }
         Ok(page)
     }
@@ -316,6 +328,7 @@ mod tests {
                     key: format!("{prefix}a"),
                     size: self.size.unwrap_or(0),
                     etag: "fixture-etag".into(),
+                    version: "fixture-upload-version".into(),
                 }],
                 cursor: Some("next".into()),
             })
@@ -325,6 +338,7 @@ mod tests {
             Ok(self.size.map(|size| R2HeadObject {
                 size,
                 etag: "fixture-etag".into(),
+                version: "fixture-upload-version".into(),
             }))
         }
         async fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
@@ -385,14 +399,12 @@ mod tests {
     #[tokio::test]
     async fn contract_covers_listing_size_before_body_and_multipart_lifecycle() {
         let contract = fake(4, vec![1; 4]);
+        let page = contract.list("p/", None, 2).await.unwrap();
+        assert_eq!(page.cursor.as_deref(), Some("next"));
+        assert_eq!(page.objects[0].etag, "\"fixture-etag\"");
         assert_eq!(
-            contract
-                .list("p/", None, 2)
-                .await
-                .unwrap()
-                .cursor
-                .as_deref(),
-            Some("next")
+            contract.head("p/o").await.unwrap().unwrap().etag,
+            "\"fixture-etag\""
         );
         assert_eq!(
             contract.read_bounded("p/o", 4).await.unwrap(),
@@ -466,6 +478,7 @@ mod tests {
             etag: etag.map(str::to_string),
             content_hash: None,
             size,
+            expected_provider_version: None,
         }
     }
 

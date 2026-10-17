@@ -32,7 +32,7 @@ pub mod login;
 pub use aos_proto_types as hub_types;
 pub use client::AosClient;
 pub use hub::hub_rpc;
-pub use hub::{HubClient, HubRpc, HubSurfaceRef};
+pub use hub::{DirectHubControl, HubClient, HubRpc, HubSurfaceRef};
 pub use login::{
     DeviceAuthorization, DeviceTokenPoll, TokenGrant, exchange_token, poll_device_token,
     refresh_token, revoke_refresh_token, start_device_authorization,
@@ -46,4 +46,12 @@ pub use aos_proto::aos::gc::v1::{EvictionCandidate, GcResponse};
 // `aos-proto-types` rather than the connectrpc `aos-proto` types.
 pub use aos_proto_types::{
     HashRangeV1, Placement, PlacementObservation, PlacementSpec, PlacementStatus,
+};
+
+#[cfg(unix)]
+pub use hub::{
+    DirectHubAuthentication, DirectProvisioningAuthentication, DirectStageFile, DirectStagePath,
+    DirectUploadCoordinator, DirectUploadOptions, PinnedLegacyBearer, PreparedDirectPublication,
+    PublicationTransferDiscovery, checkpoint_namespace, commit_direct_publication,
+    discover_publication_transport, prepare_direct_publication, publication_inventory_digest,
 };

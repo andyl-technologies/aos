@@ -12,6 +12,8 @@ use leptos::prelude::*;
 use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
+mod direct;
+
 /// Renders registry publication begin, resume, upload, commit, and abort flows.
 #[component]
 pub(super) fn RegistryPublicationWorkflow(client: ApiClient, registry_id: String) -> impl IntoView {
@@ -72,13 +74,7 @@ fn PublicationBegin(
         error.set(None);
         busy.set(true);
         spawn_local(async move {
-            match client
-                .call::<_, aos_proto_types::RegistryPublication>(
-                    aos_proto_types::PUBLISH_SERVICE_BEGIN_REGISTRY_PUBLICATION_PATH,
-                    &request,
-                )
-                .await
-            {
+            match direct::begin(&client, request).await {
                 Ok(response) => publication.set(Some(response)),
                 Err(failure) => error.set(Some(failure.to_string())),
             }
@@ -210,7 +206,7 @@ fn PublicationSession(
             <p>"Choose the exact file for each path. The Hub verifies declared size and SHA-256 on every required placement. Mutable pointers remain blocked until immutable objects complete."</p>
             <div class="binding-list">
                 {value.objects.iter().cloned().map(|object| view! {
-                    <PublicationObjectUpload client=client.clone() object=object/>
+                    <PublicationObjectUpload client=client.clone() publication=publication owner=value.clone() object=object/>
                 }).collect_view()}
             </div>
             <PublicationLifecycle client=client publication=publication value=value/>
@@ -221,14 +217,18 @@ fn PublicationSession(
 #[component]
 fn PublicationObjectUpload(
     client: ApiClient,
+    publication: RwSignal<Option<aos_proto_types::RegistryPublication>>,
+    owner: aos_proto_types::RegistryPublication,
     object: aos_proto_types::RegistryPublicationObject,
 ) -> impl IntoView {
     let status = RwSignal::new(None::<String>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let expected_size = object.byte_size;
-    let upload_url = object.upload_url.clone();
-    let upload_available = !upload_url.is_empty();
+    let upload_available = !object.verified
+        && (object.kind == "immutable" && owner.state == "preparing"
+            || object.kind == "mutable_pointer" && owner.state == "writing_pointers");
+    let selected_object = object.clone();
     let on_file = move |event: Event| {
         let input = event_target::<leptos::web_sys::HtmlInputElement>(&event);
         let Some(file) = input.files().and_then(|files| files.get(0)) else {
@@ -242,13 +242,17 @@ fn PublicationObjectUpload(
             return;
         }
         let client = client.clone();
-        let upload_url = upload_url.clone();
+        let object = selected_object.clone();
+        let owner = owner.clone();
         error.set(None);
         status.set(None);
         busy.set(true);
         spawn_local(async move {
-            match client.put_publication_object(&upload_url, &file).await {
-                Ok(()) => status.set(Some("Verified on every required placement".to_string())),
+            match direct::upload(&client, &owner, &object, file).await {
+                Ok(value) => {
+                    publication.set(Some(value));
+                    status.set(Some("Verified on every required placement".to_string()));
+                }
                 Err(failure) => error.set(Some(failure.to_string())),
             }
             busy.set(false);

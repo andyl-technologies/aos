@@ -478,7 +478,7 @@ impl Database {
                 AND publication.registry_id = bundle.registry_id
               WHERE bundle.bundle_digest = ?1 AND bundle.registry_id = ?2
                 AND publication.state = 'ready'
-                AND ?5 = bundle.staging_deployment_id AND ?8 IS NULL";
+                AND ?5 = bundle.staging_deployment_id AND CAST(?8 AS VARCHAR) IS NULL";
         self.backend
             .checked_batch(&[CheckedStatement::exact(
                 sql,
@@ -1995,7 +1995,8 @@ mod tests {
         create_channel(&db, bundle.registry_id, 1, "edge").await;
         drop(db);
 
-        // The retained operation lives in the frozen baseline ledger.
+        // Stage retained history without the successor ledger. The old marker
+        // must refuse serving; the additive SQL copy is tested separately.
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
             .execute(
@@ -2015,7 +2016,62 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        let db = Database::open(&path).await.unwrap();
+        async fn fingerprint(backend: &dyn crate::backend::Backend) -> String {
+            let schema = backend
+                .query(
+                    "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name",
+                    &[],
+                )
+                .await
+                .unwrap();
+            let tables = backend
+                .query(
+                    "SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name",
+                    &[],
+                )
+                .await
+                .unwrap();
+            let mut payloads = Vec::new();
+            for table in tables {
+                let name: String = table.get(0).unwrap();
+                let sql = format!("SELECT * FROM \"{}\"", name.replace('"', "\"\""));
+                let mut rows = backend
+                    .query(&sql, &[])
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|row| serde_json::to_string(row).unwrap())
+                    .collect::<Vec<_>>();
+                rows.sort();
+                payloads.push((name, rows));
+            }
+            serde_json::to_string(&(schema, payloads)).unwrap()
+        }
+
+        let backend = crate::backend::SqlxBackend::connect_sqlite(path.to_str().unwrap())
+            .await
+            .unwrap();
+        let before = fingerprint(&backend).await;
+
+        let error = match Database::open(&path).await {
+            Ok(_) => panic!("old channel ledger must refuse serving"),
+            Err(error) => error,
+        };
+
+        assert!(format!("{error:#}").contains(crate::backend::schema_lineage::RESET_REQUIRED));
+        assert_eq!(fingerprint(&backend).await, before);
+
+        // Explicit script replay is an isolated legacy SQL compatibility check,
+        // not an online upgrade or a serving-identity stamp.
+        crate::backend::Backend::execute_batch(
+            &backend,
+            include_str!("release_channel_advances.sql"),
+        )
+        .await
+        .unwrap();
+        let db = Database {
+            backend: Box::new(backend),
+        };
         let version: i64 = db
             .backend
             .query_opt("SELECT version FROM schema_version", &[])
@@ -2024,7 +2080,7 @@ mod tests {
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(version, super::super::MIGRATIONS.len() as i64);
+        assert_eq!(version, 1);
         let retained = db
             .release_channel_operation(bundle.registry_id, "edge", 1)
             .await
@@ -2048,7 +2104,8 @@ mod tests {
 
     #[test]
     fn per_train_ledger_migration_replays_after_any_interruption() {
-        let migration = crate::backend::split_statements(super::super::MIGRATIONS[1]);
+        let migration =
+            crate::backend::split_statements(include_str!("release_channel_advances.sql"));
         for cut in 0..=migration.len() {
             let connection = rusqlite::Connection::open_in_memory().unwrap();
             connection

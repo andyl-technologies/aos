@@ -64,6 +64,7 @@
 //! target, and randomness reaches `crypto.getRandomValues` through getrandom's
 //! JS backend.
 
+pub mod application_body_observation;
 pub mod auth;
 pub mod backend;
 pub mod binding;
@@ -83,6 +84,7 @@ pub mod delivery;
 pub mod delivery_attestation;
 pub mod delivery_http;
 pub mod dialect;
+pub mod direct_upload;
 pub mod directory;
 pub mod domain;
 pub mod egress_protocol;
@@ -94,6 +96,8 @@ pub mod filter;
 pub mod gc_controller;
 pub mod git;
 pub mod gitwrite;
+pub mod hybrid_ingress;
+pub mod hybrid_upload;
 pub mod image_catalog;
 pub mod image_http;
 pub mod indexer;
@@ -102,11 +106,22 @@ pub mod keymap;
 pub mod kv;
 pub mod lease;
 pub mod migrate;
+pub mod mirror_acceptance;
+pub mod mirror_batch;
+pub mod mirror_candidate;
+pub mod mirror_guard;
+pub mod mirror_inspection;
+pub mod mirror_membership;
+pub mod mirror_tree_inventory;
+pub mod mirror_work;
 pub mod nix_sign;
 pub mod oci;
 pub mod oci_gc_controller;
 pub mod oci_http;
 pub mod oci_inventory_controller;
+pub mod oci_projection;
+pub mod oci_cleanup;
+pub mod oci_sdk_emulation;
 pub mod placement_read;
 pub mod placement_scan;
 pub mod ratelimit;
@@ -120,7 +135,11 @@ pub mod secret_version;
 pub mod service;
 pub mod signing;
 pub mod sigv4;
+pub mod snapshot;
+pub mod storage_authority;
 pub mod storage_credential;
+pub mod storage_work;
+pub mod tree_projection;
 /// Re-export of the cache-stack node model from `aos-registry-surface`.
 ///
 /// The model lives in the shared wasm-clean surface crate so the `apm`/`apr`

@@ -551,6 +551,7 @@ fn signature_input(release: &ContainerRelease) -> ContainerSignatureInput {
         oci: release.oci.clone(),
         nix: release.nix.clone(),
         evidence: ContainerSignatureInputEvidence {
+            deployment: release.evidence.deployment.clone(),
             abilities: release.evidence.abilities.clone(),
             sbom: release.evidence.sbom.clone(),
             source: release.evidence.source.clone(),
@@ -587,16 +588,18 @@ fn signed_container_envelope(
 }
 
 fn release_roots(release: &ContainerRelease) -> Vec<aos_oci_types::Descriptor> {
-    vec![
+    let mut roots = vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
-        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),
         release.evidence.provenance.clone(),
         release.evidence.signature.clone(),
-    ]
+    ];
+    roots.extend(release.evidence.abilities.clone());
+    roots.extend(release.evidence.deployment.clone());
+    roots
 }
 
 async fn assert_local_publication_rejections(

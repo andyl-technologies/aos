@@ -6,7 +6,7 @@ __pycache__/
 output/
 
 # Cached source tarballs
-mirror/
+/mirror/
 
 # Rust build artifacts
 cli/target/

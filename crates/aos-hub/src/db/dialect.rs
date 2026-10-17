@@ -41,6 +41,27 @@ mod tests {
     }
 
     #[test]
+    fn mysql_uses_supported_cast_types() {
+        let mysql = Dialect::Mysql
+            .translate(
+                "SELECT CAST(?1 AS BIGINT), CAST(?2 AS VARCHAR), \
+                 CAST(?3 AS TEXT), CAST(?4 AS BLOB) FROM t WHERE id = ?1",
+            )
+            .unwrap();
+        assert_eq!(
+            mysql.sql,
+            "SELECT CAST(? AS SIGNED), CAST(? AS CHAR), \
+             CAST(? AS CHAR), CAST(? AS BINARY) FROM t WHERE id = ?"
+        );
+        assert_eq!(mysql.param_order, vec![0, 1, 2, 3, 0]);
+
+        let postgres = Dialect::Postgres
+            .translate("SELECT CAST(?1 AS BIGINT), value FROM t WHERE id = ?1")
+            .unwrap();
+        assert!(postgres.sql.contains("CAST($1 AS BIGINT)"));
+    }
+
+    #[test]
     fn mysql_quotes_rate_limit_reserved_identifiers() {
         let source = "CREATE TABLE rate_limits(\
                       class TEXT NOT NULL,\

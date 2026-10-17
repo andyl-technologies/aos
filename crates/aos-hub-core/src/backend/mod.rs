@@ -36,6 +36,8 @@
 //! helpers every driver reuses. The concrete drivers live in the deployment
 //! crates (`SqlxBackend` in the native hub, the `HubDb` bridge in the Worker).
 
+pub mod schema_lineage;
+
 use anyhow::{Context, Result};
 
 use crate::dialect::{order_params, Dialect};
@@ -58,6 +60,17 @@ impl<T: Send + Sync> BackendBounds for T {}
 pub trait BackendBounds {}
 #[cfg(target_arch = "wasm32")]
 impl<T> BackendBounds for T {}
+
+/// One instantaneous connection-pool snapshot from a native SQL backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStats {
+    /// Open connections, including idle connections.
+    pub open: u32,
+    /// Open connections currently idle.
+    pub idle: usize,
+    /// Configured maximum open connections.
+    pub maximum: u32,
+}
 
 /// One statement in a [`Backend::batch`]: source SQL and its bound parameters.
 ///
@@ -154,6 +167,24 @@ impl CheckedStatement {
 pub trait Backend: BackendBounds {
     /// The SQL dialect this backend speaks.
     fn dialect(&self) -> Dialect;
+
+    /// Reports a native connection pool snapshot when this backend has one.
+    fn pool_stats(&self) -> Option<PoolStats> {
+        None
+    }
+
+    /// Initializes an empty schema or reopens the current serving singleton.
+    ///
+    /// Implementors hold one dialect migration lock and the same connection
+    /// through read-only lineage inspection, all bookkeeping writes, and final
+    /// serving identity validation. An unsupported backend refuses before DDL.
+    ///
+    /// # Errors
+    /// Returns reset/import guidance for unsupported source lineage, or a
+    /// driver error when its lock, inspection, transaction or migration fails.
+    async fn migrate_schema(&self) -> Result<()> {
+        anyhow::bail!(schema_lineage::RESET_REQUIRED)
+    }
 
     /// Runs a non-`SELECT` statement, returning the number of rows affected.
     ///
@@ -379,6 +410,12 @@ mod sqlx;
 #[cfg(not(target_arch = "wasm32"))]
 pub use sqlx::SqlxBackend;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sqlite_snapshot;
+
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+pub mod postgres_snapshot;
+
 // Per-statement query timing (RFC-0004 ch.14 Phase A): a `Backend` decorator
 // that records each statement's wall-clock duration for a `Server-Timing`
 // header, so the per-request Worker database cost is measurable at the call site.
@@ -510,6 +547,69 @@ mod tests {
         assert!(err.is_err(), "a failing statement aborts the batch");
         let rows = backend.query("SELECT id FROM t", &[]).await.unwrap();
         assert!(rows.is_empty(), "the first insert was rolled back");
+    }
+
+    #[tokio::test]
+    async fn checked_batch_waits_for_a_busy_writer_before_mutating() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("concurrent.sqlite");
+        let original = SqlxBackend::connect_sqlite(path.to_str().unwrap())
+            .await
+            .unwrap();
+        original
+            .execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER NOT NULL);")
+            .await
+            .unwrap();
+
+        let SqlxBackend::Sqlite(pool) = original else {
+            panic!("fixture must use SQLite");
+        };
+        let options = pool
+            .connect_options()
+            .as_ref()
+            .clone()
+            .busy_timeout(Duration::from_millis(30));
+        let competing_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let backend = Arc::new(SqlxBackend::Sqlite(competing_pool));
+        let blocker = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let writer = Arc::clone(&backend);
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let pending = tokio::spawn(async move {
+            started.send(()).unwrap();
+            writer
+                .checked_batch(&[CheckedStatement::exact(
+                    "INSERT INTO t (id, v) VALUES (1, 1)",
+                    vec![],
+                    1,
+                )])
+                .await
+        });
+
+        waiting.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!pending.is_finished(), "writer contention must be retried");
+        assert!(backend
+            .query("SELECT id FROM t", &[])
+            .await
+            .unwrap()
+            .is_empty());
+        blocker.commit().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let rows = backend.query("SELECT v FROM t", &[]).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get::<i64>(0).unwrap(), 1);
     }
 
     #[tokio::test]

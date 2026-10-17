@@ -29,6 +29,11 @@
       default = 52428800;
       description = "Maximum size of one event-log segment in bytes.";
     };
+    lineMaxBytes = lib.mkOption {
+      type = lib.types.nullOr (lib.types.ints.between 256 1048576);
+      default = null;
+      description = "Maximum event line length in bytes; null preserves the backend default.";
+    };
     rateLimitIntervalMillis = lib.mkOption {
       type = lib.types.ints.between 1 86400000;
       default = 30000;

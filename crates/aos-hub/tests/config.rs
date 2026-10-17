@@ -14,7 +14,7 @@ use std::sync::Arc;
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::config::{self, ConfigOp, MembershipChange};
-use aos_hub::db::{Database, TokenAuth};
+use aos_hub::db::Database;
 use aos_hub::domain::{Permission, Principal, Role, Scope};
 use aos_hub::server::{router, AppState};
 use axum::body::Body;
@@ -55,18 +55,15 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     })
 }
 
-fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
-    let keys = JwtKeys::from_secret(TEST_JWT_SECRET);
-    keys.mint(
-        &TokenAuth {
-            token_id: "test-token".into(),
-            owner: principal,
-            scope: Scope::parse(scope),
-            permissions: perms.to_vec(),
-        },
-        900,
+async fn bearer(db: &Database, principal: Principal, scope: &str, perms: &[Permission]) -> String {
+    common::current_bearer(
+        db,
+        &JwtKeys::from_secret(TEST_JWT_SECRET),
+        principal,
+        scope,
+        perms,
     )
-    .unwrap()
+    .await
 }
 
 async fn rpc(
@@ -490,7 +487,7 @@ async fn rpc_audit_and_config_authorized_and_rejected() {
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     let scope = db.registry_authorization_scope(id).await.unwrap();
-    let audit_token = bearer(actor, &scope, &[Permission::AuditRead]);
+    let audit_token = bearer(&db, actor, &scope, &[Permission::AuditRead]).await;
 
     // ListAudit (authorized): surfaces the entry.
     let (status, value) = rpc(
@@ -508,7 +505,7 @@ async fn rpc_audit_and_config_authorized_and_rejected() {
     assert_eq!(value["entries"][0]["changeId"], change_id.as_str());
 
     // ListAudit (unauthorized: only Read, not AuditRead): denied.
-    let weak = bearer(actor, &scope, &[Permission::Read]);
+    let weak = bearer(&db, actor, &scope, &[Permission::Read]).await;
     let (status, _) = rpc(
         &app,
         "AuditService/ListAudit",

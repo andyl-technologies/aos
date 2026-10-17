@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{Database, DueDelivery, TokenAuth};
+use aos_hub::db::{Database, DueDelivery};
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use aos_hub::webhook::{self, WebhookEvent};
@@ -192,18 +192,15 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
 }
 
 /// Mint a bearer JWT for `principal` scoped to `scope` with `perms`.
-fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
-    let keys = JwtKeys::from_secret(TEST_JWT_SECRET);
-    keys.mint(
-        &TokenAuth {
-            token_id: "test-token".into(),
-            owner: principal,
-            scope: Scope::parse(scope),
-            permissions: perms.to_vec(),
-        },
-        900,
+async fn bearer(db: &Database, principal: Principal, scope: &str, perms: &[Permission]) -> String {
+    common::current_bearer(
+        db,
+        &JwtKeys::from_secret(TEST_JWT_SECRET),
+        principal,
+        scope,
+        perms,
     )
-    .unwrap()
+    .await
 }
 
 /// POST a Connect-JSON RPC body, returning `(status, body)`.
@@ -669,14 +666,16 @@ async fn webhook_rpc_create_list_delete_with_authz() {
         .create_user("webhook-admin@acme.test", None)
         .await
         .unwrap();
-    let admin = bearer(
-        Principal::user(admin_id),
-        &org_scope,
-        &[Permission::MembersManage],
-    );
     db.grant_membership("user", admin_id, &org_scope, "admin")
         .await
         .unwrap();
+    let admin = bearer(
+        &db,
+        Principal::user(admin_id),
+        &org_scope,
+        &[Permission::MembersManage],
+    )
+    .await;
 
     for (secret_version_ref, credential_fingerprint) in [
         (
@@ -793,10 +792,16 @@ async fn webhook_rpc_create_list_delete_with_authz() {
         .create_user("webhook-viewer@acme.test", None)
         .await
         .unwrap();
-    let viewer = bearer(Principal::user(viewer_id), &org_scope, &[Permission::Read]);
     db.grant_membership("user", viewer_id, &org_scope, "viewer")
         .await
         .unwrap();
+    let viewer = bearer(
+        &db,
+        Principal::user(viewer_id),
+        &org_scope,
+        &[Permission::Read],
+    )
+    .await;
     let (status, _body) = rpc(
         &app,
         "WebhookService/PlanCreateWebhook",

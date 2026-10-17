@@ -22,6 +22,7 @@
   buildCc = buildPackages.cc;
   buildBash = buildPackages.bash;
   buildCoreutils = buildPackages.coreutils;
+  buildNukeReferences = buildPackages.nuke-references;
   buildRust = buildPackages.rust;
   nativeRustTarget = stdenv.buildPlatform.config;
   nativeRustCargoPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] nativeRustTarget);
@@ -182,7 +183,7 @@ in
 
     inherit version src;
 
-    buildDeps = [buildRust wasm-bindgen-cli buildProtobuf buildCc buildBash buildCoreutils];
+    buildDeps = [buildRust wasm-bindgen-cli buildProtobuf buildCc buildBash buildCoreutils buildNukeReferences];
     inherit cargoDeps;
 
     phases = [
@@ -268,6 +269,12 @@ in
           cp generated/hub-console.js "$out/hub-console.js"
           cp generated/hub-console_bg.wasm "$out/hub-console_bg.wasm"
           cp aos-hub-console/assets/app.css "$out/hub-console.css"
+          # Native ELF scrubbing also visits its embedded browser Wasm, whereas
+          # standalone Worker assets are not ELF files. Normalize diagnostic
+          # store references before consumers hash or embed the public bundle,
+          # so Native scrubbing cannot change the edge's immutable identity.
+          ${buildNukeReferences}/bin/nuke-refs \
+            "$out/hub-console.js" "$out/hub-console_bg.wasm" "$out/hub-console.css"
           test -s "$out/hub-console.js"
           test -s "$out/hub-console_bg.wasm"
           test -s "$out/hub-console.css"

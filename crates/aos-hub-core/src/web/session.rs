@@ -93,6 +93,11 @@ pub async fn resolve_session(
     let Some(email) = db.user_email(auth.user_id).await? else {
         return Ok(None);
     };
+    // Email resolution awaits another database read. Recheck the original
+    // session/account pin before publishing a resolved browser identity.
+    if !db.session_auth_is_current(&auth).await? {
+        return Ok(None);
+    }
     Ok(Some(ResolvedSession {
         secret: secret.to_string(),
         auth,

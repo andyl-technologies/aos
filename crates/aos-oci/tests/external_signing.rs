@@ -14,59 +14,68 @@ use std::fs;
 
 #[test]
 fn external_signing_verifies_and_atomically_assembles_complete_bundle() {
-    let fixture = support::fixture();
-    let release = support::add_signed_release_graph(&fixture);
-    let input = support::publication_signature_input(&release);
-    let workspace = tempfile::tempdir().expect("workspace");
-    let inputs = workspace.path().join("publication-inputs");
-    support::write_publication_inputs(&inputs, fixture.root(), &input);
+    for contract in ["abilities", "deployment", "both"] {
+        let fixture = support::fixture();
+        let mut release = if contract != "abilities" {
+            support::add_signed_release_graph_with_deployment(&fixture)
+        } else {
+            support::add_signed_release_graph(&fixture)
+        };
+        if contract == "deployment" {
+            release.evidence.abilities = None;
+        }
+        let input = support::publication_signature_input(&release);
+        let workspace = tempfile::tempdir().expect("workspace");
+        let inputs = workspace.path().join("publication-inputs");
+        support::write_publication_inputs(&inputs, fixture.root(), &input);
 
-    let pae_path = workspace.path().join("container-signature.pae");
-    let expected_pae = container_signature_pae(&inputs).expect("PAE");
-    let written = write_container_signature_pae(&inputs, &pae_path).expect("write PAE");
-    assert_eq!(written, expected_pae);
-    assert_eq!(fs::read(&pae_path).expect("read PAE"), expected_pae);
-    assert!(write_container_signature_pae(&inputs, &pae_path).is_err());
+        let pae_path = workspace.path().join("container-signature.pae");
+        let expected_pae = container_signature_pae(&inputs).expect("PAE");
+        let written = write_container_signature_pae(&inputs, &pae_path).expect("write PAE");
+        assert_eq!(written, expected_pae);
+        assert_eq!(fs::read(&pae_path).expect("read PAE"), expected_pae);
+        assert!(write_container_signature_pae(&inputs, &pae_path).is_err());
 
-    let signing_key = SigningKey::from_bytes(&[41_u8; 32]);
-    let signer = aos_registry_surface::sshsig::trusted_key_line(
-        "qualification",
-        &signing_key.verifying_key(),
-    );
-    let signature = aos_registry_surface::sshsig::sign_armored_namespace(
-        &expected_pae,
-        &signing_key,
-        CONTAINER_DSSE_SIGNATURE_NAMESPACE,
-    );
-    let signature_path = workspace.path().join("container-signature.pae.sig");
-    fs::write(&signature_path, signature).expect("signature");
-    let output = workspace.path().join("final-bundle");
-    let finalized = finalize_container_publication(&inputs, &signer, &signature_path, &output)
-        .expect("finalize publication");
+        let signing_key = SigningKey::from_bytes(&[41_u8; 32]);
+        let signer = aos_registry_surface::sshsig::trusted_key_line(
+            "qualification",
+            &signing_key.verifying_key(),
+        );
+        let signature = aos_registry_surface::sshsig::sign_armored_namespace(
+            &expected_pae,
+            &signing_key,
+            CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+        );
+        let signature_path = workspace.path().join("container-signature.pae.sig");
+        fs::write(&signature_path, signature).expect("signature");
+        let output = workspace.path().join("final-bundle");
+        let finalized = finalize_container_publication(&inputs, &signer, &signature_path, &output)
+            .expect("finalize publication");
 
-    assert_eq!(finalized.bundle, output);
-    assert!(finalized.layout.join("oci-layout").is_file());
-    assert!(finalized.archive.is_file());
-    assert!(finalized.release.is_file());
-    assert_eq!(
-        fs::read(&finalized.signature_input).expect("final signature input"),
-        to_canonical_json(&input).expect("canonical input")
-    );
-    input
-        .validate_final_release(&finalized.declaration)
-        .expect("final release binding");
-    assert_eq!(
-        prepare_layout(&finalized.archive)
-            .expect("extract finalized archive")
-            .root()
-            .join("index.json")
-            .is_file(),
-        true
-    );
-    assert!(
-        finalize_container_publication(&inputs, &signer, &signature_path, &output).is_err(),
-        "finalization must never overwrite an existing bundle"
-    );
+        assert_eq!(finalized.bundle, output);
+        assert!(finalized.layout.join("oci-layout").is_file());
+        assert!(finalized.archive.is_file());
+        assert!(finalized.release.is_file());
+        assert_eq!(
+            fs::read(&finalized.signature_input).expect("final signature input"),
+            to_canonical_json(&input).expect("canonical input")
+        );
+        input
+            .validate_final_release(&finalized.declaration)
+            .expect("final release binding");
+        assert_eq!(
+            prepare_layout(&finalized.archive)
+                .expect("extract finalized archive")
+                .root()
+                .join("index.json")
+                .is_file(),
+            true
+        );
+        assert!(
+            finalize_container_publication(&inputs, &signer, &signature_path, &output).is_err(),
+            "finalization must never overwrite an existing bundle"
+        );
+    }
 }
 
 #[test]

@@ -1,0 +1,7 @@
+{
+  "commit": "c33422854f98185bdbbb796e386edf3d41a50c36",
+  "sourcePath": "crates/aos-registry-surface/src/pack_index/boundary_tests.rs",
+  "originalSha256": "a0301a52939675a0ecf977ed3f0adb75cca05d8fd1cbadd83abdc4261602e88a",
+  "copiedSpanSha256": "9525c81b8592afe7cf5cf4eaf7b4f2fe0c39c4fa7d684c592be7867941d780e2",
+  "adaptation": "Original helper geometry retained. Auxiliary executable adapts compression, geometry and missing-selection failures to Result/ensure/Context with checked widths; exporter propagates them. Private wire table/constants localized. No product source modified."
+}

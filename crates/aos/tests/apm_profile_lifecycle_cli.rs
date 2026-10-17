@@ -1,8 +1,10 @@
-//! End-to-end CLI coverage for user profile lifecycle operations.
+//! CLI coverage for legacy profile inspection and Native mutation boundaries.
 //!
 //! The fixture starts from a profile that looks like a consumer has already
 //! installed packages from a registry, then drives ordinary `apm`
-//! maintenance commands against that state.
+//! diagnostics against that state. Mutations require a Native deployment
+//! envelope; real Native upgrade, removal, and rollback use the hermetic
+//! consumer fixtures in the package checks.
 
 #![cfg(unix)]
 
@@ -15,7 +17,7 @@ use serde_json::Value;
 
 #[cfg(unix)]
 #[test]
-fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()> {
+fn apm_profile_lifecycle_cli_lists_holds_and_refuses_legacy_mutations() -> Result<()> {
     let fixture = LifecycleFixture::new()?;
     fixture.write_registry_cache()?;
     fixture.write_profile()?;
@@ -54,7 +56,7 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
     assert_eq!(policy["package"], "alpha");
     assert_eq!(policy["installed"], "2.0.0");
     assert_eq!(policy["candidate"], "2.0.0");
-    assert_policy_versions(&policy, &[("2.0.0", true)])?;
+    assert_policy_versions(&policy, &[("2.0.0", true), ("1.0.0", false)])?;
 
     let files = fixture.run_json(&["--json", "files", "alpha"], "files alpha")?;
     assert_eq!(files, serde_json::json!(["bin/alpha"]));
@@ -87,55 +89,25 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
     assert_eq!(unheld_alpha["package"], "alpha");
     assert_eq!(unheld_alpha["held"], false);
 
-    let removed_beta = fixture.run_json(&["--json", "--yes", "remove", "beta"], "remove beta")?;
-    assert_eq!(removed_beta["action"], "remove");
-    assert_eq!(removed_beta["status"], "removed");
-    assert_eq!(removed_beta["removed"], 1);
-    assert_eq!(removed_beta["explicit_removed"], 1);
-    assert_eq!(removed_beta["orphan_removed"], 0);
-    assert_eq!(removed_beta["generation"], 3);
-    assert_eq!(removed_beta["packages"][0]["name"], "beta");
-    assert_eq!(fixture.current_generation()?, "gen-3");
+    fixture.assert_refused_without_switching(
+        &["--json", "--yes", "remove", "beta"],
+        "no authenticated native package envelope",
+    )?;
+    fixture.assert_refused_without_switching(
+        &["--json", "rollback", "--generation", "1"],
+        "committed profile deployment journals are absent or incomplete",
+    )?;
+    assert_eq!(fixture.current_generation()?, "gen-2");
     assert_eq!(fixture.run_profile_command("alpha")?, "alpha 2.0.0\n");
-    assert!(
-        !fixture.profile_bin("beta").exists(),
-        "remove should delete beta from the active profile bin directory"
-    );
+    assert_eq!(fixture.run_profile_command("beta")?, "beta 1.0.0\n");
+    Ok(())
+}
 
-    let installed = fixture.run_json(
-        &["--json", "list", "--installed", "--registry", "lifecycle"],
-        "list installed after remove",
-    )?;
-    assert_package_list(&installed, &[("alpha", "2.0.0", "installed")])?;
-
-    let planned = fixture.run_json(
-        &["--json", "--dry-run", "rollback", "--generation", "1"],
-        "rollback dry-run",
-    )?;
-    assert_eq!(planned["action"], "rollback");
-    assert_eq!(planned["status"], "planned");
-    assert_eq!(planned["from_generation"], 3);
-    assert_eq!(planned["to_generation"], 1);
-    assert_root_names(&planned["restored"], &[("alpha", "1.0.0")])?;
-    assert_root_names(&planned["removed"], &[("alpha", "2.0.0")])?;
-    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 2.0.0\n");
-
-    let rolled_back = fixture.run_json(&["--json", "rollback", "--generation", "1"], "rollback")?;
-    assert_eq!(rolled_back["action"], "rollback");
-    assert_eq!(rolled_back["status"], "rolled_back");
-    assert_eq!(rolled_back["generation"], 1);
-    assert_eq!(fixture.current_generation()?, "gen-1");
-    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 1.0.0\n");
-    assert!(
-        !fixture.profile_bin("beta").exists(),
-        "rollback should remove beta from the active profile bin directory"
-    );
-
-    let installed = fixture.run_json(
-        &["--json", "list", "--installed", "--registry", "lifecycle"],
-        "list installed after rollback",
-    )?;
-    assert_package_list(&installed, &[("alpha", "1.0.0", "installed")])?;
+#[test]
+fn apm_profile_lifecycle_cli_keeps_legacy_registry_diagnostics_readable() -> Result<()> {
+    let fixture = LifecycleFixture::new()?;
+    fixture.write_registry_cache()?;
+    fixture.write_upgrade_profile()?;
 
     let disabled = fixture.run_json(
         &["--json", "registry", "disable", "lifecycle"],
@@ -227,7 +199,7 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
 
 #[cfg(unix)]
 #[test]
-fn apm_profile_lifecycle_cli_autoremoves_dependency_roots() -> Result<()> {
+fn apm_profile_lifecycle_cli_refuses_legacy_autoremove_without_switching() -> Result<()> {
     let fixture = LifecycleFixture::new()?;
     fixture.write_registry_cache()?;
     fixture.write_autoremove_profile()?;
@@ -238,38 +210,10 @@ fn apm_profile_lifecycle_cli_autoremoves_dependency_roots() -> Result<()> {
         "beta-helper 1.0.0\n"
     );
 
-    let removed = fixture.run_json(
+    fixture.assert_refused_without_switching(
         &["--json", "--yes", "remove", "--autoremove", "beta"],
-        "remove beta with autoremove",
+        "no authenticated native package envelope",
     )?;
-    assert_eq!(removed["action"], "remove");
-    assert_eq!(removed["status"], "removed");
-    assert_eq!(removed["removed"], 2);
-    assert_eq!(removed["explicit_removed"], 1);
-    assert_eq!(removed["orphan_removed"], 1);
-    assert_eq!(removed["generation"], 2);
-    assert_eq!(removed["packages"][0]["name"], "beta");
-    assert_eq!(removed["orphans"][0]["name"], "beta-helper");
-    assert_eq!(fixture.current_generation()?, "gen-2");
-    assert!(
-        !fixture.profile_bin("beta").exists(),
-        "remove --autoremove should delete beta from the active profile bin directory"
-    );
-    assert!(
-        !fixture.profile_bin("beta-helper").exists(),
-        "remove --autoremove should delete orphaned dependency commands"
-    );
-
-    let installed = fixture.run_json(
-        &["--json", "list", "--installed", "--registry", "lifecycle"],
-        "list installed after autoremove",
-    )?;
-    assert_package_list(&installed, &[])?;
-
-    let rolled_back = fixture.run_json(&["--json", "rollback"], "rollback autoremove")?;
-    assert_eq!(rolled_back["action"], "rollback");
-    assert_eq!(rolled_back["status"], "rolled_back");
-    assert_eq!(rolled_back["generation"], 1);
     assert_eq!(fixture.current_generation()?, "gen-1");
     assert_eq!(fixture.run_profile_command("beta")?, "beta 1.0.0\n");
     assert_eq!(
@@ -282,7 +226,7 @@ fn apm_profile_lifecycle_cli_autoremoves_dependency_roots() -> Result<()> {
 
 #[cfg(unix)]
 #[test]
-fn apm_profile_lifecycle_cli_full_upgrades_and_executes_new_generation() -> Result<()> {
+fn apm_profile_lifecycle_cli_refuses_legacy_upgrade_before_store_access() -> Result<()> {
     let fixture = LifecycleFixture::new()?;
     fixture.write_registry_cache()?;
     fixture.write_upgrade_profile()?;
@@ -304,56 +248,16 @@ fn apm_profile_lifecycle_cli_full_upgrades_and_executes_new_generation() -> Resu
     assert_eq!(fixture.current_generation()?, "gen-1");
     assert_eq!(fixture.run_profile_command("alpha")?, "alpha 1.0.0\n");
 
-    let upgraded = fixture.run_json(&["--json", "--yes", "full-upgrade"], "full-upgrade")?;
-    assert_eq!(upgraded["action"], "upgrade");
-    assert_eq!(upgraded["status"], "upgraded", "{upgraded}");
-    assert_eq!(upgraded["requested"], serde_json::json!([]));
-    assert_eq!(upgraded["exclude"], serde_json::json!([]));
-    assert_eq!(upgraded["upgraded"], 1, "{upgraded}");
-    assert_eq!(upgraded["generation"], 2, "{upgraded}");
-    assert_eq!(upgraded["downloads"]["planned"], 0, "{upgraded}");
-    assert_eq!(upgraded["downloads"]["downloaded"], 0, "{upgraded}");
-    assert_eq!(upgraded["downloads"]["imported"], 0, "{upgraded}");
-    assert_eq!(upgraded["upgrades"][0]["name"], "alpha");
-    assert_eq!(upgraded["upgrades"][0]["old_version"], "1.0.0");
-    assert_eq!(upgraded["upgrades"][0]["new_version"], "2.0.0");
-    assert_eq!(
-        upgraded["upgrades"][0]["new_store_hash"],
-        fixture.packages.alpha_v2.hash,
-    );
-
-    assert_eq!(fixture.current_generation()?, "gen-2");
-    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 2.0.0\n");
-    assert!(
-        !fixture
-            .profile
-            .join("meta")
-            .join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json")
-            .exists(),
-        "full-upgrade should remove obsolete alpha 1.0.0 metadata"
-    );
-    assert!(
-        fixture
-            .profile
-            .join("meta")
-            .join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json")
-            .exists(),
-        "full-upgrade should write alpha 2.0.0 metadata"
-    );
-
-    let installed = fixture.run_json(
-        &["--json", "list", "--installed", "--registry", "lifecycle"],
-        "list installed after full-upgrade",
+    fixture.assert_refused_without_switching(
+        &["--json", "--yes", "full-upgrade"],
+        "no native deployment envelope",
     )?;
-    assert_package_list(&installed, &[("alpha", "2.0.0", "installed")])?;
-    let nix_store_calls = fs::read_to_string(fixture.nix_store_stub_log())
-        .context("reading nix-store stub call log")?;
+    assert_eq!(fixture.current_generation()?, "gen-1");
+    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 1.0.0\n");
+    let nix_store_calls = fs::read_to_string(fixture.nix_store_stub_log()).unwrap_or_default();
     assert!(
-        nix_store_calls.contains(&format!(
-            "--check-validity {}",
-            fixture.packages.alpha_v2.store_path.display()
-        )),
-        "full-upgrade should check the upgraded store path for validity:\n{nix_store_calls}",
+        nix_store_calls.is_empty(),
+        "legacy metadata must fail before store access"
     );
 
     Ok(())
@@ -711,6 +615,33 @@ exit 64
             .with_context(|| format!("parsing apm {action} JSON from stdout"))
     }
 
+    /// Legacy metadata remains inspectable but cannot authorize a Native deployment.
+    fn assert_refused_without_switching(&self, args: &[&str], message: &str) -> Result<()> {
+        let state = fs::read(self.profile.join("state.json"))?;
+        let current = fs::read_link(self.profile.join("current"))?;
+        let metadata = fs::read_dir(self.profile.join("meta"))?
+            .map(|entry| {
+                let entry = entry?;
+                Ok((entry.file_name(), fs::read(entry.path())?))
+            })
+            .collect::<std::io::Result<std::collections::BTreeMap<_, _>>>()?;
+
+        let output = self.package_command(args)?.output()?;
+
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(message),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(fs::read_link(self.profile.join("current"))?, current);
+        assert_eq!(fs::read(self.profile.join("state.json"))?, state);
+        for (name, contents) in metadata {
+            assert_eq!(fs::read(self.profile.join("meta").join(name))?, contents);
+        }
+        Ok(())
+    }
+
     fn package_command(&self, args: &[&str]) -> Result<Command> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_apm"));
         command
@@ -917,33 +848,6 @@ fn assert_dependency_tree(
     for (child, expected_name) in children.iter().zip(child_names.iter()) {
         assert_eq!(child["name"], *expected_name, "{json}");
     }
-    Ok(())
-}
-
-fn assert_root_names(json: &Value, expected: &[(&str, &str)]) -> Result<()> {
-    let entries = json.as_array().context("root list should be an array")?;
-    let mut actual = entries
-        .iter()
-        .map(|entry| {
-            (
-                entry["package"]["name"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                entry["package"]["version"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-    actual.sort();
-    let mut expected = expected
-        .iter()
-        .map(|(name, version)| ((*name).to_string(), (*version).to_string()))
-        .collect::<Vec<_>>();
-    expected.sort();
-    assert_eq!(actual, expected, "{json}");
     Ok(())
 }
 

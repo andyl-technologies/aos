@@ -1,0 +1,36 @@
+# Generation-sixteen Native references, search projections, and private deployment reports.
+# Derived release rows are retained with the browse catalogue, rather than treated
+# as singleton schema metadata. Free-form documents stay in the private stream.
+release_ability_graphs	retain	registry_id	integer	no	1	retain
+release_ability_graphs	retain	source_commit	text	no	2	retain
+release_ability_graphs	retain	platform	text	no	3	retain
+release_ability_graphs	retain	canonical_json	text	no	0	private_cell
+release_ability_graphs	retain	content_digest	text	no	0	fingerprint
+release_native_documentation	retain	registry_id	integer	no	1	retain
+release_native_documentation	retain	source_commit	text	no	2	retain
+release_native_documentation	retain	package_name	text	no	3	retain
+release_native_documentation	retain	package_version	text	no	4	retain
+release_native_documentation	retain	platform	text	no	5	retain
+release_native_documentation	retain	document_sha256	text	no	0	fingerprint
+release_native_documentation	retain	store_path	text	no	0	retain
+release_native_documentation	retain	search_json	text	no	0	private_cell
+release_native_documentation	retain	content_digest	text	no	0	fingerprint
+ability_deployment_reporters	retain	registry_id	integer	no	1	retain
+ability_deployment_reporters	retain	deployment	text	no	2	retain
+ability_deployment_reporters	retain	principal_kind	text	no	0	retain
+ability_deployment_reporters	retain	principal_id	integer	no	0	retain
+ability_deployment_reporters	retain	principal_ref	text	no	0	retain
+ability_deployment_reporters	retain	active	integer	no	0	retain
+ability_deployment_reporters	retain	resource_version	integer	no	0	retain
+ability_deployment_reporters	retain	current_sequence	integer	no	0	retain
+ability_deployment_reporters	retain	last_mutation_plan_id	text	no	0	retain
+ability_deployment_reporters	retain	registry_commit	text	yes	0	retain
+ability_deployment_reporters	retain	package_name	text	yes	0	retain
+ability_deployment_reporters	retain	package_version	text	yes	0	retain
+ability_deployment_reporters	retain	platform	text	yes	0	retain
+ability_deployment_reporters	retain	document_sha256	text	yes	0	fingerprint
+ability_deployment_reporters	retain	transaction_sha256	text	yes	0	fingerprint
+ability_deployment_reporters	retain	canonical_json	bytes	yes	0	private_cell
+ability_deployment_reporters	retain	reported_at	integer	yes	0	retain
+ability_deployment_reporters	retain	received_at	integer	yes	0	retain
+ability_deployment_reporters	retain	expires_at	integer	yes	0	retain

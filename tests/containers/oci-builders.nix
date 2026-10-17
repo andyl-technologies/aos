@@ -644,6 +644,31 @@ in
                   fail "mismatched platform manifest sidecar/blob fixture was accepted"
                 fi
 
+          single_index_digest=$(jq -r .digest ${singlePlatform}/index-descriptor.json)
+          single_index_hex=''${single_index_digest#sha256:}
+          verify_descriptor_blob \
+            ${singlePlatform}/index-descriptor.json \
+            ${singlePlatform}/layout/blobs/sha256/$single_index_hex
+          test "$(find ${singlePlatform}/layout/blobs/sha256 -name "$single_index_hex" | wc -l)" -eq 1 \
+            || fail "single-platform index did not retain its exact index digest"
+
+          # Source entry indexes are evidence of the input images, not members
+          # of the composed descriptor closure. Unknown extra blobs still fail.
+          for composed in ${multiPlatform} ${singlePlatform}; do
+            jq -r '.manifests[].digest | sub("^sha256:"; "")' \
+              "$composed/layout/index.json" > expected-blobs
+            jq -r '.manifests[].digest | sub("^sha256:"; "")' \
+              "$composed/image-index.json" > platform-manifests
+            while IFS= read -r manifest_hex; do
+              printf '%s\n' "$manifest_hex" >> expected-blobs
+              jq -r '(.config, .layers[]) | .digest | sub("^sha256:"; "")' \
+                "$composed/layout/blobs/sha256/$manifest_hex" >> expected-blobs
+            done < platform-manifests
+            sort -u expected-blobs > expected-blobs.sorted
+            find "$composed/layout/blobs/sha256" -type f -printf '%f\n' | sort > actual-blobs.sorted
+            cmp expected-blobs.sorted actual-blobs.sorted \
+              || fail "composed layout includes content outside its descriptor closure"
+          done
                 assert_compact_sorted_json ${multiPlatform}/image-index.json
                 assert_compact_sorted_json ${multiPlatform}/layout/index.json
                 deployment_hex=$(sha256sum ${multiPlatform}/deployment.json | cut -d ' ' -f 1)

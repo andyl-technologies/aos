@@ -64,6 +64,20 @@
         platform = platformFor args.targetPlatform;
       };
 
+    companionDefinitions = args:
+      lib.optionalAttrs (args.pkgs ? aos-hub) {
+        aos-hub =
+          (import ./hub-definition.nix {
+            inherit (args) pkgs;
+            aosSystem = args.pkgs.stdenv.hostPlatform.system;
+          }).config;
+        aos-hub-bootstrap =
+          (import ./hub-bootstrap-definition.nix {
+            inherit (args) pkgs;
+            aosSystem = args.pkgs.stdenv.hostPlatform.system;
+          }).config;
+      };
+
     buildContainer = args:
       import ./container/build.nix {
         buildPkgs = args.buildPackages;

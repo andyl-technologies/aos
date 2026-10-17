@@ -1,0 +1,13 @@
+{
+  "browser": {
+    "sourceFile": "crates/aos-hub-core/src/web/console/handlers.rs",
+    "sourceSha256": "7df2414e542820a4436f73ce682532472094cd1a75d1dbdfeb0690fbe6a146eb",
+    "templateSha256": "d7cb449cef3d7eb770a93ef2c2b01f6fc078f287d8d4089be03b0e525056d44c",
+    "sourceExpressionSha256": "2529e2b2e9f9fc6ef94e31b0f6e92bd079ebefc076acec1d2bd38ced0389c906"
+  },
+  "manifest": {
+    "sourceFile": "crates/aos-hub-core/src/service/publication_manifest.rs",
+    "sourceSha256": "3f9888740b92876bde1570f3b619daecb44d1a0fa709613296f049b47feb5783",
+    "expressionSha256": "54afa43bf5ca7ab287381fd07321779fb6441df15dae86af3f34c9a9033e46fe"
+  }
+}

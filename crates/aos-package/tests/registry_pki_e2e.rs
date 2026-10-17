@@ -443,3 +443,89 @@ async fn force_pushed_roster_downgrade_rejected() -> Result<()> {
     assert_eq!(state.last_commit.as_deref(), Some(second_commit.as_str()));
     Ok(())
 }
+
+/// A fragmented object request must not be resolved as a truncated object ID.
+#[tokio::test]
+async fn static_origin_waits_for_complete_object_request_headers() -> Result<()> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let fixture = RegistryFixture::new("aos-core")?;
+    fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 50)])?;
+    fixture.write_keys_toml()?;
+    fixture.write_package("hello", "1.0.0")?;
+    let commit = fixture.commit_all("fragmented object request")?;
+    fixture.publish_bare_origin()?;
+    let object_path = format!("objects/{}/{}", &commit[..2], &commit[2..]);
+    let expected = fs::read(fixture.origin_path().join(&object_path))?;
+    let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
+    let address = server.base_url();
+    let address = address
+        .strip_prefix("http://")
+        .unwrap()
+        .trim_end_matches('/');
+    let mut stream = tokio::net::TcpStream::connect(address).await?;
+
+    let request = format!("GET /{object_path} HTTP/1.1\r\nHost: fixture\r\n\r\n");
+    let split = "GET /objects/".len() + 20;
+    stream.write_all(&request.as_bytes()[..split]).await?;
+    let mut premature = [0; 512];
+    let early = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        stream.read(&mut premature),
+    )
+    .await;
+    assert!(
+        early.is_err(),
+        "premature reply to a partial object URL: {early:?}; {}",
+        String::from_utf8_lossy(&premature)
+    );
+
+    stream.write_all(&request.as_bytes()[split..]).await?;
+    let mut reply = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read_to_end(&mut reply),
+    )
+    .await??;
+    let body_at = reply
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    assert!(reply.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert_eq!(&reply[body_at..], expected);
+
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let head = client
+        .head(format!("{}{object_path}", server.base_url()))
+        .send()
+        .await?;
+    assert_eq!(head.status(), reqwest::StatusCode::OK);
+    // HEAD has no response body; verify the advertised representation length.
+    let advertised_length = head
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .unwrap()
+        .to_str()?
+        .parse::<u64>()?;
+    assert_eq!(advertised_length, expected.len() as u64);
+    assert!(head.bytes().await?.is_empty());
+    let absent = client
+        .get(format!("{}objects/missing", server.base_url()))
+        .send()
+        .await?;
+    assert_eq!(absent.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let mut oversized = tokio::net::TcpStream::connect(address).await?;
+    let mut headers = format!("GET /{object_path} HTTP/1.1\r\nX-Long: ").into_bytes();
+    headers.resize(8192, b'a');
+    oversized.write_all(&headers).await?;
+    let mut refusal = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        oversized.read_to_end(&mut refusal),
+    )
+    .await??;
+    assert!(refusal.starts_with(b"HTTP/1.1 431 Request Header Fields Too Large\r\n"));
+    Ok(())
+}

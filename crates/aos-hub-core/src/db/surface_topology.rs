@@ -234,6 +234,10 @@ pub(crate) mod tests {
         fn dialect(&self) -> Dialect {
             self.inner.dialect()
         }
+        async fn migrate_schema(&self) -> anyhow::Result<()> {
+            self.inner.migrate_schema().await
+        }
+
         async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
             self.inner.execute(sql, params).await
         }

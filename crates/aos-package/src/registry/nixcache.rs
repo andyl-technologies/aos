@@ -39,7 +39,6 @@ use aos_core::nar::cache::{
 use aos_core::nar::info::{basename, store_hash};
 use aos_core::nix::aos_nix_env;
 use aos_core::output::Printer;
-use futures_util::future::join_all;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -759,6 +758,60 @@ pub async fn upload_static_cache(
     let narinfos = list_narinfo_files(output_dir)?;
     let nars = referenced_nar_files(output_dir, &narinfos)?;
 
+    #[cfg(unix)]
+    if let Some(coordinator) = cache.direct_coordinator(32, 0).await? {
+        use aos_proto_types::direct_upload::{
+            DirectCapabilitiesTarget, DirectDependencyPhase, DirectUploadTarget,
+        };
+        let DirectCapabilitiesTarget::Cache { cache_id } = coordinator.target() else {
+            anyhow::bail!("static cache direct discovery returned a different owner");
+        };
+        let files = nars
+            .iter()
+            .map(|(name, path)| {
+                (
+                    format!("nar/{name}"),
+                    path.clone(),
+                    DirectDependencyPhase::Content,
+                )
+            })
+            .chain(narinfos.iter().map(|(stem, path)| {
+                (
+                    format!("{stem}.narinfo"),
+                    path.clone(),
+                    DirectDependencyPhase::Visibility,
+                )
+            }))
+            .chain(std::iter::once((
+                "nix-cache-info".to_owned(),
+                output_dir.join("nix-cache-info"),
+                DirectDependencyPhase::Visibility,
+            )));
+        let mut wave = Vec::new();
+        for (path, source, phase) in files {
+            wave.push(aos_remote::DirectStagePath {
+                source,
+                expected_sha256: None,
+                target: DirectUploadTarget::CacheObject {
+                    cache_id: cache_id.clone(),
+                    path,
+                },
+                phase,
+            });
+            if wave.len() == 64 {
+                coordinator.stage_paths(std::mem::take(&mut wave)).await?;
+            }
+        }
+        if !wave.is_empty() {
+            coordinator.stage_paths(wave).await?;
+        }
+        coordinator
+            .finish(std::time::Duration::from_secs(3600))
+            .await?;
+        printer.success("Static cache direct staging committed.");
+        return Ok(());
+    }
+
     // Immutable payloads first (NARs), then narinfos, then the
     // nix-cache-info marker last. A consumer racing a partial upload never
     // sees a narinfo or marker pointing at NAR bytes that are not there yet.
@@ -813,6 +866,8 @@ pub async fn upload_static_cache(
     let cache_info = std::fs::read_to_string(&cache_info_path)
         .with_context(|| format!("reading {}", cache_info_path.display()))?;
     cache.put_cache_info(&cache_info).await?;
+    #[cfg(unix)]
+    cache.finish_direct_uploads().await?;
 
     printer.success(&format!("Uploaded static cache files to {upload_url}"));
     Ok(())
@@ -1098,11 +1153,13 @@ pub async fn upload_static_cache_to_all(
     no_skip: bool,
     printer: &Printer,
 ) -> Result<()> {
-    let results = join_all(upload_urls.iter().map(|upload_url| async move {
+    let results = futures_util::stream::iter(upload_urls.iter().map(|upload_url| async move {
         upload_static_cache(output_dir, upload_url, auth, root_hashes, no_skip, printer)
             .await
             .map_err(|err| format!("{upload_url}: {err:#}"))
     }))
+    .buffer_unordered(4)
+    .collect::<Vec<_>>()
     .await;
 
     let failures: Vec<String> = results.into_iter().filter_map(Result::err).collect();
@@ -1570,6 +1627,16 @@ fn compress_nar_to_file(
         writer.finish().context("flushing compressed NAR")
     });
 
+    // A failed destination write leaves unread bytes in the pipe. Close it
+    // before waiting so the producer cannot block forever on a full pipe.
+    drop(dump_stdout);
+    if let Err(error) = digest {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+
     let status = child.wait().context("waiting for nix-store --dump")?;
     if !status.success() {
         let mut stderr = String::new();
@@ -1618,6 +1685,16 @@ fn dump_nar_to_file(store_path: &str, dest: &Path) -> Result<(String, u64)> {
     let mut writer = HashingWriter::new(BufWriter::new(file));
     let copy_result = io::copy(&mut dump_stdout, &mut writer).context("copying plain NAR stream");
     let digest = copy_result.and_then(|_| writer.finish().context("flushing plain NAR"));
+
+    // Plain NARs have the same producer pipe as compressed NARs; a failed
+    // copy must release and reap that producer before returning the error.
+    drop(dump_stdout);
+    if let Err(error) = digest {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
 
     let status = child.wait().context("waiting for nix-store --dump")?;
     if !status.success() {
@@ -1684,6 +1761,90 @@ mod tests {
     use super::*;
     use aos_core::nar::info as narinfo;
     use tempfile::TempDir;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cache_write_failure_reaps_dump_process() {
+        // Run the failure cases in a subprocess so a regression cannot leave
+        // this test waiting indefinitely for a producer with a full pipe.
+        let output = TempDir::new().unwrap();
+        let receipt = output.path().join("verified");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "registry::nixcache::tests::cache_write_failure_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("AOS_CACHE_WRITE_FAILURE_CHILD", &receipt)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "cache write failure subprocess failed");
+                break;
+            }
+
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("cache write failure left the dump process blocked");
+            }
+
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        assert_eq!(std::fs::read_to_string(receipt).unwrap(), "verified");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "invoked by the bounded cache write failure subprocess test"]
+    fn cache_write_failure_child() {
+        let Some(receipt) = std::env::var_os("AOS_CACHE_WRITE_FAILURE_CHILD") else {
+            return;
+        };
+
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        let mut state = 0x1234_5678_u32;
+        let payload: Vec<u8> = (0..8 * 1024 * 1024)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect();
+        std::fs::write(source.path().join("payload"), payload).unwrap();
+        let source = source.path().to_str().unwrap();
+
+        for compressed in [false, true] {
+            let destination = output.path().join("nar");
+            let temporary = output.path().join("nar.tmp");
+            std::os::unix::fs::symlink("/dev/full", &temporary).unwrap();
+
+            let result = if compressed {
+                compress_nar_to_file(source, &destination, NAR_ZSTD_LEVEL, 1)
+            } else {
+                dump_nar_to_file(source, &destination)
+            };
+
+            let error = result.unwrap_err();
+            assert!(
+                error.chain().any(|cause| cause
+                    .downcast_ref::<io::Error>()
+                    .is_some_and(|error| error.raw_os_error() == Some(28))),
+                "destination write error was lost: {error:#}"
+            );
+            assert!(!temporary.exists(), "failed NAR was retained");
+            assert!(!destination.exists(), "failed NAR was published");
+        }
+
+        std::fs::write(receipt, "verified").unwrap();
+    }
 
     #[test]
     fn local_reuse_requires_file_hash_addressed_nar_url() {

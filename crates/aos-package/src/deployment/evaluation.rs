@@ -649,6 +649,36 @@ fn evaluator_store() -> Result<Option<std::ffi::OsString>> {
 mod tests {
     use super::*;
 
+    /// Runs store-writing evaluation tests with process-local, disposable state.
+    fn isolated_evaluator_test(name: &str) -> bool {
+        if std::env::var_os("AOS_TEST_EVALUATOR_CHILD").is_some() {
+            return false;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("deployment::evaluation::tests::{name}"),
+                "--nocapture",
+            ])
+            .env("AOS_TEST_EVALUATOR_CHILD", "1")
+            .env(
+                "AOS_NIX_EVAL_STORE",
+                format!("local?root={}", root.display()),
+            )
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
     fn eval_projection(expression: &str) -> (Value, String) {
         let executable = std::env::var_os("AOS_NIX_STORE")
             .map(PathBuf::from)
@@ -720,6 +750,12 @@ mod tests {
 
     #[test]
     fn session_reuses_private_sources_without_reusing_definition_policy() {
+        if isolated_evaluator_test(
+            "session_reuses_private_sources_without_reusing_definition_policy",
+        ) {
+            return;
+        }
+
         let evaluation = session_evaluation(
             r#"{ system }: { evalPackageModules = args: {
               config.aos.apm.desiredPackages = [ "example" ];
@@ -747,7 +783,15 @@ mod tests {
         assert_eq!(views.directory(), directory);
         assert_eq!(views.read_path(&evaluation.library).unwrap(), library);
         assert_eq!(views.nar_hash(&evaluation.library).unwrap(), digest);
-        assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 1);
+        let source_views = std::fs::read_dir(staging.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().starts_with("evaluation-sources-"))
+            .count();
+        assert_eq!(
+            source_views, 1,
+            "queries must reuse the same private source views"
+        );
         drop(session);
         assert!(
             !directory.exists(),
@@ -757,6 +801,11 @@ mod tests {
 
     #[test]
     fn session_strict_query_rejects_definitions_deferred_by_selection() {
+        if isolated_evaluator_test("session_strict_query_rejects_definitions_deferred_by_selection")
+        {
+            return;
+        }
+
         let evaluation = session_evaluation(
             r#"{ system }: { evalPackageModules = args:
               if args.checkDefinitions then throw "malformed-strict-definition"
@@ -778,6 +827,10 @@ mod tests {
 
     #[test]
     fn session_reuse_still_honors_cancellation() {
+        if isolated_evaluator_test("session_reuse_still_honors_cancellation") {
+            return;
+        }
+
         let evaluation = session_evaluation(
             r#"{ system }: { evalPackageModules = args: {
               config.aos.apm.desiredPackages = [];
@@ -799,6 +852,10 @@ mod tests {
 
     #[test]
     fn co_projection_preserves_null_and_configured_observer() {
+        if isolated_evaluator_test("co_projection_preserves_null_and_configured_observer") {
+            return;
+        }
+
         let projection = deployment_observer_projection().unwrap();
         let expected = serde_json::json!({"socketPath":"/run/override.sock","timeoutMillis":1234});
         for (configured, observer) in [
@@ -824,6 +881,12 @@ mod tests {
 
     #[test]
     fn co_projection_shares_the_fixed_point_and_missing_observer_is_null() {
+        if isolated_evaluator_test(
+            "co_projection_shares_the_fixed_point_and_missing_observer_is_null",
+        ) {
+            return;
+        }
+
         let projection = deployment_observer_projection().unwrap();
         let expression = format!(
             "let evaluated = builtins.trace \"shared-evaluation-projection\" \

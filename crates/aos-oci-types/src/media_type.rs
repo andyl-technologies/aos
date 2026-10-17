@@ -46,6 +46,8 @@ pub enum MediaType {
     AosNixClosure,
     /// AOS static package abilities and unresolved launch obligations.
     AosContainerStaticAbilities,
+    /// Versioned native deployment document retained with an image.
+    AosArtifactDeployment,
     /// AOS corresponding-source closure inventory.
     AosSourceClosure,
     /// Deterministic gzip-compressed AOS corresponding-source archive.
@@ -62,7 +64,7 @@ pub enum MediaType {
 
 impl MediaType {
     /// Every media type admitted by the first-release compatibility contract.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::OctetStream,
         Self::OciImageManifest,
         Self::OciImageIndex,
@@ -79,6 +81,7 @@ impl MediaType {
         Self::AosContainerRelease,
         Self::AosNixClosure,
         Self::AosContainerStaticAbilities,
+        Self::AosArtifactDeployment,
         Self::AosSourceClosure,
         Self::AosSourceArchive,
         Self::AosLicenseReport,
@@ -116,6 +119,7 @@ impl MediaType {
             "application/vnd.aos.container.static-abilities.v1+json" => {
                 Ok(Self::AosContainerStaticAbilities)
             }
+            "application/vnd.aos.artifact.deployment.v1+json" => Ok(Self::AosArtifactDeployment),
             "application/vnd.aos.source-closure.v1+json" => Ok(Self::AosSourceClosure),
             "application/vnd.aos.source-closure.v1.tar+gzip" => Ok(Self::AosSourceArchive),
             "application/vnd.aos.license-report.v1+json" => Ok(Self::AosLicenseReport),
@@ -156,6 +160,7 @@ impl MediaType {
             Self::AosContainerStaticAbilities => {
                 "application/vnd.aos.container.static-abilities.v1+json"
             }
+            Self::AosArtifactDeployment => "application/vnd.aos.artifact.deployment.v1+json",
             Self::AosSourceClosure => "application/vnd.aos.source-closure.v1+json",
             Self::AosSourceArchive => "application/vnd.aos.source-closure.v1.tar+gzip",
             Self::AosLicenseReport => "application/vnd.aos.license-report.v1+json",
@@ -206,6 +211,7 @@ impl MediaType {
             Self::AosContainerRelease
                 | Self::AosNixClosure
                 | Self::AosContainerStaticAbilities
+                | Self::AosArtifactDeployment
                 | Self::AosSourceClosure
                 | Self::AosLicenseReport
                 | Self::SpdxJson

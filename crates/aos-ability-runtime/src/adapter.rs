@@ -36,4 +36,3 @@ pub trait RuntimeControl {
     /// Returns the remaining total recovery budget.
     fn recovery_remaining_millis(&self) -> u64;
 }
-

@@ -45,7 +45,9 @@ use super::verify::verify_store_path;
 /// in dependency order.
 ///
 /// Privileged AOS management retains its local export import, after callers
-/// authenticate the payload through the registry's provenance policy.
+/// authenticate the payload through the registry's provenance policy. It
+/// streams archive decoding into Nix without retaining the full NAR in memory
+/// or writing a decompressed copy beside the cache entry.
 ///
 /// # Errors
 ///
@@ -130,46 +132,12 @@ async fn import_privileged_nar(
     deriver: Option<&str>,
     compression: &str,
 ) -> Result<String> {
-    let nar_data = match compression {
-        "none" => tokio::fs::read(nar_path)
-            .await
-            .with_context(|| format!("reading uncompressed NAR {}", nar_path.display()))?,
-        "zstd" => {
-            // Decompress .nar.zst -> .nar alongside the original file.
-            let decompressed = nar_path.with_extension("");
-            let zstd_output = Command::new("zstd")
-                .args([
-                    "-d",
-                    "-f",
-                    &nar_path.display().to_string(),
-                    "-o",
-                    &decompressed.display().to_string(),
-                ])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .context("running zstd decompression")?;
-
-            if !zstd_output.status.success() {
-                let stderr = String::from_utf8_lossy(&zstd_output.stderr);
-                bail!(
-                    "zstd decompression failed for {}: {}",
-                    nar_path.display(),
-                    stderr.trim()
-                );
-            }
-
-            let nar_data = tokio::fs::read(&decompressed)
-                .await
-                .with_context(|| format!("reading decompressed NAR {}", decompressed.display()))?;
-
-            // Clean up the decompressed file now that it's in memory.
-            let _ = tokio::fs::remove_file(&decompressed).await;
-            nar_data
-        }
-        other => bail!("unsupported NAR compression '{other}'"),
-    };
+    ensure!(
+        matches!(compression, "none" | "zstd"),
+        "unsupported NAR compression '{compression}'"
+    );
+    let input_path = nar_path.to_owned();
+    let compression = compression.to_owned();
 
     // Resolve the store directory references are rooted under, so bare
     // basenames from the narinfo become full paths in the export trailer.
@@ -185,6 +153,15 @@ async fn import_privileged_nar(
     // Stream NAR + trailer into `nix-store --import`. aos_management_nix_env() routes
     // the import at AOS_ROOT's store when that env var is set.
     let import_output = tokio::task::spawn_blocking(move || -> Result<std::process::Output> {
+        let file = std::fs::File::open(&input_path)
+            .with_context(|| format!("opening NAR {}", input_path.display()))?;
+        let mut reader: Box<dyn std::io::Read + Send> = match compression.as_str() {
+            "zstd" => Box::new(
+                zstd::stream::read::Decoder::new(file).context("opening NAR decompressor")?,
+            ),
+            _ => Box::new(file),
+        };
+
         let mut child = std::process::Command::new("nix-store")
             .envs(aos_management_nix_env())
             .arg("--import")
@@ -193,18 +170,28 @@ async fn import_privileged_nar(
             .stderr(Stdio::piped())
             .spawn()
             .context("spawning nix-store --import")?;
-        {
-            let stdin = child
-                .stdin
-                .as_mut()
-                .context("no stdin for nix-store --import")?;
-            trailer
-                .write_import_stream(stdin, &nar_data)
-                .context("writing export stream")?;
-        }
-        child
-            .wait_with_output()
-            .context("waiting for nix-store --import")
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("no stdin for nix-store --import")?;
+
+        // Feed bounded chunks while draining both output pipes. An importer
+        // refusal must not deadlock its diagnostics behind a blocked writer.
+        std::thread::scope(|scope| {
+            let writer =
+                scope.spawn(move || trailer.write_import_stream_from(&mut stdin, &mut *reader));
+            let output = child
+                .wait_with_output()
+                .context("waiting for nix-store --import");
+            let write_result = writer
+                .join()
+                .map_err(|_| anyhow::anyhow!("NAR import writer panicked"))?;
+            let output = output?;
+            if output.status.success() {
+                write_result.context("writing export stream")?;
+            }
+            Ok(output)
+        })
     })
     .await
     .context("import task panicked")??;

@@ -3,7 +3,7 @@
 //!
 //! Drives the real router and database for the operations surface:
 //!
-//! - staged publication accounting and concurrent-generation exclusion;
+//! - verified immutable accounting before visibility and concurrent-generation exclusion;
 //! - the per-endpoint rate limiter returning `429` with `Retry-After` on the
 //!   magic-link issuance and device-authorization paths;
 //! - the instance signup policy gating `OrganizationService.CreateOrg`;
@@ -13,12 +13,15 @@
 
 mod common;
 
+#[path = "operations/publication_inventory.rs"]
+mod publication_inventory;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{Database, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget, TokenAuth};
+use aos_hub::db::{Database, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget};
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use aos_hub_core::service::{ReadAuthorization, RpcError, RpcService};
@@ -101,18 +104,15 @@ fn machine_service(state: &Arc<AppState>) -> RpcService {
 }
 
 /// Mint a bearer JWT for `principal` scoped to `scope` with `perms`.
-fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
-    JwtKeys::from_secret(TEST_JWT_SECRET)
-        .mint(
-            &TokenAuth {
-                token_id: "test-token".into(),
-                owner: principal,
-                scope: Scope::parse(scope),
-                permissions: perms.to_vec(),
-            },
-            900,
-        )
-        .unwrap()
+async fn bearer(db: &Database, principal: Principal, scope: &str, perms: &[Permission]) -> String {
+    common::current_bearer(
+        db,
+        &JwtKeys::from_secret(TEST_JWT_SECRET),
+        principal,
+        scope,
+        perms,
+    )
+    .await
 }
 
 /// GET one machine path with optional native-session and bearer credentials.
@@ -334,7 +334,13 @@ async fn native_cache_streams_preserve_session_and_bearer_authorization() {
         .unwrap();
     let session = db.create_session(member, 3600, 0).await.unwrap();
     let cookie = format!("__Host-aos_session={session}");
-    let token = bearer(Principal::user(member), &private_scope, &[Permission::Read]);
+    let token = bearer(
+        &db,
+        Principal::user(member),
+        &private_scope,
+        &[Permission::Read],
+    )
+    .await;
     let stale_cache = db.binary_cache_by_id(cache_id).await.unwrap().unwrap();
     let state = app_state(Arc::clone(&db)).await;
     let service = machine_service(&state);
@@ -536,15 +542,17 @@ async fn planned_rpc(
 }
 
 #[tokio::test]
-async fn staged_publication_bytes_remain_unaccounted_until_commit() {
+async fn verified_publication_bytes_are_charged_before_visibility() {
     let (db, _surface, _binding, _placement) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
+        &db,
         Principal::service_account(1),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
-    );
+    )
+    .await;
 
     let first = [
         ("objects/ab/cd", b"data".as_slice(), "immutable"),
@@ -553,6 +561,8 @@ async fn staged_publication_bytes_remain_unaccounted_until_commit() {
     let (status, publication) =
         begin_publication(&app, &token, "acme/infra/prod/cdn", "staging-v1", &first).await;
     assert_eq!(status, StatusCode::OK, "{publication}");
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
     let (status, _) = upload_publication_object(
         &app,
         publication_upload_url(&publication, "objects/ab/cd"),
@@ -561,8 +571,57 @@ async fn staged_publication_bytes_remain_unaccounted_until_commit() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
+    let object = db
+        .surface_object_named(SurfaceTarget::Registry(registry.id), "objects/ab/cd")
+        .await
+        .unwrap()
+        .unwrap();
+    let charge = db.surface_object_usage(object.id).await.unwrap().unwrap();
+    assert_eq!(charge.accounted_bytes, 4);
+    assert!(db
+        .registry_publication_state(registry.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .current_publication_id
+        .is_none());
+
+    // Exact immutable replay keeps its durable charge; the unuploaded root
+    // still prevents this otherwise verified object from becoming visible.
+    let (status, _) = upload_publication_object(
+        &app,
+        publication_upload_url(&publication, "objects/ab/cd"),
+        &token,
+        b"data".to_vec(),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
+    let (status, _) = rpc(
+        &app,
+        "PublishService/CommitRegistryPublication",
+        serde_json::json!({"publicationId": publication["publicationId"]}),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(db
+        .registry_publication_state(registry.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .current_publication_id
+        .is_none());
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 }
 
 #[tokio::test]
@@ -570,10 +629,12 @@ async fn concurrent_pointer_uploads_share_the_phase_transition() {
     let (db, _surface, _binding, _placement) = empty_managed().await;
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
+        &db,
         Principal::service_account(1),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
-    );
+    )
+    .await;
 
     let objects = [
         ("objects/ab/cd", b"data".as_slice(), "immutable"),
@@ -626,10 +687,12 @@ async fn concurrent_publication_generation_is_rejected() {
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
+        &db,
         Principal::service_account(1),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
-    );
+    )
+    .await;
 
     let first = [
         ("objects/ab/cd", b"data".as_slice(), "immutable"),
@@ -646,8 +709,8 @@ async fn concurrent_publication_generation_is_rejected() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 
     // A later generation cannot start while the preceding publication is
     // incomplete. Admission fails before any additional write or usage change.
@@ -664,8 +727,8 @@ async fn concurrent_publication_generation_is_rejected() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 }
 
 #[tokio::test]
@@ -705,7 +768,7 @@ async fn signup_policy_gates_create_org() {
     // Default policy is invite-only.
     let fresh = db.create_user("nobody@acme.com", None).await.unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(fresh), "instance", &[]);
+    let token = bearer(&db, Principal::user(fresh), "instance", &[]).await;
 
     // invite_only blocks a fresh, unaffiliated user.
     let (status, _) = rpc(
@@ -747,7 +810,7 @@ async fn invite_only_allows_existing_member() {
     .await
     .unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(member), "instance", &[]);
+    let token = bearer(&db, Principal::user(member), "instance", &[]).await;
     let (status, value) = planned_rpc(
         &app,
         "OrganizationService/PlanCreateOrganization",
@@ -798,7 +861,7 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     )
     .await
     .unwrap();
-    let (_id, secret) = db
+    let (token_id, secret) = db
         .create_token(
             Principal::service_account(sa),
             &common::registry_scope(&db, "acme/infra/prod/cdn").await,
@@ -813,11 +876,11 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     // round-trip. The typed publication remains intentionally uncommitted: the
     // export test concerns physical-byte copying, not signed-index promotion.
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(
-        Principal::service_account(sa),
-        &common::registry_scope(&db, "acme/infra/prod/cdn").await,
-        &[Permission::Publish],
-    );
+    // Authenticate with the token whose metadata and redaction are tested.
+    let auth = db.validate_token(&secret).await.unwrap().unwrap();
+    let token = JwtKeys::from_secret(TEST_JWT_SECRET)
+        .mint(&auth, 900)
+        .unwrap();
     let objects = [
         ("objects/ab/cd", b"surface-bytes".as_slice(), "immutable"),
         ("info/refs", b"".as_slice(), "mutable_pointer"),
@@ -861,6 +924,7 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
         .iter()
         .any(|m| m.scope == org.stable_id && m.role == "owner"));
     assert_eq!(manifest.tokens.len(), 1);
+    assert_eq!(manifest.tokens[0].id, token_id);
     assert_eq!(
         manifest.tokens[0].scope,
         common::registry_scope(&db, "acme/infra/prod/cdn").await

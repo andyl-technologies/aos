@@ -13,6 +13,7 @@
     rate_limit_interval_millis = cfg.rateLimitIntervalMillis;
     rate_limit_burst = cfg.rateLimitBurst;
     forward_to_syslog = cfg.forwardToSyslog;
+    line_max_bytes = cfg.lineMaxBytes;
   };
   files = import ./platform/_event-log-configuration.nix {inherit policy;};
 in {

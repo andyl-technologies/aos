@@ -12,6 +12,12 @@
     == cratesRoot
     || pathString == "${cratesRoot}/Cargo.toml"
     || pathString == "${cratesRoot}/Cargo.lock"
+    # Integration suites need the workspace runner profile. Small provider
+    # slices use the runner defaults without unrelated package-specific rules.
+    || (includeIntegrationInputs
+      && (pathString
+        == "${cratesRoot}/.config"
+        || lib.hasPrefix "${cratesRoot}/.config/" pathString))
     || builtins.any
     (crate: pathString == "${cratesRoot}/${crate}" || lib.hasPrefix "${cratesRoot}/${crate}/" pathString)
     selectedCrates;
@@ -39,6 +45,8 @@ in
           == ".git"
           || base == ".direnv"
           || base == ".worktrees"
+          || base == "__pycache__"
+          || lib.hasPrefix ".tmp" base
           || base == "result"
           || lib.hasPrefix "result-" base
           || base == "target"
@@ -79,6 +87,15 @@ in
         || lib.hasPrefix "${repoRootString}/qualification" pathString
         || lib.hasPrefix "${repoRootString}/stdenv" pathString
         || lib.hasPrefix "${repoRootString}/systems" pathString
+        || pathString == "${repoRootString}/tests"
+        # Native API tests use disposable TLS fixtures and their trust roots.
+        || pathString == "${repoRootString}/tests/fixtures"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-ca.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-server.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-server.key"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-s3-ca.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-s3.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-s3.key"
         || lib.hasPrefix "${repoRootString}/tests/abilities" pathString
         || lib.hasPrefix "${repoRootString}/tests/build" pathString
         || lib.hasPrefix "${repoRootString}/tests/fleet" pathString

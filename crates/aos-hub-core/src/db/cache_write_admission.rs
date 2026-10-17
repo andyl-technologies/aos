@@ -161,8 +161,9 @@ impl Database {
     /// Atomically creates a bounded set of observing proxy-write tickets.
     ///
     /// Every ticket shares one already-resolved physical authority snapshot.
-    /// Any same-key race, stale topology pin, active inventory, deletion
-    /// overlap, or invalid credential rolls the whole admission back.
+    /// Any same-key race, stale topology pin, deletion overlap, or invalid
+    /// credential rolls the whole admission back. A building inventory may
+    /// coexist with new tickets; publication waits for those tickets to close.
     ///
     /// # Errors
     ///
@@ -224,7 +225,7 @@ impl Database {
                             revision.write_credential_purpose,
                             revision.write_credential_generation,
                             state.inventory_generation, ?5, 0, 0,
-                            CASE WHEN ?5 IS NULL THEN 'none' ELSE 'pending' END,
+                            CASE WHEN CAST(?5 AS BIGINT) IS NULL THEN 'none' ELSE 'pending' END,
                             'observing', 1, ?8, ?9
                        FROM surface_placement_effective placement
                        JOIN bindings binding ON binding.id = placement.binding_id
@@ -248,11 +249,7 @@ impl Database {
                           WHERE owner.id = ?2
                             AND (owner.org_id IS NULL OR org.deleted_at IS NULL)
                             AND (owner.org_id = ?5
-                              OR (owner.org_id IS NULL AND ?5 IS NULL)))
-                        AND NOT EXISTS (SELECT 1
-                          FROM cache_inventory_generations inventory
-                          WHERE inventory.cache_id = ?2
-                            AND inventory.state = 'building')
+                              OR (owner.org_id IS NULL AND CAST(?5 AS BIGINT) IS NULL)))
                         AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                           JOIN surface_objects object
                             ON object.id = job.surface_object_id
@@ -326,5 +323,43 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(operations, ["query", "checked_batch"]);
+    }
+
+    #[tokio::test]
+    async fn bulk_proxy_admission_preserves_writes_during_inventory() {
+        let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
+        let db = Database::with_backend(Box::new(backend)).await.unwrap();
+        db.install_write_failure_test_tickets().await.unwrap();
+        let placement = db
+            .reconciled_surface_writer(SurfaceTarget::BinaryCache(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            db.backend
+                .execute("DELETE FROM cache_write_tickets WHERE cache_id = 1", &[])
+                .await
+                .unwrap(),
+            6
+        );
+        db.begin_cache_inventory_topology(1, 2, 0, "inventory-owner", 10, 100)
+            .await
+            .unwrap();
+
+        let admissions = [CacheProxyWriteAdmission {
+            ticket_id: "inventory-overlap-ticket".into(),
+            object_key: "nar/inventory-overlap.nar".into(),
+            declared_size: 4,
+        }];
+        db.begin_cache_proxy_write_tickets(1, placement.id, 1, 1, 1, Some(1), 500, 50, &admissions)
+            .await
+            .unwrap();
+
+        let ticket = db
+            .cache_write_ticket("inventory-overlap-ticket")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ticket.starting_inventory_generation, 1);
+        assert_eq!(ticket.state, "observing");
     }
 }

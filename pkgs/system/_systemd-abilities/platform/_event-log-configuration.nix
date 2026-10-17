@@ -21,6 +21,11 @@ in
       RateLimitBurst=${toString policy.rate_limit_burst}
       ForwardToSyslog=${yesNo policy.forward_to_syslog}
       Compress=${yesNo policy.compress}
+      ${
+        if (policy.line_max_bytes or null) == null
+        then ""
+        else "LineMax=${toString policy.line_max_bytes}"
+      }
     '';
   }
   // (

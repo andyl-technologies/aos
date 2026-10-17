@@ -43,7 +43,7 @@ use async_trait::async_trait;
 use worker::{SqlStorage, SqlStorageValue, Storage};
 
 use aos_hub_core::backend::{prepare, split_statements, Backend, CheckedStatement, Statement};
-use aos_hub_core::db::{MIGRATIONS, SCHEMA_IDENTITY};
+use aos_hub_core::db::{HISTORICAL_SCHEMA_IDENTITY, MIGRATIONS, SCHEMA_IDENTITY};
 use aos_hub_core::dialect::Dialect;
 use aos_hub_core::value::{Row, Value};
 
@@ -55,7 +55,7 @@ const JS_SAFE_INTEGER_MAX: i64 = 9_007_199_254_740_991;
 /// every method runs the translated SQL through the local engine. One backend
 /// serves one tenant DO's database.
 pub struct SqlDoBackend {
-    storage: Storage,
+    storage: Rc<Storage>,
     sql: SqlStorage,
     metrics: SqlDoMetrics,
 }
@@ -188,20 +188,57 @@ impl SqlDoBackend {
     pub fn with_metrics(storage: Storage, metrics: SqlDoMetrics) -> SqlDoBackend {
         let sql = storage.sql();
         SqlDoBackend {
-            storage,
+            storage: Rc::new(storage),
             sql,
             metrics,
         }
     }
 
-    /// Proves indexed row counts and rollback against the real DO transaction binding.
+    /// Proves forward schema migration, indexed row counts, and real DO rollback.
     ///
     /// # Errors
     ///
-    /// Returns an error if fixture setup, the expected mismatch, rollback, or
-    /// the verification query does not behave as required.
+    /// Returns an error if the migrated schema, fixture setup, expected
+    /// mismatch, rollback, or verification query does not behave as required.
     #[cfg(feature = "do-e2e")]
     pub(crate) async fn e2e_assert_checked_batch_row_counts_and_rollback(&self) -> Result<()> {
+        let ledger = self
+            .query("SELECT applied, id FROM _do_migrations", &[])
+            .await?;
+        anyhow::ensure!(
+            ledger.len() == 1
+                && ledger[0].get::<i64>(0)? == i64::try_from(MIGRATIONS.len())?
+                && ledger[0].get::<i64>(1)? == 0,
+            "real HubDb did not apply the incarnation forward migration"
+        );
+        for (table, column) in [
+            ("oci_provider_inventory_entries", "provider_version"),
+            ("oci_gc_placement_actions", "expected_provider_version"),
+            ("cache_inventory_listed_objects", "provider_version"),
+            ("cache_inventory_object_observations", "provider_version"),
+            ("object_placements", "provider_version"),
+            ("cache_gc_plan_actions", "expected_provider_version"),
+            ("object_deletion_jobs", "expected_provider_version"),
+            (
+                "object_deletion_attempt_receipts",
+                "expected_provider_version",
+            ),
+        ] {
+            let columns = self
+                .query(&format!("PRAGMA table_info({table})"), &[])
+                .await?;
+            let mut nullable_version_column = false;
+            for row in columns {
+                if row.get::<String>(1)? == column {
+                    nullable_version_column = row.get::<i64>(3)? == 0;
+                }
+            }
+            anyhow::ensure!(
+                nullable_version_column,
+                "real HubDb has no nullable {table}.{column} incarnation column"
+            );
+        }
+
         let unsafe_bind = self
             .query("SELECT ?1", &[Value::Int(JS_SAFE_INTEGER_MAX + 1)])
             .await;
@@ -285,74 +322,146 @@ impl SqlDoBackend {
 /// Returns an error when migration SQL fails or the persisted schema identity
 /// is absent or unsupported.
 pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> Result<()> {
-    backend
-        .execute_batch(
-            "CREATE TABLE IF NOT EXISTS _do_migrations (\
-               id INTEGER PRIMARY KEY CHECK (id = 0), \
-               applied INTEGER NOT NULL)",
-        )
-        .await?;
-    let rows = backend
-        .query("SELECT applied, id FROM _do_migrations", &[])
-        .await?;
-    anyhow::ensure!(rows.len() <= 1, "HubDb migration ledger has duplicate rows");
-    if let Some(row) = rows.first() {
-        anyhow::ensure!(
-            row.get::<i64>(1)? == 0,
-            "HubDb migration ledger has an invalid singleton id"
-        );
+    let storage = backend.storage.clone();
+    let transactional = SqlDoBackend {
+        storage: storage.clone(),
+        sql: backend.sql.clone(),
+        metrics: backend.metrics.clone(),
+    };
+    backend.metrics.record_transaction();
+    storage
+        .transaction(move |_transaction| async move {
+            migrate_held(&transactional)
+                .await
+                .map_err(|error| worker::Error::RustError(error.to_string()))
+        })
+        .await
+        .map_err(|_| anyhow!(aos_hub_core::backend::schema_lineage::RESET_REQUIRED))
+}
+
+async fn migrate_held(backend: &SqlDoBackend) -> Result<()> {
+    let admission = inspect_held(backend).await?;
+    if admission.applied < MIGRATIONS.len() {
+        // Admission precedes the first bookkeeping write in this same DO turn.
+        // The surrounding storage transaction keeps all DDL and its marker
+        // atomic, including cancellation/eviction and concurrent requests.
+        backend
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS _do_migrations (\
+             id INTEGER PRIMARY KEY CHECK (id = 0), \
+             applied INTEGER NOT NULL)",
+            )
+            .await?;
+        for migration in &MIGRATIONS[admission.applied..] {
+            backend.execute_batch(migration).await?;
+        }
+        let stamped = backend
+            .execute(
+                "UPDATE hub_schema_identity SET identity=?1 WHERE identity=?2",
+                &[
+                    Value::Text(SCHEMA_IDENTITY.into()),
+                    Value::Text(HISTORICAL_SCHEMA_IDENTITY.into()),
+                ],
+            )
+            .await?;
+        anyhow::ensure!(stamped == 1, "fresh serving identity did not settle");
+        backend.execute(
+            "INSERT INTO _do_migrations (id,applied) VALUES (0,?1) ON CONFLICT(id) DO UPDATE SET applied=?1",
+            &[Value::Int(i64::try_from(MIGRATIONS.len())?)],
+        ).await?;
     }
-    let applied = rows
-        .first()
-        .map(|row| row.get::<i64>(0))
-        .transpose()?
-        .unwrap_or(0);
-    anyhow::ensure!(applied >= 0, "HubDb schema version cannot be negative");
+    let current = inspect_held(backend).await?;
     anyhow::ensure!(
-        applied <= MIGRATIONS.len() as i64,
-        "HubDb schema {applied} is newer than this Worker supports ({})",
-        MIGRATIONS.len()
+        current.applied == MIGRATIONS.len(),
+        "HubDb canonical migration did not settle"
     );
-    if applied > 0 {
-        require_schema_identity(backend).await?;
-    }
-    let applied = applied as usize;
-    for (offset, migration) in MIGRATIONS[applied..].iter().enumerate() {
-        let next = applied + offset + 1;
-        let mut statements = split_statements(migration)
-            .into_iter()
-            .map(|sql| Statement::new(sql, Vec::new()))
-            .collect::<Vec<_>>();
-        statements.push(Statement::new(
-            "INSERT INTO _do_migrations (id, applied) VALUES (0, ?1) \
-             ON CONFLICT(id) DO UPDATE SET applied = ?1",
-            vec![Value::Int(next as i64)],
-        ));
-        // Durable Object eviction cannot split schema DDL from its ledger
-        // advancement: the storage transaction either commits both or rolls
-        // every statement back, leaving the migration safe to retry.
-        backend.batch(&statements).await?;
-    }
-    require_schema_identity(backend).await?;
     Ok(())
 }
 
-async fn require_schema_identity(backend: &SqlDoBackend) -> Result<()> {
+async fn inspect_held(
+    backend: &SqlDoBackend,
+) -> Result<aos_hub_core::backend::schema_lineage::SchemaAdmission> {
+    use aos_hub_core::backend::schema_lineage::{
+        admit_sqlite, SqliteMigrationLedger, SqliteSchemaObject, MAX_SCHEMA_BYTES,
+        MAX_SCHEMA_DEFINITION_BYTES, MAX_SCHEMA_IDENTIFIER_BYTES, MAX_SCHEMA_OBJECTS,
+        RESET_REQUIRED,
+    };
+
+    let totals = backend.query(
+        "SELECT COUNT(*),COALESCE(SUM(length(CAST(type AS BLOB))+length(CAST(name AS BLOB))+length(CAST(tbl_name AS BLOB))+COALESCE(length(CAST(sql AS BLOB)),0)),0) FROM sqlite_schema",
+        &[],
+    ).await?;
+    anyhow::ensure!(
+        totals.len() == 1
+            && totals[0].get::<i64>(0)? <= i64::try_from(MAX_SCHEMA_OBJECTS)?
+            && totals[0].get::<i64>(1)? <= i64::try_from(MAX_SCHEMA_BYTES)?,
+        "{RESET_REQUIRED}"
+    );
+    let oversized = backend.query(
+        "SELECT 1 FROM sqlite_schema WHERE length(CAST(name AS BLOB))>?1 OR length(CAST(tbl_name AS BLOB))>?1 OR length(CAST(sql AS BLOB))>?2 LIMIT 1",
+        &[Value::Int(i64::try_from(MAX_SCHEMA_IDENTIFIER_BYTES)?),Value::Int(i64::try_from(MAX_SCHEMA_DEFINITION_BYTES)?)],
+    ).await?;
+    anyhow::ensure!(oversized.is_empty(), "{RESET_REQUIRED}");
     let rows = backend
-        .query("SELECT identity FROM hub_schema_identity", &[])
-        .await
-        .map_err(|error| anyhow!("HubDb has no production schema identity: {error:#}"))?;
-    anyhow::ensure!(
-        rows.len() == 1,
-        "HubDb schema identity ledger must contain exactly one row"
-    );
-    let row = &rows[0];
-    let identity: String = row.get(0)?;
-    anyhow::ensure!(
-        identity == SCHEMA_IDENTITY,
-        "unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'"
-    );
-    Ok(())
+        .query(
+            "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name LIMIT ?1",
+            &[Value::Int(i64::try_from(MAX_SCHEMA_OBJECTS + 1)?)],
+        )
+        .await?;
+    let objects = rows
+        .into_iter()
+        .map(|row| {
+            Ok(SqliteSchemaObject {
+                kind: row.get(0)?,
+                name: row.get(1)?,
+                table: row.get(2)?,
+                definition: row.get(3)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut versions = Vec::new();
+    let mut ids = Vec::new();
+    let mut identity = Vec::new();
+    if objects
+        .iter()
+        .any(|object| object.kind == "table" && object.name == "_do_migrations")
+    {
+        for row in backend
+            .query("SELECT applied,id FROM _do_migrations LIMIT 2", &[])
+            .await?
+        {
+            versions.push(row.get::<i64>(0)?);
+            ids.push(row.get::<i64>(1)?);
+        }
+    }
+    if objects
+        .iter()
+        .any(|object| object.kind == "table" && object.name == "hub_schema_identity")
+    {
+        let sizes = backend
+            .query(
+                "SELECT length(CAST(identity AS BLOB)) FROM hub_schema_identity LIMIT 2",
+                &[],
+            )
+            .await?;
+        anyhow::ensure!(
+            sizes.len() == 1 && sizes[0].get::<i64>(0)? == i64::try_from(SCHEMA_IDENTITY.len())?,
+            "{RESET_REQUIRED}"
+        );
+        for row in backend
+            .query("SELECT identity FROM hub_schema_identity LIMIT 2", &[])
+            .await?
+        {
+            identity.push(row.get::<String>(0)?);
+        }
+    }
+    admit_sqlite(
+        &objects,
+        SqliteMigrationLedger::Worker,
+        &versions,
+        &ids,
+        &identity,
+    )
 }
 
 /// Converts a bound [`Value`] into the [`SqlStorageValue`] the DO engine binds.
@@ -473,6 +582,10 @@ fn changes(sql_storage: &SqlStorage, metrics: &SqlDoMetrics) -> Result<u64> {
 
 #[async_trait(?Send)]
 impl Backend for SqlDoBackend {
+    async fn migrate_schema(&self) -> Result<()> {
+        ensure_migrated(self).await
+    }
+
     fn dialect(&self) -> Dialect {
         // The DO storage is SQLite: the source dialect, no translation beyond
         // placeholders.
@@ -609,3 +722,6 @@ impl SqlDoBackend {
             .map_err(|error| anyhow!("DO SQL checked-batch transaction: {error}"))
     }
 }
+
+#[cfg(feature = "do-e2e")]
+mod schema_probe;

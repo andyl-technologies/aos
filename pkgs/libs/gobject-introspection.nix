@@ -224,7 +224,8 @@ in
         name = "check";
         script = ''
           export PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages:${pythonPath}
-          meson test -C build --print-errorlogs
+          # Meson otherwise uses the host CPU count, exceeding the build budget.
+          meson test -C build -j"$NIX_BUILD_CORES" --print-errorlogs
         '';
       }
       {

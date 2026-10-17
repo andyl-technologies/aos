@@ -385,11 +385,16 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    async fn staged_releases_migrates_existing_version_two_database() {
+    async fn staged_releases_refuses_existing_version_two_database_without_writes() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("hub.db");
         {
             let connection = rusqlite::Connection::open(&path).unwrap();
+            // Preserve the existing driver's journal mode so the assertion
+            // measures refusal writes rather than a connection-mode change.
+            connection
+                .pragma_update(None, "journal_mode", "WAL")
+                .unwrap();
             connection
                 .execute_batch(super::super::MIGRATIONS[0])
                 .unwrap();
@@ -397,24 +402,41 @@ mod tests {
                 .execute_batch(super::super::MIGRATIONS[1])
                 .unwrap();
             connection.execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL); INSERT INTO schema_version VALUES(2)").unwrap();
+            connection
+                .execute_batch(
+                    "INSERT INTO users(email,created_at) VALUES('preserved@example.invalid',1)",
+                )
+                .unwrap();
         }
 
-        let db = Database::open(&path).await.unwrap();
-        let version = db
-            .backend
-            .query_opt("SELECT version FROM schema_version", &[])
+        let before = std::fs::read(&path).unwrap();
+
+        let error = Database::open(&path)
             .await
-            .unwrap()
-            .unwrap()
-            .get::<i64>(0)
+            .err()
+            .expect("historical serving source must require explicit reset");
+
+        assert!(
+            format!("{error:#}").contains(crate::backend::schema_lineage::RESET_REQUIRED)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, super::super::MIGRATIONS.len() as i64);
-        db.register_registry("test", &[], false).await.unwrap();
-        let id = db.registry_by_slug("test").await.unwrap().unwrap().id;
-        db.upsert_staged_release(id, &revision(1, 'a'), 0, None, 10)
-            .await
+        assert_eq!(version, 2);
+        let email: String = connection
+            .query_row("SELECT email FROM users", [], |row| row.get(0))
             .unwrap();
-        assert!(db.staged_release(id, "candidate").await.unwrap().is_some());
+        assert_eq!(email, "preserved@example.invalid");
+        let staged_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'staged_release%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(staged_tables, 0);
     }
 
     #[tokio::test]
@@ -886,12 +908,15 @@ impl Database {
             ));
         }
         if expected_revision == 0 {
+            // PostgreSQL must resolve this nullable parameter consistently in
+            // the projection, null check and publication lookup. The text cast
+            // also preserves SQLite's nullable string representation.
             writes.push(CheckedStatement::exact(
                 "INSERT INTO staged_releases
                   (registry_id, stage_id, current_revision, state, publication_id, created_at, updated_at,
                    release_id, source_branch, source_commit, inventory_digest, object_count, total_bytes, container_repository)
-                 SELECT ?1, ?2, ?3, 'draft', ?4, ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
-                  WHERE (?4 IS NULL OR EXISTS (SELECT 1 FROM registry_publications publication
+                 SELECT ?1, ?2, ?3, 'draft', CAST(?4 AS TEXT), ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+                  WHERE (CAST(?4 AS TEXT) IS NULL OR EXISTS (SELECT 1 FROM registry_publications publication
                     WHERE publication.publication_id = ?4 AND publication.registry_id = ?1 AND publication.state = 'preparing'))
                     AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks WHERE registry_id = ?1)
                     AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences WHERE registry_id = ?1 AND state = 'collecting')",
@@ -902,11 +927,11 @@ impl Database {
         } else {
             writes.push(CheckedStatement::exact(
                 "UPDATE staged_releases SET current_revision = ?4, state = 'draft',
-                     publication_id = ?5, updated_at = ?6, release_id = ?7, source_branch = ?8,
+                     publication_id = CAST(?5 AS TEXT), updated_at = ?6, release_id = ?7, source_branch = ?8,
                      source_commit = ?9, inventory_digest = ?10, object_count = ?11, total_bytes = ?12, container_repository = ?13
                   WHERE registry_id = ?1 AND stage_id = ?2 AND current_revision = ?3
                     AND state IN('draft', 'ready')
-                    AND (?5 IS NULL OR EXISTS (SELECT 1 FROM registry_publications publication
+                    AND (CAST(?5 AS TEXT) IS NULL OR EXISTS (SELECT 1 FROM registry_publications publication
                       WHERE publication.publication_id = ?5 AND publication.registry_id = ?1 AND publication.state = 'preparing'))
                     AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks WHERE registry_id = ?1)
                         AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences WHERE registry_id = ?1 AND state = 'collecting')",

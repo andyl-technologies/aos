@@ -109,6 +109,7 @@ impl aos_hub_core::topology_probe::StorageCredentialProbeProvider
         &self,
         binding: &aos_hub_core::db::BindingRecord,
         credential: &aos_hub_core::db::BindingCredentialRevisionRecord,
+        _operation_id: &str,
         probe_token: &str,
     ) -> Result<aos_hub_core::topology_probe::StorageCredentialProbeEvidence> {
         anyhow::ensure!(
@@ -440,6 +441,9 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
         } else {
             root.join(prefix_directory)
         };
+        crate::fetch::ensure_within_root(&root, &walk_root)
+            .await
+            .map_err(native_placement_read_error)?;
         let mut pending = vec![walk_root];
         let mut paths = std::collections::BTreeSet::new();
         let mut has_more = false;
@@ -2098,6 +2102,10 @@ impl core_fetch::SurfaceFetch for S3Fetch {
         for key in keys {
             if let Some(relative) = self.surface.relative_from_key(&key) {
                 if !relative.is_empty() {
+                    anyhow::ensure!(
+                        relative.starts_with(prefix),
+                        "S3 listing returned an object outside the requested prefix"
+                    );
                     paths.push(relative);
                     anyhow::ensure!(
                         paths.len() <= limit,

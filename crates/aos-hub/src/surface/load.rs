@@ -56,6 +56,22 @@ impl<'a> ObjectReader<'a> {
     /// guarantees loose presence, so absence is surface corruption), fails
     /// to inflate, or hashes to a different oid.
     pub async fn read(&self, oid: Oid) -> Result<(ObjectKind, Vec<u8>)> {
+        if self.fetch.storage_local_git_projection() {
+            let (kind, content) = self
+                .fetch
+                .inspect_git_object(oid)
+                .await?
+                .with_context(|| format!("verified Git projection {oid} is absent"))?;
+            anyhow::ensure!(
+                kind != ObjectKind::Tree,
+                "storage-local tree reads require the closed row inventory"
+            );
+            anyhow::ensure!(
+                object::hash_object(kind, &content) == oid,
+                "storage-local Git content changed the selected OID"
+            );
+            return Ok((kind, content));
+        }
         let path = oid.loose_path();
         let bytes = self
             .fetch
@@ -63,6 +79,32 @@ impl<'a> ObjectReader<'a> {
             .await?
             .with_context(|| format!("loose object {path} is missing from the surface"))?;
         object::decode_loose(&bytes, Some(oid))
+    }
+
+    /// Reads every verified tree row without hydrating a Hybrid source tree.
+    ///
+    /// # Errors
+    /// Returns an error for incomplete, malformed or oversized inventories.
+    pub async fn tree_entries(&self, oid: Oid) -> Result<Vec<object::TreeEntry>> {
+        if self.fetch.storage_local_git_projection() {
+            return self.fetch.inspect_git_tree_inventory(oid).await;
+        }
+        object::parse_tree(&self.read_kind(oid, ObjectKind::Tree).await?)
+    }
+
+    /// Indexes verified canonical tree rows by their unique component names.
+    ///
+    /// # Errors
+    /// Returns an error for malformed trees or repeated names.
+    pub async fn tree_map(&self, oid: Oid) -> Result<BTreeMap<String, object::TreeEntry>> {
+        let mut entries = BTreeMap::new();
+        for entry in self.tree_entries(oid).await? {
+            anyhow::ensure!(
+                entries.insert(entry.name.clone(), entry).is_none(),
+                "verified tree inventory repeats a name"
+            );
+        }
+        Ok(entries)
     }
 
     /// Read one loose object, requiring a specific kind.
@@ -116,7 +158,7 @@ pub struct LoadedTree {
 pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Result<LoadedTree> {
     let reader = ObjectReader::new(fetch);
     let commit = reader.read_commit(commit_oid).await?;
-    let root_tree = object::tree_map(&reader.read_kind(commit.tree, ObjectKind::Tree).await?)?;
+    let root_tree = reader.tree_map(commit.tree).await?;
 
     let root_toml = match root_tree.get("registry.toml") {
         Some(entry) => read_utf8_blob(&reader, entry.oid, "registry.toml").await?,
@@ -135,13 +177,9 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
 
     let mut packages = Vec::new();
     if let Some(packages_entry) = root_tree.get("packages") {
-        let buckets = object::tree_map(
-            &reader
-                .read_kind(packages_entry.oid, ObjectKind::Tree)
-                .await?,
-        )?;
+        let buckets = reader.tree_map(packages_entry.oid).await?;
         for bucket in buckets.values().filter(|e| e.is_tree()) {
-            let files = object::tree_map(&reader.read_kind(bucket.oid, ObjectKind::Tree).await?)?;
+            let files = reader.tree_map(bucket.oid).await?;
             for file in files.values().filter(|e| e.name.ends_with(".toml")) {
                 if packages.len() >= MAX_PACKAGES {
                     bail!(
@@ -159,11 +197,7 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
 
     let mut closures = BTreeMap::new();
     if let Some(closures_entry) = root_tree.get("closures") {
-        let files = object::tree_map(
-            &reader
-                .read_kind(closures_entry.oid, ObjectKind::Tree)
-                .await?,
-        )?;
+        let files = reader.tree_map(closures_entry.oid).await?;
         for file in files.values().filter(|e| !e.is_tree()) {
             let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
             // Adjacency list: every line is "<hash> [<dep-hash>…]"; the file
@@ -195,3 +229,6 @@ async fn read_utf8_blob(reader: &ObjectReader<'_>, oid: Oid, name: &str) -> Resu
     let content = reader.read_kind(oid, ObjectKind::Blob).await?;
     String::from_utf8(content).with_context(|| format!("committed file {name} is not UTF-8"))
 }
+
+#[cfg(test)]
+mod tests;

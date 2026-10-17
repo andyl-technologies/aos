@@ -4,8 +4,8 @@
 //! boot entries need ESP space; keeping their authenticated sources here also
 //! lets selection replay preserve or explicitly reset consumed boot counts.
 
-use std::fs::{self, File};
-use std::os::unix::fs::PermissionsExt as _;
+use std::fs::{self, File, OpenOptions};
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -15,6 +15,41 @@ pub(crate) const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
 
 /// Names the firmware partition containing selectable boot entries.
 pub(crate) const BOOT_ROOT: &str = "/boot";
+
+/// Checks measurement sidecars against the authenticated UKI's own sections.
+///
+/// Unmeasured images have no sidecars. A UKI containing either PCR policy
+/// section requires both sidecars, including when metadata omits them.
+///
+/// # Errors
+/// Returns an error for an incomplete pair, missing measured-image evidence,
+/// malformed PE data, aliased files, or failed reads.
+pub(crate) fn validate_measurement_sidecars(
+    uki: &Path,
+    measurement_present: bool,
+    signature_present: bool,
+) -> Result<()> {
+    ensure!(
+        measurement_present == signature_present,
+        "candidate measurement sidecars are incomplete"
+    );
+    if measurement_present {
+        return Ok(());
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(uki)?;
+    ensure!(file.metadata()?.is_file(), "candidate UKI is not regular");
+    for section in ["pcrsig", "pcrpkey"] {
+        ensure!(
+            aos_boot_identity::pe::section_range(&mut file, section)?.is_none(),
+            "measured candidate UKI lacks measurement sidecars"
+        );
+    }
+    Ok(())
+}
 
 /// Distinguishes selectable ESP entries from durable staged profile sources.
 pub(crate) enum PayloadSource {
@@ -113,6 +148,34 @@ pub(crate) fn private_directory(parent: &Path, name: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn missing_sidecars_require_an_unmeasured_uki_and_partial_pairs_refuse() {
+        let root = tempfile::tempdir().unwrap();
+        let uki = root.path().join("candidate.efi");
+        let mut bytes = vec![0_u8; 512];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[60..64].copy_from_slice(&64_u32.to_le_bytes());
+        bytes[64..68].copy_from_slice(b"PE\0\0");
+        bytes[70..72].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[88..96].copy_from_slice(b".cmdline");
+        fs::write(&uki, &bytes).unwrap();
+
+        validate_measurement_sidecars(&uki, false, false).unwrap();
+        assert!(validate_measurement_sidecars(&uki, true, false).is_err());
+        assert!(validate_measurement_sidecars(&uki, false, true).is_err());
+
+        for section in [b".pcrsig\0", b".pcrpkey"] {
+            bytes[88..96].copy_from_slice(section);
+            fs::write(&uki, &bytes).unwrap();
+
+            assert!(validate_measurement_sidecars(&uki, false, false).is_err());
+            validate_measurement_sidecars(&uki, true, true).unwrap();
+        }
+
+        fs::write(&uki, b"not a PE artifact").unwrap();
+        assert!(validate_measurement_sidecars(&uki, false, false).is_err());
+    }
 
     #[test]
     fn private_payload_directories_reject_aliases_and_foreign_objects() {

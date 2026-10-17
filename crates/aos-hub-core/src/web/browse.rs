@@ -237,7 +237,19 @@ async fn session_allows(
     let Ok(Some(context)) = svc.db.authorization_context(scope.as_str()).await else {
         return false;
     };
-    iam::allow(&grants, permission, &context)
+    let allowed = iam::allow(&grants, permission, &context);
+    crate::hybrid_ingress::observation::record_existing_outcome(
+        if permission == Permission::Read { "browse_session_read" } else { "browse_session_permission" },
+        allowed,
+        &(
+            auth.user_id,
+            &auth.owner_incarnation,
+            &auth.session_id_hash,
+            scope.as_str(),
+            crate::hybrid_ingress::observation::grant_projection(&grants),
+        ),
+    );
+    allowed
 }
 
 async fn session_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
@@ -297,10 +309,11 @@ async fn can_read_registry(
 ) -> bool {
     if let Some(org_id) = registry.org_id {
         if !matches!(svc.db.org_is_active(org_id).await, Ok(true)) {
+            observe_registry_read_policy(registry, false);
             return false;
         }
     }
-    match registry.visibility.as_str() {
+    let allowed = match registry.visibility.as_str() {
         "public" => true,
         "internal" => match registry.org_id {
             None => true,
@@ -308,13 +321,30 @@ async fn can_read_registry(
         },
         _ => {
             let Ok(scope_key) = svc.db.registry_authorization_scope(registry.id).await else {
+                observe_registry_read_policy(registry, false);
                 return false;
             };
             let scope = Scope::parse(&scope_key);
             session_allows_read(svc, headers, &scope).await
                 || bearer_allows_read(svc, headers, &scope).await
         }
-    }
+    };
+    observe_registry_read_policy(registry, allowed);
+    allowed
+}
+
+fn observe_registry_read_policy(registry: &RegistryRecord, allowed: bool) {
+    crate::hybrid_ingress::observation::record_existing_outcome(
+        "browse_registry_read_policy",
+        allowed,
+        &(
+            registry.id,
+            &registry.stable_id,
+            &registry.scope_key,
+            registry.org_id,
+            &registry.visibility,
+        ),
+    );
 }
 
 /// Load a registry by slug, enforcing visibility, plus its index status.
