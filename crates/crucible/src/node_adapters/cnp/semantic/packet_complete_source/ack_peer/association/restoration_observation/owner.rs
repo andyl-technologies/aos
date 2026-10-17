@@ -364,3 +364,27 @@ mod partial_tests {
         assert!(attempt.authenticate_verified().is_err());
     }
 }
+
+impl OriginalSourceRestorationObservationAttempt {
+    /// Lends the already verified immutable initial model as checkpoint DATA.
+    ///
+    /// The owning Source still authenticates its distinct seed and current
+    /// native read. This helper neither repeats a native Observe nor replaces
+    /// the first receipt after a progressed Producer attempt.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn original_producer_checkpoint_data(
+        &self,
+    ) -> Result<
+        (
+            &PacketNativeRestoredRecord,
+            &crucible_node_provider::reference_packet::control::PacketNativeRecord,
+            &ContentRef,
+        ),
+        RuntimeError,
+    > {
+        self.authenticate_verified()?;
+        let PacketNative5UnderlyingRecord::Producer(producer) = self.underlying()? else {
+            return Err(RuntimeError::UnsupportedFacet);
+        };
+        Ok((self.record()?, producer, &self.scheduling()?.proof_ref))
+    }
+}

@@ -60,6 +60,7 @@ impl CompleteOriginalRestorationWindow {
             .get(selected)
             .ok_or(RuntimeError::ForeignAuthority)?;
         self.authenticate_registered_target_identity(target, source, plan, activation)?;
+        self.authenticate_producer_publication_before_prepare_data(&phase)?;
         target.begin_original_phase_data(&phase)?;
         self.authenticate_original_phase_member_data(target, source, plan, activation, &phase)?;
         Ok(OriginalRestorationTransactionClaim::from_original_window(

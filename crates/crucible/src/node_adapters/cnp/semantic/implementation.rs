@@ -31,6 +31,70 @@ impl FacetDescription for CnpSemanticNode {
 }
 
 impl SimulationNode for CnpSemanticNode {
+    fn quote_original_restored_producer_execution(
+        &self,
+        grant: &crate::node_scheduling::ExecutionAdmission,
+        launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        raw5: &[u8],
+        maximum: usize,
+    ) -> Result<
+        crate::node_admission::OriginalRestoredProducerExecutionConstructionData,
+        RuntimeError,
+    > {
+        self.quote_installed_producer_execution_data(grant, launch, raw5, maximum)
+    }
+
+    fn begin_original_restored_producer_operation(
+        &mut self,
+        dispatch: &OriginalRuntimeOperationDispatch<'_>,
+        claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+    ) -> Submission {
+        match self.begin_installed_producer_execution_data(dispatch, claim) {
+            Ok(()) => Submission::Accepted,
+            Err(_) => Submission::Uncertain(EffectKnowledge::MayHaveProgressed),
+        }
+    }
+
+    fn requires_original_restored_producer_claim_data(&self, token: &OperationToken) -> bool {
+        self.requires_installed_producer_claim_data(token)
+    }
+
+    fn poll_original_restored_producer_operation(
+        &mut self,
+        token: &OperationToken,
+        claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+    ) -> Result<OperationOutcome, OperationFailure> {
+        self.poll_installed_producer_execution_data(token, claim)
+    }
+
+    fn with_original_restored_producer_report_data(
+        &mut self,
+        original: &OperationAdmission,
+        claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+        inspect: &mut dyn FnMut(
+            &OriginalRestoredProducerReportReadScope<'_>,
+        ) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        self.with_installed_producer_report_data(original, claim, inspect)
+    }
+
+    fn acknowledge_original_restored_producer_publication(
+        &mut self,
+        token: &OperationToken,
+        outputs: &[Id],
+        claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+    ) -> Result<(), OperationFailure> {
+        self.retire_installed_producer_execution_data(token, outputs, claim)
+    }
+
+    fn observe_original_restored_producer_scheduling(
+        &mut self,
+        original: &OperationAdmission,
+        claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+    ) -> Result<NativeSchedulingObservation, OperationFailure> {
+        self.observe_installed_producer_checkpoint_data(original, claim)
+    }
+
     fn original_restoration_construction_scratch_data(
         &self,
     ) -> Result<Option<usize>, RuntimeError> {
@@ -497,6 +561,17 @@ impl SimulationNode for CnpSemanticNode {
         prior: &OperationAdmission,
         prior_outcome: &OperationOutcome,
     ) -> Result<(), OperationFailure> {
+        if self.requires_installed_producer_claim_data(original.token())
+            || self.requires_installed_producer_claim_data(prior.token())
+        {
+            return self.validate_installed_producer_deferred_data(
+                original,
+                outcome,
+                publication,
+                prior,
+                prior_outcome,
+            );
+        }
         self.current()?;
         self.validate_outcome(original, outcome)?;
         self.validate_outcome(prior, prior_outcome)?;

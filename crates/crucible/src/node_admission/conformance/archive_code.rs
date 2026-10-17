@@ -238,6 +238,17 @@ impl AdmissionEvidence for ArchiveCodeEvidence<'_> {
         self.plan.0.authority.authenticate_schema(schema)
     }
 
+    fn authenticate_schema_roster(
+        &self,
+        binding: &NodeBinding,
+        schemas: &[crucible_node_contract::SchemaRef],
+    ) -> Option<Result<(), EvidenceError>> {
+        self.plan
+            .0
+            .authority
+            .authenticate_complete_archive_code_schema_roster(self.plan, binding, schemas)
+    }
+
     fn qualify_capability(
         &self,
         world: &WorldBinding,

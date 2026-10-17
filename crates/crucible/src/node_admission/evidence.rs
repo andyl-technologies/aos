@@ -202,6 +202,26 @@ pub trait AdmissionEvidence {
     /// content digest or generic JSON decoding is not schema support.
     fn authenticate_schema(&self, schema: &SchemaRef) -> Result<(), EvidenceError>;
 
+    /// Optionally authenticates one binding's entire exact schema roster.
+    ///
+    /// `None` retains the original per-schema callback order. `Some` selects a
+    /// closed roster check which Core repeats after all definition/extension
+    /// callbacks, including a refused callback. Each invocation must check
+    /// current original ownership; no successful currency state may survive it.
+    /// Content, implementation and owner authentication remain independent.
+    ///
+    /// # Errors
+    /// A selected check rejects a foreign binding, changed roster, unsupported
+    /// schema or unavailable current installed files. Losing selected support
+    /// at the terminal check also refuses admission.
+    fn authenticate_schema_roster(
+        &self,
+        _binding: &NodeBinding,
+        _schemas: &[SchemaRef],
+    ) -> Option<Result<(), EvidenceError>> {
+        None
+    }
+
     /// Qualifies mandatory operation and architectural meanings for actual custody.
     ///
     /// Matching advertised facet strings or requirement references does not prove

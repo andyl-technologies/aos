@@ -62,6 +62,27 @@ pub(super) fn observe(
                 ],
                 policy.maximum_requested_bytes,
             )?;
+            if let Some(candidate) = window.producer_publication.get() {
+                requested = checked_sum(
+                    &[requested, candidate.row.requested_bytes_data()],
+                    policy.maximum_requested_bytes,
+                )?;
+            }
+            for work in &window.producer_grant_work {
+                if let Some((retained, transient, scratch)) = work.get() {
+                    requested = checked_sum(
+                        &[requested, retained, transient, scratch],
+                        policy.maximum_requested_bytes,
+                    )?;
+                }
+            }
+            for ledger in &window.producer_executions {
+                let ledger = ledger.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+                requested = checked_sum(
+                    &[requested, ledger.future_requested_bytes_data()?],
+                    policy.maximum_requested_bytes,
+                )?;
+            }
             for work in &window.initial_scheduling_work {
                 if let Some((retained, transient, scratch)) = work.get() {
                     requested = checked_sum(
@@ -253,6 +274,27 @@ pub(super) fn observed_current(
         )?;
     }
     if let Some(window) = scope.window {
+        if let Some(candidate) = window.producer_publication.get() {
+            descriptors = checked_sum(
+                &[
+                    descriptors,
+                    candidate
+                        .row
+                        .maximum_simultaneous_transient_descriptors_data(),
+                ],
+                policy.maximum_owned_descriptors,
+            )?;
+        }
+        for ledger in &window.producer_executions {
+            let ledger = ledger.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+            requested = checked_sum(
+                &[
+                    requested,
+                    ledger.charge_original_storage_data(scope.inputs.runtime, maximum)?,
+                ],
+                maximum,
+            )?;
+        }
         if let Some(target) = window.coordinator_target.get() {
             use crate::node_contract::runtime_owned_counter::OwnedStorage;
             requested = checked_sum(&[requested, target.owned_storage()?], maximum)?;

@@ -3,8 +3,11 @@
 //! Each fresh target has its own code authority, capsule, native processes,
 //! live incarnations, activation and cleanup supervisor. They share only the
 //! actual signed source archive and retained immutable implementation artifacts.
+//! Both then execute and durably retire the same genuine nonempty Producer suffix.
+//! Settled recapture remains unavailable until its paired codec/issuer exists.
 
 use super::*;
+use crate::node_qualification::PacketRestoredProducerPublicationInputs;
 use crate::node_qualification::packet_collection::complete::tests::native_roundtrip::target_declaration_for;
 use crate::node_qualification::packet_collection::{
     PacketWorldHostSupervisor,
@@ -16,11 +19,22 @@ use crate::node_qualification::packet_collection::{
 };
 use crucible::node_adapters::cnp::{CnpSemanticRegistry, CnpSemanticSource};
 use crucible::node_contract::{
-    ActivationRecord, HostSchedulingContinuationLimits, SavedRuntimeActivation,
+    ActivationRecord, HostSchedulingContinuationLimits, ProgressEvidence, SavedRuntimeActivation,
 };
 use crucible::node_scheduling::{NativeSchedulingObservation, ValidatedSchedulingObservation};
 use crucible::node_state::{NativeArchiveLimits, NativeArchiveRecord};
 use std::os::unix::net::UnixStream;
+
+/// Keeps only fixed semantic observations; full outcomes stay in real custody.
+#[derive(Debug, PartialEq, Eq)]
+struct ProducerContinuation {
+    reached: Position,
+    closed_prefix: Position,
+    publication: Position,
+    evaluation: Option<Position>,
+    native_sequence: U64,
+    retained_outputs: usize,
+}
 
 struct FreshWorld {
     directory: tempfile::TempDir,
@@ -36,6 +50,8 @@ struct FreshWorld {
     refs: Arc<DirectoryRefBackend>,
     publisher: Option<StoredWorldActivationPublisher>,
     observation: Option<ValidatedSchedulingObservation>,
+    publication_inputs: Option<PacketRestoredProducerPublicationInputs>,
+    continuation: Option<ProducerContinuation>,
 }
 
 impl FreshWorld {
@@ -56,6 +72,19 @@ impl FreshWorld {
         )
         .unwrap();
 
+        let publication_inputs = PacketRestoredProducerPublicationInputs {
+            blobs: Arc::clone(&blobs),
+            refs: Arc::clone(&refs),
+            references: (0..2)
+                .map(|slot| {
+                    RefName::new(format!(
+                        "node-packet-collecting-results/restored-producer-v1/{label}-{slot}"
+                    ))
+                    .unwrap()
+                })
+                .collect(),
+        };
+
         Self {
             directory,
             prepared: None,
@@ -74,6 +103,8 @@ impl FreshWorld {
             refs,
             publisher: Some(publisher),
             observation: None,
+            publication_inputs: Some(publication_inputs),
+            continuation: None,
         }
     }
 
@@ -193,6 +224,16 @@ impl FreshWorld {
         PacketCompleteReportStartupHolder::prepare_original_fresh_runtime(installed.holder())
             .unwrap();
 
+        // The actual runtime now exists, while its restoration Window has
+        // not started. Move the real finite result store into this same
+        // capsule before Window quotation or any restored action is admitted.
+        PacketCompleteReportStartupHolder::retain_original_restored_producer_publication_into(
+            installed.holder(),
+            &mut self.publication_inputs,
+        )
+        .unwrap();
+        assert!(self.publication_inputs.is_none());
+
         let observed_node = sources[0].installation().descriptor.id.clone();
         self.observation = Some(
             installed
@@ -222,6 +263,66 @@ impl FreshWorld {
         );
         assert!(self.prepare_ids.is_none());
         assert!(self.commit_ids.is_none());
+    }
+
+    fn continue_nonempty_producer(&mut self, label: &str) {
+        let installed = self.target.as_ref().unwrap();
+        let observed = self.observation.as_ref().unwrap().native();
+        let node = &observed.node;
+        let continuation = &mut self.continuation;
+        PacketCompleteReportStartupHolder::execute_original_restored_producer(
+            installed.holder(),
+            node,
+            id(&format!("{label}-restored-nonempty-producer")),
+            U64::new(6),
+            &mut |outcome| {
+                // This is the actual Poll outcome, still describing pre-Retire
+                // publication custody. The holder separately finishes durable
+                // ACK, native Retire and final Observe before invoking us.
+                assert!(continuation.is_none());
+                assert_eq!(&outcome.node, node);
+                assert!(!outcome.retained_outputs.is_empty());
+                let ProgressEvidence::Exact { reached, .. } = &outcome.progress else {
+                    panic!("restored Producer did not return exact native progress");
+                };
+                assert_eq!(
+                    *reached,
+                    Position::new(U64::new(6), U64::new(0), Phase::BoundaryControl)
+                );
+                let scheduling = outcome.scheduling.as_ref().unwrap();
+                assert_eq!(scheduling.reached, *reached);
+                assert_eq!(scheduling.publications.len(), 1);
+                assert_eq!(outcome.retained_outputs.len(), 1);
+                let publication = &scheduling.publications[0];
+                assert_eq!(publication.publication_id, outcome.retained_outputs[0]);
+                assert_eq!(publication.publication_id.as_str(), "packet-callback-0");
+                assert_eq!(publication.endpoint.node_id, *node);
+                assert_eq!(publication.payload_bytes.as_slice(), b"original-producer");
+                publication
+                    .payload
+                    .verify(&publication.payload_bytes)
+                    .unwrap();
+                assert_eq!(
+                    publication.publication,
+                    Position::new(U64::new(5), U64::new(1), Phase::Publication,)
+                );
+
+                // No full Outcome, scheduling owner, payload or live authority
+                // is cloned by the test callback. Real failure owners remain
+                // in the same admitted Source/Node/capsule/publisher banks.
+                *continuation = Some(ProducerContinuation {
+                    reached: *reached,
+                    closed_prefix: scheduling.closed_prefix,
+                    publication: publication.publication,
+                    evaluation: publication.evaluation,
+                    native_sequence: publication.native_sequence,
+                    retained_outputs: outcome.retained_outputs.len(),
+                });
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(self.continuation.is_some());
     }
 
     fn retire_and_reclaim(&mut self) {
@@ -312,6 +413,11 @@ pub(super) fn restore_two_worlds_and_observe(
             first.observation.as_ref().unwrap().native(),
             second.observation.as_ref().unwrap().native(),
         );
+
+        for (world, label) in worlds.iter_mut().zip(["first", "second"]) {
+            world.continue_nonempty_producer(label);
+        }
+        assert_eq!(worlds[0].continuation, worlds[1].continuation);
     }));
 
     // A cleanup error in one World must not prevent attempting cleanup under

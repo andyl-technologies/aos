@@ -275,6 +275,11 @@ mod tests {
         assert!(source.ack_peer_birth.get_mut().is_none());
         assert!(source.capture_banks.get_mut().is_none());
         assert!(source.capture_execution.get_mut().is_none());
+        assert!(
+            source
+                .original_complete_native_snapshot_schema_data()
+                .is_err()
+        );
         assert!(source.authenticate_current_native().is_err());
     }
 

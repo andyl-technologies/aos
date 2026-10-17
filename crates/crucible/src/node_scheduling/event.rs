@@ -67,6 +67,10 @@ impl Delivery {
 pub struct ProducerSequences(BTreeMap<Id, Option<U64>>);
 
 impl ProducerSequences {
+    pub(crate) fn original_retained_entry_count_data(&self) -> usize {
+        self.0.len()
+    }
+
     pub(crate) fn charge_original_retained_storage(
         &self,
         counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,

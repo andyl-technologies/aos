@@ -37,6 +37,7 @@ pub(super) fn phase_owners(
         observation,
         observation_return,
         current_observations,
+        producer_executions,
     } = state;
     let slots = current_observations
         .capacity()
@@ -46,6 +47,7 @@ pub(super) fn phase_owners(
         &[
             slots,
             current_observation::retained_data(current_observations, maximum)?,
+            producer_execution::retained_data(producer_executions, maximum)?,
         ],
         maximum,
     )?;

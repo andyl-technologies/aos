@@ -1438,3 +1438,20 @@ impl PacketSemanticSource {
             .transpose()
     }
 }
+
+impl PacketSemanticSource {
+    // The returned immutable model is a sizing loan, never current native state.
+    pub(super) fn original_program_data(&self) -> &PacketProgramDefinition {
+        &self.program
+    }
+}
+
+impl PacketSemanticSource {
+    pub(super) fn original_restored_producer_inventory_data(
+        &self,
+        record: &crucible_node_provider::reference_packet::control::PacketNativeRecord,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        self.inventory(record)
+            .map_err(|_| crate::node_contract::RuntimeError::InvalidReceipt)
+    }
+}

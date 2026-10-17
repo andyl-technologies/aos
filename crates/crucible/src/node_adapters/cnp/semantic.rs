@@ -179,3 +179,9 @@ pub use packet_complete_source::{
 };
 
 pub(crate) use packet_complete_source::OriginalSourceRestoredObservationCompletion;
+
+pub use packet_complete_source::{
+    OriginalRestoredProducerOutcomeConstructionData, OriginalRestoredProducerOutcomeProjection,
+};
+
+pub(crate) use packet_complete_source::OriginalSourceRestoredProducerPhaseCompletion;

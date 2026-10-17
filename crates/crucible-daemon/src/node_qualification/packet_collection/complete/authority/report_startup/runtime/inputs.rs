@@ -155,6 +155,12 @@ pub(super) fn quote(
     held: &PacketCompleteReportStartupHolder,
     max: usize,
 ) -> Result<usize, RuntimeError> {
+    let bootstrap = held
+        .runtime_owners
+        .try_borrow()
+        .map_err(|_| RuntimeError::OwnerBusy)?
+        .capture_bootstrap
+        .unwrap_or(super::super::super::super::execution::schedule::Bootstrap::InitialEmpty);
     let mut c = Counter::new(max);
     let bytes = held
         .authority
@@ -197,8 +203,7 @@ pub(super) fn quote(
             .map_err(storage_error)?;
     }
     for n in 0..13 {
-        let (member, id, _) = super::super::super::super::execution::schedule::row(n)
-            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let (member, id, _) = bootstrap.row(n).ok_or(RuntimeError::UnsupportedFacet)?;
         c.charge(
             &held.authority.roster.sources[member]
                 .installation()
@@ -218,7 +223,8 @@ pub(super) fn quote(
         )
         .map_err(storage_error)?;
         if let Some(operation) = operation {
-            let (_, id, _) = super::super::super::super::execution::schedule::row(operation)
+            let (_, id, _) = bootstrap
+                .row(operation)
                 .ok_or(RuntimeError::UnsupportedFacet)?;
             c.add(id.len()).map_err(storage_error)?;
         }
@@ -278,6 +284,9 @@ pub(super) fn construct(
     // Install the growing owner before either fallible reservation. Later
     // failures preserve its exact capacities/IDs in this fixed holder slot.
     owners.schedule = Some(schedule);
+    let bootstrap = owners
+        .capture_bootstrap
+        .unwrap_or(super::super::super::super::execution::schedule::Bootstrap::InitialEmpty);
     let schedule = owners
         .schedule
         .as_mut()
@@ -295,8 +304,7 @@ pub(super) fn construct(
     }
 
     for n in 0..13 {
-        let (member, id, request) = super::super::super::super::execution::schedule::row(n)
-            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let (member, id, request) = bootstrap.row(n).ok_or(RuntimeError::UnsupportedFacet)?;
         schedule.grants.push(PacketConnectedGrant {
             node: schedule.nodes[member].clone(),
             operation: Id::new(id).map_err(|_| RuntimeError::UnsupportedFacet)?,

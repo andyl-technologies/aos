@@ -223,7 +223,7 @@ impl PacketSemanticSource {
         self.authenticate_provider(scope.native)
     }
 
-    fn inventory(&self, record: &PacketNativeRecord) -> Result<(), OperationFailure> {
+    pub(super) fn inventory(&self, record: &PacketNativeRecord) -> Result<(), OperationFailure> {
         let inventory = &record.inventory;
         let completed = self
             .program

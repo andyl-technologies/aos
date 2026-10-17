@@ -23,10 +23,10 @@ mod correspondence;
 mod observation;
 #[path = "installed_restoration/outcome.rs"]
 mod outcome;
-#[path = "installed_restoration/runtime_dispatch.rs"]
-mod runtime_dispatch;
 #[path = "installed_restoration/raw_storage.rs"]
 mod raw_storage;
+#[path = "installed_restoration/runtime_dispatch.rs"]
+mod runtime_dispatch;
 #[path = "installed_restoration/storage.rs"]
 mod storage;
 
@@ -48,6 +48,7 @@ pub(in crate::node_adapters::cnp::semantic) struct InstalledRestorationCustody {
     observation: Option<crate::node_scheduling::NativeSchedulingObservation>,
     observation_return: Option<crate::node_scheduling::NativeSchedulingObservation>,
     current_observations: Vec<current_observation::CurrentNodeObservation>,
+    producer_executions: producer_execution::ProducerNodeHistory,
 }
 
 /// Counts new selected-node custody copies before the restoration transaction.
@@ -160,6 +161,7 @@ impl super::super::CnpSemanticNode {
             observation: None,
             observation_return: None,
             current_observations: Vec::new(),
+            producer_executions: producer_execution::ProducerNodeHistory::new(),
         });
         self.authenticate_installed_restoration_current_data()
     }
@@ -347,6 +349,7 @@ pub(super) fn custody_counter_scratch_data() -> Result<usize, RuntimeError> {
             outcome::counter_scratch_data(),
             runtime_dispatch::counter_scratch_data(),
             current_observation::counter_scratch_data(),
+            producer_execution::counter_scratch_data(),
             raw_storage::counter_scratch_data(),
             OriginalInstalledRestorationNodeAssociation::counter_scratch_data(),
             size_of::<OriginalInstalledRestorationCustodyConstructionData>(),
@@ -575,3 +578,6 @@ impl super::super::CnpSemanticNode {
 
 #[path = "installed_restoration/current_observation.rs"]
 mod current_observation;
+
+#[path = "installed_restoration/producer_execution.rs"]
+mod producer_execution;

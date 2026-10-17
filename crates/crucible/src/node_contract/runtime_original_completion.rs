@@ -91,3 +91,76 @@ impl NodeRuntime {
         })
     }
 }
+
+impl NodeRuntime {
+    /// Lends the same completed ledger and Source report under one native read.
+    ///
+    /// No original is cloned, acknowledged or replaced while the Source-held
+    /// callback borrows it. The selected claim is checked before any node hook.
+    pub(crate) fn with_original_restored_producer_completion_data(
+        &mut self,
+        token: &OperationToken,
+        claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+        inspect: &mut dyn FnMut(
+            &OriginalCompletedOperation<'_>,
+            &crate::node_contract::OriginalRestoredProducerReportReadScope<'_>,
+        ) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        self.validate_token(token)?;
+        self.authenticate_original_restored_producer_runtime_callback_data(
+            token,
+            Some(claim),
+            crate::node_admission::ProducerExecutionPhase::Publication,
+        )?;
+        let entry = self
+            .operations
+            .get(token.operation())
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        let RetainedResult::Complete(outcome) = &entry.result else {
+            return Err(RuntimeError::OutstandingObligations);
+        };
+        if entry.admission.inputs().is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let handle = self
+            .nodes
+            .get_mut(&token.route.node)
+            .ok_or(RuntimeError::UnknownNode)?;
+        let snapshot = self
+            .snapshots
+            .get(&token.route.node)
+            .ok_or(RuntimeError::UnknownNode)?;
+        snapshot.validate_current(handle.as_ref())?;
+        let original = OriginalCompletedOperation {
+            admission: &entry.admission,
+            outcome,
+            acknowledged: false,
+            staged_inputs: Ok(None),
+        };
+        let mut called = false;
+        handle.with_original_restored_producer_report_data(
+            &entry.admission,
+            claim,
+            &mut |read| {
+                if called {
+                    return Err(RuntimeError::OutstandingObligations);
+                }
+                called = true;
+                read.authenticate_original_data(claim, &original)?;
+                inspect(&original, read)
+            },
+        )?;
+        if !called {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        snapshot.validate_current(handle.as_ref())?;
+        if !entry
+            .admission
+            .activation()
+            .same_authority(claim.world_data())
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+}

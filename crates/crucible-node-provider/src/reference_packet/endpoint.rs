@@ -422,6 +422,19 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             }
             return Ok(());
         }
+        if let Some(witness) = self.prepare_original_restored_producer_receive()? {
+            if selected_restore.is_none() || service_context.is_none() {
+                return Err(ProviderError::Correlation(
+                    "restored Producer concrete service absent",
+                ));
+            }
+            return self.receive_and_dispatch_original_restored_producer(
+                witness,
+                selected_deadline.ok_or(ProviderError::Correlation(
+                    "restored Producer deadline absent",
+                ))?,
+            );
+        }
         if let Some(witness) = self.prepare_original_restored_suffix_observation_receive()? {
             if selected_restore.is_none() || service_context.is_none() {
                 return Err(ProviderError::Correlation(

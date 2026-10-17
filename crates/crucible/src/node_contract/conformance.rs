@@ -941,3 +941,15 @@ mod installed_restoration;
 
 #[path = "conformance/current_observation.rs"]
 mod current_observation;
+
+#[path = "conformance/restored_producer_publication.rs"]
+mod restored_producer_publication;
+pub use restored_producer_publication::{
+    OriginalRestoredProducerPublicationConstructionData, OriginalRestoredProducerPublicationScope,
+    OriginalRestoredProducerReportReadScope, OriginalRestoredProducerResultPublisher,
+};
+
+#[path = "conformance/producer_execution.rs"]
+mod producer_execution;
+
+pub(crate) use restored_producer_publication::OriginalRestoredProducerReportFence;

@@ -86,6 +86,24 @@ pub struct ConformancePlanEvidence<'a> {
 /// [`AdmissionEvidence`]. Collection authorization must never issue an accepted
 /// class or use vendor-selected omissions as a normative witness population.
 pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
+    /// Optionally authenticates a complete code-only binding schema roster.
+    ///
+    /// The actual retained plan must belong to this same issuer. This hook
+    /// authenticates immutable schema membership only; ordinary live admission
+    /// and all other evidence callbacks retain their individual checks.
+    ///
+    /// # Errors
+    /// A selected implementation refuses another actual plan authority, binding
+    /// or complete roster, changed original files or unavailable code custody.
+    fn authenticate_complete_archive_code_schema_roster(
+        &self,
+        _plan: &InstalledConformancePlan,
+        _binding: &NodeBinding,
+        _schemas: &[crucible_node_contract::SchemaRef],
+    ) -> Option<Result<(), EvidenceError>> {
+        None
+    }
+
     /// Selects the exact registered inactive restoration construction phase.
     ///
     /// This origin-only callback must consume the actual holder's phase before
@@ -1432,3 +1450,11 @@ pub use restoration_construction::{
     OriginalRestoredSchedulingObservationClaim,
     OriginalRestoredSchedulingObservationConstructionData,
 };
+
+pub use restoration_construction::{
+    OriginalRestoredProducerExecutionAdmission, OriginalRestoredProducerExecutionClaim,
+    OriginalRestoredProducerExecutionConstructionData,
+    OriginalRestoredProducerPublisherConstructionScope,
+};
+
+pub(crate) use restoration_construction::ProducerExecutionPhase;

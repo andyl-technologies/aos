@@ -85,4 +85,46 @@ mod tests {
         ));
         Ok(())
     }
+
+    #[test]
+    fn all_legacy_capture_keys_match_only_their_exact_selected_definition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_node_provider::reference_packet::service::{
+            native_owned11_snapshot_schema, native_owned13_snapshot_schema,
+            native_snapshot::native_owned14_snapshot_schema,
+        };
+        let schemas = [
+            native_owned11_snapshot_schema()?,
+            native_owned13_snapshot_schema()?,
+            native_owned14_snapshot_schema()?,
+        ];
+        for (index, schema) in schemas.iter().enumerate() {
+            assert!(matches_installed_schema_data(
+                schema,
+                &schemas,
+                schema.id.as_str(),
+                schema.version
+            ));
+            for (other_index, other) in schemas.iter().enumerate() {
+                if index != other_index {
+                    assert!(!matches_installed_schema_data(
+                        schema,
+                        &schemas,
+                        other.id.as_str(),
+                        other.version
+                    ));
+                }
+            }
+            let mut changed = schema.clone();
+            changed.definition =
+                canonical::content_ref(b"changed selected grammar", "application/json")?;
+            assert!(!matches_installed_schema_data(
+                &changed,
+                &schemas,
+                schema.id.as_str(),
+                schema.version
+            ));
+        }
+        Ok(())
+    }
 }

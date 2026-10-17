@@ -23,13 +23,7 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         activation: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
-        window.construct_original_complete_scope(
-            plan,
-            self.runtime
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
-            activation,
-        )
+        window.construct_original_complete_scope(plan, &*self.runtime_data()?, activation)
     }
 
     pub(in crate::node_qualification::packet_collection::complete) fn prepare_original_complete_context<
@@ -39,12 +33,7 @@ impl PacketCompleteRestorationPrebirth {
         window: &'a Rc<CompleteOriginalRestorationWindow>,
         plan: &'a InstalledConformancePlan,
     ) -> Result<OriginalLineageRestoration<'a>, RuntimeError> {
-        window.prepare_original_complete_context(
-            plan,
-            self.runtime
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
-        )
+        window.prepare_original_complete_context(plan, &*self.runtime_data()?)
     }
 
     pub(in crate::node_qualification::packet_collection::complete) fn prepare_original_complete_scheduler(
@@ -53,9 +42,7 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         context: &OriginalLineageRestoration<'_>,
     ) -> Result<(), RuntimeError> {
-        self.runtime
-            .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?
+        self.runtime_data()?
             .prepare_original_installed_scheduler(window, plan, context)
     }
 
@@ -65,9 +52,7 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         context: &OriginalLineageRestoration<'_>,
     ) -> Result<(), RuntimeError> {
-        self.runtime
-            .as_mut()
-            .ok_or(RuntimeError::OwnerUnavailable)?
+        self.runtime_mut_data()?
             .arm_original_installed_restoration(window, plan, context)
     }
 
@@ -80,7 +65,9 @@ impl PacketCompleteRestorationPrebirth {
         let runtime = self
             .runtime
             .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?;
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
         self.publication
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?
@@ -101,7 +88,8 @@ impl PacketCompleteRestorationPrebirth {
         let runtime = self
             .runtime
             .as_mut()
-            .ok_or(RuntimeError::OwnerUnavailable)?;
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .get_mut();
         let publication = self
             .publication
             .as_ref()
@@ -120,9 +108,7 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         context: &OriginalLineageRestoration<'_>,
     ) -> Result<(), RuntimeError> {
-        self.runtime
-            .as_mut()
-            .ok_or(RuntimeError::OwnerUnavailable)?
+        self.runtime_mut_data()?
             .install_original_installed_restoration(window, plan, context)
     }
 }
@@ -134,9 +120,7 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         context: &OriginalLineageRestoration<'_>,
     ) -> Result<(), RuntimeError> {
-        self.runtime
-            .as_mut()
-            .ok_or(RuntimeError::OwnerUnavailable)?
+        self.runtime_mut_data()?
             .activate_original_installed_restoration_worlds(window, plan, context)
     }
 }
@@ -151,9 +135,7 @@ impl PacketCompleteRestorationPrebirth {
         canonical_launch5: [&[u8]; 3],
         node: &Id,
     ) -> Result<OriginalRestoredSchedulingObservationAdmission, RuntimeError> {
-        self.runtime
-            .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?
+        self.runtime_data()?
             .prepare_original_installed_restored_scheduling(
                 window,
                 plan,
@@ -171,11 +153,8 @@ impl PacketCompleteRestorationPrebirth {
         canonical_launch5: &[u8],
         node: &Id,
     ) -> Result<ValidatedSchedulingObservation, RuntimePollFailure> {
-        self.runtime
-            .as_mut()
-            .ok_or(RuntimePollFailure::Admission(
-                RuntimeError::OwnerUnavailable,
-            ))?
+        self.runtime_mut_data()
+            .map_err(RuntimePollFailure::Admission)?
             .observe_original_installed_restored_scheduling(
                 admission,
                 launch,
@@ -193,9 +172,7 @@ impl PacketCompleteRestorationPrebirth {
         canonical_launch5: [&[u8]; 3],
         node: &Id,
     ) -> Result<OriginalRestoredInitialSchedulingAdmission, RuntimeError> {
-        self.runtime
-            .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?
+        self.runtime_data()?
             .prepare_original_installed_initial_scheduling(
                 window,
                 plan,
@@ -211,11 +188,8 @@ impl PacketCompleteRestorationPrebirth {
         admission: &mut OriginalRestoredInitialSchedulingAdmission,
         node: &Id,
     ) -> Result<(), RuntimePollFailure> {
-        self.runtime
-            .as_mut()
-            .ok_or(RuntimePollFailure::Admission(
-                RuntimeError::OwnerUnavailable,
-            ))?
+        self.runtime_mut_data()
+            .map_err(RuntimePollFailure::Admission)?
             .observe_original_installed_initial_scheduling(admission, node)
     }
 
@@ -225,9 +199,7 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         node: &Id,
     ) -> Result<(), RuntimeError> {
-        self.runtime
-            .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?
+        self.runtime_data()?
             .seed_original_installed_restored_suffix(window, plan, node)
     }
 }

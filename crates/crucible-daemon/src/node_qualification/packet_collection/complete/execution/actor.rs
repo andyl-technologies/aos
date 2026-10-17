@@ -103,12 +103,13 @@ impl PacketCompleteExecutionScene {
         }
         let supervisor =
             Rc::new(crate::node_qualification::PacketWorldHostSupervisor::new_complete_original()?);
+        let bootstrap = schedule::bootstrap_data(self.oracle.execution_schedule())?;
         let mut grants = Vec::new();
         grants
             .try_reserve_exact(schedule::GRANTS)
             .map_err(|_| refused())?;
         for index in 0..schedule::GRANTS {
-            let (member, operation, request) = schedule::row(index).ok_or_else(refused)?;
+            let (member, operation, request) = bootstrap.row(index).ok_or_else(refused)?;
             let limit = match request {
                 crucible::node_contract::OperationRequest::ExactRun { limit, .. }
                 | crucible::node_contract::OperationRequest::BoundarySettle { limit, .. } => limit,

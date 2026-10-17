@@ -728,3 +728,5 @@ pub use association::{
 };
 
 pub(crate) use association::OriginalSourceRestoredObservationCompletion;
+
+pub(crate) use association::OriginalSourceRestoredProducerPhaseCompletion;

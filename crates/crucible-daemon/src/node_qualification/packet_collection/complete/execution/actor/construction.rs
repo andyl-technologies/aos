@@ -46,31 +46,23 @@ const BATCHES: [&str; 13] = [
     "complete-batch-12",
 ];
 
-fn authenticate_schedule_data(selected: &PacketConnectedSchedule) -> Result<(), RuntimeError> {
+fn authenticate_schedule_data(
+    selected: &PacketConnectedSchedule,
+) -> Result<schedule::Bootstrap, RuntimeError> {
     if selected.grants.len() != schedule::GRANTS {
         return Err(RuntimeError::UnsupportedFacet);
     }
-    for (index, grant) in selected.grants.iter().enumerate() {
-        let (member, operation, request) =
-            schedule::row(index).ok_or(RuntimeError::UnsupportedFacet)?;
-        if grant.node != selected.nodes[member]
-            || grant.operation.as_str() != operation
-            || grant.request != request
-        {
-            return Err(RuntimeError::ForeignAuthority);
-        }
-    }
-    Ok(())
+    schedule::bootstrap_data(selected).map_err(|_| RuntimeError::ForeignAuthority)
 }
 
 fn reserve_grants(selected: &PacketConnectedSchedule) -> Result<Vec<Grant>, QualificationError> {
-    authenticate_schedule_data(selected).map_err(|_| refused())?;
+    let bootstrap = authenticate_schedule_data(selected).map_err(|_| refused())?;
     let mut grants = Vec::new();
     grants
         .try_reserve_exact(schedule::GRANTS)
         .map_err(|_| refused())?;
     for index in 0..schedule::GRANTS {
-        let (member, operation, request) = schedule::row(index).ok_or_else(refused)?;
+        let (member, operation, request) = bootstrap.row(index).ok_or_else(refused)?;
         let limit = match request {
             crucible::node_contract::OperationRequest::ExactRun { limit, .. }
             | crucible::node_contract::OperationRequest::BoundarySettle { limit, .. } => limit,
@@ -105,7 +97,7 @@ impl PacketCompleteExecutionActor {
         proposal: &ActivationRecord,
         maximum: usize,
     ) -> Result<PacketCompleteConstructionStorageData, RuntimeError> {
-        authenticate_schedule_data(selected)?;
+        let bootstrap = authenticate_schedule_data(selected)?;
         if proposal.owners.len() != 4 {
             return Err(RuntimeError::UnsupportedFacet);
         }
@@ -122,7 +114,7 @@ impl PacketCompleteExecutionActor {
             .map_err(|_| RuntimeError::ResourceLimit)?;
         for index in 0..schedule::GRANTS {
             let (member, operation, _) =
-                schedule::row(index).ok_or(RuntimeError::UnsupportedFacet)?;
+                bootstrap.row(index).ok_or(RuntimeError::UnsupportedFacet)?;
             counter
                 .charge(&selected.nodes[member])
                 .map_err(|_| RuntimeError::ResourceLimit)?;
@@ -156,6 +148,7 @@ impl PacketCompleteExecutionActor {
     /// physical overhead and existing Source/kernel owners remain separate.
     pub(crate) fn original_construction_counter_scratch_data() -> Result<usize, RuntimeError> {
         [
+            schedule::bootstrap_counter_scratch_data(),
             size_of::<Counter>(),
             size_of::<Self>(),
             size_of::<Vec<Grant>>(),

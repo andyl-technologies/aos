@@ -165,6 +165,7 @@ impl PacketCompleteRestorationPrebirth {
                 .map_err(storage_error)?;
         }
         if let Some(runtime) = &self.runtime {
+            let runtime = runtime.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
             let graph = self
                 .fresh_graph
                 .as_ref()
@@ -173,7 +174,7 @@ impl PacketCompleteRestorationPrebirth {
                 .add(
                     self.source
                         .retained_original_construction_runtime_storage_data(
-                            runtime,
+                            &runtime,
                             graph,
                             target,
                             counter.remaining(),

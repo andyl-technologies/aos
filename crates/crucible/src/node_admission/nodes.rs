@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crucible_node_contract::{
     CapabilityProfile, CaptureScope, Continuation, ContractError, GuaranteeProfile, Id,
-    OperatingMode, Repeatability, Validate,
+    NodeBinding, OperatingMode, Repeatability, Validate,
 };
 
 use super::error::refuse;
@@ -322,29 +322,7 @@ pub(super) fn validate_nodes(
         for model in &compatibility.implementation.model_definitions {
             content.verify(model)?;
         }
-        for format in &compatibility.implementation.formats {
-            content.extension_record(format, &format.extensions, || RecordPlacement {
-                kind: Kind::SchemaRef,
-                node: Some(&descriptor.id),
-                path: Path::ImplementationSchema {
-                    schema: format.id.clone(),
-                    version: format.version,
-                },
-            })?;
-            content.verify(&format.definition)?;
-            content
-                .source
-                .authenticate_schema(format)
-                .map_err(|error| {
-                    refuse(
-                        AdmissionStage::Authenticate,
-                        subject.clone(),
-                        AdmissionCode::UnknownInterface,
-                        "installed validator for exact complete format schema",
-                        crate::node_admission::error::construction_diagnostic(&error),
-                    )
-                })?;
-        }
+        validate_implementation_formats(content, binding, &descriptor.id, &subject)?;
         for qualification in &compatibility.qualification_refs {
             content.verify(qualification)?;
         }
@@ -491,4 +469,66 @@ pub(super) fn validate_nodes(
         guarantees,
         operating_policies,
     })
+}
+
+// Batch support changes only repeated immutable schema membership checks. The
+// terminal check runs even when a definition callback returns an error, so file
+// drift can revoke the same original owner before the refusal leaves this call.
+fn validate_implementation_formats(
+    content: &mut VerifiedContent<'_>,
+    binding: &NodeBinding,
+    node: &Id,
+    subject: &AdmissionSubject,
+) -> Result<(), AdmissionError> {
+    let schemas = &binding.compatibility.implementation.formats;
+    let failure = |error: super::EvidenceError| {
+        refuse(
+            AdmissionStage::Authenticate,
+            subject.clone(),
+            AdmissionCode::UnknownInterface,
+            "installed validator for exact complete format schema",
+            crate::node_admission::error::construction_diagnostic(&error),
+        )
+    };
+    let batched = match content.source.authenticate_schema_roster(binding, schemas) {
+        Some(checked) => {
+            checked.map_err(&failure)?;
+            true
+        }
+        None => false,
+    };
+
+    let checked: Result<(), AdmissionError> = (|| {
+        for format in schemas {
+            content.extension_record(format, &format.extensions, || RecordPlacement {
+                kind: Kind::SchemaRef,
+                node: Some(node),
+                path: Path::ImplementationSchema {
+                    schema: format.id.clone(),
+                    version: format.version,
+                },
+            })?;
+            content.verify(&format.definition)?;
+            if !batched {
+                content
+                    .source
+                    .authenticate_schema(format)
+                    .map_err(&failure)?;
+            }
+        }
+        Ok(())
+    })();
+    let terminal = if batched {
+        match content.source.authenticate_schema_roster(binding, schemas) {
+            Some(result) => result.map_err(&failure),
+            None => Err(failure(super::EvidenceError {
+                message: "schema roster support changed during validation".into(),
+            })),
+        }
+    } else {
+        Ok(())
+    };
+
+    checked?;
+    terminal
 }

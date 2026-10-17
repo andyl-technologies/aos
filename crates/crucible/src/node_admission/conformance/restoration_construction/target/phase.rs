@@ -172,3 +172,12 @@ mod tests {
         );
     }
 }
+
+impl OriginalRestorationTargetPhaseGate {
+    pub(super) fn authenticate_before_prepare_data(&self) -> Result<(), RuntimeError> {
+        if self.phase.get() != Phase::Reserved || self.mapping_started.get() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        Ok(())
+    }
+}

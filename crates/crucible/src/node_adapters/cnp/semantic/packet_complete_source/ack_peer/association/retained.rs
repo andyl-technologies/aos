@@ -54,6 +54,18 @@ impl OriginalAckPeerAssociation {
             maximum,
         )?;
         drop(current);
+        let progress = self
+            .producer_progress
+            .try_borrow()
+            .map_err(|_| E::unknown("Producer progress custody is borrowed"))?;
+        bytes = sum_with_error::<E, _>(
+            [
+                bytes,
+                progress.retained_heap_bytes_with_error::<E>(maximum)?,
+            ],
+            maximum,
+        )?;
+        drop(progress);
         if let Some(observation) = &self.restoration_observation {
             bytes = sum_with_error::<E, _>(
                 [

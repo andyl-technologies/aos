@@ -18,6 +18,7 @@ impl PacketCompleteRestorationPrebirth {
         'a,
     >(
         &'a self,
+        runtime: &'a ConformanceRuntime,
         sources: &'a [Rc<PacketCompleteSemanticSource>; 3],
         sdks: [&'a PacketCompleteOriginalHostSdk; 3],
         launches: &'a [PacketNative5SourceLaunch; 3],
@@ -27,10 +28,7 @@ impl PacketCompleteRestorationPrebirth {
         prepare_ids: &'a [Id; 3],
         commit_ids: &'a [Id; 3],
     ) -> Result<OriginalRestorationConstructionInputs<'a>, RuntimeError> {
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?;
+        self.authenticate_runtime_owner_data(runtime)?;
         let archive = self
             .source
             .original_restoration_source_data(runtime, plan, activation)?;
@@ -85,10 +83,12 @@ impl PacketCompleteRestorationPrebirth {
         let runtime = self
             .runtime
             .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?;
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
         window.retain_original_transaction_group(
             plan,
-            runtime,
+            &runtime,
             activation,
             &mut self.native,
             prepare_ids,
@@ -106,7 +106,8 @@ impl PacketCompleteRestorationPrebirth {
         let runtime = self
             .runtime
             .as_mut()
-            .ok_or(RuntimeError::OwnerUnavailable)?;
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .get_mut();
         for (selected, source) in sources.iter().enumerate() {
             window.bind_original_transaction_target(plan, source, runtime, activation, selected)?;
         }
@@ -119,13 +120,7 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         activation: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
-        window.execute_original_prepare_phase(
-            plan,
-            self.runtime
-                .as_mut()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
-            activation,
-        )
+        window.execute_original_prepare_phase(plan, self.runtime_mut_data()?, activation)
     }
 
     pub(in crate::node_qualification::packet_collection::complete) fn execute_original_restoration_inputs(
@@ -134,13 +129,7 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         activation: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
-        window.execute_original_inputs_phase(
-            plan,
-            self.runtime
-                .as_mut()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
-            activation,
-        )
+        window.execute_original_inputs_phase(plan, self.runtime_mut_data()?, activation)
     }
 
     pub(in crate::node_qualification::packet_collection::complete) fn execute_original_restoration_commit(
@@ -149,13 +138,7 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         activation: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
-        window.execute_original_commit_phase(
-            plan,
-            self.runtime
-                .as_mut()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
-            activation,
-        )
+        window.execute_original_commit_phase(plan, self.runtime_mut_data()?, activation)
     }
 }
 
@@ -174,9 +157,7 @@ impl PacketCompleteRestorationPrebirth {
             sdks,
             launches,
             encoded_launches,
-            self.runtime
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
+            &*self.runtime_data()?,
             activation,
         )
     }
@@ -189,12 +170,6 @@ impl PacketCompleteRestorationPrebirth {
         plan: &InstalledConformancePlan,
         activation: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
-        window.inspect_original_native_continuations(
-            plan,
-            self.runtime
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
-            activation,
-        )
+        window.inspect_original_native_continuations(plan, &*self.runtime_data()?, activation)
     }
 }

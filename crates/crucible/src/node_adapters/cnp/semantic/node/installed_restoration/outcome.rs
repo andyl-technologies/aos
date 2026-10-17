@@ -22,6 +22,9 @@ impl super::super::super::CnpSemanticNode {
         actual: &OperationOutcome,
     ) -> Result<(), OperationFailure> {
         self.current()?;
+        if self.requires_installed_producer_claim_data(original.token()) {
+            return self.validate_installed_producer_outcome_data(original, actual);
+        }
         let native = self
             .preparation
             .guard

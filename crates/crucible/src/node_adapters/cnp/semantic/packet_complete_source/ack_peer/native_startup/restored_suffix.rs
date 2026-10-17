@@ -158,3 +158,86 @@ impl PacketCompleteSemanticSource {
         retained_values::sum_with_error::<RuntimeError, _>(terms, usize::MAX)
     }
 }
+
+impl PacketCompleteSemanticSource {
+    /// Authenticates the same completed birth's typed and complete nested launch.
+    ///
+    /// This borrowed identity check spends no wire, bootstrap or action marker.
+    /// The real phase claim and owning SourceRead remain separate conjuncts.
+    ///
+    /// # Errors
+    /// Refuses another typed launch, purpose, Source/member, incomplete original
+    /// wire, changed complete raw launch bytes or the defining wrapper ceiling.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_original_restored_producer_launch_data(
+        &self,
+        launch: &PacketNative5SourceLaunch,
+        canonical_launch5: &[u8],
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_native_launch_data(launch)?;
+        if !self.is_original_restored_suffix_declaration_data()? {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let slot = self
+            .ack_peer_birth
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let birth = slot.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        birth.authenticate_original_initial_lifecycle_data()?;
+        let state = birth
+            .native_startup
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if !state.complete {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        state.member.authenticate_boot_ready(self)?;
+        let purpose = state
+            .original_invocation_data()?
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        purpose
+            .authenticate_target_data(launch)
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        let suffix = state
+            .member
+            .suffix
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        suffix.authenticate_source_data(self)?;
+        suffix.authenticate_completed_wire_data(self)?;
+        let reservation = suffix.reservation_data();
+        let actual = crucible_node_provider::reference_packet::service::native_startup::original_native_suffix_launch_identity_data(
+            &purpose, canonical_launch5, &reservation,
+        ).map_err(|_| RuntimeError::ForeignAuthority)?;
+        if actual != suffix.launch_identity_data() || actual.encoded_bytes > 1024 * 1024 {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+
+    /// Names startup authentication and the exact borrowed identity views.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn original_restored_producer_launch_counter_scratch_data()
+    -> usize {
+        use crucible_node_provider::reference_packet::service::native_startup::{
+            PacketNativeInvocationPurposeData, PacketNativeSuffixLaunchIdentityData,
+            original_native_suffix_counter_scratch_data,
+        };
+        super::super::PacketCompleteAckPeerBootMaterial::original_native_startup_authentication_scratch_data()
+            + original_native_suffix_counter_scratch_data()
+            + size_of::<PacketNativeInvocationPurposeData>()
+            + size_of::<Option<PacketNativeInvocationPurposeData>>()
+            + size_of::<Result<Option<PacketNativeInvocationPurposeData>, RuntimeError>>()
+            + size_of::<Result<PacketNativeInvocationPurposeData, RuntimeError>>()
+            + size_of::<PacketNativeSuffixLaunchIdentityData>()
+            + size_of::<Result<PacketNativeSuffixLaunchIdentityData, crucible_node_provider::ProviderError>>()
+            + size_of::<&OriginalNativeStartupFinalization>()
+            + size_of::<Option<&OriginalNativeStartupFinalization>>()
+            + size_of::<Result<&OriginalNativeStartupFinalization, RuntimeError>>()
+            + size_of::<&OriginalRestoredSuffixStartupMember>()
+            + size_of::<Option<&OriginalRestoredSuffixStartupMember>>()
+            + size_of::<Result<&OriginalRestoredSuffixStartupMember, RuntimeError>>()
+            + size_of::<PacketRestoredSuffixReservationData>()
+            + size_of::<Result<(), RuntimeError>>()
+            + size_of::<Result<(), crucible_node_provider::ProviderError>>()
+            + size_of::<&PacketNative5SourceLaunch>() + size_of::<&[u8]>()
+    }
+}

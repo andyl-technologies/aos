@@ -126,3 +126,9 @@ pub use semantic::{
 };
 
 pub(crate) use semantic::OriginalSourceRestoredObservationCompletion;
+
+pub use semantic::{
+    OriginalRestoredProducerOutcomeConstructionData, OriginalRestoredProducerOutcomeProjection,
+};
+
+pub(crate) use semantic::OriginalSourceRestoredProducerPhaseCompletion;

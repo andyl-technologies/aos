@@ -1688,3 +1688,6 @@ fn original_scheduler_snapshot_precharges_actual_payload_before_copying() {
 
 #[path = "tests/deferred_evaluation.rs"]
 mod deferred_evaluation;
+
+#[path = "tests/producer_execution_storage.rs"]
+mod producer_execution_storage;

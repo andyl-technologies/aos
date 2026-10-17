@@ -70,6 +70,30 @@ impl AdmissionEvidence for InstalledPacketCompleteCollectionAuthority {
 }
 
 impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn authenticate_complete_archive_code_schema_roster(
+        &self,
+        plan: &crucible::node_admission::InstalledConformancePlan,
+        binding: &NodeBinding,
+        schemas: &[SchemaRef],
+    ) -> Option<Result<(), EvidenceError>> {
+        // Only the separate never-enrolled historical code authority uses this
+        // path. Ordinary/live callbacks keep their original per-schema checks.
+        if self.capture_factory.get().is_some()
+            || self.execution_scene.get().is_some()
+            || self.report_startup_holder.get().is_some()
+            || self.original_initial_callback_active.get()
+            || self.original_runtime_callback_active.get()
+        {
+            return None;
+        }
+        Some((|| {
+            plan.authenticate_authority(self)?;
+            self.graph_policy
+                .authenticate_schema_roster_data(binding, schemas)?;
+            plan.authenticate_authority(self)
+        })())
+    }
+
     fn original_runtime_construction_policy(
         &self,
         _: &ConformancePlanEvidence<'_>,

@@ -1497,3 +1497,6 @@ fn owner_conflict_derivation_has_a_finite_host_work_ceiling() {
 
 #[path = "tests/conformance.rs"]
 mod conformance;
+
+#[path = "tests/schema_roster.rs"]
+mod schema_roster;

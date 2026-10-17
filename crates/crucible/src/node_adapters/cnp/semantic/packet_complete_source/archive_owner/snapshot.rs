@@ -17,6 +17,77 @@ use crucible_node_provider::reference_packet::service::{
     },
 };
 
+impl PacketCompleteSemanticSource {
+    /// Borrows the exact installed schema selected by the actual legacy Source.
+    ///
+    /// The closed selection distinguishes ordinary11, startup14 and invocation15.
+    /// It is correspondence DATA only: currentness, live purpose, native Capture
+    /// admission and complete cold validation remain separate obligations. This
+    /// getter neither creates a definition nor accepts the new settled family.
+    ///
+    /// # Errors
+    /// Refuses foreign or failed Source selection, absent/duplicate schema rows,
+    /// or a full provider definition that differs from the same binding roster.
+    pub fn original_complete_native_snapshot_schema_data(
+        &self,
+    ) -> Result<&SchemaRef, OperationFailure> {
+        let class = self.selected_complete_native_snapshot_class()?;
+        let installation = self.installation();
+        let provider = &installation.provider.implementation.formats;
+        let binding = &installation.binding.compatibility.implementation.formats;
+        let mut selected = None;
+        for schema in provider {
+            if schema.id.as_str() == class.schema_id() {
+                if selected.is_some()
+                    || schema.version != class.schema_version()
+                    || !schema.extensions.is_empty()
+                {
+                    return Err(refused("selected native schema is duplicate or differs"));
+                }
+                selected = Some(schema);
+            }
+        }
+
+        let schema = selected.ok_or_else(|| refused("selected native schema is absent"))?;
+        let mut count = 0usize;
+        for candidate in binding {
+            if candidate.id.as_str() == class.schema_id() {
+                if candidate != schema {
+                    return Err(refused("selected native binding schema differs"));
+                }
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| refused("selected native schema count overflow"))?;
+            }
+        }
+
+        if count != 1 {
+            return Err(refused(
+                "selected native binding schema is absent or duplicate",
+            ));
+        }
+
+        Ok(schema)
+    }
+
+    /// Names the fixed borrowed selection views before legacy key comparison.
+    pub fn original_complete_native_snapshot_schema_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        Self::original_invocation_snapshot_declaration_counter_scratch_data()
+            + size_of::<CompleteNativeSnapshotClass>()
+            + size_of::<Result<CompleteNativeSnapshotClass, OperationFailure>>()
+            + 2 * size_of::<&SchemaRef>()
+            + size_of::<Option<&SchemaRef>>()
+            + size_of::<Result<&SchemaRef, OperationFailure>>()
+            + 2 * size_of::<std::slice::Iter<'static, SchemaRef>>()
+            + 2 * size_of::<&Vec<SchemaRef>>()
+            + size_of::<usize>()
+            + size_of::<Option<usize>>()
+            + size_of::<Result<usize, OperationFailure>>()
+            + size_of::<&crate::node_adapters::cnp::CnpSemanticInstallation>()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::node_adapters::cnp::semantic::packet_complete_source) enum CompleteNativeSnapshotClass
 {
@@ -390,6 +461,23 @@ mod invocation_plan_tests {
         };
         let mut aliases = [];
         assert!(ValidatedNativeOwnedProtocol11::validate(before, limits, &mut aliases).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_snapshot_class_names_match_each_actual_compiled_definition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for class in [
+            CompleteNativeSnapshotClass::Legacy11,
+            CompleteNativeSnapshotClass::StartupCapture14,
+            CompleteNativeSnapshotClass::InvocationCapture15,
+        ] {
+            let schema = class
+                .schema()
+                .map_err(|error| std::io::Error::other(error.reason))?;
+            assert_eq!(schema.id.as_str(), class.schema_id());
+            assert_eq!(schema.version, class.schema_version());
+        }
         Ok(())
     }
 }

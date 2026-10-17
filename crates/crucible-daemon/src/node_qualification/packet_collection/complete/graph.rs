@@ -285,6 +285,29 @@ impl InstalledPacketCompleteGraphPolicy {
             .map_err(|error| QualificationError::Evidence(error.reason))
     }
 
+    // The caller brackets this closed, allocation-free membership pass with
+    // full actual-plan currency checks. No file result or active token is kept.
+    pub(super) fn authenticate_schema_roster_data(
+        &self,
+        binding: &NodeBinding,
+        schemas: &[SchemaRef],
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_retained_origin_data().map_err(external)?;
+        if !self.revision.get()
+            || schemas != binding.compatibility.implementation.formats.as_slice()
+            || (!self
+                .roster
+                .sources
+                .iter()
+                .any(|source| &source.installation().binding == binding)
+                && &self.host.selection().binding != binding)
+            || schemas.iter().any(|schema| !self.schemas.contains(schema))
+        {
+            return Err(denied());
+        }
+        Ok(())
+    }
+
     fn evidence_current(&self) -> Result<(), EvidenceError> {
         self.read_current().map_err(external)
     }

@@ -726,3 +726,36 @@ impl NodeRuntime {
         Ok(bytes)
     }
 }
+
+impl NodeRuntime {
+    /// Observes actual retained JSON capacities without serializing another copy.
+    ///
+    /// The enclosing Value slot is excluded. This pure owner walk grants no
+    /// Source, native, publication or allocation permission.
+    ///
+    /// # Errors
+    /// Refuses arithmetic overflow or requested storage above the supplied bound.
+    pub fn original_json_value_requested_storage_data(
+        value: &serde_json::Value,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let bytes = value.owned_storage()?;
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
+    }
+
+    /// Names fixed raw JSON owner and child-cursor observation views.
+    pub fn original_json_value_counter_scratch_data() -> usize {
+        size_of::<&serde_json::Value>()
+            + size_of::<&String>()
+            + size_of::<(&String, &serde_json::Value)>()
+            + size_of::<std::slice::Iter<'static, serde_json::Value>>()
+            + size_of::<serde_json::map::Iter<'static>>()
+            + size_of::<std::collections::btree_map::Iter<'static, String, serde_json::Value>>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<Option<usize>>()
+            + 3 * size_of::<usize>()
+    }
+}

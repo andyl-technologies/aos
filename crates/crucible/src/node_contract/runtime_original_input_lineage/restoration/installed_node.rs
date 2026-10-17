@@ -694,3 +694,97 @@ impl OriginalInstalledRestorationNodeAssociation {
         )
     }
 }
+
+impl OriginalInstalledRestorationNodeAssociation {
+    pub(crate) fn quote_original_producer_execution_data(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        grant: &crate::node_scheduling::ExecutionAdmission,
+        launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        raw5: &[u8],
+        maximum: usize,
+    ) -> Result<
+        crate::node_admission::OriginalRestoredProducerExecutionConstructionData,
+        RuntimeError,
+    > {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.quote_original_producer_execution_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            grant,
+            launch,
+            raw5,
+            maximum,
+        )
+    }
+
+    pub(crate) fn with_original_producer_execution_source_data<R>(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: *const CnpController,
+        read_owner: *const (),
+        claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+        inspect: impl FnOnce(
+            &crate::node_adapters::cnp::PacketCompleteSemanticSource,
+            &crate::node_admission::OriginalInstalledRestorationObservationSigningInputs<'_>,
+        ) -> Result<R, RuntimeError>,
+    ) -> Result<R, RuntimeError> {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.with_original_producer_execution_source_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            claim,
+            inspect,
+        )
+    }
+}
+
+impl OriginalInstalledRestorationNodeAssociation {
+    pub(crate) fn with_original_producer_deferred_source_data<R>(
+        &self,
+        source: &dyn CnpSemanticSource,
+        controller: &CnpController,
+        read_owner: *const (),
+        world: &WorldActivation,
+        inspect: impl FnOnce(
+            &crate::node_adapters::cnp::PacketCompleteSemanticSource,
+        ) -> Result<R, RuntimeError>,
+    ) -> Result<R, RuntimeError> {
+        self.origin()?;
+        let window = self
+            .window
+            .upgrade()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if window.original_complete_scope_proof_identity_data()? != self.proof_identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.with_original_producer_deferred_source_data(
+            self.selected,
+            source,
+            controller,
+            read_owner,
+            world,
+            inspect,
+        )
+    }
+}

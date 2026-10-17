@@ -524,3 +524,12 @@ impl CompleteOriginalRestorationTransactionTarget {
         )
     }
 }
+
+impl CompleteOriginalRestorationTransactionTarget {
+    pub(super) fn authenticate_original_before_prepare_data(&self) -> Result<(), RuntimeError> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.phase.authenticate_before_prepare_data()
+    }
+}

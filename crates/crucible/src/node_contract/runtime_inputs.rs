@@ -548,7 +548,10 @@ impl NodeRuntime {
     // staged buffers. Coordinator queue removal and staging ACKs prove no such
     // semantic consumption. The bounded operation ledger retains this receipt
     // even when the caller has already acknowledged its outputs.
-    fn input_fully_consumed(&self, batch: &RuntimeInputBatch) -> bool {
+    pub(in crate::node_contract::runtime) fn input_fully_consumed(
+        &self,
+        batch: &RuntimeInputBatch,
+    ) -> bool {
         self.operations.values().any(|operation| {
             if operation.admission.token.route.node != *batch.node()
                 || operation

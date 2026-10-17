@@ -60,6 +60,15 @@ impl PacketCompleteRestorationPrebirth {
                 .add(publication.retained_storage_data(counter.remaining())?)
                 .map_err(|_| RuntimeError::ResourceLimit)?;
         }
+        if let Some(results) = &self.restored_results {
+            results
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?
+                .charge_retained_storage_data(&mut counter)?;
+        }
+        if self.restored_results.is_some() {
+            Self::charge_restored_actions_data(&self.restored_actions, &mut counter)?;
+        }
         counter
             .rc(original)
             .map_err(|_| RuntimeError::ResourceLimit)?;

@@ -10,6 +10,7 @@ use std::mem::{size_of, size_of_val};
 pub(super) fn counter_scratch_data() -> Result<usize, RuntimeError> {
     let terms=[InstalledConformancePlan::original_runtime_construction_counter_scratch_data()?,
         super::content_limits::counter_scratch_data(),
+        super::super::super::super::execution::schedule::bootstrap_counter_scratch_data(),
         super::family::counter_scratch_data(),
         super::fresh::counter_scratch_data()?,
         ConformanceRuntime::original_fixed_four_inactive_observer_counter_scratch_data()?,

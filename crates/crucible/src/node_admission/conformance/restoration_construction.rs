@@ -236,3 +236,11 @@ pub use window::{
     OriginalRestoredSchedulingObservationClaim,
     OriginalRestoredSchedulingObservationConstructionData,
 };
+
+pub use window::{
+    OriginalRestoredProducerExecutionAdmission, OriginalRestoredProducerExecutionClaim,
+    OriginalRestoredProducerExecutionConstructionData,
+    OriginalRestoredProducerPublisherConstructionScope,
+};
+
+pub(crate) use window::ProducerExecutionPhase;

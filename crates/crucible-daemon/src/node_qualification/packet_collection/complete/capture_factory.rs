@@ -444,6 +444,9 @@ impl PacketCompleteCaptureFactory {
                     .find(|source| &source.installation().descriptor.id == participant)
                     .ok_or_else(|| refused("complete preflight participant is not original"))?;
                 let installed = selected.installation();
+                let schema = selected
+                    .original_complete_native_snapshot_schema_data()
+                    .map_err(operation_failure)?;
                 (
                     &installed
                         .binding
@@ -451,12 +454,12 @@ impl PacketCompleteCaptureFactory {
                         .implementation
                         .implementation_id,
                     PACKET_COMPLETE_LINEAGE_PROFILE,
-                    "source-owned.packet-native-continuation/11",
-                    11,
+                    schema.id.as_str(),
+                    schema.version,
                     &installed.binding.compatibility.implementation.formats,
                 )
             };
-        // authenticate_live has already authenticated the selected Source11 or
+        // authenticate_live has already authenticated the selected legacy Source or
         // genuine Host2 mechanism. Compare the entire returned schema against
         // that same retained installed format; do not serialize a second schema
         // definition or infer a native right from its identifier.
@@ -545,6 +548,7 @@ impl NativeWorldFactory for PacketCompleteCaptureFactory {
                 // traversal frames/unwind and allocator rounding remain separate
                 // source/qualification obligations; this is not a stack bound.
                 .checked_add(dependencies::requested_scratch_bytes())
+                .and_then(|bytes| bytes.checked_add(crucible::node_adapters::cnp::PacketCompleteSemanticSource::original_complete_native_snapshot_schema_counter_scratch_data()))
                 // Full streamed-file scratch can coexist with the retained
                 // owners above; repeated synchronous checks share one slot.
                 .and_then(|bytes| bytes.checked_add(PacketFixtureMeasurements::streaming_scratch_bytes()))

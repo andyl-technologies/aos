@@ -6,6 +6,7 @@
 //! whole-preparation context, readiness or restoration installation permission.
 
 mod precredit;
+mod producer_publication;
 pub(in crate::node_qualification::packet_collection::complete) mod publication;
 mod restoration_storage;
 
@@ -37,9 +38,14 @@ pub struct PacketCompleteRestorationPrebirth {
     runtime_attempted: bool,
     report_startup_holder:
         Option<std::rc::Weak<RefCell<super::super::PacketCompleteReportStartupHolder>>>,
-    runtime: Option<ConformanceRuntime>,
+    runtime: Option<RefCell<ConformanceRuntime>>,
     failed_runtime: Option<crucible::node_contract::ConformanceRuntimeFailure>,
     publication: Option<publication::OriginalRestorationPublicationOwners>,
+    restored_results: Option<
+        RefCell<super::super::restored_publication::StoredPacketRestoredProducerResultPublisher>,
+    >,
+    restored_actions:
+        RefCell<Vec<RefCell<super::super::restored_publication::RestoredProducerAction>>>,
     process: u32,
     thread: std::thread::ThreadId,
 }
@@ -85,6 +91,8 @@ impl PacketCompleteArchiveCodeFactory {
             runtime: None,
             failed_runtime: None,
             publication: None,
+            restored_results: None,
+            restored_actions: RefCell::new(Vec::new()),
             process: std::process::id(),
             thread: std::thread::current().id(),
         });
@@ -382,7 +390,7 @@ impl PacketCompleteRestorationPrebirth {
             host,
             &self.source,
         ) {
-            Ok(runtime) => self.runtime = Some(runtime),
+            Ok(runtime) => self.runtime = Some(RefCell::new(runtime)),
             Err(failure) => {
                 let reason = failure.reason.clone();
                 self.failed_runtime = Some(failure);
@@ -577,11 +585,15 @@ impl PacketCompleteRestorationPrebirth {
     ///
     /// # Errors
     /// Refuses foreign creation/code ownership or an absent/failed runtime.
-    pub fn original_runtime_data(&self) -> Result<&ConformanceRuntime, StateError> {
+    pub fn original_runtime_data(
+        &self,
+    ) -> Result<std::cell::Ref<'_, ConformanceRuntime>, StateError> {
         self.authenticate_code_owner()?;
         self.runtime
             .as_ref()
-            .ok_or_else(|| refused("actual inactive fresh runtime is absent"))
+            .ok_or_else(|| refused("actual inactive fresh runtime is absent"))?
+            .try_borrow()
+            .map_err(|_| refused("actual inactive fresh runtime is absent"))
     }
 }
 
@@ -597,3 +609,7 @@ mod restored_suffix;
 #[path = "restoration_prebirth/construction.rs"]
 mod construction;
 mod fresh_runtime;
+
+mod runtime_owner;
+
+mod producer_lifecycle;

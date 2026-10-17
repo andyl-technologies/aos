@@ -61,6 +61,7 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
     // Fixed, separate custody: immutable first-Observe owners are never replaced.
     // Every initialized/failed seed remains inside the actual Source sizeof root.
     current_observations: std::cell::RefCell<restoration_observation::CurrentObservationHistory>,
+    producer_progress: std::cell::RefCell<producer_progress::ProducerProgressHistory>,
     restored_suffix:
         std::cell::RefCell<Option<restoration_continuation::OriginalRestoredSuffixSeed>>,
     emitter: Option<OriginalCanonicalBlobAckEmitter>,
@@ -106,6 +107,9 @@ impl OriginalAckPeerAssociation {
             restored_suffix: std::cell::RefCell::new(None),
             current_observations: std::cell::RefCell::new(
                 restoration_observation::CurrentObservationHistory::new(),
+            ),
+            producer_progress: std::cell::RefCell::new(
+                producer_progress::ProducerProgressHistory::new(),
             ),
             emitter: None,
             restore_input_emitter: None,
@@ -1171,6 +1175,7 @@ impl OriginalAckPeerAssociation {
             restoration_observation,
             restored_suffix,
             current_observations,
+            producer_progress,
             emitter,
             restore_input_emitter,
             native,
@@ -1207,6 +1212,13 @@ impl OriginalAckPeerAssociation {
             ));
         }
         drop(current);
+        let progress = producer_progress
+            .try_borrow()
+            .map_err(|_| E::refused("reserved prebirth Producer owner busy"))?;
+        if progress.is_used_data() {
+            return Err(E::refused("reserved prebirth Producer owner already used"));
+        }
+        drop(progress);
 
         if restoration_observation.is_some()
             || restoration_activation.is_some()
@@ -1332,3 +1344,8 @@ impl OriginalAckPeerAssociation {
 }
 
 pub(crate) use restoration_observation::OriginalSourceRestoredObservationCompletion;
+
+#[path = "association/producer_progress.rs"]
+mod producer_progress;
+
+pub(crate) use producer_progress::OriginalSourceRestoredProducerPhaseCompletion;

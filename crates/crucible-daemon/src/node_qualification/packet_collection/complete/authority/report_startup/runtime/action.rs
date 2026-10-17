@@ -94,6 +94,48 @@ impl PacketCompleteReportStartupHolder {
         })
     }
 
+    /// Selects the closed original bootstrap that stops after private mutation.
+    ///
+    /// The three real initial grants park at time five, before the public
+    /// event's evaluation. Selection precedes every runtime construction member
+    /// and never creates a grant, native result or publication acknowledgement.
+    /// The default installer path keeps its existing time-one schedule.
+    ///
+    /// # Errors
+    /// Refuses a foreign/fresh owner, repeated or late selection, retirement,
+    /// already staged runtime owners, or a busy actual holder.
+    pub fn select_original_private_mutation_capture_schedule(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<(), RuntimeError> {
+        let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        held.authenticate_native_origin_data()?;
+        if !matches!(&held.purpose, StartupHolderPurpose::OriginalScene)
+            || held.original_scene_retired.get()
+            || held.runtime_attempted.iter().any(Cell::get)
+            || held.runtime_issuing.get().is_some()
+            || held.runtime_in_flight.get().is_some()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+
+        let mut owners = held
+            .runtime_owners
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if owners.capture_bootstrap.is_some()
+            || owners.schedule.is_some()
+            || owners.oracle.is_some()
+            || owners.actor.is_some()
+            || owners.complete
+        {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+
+        owners.capture_bootstrap =
+            Some(super::super::super::super::execution::schedule::Bootstrap::PrivateMutation);
+        Ok(())
+    }
+
     /// Constructs the same original four-node runtime and attaches it inactive.
     ///
     /// Each installed Core member is spent and retained before its corresponding

@@ -198,3 +198,41 @@ impl PreparedPacketPlacement {
 
 #[cfg(test)]
 mod tests;
+
+impl PreparedPacketPlacement {
+    // These four handles were constructed here from independent Vec clones.
+    // Their exact BytesBlobSource/Arc-slice backing is not an arbitrary erased
+    // backend owner and does not require a callback to observe.
+    pub(in super::super) fn charge_retained_storage_data(
+        &self,
+        counter: &mut super::super::complete::retained::Counter,
+    ) -> Result<(), crate::node_qualification::QualificationError> {
+        counter.add(self.reference.retained_requested_storage_data())?;
+        for object in &self.objects {
+            counter.add(object.bytes.capacity())?;
+            counter.add(
+                BlobHandle::from_bytes_retained_requested_storage_data(object.bytes.len())
+                    .map_err(|_| {
+                        crate::node_qualification::QualificationError::Refused(
+                            "placement in-memory handle storage overflow",
+                        )
+                    })?,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl PreparedPacketPlacement {
+    pub(in super::super) fn retained_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        size_of::<&Self>()
+            + size_of::<&mut super::super::complete::retained::Counter>()
+            + size_of::<std::slice::Iter<'static, OriginalObject>>()
+            + size_of::<&OriginalObject>()
+            + size_of::<Result<usize, crucible_cas::content_store::StoreError>>()
+            + size_of::<Result<usize, crate::node_qualification::QualificationError>>()
+            + size_of::<Result<(), crate::node_qualification::QualificationError>>()
+            + BlobHandle::from_bytes_retained_counter_scratch_data()
+    }
+}

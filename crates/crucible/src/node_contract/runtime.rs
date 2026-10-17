@@ -680,6 +680,15 @@ impl NodeRuntime {
         token: &OperationToken,
         context: &mut Context<'_>,
     ) -> Poll<Result<OperationOutcome, RuntimePollFailure>> {
+        self.poll_with_producer_claim(token, context, None)
+    }
+
+    pub(super) fn poll_with_producer_claim(
+        &mut self,
+        token: &OperationToken,
+        context: &mut Context<'_>,
+        producer: Option<&crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>>,
+    ) -> Poll<Result<OperationOutcome, RuntimePollFailure>> {
         if let Err(error) = self.validate_token(token) {
             return Poll::Ready(Err(RuntimePollFailure::Admission(error)));
         }
@@ -691,6 +700,23 @@ impl NodeRuntime {
                 )));
             }
         };
+        if self.original_restored_producer_claim_required_data(token) && producer.is_none() {
+            return Poll::Ready(Err(RuntimePollFailure::Admission(
+                RuntimeError::ForeignAuthority,
+            )));
+        }
+        if let Some(claim) = producer {
+            if claim.phase_data() != crate::node_admission::ProducerExecutionPhase::Poll {
+                return Poll::Ready(Err(RuntimePollFailure::Admission(
+                    RuntimeError::ForeignAuthority,
+                )));
+            }
+            if let Err(error) =
+                claim.authenticate_runtime_data(self, &entry.admission, token.route())
+            {
+                return Poll::Ready(Err(RuntimePollFailure::Admission(error)));
+            }
+        }
         match &entry.result {
             RetainedResult::Complete(outcome) | RetainedResult::Acknowledged(outcome) => {
                 return Poll::Ready(Ok(outcome.clone()));
@@ -706,7 +732,12 @@ impl NodeRuntime {
             return Poll::Ready(Err(RuntimePollFailure::Admission(error)));
         }
         let result = match self.nodes.get_mut(&token.route.node) {
-            Some(handle) => handle.poll_operation(token, context),
+            Some(handle) => match producer {
+                Some(claim) => {
+                    Poll::Ready(handle.poll_original_restored_producer_operation(token, claim))
+                }
+                None => handle.poll_operation(token, context),
+            },
             None => {
                 return Poll::Ready(Err(RuntimePollFailure::Admission(
                     RuntimeError::UnknownNode,
@@ -773,6 +804,11 @@ impl NodeRuntime {
     pub fn cancel(&mut self, token: &OperationToken) -> Result<CancelStatus, RuntimePollFailure> {
         self.validate_token(token)
             .map_err(RuntimePollFailure::Admission)?;
+        if self.original_restored_producer_claim_required_data(token) {
+            return Err(RuntimePollFailure::Admission(
+                RuntimeError::UnsupportedFacet,
+            ));
+        }
         if self
             .operations
             .get(token.operation())
@@ -843,8 +879,23 @@ impl NodeRuntime {
         token: &OperationToken,
         outputs: &[Id],
     ) -> Result<(), RuntimePollFailure> {
+        self.acknowledge_with_producer_claim(token, outputs, None)
+    }
+
+    fn acknowledge_with_producer_claim(
+        &mut self,
+        token: &OperationToken,
+        outputs: &[Id],
+        claim: Option<&crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>>,
+    ) -> Result<(), RuntimePollFailure> {
         self.validate_token(token)
             .map_err(RuntimePollFailure::Admission)?;
+        self.authenticate_original_restored_producer_runtime_callback_data(
+            token,
+            claim,
+            crate::node_admission::ProducerExecutionPhase::Retirement,
+        )
+        .map_err(RuntimePollFailure::Admission)?;
         let entry = self
             .operations
             .get(token.operation())
@@ -869,11 +920,17 @@ impl NodeRuntime {
 
         final_collection_scope(self.collecting.as_deref())
             .map_err(RuntimePollFailure::Admission)?;
-        self.nodes
+        let node = self
+            .nodes
             .get_mut(&token.route.node)
-            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?
-            .acknowledge_publication(token, outputs)
-            .map_err(RuntimePollFailure::Native)?;
+            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+        match claim {
+            Some(claim) => {
+                node.acknowledge_original_restored_producer_publication(token, outputs, claim)
+            }
+            None => node.acknowledge_publication(token, outputs),
+        }
+        .map_err(RuntimePollFailure::Native)?;
         if let Some(entry) = self.operations.get_mut(token.operation()) {
             entry.result = RetainedResult::Acknowledged(outcome);
         }
@@ -894,6 +951,15 @@ impl NodeRuntime {
         &mut self,
         token: &OperationToken,
         commit: &crate::node_scheduling::SchedulingCommit,
+    ) -> Result<(), RuntimePollFailure> {
+        self.acknowledge_scheduled_with_producer_claim(token, commit, None)
+    }
+
+    pub(crate) fn acknowledge_scheduled_with_producer_claim(
+        &mut self,
+        token: &OperationToken,
+        commit: &crate::node_scheduling::SchedulingCommit,
+        claim: Option<&crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>>,
     ) -> Result<(), RuntimePollFailure> {
         self.validate_activation(commit.activation())
             .map_err(RuntimePollFailure::Admission)?;
@@ -916,7 +982,7 @@ impl NodeRuntime {
         {
             return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
         }
-        self.acknowledge(token, commit.retained_outputs())
+        self.acknowledge_with_producer_claim(token, commit.retained_outputs(), claim)
     }
 
     /// Acquires one explicitly advertised observation-only facet.
@@ -1711,3 +1777,6 @@ pub use original_input_lineage::OriginalInstalledRestorationNodeAssociation;
 
 #[path = "runtime/current_observation.rs"]
 mod current_observation;
+
+#[path = "runtime/producer_execution_storage.rs"]
+mod producer_execution_storage;

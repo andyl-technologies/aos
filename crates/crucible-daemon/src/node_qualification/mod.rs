@@ -118,8 +118,8 @@ pub use packet_collection::{
     PacketCompleteCollectionRequest, PacketCompleteGraphOwner, PacketCompleteGraphRequest,
     PacketCompleteNativeOracle, PacketCompleteOracleRequest, PacketCompletePopulationRequest,
     PacketCompletePublicationRequest, PacketCompleteRoster, PacketCompleteWitnessPopulation,
-    StoredPacketCompleteResultPublisher, packet_complete_independent_graph_contract,
-    packet_complete_measured_graph_proof,
+    PacketRestoredProducerPublicationInputs, StoredPacketCompleteResultPublisher,
+    packet_complete_independent_graph_contract, packet_complete_measured_graph_proof,
 };
 
 // The same actual-capacity walker serves known actor-local Clock owners.

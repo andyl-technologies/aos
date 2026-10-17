@@ -1359,3 +1359,11 @@ pub use ack_peer::{
 };
 
 pub(crate) use ack_peer::OriginalSourceRestoredObservationCompletion;
+
+#[path = "packet_complete_source/restored_producer_outcome.rs"]
+mod restored_producer_outcome;
+pub use restored_producer_outcome::{
+    OriginalRestoredProducerOutcomeConstructionData, OriginalRestoredProducerOutcomeProjection,
+};
+
+pub(crate) use ack_peer::OriginalSourceRestoredProducerPhaseCompletion;

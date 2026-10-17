@@ -25,6 +25,26 @@ impl NodeRuntime {
         request: OperationRequest,
         inputs: Option<Rc<crate::node_scheduling::RuntimeInputBatch>>,
     ) -> Result<BeginResult, RuntimeError> {
+        self.begin_with_inputs_and_producer_claim(
+            activation, node, operation, request, inputs, None,
+        )
+    }
+
+    pub(super) fn begin_with_inputs_and_producer_claim(
+        &mut self,
+        activation: &WorldActivation,
+        node: &NodeId,
+        operation: OperationId,
+        request: OperationRequest,
+        inputs: Option<Rc<crate::node_scheduling::RuntimeInputBatch>>,
+        producer: Option<&crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>>,
+    ) -> Result<BeginResult, RuntimeError> {
+        if let Some(claim) = producer {
+            if inputs.is_some() {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            claim.authenticate_request_data(self, activation, node, &operation, &request)?;
+        }
         self.validate_activation(activation)?;
         self.validate_condition_dispatch(node, &operation, &request)?;
         if let Some(terminal) = &self.terminal {
@@ -100,7 +120,10 @@ impl NodeRuntime {
             &self.barrier,
         )?;
         let submission = match self.nodes.get_mut(node) {
-            Some(handle) => handle.begin_original_retained_operation(&dispatch),
+            Some(handle) => match producer {
+                Some(claim) => handle.begin_original_restored_producer_operation(&dispatch, claim),
+                None => handle.begin_original_retained_operation(&dispatch),
+            },
             None => return Err(RuntimeError::UnknownNode),
         };
         match submission {
@@ -264,7 +287,20 @@ impl NodeRuntime {
         &self,
         token: &OperationToken,
     ) -> Result<crate::node_scheduling::SchedulingReceipt, RuntimeError> {
+        self.scheduling_receipt_with_producer_claim(token, None)
+    }
+
+    pub(crate) fn scheduling_receipt_with_producer_claim(
+        &self,
+        token: &OperationToken,
+        claim: Option<&crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>>,
+    ) -> Result<crate::node_scheduling::SchedulingReceipt, RuntimeError> {
         self.validate_token(token)?;
+        self.authenticate_original_restored_producer_runtime_callback_data(
+            token,
+            claim,
+            crate::node_admission::ProducerExecutionPhase::Publication,
+        )?;
         self.scheduler
             .as_ref()
             .ok_or(RuntimeError::NotActivated)?
@@ -549,7 +585,24 @@ impl NodeRuntime {
         &mut self,
         receipt: crate::node_scheduling::SchedulingReceipt,
     ) -> Result<crate::node_scheduling::SchedulingCommit, RuntimeError> {
+        self.commit_scheduling_receipt_with_producer_claim(receipt, None)
+    }
+
+    pub(crate) fn commit_scheduling_receipt_with_producer_claim(
+        &mut self,
+        receipt: crate::node_scheduling::SchedulingReceipt,
+        claim: Option<&crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>>,
+    ) -> Result<crate::node_scheduling::SchedulingCommit, RuntimeError> {
         self.validate_activation(&receipt.activation)?;
+        let entry = self
+            .operations
+            .get(&receipt.operation)
+            .ok_or(RuntimeError::OutstandingObligations)?;
+        self.authenticate_original_restored_producer_runtime_callback_data(
+            entry.admission.token(),
+            claim,
+            crate::node_admission::ProducerExecutionPhase::Publication,
+        )?;
         let original = match self
             .operations
             .get(&receipt.operation)

@@ -172,6 +172,7 @@ impl PacketCompleteCaptureFactory {
                 // Both live and code-only validation can remeasure originals
                 // while these local observers and retained owners coexist.
                 PacketFixtureMeasurements::streaming_scratch_bytes(),
+                PacketCompleteSemanticSource::original_complete_native_snapshot_schema_counter_scratch_data(),
             ],
             maximum,
         )?;

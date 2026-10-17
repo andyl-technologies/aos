@@ -67,12 +67,16 @@ fn source_built_packet_three_stored_grants_capture_and_selected_reload() {
     .unwrap();
     let mut captured = None;
     let mut results = None;
-    let expected_cut = Position::new(U64::new(1), U64::new(0), Phase::BoundaryControl);
+    let expected_cut = Position::new(U64::new(5), U64::new(0), Phase::BoundaryControl);
     let expected_ordinal = U64::new(0);
 
     // Every native owner remains outside the unwind boundary. A failed grant,
     // publication or Capture retains its partials until genuine reclamation.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        PacketCompleteReportStartupHolder::select_original_private_mutation_capture_schedule(
+            &installed.original,
+        )
+        .unwrap();
         installed.prepare().unwrap();
         PacketCompleteReportStartupHolder::authenticate_original_inactive_actor_for_test(
             &installed.original,
@@ -85,6 +89,8 @@ fn source_built_packet_three_stored_grants_capture_and_selected_reload() {
             limits.state.maximum_record_bytes,
         )
         .unwrap();
+        // Real grants execute private event four and park before public event
+        // five. Each original still needs native Poll and durable stored ACK.
         let references = std::array::from_fn(|index| {
             RefName::new(format!(
                 "node-packet-collecting-results/installed-packet-original-{index}"
@@ -165,28 +171,88 @@ fn source_built_packet_three_stored_grants_capture_and_selected_reload() {
     }
 
     let captured = captured.unwrap();
+    assert!(installed.prepare().is_err());
+    // All original native/runtime obligations have been reclaimed. Withdraw
+    // the actual actor/Source owners and both completed publication owners
+    // before removing their mutable storage. Failed paths above retain these
+    // same originals through cleanup and resume their original panic.
+    drop(installed);
+    drop(activation_publisher);
+    drop(blob_store);
+    drop(ref_store);
+    assert_eq!(Arc::strong_count(&blobs), 1);
+    assert_eq!(Arc::strong_count(&refs), 1);
+    drop((blobs, refs));
+
+    // Keep only the measured immutable implementation files and independently
+    // signed archive backend. Neither selected load can consult the original
+    // scene, result blobs or activation/result reference directory afterward.
+    for name in ["scene", "blobs", "refs"] {
+        let mutable_resource = directory.path().join(name);
+        assert!(mutable_resource.is_dir());
+        std::fs::remove_dir_all(&mutable_resource).unwrap();
+        assert!(!mutable_resource.exists());
+    }
+    assert!(directory.path().join("archive").is_dir());
+
     let loaded = archive.load_complete_original(captured.artifact()).unwrap();
     assert_eq!(loaded.artifact(), captured.artifact());
     assert_eq!(loaded.manifest(), captured.manifest());
     assert_eq!(loaded.owners().len(), 4);
-    assert!(installed.prepare().is_err());
-    // The new target cannot borrow an old live Source, actor or controller.
-    // The separate unstarted fixture keeps the measured files alive.
-    drop(installed);
-
+    assert_captured_private_mutation(&loaded, limits);
     let second = archive.load_complete_original(captured.artifact()).unwrap();
     assert_eq!(second.artifact(), loaded.artifact());
     assert_eq!(second.manifest(), loaded.manifest());
-
-    // Original mutable transport resources are gone before either new World
-    // prepares. The separately measured implementation files and archive store
-    // deliberately remain available to both independent restoration factories.
-    let mutable_namespace = directory.path().join("scene");
-    std::fs::remove_dir_all(&mutable_namespace).unwrap();
-    assert!(!mutable_namespace.exists());
 
     restoration::restore_two_worlds_and_observe(&declaration, [loaded, second], limits);
 }
 
 #[path = "native_capture/restoration.rs"]
 mod restoration;
+
+fn assert_captured_private_mutation(
+    record: &crucible::node_state::NativeArchiveRecord,
+    limits: crucible::node_state::NativeArchiveLimits,
+) {
+    let producer = id("packet-0");
+    let owner = record
+        .owners()
+        .iter()
+        .find(|owner| owner.participants.contains(&producer))
+        .unwrap();
+    let journal = crucible::node_adapters::cnp::PacketCompleteSettledJournal::decode_data(
+        &record
+            .object_bytes(&owner.state, limits.state.maximum_record_bytes)
+            .unwrap(),
+        limits.state.maximum_record_bytes,
+    )
+    .unwrap();
+    let control = canonical::parse_json(
+        &record
+            .object_bytes(&journal.native_control, limits.state.maximum_record_bytes)
+            .unwrap(),
+        limits.state.maximum_record_bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        control["schema"],
+        "source-owned.packet-native-control-state/6"
+    );
+    assert_eq!(
+        control["local_cursor"],
+        serde_json::to_value(record.manifest().cut).unwrap()
+    );
+    let model = &control["model"];
+    assert_eq!(model["schema"], "source-owned.packet-native-model/5");
+    assert_eq!(model["kind"], "producer");
+    let state = &model["state"];
+    assert_eq!(state["private_mutations"].as_u64(), Some(1));
+    assert_eq!(state["packet_effects"].as_u64(), Some(0));
+    assert_eq!(state["next_event"].as_u64(), Some(1));
+    assert!(state["outputs"].as_array().unwrap().is_empty());
+    assert_eq!(state["events"][1]["id"], "packet-callback-0");
+    assert_eq!(
+        state["events"][1]["completion"],
+        serde_json::to_value(Position::new(U64::new(5), U64::new(1), Phase::Publication),).unwrap()
+    );
+}

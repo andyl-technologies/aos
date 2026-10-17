@@ -66,12 +66,9 @@ impl PacketCompleteRestorationPrebirth {
             .fresh_graph
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let runtime = self.runtime_data()?;
         self.source
-            .retained_original_construction_runtime_descriptor_data(runtime, graph, target)
+            .retained_original_construction_runtime_descriptor_data(&runtime, graph, target)
     }
 
     pub(in crate::node_qualification::packet_collection::complete) fn retained_fresh_construction_descriptor_data(
@@ -111,7 +108,7 @@ impl PacketCompleteRestorationPrebirth {
             return Err(RuntimeError::ThreadAffinity);
         }
         if let Some(runtime) = &mut self.runtime {
-            runtime.retire_original()?;
+            runtime.get_mut().retire_original()?;
         }
         if let Some(failure) = &mut self.failed_runtime {
             failure.retire_original()?;
@@ -121,7 +118,8 @@ impl PacketCompleteRestorationPrebirth {
 
     pub(in crate::node_qualification::packet_collection::complete) fn fresh_runtime_custody_counter_scratch_data()
     -> usize {
-        size_of::<&Self>()
+        Self::runtime_owner_counter_scratch_data()
+            + size_of::<&Self>()
             + size_of::<&mut Self>()
             + size_of::<&Rc<PacketCompleteCaptureFactory>>()
             + size_of::<[usize; 4]>()

@@ -54,6 +54,8 @@ impl PacketCompleteRestorationPrebirth {
             runtime: _,
             failed_runtime,
             publication,
+            restored_results,
+            restored_actions,
             process: _,
             thread: _,
         } = self;
@@ -71,6 +73,15 @@ impl PacketCompleteRestorationPrebirth {
             counter
                 .add(publication.retained_storage_data(counter.remaining())?)
                 .map_err(storage_error)?;
+        }
+        if let Some(results) = restored_results {
+            results
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?
+                .charge_retained_storage_data(&mut counter)?;
+        }
+        if restored_results.is_some() {
+            Self::charge_restored_actions_data(restored_actions, &mut counter)?;
         }
         counter.rc(original).map_err(storage_error)?;
         if let Some(holder) = report_startup_holder {
@@ -144,7 +155,7 @@ impl PacketCompleteRestorationPrebirth {
             || !self
                 .runtime
                 .as_ref()
-                .is_some_and(|actual| std::ptr::eq(actual, runtime))
+                .is_some_and(|actual| std::ptr::eq(actual.as_ptr().cast_const(), runtime))
         {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -207,6 +218,8 @@ impl PacketCompleteRestorationPrebirth {
             runtime: _,
             failed_runtime,
             publication,
+            restored_results,
+            restored_actions,
             process: _,
             thread: _,
         } = self;
@@ -230,6 +243,16 @@ impl PacketCompleteRestorationPrebirth {
         // equal paths/hashes never justify a discount between actual owners.
         if let Some(publication) = publication {
             publication.authenticate_retained_directory_views_data()?;
+        }
+        if let Some(results) = restored_results {
+            // Idle Directory configurations own no open descriptors. Refuse a
+            // busy partial owner rather than omit its independently quoted work.
+            let _results = results.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        }
+        if restored_results.is_some() {
+            let _actions = restored_actions
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
         }
         let descriptors = code.checked_add(fresh).ok_or(RuntimeError::ResourceLimit)?;
         self.authenticate_restoration_storage_scope_data(
@@ -278,7 +301,7 @@ impl PacketCompleteRestorationPrebirth {
                 || !self
                     .runtime
                     .as_ref()
-                    .is_some_and(|actual| std::ptr::eq(actual, runtime))
+                    .is_some_and(|actual| std::ptr::eq(actual.as_ptr().cast_const(), runtime))
                 || !std::ptr::eq(scope.inputs().archive, archive)
                 || !std::ptr::eq(scope.inputs().activation, activation)
                 || !scope.plan().is_original_plan_data(plan)

@@ -632,3 +632,6 @@ fn scene_declaration(scene: &Scene) -> serde_json::Value {
 
 #[path = "tests/native_roundtrip.rs"]
 pub(super) mod native_roundtrip;
+
+#[path = "tests/schema_roster.rs"]
+mod schema_roster;

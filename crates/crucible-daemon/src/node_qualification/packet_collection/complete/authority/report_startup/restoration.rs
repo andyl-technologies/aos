@@ -167,6 +167,7 @@ impl PacketCompleteReportStartupHolder {
             .map_err(|_| RuntimeError::ResourceLimit)?;
         let scratch = [
             base.declared_observer_scratch_bytes,
+            self.original_restored_result_counter_scratch_data()?,
             crate::node_observed_executor::StoredWorldActivationPublisher::original_directory_publication_counter_scratch_data()?,
             InstalledConformancePlan::original_restoration_construction_counter_scratch_data()?,
             PacketCompleteRestorationPrebirth::restoration_holder_counter_scratch_data(),
@@ -242,6 +243,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             .maximum_requested_bytes
             .checked_sub(policy.declared_observer_scratch_bytes)
             .ok_or(RuntimeError::ResourceLimit)?;
+        held.authenticate_original_restored_result_candidate_data(scope)?;
         let retained = PacketCompleteReportStartupHolder::original_restoration_holder_storage_data(
             &original, &held, scope, maximum,
         )?;
@@ -306,6 +308,11 @@ impl InstalledPacketCompleteCollectionAuthority {
                 return Err(RuntimeError::ForeignAuthority);
             }
         }
+        if let Some(candidate) = scope.original_restored_producer_publication_candidate_data()
+            && held.restored_result_publication.get() != Some(&candidate)
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
         // No capsule/SDK/preparation/runtime/Source bank is borrowed here.
         // Core repeats the same actual spent ticket and live scheduler fence
         // after this callback, while SourceRead remains armed around it.
@@ -364,7 +371,9 @@ impl PacketCompleteReportStartupHolder {
                 .restoration_requests
                 .try_borrow()
                 .map_err(|_| RuntimeError::OwnerBusy)?;
+            let runtime = capsule.runtime_data()?;
             let inputs = capsule.original_restoration_construction_inputs_data(
+                &runtime,
                 &held.authority.roster.sources,
                 sdks,
                 &held.authority.original_launches,
@@ -401,6 +410,28 @@ impl PacketCompleteReportStartupHolder {
         Self::construct_original_restoration_cold_and_transaction(original, activation)?;
         Self::move_original_restoration_group_and_targets(original, activation)?;
         Self::recheck_original_restoration_transaction_data(original, activation)?;
+        let constructed_publisher = {
+            let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+            if held.restored_result_publication.get().is_some() {
+                let window = held
+                    .restoration_window
+                    .get()
+                    .ok_or(RuntimeError::OwnerUnavailable)?;
+                let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose else {
+                    return Err(RuntimeError::ForeignAuthority);
+                };
+                capsule
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?
+                    .initialize_original_restored_results_data(window, &held.plan, activation)?;
+                true
+            } else {
+                false
+            }
+        };
+        if constructed_publisher {
+            Self::recheck_original_restoration_transaction_data(original, activation)?;
+        }
         {
             let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
             let window = held
@@ -491,7 +522,9 @@ impl PacketCompleteReportStartupHolder {
             .restoration_requests
             .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?;
+        let runtime = capsule.runtime_data()?;
         let inputs = capsule.original_restoration_construction_inputs_data(
+            &runtime,
             &held.authority.roster.sources,
             sdks,
             &held.authority.original_launches,
@@ -511,6 +544,20 @@ impl PacketCompleteReportStartupHolder {
                 .ok_or(RuntimeError::OwnerUnavailable)?,
         )?;
         window.construct_original_cold_owners(&held.plan, &inputs)?;
+        if let Some((pointer, row)) =
+            capsule.original_restored_result_candidate_data(&held.plan, &inputs, None)?
+        {
+            if held.restored_result_publication.get() != Some(&pointer) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            window.retain_original_restored_producer_publication_data(
+                &held.plan,
+                inputs.runtime,
+                activation,
+                pointer,
+                row,
+            )?;
+        }
         window.admit_original_transaction(&held.plan, &inputs)
     }
 
@@ -592,3 +639,9 @@ mod installed;
 mod fresh_lifecycle;
 pub(super) use fresh_lifecycle::FreshLifecycleOwners;
 pub use fresh_lifecycle::PacketCompleteFreshRestorationInputs;
+
+#[path = "restoration/restored_publication.rs"]
+mod restored_publication;
+
+#[path = "restoration/producer_lifecycle.rs"]
+mod producer_lifecycle;

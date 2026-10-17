@@ -1221,3 +1221,9 @@ mod preflight;
 
 #[path = "epoch_impl.rs"]
 mod epoch_impl;
+
+#[path = "scheduler/producer_construction.rs"]
+mod producer_construction;
+
+#[path = "scheduler/producer_publication_storage.rs"]
+mod producer_publication_storage;

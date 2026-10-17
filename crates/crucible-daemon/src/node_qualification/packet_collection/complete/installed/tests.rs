@@ -258,3 +258,46 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
 
 #[path = "tests/native_capture.rs"]
 mod native_capture;
+
+#[test]
+fn original_capture_schedule_selection_is_once_before_runtime_and_refuses_after_retirement() {
+    use crate::node_qualification::packet_collection::complete::{
+        InstalledCompleteScene, InstalledCompleteSceneManifest,
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let (_source, declaration) =
+        crate::node_qualification::packet_collection::complete::tests::installed_scene_declaration(
+        );
+    let directory = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let bytes = crucible_node_contract::canonical::canonical_json(&declaration).unwrap();
+    let reference =
+        crucible_node_contract::canonical::content_ref(&bytes, "application/json").unwrap();
+    let path = directory.path().join("installation.json");
+    std::fs::write(&path, bytes).unwrap();
+    let pin = InstalledCompleteSceneManifest::new(path, reference).unwrap();
+    let mut installed =
+        InstalledCompleteScene::install(pin, directory.path().join("scene")).unwrap();
+    // This real installed holder has no runtime member, operation or Child.
+    PacketCompleteReportStartupHolder::select_original_private_mutation_capture_schedule(
+        &installed.original,
+    )
+    .unwrap();
+    assert!(matches!(
+        PacketCompleteReportStartupHolder::select_original_private_mutation_capture_schedule(
+            &installed.original
+        ),
+        Err(crucible::node_contract::RuntimeError::DuplicateOperation)
+    ));
+    assert!(!installed.attempted);
+    assert!(!installed.retired);
+    installed.retire().unwrap();
+    assert!(
+        PacketCompleteReportStartupHolder::select_original_private_mutation_capture_schedule(
+            &installed.original
+        )
+        .is_err()
+    );
+}

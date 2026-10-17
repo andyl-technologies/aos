@@ -544,3 +544,11 @@ pub use conformance::{
     OriginalRestoredSchedulingObservationClaim,
     OriginalRestoredSchedulingObservationConstructionData,
 };
+
+pub use conformance::{
+    OriginalRestoredProducerExecutionAdmission, OriginalRestoredProducerExecutionClaim,
+    OriginalRestoredProducerExecutionConstructionData,
+    OriginalRestoredProducerPublisherConstructionScope,
+};
+
+pub(crate) use conformance::ProducerExecutionPhase;

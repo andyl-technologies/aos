@@ -2,7 +2,7 @@
 
 use std::task::{Context, Poll};
 
-use crucible_node_contract::{NodeBinding, NodeDescriptor, Position, PreparedOwner};
+use crucible_node_contract::{Id, NodeBinding, NodeDescriptor, Position, PreparedOwner};
 
 use super::{
     ActivationRecord, CancelStatus, FacetKind, NativeReclamationReceipt, NodeRoute, NodeStatus,
@@ -1157,6 +1157,110 @@ pub trait SimulationNode {
         dispatch: &super::OriginalRuntimeOperationDispatch<'_>,
     ) -> Submission {
         self.begin_operation(dispatch.admission_data())
+    }
+
+    /// Quotes an actual pending restored Producer grant without issuing effects.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Supporting nodes require the actual installed
+    /// association, current Source checkpoint and unchanged construction policy.
+    fn quote_original_restored_producer_execution(
+        &self,
+        _grant: &crate::node_scheduling::ExecutionAdmission,
+        _launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        _canonical_launch5: &[u8],
+        _maximum: usize,
+    ) -> Result<
+        crate::node_admission::OriginalRestoredProducerExecutionConstructionData,
+        RuntimeError,
+    > {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
+    /// Receives the real pending dispatch and its separate Producer action claim.
+    ///
+    /// Neither argument substitutes for the other. The default refuses, keeping
+    /// the ordinary restored path closed until the full consumer is installed.
+    fn begin_original_restored_producer_operation(
+        &mut self,
+        _dispatch: &super::OriginalRuntimeOperationDispatch<'_>,
+        _claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+    ) -> Submission {
+        Submission::Refused(Refusal {
+            reason: super::OriginalRuntimeOperationDispatch::SUFFIX_ACTION_ROW_REFUSAL.into(),
+        })
+    }
+
+    /// Classifies an actual retained Producer action requiring its private claim.
+    ///
+    /// This bank-free DATA predicate creates no grant or currentness. Supporting
+    /// nodes keep it true for successful, uncertain and failed action entries.
+    fn requires_original_restored_producer_claim_data(&self, _operation: &OperationToken) -> bool {
+        false
+    }
+
+    /// Polls the same separately admitted restored Producer original once.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Supporting synchronous native consumers retain
+    /// partial transport/proof owners before every fallible step.
+    fn poll_original_restored_producer_operation(
+        &mut self,
+        _operation: &OperationToken,
+        _claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+    ) -> Result<OperationOutcome, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: super::OriginalRuntimeOperationDispatch::SUFFIX_ACTION_ROW_REFUSAL.into(),
+        })
+    }
+
+    /// Lends the retained Source report beneath its owning current read fence.
+    ///
+    /// # Errors
+    /// Defaults to refusal. A completion DTO or SDK method owner cannot create
+    /// the nonconstructible Source report scope supplied to this callback.
+    fn with_original_restored_producer_report_data(
+        &mut self,
+        _original: &OperationAdmission,
+        _claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+        _inspect: &mut dyn FnMut(
+            &super::OriginalRestoredProducerReportReadScope<'_>,
+        ) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
+    /// Acknowledges only a separately admitted, durably committed target result.
+    ///
+    /// # Errors
+    /// Defaults to refusal; it never falls through to the ordinary ACK path.
+    fn acknowledge_original_restored_producer_publication(
+        &mut self,
+        _operation: &OperationToken,
+        _outputs: &[Id],
+        _claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: super::OriginalRuntimeOperationDispatch::SUFFIX_ACTION_ROW_REFUSAL.into(),
+        })
+    }
+
+    /// Returns the separately admitted actual post-retirement scheduling proof.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Supporting nodes retain independent returned/current
+    /// copies before their Source proof completes its final native read fence.
+    fn observe_original_restored_producer_scheduling(
+        &mut self,
+        _original: &OperationAdmission,
+        _claim: &crate::node_admission::OriginalRestoredProducerExecutionClaim<'_>,
+    ) -> Result<crate::node_scheduling::NativeSchedulingObservation, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: super::OriginalRuntimeOperationDispatch::SUFFIX_ACTION_ROW_REFUSAL.into(),
+        })
     }
 
     /// Begins the original admitted operation without fabricating completion.

@@ -140,6 +140,11 @@ enum WindowStage {
 /// the window cannot renew the archive's per-owner transaction ledger.
 #[must_use = "retain the original window and every partial owner through failure"]
 pub struct CompleteOriginalRestorationWindow {
+    producer_executions: [RefCell<producer_execution::ProducerExecutionLedger>; 3],
+    producer_publication: OnceCell<producer_execution::ProducerPublicationIdentity>,
+    producer_next_slot: Cell<usize>,
+    producer_grant_work: [Cell<Option<(usize, usize, usize)>>; 3],
+    producer_grant_started: [Cell<bool>; 3],
     current_observations: [RefCell<current_observation::CurrentObservationLedger>; 3],
     initial_scheduling_work: [Cell<Option<(usize, usize, usize)>>; 3],
     process: u32,
@@ -223,6 +228,7 @@ impl InstalledConformancePlan {
             OriginalRestorationRuntimeMemberIdentity::counter_scratch_data(),
             CompleteOriginalRestorationTransactionTarget::counter_scratch_data(),
             CompleteOriginalRestorationWindow::phase_counter_scratch_data(),
+            producer_execution::counter_scratch_data(),
             world_roster::counter_scratch_data()?,
             super::transaction_group::OriginalRestorationTransactionGroup::counter_scratch_data(),
             size_of::<super::target::OriginalRestorationTargetInputs>(),
@@ -365,6 +371,13 @@ impl InstalledConformancePlan {
             policy.maximum_requested_bytes,
         )?;
         Ok(Rc::new(CompleteOriginalRestorationWindow {
+            producer_executions: std::array::from_fn(|_| {
+                RefCell::new(producer_execution::ProducerExecutionLedger::new())
+            }),
+            producer_publication: OnceCell::new(),
+            producer_next_slot: Cell::new(0),
+            producer_grant_work: std::array::from_fn(|_| Cell::new(None)),
+            producer_grant_started: std::array::from_fn(|_| Cell::new(false)),
             process: std::process::id(),
             thread: std::thread::current().id(),
             plan: self.downgrade(),
@@ -1363,3 +1376,13 @@ pub use current_observation::{
     OriginalRestoredSchedulingObservationClaim,
     OriginalRestoredSchedulingObservationConstructionData,
 };
+
+#[path = "window/producer_execution.rs"]
+mod producer_execution;
+pub use producer_execution::{
+    OriginalRestoredProducerExecutionAdmission, OriginalRestoredProducerExecutionClaim,
+    OriginalRestoredProducerExecutionConstructionData,
+    OriginalRestoredProducerPublisherConstructionScope,
+};
+
+pub(crate) use producer_execution::ProducerExecutionPhase;
