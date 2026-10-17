@@ -1945,7 +1945,8 @@ fn streaming_error_response(error: StreamingApiError) -> Response {
         StreamingApiError::CommandChannelClosed { .. }
         | StreamingApiError::CommandResponseMissing { .. }
         | StreamingApiError::StateDidNotAdvance { .. }
-        | StreamingApiError::EventStreamLagged { .. } => typed_rpc_status_response(
+        | StreamingApiError::EventStreamLagged { .. }
+        | StreamingApiError::EventLogUnavailable { .. } => typed_rpc_status_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             RpcStatusCode::Internal,
             "internal",

@@ -113,6 +113,10 @@ impl QuantumLoop for SingleScheduler {
         self.drive_authoritative_quantum(request)
     }
 
+    fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>> {
+        Some(self.event_log_segment_store())
+    }
+
     fn backend_step_ceiling(
         &self,
         outcome: &QuantumOutcome,

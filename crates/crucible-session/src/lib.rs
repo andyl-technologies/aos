@@ -127,12 +127,16 @@ mod session_commands;
 mod session_core;
 #[path = "session/debug_coordinator.rs"]
 mod session_debug_coordinator;
+#[path = "session/debug_history.rs"]
+mod session_debug_history;
 #[path = "session/engine.rs"]
 mod session_engine;
 #[path = "session/exploration.rs"]
 mod session_exploration;
 #[path = "session/exploration/support.rs"]
 mod session_exploration_support;
+#[path = "session/segmented_log.rs"]
+mod session_segmented_log;
 #[path = "session/streams.rs"]
 mod session_streams;
 
@@ -141,9 +145,11 @@ pub use session_breakpoint_metadata::*;
 pub use session_commands::*;
 pub use session_core::*;
 pub use session_debug_coordinator::*;
+use session_debug_history::SessionDebugHistory;
 pub use session_engine::*;
 pub use session_exploration::*;
 use session_exploration_support::*;
+pub use session_segmented_log::SessionEventLogStoreError;
 pub use session_streams::*;
 
 #[cfg(test)]

@@ -967,6 +967,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         Ok(())
     }
 
+    fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>> {
+        self.inner.sealed_event_log_store()
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.reconcile_indeterminate_debug_ownership()?;
         let pending = self.inner.loop_impl().pending_branch_effect_choice_count();

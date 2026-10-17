@@ -758,6 +758,15 @@ pub trait QuantumLoop {
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         Ok(Vec::new())
     }
+
+    /// Returns the store holding this loop's sealed event-log segments.
+    ///
+    /// Consumers that keep their own view of the log, such as a session's
+    /// subscriber hub, seal into the same store so equal segments are stored
+    /// once. Loops without a scheduler event log return `None`.
+    fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>> {
+        None
+    }
 }
 
 /// Advances one bounded host-concurrent scheduler round.

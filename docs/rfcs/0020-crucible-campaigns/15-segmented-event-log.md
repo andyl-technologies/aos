@@ -601,6 +601,39 @@ search frontiers (single-scheduler continuation v10):
   check that identity. Branch authentication MUST compare a frontier's time
   and parent before normalizing its candidates.
 
+A live session keeps two views of the same log: the subscriber hub that
+streams entries to control-plane clients, and the debug history behind
+breakpoints and time travel, which survives a reverse step until execution
+diverges. Both seal under the same rule into the quantum loop's segment
+store, so a session that starts at the run's genesis adds no segment objects
+of its own. Each keeps its open tail resident and one index row per sealed
+segment: the reference and the cumulative entry counts by class.
+
+```text
+session log view:
+  index: [{ segment ref, causal/observational counts before and after }, ...]
+  tail:  [SchedulerEventLogEntry, ...]          // since the last seal, <= 8 MiB
+```
+
+Subscriber replay reads one sealed segment at a time and walks it batch by
+batch, an attach summary decodes at most the one segment its cursor falls in,
+and a truncation decodes only the segment it cuts. While a breakpoint is
+armed, the debug history extends one condition prefix by each appended batch
+instead of rebuilding it from the history at every quantum, and it records an
+event's configuration coordinate only where the coordinate changes. A
+debugger command whose engine request takes the complete log collects it from
+the segments for that command alone. The condition prefix itself still
+retains its history until [CMEAS-15] lands.
+
+- **[CCOMP-42]** A live session's subscriber hub and debug history MUST seal
+  their entries under the rule of [CCOMP-26] and keep only the open tail and
+  one index row per sealed segment resident. Subscriber replay MUST hold at
+  most one sealed segment at a time, breakpoint evaluation MUST extend its
+  condition prefix by each appended batch rather than rebuild it from the
+  history, and the debug history MUST keep configuration coordinates only
+  where they change. Only a debugger command whose engine request requires
+  the complete log MAY collect it, and only for that command.
+
 ## 15.13 Guarded campaign run results
 
 The guarded campaign owner behind local `run`, replay, save, resume, search,

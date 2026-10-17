@@ -182,6 +182,7 @@ CCOMP-34	T-CAM-4.18	gate:campaign-replay,gate:campaign-cold-continuity
 CCOMP-36	T-CAM-4.20	gate:campaign-replay
 CCOMP-37	T-CAM-4.22	gate:campaign-replay,gate:campaign-performance
 CCOMP-39	T-CAM-4.24	gate:exact-closure-streaming,gate:content-address
+CCOMP-42	T-CAM-4.28	gate:control-responsiveness,gate:campaign-replay
 HFORK-1	T-CAM-7.3,T-CAM-7.6	gate:hot-fork-equivalence
 HFORK-2	T-CAM-7.3,T-CAM-7.6	gate:hot-fork-equivalence
 HFORK-3	T-CAM-6.1,T-CAM-7.1	gate:hot-fork-isolation,gate:abi-conformance

@@ -384,7 +384,9 @@ pub(super) fn event_log_stream_recovers_broadcast_lag_from_the_retained_log() {
             )
         })
         .collect::<Vec<_>>();
-    event_log.append_entries(&entries);
+    event_log
+        .append_entries(&entries)
+        .unwrap_or_else(|error| panic!("lag fixture entries must append: {error}"));
 
     let mut observed = Vec::new();
     while let Some(frame) = stream

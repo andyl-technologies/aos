@@ -35,7 +35,8 @@ impl Http2LifecycleServer {
             .streaming_session(session)
             .unwrap_or_else(|error| panic!("streaming session should exist: {error}"));
         let hub = streaming.event_log().clone().into_inner();
-        append_event_log_entries_for_test(&hub, entries);
+        append_event_log_entries_for_test(&hub, entries)
+            .unwrap_or_else(|error| panic!("fixture entries should append: {error}"));
         if let Some(last) = entries.last() {
             assert_eq!(
                 hub.current_cursor().next_sequence,

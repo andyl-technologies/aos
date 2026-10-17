@@ -3,6 +3,68 @@
 use super::*;
 
 impl ConditionEventLogPrefix {
+    /// Builds an empty prefix whose first appended entry must carry
+    /// `base_sequence`.
+    ///
+    /// Live consumers that observe a log from a resumed offset use this with
+    /// [`Self::append_entries`] to keep one prefix current instead of
+    /// rebuilding it from their whole history at every evaluation.
+    #[must_use]
+    pub fn empty_at(base_sequence: u64) -> Self {
+        Self::genesis().with_base_sequence(base_sequence)
+    }
+
+    /// Extends this prefix with the next dense entries of the same log.
+    ///
+    /// The suffix is checked exactly as at construction, so extending batch by
+    /// batch yields the same prefix as building it from the whole log when
+    /// every batch ends at its latest entry, as live appends do.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError`] for an empty or non-dense suffix,
+    /// invalid content hashes or observation stamps, backwards black-box
+    /// ordering, or entries hidden by the suffix's final boundary. A refused
+    /// suffix leaves this prefix unchanged.
+    pub fn append_entries(
+        &mut self,
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<(), ConditionEvaluationError> {
+        self.append_scheduler_entries(entries)
+    }
+
+    /// Returns the dense sequence the next appended entry must carry.
+    #[must_use]
+    pub fn next_sequence(&self) -> u64 {
+        u64::try_from(self.scheduler_entries.len())
+            .ok()
+            .and_then(|length| self.base_sequence.checked_add(length))
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Returns a copy evaluated at a synthesized boundary after this prefix.
+    ///
+    /// This is [`Self::from_scheduler_event_log_entries_with_evaluation_boundary`]
+    /// applied to an already built prefix: the boundary at `sequence` is
+    /// appended to the copy only, and the copy reports the boundary offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError`] when the boundary is not the next
+    /// dense entry or precedes a retained entry.
+    pub fn with_evaluation_boundary(
+        &self,
+        sequence: u64,
+        at: VirtualTime,
+        kind: SchedulerEvaluationBoundaryKind,
+    ) -> Result<Self, ConditionEvaluationError> {
+        let mut prefix = self.clone();
+        prefix.append_scheduler_entries(vec![SchedulerEventLogEntry::evaluation_boundary(
+            sequence, at, kind,
+        )])?;
+        Ok(prefix.with_event_log_offset(EventLogOffset::new(ContentHash::default(), 0, sequence)))
+    }
+
     /// Validates a suffix before committing its entries and derived facts.
     ///
     /// Retained entries were authenticated when this prefix was constructed or

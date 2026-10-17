@@ -253,6 +253,15 @@ impl<L> Engine<L> {
         self.frontier
     }
 
+    /// Returns the store holding the quantum loop's sealed event-log segments.
+    #[must_use]
+    pub fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>>
+    where
+        L: QuantumLoop,
+    {
+        self.quantum_loop.sealed_event_log_store()
+    }
+
     /// Returns the canonical event-log length observed so far.
     #[must_use]
     pub fn event_log_len(&self) -> usize {
@@ -343,6 +352,7 @@ impl<L> Engine<L> {
     ) -> Result<SessionFork<C>, SessionError>
     where
         I: IntoIterator<Item = Decision>,
+        C: QuantumLoop,
     {
         let parent_state = self.state.clone();
         if !matches!(
@@ -399,7 +409,7 @@ impl<L> Engine<L> {
     ///
     /// Returns [`SessionError::Engine`] when the checkpoint or its configuration
     /// is not recorded, or when temporal-graph resume cannot instantiate it.
-    pub fn resume_session_from_checkpoint<C>(
+    pub fn resume_session_from_checkpoint<C: QuantumLoop>(
         &mut self,
         checkpoint: ContentHash,
         session_quantum_loop: C,
@@ -463,6 +473,7 @@ impl<L> Engine<L> {
     ) -> Result<SessionFork<C>, SessionError>
     where
         L: QuantumLoop,
+        C: QuantumLoop,
     {
         let parent_state = self.state.clone();
         if !matches!(
@@ -479,7 +490,7 @@ impl<L> Engine<L> {
         self.build_checkpoint_child(parent_state, checkpoint.id, child_quantum_loop)
     }
 
-    pub(super) fn build_checkpoint_child<C>(
+    pub(super) fn build_checkpoint_child<C: QuantumLoop>(
         &mut self,
         parent_state: EngineState,
         checkpoint: ContentHash,
@@ -889,35 +900,23 @@ impl<L> Engine<L> {
         self.next_boundary_control_batch
     }
 
+    /// Evaluates armed breakpoints after a quantum.
+    ///
+    /// `history` is the condition prefix over the session's whole history,
+    /// with every pattern of [`Self::breakpoint_console_patterns`] declared.
     pub(super) fn evaluate_breakpoints(
         &mut self,
-        event_log_entries: &[SchedulerEventLogEntry],
+        history: &ConditionEventLogPrefix,
         emitted_event_log_entries: usize,
     ) -> Result<(), SessionError>
     where
         L: QuantumLoop,
     {
-        if matches!(self.state, EngineState::Stopped { .. }) || self.breakpoints.is_empty() {
+        if !self.breakpoints_armed() {
             return Ok(());
         }
 
-        let Some(mut prefix) =
-            self.breakpoint_condition_prefix(event_log_entries, emitted_event_log_entries)?
-        else {
-            return Ok(());
-        };
-        // The prefix is rebuilt from the session's whole log, so declaring a
-        // matcher here folds every console byte the breakpoint could match.
-        let console_patterns = crucible::predicate_console_patterns(
-            self.breakpoints.iter().map(|(_, spec, _)| &spec.predicate),
-        );
-        for (node, pattern) in &console_patterns {
-            prefix
-                .declare_console_pattern(node, pattern)
-                .map_err(|error| SessionError::BreakpointConditionPrefix {
-                    reason: error.to_string(),
-                })?;
-        }
+        let prefix = self.breakpoint_condition_prefix(history, emitted_event_log_entries)?;
         let evaluations = self
             .breakpoints
             .iter()

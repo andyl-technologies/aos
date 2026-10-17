@@ -1769,6 +1769,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   chunk objects in production exact closure version 11, and copy,
   authenticate, and restore them one chunk at a time (CMEAS-33, CCOMP-39).
   The base image itself remains resident.
+- [x] **T-CAM-4.28** Seal a live session's subscriber hub and debug history
+  into the quantum loop's segment store with a bounded resident tail and
+  per-segment class counts, replay subscribers one segment at a time, extend
+  the breakpoint condition prefix by each appended batch, keep debug
+  coordinates only where they change, and collect the complete log only for
+  debugger commands that need it (CCOMP-42). The condition prefix still
+  retains its history until T-CAM-3.7, and the debugger's time-travel engine
+  API still takes a complete log and per-event coordinate map.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,
