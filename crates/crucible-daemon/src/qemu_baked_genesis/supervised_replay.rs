@@ -14,6 +14,22 @@ use crucible_qemu::{
     QemuPreparedRunDirectory,
 };
 
+/// Measures the selected generation directory retained by a replay World.
+///
+/// Replay keeps its facade inline and borrows existing Service and basis
+/// allocations. Its preborn constructor retains the same selected generation
+/// storage; it constructs neither a Source launcher nor a Source Loop Box.
+///
+/// # Errors
+/// Refuses an empty, noncanonical or excessive node set and extent overflow.
+pub(crate) fn replay_world_control_bytes(
+    source: &ScenarioDefForm,
+) -> Result<u64, LifecycleApiError> {
+    crate::QemuAttemptGenerationStorage::control_bytes(
+        source.world().vm_nodes().iter().map(|node| &node.id),
+    )
+}
+
 /// Retains fresh physical Service authority for one accepted-root comparison.
 pub(crate) struct ProductionCheckpointReplayGuard<G: QemuAttemptProcessResourceGuard> {
     native: G,
@@ -35,6 +51,7 @@ impl<G: QemuAttemptProcessResourceGuard> ProductionCheckpointReplayGuard<G> {
 
     pub(super) fn registration_preparation(
         &self,
+        node: &NodeId,
     ) -> Result<
         Arc<dyn crucible_qemu::QemuReplayValidationRegistrationPreparation>,
         QemuVmRealizationError,
@@ -52,7 +69,7 @@ impl<G: QemuAttemptProcessResourceGuard> ProductionCheckpointReplayGuard<G> {
         Ok(Arc::new(ReplayRegistrationPreparation {
             issuer: self
                 .native
-                .installed_node_issuer()
+                .installed_node_issuer_for_node(node)
                 .map_err(|source| replay_contract(source.to_string()))?,
             registration: self.registration(),
             supervisor: self.supervisor.clone(),
@@ -237,8 +254,28 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProcessResourceGuard
         self.native.prepare_generation_run_directory(requirements)
     }
 
+    fn child_process_contract_for_node(
+        &self,
+        node: &NodeId,
+    ) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        self.native.child_process_contract_for_node(node)
+    }
+
+    fn prepare_generation_run_directory_for_node(
+        &mut self,
+        node: &NodeId,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        self.native
+            .prepare_generation_run_directory_for_node(node, requirements)
+    }
+
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
         self.native.retain_failed_launch_child(child);
+    }
+
+    fn retain_failed_launch_child_for_node(&mut self, node: &NodeId, child: QemuNodeChild) {
+        self.native.retain_failed_launch_child_for_node(node, child);
     }
 }
 

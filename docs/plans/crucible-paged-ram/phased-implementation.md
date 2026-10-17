@@ -168,6 +168,15 @@ selected-member resource geometry and healthy retirement remain required. These
 component results qualify neither native Target activation nor physical resource
 floors or VM performance parity.
 
+Replay preparation now selects the actual node for its installed issuer,
+generation directories, child contract and failed-child retention. The same
+node passes through the existing operational checks; no descriptor is cloned
+to reconstruct that selection. The replay World control query measures its
+actual selected generation storage and does not charge a nonexistent Source
+launcher or Source Loop. Default and private workspace/all-target checks and
+all seven focused replay library controls pass. This query is preparatory;
+the durable replay producer and native execution remain unqualified.
+
 If exact cell attachment refuses, the same inline factory slot retains the
 pending body, its canonical never-born journal and its body lease. Physical destruction precedes the paired descriptor-table/window return
 and ledger credit. Retry borrows the same cached World Cleanup; it does not
