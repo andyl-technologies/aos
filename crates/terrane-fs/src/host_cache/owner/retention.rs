@@ -109,11 +109,15 @@ struct IndexRepairCustody {
 ///
 /// Cold loads never produce this provenance. It is cleared before every write
 /// attempt and recreated only after file/parent durability and currentness.
-struct SynchronizedState {
-    state: CacheState,
-    generation: u64,
-    device: u64,
-    inode: u64,
+pub(super) struct SynchronizedState {
+    /// Exact state observed after the actual completed writer.
+    pub(super) state: CacheState,
+    /// Actual owner generation acknowledged by that writer.
+    pub(super) generation: u64,
+    /// Device of the synchronized canonical snapshot.
+    pub(super) device: u64,
+    /// Inode of the synchronized canonical snapshot.
+    pub(super) inode: u64,
 }
 
 impl SynchronizedState {
@@ -130,7 +134,12 @@ pub(super) struct Custody {
     pub(super) directory: File,
     pub(super) state: CacheState,
     pub(super) snapshot: Option<(File, Metadata)>,
-    synchronized_state: Option<SynchronizedState>,
+    /// Provenance recorded only after an actual completed snapshot writer.
+    pub(super) synchronized_state: Option<SynchronizedState>,
+    /// Monotonic identity of this owner's prepared snapshot writes.
+    pub(super) snapshot_sequence: u64,
+    /// Atomic busy/abandoned state rejects receipts without Drop mutex locking.
+    pub(super) snapshot_phase: Arc<std::sync::atomic::AtomicU8>,
     sources: BTreeMap<[u8; 16], Arc<NativeManifestSource>>,
     index_repairs: BTreeMap<[u8; 16], IndexRepairCustody>,
     pub(super) faulted: bool,
@@ -268,17 +277,17 @@ impl NativeMetadataOwner {
                             let _ = response.send(result);
                         }
                         Command::Retain { identity, response } => {
-                            let result = executor.check_recovery_phase().and_then(|()| {
-                                runtime.block_on(retain(executor.custody(), identity))
-                            });
+                            let result = executor
+                                .check_recovery_phase()
+                                .and_then(|()| runtime.block_on(retain(&executor, identity)));
                             // An abandoned reply never releases the registry's source,
                             // durable pins, future hold or exclusive state custody.
                             let _ = response.send(result);
                         }
                         Command::RepairIndex { source, response } => {
-                            let result = executor.check_recovery_phase().and_then(|()| {
-                                runtime.block_on(repair_index(executor.custody(), source))
-                            });
+                            let result = executor
+                                .check_recovery_phase()
+                                .and_then(|()| runtime.block_on(repair_index(&executor, source)));
                             // Actual source/temporary custody and durable holds
                             // belong to the worker, never to this reply waiter.
                             let _ = response.send(result);
@@ -621,6 +630,8 @@ impl Custody {
             state: CacheState::default(),
             snapshot: None,
             synchronized_state: None,
+            snapshot_sequence: 0,
+            snapshot_phase: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             sources: BTreeMap::new(),
             index_repairs: BTreeMap::new(),
             faulted: false,
@@ -659,6 +670,15 @@ impl Custody {
         {
             return Err(io::Error::other(
                 "abandoned physical admission requires reconciliation",
+            ));
+        }
+        if self
+            .snapshot_phase
+            .load(std::sync::atomic::Ordering::Acquire)
+            != 0
+        {
+            return Err(io::Error::other(
+                "state snapshot write is incomplete or abandoned",
             ));
         }
         self.preparation.confinement.check_current()?;
@@ -707,7 +727,11 @@ impl Custody {
         Ok(())
     }
 
-    fn capture_snapshot(&mut self) -> io::Result<()> {
+    /// Retains the actual canonical snapshot after native custody checks.
+    ///
+    /// # Errors
+    /// Refuses unavailable, replaced or incorrectly owned/projected snapshots.
+    pub(super) fn capture_snapshot(&mut self) -> io::Result<()> {
         match open_regular_at(&self.directory, "records.toml") {
             Ok(file) => {
                 let metadata = file.metadata()?;
@@ -725,55 +749,6 @@ impl Custody {
             Err(error) if error.kind() == io::ErrorKind::NotFound && self.snapshot.is_none() => {}
             Err(error) => return Err(error),
         }
-        Ok(())
-    }
-
-    /// Synchronizes the bounded snapshot and fixed ancestors before retaining it.
-    ///
-    /// # Errors
-    /// Refuses failed snapshot/parent durability and missing or changed state.
-    pub(super) async fn persist(&mut self) -> io::Result<()> {
-        // An old successful snapshot cannot certify the next in-memory state
-        // when this attempt fails or its future is cancelled before replacement.
-        self.synchronized_state = None;
-        let path = self.preparation.config.location.root().join("state/cache");
-        self.state
-            .persist(&TokioLocalFs, &path, self.preparation.config.state)
-            .await
-            .map_err(io::Error::other)?;
-        // The snapshot helper synchronizes state/cache itself. Retain and sync
-        // its fixed layout ancestors too before treating the pin as durable.
-        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-        let state_root = self
-            .preparation
-            .layout()
-            .directories
-            .get("state")
-            .ok_or_else(|| invalid("retained state root is absent"))?;
-        File::from(openat(state_root, ".", flags, Mode::empty())?).sync_all()?;
-        File::from(openat(
-            &self.preparation.layout().root,
-            ".",
-            flags,
-            Mode::empty(),
-        )?)
-        .sync_all()?;
-        self.capture_snapshot()?;
-        if self.snapshot.is_none() {
-            return Err(invalid("synchronized metadata pin snapshot is absent"));
-        }
-        self.check_current()?;
-        let metadata = &self
-            .snapshot
-            .as_ref()
-            .ok_or_else(|| invalid("synchronized snapshot absent"))?
-            .1;
-        self.synchronized_state = Some(SynchronizedState {
-            state: self.state.clone(),
-            generation: self.generation,
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        });
         Ok(())
     }
 
@@ -817,123 +792,140 @@ impl Custody {
 }
 
 async fn repair_index(
-    custody: &Arc<Mutex<Custody>>,
+    executor: &NativeOwnerExecutor,
     source: DerivedIndexRepair,
 ) -> io::Result<NativeIndexRepairReport> {
-    let mut owner = custody
-        .lock()
-        .map_err(|_| io::Error::other("metadata custody poisoned"))?;
-    if owner.faulted || owner.recovery_required {
-        return Err(io::Error::other(
-            "index repair requires failed-operation recovery",
-        ));
-    }
-    owner.check_current()?;
-    let hold = owner
-        .preparation
-        .config
-        .index_repair_hold(source.index_bytes().len())?;
-    if source.detached_index_status() != DetachedIndexStatus::Missing
-        || !source.matches_client(owner.preparation.publisher())
-        || !Arc::ptr_eq(source.layout(), owner.preparation.layout())
-    {
-        return Err(invalid(
-            "index repair has foreign or ineligible source evidence",
-        ));
-    }
-    source.check_pack_current()?;
-    for file in [source.pack_file(), source.parent_file()] {
-        if NativeProject::inspect(file)?.project_id != owner.preparation.config.project_id {
-            return Err(invalid(
-                "index repair source differs from the charged project",
+    let custody = Arc::clone(executor.custody());
+    let (source, id, future, reserved_write) = {
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+        if owner.faulted || owner.recovery_required {
+            return Err(io::Error::other(
+                "index repair requires failed-operation recovery",
             ));
         }
-    }
+        owner.check_current()?;
+        let hold = owner
+            .preparation
+            .config
+            .index_repair_hold(source.index_bytes().len())?;
+        if source.detached_index_status() != DetachedIndexStatus::Missing
+            || !source.matches_client(owner.preparation.publisher())
+            || !Arc::ptr_eq(source.layout(), owner.preparation.layout())
+        {
+            return Err(invalid(
+                "index repair has foreign or ineligible source evidence",
+            ));
+        }
+        source.check_pack_current()?;
+        for file in [source.pack_file(), source.parent_file()] {
+            if NativeProject::inspect(file)?.project_id != owner.preparation.config.project_id {
+                return Err(invalid(
+                    "index repair source differs from the charged project",
+                ));
+            }
+        }
 
-    // InspectPending can itself reconcile publisher custody. Authenticate fresh
-    // actual charges here, even if inspection performed no local cache writes.
-    owner.preparation.recheck()?;
-    let future = owner
-        .state
-        .reservations
-        .iter()
-        .try_fold(hold, |total, reservation| {
-            total
-                .checked_add(reservation.bytes)
-                .ok_or_else(|| invalid("index repair future holds overflow"))
-        })?;
-    check_future_charge(&owner, future)?;
-    let mut id = [0; 16];
-    File::open("/dev/urandom")?.read_exact(&mut id)?;
-    let token = hex(&id);
-    if owner.sources.contains_key(&id)
-        || owner.index_repairs.contains_key(&id)
-        || owner
+        // InspectPending can itself reconcile publisher custody. Authenticate fresh
+        // actual charges here, even if inspection performed no local cache writes.
+        owner.preparation.recheck()?;
+        let future = owner
             .state
             .reservations
             .iter()
-            .any(|record| record.id == token)
-    {
-        return Err(io::Error::other("random index repair identifier collision"));
-    }
-    let pin_owner = format!("index-repair:{token}");
-    let mut next = owner.state.clone();
-    next.reservations.push(ReservationRecord {
-        id: token,
-        owner: owner.preparation.config.quota_owner.clone(),
-        bytes: hold,
-    });
-    next.leases.push(LeaseRecord {
-        owner: pin_owner.clone(),
-        expires: u64::MAX,
-    });
-    next.pins.push(PinRecord {
-        owner: pin_owner,
-        hash: hex(source.pack_identity().digest()),
-        expires: u64::MAX,
-    });
-    next.encoded_len(owner.preparation.config.state)
-        .map_err(io::Error::other)?;
+            .try_fold(hold, |total, reservation| {
+                total
+                    .checked_add(reservation.bytes)
+                    .ok_or_else(|| invalid("index repair future holds overflow"))
+            })?;
+        check_future_charge(&owner, future)?;
+        let mut id = [0; 16];
+        File::open("/dev/urandom")?.read_exact(&mut id)?;
+        let token = hex(&id);
+        if owner.sources.contains_key(&id)
+            || owner.index_repairs.contains_key(&id)
+            || owner
+                .state
+                .reservations
+                .iter()
+                .any(|record| record.id == token)
+        {
+            return Err(io::Error::other("random index repair identifier collision"));
+        }
+        let pin_owner = format!("index-repair:{token}");
+        let mut next = owner.state.clone();
+        next.reservations.push(ReservationRecord {
+            id: token,
+            owner: owner.preparation.config.quota_owner.clone(),
+            bytes: hold,
+        });
+        next.leases.push(LeaseRecord {
+            owner: pin_owner.clone(),
+            expires: u64::MAX,
+        });
+        next.pins.push(PinRecord {
+            owner: pin_owner,
+            hash: hex(source.pack_identity().digest()),
+            expires: u64::MAX,
+        });
+        next.encoded_len(owner.preparation.config.state)
+            .map_err(io::Error::other)?;
 
-    let source = Arc::new(source);
-    owner.begin_mutation()?;
-    owner.index_repairs.insert(
-        id,
-        IndexRepairCustody {
-            source: Arc::clone(&source),
-            pending: None,
-            completed: None,
-        },
-    );
-    owner.state = next;
-    owner.faulted = true;
-    // No index allocation begins before the actual source pin and future hold
-    // survive state snapshot/parent synchronization. Every subsequent failure
-    // leaves those records and the source in the physical owner's registry.
-    owner.persist().await?;
-    source.pack_file().sync_all()?;
-    source.parent_file().sync_all()?;
-    source.check_pack_current()?;
-    let result = write_missing_index(&source);
-    let entry = owner
-        .index_repairs
-        .get_mut(&id)
-        .ok_or_else(|| invalid("registered index source custody is absent"))?;
-    let allocated_bytes = match result {
-        Ok(completion) => {
-            let bytes = completion.allocated_bytes;
-            entry.completed = Some(completion);
-            bytes
-        }
-        Err(failure) => {
-            entry.pending = Some(failure.pending);
-            return Err(failure.error);
-        }
+        let source = Arc::new(source);
+        owner.begin_mutation()?;
+        owner.index_repairs.insert(
+            id,
+            IndexRepairCustody {
+                source: Arc::clone(&source),
+                pending: None,
+                completed: None,
+            },
+        );
+        owner.state = next;
+        owner.faulted = true;
+        // No index allocation begins before the actual source pin and future hold
+        // survive state snapshot/parent synchronization. Every subsequent failure
+        // leaves those records and the source in the physical owner's registry.
+        let write = super::snapshot::prepare(executor, &mut owner)?;
+        (source, id, future, write)
     };
+    super::snapshot::persist(executor, reserved_write).await?;
+    let (allocated_bytes, completion_write) = {
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+        owner.check_current()?;
+        source.pack_file().sync_all()?;
+        source.parent_file().sync_all()?;
+        source.check_pack_current()?;
+        let result = write_missing_index(&source);
+        let entry = owner
+            .index_repairs
+            .get_mut(&id)
+            .ok_or_else(|| invalid("registered index source custody is absent"))?;
+        let allocated_bytes = match result {
+            Ok(completion) => {
+                let bytes = completion.allocated_bytes;
+                entry.completed = Some(completion);
+                bytes
+            }
+            Err(failure) => {
+                entry.pending = Some(failure.pending);
+                return Err(failure.error);
+            }
+        };
 
-    // A second durable snapshot and fresh authenticated charge observation are
-    // part of command completion, not tasks detached from the caller's waiter.
-    owner.persist().await?;
+        // A second durable snapshot and fresh authenticated charge observation are
+        // part of command completion, not tasks detached from the caller's waiter.
+        let write = super::snapshot::prepare(executor, &mut owner)?;
+        (allocated_bytes, write)
+    };
+    super::snapshot::persist(executor, completion_write).await?;
+    let mut owner = custody
+        .lock()
+        .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+    owner.check_current()?;
     owner.snapshot_allocated_bytes = owner
         .snapshot
         .as_ref()
@@ -981,7 +973,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn same_file(left: &Metadata, right: &Metadata) -> bool {
+/// Compares retained inode custody and content-change metadata.
+pub(super) fn same_file(left: &Metadata, right: &Metadata) -> bool {
     left.dev() == right.dev()
         && left.ino() == right.ino()
         && left.mode() == right.mode()

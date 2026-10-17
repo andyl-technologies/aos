@@ -65,13 +65,18 @@ impl NativeOwnerExecutor {
     ///
     /// # Errors
     /// Refuses a caller on any thread other than this retained executor.
-    pub(super) fn check_physical_worker(&self) -> io::Result<()> {
+    pub(in crate::host_cache::owner) fn check_physical_worker(&self) -> io::Result<()> {
         if self.worker != thread::current().id() {
             return Err(io::Error::other(
                 "native command belongs to another physical worker",
             ));
         }
         Ok(())
+    }
+
+    /// Borrows the original worker identity established by this executor.
+    pub(in crate::host_cache::owner) fn worker_identity(&self) -> ThreadId {
+        self.worker
     }
 
     /// Checks the real acknowledged running owner without reusing cold recovery predicates.
