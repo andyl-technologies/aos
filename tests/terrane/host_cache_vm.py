@@ -1,0 +1,437 @@
+"""Supervises real bounded native cache component witnesses inside the ext4 VM.
+
+This script never manufactures native proof objects. Root explicitly provisions
+finite projects and runs the privileged helper; separate empty-capability Unix
+identities execute the actual publisher CLI and confined cache example.
+"""
+
+import hashlib
+import json
+import os
+import pathlib
+import select
+import signal
+import subprocess
+import sys
+import time
+
+IMAGE = pathlib.Path(sys.argv[1])
+SOURCE = pathlib.Path(sys.argv[2])
+MOUNT = pathlib.Path(os.environ["TERRANE_CACHE_VM_ROOT"])
+ADMIN = pathlib.Path("/var/lib/terrane-host")
+RUNTIME = pathlib.Path("/run/terrane-cache-proof")
+PUB_RUNTIME = pathlib.Path("/run/terrane-publish")
+HARD = 8 * 1024 * 1024
+EPOCH = "00000000000000000000000000000001"
+CASES = ["empty", "pin", "lease", "reservation", "residence", "unknown",
+         "state-file", "state-directory", "cancel", "edquot", "exclusive"]
+LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
+          "pending-delete", "state"]
+BUDGET = HARD * len(CASES)
+PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
+QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
+
+
+def require(condition, message):
+    """Fails this component witness rather than reporting unsupported as pass."""
+    if not condition:
+        raise RuntimeError(message)
+
+
+def run(arguments, **kwargs):
+    """Runs one explicit guest action with bounded completion."""
+    return subprocess.run(list(map(str, arguments)), check=True, timeout=30, **kwargs)
+
+
+def metadata(path, uid, gid, mode):
+    """Applies exactly the deployed module's scaffold ownership and mode."""
+    os.chown(path, uid, gid)
+    path.chmod(mode)
+
+
+def domain(case):
+    return "public" if case == "empty" else "tenant:" + case
+
+
+def root(case):
+    return MOUNT / case
+
+
+def owner(case):
+    return "native-cache-" + case
+
+
+def project(case):
+    return 52001 + CASES.index(case)
+
+
+def role_command(uid, arguments):
+    """Executes a distinct role with all five capability sets empty."""
+    groups = "844,845" if uid == 840 else "845"
+    return ["setpriv", "--reuid", str(uid), "--regid", str(uid), "--groups", groups,
+            "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", *map(str, arguments)]
+
+
+def admin_command(caps, arguments):
+    """Bounds the explicit administrative helper independently of role processes."""
+    return ["setpriv", "--bounding-set=" + caps, "--clear-groups",
+            "--inh-caps=-all", "--ambient-caps=-all", *map(str, arguments)]
+
+
+def actor_environment(case, uuid):
+    """Supplies public fixed connection metadata, never a quota observation."""
+    return dict(os.environ, TERRANE_CACHE_ROOT=str(root(case)), TERRANE_CACHE_DOMAIN=domain(case),
+                TERRANE_CACHE_OWNER=owner(case), TERRANE_CACHE_PROJECT=str(project(case)),
+                TERRANE_CACHE_QUOTA_SOCKET=str(RUNTIME / "quota.sock"),
+                TERRANE_CACHE_PUBLISHER_SOCKET=str(PUB_RUNTIME / "publisher.sock"),
+                TERRANE_CACHE_BUDGET=str(BUDGET), TERRANE_CACHE_UUID=uuid)
+
+
+def actor(case, mode, uuid):
+    """Executes an actual confined cache actor and retains its complete output."""
+    result = subprocess.run(role_command(840, [IMAGE / "bin/host_cache_fixture", mode]),
+                            env=actor_environment(case, uuid), text=True, capture_output=True, timeout=30)
+    print(result.stdout, end="", flush=True)
+    if result.stderr:
+        print(result.stderr, end="", flush=True)
+    require(result.returncode == 0 and "PASS " in result.stdout,
+            "actual actor failed: " + case + "/" + mode)
+    return result.stdout
+
+
+def administrative_preflight(stage):
+    """Reports bounded fixed guest ancestry without weakening native validation."""
+    protected = [pathlib.Path(path) for path in ["/", "/var", "/var/lib", "/mnt", "/run"]]
+    protected.extend([MOUNT, ADMIN, ADMIN / "project-claims", RUNTIME])
+    for path in [*protected, PUB_RUNTIME]:
+        if not path.exists():
+            print(f"administrative preflight {stage}: {path} missing", flush=True)
+            require(stage == "before", "missing configured guest ancestor: " + str(path))
+            continue
+        value = path.lstat()
+        print(f"administrative preflight {stage}: {path} uid={value.st_uid} "
+              f"gid={value.st_gid} mode={value.st_mode & 0o7777:04o}", flush=True)
+        if stage == "after" and path in protected:
+            require(path.is_dir() and not path.is_symlink()
+                    and value.st_uid == 0 and value.st_mode & 0o022 == 0,
+                    "unsafe configured guest ancestor: " + str(path))
+
+
+def scaffold():
+    """Creates only directory scaffolding before genuine explicit provisioning."""
+    # The minimal Firecracker init mounts /run without a mode option, so
+    # Linux defaults it to sticky 01777. Match the deployed protected runtime
+    # parent before the real helper traverses it; child modes cannot repair it.
+    metadata(pathlib.Path("/run"), 0, 0, 0o755)
+    ADMIN.mkdir(parents=True, exist_ok=True)
+    metadata(ADMIN, 0, 0, 0o700)
+    (ADMIN / "project-claims").mkdir()
+    metadata(ADMIN / "project-claims", 0, 0, 0o700)
+    RUNTIME.mkdir(parents=True)
+    metadata(RUNTIME, 0, 0, 0o755)
+    PUB_RUNTIME.mkdir(parents=True)
+    metadata(PUB_RUNTIME, 841, 845, 0o2750)
+    for case in CASES:
+        path = root(case)
+        path.mkdir()
+        metadata(path, 0, 0, 0o755)
+        for label in LABELS[1:]:
+            directory = path / label
+            directory.mkdir()
+            custody = ((0, 0, 0o755) if label == "state" else
+                       (841, 841, 0o700) if label in {"sealed", "staging", "pending-delete"}
+                       else (840, 845, 0o2770))
+            metadata(directory, *custody)
+        for name, uid, gid, mode in [("cache", 840, 844, 0o2770), ("publication", 841, 841, 0o700)]:
+            directory = path / "state" / name
+            directory.mkdir()
+            metadata(directory, uid, gid, mode)
+
+
+def configurations():
+    """Writes separate privileged provisioning and readable configured CLI input."""
+    quota = [f"socket = {json.dumps(str(RUNTIME / 'quota.sock'))}", f'epoch = "{EPOCH}"',
+             f"tier_charge_budget_bytes = {BUDGET}"]
+    publisher = ['role = "publish"', 'store = ' + json.dumps('disk(' + str(root('empty')) + ')'), '[host_tier]',
+                 f"path = {json.dumps(str(root('empty')))}", f"size_bytes = {BUDGET}",
+                 'reassembly = "never"', '[host_tier.publisher]',
+                 f"socket_path = {json.dumps(str(PUB_RUNTIME / 'publisher.sock'))}",
+                 "serve_uid = 840", "publish_uid = 841", "content_uid = 840", "content_gid = 845",
+                 "max_connections = 32", "[host_tier.quota]",
+                 f"socket_path = {json.dumps(str(RUNTIME / 'quota.sock'))}",
+                 f'configuration_epoch = "{EPOCH}"']
+    for case in CASES:
+        quota.extend(["[[owners]]", f"owner_id = {json.dumps(owner(case))}",
+                      f"domain = {json.dumps(domain(case))}", f"project_id = {project(case)}",
+                      f"hard_limit_bytes = {HARD}", "allowed_client_uids = [0, 840, 841]"])
+        for label in LABELS:
+            path = root(case) if label == "layout-root" else root(case) / label
+            quota.extend(["[[owners.roots]]", f"role_directory = {json.dumps(label)}",
+                          f"path = {json.dumps(str(path))}"])
+        table = "host_tier.domains." + json.dumps(domain(case))
+        publisher.extend([f"[{table}]", f"path = {json.dumps(str(root(case)))}", 'wipe = "none"',
+                          f"quota_owner_id = {json.dumps(owner(case))}", f"[{table}.publisher]",
+                          "retirement_grace_ms = 30000", 'chunk_profile = "cdc-1m"',
+                          'chunk_seed = "' + "00" * 32 + '"'])
+    quota_path = ADMIN / "host.toml"
+    quota_path.write_text("\n".join(quota) + "\n")
+    metadata(quota_path, 0, 0, 0o600)
+    cli_path = RUNTIME / "publisher.toml"
+    cli_path.write_text("\n".join(publisher) + "\n")
+    metadata(cli_path, 0, 0, 0o644)
+    return quota_path, cli_path
+
+
+def cold_candidates():
+    """Seeds actual bounded untrusted records without granting native authority."""
+    bodies = {
+        "pin": '[[pins]]\nowner = "cold"\nhash = "' + "00" * 32 + '"\nexpires = 1\n',
+        "lease": '[[leases]]\nowner = "cold"\nexpires = 1\n',
+        "reservation": '[[reservations]]\nid = "cold"\nowner = "cold"\nbytes = 262144\n',
+        "residence": '[[residences]]\nchunk = "' + "00" * 32 + '"\nobject = "' + "11" * 32 + '"\noffset = 0\nlength = 1\n',
+    }
+    for case, record in bodies.items():
+        categories = {"pin": "pins", "lease": "leases", "reservation": "reservations", "residence": "residences"}
+        text = "version = 1\n" + "".join(name + " = []\n" for name in categories.values()
+                                                    if name != categories[case]) + record
+        path = root(case) / "state/cache/records.toml"
+        path.write_text(text)
+        metadata(path, 840, 844, 0o660)
+    unknown = root("unknown") / "chunks/unrecognized-name"
+    unknown.write_bytes(b"untrusted actual unknown body")
+    metadata(unknown, 840, 845, 0o660)
+    sibling = root("state-file") / "state/unhandled.tmp"
+    sibling.write_bytes(b"unknown policy sibling must survive")
+    metadata(sibling, 840, 844, 0o660)
+    sibling = root("state-directory") / "state/old-policy"
+    sibling.mkdir()
+    metadata(sibling, 840, 844, 0o770)
+
+
+def process_status(process, uid):
+    """Checks actual running-role identity and every capability set."""
+    require(process.poll() is None, "role exited before currentness inspection")
+    status = (pathlib.Path("/proc") / str(process.pid) / "status").read_text()
+    for name in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]:
+        require(f"{name}:\t0000000000000000" in status.splitlines(), name + " is not empty")
+    require(f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}" in status.splitlines(), "actual role UID mismatch")
+    require("NoNewPrivs:\t1" in status.splitlines() and "Seccomp:\t2" in status.splitlines(),
+            "actual role confinement absent")
+    return status
+
+
+class Lines:
+    """Reads a real actor handshake with bounded deadlines and buffered bytes."""
+    def __init__(self, process):
+        self.process = process
+        self.bytes = b""
+
+    def until(self, expected, timeout=10):
+        deadline = time.monotonic() + timeout
+        while expected.encode() not in self.bytes:
+            require(self.process.poll() is None, "actor exited before handshake: " + expected)
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, "actor handshake deadline: " + expected)
+            ready, _, _ = select.select([self.process.stdout], [], [], remaining)
+            require(ready, "actor handshake timeout: " + expected)
+            chunk = os.read(self.process.stdout.fileno(), 4096)
+            require(chunk, "actor stdout closed before handshake")
+            self.bytes += chunk
+        print(self.bytes.decode(), end="", flush=True)
+
+
+def controlled_actor(case, mode, uuid):
+    """Starts a genuine actor with only inherited ordinary control/stdio pipes."""
+    return subprocess.Popen(role_command(840, [IMAGE / "bin/host_cache_fixture", mode]),
+                            env=actor_environment(case, uuid), stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+
+def finish_controlled(process, command):
+    """Requires physical command completion after a real supervisor control."""
+    output, _ = process.communicate((command + "\n").encode(), timeout=15)
+    print(output.decode(), end="", flush=True)
+    require(process.returncode == 0 and b"PASS " in output, "controlled actor failed")
+
+
+def cancel_case(helper, uuid):
+    """Drops an actually pending enqueued waiter while only the helper is stopped."""
+    process = controlled_actor("cancel", "cancel", uuid)
+    stopped = False
+    try:
+        lines = Lines(process)
+        lines.until("READY actual preparation and owner")
+        process_status(process, 840)
+        helper.send_signal(signal.SIGSTOP)
+        stopped = True
+        deadline = time.monotonic() + 1
+        while True:
+            status = (pathlib.Path("/proc") / str(helper.pid) / "status").read_text()
+            if any(line.startswith("State:\tT") or line.startswith("State:\tt") for line in status.splitlines()):
+                break
+            require(time.monotonic() < deadline, "helper stop was not acknowledged")
+            time.sleep(0.005)
+        process.stdin.write(b"enqueue\n")
+        process.stdin.flush()
+        lines.until("CANCELLED accepted pending waiter", timeout=1)
+        helper.send_signal(signal.SIGCONT)
+        stopped = False
+        finish_controlled(process, "resumed")
+    finally:
+        # A failed witness must never strand the privileged query helper stopped.
+        if stopped and helper.poll() is None:
+            helper.send_signal(signal.SIGCONT)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def exclusive_case(uuid):
+    """Confirms actual exclusive state custody rather than trusting a role flag."""
+    process = controlled_actor("exclusive", "hold", uuid)
+    try:
+        Lines(process).until("READY actual exclusive state owner")
+        process_status(process, 840)
+        actor("exclusive", "start-refuse", uuid)
+        finish_controlled(process, "release")
+        actor("exclusive", "empty", uuid)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def verify_image():
+    """Independently checks final ELF bytes and retained original Cargo events."""
+    identity = json.loads((IMAGE / "share/identity.json").read_text())
+    require(identity["schema_version"] == 1 and identity["source"] == str(SOURCE)
+            and identity["native_cases_executed"] == [], "image source or execution identity mismatch")
+    supervisor_source = SOURCE / "tests/terrane/host_cache_vm.py"
+    supervisor = IMAGE / "share/host_cache_vm.py"
+    supervisor_hash = hashlib.sha256(supervisor.read_bytes()).hexdigest()
+    require(identity["supervisor"] == {"source_path": "tests/terrane/host_cache_vm.py",
+                                      "installed_path": "share/host_cache_vm.py", "sha256": supervisor_hash}
+            and supervisor_hash == identity["input_sha256"]["tests/terrane/host_cache_vm.py"]
+            and supervisor.read_bytes() == supervisor_source.read_bytes(),
+            "installed VM supervisor differs from immutable source")
+    require(pathlib.Path(__file__).read_bytes() == supervisor_source.read_bytes(),
+            "executed VM supervisor differs from source")
+    expected = {"host_cache_fixture": ("terrane-fs", "example", ["native-test-fixtures", "tokio"]),
+                "terrane": ("terrane-cli", "bin", []), "aos-terrane-host": ("aos-terrane", "bin", [])}
+    require(set(identity["artifacts"]) == set(expected), "incomplete native image executable set")
+    packages = json.loads((IMAGE / "share/host-cache-packages.json").read_text())["packages"]
+    profile = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
+               "overflow_checks": True, "test": False}
+    for name, (package, kind, features) in expected.items():
+        record = identity["artifacts"][name]
+        artifact = record["cargo_artifact"]
+        original = [json.loads(line) for line in (IMAGE / f"share/host-cache-{name}.jsonl").read_text().splitlines()]
+        selected = [item for item in original if item.get("reason") == "compiler-artifact"
+                    and item.get("executable") and item.get("target", {}).get("name") == name]
+        metadata_packages = [item for item in packages if item["name"] == package]
+        require(len(metadata_packages) == len(selected) == 1 and selected[0] == artifact,
+                "retained original Cargo event mismatch: " + name)
+        targets = [item for item in metadata_packages[0]["targets"] if item["name"] == name and item["kind"] == [kind]]
+        require(len(targets) == 1 and artifact["target"] == targets[0]
+                and artifact["package_id"] == metadata_packages[0]["id"]
+                and artifact["profile"] == profile and sorted(artifact["features"]) == features
+                and record["installed_path"] == "bin/" + name, "Cargo target/profile/features changed: " + name)
+        executable = IMAGE / record["installed_path"]
+        digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+        require(executable.read_bytes().startswith(b"\x7fELF")
+                and digest == record["cargo_elf_sha256"] == record["installed_elf_sha256"],
+                "final installed ELF differs from actual Cargo output: " + name)
+    for name, expected_hash in identity["input_sha256"].items():
+        path = SOURCE / name if name.startswith("tests/") else SOURCE / "crates" / name
+        require(hashlib.sha256(path.read_bytes()).hexdigest() == expected_hash, "immutable input hash mismatch: " + name)
+    library_path = (IMAGE / "share/runtime-library-path").read_text().strip()
+    directories = [pathlib.Path(value) for value in library_path.split(":")]
+    require(directories and directories[0] == IMAGE / "lib"
+            and all(path.is_dir() and (path == IMAGE / "lib" or path.resolve().is_relative_to("/nix/store")) for path in directories),
+            "unsafe runtime library search path")
+    require(os.environ.get("LD_LIBRARY_PATH") == library_path, "actual runtime library path differs from image")
+
+
+def main():
+    """Runs actual helper, actual CLI publisher and isolated native controls."""
+    require(os.geteuid() == 0, "VM supervisor requires explicit root administration")
+    verify_image()
+    administrative_preflight("before")
+    scaffold()
+    administrative_preflight("after")
+    quota_config, publisher_config = configurations()
+    ledger = ADMIN / "ledger.toml"
+    helper_bin = IMAGE / "bin/aos-terrane-host"
+    run(admin_command(PROVISION_CAPS, [helper_bin, "provision", "--config", quota_config, "--ledger", ledger]))
+    cold_candidates()
+    uuid = subprocess.check_output(["blkid", "-s", "UUID", "-o", "value",
+                                    os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
+    require(len(uuid) == 32, "actual ext4 UUID unavailable")
+    logs = []
+    children = []
+    try:
+        for name in ["helper", "publisher"]:
+            logs.append((RUNTIME / (name + ".log")).open("wb"))
+        helper = subprocess.Popen(admin_command(QUERY_CAPS, [helper_bin, "serve", "--config", quota_config, "--ledger", ledger]), stdout=logs[0], stderr=subprocess.STDOUT)
+        children.append(helper)
+        deadline = time.monotonic() + 10
+        while True:
+            result = subprocess.run([str(helper_bin), "query", "--config", str(quota_config), "--owner", owner("empty"), "--domain", "public"], capture_output=True, timeout=6)
+            if result.returncode == 0:
+                break
+            require(helper.poll() is None and time.monotonic() < deadline, "actual quota helper failed readiness")
+            time.sleep(0.02)
+        publisher = subprocess.Popen(role_command(841, [IMAGE / "bin/terrane", "--config", publisher_config, "--role", "publish"]), stdout=logs[1], stderr=subprocess.STDOUT)
+        children.append(publisher)
+        deadline = time.monotonic() + 15
+        while True:
+            result = subprocess.run(role_command(840, [IMAGE / "bin/host_cache_fixture", "prepare"]), env=actor_environment("empty", uuid), text=True, capture_output=True, timeout=12)
+            if result.returncode == 0:
+                require("PASS actual native preparation" in result.stdout, "no actual preparation witness")
+                print(result.stdout, end="", flush=True)
+                break
+            require(publisher.poll() is None and time.monotonic() < deadline, "actual configured CLI publisher failed preparation: " + result.stderr)
+            time.sleep(0.02)
+        print(process_status(publisher, 841), flush=True)
+        actor("empty", "empty", uuid)
+        # The successful recovery's durable bootstrap hold is itself cold state;
+        # a restart must refuse it rather than silently clear or reuse capacity.
+        actor("empty", "refuse", uuid)
+        for case in ["pin", "lease", "reservation", "residence", "unknown", "state-file", "state-directory"]:
+            candidate = (root(case) / "state/cache/records.toml" if case in {"pin", "lease", "reservation", "residence"}
+                         else root(case) / "chunks/unrecognized-name" if case == "unknown"
+                         else root(case) / "state/unhandled.tmp" if case == "state-file" else None)
+            before = {str(candidate): hashlib.sha256(candidate.read_bytes()).hexdigest()} if candidate else {}
+            directory_identity = (root(case) / "state/old-policy").stat().st_ino if case == "state-directory" else None
+            actor(case, "refuse", uuid)
+            for name, digest in before.items():
+                require(pathlib.Path(name).is_file() and hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == digest,
+                        "cold candidate was changed or deleted: " + name)
+            if case == "state-directory":
+                path = root(case) / "state/old-policy"
+                require(path.is_dir() and path.stat().st_ino == directory_identity and list(path.iterdir()) == [],
+                        "unknown state directory changed or disappeared")
+        cancel_case(helper, uuid)
+        exclusive_case(uuid)
+        actor("edquot", "edquot", uuid)
+        print("PASS bounded native cache component cases; Resume/admission/BKT15 remain unqualified", flush=True)
+    finally:
+        for child in reversed(children):
+            if child.poll() is None:
+                child.send_signal(signal.SIGCONT)
+                child.terminate()
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=5)
+        for log in logs:
+            log.close()
+        for name in ["helper", "publisher"]:
+            path = RUNTIME / (name + ".log")
+            if path.exists():
+                print(name + " actual process log:\n" + path.read_text(errors="replace"), flush=True)
+
+
+if __name__ == "__main__":
+    main()

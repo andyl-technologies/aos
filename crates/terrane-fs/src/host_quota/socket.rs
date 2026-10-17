@@ -5,6 +5,7 @@ use std::mem::{size_of, size_of_val, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 pub(super) struct PacketSocket(OwnedFd);
 
@@ -165,6 +166,58 @@ impl PacketSocket {
     }
 
     pub(super) fn receive(&self) -> io::Result<Vec<u8>> {
+        self.receive_until(Instant::now() + Duration::from_secs(5))
+    }
+
+    fn receive_until(&self, deadline: Instant) -> io::Result<Vec<u8>> {
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "quota receive deadline expired",
+                ));
+            }
+
+            // Stop/continue can interrupt timed socket reads without a signal
+            // handler. Keep this connection and its correlation state, while
+            // charging every retry against the original monotonic deadline.
+            let bounded = remaining.min(Duration::from_secs(5));
+            let micros = bounded.as_micros().max(1);
+            let timeout = libc::timeval {
+                tv_sec: (micros / 1_000_000) as libc::time_t,
+                tv_usec: (micros % 1_000_000) as libc::suseconds_t,
+            };
+            // SAFETY: timeout is initialized ABI storage, retained for the call;
+            // its duration is positive and bounded by five seconds.
+            if unsafe {
+                libc::setsockopt(
+                    self.0.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVTIMEO,
+                    &timeout as *const _ as *const libc::c_void,
+                    size_of::<libc::timeval>() as libc::socklen_t,
+                )
+            } == -1
+            {
+                return Err(io::Error::last_os_error());
+            }
+            match self.receive_packet() {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "quota receive deadline expired",
+                    ));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    // Each attempt starts with fresh packet/control buffers and a new msghdr:
+    // recvmsg output lengths and flags must never become the next call's input.
+    fn receive_packet(&self) -> io::Result<Vec<u8>> {
         let mut packet = vec![0u8; 16384];
         // Space for Linux's maximum SCM_RIGHTS payload. Every received descriptor
         // must be closed even when the packet will be rejected.
@@ -217,10 +270,18 @@ impl PacketSocket {
 }
 
 #[cfg(test)]
+#[path = "socket_signal_tests.rs"]
+mod signal_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn pair() -> (PacketSocket, PacketSocket) {
+    /// Creates two retained kernel seqpacket endpoints for socket tests.
+    ///
+    /// # Panics
+    /// Panics if the kernel cannot create the isolated socket pair.
+    pub(super) fn pair() -> (PacketSocket, PacketSocket) {
         let mut descriptors = [-1; 2];
         // SAFETY: descriptors supplies the two writable integer slots required
         // by socketpair; success transfers two independent descriptors.

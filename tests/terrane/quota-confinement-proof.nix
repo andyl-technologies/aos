@@ -8,6 +8,7 @@
   testing = import ../../lib/testing {inherit pkgs lib;};
   image =
     sourceGateWithInputs {
+      preserveArtifactBytes = true;
       runtimeDeps = [pkgs.rust pkgs.rust.dev] ++ (pkgs.rust.runtimeDeps or []);
       nukeRefsKeep = [pkgs.terrane.src];
       extraBuildDeps = [pkgs.binutils];
