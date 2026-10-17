@@ -84,6 +84,13 @@ inventory; the installed messages contain artifacts for 59 of those packages,
 with no standalone `crucible-harness` artifact. No test executable runs in this
 gate, and the separate constructor failures remain unresolved.
 
+The gate also passes for the clock, observation-range and allocation-layout
+checkpoint at `8309976a6e`: 167 test artifacts across 48 application packages,
+including 69 integration targets. Independent review verifies the registered
+output, actual compiler messages and all 4,126 included Rust/Cargo files against
+that commit. This is compilation only and excludes the later selected-executable
+buffer change and native runtime execution.
+
 ### QEMU package
 
 The ordinary QEMU package passes 589 upstream TAP checks, 44 project model/cost
@@ -1329,7 +1336,7 @@ reference initialization and measurement. All four full-roster controls pass
 in 26.28 seconds; six-crate, all-feature/all-target checking passes in 41.15
 seconds. The provider rebuild passes in 19.20 seconds. The actual startup test
 still fails with zero passes and one failure in 74.83 seconds; its precise next
-refusal remains under investigation. The running application-target gate covers
+refusal remains under investigation. The application-target gate passes for
 the preceding layout checkpoint, not this measurement change.
 
 ## Known gaps and exit criteria
