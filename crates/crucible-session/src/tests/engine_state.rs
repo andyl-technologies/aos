@@ -1075,7 +1075,10 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
     assert_ne!(past_frame.entry, test_event_log_entry(1));
 
     assert_eq!(actor.event_log.len(), 1);
-    assert_eq!(actor.debug_history.entries_for_test(), std::slice::from_ref(&marker));
+    assert_eq!(
+        actor.debug_history.entries_for_test(),
+        std::slice::from_ref(&marker)
+    );
     assert_eq!(
         actor.debug_history.coordinate(marker.sequence()),
         Some(&actor.engine().snapshot().configuration),
