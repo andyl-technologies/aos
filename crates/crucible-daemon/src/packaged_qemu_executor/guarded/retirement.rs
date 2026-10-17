@@ -233,11 +233,11 @@ impl GuardedCampaignOwner {
         let controls = self.inner.config.normal_executor.as_ref().and_then(|main| {
             crate::campaign_process::try_retire_executor_controls_for_main(main).err()
         });
-        let lifecycle = self.inner.lifecycle_cleanup.as_ref().and_then(|queue| {
-            let work = queue.retry_pending();
-            let empty = queue.verify_empty();
-            work.and(empty).err()
-        });
+        let lifecycle = self
+            .inner
+            .lifecycle_cleanup
+            .as_ref()
+            .and_then(|queue| queue.verify_empty().err());
         retire_after_controls(controls, lifecycle, || self.try_retire_native())
     }
 

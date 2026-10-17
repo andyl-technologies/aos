@@ -195,6 +195,15 @@ causes. Controls use real retained files to prove a deadline cannot close the
 next queued body and that an already closed body can still be destroyed outside
 its containing mutex. Outer cancellation alone remains compatible with cleanup.
 
+Attached, original and standalone Main retirement now use that guarded cleanup
+path as the sole lifecycle drain. Their final queue checks only observe emptiness;
+they cannot initiate a second cleanup after the saved Original has refused another
+effect. Default and private workspace/all-target checks pass, and all 1,742
+private daemon library tests pass with 43 ignored probes. Engineering hygiene
+has five passes; testing standards retains one failure with 25 findings. The
+removed duplicate standalone drain no longer trips its source classifier. The
+independent no-Main component shutdown retains its explicit cleanup route.
+
 Checked checkpoint-slot operations use nonblocking access and distinguish busy,
 poisoned and occupied storage. A refused restoration returns the same selected
 root instead of overwriting another root or dropping the incoming owner. These
