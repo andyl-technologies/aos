@@ -425,15 +425,27 @@ The daemon's local prepared-publication formats use this closed registry:
 
 | Schema name | Current version | Contract |
 |---|---:|---|
-| `crucible.executor.prepared-semantic-attempt-result` | 9 | Contains the observation, optional canonical resolved-effect trace, content-ordered raw measurement replay leaves, and optional finding closure. Leaves name their attempt-log segments by identity; the payload carries no segment bytes. |
-| `crucible.executor.prepared-result-journal-state` | 3 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, referenced-segment count and ordered-reference hash, payload limit, length, and hash. |
+| `crucible.executor.prepared-semantic-attempt-result` | 10 | Contains the observation, optional canonical resolved-effect trace, content-ordered raw measurement replay leaves, and optional finding closure. Leaves name their attempt-log segments by identity, and the finding names its retained replay records by identity in eight first-seen tables; the payload carries no segment or replay-record bytes. |
+| `crucible.executor.prepared-result-journal-state` | 4 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, referenced-segment count and ordered-reference hash, retained-record count and ordered-ID hash, payload limit, length, and hash. |
 | `crucible.attempt.event-log-segment` | 1 | One sealed, content-addressed run of attempt-log entries. The journal owns a copy of every segment its result references. |
 
-Readers accept only prepared-result version 9 and journal-state version 3. A
+Readers accept only prepared-result version 10 and journal-state version 4. A
 state file and its result payload must use those exact current versions;
 mismatches fail closed. Decoding a prepared result reads and authenticates
-every referenced segment from the stores it is given, one segment at a time;
-a missing, substituted, or corrupt segment fails closed.
+every referenced segment and retained replay record from the stores it is
+given, one at a time; a missing, substituted, or corrupt segment or record
+fails closed.
+
+Finding minimization replays a candidate up to twice per reduction step, and
+the choice opportunities and selections each replay yields grow with the
+replayed run. The replay transcript therefore writes each distinct record to a
+record directory under the executor's attempt namespace as it arrives and
+keeps only identities in memory. Staging a journal copies every retained
+record into the journal's own `records/` directory beside `segments/`, and
+reopening reads records only from there. The distinct records of both passes
+are charged against a per-finding allowance equal to the run-length
+publication allowance for replay-capture segments, and their count against the
+prepared-result reader's replay-validation reference allowance.
 
 The prepared-result codec validates raw-leaf closure ownership without claiming
 measurement semantics. It checks each singleton edge and its trace ID, scenario,

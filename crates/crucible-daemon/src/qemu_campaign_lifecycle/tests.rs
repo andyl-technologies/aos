@@ -2330,6 +2330,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                 exact_retention: crate::crucible_artifact::test_disabled_finding_exact_retention()
                     .expect("test disabled finding retention"),
                 seed: Seed::from_bytes([0x75; 32]),
+                record_store: crate::ReplayRecordStore::default(),
             },
             |replay_candidate| {
                 let decisions = replay_candidate
@@ -2375,6 +2376,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
         &durable_bytes,
         prepared.log_segments().clone(),
+        prepared.replay_record_sources(),
     )
     .expect("decode rich prepared result after restart");
     let finding = decoded.finding().expect("decoded rich finding");

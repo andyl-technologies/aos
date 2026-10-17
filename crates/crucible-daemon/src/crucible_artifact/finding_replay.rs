@@ -19,11 +19,11 @@ use crucible::{
     SignalFaultSelectable,
 };
 use crucible_campaign::{
-    CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceOpportunityId,
-    ConfigurationArtifact, ConfigurationArtifactId, CoverageProjection, CoverageProjectionId,
-    FindingKind, FindingSignature, FindingTarget, MeasurementSet, MeasurementSetId,
-    PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, ResolvedSelection,
-    SelectableDeclaration, Selection, SelectionId, SelectionOrigin,
+    CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity,
+    ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, CoverageProjection,
+    CoverageProjectionId, FindingKind, FindingSignature, FindingTarget, MeasurementSet,
+    MeasurementSetId, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, ResolvedSelection,
+    SelectableDeclaration, SelectableId, Selection, SelectionId, SelectionOrigin,
 };
 use crucible_cas::content_store::ContentId;
 
@@ -37,6 +37,7 @@ use accumulator::ReplayRecordAccumulator;
 pub(crate) use accumulator::validate_recorded_replay_configuration;
 #[cfg(test)]
 use accumulator::validate_replay_configuration;
+pub(super) use accumulator::{PreparedFindingReplayRecords, ReplayRecordIds};
 
 /// Stable reason that an exact minimization candidate could not be materialized.
 ///
@@ -548,27 +549,13 @@ fn preflight_single_replay(
         .ok_or(CampaignCodecError::LimitExceeded {
             limit: "finding-replay-retained-record-bytes",
         })?;
-    if total_bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES {
+    if total_bytes as u64 > MAX_CRUCIBLE_FINDING_REPLAY_BYTES {
         return Err(CampaignCodecError::LimitExceeded {
             limit: "finding-replay-retained-record-bytes",
         }
         .into());
     }
     Ok(())
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct PreparedFindingReplayRecords {
-    pub(super) configurations: Vec<ConfigurationArtifact>,
-    pub(super) measurements: Vec<MeasurementSet>,
-    pub(super) properties: Vec<PropertyVerdictSet>,
-    pub(super) coverage: Vec<CoverageProjection>,
-    pub(super) declarations: Vec<SelectableDeclaration>,
-    pub(super) domains: Vec<ChoiceDomain>,
-    pub(super) opportunities: Vec<ChoiceOpportunity>,
-    pub(super) selections: Vec<Selection>,
-    pub(super) record_count: usize,
-    pub(super) canonical_bytes: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -642,8 +629,9 @@ type RecordedFindingReplayComponents<'a> = (
 /// Incrementally bounded raw oracle transcript for both minimization passes.
 ///
 /// Recording consumes each replay's owned typed records, deduplicates them by
-/// authenticated identity, and checks the cumulative object and byte limits
-/// before retaining the lightweight pass entry.
+/// authenticated identity, checks the cumulative record allowances, and
+/// writes each new record to the transcript's record store before retaining
+/// the lightweight pass entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CrucibleFindingReplayTranscript {
     pub(super) minimization_pass: Vec<RecordedFindingReplay>,
@@ -661,6 +649,17 @@ impl CrucibleFindingReplayTranscript {
             minimization_pass: Vec::new(),
             verification_pass: Vec::new(),
             records: ReplayRecordAccumulator::new(),
+            triage: RetainedFindingTriageEvidence::new(),
+            production: RetainedFindingProductionReplayEvidence::new(),
+        }
+    }
+
+    /// Creates an empty transcript that writes retained records to `store`.
+    pub(crate) const fn with_record_store(store: crate::ReplayRecordStore) -> Self {
+        Self {
+            minimization_pass: Vec::new(),
+            verification_pass: Vec::new(),
+            records: ReplayRecordAccumulator::with_store(store),
             triage: RetainedFindingTriageEvidence::new(),
             production: RetainedFindingProductionReplayEvidence::new(),
         }
@@ -1138,6 +1137,38 @@ mod tests {
     }
 
     #[test]
+    fn retained_records_are_written_to_the_record_store_as_they_arrive() {
+        let (_finding, replay, _signature_bytes) = replay_fixture();
+        let parent = tempfile::tempdir().expect("temporary parent");
+        let directory =
+            crate::attempt_event_log::AttemptLogDirectory::create(parent.path().join("records"))
+                .expect("record directory");
+        let path = directory.path().to_path_buf();
+        let mut records =
+            ReplayRecordAccumulator::with_store(crate::ReplayRecordStore::directory(directory));
+
+        records
+            .record_observed(replay.clone())
+            .expect("first replay");
+        records.record_observed(replay).expect("duplicate replay");
+        let files = std::fs::read_dir(&path).expect("record files").count();
+        assert_eq!(files, records.ids.len(), "each distinct record is one file");
+
+        let prepared = records.finish();
+        let mut visited = 0;
+        prepared
+            .try_for_each_encoded(|_, _| {
+                visited += 1;
+                Ok::<_, crate::ReplayRecordError>(())
+            })
+            .expect("every retained record reads back authenticated");
+        assert_eq!(visited, prepared.record_count);
+
+        drop(prepared);
+        assert!(!path.exists(), "the directory lives as long as its readers");
+    }
+
+    #[test]
     fn duplicate_replays_charge_each_raw_signature_but_deduplicate_records() {
         let (_finding, replay, signature_bytes) = replay_fixture();
         let mut records = ReplayRecordAccumulator::new();
@@ -1150,7 +1181,10 @@ mod tests {
         records.record_observed(replay).expect("duplicate replay");
 
         assert_eq!(records.ids.len(), first_count);
-        assert_eq!(records.canonical_bytes, first_bytes + signature_bytes);
+        assert_eq!(
+            records.canonical_bytes,
+            first_bytes + signature_bytes as u64
+        );
     }
 
     #[test]

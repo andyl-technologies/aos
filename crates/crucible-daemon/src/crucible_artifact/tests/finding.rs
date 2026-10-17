@@ -322,14 +322,19 @@ fn finding_replay_retains_nonempty_configuration_target_and_causal_evidence() {
             observed.target().is_some() && !observed.causal_evidence().is_empty()
         })
     );
-    assert!(prepared.replay_records.configurations.iter().any(|record| {
-        record.id().ok() == Some(original_configuration.id().expect("configuration ID"))
-    }));
+    let original_configuration_id = original_configuration.id().expect("configuration ID");
     assert!(
         prepared
             .replay_records
+            .ids
+            .configurations
+            .contains(&original_configuration_id)
+    );
+    assert!(
+        prepared
+            .replay_records
+            .ids
             .properties
-            .iter()
-            .any(|record| record.id().ok() == Some(property_id))
+            .contains(&property_id)
     );
 }

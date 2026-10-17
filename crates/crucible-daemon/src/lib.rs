@@ -177,6 +177,7 @@ mod qemu_hot_fork_world_factory;
 mod qemu_hot_fork_world_resource;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
+mod replay_record_store;
 pub mod repository_admission;
 mod supervision;
 
@@ -640,5 +641,12 @@ pub use qemu_resource_guard::{
     MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptCancellationSignal, QemuAttemptGenerationLease,
     QemuAttemptGenerationResourceOwner, QemuAttemptHostResourceFactory,
     QemuAttemptHostResourceOwner, SharedQemuAttemptHostResourceFactory,
+};
+pub use replay_record_store::{
+    MAX_REPLAY_RECORD_BYTES, MemoryReplayRecordStore, ReplayRecordError, ReplayRecordSource,
+    ReplayRecordSources,
+};
+pub(crate) use replay_record_store::{
+    ReplayRecord, ReplayRecordStore, load_replay_record, load_replay_record_by_content,
 };
 pub use repository_admission::RepositoryAttemptAdmission;

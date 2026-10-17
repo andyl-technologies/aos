@@ -290,12 +290,12 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner) in [
         (
             "crucible.executor.prepared-semantic-attempt-result",
-            "9",
+            "10",
             "crucible-daemon::crucible_artifact::prepared_result",
         ),
         (
             "crucible.executor.prepared-result-journal-state",
-            "3",
+            "4",
             "crucible-daemon::prepared_result_journal",
         ),
     ] {

@@ -2454,7 +2454,7 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
             .expect("journal directory name")
     ));
     std::fs::rename(&journal_root, &staged_root).expect("interrupt journal publication");
-    std::fs::remove_file(staged_root.join("state-v3")).expect("leave partial staged journal");
+    std::fs::remove_file(staged_root.join("state-v4")).expect("leave partial staged journal");
 
     let observer: Arc<dyn PausedCheckpointObserver> =
         Arc::new(RecordingPausedCheckpointObserver::default());

@@ -30,6 +30,9 @@ pub enum CrucibleArtifactError {
     /// A private production replay could not be converted to portable capture evidence.
     #[error(transparent)]
     ProductionReplay(#[from] crate::FindingProductionReplayCaptureError),
+    /// A retained finding replay record could not be written or read.
+    #[error(transparent)]
+    ReplayRecord(#[from] crate::ReplayRecordError),
     /// A required original or selected replay did not preserve the finding signature.
     #[error("required finding reproduction failed during {stage}")]
     FindingRequiredReproductionMismatch {

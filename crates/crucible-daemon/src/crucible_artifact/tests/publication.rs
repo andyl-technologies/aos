@@ -352,14 +352,16 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert!(matches!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &invalid_magic,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            crate::ReplayRecordSources::default(),
         ),
         Err(PreparedSemanticResultCodecError::Version)
     ));
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &observation_bytes,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            crate::ReplayRecordSources::default(),
         )
         .expect("decode observation result"),
         observation_result
@@ -410,6 +412,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 .canonical_bytes()
                 .expect("trace result encoding"),
             trace_result.log_segments().clone(),
+            trace_result.replay_record_sources(),
         )
         .expect("trace result decoding"),
         trace_result
@@ -443,7 +446,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &terminal_bytes,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            crate::ReplayRecordSources::default(),
         )
         .expect("decode terminal observation result"),
         terminal_result
@@ -453,7 +457,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert!(matches!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &truncated_terminal_bytes,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            crate::ReplayRecordSources::default(),
         ),
         Err(PreparedSemanticResultCodecError::Truncated)
     ));
@@ -519,6 +524,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 evidence: None,
             },
             seed,
+            record_store: crate::ReplayRecordStore::default(),
         },
         |candidate| {
             let candidate_scenario =
@@ -605,6 +611,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let decoded_incompatibility = PreparedSemanticAttemptResult::from_canonical_bytes(
         &incompatibility_bytes,
         crate::AttemptLogSegmentSources::default(),
+        incompatibility_result.replay_record_sources(),
     )
     .expect("decode typed incompatibility result");
     assert_eq!(decoded_incompatibility, incompatibility_result);
@@ -733,6 +740,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 evidence: None,
             },
             seed,
+            record_store: crate::ReplayRecordStore::default(),
         },
         |candidate| {
             let candidate_scenario =
@@ -823,12 +831,16 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
 
     let measurement_records = prepared_finding
         .replay_records
+        .ids
         .measurements
         .iter()
-        .map(|measurement| {
+        .map(|id| {
             (
-                measurement.id().expect("replay measurement ID"),
-                measurement,
+                *id,
+                prepared_finding
+                    .replay_records
+                    .load::<MeasurementSet>(*id)
+                    .expect("replay measurement record"),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -880,7 +892,6 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .expect("shared replay is observed");
     let original_measurement = measurement_records
         .get(&original_measurement_id)
-        .copied()
         .expect("shared replay measurement");
     let retained = original_measurement.evaluation();
     let mut tampered_payload = retained.payload().to_vec();
@@ -899,8 +910,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let mut tampered_finding = prepared_finding.clone();
     tampered_finding
         .replay_records
-        .measurements
-        .push(tampered_measurement);
+        .insert_for_test(&tampered_measurement, |ids| &mut ids.measurements);
     let RecordedFindingReplay::Observed { measurements, .. } =
         &mut tampered_finding.verification_replays[verification_replay]
     else {
@@ -925,7 +935,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &observed_finding_bytes,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            observed_finding_result.replay_record_sources(),
         )
         .expect("decode observed finding result"),
         observed_finding_result
@@ -976,8 +987,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let mut finding_with_unused_measurement = prepared_finding.clone();
     finding_with_unused_measurement
         .replay_records
-        .measurements
-        .push(unused_measurements);
+        .insert_for_test(&unused_measurements, |ids| &mut ids.measurements);
     assert!(matches!(
         PreparedSemanticAttemptResult::new(
             observation_candidate_with_measurements.clone(),
@@ -1064,15 +1074,18 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
         &durable_bytes,
         crate::AttemptLogSegmentSources::default(),
+        durable_result.replay_record_sources(),
     )
     .expect("decode prepared semantic result");
     assert_eq!(decoded, durable_result);
+    assert_journal_owns_replay_records(&durable_result);
     let mut trailing = durable_bytes.clone();
     trailing.push(0);
     assert!(matches!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &trailing,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            durable_result.replay_record_sources(),
         ),
         Err(PreparedSemanticResultCodecError::TrailingBytes)
     ));

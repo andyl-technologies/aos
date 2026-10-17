@@ -16,7 +16,7 @@ use super::super::tests::{TEST_PAYLOAD_LIMIT, observation_candidate, semantic_ke
 use super::super::{
     DirectoryPreparedResultJournal, PreparedResultJournalError, PreparedResultJournalNamespace,
 };
-use super::JOURNAL_SEGMENTS_DIRECTORY;
+use super::SEGMENTS;
 use crate::{
     AttemptLogSegmentSource, AttemptLogSegmentSources,
     MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, MemorySegmentStore,
@@ -27,7 +27,7 @@ use crate::{
 /// bytes would contain it.
 const ENTRY_TEXT_MARKER: &str = "journal-segment-fixture-text";
 
-const V9_MAGIC: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v9\0";
+const V10_MAGIC: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v10\0";
 
 fn entry(sequence: u64) -> SchedulerEventLogEntry {
     let mut attributes = BTreeMap::new();
@@ -77,7 +77,7 @@ fn result_with_segments(
 }
 
 fn segment_files(journal: &DirectoryPreparedResultJournal) -> Vec<PathBuf> {
-    let mut files = fs::read_dir(journal.root().join(JOURNAL_SEGMENTS_DIRECTORY))
+    let mut files = fs::read_dir(journal.root().join(SEGMENTS.directory))
         .unwrap_or_else(|error| panic!("list journal segments: {error}"))
         .map(|entry| {
             entry
@@ -99,15 +99,15 @@ impl AttemptLogSegmentSource for SubstitutingSource {
 }
 
 #[test]
-fn v9_payload_names_segments_without_their_bytes() {
-    let key = semantic_key(b"v9-payload");
+fn v10_payload_names_segments_without_their_bytes() {
+    let key = semantic_key(b"v10-payload");
     let (result, segments) = result_with_segments(0x71, key);
 
     let payload = result
         .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
-        .unwrap_or_else(|error| panic!("v9 payload: {error}"));
+        .unwrap_or_else(|error| panic!("v10 payload: {error}"));
 
-    assert!(payload.starts_with(V9_MAGIC));
+    assert!(payload.starts_with(V10_MAGIC));
     assert!(
         !payload
             .windows(ENTRY_TEXT_MARKER.len())
@@ -123,12 +123,16 @@ fn v8_payload_is_rejected() {
     let (result, segments) = result_with_segments(0x72, key);
     let mut payload = result
         .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
-        .unwrap_or_else(|error| panic!("v9 payload: {error}"));
+        .unwrap_or_else(|error| panic!("v10 payload: {error}"));
     // The version digit precedes the magic's terminating NUL.
-    let version = V9_MAGIC.len() - 2;
+    let version = V10_MAGIC.len() - 2;
     payload[version] = b'8';
 
-    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(&payload, segments);
+    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
+        &payload,
+        segments,
+        crate::ReplayRecordSources::default(),
+    );
 
     assert!(matches!(
         decoded,
@@ -164,7 +168,7 @@ fn new_rejects_absent_or_substituted_segment() {
 }
 
 #[test]
-fn journal_v3_reopens_segments_after_source_dropped() {
+fn journal_v4_reopens_segments_after_source_dropped() {
     let namespace = TempDir::new().unwrap_or_else(|error| panic!("journal namespace: {error}"));
     let runtime = PreparedResultJournalNamespace::open(namespace.path())
         .unwrap_or_else(|error| panic!("runtime: {error}"));
@@ -230,7 +234,7 @@ fn journal_rejects_missing_corrupt_or_extra_segment_file() {
     let original = fs::read(&segment).unwrap_or_else(|error| panic!("read segment: {error}"));
     let extra = journal
         .root()
-        .join(JOURNAL_SEGMENTS_DIRECTORY)
+        .join(SEGMENTS.directory)
         .join(format!("{}.segment", "0".repeat(64)));
     drop(journal);
     let reopen =

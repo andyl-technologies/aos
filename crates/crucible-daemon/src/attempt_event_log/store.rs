@@ -40,6 +40,9 @@ use super::{
 /// Distinguishes concurrent in-flight writes within one process.
 static PARTIAL_WRITE_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
+/// Suffix of one complete segment file.
+const SEGMENT_FILE_SUFFIX: &str = ".segment";
+
 /// Read access to sealed segments, addressed by content identity.
 ///
 /// Readers authenticate every segment they receive against its reference, so
@@ -123,21 +126,6 @@ impl DirectorySegmentStore {
     pub(crate) fn directory(&self) -> &Arc<AttemptLogDirectory> {
         &self.directory
     }
-
-    fn path(&self, id: ContentId) -> PathBuf {
-        self.directory
-            .path()
-            .join(format!("{}.segment", digest_hex(id)))
-    }
-
-    fn partial_path(&self, id: ContentId) -> PathBuf {
-        let ordinal = PARTIAL_WRITE_ORDINAL.fetch_add(1, Ordering::Relaxed);
-        self.directory.path().join(format!(
-            ".{}.{}.{ordinal}.partial",
-            digest_hex(id),
-            std::process::id()
-        ))
-    }
 }
 
 /// Two stores are equal when they read and write the same directory.
@@ -151,39 +139,18 @@ impl Eq for DirectorySegmentStore {}
 
 impl AttemptLogSegmentStore for DirectorySegmentStore {
     fn put(&mut self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
-        let path = self.path(id);
-        // Segments are content-addressed and only ever appear by rename, so a
-        // present file already holds exactly these bytes.
-        if path.try_exists()? {
-            return Ok(());
-        }
-
-        let staging = self.partial_path(id);
-        let written = fs::File::create_new(&staging).and_then(|mut file| {
-            file.write_all(bytes)?;
-            file.sync_all()
-        });
-        match written.and_then(|()| fs::rename(&staging, &path)) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let _ = fs::remove_file(&staging);
-                Err(error)
-            }
-        }
+        write_content_file(self.directory.path(), id, SEGMENT_FILE_SUFFIX, bytes)
     }
 }
 
 impl AttemptLogSegmentSource for DirectorySegmentStore {
     fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
-        let path = self.path(id);
-        let length = fs::metadata(&path)?.len();
-        if length > MAX_ATTEMPT_LOG_SEGMENT_BYTES as u64 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "attempt log segment exceeds its format bound",
-            ));
-        }
-        fs::read(path)
+        read_content_file(
+            self.directory.path(),
+            id,
+            SEGMENT_FILE_SUFFIX,
+            MAX_ATTEMPT_LOG_SEGMENT_BYTES,
+        )
     }
 }
 
@@ -453,6 +420,7 @@ impl From<AttemptLogStore> for AttemptLogSegmentSources {
 /// ```text
 /// <namespace>/
 ///   attempt-<16 hex digits>/      one attempt log's AttemptLogDirectory
+///   records-<16 hex digits>/      one finding preparation's replay records
 /// ```
 #[derive(Debug)]
 pub(crate) struct AttemptLogNamespace {
@@ -489,16 +457,92 @@ impl AttemptLogNamespace {
     ///
     /// Returns an I/O error when the directory cannot be created.
     pub(crate) fn create_store(&self) -> io::Result<AttemptLogStore> {
-        let ordinal = self.next_directory.fetch_add(1, Ordering::Relaxed);
-        let directory =
-            AttemptLogDirectory::create(self.root.join(format!("attempt-{ordinal:016x}")))?;
+        let directory = self.create_directory("attempt")?;
         Ok(AttemptLogStore::Directory(DirectorySegmentStore::new(
             directory,
         )))
     }
+
+    /// Creates a new, empty directory named `<family>-<ordinal>`.
+    ///
+    /// Every family shares one ordinal sequence, so names never collide. The
+    /// directory is removed when the last handle to it drops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory cannot be created.
+    pub(crate) fn create_directory(&self, family: &str) -> io::Result<Arc<AttemptLogDirectory>> {
+        let ordinal = self.next_directory.fetch_add(1, Ordering::Relaxed);
+        AttemptLogDirectory::create(self.root.join(format!("{family}-{ordinal:016x}")))
+    }
 }
 
-/// Formats a segment identity's digest as lowercase hex.
+/// Writes one immutable content-addressed file into `directory`.
+///
+/// The file is named by the identity's digest and `suffix`. It is written to a
+/// uniquely named temporary file, synchronized, and renamed, so a reader never
+/// observes a partial file and concurrent writers of the same identity never
+/// truncate each other.
+///
+/// # Errors
+///
+/// Returns an I/O error when the file cannot be durably written.
+pub(crate) fn write_content_file(
+    directory: &Path,
+    id: ContentId,
+    suffix: &str,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let digest = digest_hex(id);
+    let path = directory.join(format!("{digest}{suffix}"));
+    // Content files only ever appear by rename, so a present file already
+    // holds exactly the bytes its identity names.
+    if path.try_exists()? {
+        return Ok(());
+    }
+
+    let ordinal = PARTIAL_WRITE_ORDINAL.fetch_add(1, Ordering::Relaxed);
+    let staging = directory.join(format!(
+        ".{digest}.{}.{ordinal}.partial",
+        std::process::id()
+    ));
+    let written = fs::File::create_new(&staging).and_then(|mut file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    });
+    match written.and_then(|()| fs::rename(&staging, &path)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(&staging);
+            Err(error)
+        }
+    }
+}
+
+/// Reads one content-addressed file written by [`write_content_file`].
+///
+/// # Errors
+///
+/// Returns an I/O error when the file is absent, unreadable, or longer than
+/// `maximum_bytes`.
+pub(crate) fn read_content_file(
+    directory: &Path,
+    id: ContentId,
+    suffix: &str,
+    maximum_bytes: usize,
+) -> io::Result<Vec<u8>> {
+    let path = directory.join(format!("{}{suffix}", digest_hex(id)));
+    let length = fs::metadata(&path)?.len();
+    if length > maximum_bytes as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "content file exceeds its format bound",
+        ));
+    }
+    fs::read(path)
+}
+
+/// Formats an identity's digest as lowercase hex.
 fn digest_hex(id: ContentId) -> String {
     id.digest()
         .iter()

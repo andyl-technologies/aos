@@ -100,10 +100,22 @@ type RetainedConfigurationMemoryGuard<'a> =
 const CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V4: u32 = 4;
 const CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V4: &[u8] = b"crucible.finding-minimization-policy.v4\0";
 const CRUCIBLE_MINIMIZATION_CANDIDATES: u32 = 4_096;
-/// Maximum unique immutable records retained from both finding replay passes.
-pub const MAX_CRUCIBLE_FINDING_REPLAY_RECORDS: usize = 65_536;
+/// Maximum distinct records retained from both finding replay passes.
+///
+/// Retained records live in the preparation's record store, so this bounds
+/// only the identities the transcript and prepared result keep in memory.
+/// A prepared-result reader charges at least one validation reference to
+/// every record it reconstructs, so the count equals that reference
+/// allowance: a transcript holding more records could never be read back.
+pub const MAX_CRUCIBLE_FINDING_REPLAY_RECORDS: usize = 4 * 1024 * 1024;
 /// Maximum aggregate canonical bytes retained from both finding replay passes.
-pub const MAX_CRUCIBLE_FINDING_REPLAY_BYTES: usize = 256 * 1024 * 1024;
+///
+/// Choice opportunities and selections grow with every replayed run, so the
+/// retained records are run-length evidence. They are written to disk as they
+/// arrive and published with the finding, and take the value of the finding's
+/// run-length publication allowance.
+pub const MAX_CRUCIBLE_FINDING_REPLAY_BYTES: u64 =
+    crucible_campaign::MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES;
 /// Maximum oracle results retained in either finding replay pass.
 pub const MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS: usize = MAX_MINIMIZATION_CANDIDATES + 1;
 const _: () = assert!(MAX_MINIMIZATION_CANDIDATES == CRUCIBLE_MINIMIZATION_CANDIDATES as usize);
@@ -304,7 +316,7 @@ impl PreparedCrucibleFindingCandidate {
 
     /// Returns aggregate canonical body bytes retained from both replay passes.
     #[must_use]
-    pub const fn replay_record_bytes(&self) -> usize {
+    pub const fn replay_record_bytes(&self) -> u64 {
         self.replay_records.canonical_bytes
     }
 
@@ -454,30 +466,34 @@ impl PreparedCrucibleFindingCandidate {
         store: &CrucibleCampaignArtifactStore,
     ) -> Result<FindingCandidateBundleId, CrucibleArtifactError> {
         store.publish_scenario_record(&self.scenario)?;
-        for domain in &self.replay_records.domains {
-            store.publish_choice_domain_record(domain)?;
-        }
-        for declaration in &self.replay_records.declarations {
-            store.publish_selectable_record(declaration)?;
-        }
-        for opportunity in &self.replay_records.opportunities {
-            store.publish_choice_opportunity_record(opportunity)?;
-        }
-        for selection in &self.replay_records.selections {
-            store.publish_selection_record(selection)?;
-        }
-        for configuration in &self.replay_records.configurations {
-            store.publish_configuration(configuration)?;
-        }
-        for measurements in &self.replay_records.measurements {
-            store.publish_measurement_record(measurements)?;
-        }
-        for properties in &self.replay_records.properties {
-            store.publish_property_record(properties)?;
-        }
-        for coverage in &self.replay_records.coverage {
-            store.publish_coverage_record(coverage)?;
-        }
+        // Replay records are read from their store one at a time.
+        let records = &self.replay_records;
+        records.try_for_each(&records.ids.domains, |domain| {
+            store.publish_choice_domain_record(domain).map(drop)
+        })?;
+        records.try_for_each(&records.ids.declarations, |declaration| {
+            store.publish_selectable_record(declaration).map(drop)
+        })?;
+        records.try_for_each(&records.ids.opportunities, |opportunity| {
+            store
+                .publish_choice_opportunity_record(opportunity)
+                .map(drop)
+        })?;
+        records.try_for_each(&records.ids.selections, |selection| {
+            store.publish_selection_record(selection).map(drop)
+        })?;
+        records.try_for_each(&records.ids.configurations, |configuration| {
+            store.publish_configuration(configuration).map(drop)
+        })?;
+        records.try_for_each(&records.ids.measurements, |measurements| {
+            store.publish_measurement_record(measurements).map(drop)
+        })?;
+        records.try_for_each(&records.ids.properties, |properties| {
+            store.publish_property_record(properties).map(drop)
+        })?;
+        records.try_for_each(&records.ids.coverage, |coverage| {
+            store.publish_coverage_record(coverage).map(drop)
+        })?;
         store.publish_configuration(&self.original_configuration)?;
         store.publish_reproduction_record(&self.original)?;
         store.publish_configuration(&self.minimized_configuration)?;
@@ -517,30 +533,42 @@ impl PreparedCrucibleFindingCandidate {
         store: &CampaignExecutorStore,
         authenticator: &dyn FindingExactCheckpointAuthenticator,
     ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
-        for domain in &self.replay_records.domains {
-            store.publish_executor_choice_domain(domain)?;
-        }
-        for declaration in &self.replay_records.declarations {
-            store.publish_executor_selectable(declaration)?;
-        }
-        for opportunity in &self.replay_records.opportunities {
-            store.publish_executor_choice_opportunity(opportunity)?;
-        }
-        for selection in &self.replay_records.selections {
-            store.publish_executor_selection(selection)?;
-        }
-        for configuration in &self.replay_records.configurations {
-            store.publish_executor_configuration(configuration)?;
-        }
-        for measurements in &self.replay_records.measurements {
-            store.publish_executor_measurement_set(measurements)?;
-        }
-        for properties in &self.replay_records.properties {
-            store.publish_executor_property_verdict_set(properties)?;
-        }
-        for coverage in &self.replay_records.coverage {
-            store.publish_executor_coverage_projection(coverage)?;
-        }
+        // Replay records are read from their store one at a time.
+        let records = &self.replay_records;
+        records.try_for_each(&records.ids.domains, |domain| {
+            store.publish_executor_choice_domain(domain).map(drop)
+        })?;
+        records.try_for_each(&records.ids.declarations, |declaration| {
+            store.publish_executor_selectable(declaration).map(drop)
+        })?;
+        records.try_for_each(&records.ids.opportunities, |opportunity| {
+            store
+                .publish_executor_choice_opportunity(opportunity)
+                .map(drop)
+        })?;
+        records.try_for_each(&records.ids.selections, |selection| {
+            store.publish_executor_selection(selection).map(drop)
+        })?;
+        records.try_for_each(&records.ids.configurations, |configuration| {
+            store
+                .publish_executor_configuration(configuration)
+                .map(drop)
+        })?;
+        records.try_for_each(&records.ids.measurements, |measurements| {
+            store
+                .publish_executor_measurement_set(measurements)
+                .map(drop)
+        })?;
+        records.try_for_each(&records.ids.properties, |properties| {
+            store
+                .publish_executor_property_verdict_set(properties)
+                .map(drop)
+        })?;
+        records.try_for_each(&records.ids.coverage, |coverage| {
+            store
+                .publish_executor_coverage_projection(coverage)
+                .map(drop)
+        })?;
         let original_configuration =
             store.publish_executor_configuration(&self.original_configuration)?;
         if original_configuration != self.original_configuration.id()? {
@@ -745,6 +773,8 @@ pub(crate) struct AutomaticFindingPreparation<'a> {
     pub(crate) exact_pins: FindingExactPins,
     pub(crate) exact_retention: PreparedFindingExactRetention,
     pub(crate) seed: crucible::Seed,
+    /// Store that receives each distinct replay record as it is retained.
+    pub(crate) record_store: crate::ReplayRecordStore,
 }
 
 pub(crate) fn prepare_automatic_signature_preserving_finding_with_outcomes<F>(
@@ -761,13 +791,14 @@ where
         exact_pins,
         exact_retention,
         seed,
+        record_store,
     } = preparation;
     let observation = result
         .observation()
         .observation()
         .id()
         .map_err(CrucibleArtifactError::from)?;
-    let mut transcript = CrucibleFindingReplayTranscript::new();
+    let mut transcript = CrucibleFindingReplayTranscript::with_record_store(record_store);
     let mut replay_measurements = BoundedReplayMeasurementEvidence::new(&result)?;
 
     for pass in [

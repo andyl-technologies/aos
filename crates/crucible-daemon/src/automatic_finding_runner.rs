@@ -1052,6 +1052,13 @@ where
             )
             .map_err(terminal_campaign_error)?;
 
+            // Retained replay records go to disk under the attempt namespace.
+            let record_store = context.create_replay_record_store().map_err(|source| {
+                terminal_artifact_error(CrucibleArtifactError::ReplayRecord(
+                    crate::ReplayRecordError::StoreUnavailable { source },
+                ))
+            })?;
+
             let mut candidate_failure = None;
             let target_signature = signature.clone();
             let prepared = prepare_automatic_signature_preserving_finding_with_outcomes(
@@ -1062,6 +1069,7 @@ where
                     exact_pins,
                     exact_retention,
                     seed,
+                    record_store,
                 },
                 |candidate| match replay_candidate(
                     &self.store,
