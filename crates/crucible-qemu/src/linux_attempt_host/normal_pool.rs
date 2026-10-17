@@ -10,11 +10,54 @@
 use super::*;
 use crucible_linux_resource::host_services::process_birth::{
     AuthenticatedNativePoolPurpose, AuthenticatedNativeWorldClaim,
-    AuthenticatedNativeWorldCleanupLoan, NativeNodeReservation, NativeWorldIdentity,
-    NativeWorldReturn, ServiceBirthError,
+    AuthenticatedNativeWorldCleanupLoan, NativeNodeReservation, NativePoolRefusal,
+    NativeWorldIdentity, NativeWorldReturn, ServiceBirthError,
 };
 use crucible_linux_resource::host_supervision::HostOperationGuard;
 use crucible_linux_resource::ram_policy::HostResourceVector;
+
+/// Receives genuine World custody separately from checked preparation.
+///
+/// The receiver is paid before admission. A negative admission postcut can
+/// transfer existing holders, but cannot invoke preparation or create an owner.
+pub trait LinuxQemuNativeWorldConstructor {
+    /// Retains both exact holders without allocation or Original admission.
+    ///
+    /// # Errors
+    /// Reports a fixed custody refusal after retaining the SAME holders.
+    fn retain_world(
+        &mut self,
+        loan: AuthenticatedNativeWorldCleanupLoan,
+        controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), &'static str>;
+
+    /// Performs selected preparation only after positive original admission.
+    ///
+    /// # Errors
+    /// Preserves the actual selected preparation refusal in its existing owner.
+    fn prepare_world(&mut self) -> Result<(), QemuVmRealizationError>;
+}
+
+fn complete_world_admission<E>(
+    first: Option<E>,
+    retained: Result<(), &'static str>,
+    report: impl FnOnce(E, Option<&'static str>) -> QemuVmRealizationError,
+    prepare: impl FnOnce() -> Result<(), QemuVmRealizationError>,
+) -> Result<(), QemuVmRealizationError> {
+    if let Some(first) = first {
+        return Err(report(first, retained.err()));
+    }
+    retained.map_err(|operation| QemuVmRealizationError::CleanupRetained { operation })?;
+    prepare()
+}
+
+enum WorldClaimFailure {
+    NoHolder(OriginalActorAccountError),
+    Retained {
+        first: NativePoolRefusal,
+        index: usize,
+    },
+}
 
 pub(super) struct NormalNativePool {
     purpose: Option<AuthenticatedNativePoolPurpose>,
@@ -113,7 +156,7 @@ impl NormalNativePool {
         Ok(Arc::new(purpose.begin_native_preparation()?))
     }
 
-    pub(super) fn claim_world(
+    fn claim_world(
         &mut self,
         identity: NativeWorldIdentity,
         consumer_control_bytes: u64,
@@ -121,21 +164,32 @@ impl NormalNativePool {
         populate: impl FnOnce(
             &mut dyn FnMut(NativeNodeReservation) -> Result<(), ServiceBirthError>,
         ) -> Result<(), ServiceBirthError>,
-    ) -> Result<usize, OriginalActorAccountError> {
-        let index = self
-            .worlds
-            .iter()
-            .position(Option::is_none)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        let purpose = self
-            .purpose
-            .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        let world =
-            purpose.claim_world_from(identity, consumer_control_bytes, original, populate)?;
-        // Publish the real World before any per-node roster or kernel effect.
-        self.worlds[index] = Some(world);
-        Ok(index)
+    ) -> Result<usize, WorldClaimFailure> {
+        let index =
+            self.worlds
+                .iter()
+                .position(Option::is_none)
+                .ok_or(WorldClaimFailure::NoHolder(
+                    OriginalActorAccountError::Unavailable,
+                ))?;
+        let purpose = self.purpose.as_ref().ok_or(WorldClaimFailure::NoHolder(
+            OriginalActorAccountError::Unavailable,
+        ))?;
+        match purpose.claim_world_from(identity, consumer_control_bytes, original, populate) {
+            Ok(world) => {
+                self.worlds[index] = Some(world);
+                Ok(index)
+            }
+            Err(mut first) => {
+                let Some(world) = first.take_retained_world() else {
+                    return Err(WorldClaimFailure::NoHolder(first.into()));
+                };
+                // A negative descriptor/postcut can follow actual publication.
+                // Keep that SAME claim canonical before propagating its report.
+                self.worlds[index] = Some(world);
+                Err(WorldClaimFailure::Retained { first, index })
+            }
+        }
     }
 
     pub(super) fn prepare_next(
@@ -537,10 +591,7 @@ impl LinuxQemuAttemptHostFactory {
         identity: NativeWorldIdentity,
         consumer_control_bytes: u64,
         exact_checkpoint_root: Option<crucible::ContentHash>,
-        before_effects: impl FnOnce(
-            AuthenticatedNativeWorldCleanupLoan,
-            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-        ) -> Result<(), QemuVmRealizationError>,
+        before_effects: &mut dyn LinuxQemuNativeWorldConstructor,
         populate: impl FnOnce(
             &mut dyn FnMut(NativeNodeReservation) -> Result<(), ServiceBirthError>,
         ) -> Result<(), ServiceBirthError>,
@@ -569,10 +620,10 @@ impl LinuxQemuAttemptHostFactory {
             let original = pool
                 .begin_preparation()
                 .map_err(original_roster::original_error)?;
-            let world =
+            let (world, mut admission_failure) =
                 match pool.claim_world(identity, consumer_control_bytes, &original, populate) {
-                    Ok(world) => world,
-                    Err(source) => {
+                    Ok(world) => (world, None),
+                    Err(WorldClaimFailure::NoHolder(source)) => {
                         proven_unassigned = matches!(
                             &source,
                             OriginalActorAccountError::NativePool(refusal)
@@ -580,20 +631,47 @@ impl LinuxQemuAttemptHostFactory {
                         );
                         return Err(original_roster::original_error(source));
                     }
+                    Err(WorldClaimFailure::Retained { first, index }) => (index, Some(first)),
                 };
-            // This is the first physical-birth cut. The nonempty logical
-            // assignment already occupies its actual family rows. The caller
-            // moves these exact holders into the prepaid pending owner/cell.
             let claim = pool.worlds[world]
                 .as_ref()
                 .ok_or_else(|| missing_authority("retain logical World before effects"))?;
-            let loan = claim
-                .cleanup_loan()
-                .map_err(|source| original_roster::original_error(source.into()))?;
-            let controls = claim
-                .take_consumer_controls()
-                .map_err(|source| original_roster::original_error(source.into()))?;
-            before_effects(loan, controls)?;
+            let custody = claim.cleanup_loan().and_then(|loan| {
+                claim
+                    .take_consumer_controls()
+                    .map(|controls| (loan, controls))
+            });
+            let (loan, controls) = match custody {
+                Ok(custody) => custody,
+                Err(delivery) => {
+                    return Err(match admission_failure {
+                        Some(mut first) => {
+                            first.retain_world_delivery_error(delivery);
+                            original_roster::original_error(first.into())
+                        }
+                        None => original_roster::original_error(delivery.into()),
+                    });
+                }
+            };
+            // The receiver is already Main-paid. This event may only transfer
+            // custody; a refused Original never starts selected preparation.
+            let retained = before_effects.retain_world(loan, controls);
+            complete_world_admission(
+                admission_failure.take(),
+                retained,
+                |mut first, receiver| {
+                    if let Some(receiver) = receiver {
+                        first.retain_world_receiver_refusal(receiver);
+                    }
+                    original_roster::original_error(first.into())
+                },
+                || {
+                    original
+                        .wait_slice()
+                        .map_err(|first| original_roster::original_error(first.into()))?;
+                    before_effects.prepare_world()
+                },
+            )?;
             let mut owners = Vec::new();
             let capacity = pool.worlds[world]
                 .as_ref()
@@ -644,3 +722,6 @@ impl LinuxQemuAttemptHostFactory {
         result
     }
 }
+
+#[cfg(test)]
+mod construction_tests;

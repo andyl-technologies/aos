@@ -152,18 +152,14 @@ let Some((reservation, owner)) = returned.take() else {
                     1,
                 ),
                 (
-                    r#"pub(crate) fn reserve_for_world(
+                    r#"pub(crate) fn reserve_for_source(
         &self,
-        controls: AuthenticatedNativeWorldControlLease,
-    ) -> Result<
-        WorldLifecycleCleanupReservation,
-        (AuthenticatedNativeWorldControlLease, LifecycleApiError),
-    > {"#,
+    ) -> Result<WorldLifecycleCleanupReservation, crucible_qemu::QemuVmRealizationError> {"#,
                     1,
                 ),
                 (
-                    r#"let epoch = initialize_reserved_slot(slot, controls, |cell, controls| {
-    cell.controls = Some(controls);
+                    r#"let epoch = initialize_reserved_slot(slot, (), |_, ()| {}).map_err(|(_, first)| {
+    crucible_qemu::QemuVmRealizationError::ModelCopy { source: Box::new(first), }
 })?;
 return Ok(WorldLifecycleCleanupReservation {
     reservation: Box::new(CleanupReservation {
@@ -172,6 +168,34 @@ return Ok(WorldLifecycleCleanupReservation {
     }),
     cell: ReservedWorldCell { queue: Weak::clone(&self.queue), index, epoch, },
 });"#,
+                    1,
+                ),
+                (
+                    r#"queue._pool.verify_retained_main().map_err(|first| {
+    crucible_qemu::QemuVmRealizationError::ModelCopy {
+        source: Box::new(crucible_qemu::OriginalActorAccountError::NativePurpose(first,)),
+    }
+})?;
+for (index, slot) in queue.slots.iter().enumerate() {"#,
+                    1,
+                ),
+                (
+                    r#"pub(crate) fn is_preclaimed(&self) -> bool {
+    let Some(queue) = self.cell.queue.upgrade() else { return false; };
+    let Some(slot) = queue.slots.get(self.cell.index) else { return false; };
+    borrow_reserved_cell(slot, self.cell.epoch).is_some_and(|cell| cell.controls.is_none())
+}"#,
+                    1,
+                ),
+                (
+                    r#"let Some(queue) = self.cell.queue.upgrade() else { return Err(controls); };
+let Some(slot) = queue.slots.get(self.cell.index) else { return Err(controls); };"#,
+                    1,
+                ),
+                (
+                    r#"let Some(mut cell) = borrow_reserved_cell(slot, self.cell.epoch) else { return Err(controls); };
+if cell.controls.is_some() { return Err(controls); }
+cell.controls = Some(controls); Ok(())"#,
                     1,
                 ),
                 (
@@ -250,6 +274,19 @@ attach(&mut cell, input); drop(cell); slot.publish(CleanupPhase::Reserved); Ok(e
         Companion {
             path: "crates/crucible-daemon/src/lifecycle_cleanup.rs",
             required: &[
+                (
+                    r#"type SourceFactory = crate::ComposedQemuAttemptResourceGuardFactory<
+    crate::SharedQemuAttemptHostResourceFactory<crate::LinuxQemuAttemptHostResourceFactory>,
+>;
+let constructors = crate::qemu_lifecycle_launcher::PendingSourceConstruction::<SourceFactory,>::control_bytes()?
+    .checked_mul(u64::try_from(slots).map_err(|_| refusal(""))?)
+    .ok_or_else(|| refusal(""))?;"#,
+                    1,
+                ),
+                (
+                    r#"u64::try_from(bytes).ok().and_then(|bytes| bytes.checked_add(constructors))"#,
+                    1,
+                ),
                 (
                     r#"fn claim(&self, from: CleanupPhase, to: CleanupPhase) -> bool {
     self.phase.compare_exchange(from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire).is_ok()
@@ -371,20 +408,31 @@ if !matches!(stage, Ok(ProductionVmCleanupStage::Complete)) {"#,
             path: "crates/crucible-daemon/src/qemu_lifecycle_launcher/pending_construction.rs",
             required: &[
                 (
-                    r#"factory: Some(factory), world: Some(world), reservation: None,"#,
+                    r#"factory: Some(factory), world: None, reservation: Some(reservation),"#,
                     1,
                 ),
                 (
-                    r#"match factory.reserve_world_lifecycle_cleanup(controls) {
-    Ok(reservation) => {
-        let reserved = reservation.is_reserved();
-        self.reservation = Some(reservation);
-        if reserved { Ok(()) } else {
-            Err(QemuVmRealizationError::CleanupRetained { operation: "", })
-        }
+                    r#"self.world = Some(world);
+let returned = match self.reservation.as_ref() {
+    Some(reservation) => reservation.attach_controls(controls),
+    None => Err(controls),
+};
+match returned {
+    Ok(()) => Ok(()),
+    Err(controls) => {
+        self.controls = Some(controls);
+        self.record_first(QemuVmRealizationError::CleanupRetained { operation: "", });
+        Err("")
     }
-    Err((controls, source)) => { self.controls = Some(controls); Err(source) }
 }"#,
+                    1,
+                ),
+                (
+                    r#"fn retain_world(
+    &mut self,
+    loan: AuthenticatedNativeWorldCleanupLoan,
+    controls: AuthenticatedNativeWorldControlLease,
+) -> Result<(), &'static str> { self.pending.attach_world(loan, controls) }"#,
                     1,
                 ),
                 (
@@ -424,11 +472,18 @@ Ok((guard, storage, factory, reservation, custody, world))"#,
             path: "crates/crucible-daemon/src/qemu_campaign_lifecycle/source_construction.rs",
             required: &[
                 (
-                    r#"let mut owner = PendingSourceConstruction::new_prepaid(factory, loan, controls);
-let result = owner.reserve_cleanup().and_then(|()| {"#,
+                    r#"let reservation = factory.reserve_source_lifecycle_cleanup()
+    .map_err(QemuAttemptProductionVmLifecycleError::ResourceInstallation)?;
+let preclaimed = reservation.is_preclaimed();
+let mut owner = PendingSourceConstruction::new_prepaid(factory, reservation);"#,
                     1,
                 ),
-                (r#"pending = Some(owner); result"#, 1),
+                (
+                    r#"let mut before_effects = owner.before_effects(source, &mut metadata_failure);
+let result = if preclaimed {
+    self.begin_prepared_native_world_guard(context, prepared, &mut before_effects)"#,
+                    1,
+                ),
                 (r#"self.require_install_vacancy()?;"#, 1),
                 (
                     r#"let (guard, expected, pending) = self.begin_retained_native_world_guard(context, source, config)?;"#,
@@ -443,7 +498,7 @@ let result = owner.reserve_cleanup().and_then(|()| {"#,
                     1,
                 ),
                 (
-                    r#"let mut factory = Some(self.resources.retain_fork_target_factory().ok_or_else(|| {"#,
+                    r#"let factory = self.resources.retain_fork_target_factory().ok_or_else(|| {"#,
                     1,
                 ),
             ],
@@ -483,13 +538,57 @@ let result = owner.reserve_cleanup().and_then(|()| {"#,
             path: "crates/crucible-daemon/src/qemu_resource_guard.rs",
             required: &[(
                 r#"let Some(cleanup) = self.cleanup.as_ref() else {
-    return Err((controls, QemuVmRealizationError::ExecutorUnavailable {
+    return Err(QemuVmRealizationError::ExecutorUnavailable {
         operation: "", message: String::from(""),
-    },));
+    });
 };
-cleanup.reserve_for_world(controls).map_err(|(controls, error)| {"#,
+cleanup.reserve_for_source()"#,
                 1,
             )],
+        },
+        Companion {
+            path: "crates/crucible-qemu/src/linux_attempt_host/normal_pool.rs",
+            required: &[
+                (r#"self.worlds[index] = Some(world);"#, 2),
+                (
+                    r#"let Some(world) = first.take_retained_world() else {
+    return Err(WorldClaimFailure::NoHolder(first.into()));
+};
+self.worlds[index] = Some(world);
+Err(WorldClaimFailure::Retained { first, index })"#,
+                    1,
+                ),
+                (
+                    r#"let retained = before_effects.retain_world(loan, controls);
+complete_world_admission(
+    admission_failure.take(), retained,"#,
+                    1,
+                ),
+                (
+                    r#"if let Some(first) = first { return Err(report(first, retained.err())); }
+retained.map_err(|operation| QemuVmRealizationError::CleanupRetained { operation })?;
+prepare()"#,
+                    1,
+                ),
+                (
+                    r#"original.wait_slice().map_err(|first| original_roster::original_error(first.into()))?;
+before_effects.prepare_world()"#,
+                    1,
+                ),
+            ],
+        },
+        Companion {
+            path: "crates/crucible-linux-resource/src/host_services/process_birth/executor_purpose/native_pool/refusal.rs",
+            required: &[
+                (
+                    r#"pub fn take_retained_world(&mut self) -> Option<AuthenticatedNativeWorldClaim> {
+    self._retained.as_mut()?._world.take()
+}"#,
+                    1,
+                ),
+                (r#"retained.delivery.get_or_insert(error);"#, 1),
+                (r#"retained.receiver.get_or_insert(operation);"#, 1),
+            ],
         },
     ],
 }];

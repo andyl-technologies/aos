@@ -362,7 +362,8 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
         first_run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
-    );
+    )
+    .with_target_operations(super::super::target_operations::ComponentTargetOperations);
     let mut second_factory = QemuProductionHotForkWorldLifecycleFactory::new(
         shared.provider().expect("second source provider"),
         ScriptedWorldGuardFactory {
@@ -371,7 +372,8 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
         second_run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
-    );
+    )
+    .with_target_operations(super::super::target_operations::ComponentTargetOperations);
 
     let mut first = match first_factory
         .try_start(&input, &execution_context(&input, 0xd2))
@@ -483,7 +485,8 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
         run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
-    );
+    )
+    .with_target_operations(super::super::target_operations::ComponentTargetOperations);
 
     let first_context = execution_context(&input, 0x79);
     assert!(matches!(

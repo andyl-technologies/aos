@@ -22,6 +22,7 @@ use reservation::CleanupReservation;
 pub use reservation::WorldLifecycleCleanupReservation;
 #[cfg(test)]
 pub(crate) use reservation::component_owner_history_for_test;
+pub(crate) use reservation::{ServiceMainPreclaim, ServiceMainPreclaimError};
 
 /// Owns fixed cleanup storage beneath the actual containing Main pool.
 pub(crate) struct LifecycleCleanupQueue {
@@ -85,10 +86,12 @@ impl CleanupSlot {
 }
 
 impl LifecycleCleanupQueue {
-    /// Prices all actual cells and simultaneously retained reservation bodies.
+    /// Prices fixed cells, reservation bodies and their preborn constructors.
     ///
     /// The producer derives the count from occupied Source/primary/auxiliary
     /// roles and includes this extent in the SAME Main before queue birth.
+    /// Each role can hold one configured Linux Source constructor, its existing
+    /// carrier and one native-admission report until its exact cell returns.
     pub(crate) fn control_bytes(slots: usize) -> Result<u64, LifecycleApiError> {
         if slots == 0 {
             return Err(refusal("cleanup ownership capacity is absent"));
@@ -100,13 +103,24 @@ impl LifecycleCleanupQueue {
         let (shared, _) = std::alloc::Layout::new::<(usize, usize)>()
             .extend(std::alloc::Layout::new::<Self>())
             .map_err(|_| refusal("cleanup shared owner extent overflows"))?;
+        type SourceFactory = crate::ComposedQemuAttemptResourceGuardFactory<
+            crate::SharedQemuAttemptHostResourceFactory<crate::LinuxQemuAttemptHostResourceFactory>,
+        >;
+        let constructors = crate::qemu_lifecycle_launcher::PendingSourceConstruction::<
+            SourceFactory,
+        >::control_bytes()?
+        .checked_mul(u64::try_from(slots).map_err(|_| refusal("cleanup role count overflows"))?)
+        .ok_or_else(|| refusal("Main Source constructor extent overflows"))?;
         let bytes = shared
             .pad_to_align()
             .size()
             .checked_add(cells.size())
             .and_then(|bytes| bytes.checked_add(handles.size()))
             .ok_or_else(|| refusal("cleanup containing extent overflows"))?;
-        u64::try_from(bytes).map_err(|_| refusal("cleanup extent is not representable"))
+        u64::try_from(bytes)
+            .ok()
+            .and_then(|bytes| bytes.checked_add(constructors))
+            .ok_or_else(|| refusal("cleanup containing extent is not representable"))
     }
 
     /// Constructs the one queue after the real containing producer paid it.

@@ -16,6 +16,7 @@ use super::{
 
 mod ledger;
 mod node;
+mod refusal;
 mod window;
 mod world_return;
 use ledger::{NodeSlot, PoolLedger, WorldSlot};
@@ -187,18 +188,8 @@ struct RetainedClaim {
     _world: Option<AuthenticatedNativeWorldClaim>,
     _node: Option<AuthenticatedNativeNodeClaim>,
     _window: Option<AuthenticatedNativeNodeHostWindow>,
-}
-
-impl NativePoolRefusal {
-    /// Reports a proven World admission refusal before any assignment published.
-    ///
-    /// This factual classification grants no retry authority. Callback refusal,
-    /// poisoned synchronization, descriptor effects and negative postcuts never
-    /// acquire it, even when no issued holder is present in this error.
-    #[must_use]
-    pub fn world_assignment_was_refused(&self) -> bool {
-        self.world_assignment_refused && self.after.is_none() && self._retained.is_none()
-    }
+    delivery: Option<ServiceBirthError>,
+    receiver: Option<&'static str>,
 }
 
 impl RetainedClaim {
@@ -211,6 +202,8 @@ impl RetainedClaim {
             _world: None,
             _node: None,
             _window: None,
+            delivery: None,
+            receiver: None,
         }
     }
 
@@ -223,6 +216,8 @@ impl RetainedClaim {
             _world: None,
             _node: None,
             _window: None,
+            delivery: None,
+            receiver: None,
         }
     }
 
@@ -235,6 +230,8 @@ impl RetainedClaim {
             _world: None,
             _node: None,
             _window: None,
+            delivery: None,
+            receiver: None,
         }
     }
 
@@ -247,6 +244,8 @@ impl RetainedClaim {
             _world: Some(world),
             _node: None,
             _window: None,
+            delivery: None,
+            receiver: None,
         }
     }
 
@@ -259,6 +258,8 @@ impl RetainedClaim {
             _world: None,
             _node: Some(node),
             _window: None,
+            delivery: None,
+            receiver: None,
         }
     }
 
@@ -271,6 +272,8 @@ impl RetainedClaim {
             _world: None,
             _node: None,
             _window: Some(window),
+            delivery: None,
+            receiver: None,
         }
     }
 }
@@ -310,6 +313,8 @@ pub(super) fn finish_dispatcher(
                 _world: None,
                 _node: None,
                 _window: None,
+                delivery: None,
+                receiver: None,
             }),
         }),
     }
@@ -520,6 +525,14 @@ impl AuthenticatedNativePoolPurpose {
             .reserve_worker_controls(bytes)?;
         self.held.root.check()?;
         Ok(self.clone())
+    }
+
+    /// Checks the retained Main without entering another operation or claim.
+    ///
+    /// # Errors
+    /// Refuses a changed, expired or canceled authenticated Main owner.
+    pub fn verify_retained_main(&self) -> Result<(), ServiceBirthError> {
+        self.held.root.check()
     }
 
     /// Enters actual native Preparation beneath this same unchanged Main.
@@ -918,3 +931,6 @@ impl AuthenticatedNativeWorldCleanupLoan {
             .retained_cleanup(self.epoch)
     }
 }
+
+#[cfg(test)]
+mod refusal_tests;

@@ -39,11 +39,10 @@ use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceBootstrap, HostServiceError, HostServiceLeasePair,
 };
 use crucible_linux_resource::host_supervision::{
-    HostOperationGuard, HostOperationSupervisor, HostSupervisionBootstrap, HostSupervisionError,
+    HostOperationGuard, HostOperationSupervisor, HostSupervisionBootstrap,
 };
 use crucible_linux_resource::measurement_origin::{
     AuthenticatedActorFamily, AuthenticatedParentInvocation, CertifiedNativeRoleEvidence,
-    MeasurementOriginError,
 };
 
 /// Keeps the same original actor banks outside every allocation they fund.

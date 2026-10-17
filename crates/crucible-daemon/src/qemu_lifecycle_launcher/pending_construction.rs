@@ -1,10 +1,11 @@
 //! Retains the real factory and exact World across partial Source construction.
 //!
-//! The containing Box is allocated inside the authenticated before-effects
-//! callback under the selected World's containing-body charge. An accepted
-//! Main cell owns ordinary cleanup. If cell admission refuses, the fixed
-//! factory slot keeps this same Box until canonical no-birth proof permits a
-//! consuming return. Neither path creates a replacement owner or Original.
+//! The containing Box and construction carrier are Main-paid and allocated
+//! after exact cell reservation, before logical World admission. Custody
+//! delivery allocates nothing. The same Main cell owns ordinary cleanup.
+//! If cell admission refuses, the fixed factory slot keeps this same Box until
+//! canonical no-birth proof permits a consuming return. Neither path creates a
+//! replacement owner or Original.
 
 use super::*;
 use crate::qemu_campaign_lifecycle::SourceCleanupCause;
@@ -30,9 +31,21 @@ pub(crate) struct PendingSourceConstruction<F: QemuAttemptResourceGuardFactory> 
 }
 
 impl<F: QemuAttemptResourceGuardFactory> PendingSourceConstruction<F> {
-    /// Prices the temporary Box that overlaps successful launcher construction.
+    /// Prices the actual Main-preborn Pending body and construction carrier.
     pub(crate) fn control_bytes() -> Result<u64, LifecycleApiError> {
-        u64::try_from(std::mem::size_of::<Self>())
+        let bytes = std::mem::size_of::<Self>()
+            .checked_add(std::mem::size_of::<crate::ProductionVmConstructionCustody>())
+            // One original reservation/admission report can outlive this call.
+            // These alternatives share a phase; price its actual payload before
+            // any failure rather than allocate a replacement ownership carrier.
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    std::mem::size_of::<crucible_qemu::OriginalActorAccountError>()
+                        .max(std::mem::size_of::<LifecycleApiError>()),
+                )
+            })
+            .ok_or_else(|| launcher_message("pending Source construction extent overflow"))?;
+        u64::try_from(bytes)
             .map_err(|_| launcher_message("pending Source construction extent overflow"))
     }
 }
@@ -42,58 +55,65 @@ where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: Send + 'static,
 {
-    /// Creates the paid owner after logical claim and before cell admission.
+    /// Creates the same Main-paid owner before logical World admission.
     ///
-    /// Both admission outcomes retain this already allocated same Box.
+    /// The caller first reserves a genuine Main cell that funds these bodies.
+    /// An uncertain empty-cell observation retains them without admitting a
+    /// World. This allocation constructs no World or cleanup authority.
     pub(crate) fn new_prepaid(
         factory: F,
-        world: AuthenticatedNativeWorldCleanupLoan,
-        controls: AuthenticatedNativeWorldControlLease,
+        reservation: crate::WorldLifecycleCleanupReservation,
     ) -> Box<Self> {
         Box::new(Self {
             returned_guard: None,
             generation_storage: None,
             factory: Some(factory),
-            world: Some(world),
-            reservation: None,
+            world: None,
+            reservation: Some(reservation),
             construction_custody: Some(Box::new(crate::ProductionVmConstructionCustody::new())),
-            controls: Some(controls),
+            controls: None,
             first_failure: None,
             members_closed: false,
             physically_closed: false,
         })
     }
 
-    /// Moves the exact containing lease into the same permanent Main cell.
+    /// Moves delivered holders into the preborn owner and its original Main cell.
     ///
-    /// # Errors
-    /// Preserves this same Box and lease on genuine reservation refusal. This
-    /// method never claims that no node was born or that a debit was returned.
-    pub(crate) fn reserve_cleanup(&mut self) -> Result<(), QemuVmRealizationError> {
-        let factory = self
-            .factory
-            .as_ref()
-            .ok_or_else(|| missing_pending("actual factory is absent"))?;
-        let controls = self
-            .controls
-            .take()
-            .ok_or_else(|| missing_pending("actual body lease is absent"))?;
-        match factory.reserve_world_lifecycle_cleanup(controls) {
-            Ok(reservation) => {
-                let reserved = reservation.is_reserved();
-                self.reservation = Some(reservation);
-                if reserved {
-                    Ok(())
-                } else {
-                    Err(QemuVmRealizationError::CleanupRetained {
-                        operation: "authenticate exact World cleanup reservation",
-                    })
-                }
-            }
-            Err((controls, source)) => {
+    /// The actual host delivers once, before any selected preparation. This operation
+    /// allocates nothing and enters no Original, including on a negative postcut.
+    fn attach_world(
+        &mut self,
+        world: AuthenticatedNativeWorldCleanupLoan,
+        controls: AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), &'static str> {
+        self.world = Some(world);
+        let returned = match self.reservation.as_ref() {
+            Some(reservation) => reservation.attach_controls(controls),
+            None => Err(controls),
+        };
+        match returned {
+            Ok(()) => Ok(()),
+            Err(controls) => {
                 self.controls = Some(controls);
-                Err(source)
+                self.record_first(QemuVmRealizationError::CleanupRetained {
+                    operation: "attach exact World controls to its Main preclaim",
+                });
+                Err("attach exact World controls to its Main preclaim")
             }
+        }
+    }
+
+    /// Borrows the preborn receiver for this single actual admission call.
+    pub(crate) fn before_effects<'a>(
+        &'a mut self,
+        source: &'a crucible::ScenarioDefForm,
+        metadata_failure: &'a mut Option<LifecycleApiError>,
+    ) -> PendingWorldBeforeEffects<'a, F> {
+        PendingWorldBeforeEffects {
+            pending: self,
+            source,
+            metadata_failure,
         }
     }
 
@@ -185,7 +205,7 @@ where
 
     /// Identifies the no-cell branch without asserting absence of Source effects.
     pub(crate) fn has_unreserved_controls(&self) -> bool {
-        self.controls.is_some()
+        self.controls.is_some() && self.reservation.is_none()
     }
 
     /// Returns the exact typed begin error after publishing the same owner.
@@ -211,6 +231,38 @@ where
             .take()
             .map(crate::WorldLifecycleCleanupReservation::into_reservation);
         retain_source_owner(reservation, self, source)
+    }
+}
+
+/// Stack-only borrow of the already Main-paid owner through one admission.
+pub(crate) struct PendingWorldBeforeEffects<'a, F: QemuAttemptResourceGuardFactory> {
+    pending: &'a mut PendingSourceConstruction<F>,
+    source: &'a crucible::ScenarioDefForm,
+    metadata_failure: &'a mut Option<LifecycleApiError>,
+}
+
+impl<F> crucible_qemu::LinuxQemuNativeWorldConstructor for PendingWorldBeforeEffects<'_, F>
+where
+    F: QemuAttemptResourceGuardFactory + Send + 'static,
+    F::Guard: Send + 'static,
+{
+    fn retain_world(
+        &mut self,
+        loan: AuthenticatedNativeWorldCleanupLoan,
+        controls: AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), &'static str> {
+        self.pending.attach_world(loan, controls)
+    }
+
+    fn prepare_world(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.pending
+            .prepare_generation_storage(self.source.world().vm_nodes().iter().map(|node| &node.id))
+            .map_err(|first| {
+                *self.metadata_failure = Some(first);
+                QemuVmRealizationError::CleanupRetained {
+                    operation: "selected generation preparation refused",
+                }
+            })
     }
 }
 

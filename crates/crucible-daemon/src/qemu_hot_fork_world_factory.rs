@@ -56,6 +56,9 @@ use crate::{
     QemuHotForkWorldResourceOwner, QemuProductionHotForkWorldLifecycle,
 };
 
+mod target_operations;
+use target_operations::{NativeTargetOperations, TargetBeginFailure, WorldTargetOperations};
+
 /// Exact semantic and executor basis of one retained source world.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct QemuHotForkSourceWorldKey {
@@ -628,13 +631,14 @@ where
 }
 
 /// Concrete source-world and target-resource lifecycle factory.
-pub(crate) struct QemuProductionHotForkWorldLifecycleFactory<S, R>
+pub(crate) struct QemuProductionHotForkWorldLifecycleFactory<S, R, O = NativeTargetOperations>
 where
     R: QemuAttemptResourceGuardFactory,
     R::Guard: QemuAttemptProcessResourceGuard,
 {
     sources: S,
     resources: R,
+    target_operations: O,
     auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<R::Guard>>,
     retained_installation: Option<RetainedHotForkInstallation<R::Guard>>,
     terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
@@ -664,6 +668,7 @@ where
         Self {
             sources,
             resources,
+            target_operations: NativeTargetOperations,
             auxiliary_resources: None,
             retained_installation: None,
             terminal_checkpoints: None,
@@ -674,6 +679,33 @@ where
             node_launch_nanoseconds: Vec::new(),
             #[cfg(test)]
             native_qualification_ram_mode: None,
+        }
+    }
+}
+
+impl<S, R, O> QemuProductionHotForkWorldLifecycleFactory<S, R, O>
+where
+    R: QemuAttemptResourceGuardFactory,
+    R::Guard: QemuAttemptProcessResourceGuard,
+{
+    /// Selects a component resource model without changing the transaction.
+    #[cfg(test)]
+    fn with_target_operations<P>(
+        self,
+        target_operations: P,
+    ) -> QemuProductionHotForkWorldLifecycleFactory<S, R, P> {
+        QemuProductionHotForkWorldLifecycleFactory {
+            sources: self.sources,
+            resources: self.resources,
+            target_operations,
+            auxiliary_resources: self.auxiliary_resources,
+            retained_installation: self.retained_installation,
+            terminal_checkpoints: self.terminal_checkpoints,
+            run_state_root: self.run_state_root,
+            shutdown_policy: self.shutdown_policy,
+            async_policy: self.async_policy,
+            node_launch_nanoseconds: self.node_launch_nanoseconds,
+            native_qualification_ram_mode: self.native_qualification_ram_mode,
         }
     }
 
@@ -883,7 +915,8 @@ where
     }
 }
 
-impl<S, R> QemuHotForkWorldLifecycleFactory for QemuProductionHotForkWorldLifecycleFactory<S, R>
+impl<S, R, O> QemuHotForkWorldLifecycleFactory
+    for QemuProductionHotForkWorldLifecycleFactory<S, R, O>
 where
     S: QemuHotForkSourceWorldProvider,
     R: QemuAttemptResourceGuardFactory,
@@ -891,6 +924,7 @@ where
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
         + Send
         + 'static,
+    O: WorldTargetOperations<R>,
 {
     type Lifecycle = QemuProductionHotForkWorldLifecycle<R::Guard>;
     type Error = QemuProductionHotForkWorldLifecycleFactoryError<S::Error>;
@@ -1079,36 +1113,21 @@ where
                 )));
             }
         };
-        let permit = match source_world
-            .lock()
-            .map_err(|_| String::from("source-world ownership lock is poisoned"))
-            .and_then(|mut source| {
-                source
-                    .lend_fork_target_permit()
-                    .map_err(|error| error.to_string())
-            }) {
-            Ok(permit) => permit,
-            Err(message) => {
-                drop(source_world);
-                self.sources.restore(source_lease);
-                return Err(AttemptWorkerFailure::Retryable(Self::Error::Source(
-                    message,
-                )));
-            }
-        };
-        let mut guard = match self.resources.begin_fork_target(
-            permit,
+        let mut guard = match self.target_operations.begin_target(
+            &mut self.resources,
+            &source_world,
             process_resources,
             context.cancellation().clone(),
         ) {
             Ok(guard) => guard,
             Err(failure) => {
-                let (error, _) = failure.into_parts();
                 drop(source_world);
                 self.sources.restore(source_lease);
-                return Err(AttemptWorkerFailure::Retryable(Self::Error::ResourceBegin(
-                    error,
-                )));
+                let error = match failure {
+                    TargetBeginFailure::Source(message) => Self::Error::Source(message),
+                    TargetBeginFailure::Resources(error) => Self::Error::ResourceBegin(error),
+                };
+                return Err(AttemptWorkerFailure::Retryable(error));
             }
         };
         if guard.resource_limits() != process_resources
@@ -1123,22 +1142,9 @@ where
                 Self::Error::ResourceContractMismatch,
             ));
         }
-        let bound = (|| {
-            for node in input.scenario().world().vm_nodes() {
-                // Each native member owns its controller and descriptor window;
-                // a World-wide alias cannot stand in for a sibling's allowance.
-                ram_factory
-                    .reserve_native_controller_resources(&node.id.name)
-                    .map_err(|error| error.to_string())?;
-                let controller = guard
-                    .native_resource_controller_for_node(&node.id)
-                    .map_err(|error| error.to_string())?;
-                ram_factory
-                    .bind_native_resource_controller(&node.id.name, controller)
-                    .map_err(|error| error.to_string())?;
-            }
-            Ok::<(), String>(())
-        })();
+        let bound = self
+            .target_operations
+            .bind_world(&mut guard, ram_factory.as_ref(), input);
         if let Err(message) = bound {
             guard.quarantine();
             drop(source_world);
@@ -1229,7 +1235,7 @@ where
     }
 }
 
-impl<S, R> QemuProductionHotForkWorldLifecycleFactory<S, R>
+impl<S, R, O> QemuProductionHotForkWorldLifecycleFactory<S, R, O>
 where
     S: QemuHotForkSourceWorldProvider,
     R: QemuAttemptResourceGuardFactory,
@@ -1237,6 +1243,7 @@ where
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
         + Send
         + 'static,
+    O: WorldTargetOperations<R>,
 {
     // crucible-lint: allow rust-allow -- the transaction inputs remain explicit at the sole whole-world launch boundary.
     #[allow(clippy::too_many_arguments)]
@@ -1348,35 +1355,14 @@ where
                     );
                 }
             };
-            let operational = (|| {
-                #[cfg(test)]
-                {
-                    target.component_ram_facts = context.uses_component_ram_facts();
-                }
-                let owner = context.host_operation_supervisor().ok_or_else(|| {
-                    String::from("hot-fork child has no admitted operational supervisor")
-                })?;
-                let (_, budgets) = owner.budgets().map_err(|error| error.to_string())?;
-                let supervisor = owner
-                    .new_budget_owner(budgets)
-                    .map_err(|error| error.to_string())?;
-                let registration = ram_factory
-                    .prepare(
-                        &node.name,
-                        child_generation,
-                        launch_resources.guest_memory_bytes(),
-                        launch_resources.virtual_cpus(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                target
-                    .install_host_ram_registration(
-                        registration,
-                        supervisor.clone(),
-                        launch_resources.guest_memory_bytes(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                Ok::<_, String>(supervisor)
-            })();
+            let operational = self.target_operations.prepare_member(
+                &mut target,
+                context,
+                ram_factory.as_ref(),
+                &node,
+                child_generation,
+                launch_resources,
+            );
             let supervisor = match operational {
                 Ok(supervisor) => supervisor,
                 Err(message) => {
@@ -1393,42 +1379,11 @@ where
                 }
             };
             child_supervisors.insert(node.clone(), supervisor);
-            let prepared = (|| {
-                let contract = target.child_process_contract()?;
-                source_world
-                    .lock()
-                    .map_err(|_| QemuVmRealizationError::Executor {
-                        operation: "prepare same-family hot-fork directory",
-                        message: String::from("source-world ownership lock is poisoned"),
-                    })?
-                    .prepare_fork_target_run_directory(contract, launch_resources)
-                    .map_err(|error| QemuVmRealizationError::Executor {
-                        operation: "prepare same-family hot-fork directory",
-                        message: error.to_string(),
-                    })
-            })()
-            .and_then(|mut directory| {
-                let custody =
-                    target
-                        .host_ram_custody()
-                        .ok_or_else(|| QemuVmRealizationError::Executor {
-                            operation: "retain hot-fork child RAM custody",
-                            message: String::from("admitted child lost its exact launch custody"),
-                        })?;
-                directory
-                    .retain_ram_launch_custody(custody.clone())
-                    .map_err(|source| QemuVmRealizationError::Executor {
-                        operation: "retain hot-fork child directory custody",
-                        message: source.to_string(),
-                    })?;
-                directory
-                    .provision_hot_fork_child_files(target.child_process_contract()?)
-                    .map_err(|source| QemuVmRealizationError::Executor {
-                        operation: "provision private hot-fork child files",
-                        message: source.to_string(),
-                    })?;
-                Ok(directory)
-            });
+            let prepared = self.target_operations.prepare_directory(
+                &source_world,
+                &mut target,
+                launch_resources,
+            );
             let run_directory = match prepared {
                 Ok(directory) => directory,
                 Err(error) => {
