@@ -1167,16 +1167,25 @@ All 1,753 Core, seven contract and 1,058 provider tests pass, with zero failures
 a delayed real listener, expiry without a descriptor, invalid paths, and retained
 failed-connect/occupied-output custody. Formatting passes, and six-crate,
 all-feature/all-target checking passes in 40.32 seconds. The source-built
-provider rebuild passes in 25.65 seconds. The application-target gate currently
-running covers the preceding committed preflight checkpoint, not this change.
+provider rebuild passes in 25.65 seconds. The application-target gate passes
+for committed preflight checkpoint `018661ff84`: 167 test artifacts across 48
+application roots, including 69 integration targets, compiled without execution.
+All 4,119 included Rust and Cargo source files match that checkpoint. This gate
+does not qualify the later readiness change.
 
-Actual startup still refuses during member zero socket acquisition after 71.25
+Actual startup first refuses during member zero socket acquisition after 71.25
 seconds, with zero passes and one failure. Launches, bootstrap writes, baseline
-reservation and reclamation pass. The exact native-side refusal remains
-unproven. Its bootstrap has a separate five-second cut and retains failures
-before listener binding; a failure-only diagnostic on the existing duplex
-bootstrap channel is being prepared. Temporary phase tracing is removed, and
-Capture and fresh-world continuation remain unqualified.
+reservation and reclamation pass. A subsequent failure-only probe on the
+existing duplex bootstrap channel identifies the native refusal:
+`ResourceExhausted("native baseline requested storage")`, during the original
+private row claim, before launch validation, executable measurement or listener
+binding. The failure arrives 1.776 seconds into bootstrap, with 128.85 ms in
+that phase; this run does not expire the separate five-second native cut.
+Its original startup test has zero passes and one failure in 71.15 seconds,
+with reclamation passing. The temporary probe is removed in full. The defining
+native projection is under investigation; no native Capture or fresh-world
+continuation result is claimed. The production provider rebuild passes in 28.80
+seconds and reproduces its pre-probe executable hash.
 
 ## Known gaps and exit criteria
 
