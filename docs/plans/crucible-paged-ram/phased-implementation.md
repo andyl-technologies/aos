@@ -149,7 +149,15 @@ callback or empty node ledger establishes that a World was never born. The
 original role also supplies a nonissuing selection that verifies the actual Main
 and exact empty epoch before future Service startup; it grants no Service cap.
 All twelve reservation controls pass, including the unavailable-selection check.
-The complete Linux resource library has 243 passes and one ignored probe.
+The complete Linux resource library has 247 passes and one ignored probe.
+Supervisor preparation now captures its original identity and both clock
+coordinates before allocating shared controls. Publication consumes that same
+value; delay cannot renew its cap. Ordinary construction uses the same path,
+conservatively counting control allocation in its original interval. Four new
+controls cover delayed and reversed publication, unchanged budget refusals and
+exact roster identity. Both workspace/all-target checks and engineering hygiene
+pass; the existing testing-standards classifier failure remains unchanged.
+This lower-level seam alone supplies no Main or Service admission.
 
 The whole-world transaction separates native resource effects from a private
 component backend while preserving checkout, adoption, rollback and publication.

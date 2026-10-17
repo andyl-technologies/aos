@@ -21,7 +21,9 @@ pub use action_loan::{
 
 mod bootstrap;
 mod deadline;
+mod prepared_start;
 mod quiescence;
+pub use prepared_start::PreparedHostOperationSupervisor;
 mod source_publication;
 mod startup;
 pub use quiescence::OriginalQuiescenceStartError;
@@ -437,31 +439,7 @@ impl HostOperationSupervisor {
         budgets: HostOperationBudgets,
         outer: Option<Duration>,
     ) -> Result<Self, HostSupervisionError> {
-        if outer.is_some_and(|duration| {
-            duration.is_zero() || host_now().checked_add(duration).is_none()
-        }) {
-            return Err(HostSupervisionError::InvalidBudget);
-        }
-        budgets.validate(outer.is_some())?;
-        let ordinal = NEXT_CAP_ID
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |ordinal| {
-                ordinal.checked_add(1)
-            })
-            .map_err(|_| HostSupervisionError::IdentityExhausted)?;
-        let mut cap_id = [0; 32];
-        cap_id[24..].copy_from_slice(&ordinal.to_be_bytes());
-        let changed = Arc::new(Condvar::new());
-        // Sampling before the Instant origin cannot extend the native cap.
-        let original_monotonic_ns = kernel_monotonic_ns()?;
-        Self::publish(
-            budgets,
-            outer,
-            host_now(),
-            original_monotonic_ns,
-            cap_id,
-            changed,
-            None,
-        )
+        Self::prepare(budgets, outer)?.publish()
     }
 
     fn publish(
@@ -1484,6 +1462,12 @@ impl HostOperationGuard {
     /// operation, clock, or budget roster.
     pub fn shares_outer_cap(&self, supervisor: &HostOperationSupervisor) -> bool {
         self.supervisor.shares_outer_cap(supervisor)
+    }
+
+    /// Checks the exact retained supervisor roster without issuing authority.
+    #[must_use]
+    pub fn belongs_to_supervisor(&self, supervisor: &HostOperationSupervisor) -> bool {
+        self.supervisor == *supervisor
     }
 
     /// Returns coherent live operation status.
