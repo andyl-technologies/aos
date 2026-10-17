@@ -14,6 +14,19 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 mod app_random;
+mod native_administration;
+mod native_initialization;
+mod native_node;
+mod native_phase;
+mod native_root;
+pub use native_administration::NativeAdministrationConfig;
+pub use native_initialization::NativeInitializationConfig;
+pub use native_node::{
+    NativeNodeControlConfig, PLUGIN_ARG_NODE_CONTROL_FD, PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH,
+    PLUGIN_ARG_NODE_CONTROL_VERSION,
+};
+pub use native_phase::NativePhaseConfig;
+pub use native_root::NativeFixedMicrovmConfig;
 mod resource_limits;
 mod whitebox;
 pub use app_random::{
@@ -71,6 +84,7 @@ pub struct PluginArgs {
     app_random: Option<PluginAppRandomConfig>,
     coverage: PluginSwitch,
     fingerprint: PluginSwitch,
+    native_node_control: Option<NativeNodeControlConfig>,
 }
 
 impl PluginArgs {
@@ -102,6 +116,15 @@ impl PluginArgs {
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
         let inherited_fds = parse_inherited_fds(&parsed)?;
+        let native_node_control = native_node::parse(&parsed)?;
+        if native_node_control.is_some_and(|native| {
+            native.descriptor() == sim_fd
+                || inherited_fds.is_some_and(|fds| {
+                    native.descriptor() == fds.shmem_fd || native.descriptor() == fds.wake_fd
+                })
+        }) {
+            return Err(PluginArgsParseError::InvalidNativeNodeControl);
+        }
 
         Ok(Self {
             sim_fd,
@@ -117,6 +140,7 @@ impl PluginArgs {
             app_random,
             coverage,
             fingerprint,
+            native_node_control,
         })
     }
 
@@ -196,6 +220,11 @@ impl PluginArgs {
     #[must_use]
     pub const fn fingerprint(&self) -> PluginSwitch {
         self.fingerprint
+    }
+
+    /// Returns the independently prepared native controller, if negotiated.
+    pub const fn native_node_control(&self) -> Option<NativeNodeControlConfig> {
+        self.native_node_control
     }
 
     /// Validates the slot against the host-advertised node count.
@@ -347,6 +376,9 @@ pub enum PluginArgsParseError {
     /// The app-random argument group was malformed.
     #[error(transparent)]
     AppRandom(#[from] AppRandomArgsParseError),
+    /// Native control preparation selected an unsupported edition or aliased descriptor.
+    #[error("invalid independently prepared native node control")]
+    InvalidNativeNodeControl,
     /// Only one of the inherited descriptor keys was supplied.
     #[error("plugin inherited descriptors require both `shmemfd` and `wakefd`")]
     IncompleteInheritedDescriptors,
@@ -554,7 +586,8 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_CAMPAIGN_MARKER_PARKING
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
-    ) || app_random::is_key(key)
+    ) || native_node::is_key(key)
+        || app_random::is_key(key)
         || resource_limits::is_key(key)
 }
 

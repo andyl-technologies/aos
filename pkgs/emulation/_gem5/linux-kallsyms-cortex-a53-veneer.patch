@@ -1,0 +1,13 @@
+--- a/scripts/mksysmap
++++ b/scripts/mksysmap
+@@ -44,6 +44,10 @@
+ 
+ # lld arm/aarch64/mips thunks
+ / __[[:alnum:]]*Thunk_/d
++
++# lld Cortex-A53 erratum veneers include their changing placement address.
++# Like other synthetic thunks, they must not feed kallsyms layout iteration.
++/ __CortexA53843419_[[:xdigit:]]*$/d
+ 
+ # CFI type identifiers
+ / __kcfi_typeid_/d

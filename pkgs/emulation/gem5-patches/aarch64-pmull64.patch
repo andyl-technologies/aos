@@ -1,0 +1,61 @@
+--- a/src/arch/arm/isa/formats/neon64.isa
++++ b/src/arch/arm/isa/formats/neon64.isa
+@@ -944,14 +944,16 @@
+                 }
+             }
+           case 0xe:
+-            if (u || size != 0) {
+-                return new Unknown64(machInst);
+-            } else {
++            if (u || (size != 0 && size != 3))
++                return new Unknown64(machInst);
++            if (size == 3) {
+                 if (q)
+-                    return new Pmull2X<uint8_t>(machInst, vd, vn, vm);
+-                else
+-                    return new PmullX<uint8_t>(machInst, vd, vn, vm);
+-            }
++                    return new Pmull2X<uint64_t>(machInst, vd, vn, vm);
++                return new PmullX<uint64_t>(machInst, vd, vn, vm);
++            }
++            if (q)
++                return new Pmull2X<uint8_t>(machInst, vd, vn, vm);
++            return new PmullX<uint8_t>(machInst, vd, vn, vm);
+           default:
+             return new Unknown64(machInst);
+         }
+--- a/src/arch/arm/isa/insts/neon64.isa
++++ b/src/arch/arm/isa/insts/neon64.isa
+@@ -2224,8 +2224,14 @@
+                        pmulCode)
+     threeEqualRegInstX("pmul", "PmulQX", "SimdMultOp", ("uint8_t",), 4,
+                        pmulCode)
+-    # PMULL, PMULL2
+-    # Note: 64-bit PMULL is not available (Crypto. Extension)
++    # PMULL and PMULL2 select the lower or upper source half respectively.
++    # Byte elements belong to AdvSIMD; 64-bit elements require FEAT_PMULL.
++    pmullCheck = '''
++        if (sizeof(Element) == 8 &&
++            !HaveExt(xc->tcBase(), ArmExtension::FEAT_PMULL)) {
++            return std::make_shared<UndefinedInstruction>(machInst, true);
++        }
++    '''
+     pmullCode = '''
+             destElem = 0;
+             for (unsigned j = 0; j < sizeof(Element) * 8; j++) {
+@@ -2233,9 +2239,12 @@
+                     destElem ^= (BigElement)srcElem1 << j;
+             }
+     '''
+-    threeRegLongInstX("pmull", "PmullX", "SimdMultOp", ("uint8_t",), pmullCode)
+-    threeRegLongInstX("pmull", "Pmull2X", "SimdMultOp", ("uint8_t",),
+-                      pmullCode, hi=True)
++    threeRegLongInstX("pmull", "PmullX", "SimdMultOp",
++                      ("uint8_t", "uint64_t"), pmullCode,
++                      extra_check=pmullCheck)
++    threeRegLongInstX("pmull", "Pmull2X", "SimdMultOp",
++                      ("uint8_t", "uint64_t"), pmullCode, hi=True,
++                      extra_check=pmullCheck)
+     # RADDHN, RADDHN2
+     raddhnCode = '''
+             destElem = ((BigElement)srcElem1 + (BigElement)srcElem2 +

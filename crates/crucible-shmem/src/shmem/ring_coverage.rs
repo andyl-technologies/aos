@@ -161,6 +161,14 @@ impl RingHeader {
     /// after the held bit becomes visible.
     #[must_use]
     pub fn hold_hot_fork_producers(&self) -> RingProducerBarrierSnapshot {
+        crate::mapped_setup_region::selected_lifecycle::ordinary_header_mutation(
+            std::ptr::from_ref(self) as usize,
+            || self.hold_hot_fork_producers_with_mapping_loan(),
+        )
+        .unwrap_or_else(|_| self.producer_barrier_snapshot())
+    }
+
+    pub(crate) fn hold_hot_fork_producers_with_mapping_loan(&self) -> RingProducerBarrierSnapshot {
         self.producer_state
             .fetch_or(RING_ADMISSION_HELD, Ordering::SeqCst);
         self.producer_barrier_snapshot()
@@ -169,6 +177,16 @@ impl RingHeader {
     /// Releases the reversible hot-fork producer barrier for this ring.
     #[must_use]
     pub fn release_hot_fork_producers(&self) -> RingProducerBarrierSnapshot {
+        crate::mapped_setup_region::selected_lifecycle::ordinary_header_mutation(
+            std::ptr::from_ref(self) as usize,
+            || self.release_hot_fork_producers_with_mapping_loan(),
+        )
+        .unwrap_or_else(|_| self.producer_barrier_snapshot())
+    }
+
+    pub(crate) fn release_hot_fork_producers_with_mapping_loan(
+        &self,
+    ) -> RingProducerBarrierSnapshot {
         self.producer_state
             .fetch_and(!RING_ADMISSION_HELD, Ordering::SeqCst);
         self.producer_barrier_snapshot()
@@ -191,6 +209,14 @@ impl RingHeader {
     /// read index after the held bit becomes visible.
     #[must_use]
     pub fn hold_hot_fork_consumers(&self) -> RingConsumerBarrierSnapshot {
+        crate::mapped_setup_region::selected_lifecycle::ordinary_header_mutation(
+            std::ptr::from_ref(self) as usize,
+            || self.hold_hot_fork_consumers_with_mapping_loan(),
+        )
+        .unwrap_or_else(|_| self.consumer_barrier_snapshot())
+    }
+
+    pub(crate) fn hold_hot_fork_consumers_with_mapping_loan(&self) -> RingConsumerBarrierSnapshot {
         self.consumer_state
             .fetch_or(RING_ADMISSION_HELD, Ordering::SeqCst);
         self.consumer_barrier_snapshot()
@@ -199,6 +225,16 @@ impl RingHeader {
     /// Releases the reversible hot-fork consumer barrier for this ring.
     #[must_use]
     pub fn release_hot_fork_consumers(&self) -> RingConsumerBarrierSnapshot {
+        crate::mapped_setup_region::selected_lifecycle::ordinary_header_mutation(
+            std::ptr::from_ref(self) as usize,
+            || self.release_hot_fork_consumers_with_mapping_loan(),
+        )
+        .unwrap_or_else(|_| self.consumer_barrier_snapshot())
+    }
+
+    pub(crate) fn release_hot_fork_consumers_with_mapping_loan(
+        &self,
+    ) -> RingConsumerBarrierSnapshot {
         self.consumer_state
             .fetch_and(!RING_ADMISSION_HELD, Ordering::SeqCst);
         self.consumer_barrier_snapshot()
@@ -433,14 +469,46 @@ impl RingHeader {
         self.enter_consumer_with_hook(|| {})
     }
 
+    #[cfg(test)]
+    pub(crate) fn enter_producer_with_test_hook(
+        &self,
+        hook: impl FnOnce(),
+    ) -> Option<RingProducerAdmission<'_>> {
+        self.enter_producer_with_hook(hook)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enter_consumer_with_test_hook(
+        &self,
+        hook: impl FnOnce(),
+    ) -> Option<RingConsumerAdmission<'_>> {
+        self.enter_consumer_with_hook(hook)
+    }
+
     fn enter_producer_with_hook(
         &self,
         after_initial_load: impl FnOnce(),
     ) -> Option<RingProducerAdmission<'_>> {
         let mut observed = self.producer_state.load(Ordering::SeqCst);
         after_initial_load();
+        // Every admission inside a selected loan checks its exact header
+        // before publication, including foreign ordinary or standalone rings.
+        let selected_admitted =
+            match crate::mapped_setup_region::selected_lifecycle::admit_selected_header(
+                std::ptr::from_ref(self) as usize,
+                true,
+                observed & RING_ADMISSION_HELD != 0,
+            ) {
+                Some(true) => true,
+                Some(false) => return None,
+                None => false,
+            };
         loop {
-            if observed & RING_ADMISSION_HELD != 0 {
+            if selected_admitted && observed & RING_ADMISSION_HELD == 0 {
+                crate::mapped_setup_region::selected_lifecycle::refuse_selected_admission();
+                return None;
+            }
+            if !selected_admitted && observed & RING_ADMISSION_HELD != 0 {
                 return None;
             }
             let count = observed & RING_ADMISSION_COUNT_MASK;
@@ -452,7 +520,7 @@ impl RingHeader {
             }
             match self.producer_state.compare_exchange(
                 observed,
-                next_count,
+                (observed & RING_ADMISSION_HELD) | next_count,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
@@ -468,8 +536,24 @@ impl RingHeader {
     ) -> Option<RingConsumerAdmission<'_>> {
         let mut observed = self.consumer_state.load(Ordering::SeqCst);
         after_initial_load();
+        // Every admission inside a selected loan checks its exact header
+        // before publication, including foreign ordinary or standalone rings.
+        let selected_admitted =
+            match crate::mapped_setup_region::selected_lifecycle::admit_selected_header(
+                std::ptr::from_ref(self) as usize,
+                false,
+                observed & RING_ADMISSION_HELD != 0,
+            ) {
+                Some(true) => true,
+                Some(false) => return None,
+                None => false,
+            };
         loop {
-            if observed & RING_ADMISSION_HELD != 0 {
+            if selected_admitted && observed & RING_ADMISSION_HELD == 0 {
+                crate::mapped_setup_region::selected_lifecycle::refuse_selected_admission();
+                return None;
+            }
+            if !selected_admitted && observed & RING_ADMISSION_HELD != 0 {
                 return None;
             }
             let count = observed & RING_ADMISSION_COUNT_MASK;
@@ -481,7 +565,7 @@ impl RingHeader {
             }
             match self.consumer_state.compare_exchange(
                 observed,
-                next_count,
+                (observed & RING_ADMISSION_HELD) | next_count,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
@@ -808,21 +892,27 @@ impl RingHeader {
         entries: &mut [FrameEntry],
         snapshot: &SpscRingSnapshot,
     ) -> Result<(), SpscRingError> {
-        let capacity = validated_capacity(entries)?;
-        if snapshot.frames.len() as u64 > capacity {
-            return Err(SpscRingError::SnapshotTooLarge {
-                len: snapshot.frames.len(),
-                capacity,
-            });
-        }
+        crate::mapped_setup_region::selected_lifecycle::ordinary_header_mutation(
+            std::ptr::from_ref(self) as usize,
+            || {
+                let capacity = validated_capacity(entries)?;
+                if snapshot.frames.len() as u64 > capacity {
+                    return Err(SpscRingError::SnapshotTooLarge {
+                        len: snapshot.frames.len(),
+                        capacity,
+                    });
+                }
 
-        for (slot, frame) in snapshot.frames.iter().enumerate() {
-            entries[slot] = frame.to_live()?;
-        }
-        self.read_idx.store(0, Ordering::Release);
-        self.write_idx
-            .store(snapshot.frames.len() as u64, Ordering::Release);
-        Ok(())
+                for (slot, frame) in snapshot.frames.iter().enumerate() {
+                    entries[slot] = frame.to_live()?;
+                }
+                self.read_idx.store(0, Ordering::Release);
+                self.write_idx
+                    .store(snapshot.frames.len() as u64, Ordering::Release);
+                Ok(())
+            },
+        )
+        .map_err(|_| SpscRingError::ProducerBarrierHeld)?
     }
 
     /// Returns the current consumer-owned read index.

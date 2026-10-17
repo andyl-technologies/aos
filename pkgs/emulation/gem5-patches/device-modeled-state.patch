@@ -1,0 +1,533 @@
+diff --git a/src/dev/virtio/base.hh b/src/dev/virtio/base.hh
+--- a/src/dev/virtio/base.hh
++++ b/src/dev/virtio/base.hh
+@@ -58,6 +58,7 @@
+ struct VirtIODummyDeviceParams;
+ 
+ class VirtQueue;
++class CrucibleStateWriter;
+ 
+ /** @{
+  * @name VirtIO endian conversion helpers
+@@ -142,6 +143,9 @@
+     /** Get the descriptor's index into the virtqueue. */
+     Index index() const { return _index; }
+ 
++    /** Copies initialized native descriptor storage into typed diagnostics. */
++    void crucibleVisit(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     /** Returns the already validated native data address for frozen custody. */
+     Addr dataAddress() const { return desc.addr; }
+ 
+@@ -353,6 +357,9 @@
+     void setReady(bool ready);
+     bool ready() const { return _ready; }
+ 
++    /** Copies actual queue storage, cursors and geometry without guest DMA. */
++    void crucibleVisit(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     /** Returns a native reset/reconfiguration fence, never guest authority. */
+     uint64_t incarnation() const { return _incarnation; }
+ 
+@@ -523,6 +530,7 @@
+          * @param addr New host physical address
+          */
+         void setAddress(Addr addr) { _base = addr; }
++        Addr baseAddress() const { return _base; }
+ 
+         void setSize(uint16_t size) { ring.resize(size); }
+ 
+@@ -656,6 +664,9 @@
+                      FeatureBits features);
+     virtual ~VirtIODeviceBase();
+ 
++    /** Reports typed device and queue fields, with explicit coverage limits. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+   public:
+     /** @{
+      * @name SimObject Interfaces
+diff --git a/src/dev/virtio/base.cc b/src/dev/virtio/base.cc
+--- a/src/dev/virtio/base.cc
++++ b/src/dev/virtio/base.cc
+@@ -36,6 +36,7 @@
+  */
+ 
+ #include "dev/virtio/base.hh"
++#include "sim/crucible_state.hh"
+ 
+ #include <limits>
+ 
+@@ -687,4 +688,85 @@
+ {
+ }
+ 
++void
++VirtDescriptor::crucibleVisit(CrucibleStateWriter &writer,
++                              const std::string &prefix) const
++{
++    writer.reference(prefix + ".identity", this, "virtio-descriptor");
++    if (!writer.beginBody(this, "virtio-descriptor"))
++        return;
++    writer.reference(prefix + ".queue", queue, "virtio-queue");
++    writer.reference(prefix + ".proxy", memProxy, "port-proxy");
++    writer.set(prefix + ".byte_order", byteOrder);
++    writer.set(prefix + ".index", _index);
++    writer.set(prefix + ".buffer_address", desc.addr);
++    writer.set(prefix + ".buffer_length", desc.len);
++    writer.set(prefix + ".flags", desc.flags);
++    writer.set(prefix + ".next", desc.next);
++}
++
++void
++VirtQueue::crucibleVisit(CrucibleStateWriter &writer,
++                         const std::string &prefix) const
++{
++    writer.reference(prefix + ".identity", this, "virtio-queue");
++    if (!writer.beginBody(this, "virtio-queue"))
++        return;
++    writer.reference(prefix + ".proxy", &memProxy, "port-proxy");
++    writer.set(prefix + ".byte_order", byteOrder);
++    writer.set(prefix + ".maximum_size", _maxSize);
++    writer.set(prefix + ".selected_size", _size);
++    writer.set(prefix + ".descriptor_address", _address);
++    writer.set(prefix + ".driver_address", _driverAddress);
++    writer.set(prefix + ".device_address", _deviceAddress);
++    writer.set(prefix + ".modern", _modern);
++    writer.set(prefix + ".ready", _ready);
++    writer.set(prefix + ".last_available", _last_avail);
++    writer.set(prefix + ".last_used", _last_used);
++    writer.set(prefix + ".incarnation", _incarnation);
++    writer.set(prefix + ".available.base", avail.baseAddress());
++    writer.set(prefix + ".available.flags", avail.header.flags);
++    writer.set(prefix + ".available.index", avail.header.index);
++    writer.set(prefix + ".available.cached_count", avail.ring.size());
++    for (size_t index = 0; index < avail.ring.size(); ++index)
++        writer.set(prefix + ".available.cached[" + std::to_string(index) + "]",
++                   avail.ring[index]);
++    writer.set(prefix + ".used.base", used.baseAddress());
++    writer.set(prefix + ".used.flags", used.header.flags);
++    writer.set(prefix + ".used.index", used.header.index);
++    writer.set(prefix + ".used.cached_count", used.ring.size());
++    for (size_t index = 0; index < used.ring.size(); ++index) {
++        const auto key = prefix + ".used.cached[" + std::to_string(index) + "]";
++        writer.set(key + ".id", used.ring[index].id);
++        writer.set(key + ".length", used.ring[index].len);
++    }
++    writer.set(prefix + ".descriptor_storage_count", descriptors.size());
++    for (size_t index = 0; index < descriptors.size(); ++index)
++        descriptors[index].crucibleVisit(writer,
++            prefix + ".descriptor[" + std::to_string(index) + "]");
++}
++
++std::map<std::string, std::string>
++VirtIODeviceBase::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.set("virtio.device_id", deviceId);
++    writer.set("virtio.config_size", configSize);
++    writer.set("virtio.offered_features", deviceFeatures);
++    writer.set("virtio.guest_features", guestFeatures);
++    writer.set("virtio.byte_order", byteOrder);
++    writer.set("virtio.status", uint8_t(_deviceStatus));
++    writer.set("virtio.modern_transport", _modernTransport);
++    writer.set("virtio.features_finalized", _featuresFinalized);
++    writer.set("virtio.queue_select", _queueSelect);
++    writer.set("virtio.queue_count", _queues.size());
++    for (size_t index = 0; index < _queues.size(); ++index)
++        _queues[index]->crucibleVisit(writer,
++            "virtio.queue[" + std::to_string(index) + "]");
++    writer.set("virtio.transport_callback_installed", bool(transKick));
++    writer.string("coverage.unsupported",
++        "transport-callback-closure-proxy-address-map-and-inherited-simobject");
++    return std::move(writer.fields);
++}
++
+ } // namespace gem5
+diff --git a/src/dev/virtio/net.hh b/src/dev/virtio/net.hh
+--- a/src/dev/virtio/net.hh
++++ b/src/dev/virtio/net.hh
+@@ -49,6 +49,8 @@
+   public:
+     explicit VirtIONet(const VirtIONetParams &params);
+     void readConfig(PacketPtr pkt, Addr cfgOffset) override;
++    /** Reports retained native I/O and event aliases without servicing work. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
+     void serialize(CheckpointOut &cp) const override;
+     void unserialize(CheckpointIn &cp) override;
+ 
+@@ -70,6 +72,19 @@
+     bool setExecutionParent(uint64_t parent);
+ 
+   private:
++    class OwnerEvent : public Event
++    {
++      public:
++        enum class Action : uint8_t { First, Second };
++        OwnerEvent(VirtIONet &owner, Action action);
++        void process() override;
++        const char *description() const override;
++        std::map<std::string, std::string> crucibleModeledFields() const override;
++      private:
++        VirtIONet &owner;
++        const Action action;
++    };
++
+     struct Frame : public Serializable
+     {
+         uint64_t id = 0;
+@@ -115,8 +130,8 @@
+     std::array<uint8_t, 6> mac;
+     ReceiveQueue receiveQueue;
+     TransmitQueue transmitQueue;
+-    EventFunctionWrapper receiveEvent;
+-    EventFunctionWrapper transmitCreditEvent;
++    OwnerEvent receiveEvent;
++    OwnerEvent transmitCreditEvent;
+     std::deque<Frame> inputs;
+     std::deque<Frame> outputs;
+     uint64_t lastAcceptedRx = 0;
+diff --git a/src/dev/virtio/net.cc b/src/dev/virtio/net.cc
+--- a/src/dev/virtio/net.cc
++++ b/src/dev/virtio/net.cc
+@@ -30,6 +30,7 @@
+ #include "base/logging.hh"
+ #include "params/VirtIONet.hh"
+ #include "sim/system.hh"
++#include "sim/crucible_state.hh"
+ #include "sim/crucible_output.hh"
+ 
+ namespace gem5
+@@ -41,8 +42,8 @@
+       maximumFrameBytes(params.maximum_frame_bytes),
+       receiveQueue(params.system->physProxy, params.queue_size, *this),
+       transmitQueue(params.system->physProxy, params.queue_size, *this),
+-      receiveEvent([this] { receiveDue(); }, name() + ".sealed-rx"),
+-      transmitCreditEvent([this] { transmitAvailable(); }, name() + ".tx-credit")
++      receiveEvent(*this, OwnerEvent::Action::First),
++      transmitCreditEvent(*this, OwnerEvent::Action::Second)
+ {
+     fatal_if(!frameCapacity || frameCapacity > 4096 || maximumFrameBytes < 14 ||
+              maximumFrameBytes > 65536 || !params.queue_size ||
+@@ -461,4 +462,76 @@
+              "Restored native output lineage omits an unacknowledged frame");
+ }
+ 
++std::map<std::string, std::string>
++VirtIONet::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.fields = VirtIODeviceBase::crucibleModeledFields();
++    writer.set("net.frame_capacity", frameCapacity);
++    writer.set("net.maximum_frame_bytes", maximumFrameBytes);
++    writer.bytes("net.mac", mac.data(), mac.size());
++    writer.set("net.last_accepted_rx", lastAcceptedRx);
++    writer.set("net.retired_rx", retiredRx);
++    writer.set("net.next_tx", nextTx);
++    writer.set("net.acknowledged_tx", acknowledgedTx);
++    writer.set("net.execution_parent", executionParent);
++    writer.reference("net.receive_event", static_cast<const Event *>(&receiveEvent), "event");
++    writer.reference("net.transmit_credit_event", static_cast<const Event *>(&transmitCreditEvent), "event");
++    writer.set("net.receive_scheduled", receiveEvent.scheduled());
++    if (receiveEvent.scheduled())
++        writer.set("net.receive_tick", receiveEvent.when());
++    writer.set("net.transmit_credit_scheduled", transmitCreditEvent.scheduled());
++    if (transmitCreditEvent.scheduled())
++        writer.set("net.transmit_credit_tick", transmitCreditEvent.when());
++    const auto visit = [&](const std::deque<Frame> &frames, const std::string &prefix) {
++        writer.set(prefix + ".count", frames.size());
++        size_t index = 0;
++        for (const Frame &frame : frames) {
++            const auto key = prefix + "[" + std::to_string(index++) + "]";
++            writer.set(key + ".id", frame.id);
++            writer.set(key + ".tick", frame.tick);
++            writer.set(key + ".parent", frame.parent);
++            writer.set(key + ".consumed", frame.consumed);
++            writer.set(key + ".event_ordinal", frame.eventOrdinal);
++            writer.set(key + ".tick_ordinal", frame.tickOrdinal);
++            writer.set(key + ".consumed_tick", frame.consumedTick);
++            writer.set(key + ".consumption_parent", frame.consumptionParent);
++            writer.bytes(key + ".payload", frame.bytes.data(), frame.bytes.size());
++        }
++    };
++    visit(inputs, "net.inputs");
++    visit(outputs, "net.outputs");
++    return std::move(writer.fields);
++}
++
++VirtIONet::OwnerEvent::OwnerEvent(VirtIONet &owner, Action action)
++    : Event(Default_Pri), owner(owner), action(action)
++{
++}
++
++void
++VirtIONet::OwnerEvent::process()
++{
++    switch (action) {
++      case Action::First: owner.receiveDue(); break;
++      case Action::Second: owner.transmitAvailable(); break;
++    }
++}
++
++const char *
++VirtIONet::OwnerEvent::description() const
++{
++    return "VirtIONetOwnedCallback";
++}
++
++std::map<std::string, std::string>
++VirtIONet::OwnerEvent::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.reference("callback.identity", static_cast<const Event *>(this), "event");
++    writer.reference("callback.owner", static_cast<const SimObject *>(&owner), "sim-object");
++    writer.set("callback.action", action);
++    return std::move(writer.fields);
++}
++
+ } // namespace gem5
+diff --git a/src/dev/virtio/host_request.hh b/src/dev/virtio/host_request.hh
+--- a/src/dev/virtio/host_request.hh
++++ b/src/dev/virtio/host_request.hh
+@@ -42,6 +42,8 @@
+   public:
+     explicit VirtIOHostRequest(const VirtIOHostRequestParams &params);
+     void readConfig(PacketPtr pkt, Addr offset) override;
++    /** Reports retained native I/O and event aliases without servicing work. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
+     void serialize(CheckpointOut &cp) const override;
+     void unserialize(CheckpointIn &cp) override;
+ 
+@@ -56,6 +58,19 @@
+     bool retireCompleted(uint64_t id);
+ 
+   private:
++    class OwnerEvent : public Event
++    {
++      public:
++        enum class Action : uint8_t { First, Second };
++        OwnerEvent(VirtIOHostRequest &owner, Action action);
++        void process() override;
++        const char *description() const override;
++        std::map<std::string, std::string> crucibleModeledFields() const override;
++      private:
++        VirtIOHostRequest &owner;
++        const Action action;
++    };
++
+     struct Span
+     {
+         Addr address;
+@@ -113,8 +128,8 @@
+     std::vector<uint8_t> configuration;
+     PortProxy &memory;
+     Queue queue;
+-    EventFunctionWrapper replyEvent;
+-    EventFunctionWrapper creditEvent;
++    OwnerEvent replyEvent;
++    OwnerEvent creditEvent;
+     std::deque<Request> requests;
+     uint64_t nextRequest = 1;
+     uint64_t retiredThrough = 0;
+diff --git a/src/dev/virtio/host_request.cc b/src/dev/virtio/host_request.cc
+--- a/src/dev/virtio/host_request.cc
++++ b/src/dev/virtio/host_request.cc
+@@ -30,6 +30,7 @@
+ #include "base/logging.hh"
+ #include "params/VirtIOHostRequest.hh"
+ #include "sim/system.hh"
++#include "sim/crucible_state.hh"
+ #include "sim/crucible_output.hh"
+ 
+ namespace gem5
+@@ -78,8 +79,8 @@
+       maximumPayloadBytes(params.maximum_payload_bytes),
+       capacitySectors(params.capacity_sectors), configuration(configSize),
+       memory(params.system->physProxy), queue(memory, params.queue_size, *this),
+-      replyEvent([this] { completeDue(); }, name() + ".sealed-reply"),
+-      creditEvent([this] { collectRequests(); }, name() + ".request-credit")
++      replyEvent(*this, OwnerEvent::Action::First),
++      creditEvent(*this, OwnerEvent::Action::Second)
+ {
+     fatal_if(params.kind != "block" && params.kind != "9p",
+              "Unknown host-request device kind");
+@@ -431,4 +432,94 @@
+     return true;
+ }
+ 
++std::map<std::string, std::string>
++VirtIOHostRequest::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.fields = VirtIODeviceBase::crucibleModeledFields();
++    writer.set("request.block", block);
++    writer.set("request.capacity", requestCapacity);
++    writer.set("request.maximum_payload_bytes", maximumPayloadBytes);
++    writer.set("request.capacity_sectors", capacitySectors);
++    writer.bytes("request.configuration", configuration.data(), configuration.size());
++    writer.set("request.next", nextRequest);
++    writer.set("request.retired_through", retiredThrough);
++    writer.set("request.execution_parent", executionParent);
++    writer.reference("request.reply_event", static_cast<const Event *>(&replyEvent), "event");
++    writer.reference("request.credit_event", static_cast<const Event *>(&creditEvent), "event");
++    writer.set("request.reply_scheduled", replyEvent.scheduled());
++    if (replyEvent.scheduled())
++        writer.set("request.reply_tick", replyEvent.when());
++    writer.set("request.credit_scheduled", creditEvent.scheduled());
++    if (creditEvent.scheduled())
++        writer.set("request.credit_tick", creditEvent.when());
++    writer.set("request.retained_count", requests.size());
++    size_t index = 0;
++    for (const Request &request : requests) {
++        const auto key = "request.retained[" + std::to_string(index++) + "]";
++        writer.set(key + ".id", request.id);
++        writer.set(key + ".birth_tick", request.birthTick);
++        writer.set(key + ".birth_ordinal", request.birthOrdinal);
++        writer.set(key + ".birth_tick_ordinal", request.birthTickOrdinal);
++        writer.set(key + ".parent", request.parent);
++        writer.set(key + ".opcode", request.opcode);
++        writer.set(key + ".sector", request.sector);
++        writer.set(key + ".tag", request.tag);
++        writer.set(key + ".head", request.head);
++        writer.set(key + ".queue_incarnation", request.queueIncarnation);
++        writer.set(key + ".payload_bytes", request.payloadBytes);
++        writer.bytes(key + ".original_bytes", request.bytes.data(), request.bytes.size());
++        writer.set(key + ".acknowledged", request.acknowledged);
++        writer.set(key + ".reply_staged", request.replyStaged);
++        writer.set(key + ".completed", request.completed);
++        writer.set(key + ".reply_tick", request.replyTick);
++        writer.set(key + ".reply_parent", request.replyParent);
++        writer.set(key + ".status", request.status);
++        writer.bytes(key + ".reply", request.reply.data(), request.reply.size());
++        writer.set(key + ".completion_tick", request.completionTick);
++        writer.set(key + ".completion_ordinal", request.completionOrdinal);
++        writer.set(key + ".completion_tick_ordinal", request.completionTickOrdinal);
++        writer.set(key + ".completion_parent", request.completionParent);
++        writer.set(key + ".written_bytes", request.writtenBytes);
++        writer.set(key + ".writable_span_count", request.writable.size());
++        size_t spanIndex = 0;
++        for (const Span &span : request.writable) {
++            const auto spanKey = key + ".span[" + std::to_string(spanIndex++) + "]";
++            writer.set(spanKey + ".address", span.address);
++            writer.set(spanKey + ".length", span.length);
++        }
++    }
++    return std::move(writer.fields);
++}
++
++VirtIOHostRequest::OwnerEvent::OwnerEvent(VirtIOHostRequest &owner, Action action)
++    : Event(Default_Pri), owner(owner), action(action)
++{
++}
++
++void
++VirtIOHostRequest::OwnerEvent::process()
++{
++    switch (action) {
++      case Action::First: owner.completeDue(); break;
++      case Action::Second: owner.collectRequests(); break;
++    }
++}
++
++const char *
++VirtIOHostRequest::OwnerEvent::description() const
++{
++    return "VirtIOHostRequestOwnedCallback";
++}
++
++std::map<std::string, std::string>
++VirtIOHostRequest::OwnerEvent::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.reference("callback.identity", static_cast<const Event *>(this), "event");
++    writer.reference("callback.owner", static_cast<const SimObject *>(&owner), "sim-object");
++    writer.set("callback.action", action);
++    return std::move(writer.fields);
++}
++
+ } // namespace gem5
+diff --git a/src/dev/virtio/pci.hh b/src/dev/virtio/pci.hh
+--- a/src/dev/virtio/pci.hh
++++ b/src/dev/virtio/pci.hh
+@@ -53,6 +53,8 @@
+     typedef PciVirtIOParams Params;
+     PciVirtIO(const Params &params);
+     virtual ~PciVirtIO();
++    /** Reports selected transport fields and explicit inherited coverage gaps. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
+ 
+     void kick();
+     void serialize(CheckpointOut &cp) const override;
+diff --git a/src/dev/virtio/pci.cc b/src/dev/virtio/pci.cc
+--- a/src/dev/virtio/pci.cc
++++ b/src/dev/virtio/pci.cc
+@@ -36,6 +36,7 @@
+  */
+ 
+ #include "dev/virtio/pci.hh"
++#include "sim/crucible_state.hh"
+ 
+ #include <array>
+ 
+@@ -453,4 +454,18 @@
+     intrPost();
+ }
+ 
++std::map<std::string, std::string>
++PciVirtIO::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.set("pci_virtio.modern", modern);
++    writer.set("pci_virtio.device_feature_select", deviceFeatureSelect);
++    writer.set("pci_virtio.driver_feature_select", driverFeatureSelect);
++    writer.set("pci_virtio.queue_notify", queueNotify);
++    writer.set("pci_virtio.interrupt_delivery_pending", interruptDeliveryPending);
++    writer.reference("pci_virtio.device", static_cast<const SimObject *>(&vio), "sim-object");
++    writer.string("coverage.unsupported", "inherited-pci-endpoint-bars-config-and-routing");
++    return std::move(writer.fields);
++}
++
+ } // namespace gem5
+diff --git a/src/dev/arm/vio_mmio.hh b/src/dev/arm/vio_mmio.hh
+--- a/src/dev/arm/vio_mmio.hh
++++ b/src/dev/arm/vio_mmio.hh
+@@ -52,6 +52,8 @@
+   public:
+     MmioVirtIO(const MmioVirtIOParams &params);
+     virtual ~MmioVirtIO();
++    /** Reports selected transport fields and explicit inherited coverage gaps. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
+     void serialize(CheckpointOut &cp) const override;
+     void unserialize(CheckpointIn &cp) override;
+ 
+diff --git a/src/dev/arm/vio_mmio.cc b/src/dev/arm/vio_mmio.cc
+--- a/src/dev/arm/vio_mmio.cc
++++ b/src/dev/arm/vio_mmio.cc
+@@ -36,6 +36,7 @@
+  */
+ 
+ #include "dev/arm/vio_mmio.hh"
++#include "sim/crucible_state.hh"
+ 
+ #include "debug/VIOIface.hh"
+ #include "dev/arm/base_gic.hh"
+@@ -337,4 +338,19 @@
+     }
+ }
+ 
++std::map<std::string, std::string>
++MmioVirtIO::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.set("mmio_virtio.modern", modern);
++    writer.set("mmio_virtio.host_feature_select", hostFeaturesSelect);
++    writer.set("mmio_virtio.guest_feature_select", guestFeaturesSelect);
++    writer.set("mmio_virtio.page_size", pageSize);
++    writer.set("mmio_virtio.interrupt_status", interruptStatus);
++    writer.reference("mmio_virtio.device", static_cast<const SimObject *>(&vio), "sim-object");
++    writer.reference("mmio_virtio.interrupt", interrupt, "arm-interrupt-pin");
++    writer.string("coverage.unsupported", "inherited-pio-routing-and-interrupt-pin-state");
++    return std::move(writer.fields);
++}
++
+ } // namespace gem5

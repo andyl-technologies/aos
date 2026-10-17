@@ -24,6 +24,13 @@ where
         request: &ResumeAttemptExecutionRequest,
     ) -> Result<ResumeAttemptExecutionResponse, LocalExecutorError<L::Error>> {
         let assignment = request.assignment_request()?;
+        if let Err(reason) = self.validate_legacy_request_roster(&assignment) {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::Rejected { reason },
+            )
+            .map_err(Into::into);
+        }
         let validation = self.validator.validate(&assignment);
         self.resume_after_validation(request, validation)
     }
@@ -34,6 +41,13 @@ where
         validation: Result<(), ExecutorRejection>,
     ) -> Result<ResumeAttemptExecutionResponse, LocalExecutorError<L::Error>> {
         let assignment = request.assignment_request()?;
+        if let Err(reason) = self.validate_legacy_request_roster(&assignment) {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::Rejected { reason },
+            )
+            .map_err(Into::into);
+        }
         if request.daemon_epoch() != self.daemon_epoch {
             return ResumeAttemptExecutionResponse::new(
                 request,

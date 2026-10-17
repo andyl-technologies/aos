@@ -1507,7 +1507,7 @@ pub(super) fn read_world_ninep_node_binary(
     ))
 }
 
-pub(super) fn write_world_node_binary(node: &WorldNode, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_world_node_binary(node: &ComputeNodeDef, writer: &mut ScenarioBinaryWriter) {
     writer.write_string(&node.id.name);
     write_vm_arch_binary(node.arch, writer);
     writer.write_u32(node.memory_mib);
@@ -1525,7 +1525,7 @@ pub(super) fn write_world_node_binary(node: &WorldNode, writer: &mut ScenarioBin
 
 pub(super) fn read_world_node_binary(
     reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<WorldNode, EngineError> {
+) -> Result<ComputeNodeDef, EngineError> {
     let id = NodeId {
         name: reader.read_string()?,
     };
@@ -1543,7 +1543,7 @@ pub(super) fn read_world_node_binary(
         1 => WhiteBoxPolicy::Enabled,
         _ => return Err(scenario_serialization_error("invalid white-box policy tag")),
     };
-    Ok(WorldNode {
+    Ok(ComputeNodeDef {
         id,
         arch,
         memory_mib,

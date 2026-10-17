@@ -6,9 +6,9 @@ mod instances;
 
 pub use instances::*;
 
-/// Reusable node settings for code-first scenario authoring.
+/// Reusable compute-node settings for code-first scenario authoring.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct NodeTemplate {
+pub struct ComputeNodeTemplate {
     pub(super) arch: VmArchitecture,
     pub(super) memory_mib: u32,
     pub(super) cmdline: String,
@@ -20,7 +20,12 @@ pub struct NodeTemplate {
     pub(super) initrd: Option<ContentAddressedBlobRef>,
 }
 
-impl NodeTemplate {
+/// Preserves the earlier source name for [`ComputeNodeTemplate`] during migration.
+///
+/// Both names construct the same compute definition and canonical scenario bytes.
+pub use self::ComputeNodeTemplate as NodeTemplate;
+
+impl ComputeNodeTemplate {
     /// The default virtual-machine architecture for a world node.
     pub const DEFAULT_ARCH: VmArchitecture = VmArchitecture::X86_64;
     /// The default virtual-machine memory size in MiB.
@@ -82,7 +87,7 @@ impl NodeTemplate {
 
     /// Builds a node template by copying another world node's settings.
     #[must_use]
-    pub fn from_world_node(node: &WorldNode) -> Self {
+    pub fn from_world_node(node: &ComputeNodeDef) -> Self {
         Self {
             arch: node.arch,
             memory_mib: node.memory_mib,
@@ -228,8 +233,8 @@ impl NodeTemplate {
         self
     }
 
-    fn instantiate(&self, id: NodeId) -> WorldNode {
-        WorldNode {
+    fn instantiate(&self, id: NodeId) -> ComputeNodeDef {
+        ComputeNodeDef {
             id,
             arch: self.arch,
             memory_mib: self.memory_mib,
@@ -244,8 +249,8 @@ impl NodeTemplate {
     }
 }
 
-impl From<WorldNode> for NodeTemplate {
-    fn from(node: WorldNode) -> Self {
+impl From<ComputeNodeDef> for ComputeNodeTemplate {
+    fn from(node: ComputeNodeDef) -> Self {
         Self::from_world_node(&node)
     }
 }
@@ -263,7 +268,7 @@ pub struct ScenarioBuilder {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum PendingScenarioNode {
-    Concrete(WorldNode),
+    Concrete(ComputeNodeDef),
     Like { id: NodeId, template: NodeId },
 }
 
@@ -302,7 +307,7 @@ impl ScenarioBuilder {
 
     /// Adds a concrete node from a reusable node template.
     #[must_use]
-    pub fn node(mut self, name: impl Into<String>, template: NodeTemplate) -> Self {
+    pub fn node(mut self, name: impl Into<String>, template: ComputeNodeTemplate) -> Self {
         let id = NodeId { name: name.into() };
         self.nodes
             .push(PendingScenarioNode::Concrete(template.instantiate(id)));
@@ -378,13 +383,13 @@ impl ScenarioBuilder {
         world.scenario_def_with_plan_properties_and_seed(&plan, &properties, self.seed)
     }
 
-    fn build_nodes(&self) -> Result<Vec<WorldNode>, EngineError> {
+    fn build_nodes(&self) -> Result<Vec<ComputeNodeDef>, EngineError> {
         let mut templates = BTreeMap::new();
         let mut nodes = Vec::with_capacity(self.nodes.len());
 
         for pending in &self.nodes {
             if let PendingScenarioNode::Concrete(node) = pending {
-                templates.insert(node.id.clone(), NodeTemplate::from_world_node(node));
+                templates.insert(node.id.clone(), ComputeNodeTemplate::from_world_node(node));
                 nodes.push(node.clone());
             }
         }

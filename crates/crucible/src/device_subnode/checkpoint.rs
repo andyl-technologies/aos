@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{DeviceSchedulingSubNode, ModeledCompletion, PendingCompletion, ScheduledDevice};
+use super::{ModeledCompletion, PendingCompletion, ScheduledDevice, ScheduledIoNode};
 use crate::Schedule;
 
 const MAGIC: &[u8] = b"crucible.device-scheduling-subnode.v1\0";
@@ -62,7 +62,7 @@ struct ResolvedWire {
     delivered: bool,
 }
 
-impl DeviceSchedulingSubNode {
+impl ScheduledIoNode {
     /// Captures every mutable device and scheduler-bridge field.
     #[must_use]
     pub fn checkpoint(&self) -> DeviceSchedulingSubNodeCheckpoint {

@@ -16,6 +16,13 @@ where
         &mut self,
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitPreflight, LocalExecutorError<L::Error>> {
+        // Guarantee admission precedes idempotent assignment lookup: a cached
+        // deterministic completion cannot authorize a newly coupled physical owner.
+        if let Err(reason) = self.validate_legacy_request_roster(request) {
+            return self
+                .response(request, SubmitAttemptDisposition::Rejected { reason })
+                .map(SubmitPreflight::Resolved);
+        }
         if let Some(response) = self.assignment_response(request)? {
             return Ok(SubmitPreflight::Resolved(response));
         }
@@ -38,6 +45,9 @@ where
         request: &SubmitAttemptRequest,
         validation: Result<ValidatedSubmitAdmission, ExecutorRejection>,
     ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
+        if let Err(reason) = self.validate_legacy_request_roster(request) {
+            return self.response(request, SubmitAttemptDisposition::Rejected { reason });
+        }
         if let Some(response) = self.assignment_response(request)? {
             return Ok(response);
         }

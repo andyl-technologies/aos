@@ -630,6 +630,7 @@ mod finding_candidate;
 mod mode_derivation;
 mod objective;
 mod observation;
+mod observed_node_attempt;
 mod planner_driver;
 mod planner_issue;
 mod planner_scan_index;

@@ -18,19 +18,19 @@ use crucible_protocol::{
 
 use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, Checkpoint, CheckpointKind, ChoiceTag, CodePoint,
-    Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidedFuzzConfig,
-    CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun, CoverageGuidedFuzzingEvidence, Decision,
-    EngineError, EventId, FamilySpace, FindingDiscoveryPath, FindingReproductionArtifact,
-    GenesisCheckpoint, GuestWorkloadBinary, GuestWorkloadParameterKey,
-    GuestWorkloadScalarParameter, Icount, IoEventKind, LinkLossProbability, MarkerId,
-    MemoryDagStore, NodeCounter, NodeId, NodeLifecycle, NodeTemplate, OverrideDecision, Plan,
-    Predicate, Properties, Property, ReadyPoint, RegexProgram, ReproductionArtifact,
-    ScenarioDefForm, ScenarioFamily, Schedule, SchedulerNodeId, SchedulingNodeKind,
-    SchedulingPoint, Seed, SimDuration, SimInstant, TemporalGraph, TemporalGraphFork,
-    TemporalGraphResumeEvidence, TemporalGraphRuntime, TemporalGraphSave,
+    ComputeNodeDef, ComputeNodeTemplate, Configuration, ContentAddressedBlobRef, ContentHash,
+    CoverageGuidedFuzzConfig, CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun,
+    CoverageGuidedFuzzingEvidence, Decision, EngineError, EventId, FamilySpace,
+    FindingDiscoveryPath, FindingReproductionArtifact, GenesisCheckpoint, GuestWorkloadBinary,
+    GuestWorkloadParameterKey, GuestWorkloadScalarParameter, Icount, IoEventKind,
+    LinkLossProbability, MarkerId, MemoryDagStore, NodeCounter, NodeId, NodeLifecycle,
+    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RegexProgram,
+    ReproductionArtifact, ScenarioDefForm, ScenarioFamily, Schedule, SchedulerNodeId,
+    SchedulingNodeKind, SchedulingPoint, Seed, SimDuration, SimInstant, TemporalGraph,
+    TemporalGraphFork, TemporalGraphResumeEvidence, TemporalGraphRuntime, TemporalGraphSave,
     TemporalGraphSaveEvidence, TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
     UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    WhiteBoxPolicy, World, bake, try_step,
 };
 use crate::scheduler::{
     EventLog, EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, ExactLocalEvent,
@@ -385,7 +385,7 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
 
     let world = crate::model::World::from_nodes_and_links(
         vec![
-            WorldNode {
+            ComputeNodeDef {
                 id: node("server"),
                 arch: VmArchitecture::X86_64,
                 memory_mib: 256,
@@ -394,12 +394,12 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
                     marker: String::from("listening on 0.0.0.0:8080"),
                 },
                 white_box: WhiteBoxPolicy::Disabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: Some(kernel),
                 root_image: Some(server_root),
                 initrd: None,
             },
-            WorldNode {
+            ComputeNodeDef {
                 id: node("client"),
                 arch: VmArchitecture::X86_64,
                 memory_mib: 256,
@@ -408,7 +408,7 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
                     marker: String::from("client ready"),
                 },
                 white_box: WhiteBoxPolicy::Disabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: Some(kernel),
                 root_image: Some(client_root),
                 initrd: None,
@@ -544,7 +544,7 @@ pub fn fault_campaign_family() -> Result<ScenarioFamily, ExampleCorpusError> {
         TopologySizeRange::new(3, 5)?,
         vec![TopologyShape::Ring, TopologyShape::Mesh],
     )?;
-    let template = NodeTemplate::fixed_icount(Icount { retired: 100 })
+    let template = ComputeNodeTemplate::fixed_icount(Icount { retired: 100 })
         .white_box(WhiteBoxPolicy::Enabled)
         .cmdline("console=ttyS0 quiet store.role=replica cluster=crucible-a4");
     Ok(
@@ -826,8 +826,8 @@ fn partition_node(
     name: &str,
     kernel: ContentAddressedBlobRef,
     root_image: ContentAddressedBlobRef,
-) -> WorldNode {
-    WorldNode {
+) -> ComputeNodeDef {
+    ComputeNodeDef {
         id: node(name),
         arch: VmArchitecture::X86_64,
         memory_mib: 512,
@@ -836,7 +836,7 @@ fn partition_node(
             marker: String::from("ready to accept connections"),
         },
         white_box: WhiteBoxPolicy::Enabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: Some(kernel),
         root_image: Some(root_image),
         initrd: None,
@@ -847,8 +847,8 @@ fn crash_restart_node(
     name: &str,
     kernel: ContentAddressedBlobRef,
     root_image: ContentAddressedBlobRef,
-) -> WorldNode {
-    WorldNode {
+) -> ComputeNodeDef {
+    ComputeNodeDef {
         id: node(name),
         arch: VmArchitecture::X86_64,
         memory_mib: 512,
@@ -857,7 +857,7 @@ fn crash_restart_node(
             marker: String::from("ready to accept connections"),
         },
         white_box: WhiteBoxPolicy::Enabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: Some(kernel),
         root_image: Some(root_image),
         initrd: None,

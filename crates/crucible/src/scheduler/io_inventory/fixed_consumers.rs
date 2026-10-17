@@ -187,10 +187,10 @@ fn two_consumers() -> crate::BackendQuantumLoop<SingleScheduler, TwoConsumers> {
     let mut definitions = Vec::new();
     let mut nodes = Vec::new();
     for name in ["a", "b"] {
-        definitions.push(WorldNodeDef::Vm(WorldNode {
+        definitions.push(WorldNodeDef::Vm(ComputeNodeDef {
             id: id(name),
             arch: VmArchitecture::X86_64,
-            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
             cmdline: String::new(),
             ready_point: ReadyPoint::FixedIcount {
                 icount: Icount { retired: 0 },

@@ -83,7 +83,7 @@ pub(super) struct DefaultRunResumeProof {
     pub(super) source_configuration: crucible_campaign::ConfigurationId,
     pub(super) source_frontier: VirtualTime,
     pub(super) source_observation: ObservationId,
-    pub(super) source_evidence: QemuAttemptExecutionEvidenceSnapshot,
+    pub(super) source_evidence: AttemptExecutionEvidenceSnapshot,
     pub(super) source_capture: Option<DefaultRunSavepointCapture>,
     pub(super) ready_snapshot: Option<CampaignSnapshotId>,
     pub(super) ready: Option<CampaignFactId>,
@@ -222,7 +222,7 @@ pub(super) struct ResumeProofMaterialization<'a> {
     pub(super) lineage: &'a CampaignLineage,
     pub(super) observations: &'a [GuardedDefaultCampaignObservation],
     pub(super) terminal: &'a GuardedDefaultCampaignObservation,
-    pub(super) terminal_evidence: &'a QemuAttemptExecutionEvidenceSnapshot,
+    pub(super) terminal_evidence: &'a AttemptExecutionEvidenceSnapshot,
     pub(super) proof: Option<DefaultRunResumeProof>,
     pub(super) source: Option<&'a GuardedDefaultCampaignResumeSource>,
 }

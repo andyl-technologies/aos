@@ -1,0 +1,1010 @@
+//! Live unchanged-cut capture issuance and authenticated source admission.
+
+use std::collections::BTreeMap;
+
+use crucible_node_contract::{
+    CaptureManifest, CaptureRepresentation, CapturedOwner, ContentRef, HashRef, Id, Position,
+    Repeatability, U64, canonical,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::node_adapters::{HOST_EXACT_PROFILE, HostModelResources, validate_host_continuation};
+use crate::node_admission::AdmittedGraph;
+use crate::node_contract::{NodeRuntime, RuntimeSnapshot, WorldActivation};
+use crate::node_scheduling::SchedulingSnapshot;
+
+use super::super::closure::{bounded_record, core_references, limit, verify_closure};
+use super::super::validation::required_immutable_refs;
+use super::super::{
+    CaptureEvidence, NativeCoordinatorCaptureProof, NativeOwnerCaptureProof, StateError,
+    StateLimits, StateRequirements, StateRestoreMode, VerifiedCapture, VerifiedStateContent,
+    admit_capture, schema,
+};
+use super::archive::{ArchiveBody, Object, refusal};
+use super::{
+    HostArchive, HostArchiveRecord, HostWorldFactory, native_failure, require_supported_extensions,
+};
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CoordinatorEdition {
+    Legacy,
+    Terminal,
+    Fault,
+    Recorded,
+    Condition,
+}
+
+impl CoordinatorEdition {
+    fn version(self) -> u32 {
+        match self {
+            Self::Legacy => 1,
+            Self::Terminal => 2,
+            Self::Fault => 3,
+            Self::Recorded => 5,
+            Self::Condition => 6,
+        }
+    }
+}
+
+pub(super) struct Coordinator {
+    pub schema_version: u32,
+    pub scheduler: SchedulingSnapshot,
+    pub runtime: RuntimeSnapshot,
+    pub world_repeatability: Repeatability,
+}
+
+// This is the selected closed native receipt grammar, not arbitrary JSON
+// reference discovery or a claim that parsed content proves native effects.
+fn fault_receipt_dependencies(bytes: &[u8]) -> Option<Vec<ContentRef>> {
+    let record: crate::node_contract::FaultMutationRecord = serde_json::from_slice(bytes).ok()?;
+    let mut references = vec![
+        record.request.program,
+        record.previous_table,
+        record.applied_table,
+    ];
+    references.sort();
+    references.dedup();
+    Some(references)
+}
+
+#[derive(Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct OwnerReceipt {
+    schema_version: u32,
+    node: Id,
+    owner: Id,
+    state: ContentRef,
+    coordinator: ContentRef,
+    cut: Position,
+    ordinal: U64,
+    domains: Vec<Id>,
+}
+
+impl HostArchive {
+    /// Captures the authentic stopped live host world and persists its complete closure.
+    ///
+    /// Native capture is read-only. The actual runtime and scheduler inventories
+    /// are checked again before issuance; the installed factory independently
+    /// authenticates each complete native model and immutable inputs. The signed
+    /// closure is sufficient after the original runtime has terminated.
+    ///
+    /// # Errors
+    /// Refuses unsupported native profiles, moving cuts, pending/failed native
+    /// operations, incomplete immutable content, unavailable installed model
+    /// qualification, unsupported owners or any finite state bound violation.
+    // crucible-lint: allow rust-allow -- Capture inputs keep the exact graph, native runtime, cut, source evidence and factory authority explicit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_world(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn HostWorldFactory,
+    ) -> Result<HostArchiveRecord, StateError> {
+        self.capture_world_selected(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            if recorded_binding(graph) {
+                CoordinatorEdition::Recorded
+            } else {
+                CoordinatorEdition::Legacy
+            },
+        )
+    }
+
+    /// Captures explicit terminal-bearing state with its original result stages.
+    ///
+    /// This selected coordinator edition retains the finalized evaluator,
+    /// original barrier context, report bytes, publication uncertainty and ACK
+    /// custody. Capturing never finalizes assertions or retries native work.
+    ///
+    /// # Errors
+    /// Refuses absent terminal custody, unsupported installed codecs or any
+    /// ordinary complete-world capture and finite-closure validation failure.
+    // crucible-lint: allow rust-allow -- The terminal entry retains the same graph, original runtime, cut and storage arguments as ordinary capture.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_terminal_world(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn HostWorldFactory,
+    ) -> Result<HostArchiveRecord, StateError> {
+        self.capture_world_selected(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            CoordinatorEdition::Terminal,
+        )
+    }
+
+    /// Captures the selected native fault-controller journal and original operations.
+    ///
+    /// Reading this archive never applies a table mutation. The selected installed
+    /// factory must authenticate the complete native decision journal and original
+    /// runtime scope, including held receipts and pending coordinator permissions.
+    ///
+    /// # Errors
+    /// Refuses absent selected fault scope, unsupported installed codecs, moving
+    /// state, missing original evidence or any complete-world capture bound.
+    // crucible-lint: allow rust-allow -- Complete-world capture keeps graph, actual activation, original evidence and installed factory explicit at this API boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_fault_world(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn HostWorldFactory,
+    ) -> Result<HostArchiveRecord, StateError> {
+        self.capture_world_selected(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            CoordinatorEdition::Fault,
+        )
+    }
+
+    /// Captures a qualified acknowledged original Stop with complete future custody.
+    ///
+    /// Native/coordinator six and scheduler four are explicitly selected. The
+    /// installed whole-world factory authenticates the original condition
+    /// program, immutable native inputs and complete Stop bodies before capture.
+    /// Existing live control and legacy archive editions remain unsupported.
+    ///
+    /// # Errors
+    /// Refuses incomplete or resumed Stop custody, unsupported installed native
+    /// state, changed future queues, foreign authority or finite credit deficits.
+    // crucible-lint: allow rust-allow -- The selected whole-world transaction retains all original native, source and factory authorities explicitly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_condition_world(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn HostWorldFactory,
+    ) -> Result<HostArchiveRecord, StateError> {
+        self.capture_world_selected(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            CoordinatorEdition::Condition,
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- Both capture editions share one preflight and native ownership transaction; the selected terminal flag never substitutes authority.
+    #[allow(clippy::too_many_arguments)]
+    fn capture_world_selected(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn HostWorldFactory,
+        edition: CoordinatorEdition,
+    ) -> Result<HostArchiveRecord, StateError> {
+        require_supported_extensions(graph)?;
+        let alarm = graph.node_ids().any(|node| {
+            graph.binding(node).is_some_and(|binding| {
+                crate::node_adapters::host_rate_alarm_clock_schema().is_ok_and(|schema| {
+                    binding
+                        .compatibility
+                        .implementation
+                        .formats
+                        .contains(&schema)
+                })
+            })
+        });
+        if alarm
+            && (edition != CoordinatorEdition::Legacy
+                || graph.node_ids().count() != 2
+                || !graph.node_ids().all(|node| {
+                    graph.binding(node).is_some_and(|binding| {
+                        matches!(
+                            binding
+                                .compatibility
+                                .implementation
+                                .implementation_id
+                                .as_str(),
+                            "crucible-host-rate-alarm-clock" | "crucible-host-scripted-source"
+                        )
+                    })
+                }))
+        {
+            return Err(refusal(
+                "rate-alarm capture requires its closed legacy-runtime Clock/script scope; combined lineage preservation is unsupported",
+            ));
+        }
+        if requirements.restore_mode != StateRestoreMode::DurableRestart {
+            return Err(refusal(
+                "host signed archive selects durable reconstruction explicitly",
+            ));
+        }
+        let scheduler = if edition == CoordinatorEdition::Condition {
+            runtime
+                .condition_scheduler_snapshot(
+                    activation,
+                    cut,
+                    ordinal,
+                    self.limits.maximum_record_bytes,
+                )
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Terminal {
+            runtime
+                .terminal_scheduler_snapshot(activation, cut, ordinal)
+                .map_err(schema)?
+        } else {
+            runtime
+                .scheduler(graph, activation)
+                .map_err(schema)?
+                .snapshot(cut, ordinal)
+                .map_err(schema)?
+        };
+        if scheduler.schema_version != 1
+            && !(edition == CoordinatorEdition::Fault && scheduler.schema_version == 3)
+            && !(edition == CoordinatorEdition::Condition && scheduler.schema_version == 4)
+        {
+            return Err(refusal(
+                "selected Host archive does not preserve scheduling epoch lineage",
+            ));
+        }
+        let source = if edition == CoordinatorEdition::Condition {
+            runtime
+                .condition_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Terminal {
+            runtime
+                .terminal_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Fault {
+            runtime
+                .fault_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else {
+            runtime
+                .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        };
+        if alarm && source.schema_version != 1 {
+            return Err(refusal(
+                "rate-alarm native7 requires its original runtime1/coordinator1 codec",
+            ));
+        }
+        if edition == CoordinatorEdition::Recorded && source.schema_version != 2 {
+            return Err(refusal(
+                "recorded capture requires original input provenance runtime two",
+            ));
+        }
+        if edition == CoordinatorEdition::Condition {
+            factory.authenticate_condition_custody(graph, &source, &scheduler, None)?;
+        } else if edition == CoordinatorEdition::Terminal {
+            factory.authenticate_terminal_custody(graph, &source, &scheduler, None)?;
+        } else if edition == CoordinatorEdition::Fault {
+            factory.authenticate_fault_custody(graph, &source, &scheduler, None)?;
+        }
+        let immutable_refs = required_immutable_refs(graph, self.limits)?;
+        let mut immutable_content = verify_closure(immutable_refs.clone(), immutable, self.limits)?;
+        let captures = runtime
+            .capture_host_native(
+                activation,
+                &source,
+                self.limits.maximum_record_bytes,
+                self.limits.maximum_content_bytes,
+                self.limits.maximum_total_content_bytes,
+                self.limits.maximum_content_objects,
+            )
+            .map_err(schema)?;
+        if matches!(
+            edition,
+            CoordinatorEdition::Fault | CoordinatorEdition::Condition
+        ) {
+            // The owning runtime authenticated these original native receipt
+            // objects. Expose their exact bytes to installed source validation;
+            // this does not make a raw content object native authority.
+            for capture in &captures {
+                for object in capture.evidence() {
+                    immutable_content.include_payload(
+                        &object.reference,
+                        &object.bytes,
+                        self.limits,
+                    )?;
+                }
+            }
+        }
+        let mut objects = Objects::new(self.limits);
+        for (reference, bytes) in immutable_content.entries() {
+            let dependencies = if edition == CoordinatorEdition::Condition {
+                if immutable_refs.contains(reference) {
+                    // Independently installed artifacts keep their own codec;
+                    // an executable or program never becomes a native receipt.
+                    immutable.dependencies(reference, bytes, self.limits.maximum_content_objects)?
+                } else {
+                    crate::node_adapters::condition_evidence_dependencies(bytes)
+                        .map_err(native_failure)?
+                }
+            } else if edition == CoordinatorEdition::Fault {
+                if let Some(dependencies) = fault_receipt_dependencies(bytes) {
+                    dependencies
+                } else if immutable_refs.contains(reference) {
+                    immutable.dependencies(reference, bytes, self.limits.maximum_content_objects)?
+                } else {
+                    Vec::new()
+                }
+            } else {
+                immutable.dependencies(reference, bytes, self.limits.maximum_content_objects)?
+            };
+            objects.insert(reference.clone(), bytes.to_vec(), dependencies)?;
+        }
+        let coordinator = Coordinator {
+            schema_version: edition.version(),
+            scheduler,
+            runtime: source,
+            world_repeatability: graph.world_repeatability(),
+        };
+        if let Some(terminal) = &coordinator.runtime.terminal {
+            for inventory in &terminal.record.native {
+                objects.insert(
+                    inventory.receipt.reference.clone(),
+                    inventory.receipt.bytes.clone(),
+                    vec![],
+                )?;
+            }
+            objects.insert(
+                terminal.reference.clone(),
+                canonical::canonical_json(&serde_json::to_value(&terminal.record).map_err(schema)?)
+                    .map_err(schema)?,
+                vec![],
+            )?;
+            if let Some(report) = &terminal.report {
+                objects.insert(report.reference.clone(), report.bytes.clone(), vec![])?;
+            }
+        }
+        // Original scheduler custody retains dynamic request bytes separately
+        // from immutable graph definitions. Verify their bounded identities
+        // before native and coordinator validators authenticate their lineage.
+        for payload in &coordinator.scheduler.payload_objects {
+            immutable_content.include_payload(&payload.reference, &payload.bytes, self.limits)?;
+            objects.insert(payload.reference.clone(), payload.bytes.clone(), vec![])?;
+        }
+        factory.authenticate_coordinator(
+            graph,
+            &coordinator.runtime,
+            &coordinator.scheduler,
+            &immutable_content,
+        )?;
+        let coordinator_ref = objects.record(
+            &coordinator,
+            core_references(&coordinator, self.limits.maximum_record_bytes)?,
+        )?;
+        let mut owners = Vec::new();
+        owners
+            .try_reserve_exact(captures.len())
+            .map_err(|_| limit("host capture owners"))?;
+        for captured in captures {
+            let node = captured.node();
+            let binding = graph
+                .binding(node)
+                .ok_or_else(|| refusal("captured host binding absent"))?;
+            let descriptor = graph
+                .descriptor(node)
+                .ok_or_else(|| refusal("captured host descriptor absent"))?;
+            if captured.profile().as_str() != HOST_EXACT_PROFILE {
+                return Err(refusal("unsupported native host capture profile"));
+            }
+            let inventory = validate_host_continuation(
+                &captured.state().bytes,
+                &coordinator.runtime,
+                descriptor,
+                binding,
+                HostModelResources {
+                    maximum_capture_bytes: self.limits.maximum_content_bytes,
+                    ..HostModelResources::default()
+                },
+            )
+            .map_err(native_failure)?;
+            factory.authenticate_source(
+                graph,
+                node,
+                &captured.state().bytes,
+                &coordinator.runtime,
+                &immutable_content,
+            )?;
+            let state_schema = factory.state_schema(graph, node)?;
+            if !binding
+                .compatibility
+                .implementation
+                .formats
+                .contains(&state_schema)
+            {
+                return Err(refusal("installed native codec is not in actual binding"));
+            }
+            let mut dependencies = Vec::new();
+            for object in captured.evidence() {
+                dependencies.push(object.reference.clone());
+                // An immutable source body already carries its selected typed
+                // dependency edges. Native custody retains the same bytes rather
+                // than replacing that closure with an opaque leaf.
+                if let Some(original) = immutable_content.get(&object.reference) {
+                    if original != object.bytes.as_slice() {
+                        return Err(refusal("native retained immutable source body differs"));
+                    }
+                } else {
+                    objects.insert(
+                        object.reference.clone(),
+                        object.bytes.clone(),
+                        if edition == CoordinatorEdition::Fault {
+                            fault_receipt_dependencies(&object.bytes).unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        },
+                    )?;
+                }
+            }
+            if inventory
+                .evidence
+                .iter()
+                .any(|object| !dependencies.contains(&object.reference))
+            {
+                return Err(refusal("native capture evidence registry is incomplete"));
+            }
+            objects.insert(
+                captured.state().reference.clone(),
+                captured.state().bytes.clone(),
+                dependencies,
+            )?;
+            let owner_id = &binding.compatibility.capture_owner.id;
+            let policy = graph
+                .ownership_policy()
+                .capture_owners
+                .iter()
+                .find(|owner| &owner.owner_id == owner_id)
+                .ok_or_else(|| refusal("host capture owner policy absent"))?;
+            let domains: Vec<_> = graph
+                .ownership_policy()
+                .domains
+                .iter()
+                .filter(|domain| &domain.capture_owner_id == owner_id)
+                .map(|domain| domain.id.clone())
+                .collect();
+            let receipt = OwnerReceipt {
+                schema_version: 1,
+                node: node.clone(),
+                owner: owner_id.clone(),
+                state: captured.state().reference.clone(),
+                coordinator: coordinator_ref.clone(),
+                cut,
+                ordinal,
+                domains: domains.clone(),
+            };
+            let receipt_ref = objects.record(
+                &receipt,
+                vec![receipt.state.clone(), coordinator_ref.clone()],
+            )?;
+            owners.push(CapturedOwner {
+                capture_owner_id: owner_id.clone(),
+                participant_ids: vec![node.clone()],
+                state_domain_ids: domains,
+                binding_hashes: vec![binding.identity().map_err(schema)?],
+                state_schema,
+                representation: CaptureRepresentation::Durable,
+                state_ref: Some(captured.state().reference.clone()),
+                retained_source_ref: None,
+                dependencies: policy.dependencies.clone(),
+                capture_receipt: receipt_ref,
+                extensions: Default::default(),
+            });
+        }
+        owners.sort_by(|left, right| left.capture_owner_id.cmp(&right.capture_owner_id));
+        let guarantees_ref = objects.record(
+            &serde_json::json!({
+                "schema_version":1,"world_repeatability":graph.world_repeatability(),
+                "exact_model_continuation":requirements.exact_model_continuation,
+                "preservation_contract":requirements.preservation_contract,
+            }),
+            vec![],
+        )?;
+        let provenance_ref = objects.record(
+            &serde_json::json!({
+                "schema_version":1,"source_activation":coordinator.runtime.source_activation,
+                "cut":cut,"ordinal":ordinal,
+            }),
+            vec![],
+        )?;
+        let manifest = CaptureManifest {
+            schema_version: 1,
+            capture_id,
+            world_binding_hash: graph.world_binding_hash().clone(),
+            scenario_ref: graph.world().scenario_ref.clone(),
+            preservation_contract: requirements.preservation_contract.clone(),
+            cut,
+            event_ordinal: ordinal,
+            ordering_profile: graph.world().ordering_profile.clone(),
+            guarantees_ref,
+            coordinator_state_ref: coordinator_ref,
+            owners,
+            immutable_refs,
+            provenance_ref,
+            extensions: Default::default(),
+        };
+        let runtime_after = if edition == CoordinatorEdition::Condition {
+            runtime
+                .condition_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Terminal {
+            runtime
+                .terminal_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Fault {
+            runtime
+                .fault_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else {
+            runtime
+                .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        };
+        let scheduler_after = if edition == CoordinatorEdition::Condition {
+            runtime
+                .condition_scheduler_snapshot(
+                    activation,
+                    cut,
+                    ordinal,
+                    self.limits.maximum_record_bytes,
+                )
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Terminal {
+            runtime
+                .terminal_scheduler_snapshot(activation, cut, ordinal)
+                .map_err(schema)?
+        } else {
+            runtime
+                .scheduler(graph, activation)
+                .map_err(schema)?
+                .snapshot(cut, ordinal)
+                .map_err(schema)?
+        };
+        if runtime_after != coordinator.runtime || scheduler_after != coordinator.scheduler {
+            return Err(refusal(
+                "original runtime or coordinator changed during native capture",
+            ));
+        }
+        let artifact = objects.record(
+            &manifest,
+            core_references(&manifest, self.limits.maximum_record_bytes)?,
+        )?;
+        let body = ArchiveBody {
+            schema_version: 1,
+            artifact,
+            objects: objects.finish(),
+        };
+        // Verify scope and native source closure before issuing any signature.
+        let record = super::archive::validate_for_capture(body, self.limits)?;
+        record.admit(graph, requirements, factory, self.limits)?;
+        self.persist(super::archive::take_capture_body(record)?)
+    }
+}
+
+impl HostArchiveRecord {
+    /// Reads authenticated original generation data without granting live authority.
+    ///
+    /// Fresh realization derives higher generations from this data and then
+    /// independently enrolls native owners. Saved incarnations are provenance,
+    /// never reusable execution permissions.
+    ///
+    /// # Errors
+    /// Refuses excessive coordinator bytes, malformed editions or an original
+    /// activation/cut inconsistent with the authenticated complete manifest.
+    pub fn source_activation(
+        &self,
+        maximum_record_bytes: usize,
+    ) -> Result<crate::node_contract::SavedRuntimeActivation, StateError> {
+        let object = self.object(&self.manifest.coordinator_state_ref)?;
+        if object.bytes.len() > maximum_record_bytes {
+            return Err(limit("authenticated source activation record"));
+        }
+        let coordinator =
+            super::condition_coordinator::decode_selected(&object.bytes, &self.manifest)?;
+        if !matches!(coordinator.schema_version, 1..=3 | 5 | 6)
+            || (coordinator.schema_version == 6
+                && (coordinator.runtime.schema_version != 6
+                    || coordinator.scheduler.schema_version != 4))
+            || (coordinator.schema_version == 6)
+                != super::condition_coordinator::selected_manifest(&self.manifest)
+            || (coordinator.schema_version == 5 && coordinator.runtime.schema_version != 2)
+            || (coordinator.schema_version == 5) != recorded_manifest(&self.manifest)
+            || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
+            || (coordinator.schema_version == 3) != (coordinator.runtime.schema_version == 4)
+            || coordinator.runtime.source_activation.world_binding_hash
+                != self.manifest.world_binding_hash
+            || coordinator.runtime.capture_cut != self.manifest.cut
+            || coordinator.runtime.capture_ordinal != self.manifest.event_ordinal
+        {
+            return Err(refusal(
+                "authenticated source generation or complete cut differs",
+            ));
+        }
+        Ok(coordinator.runtime.source_activation)
+    }
+
+    /// Admits the authenticated original capture against measured installed models.
+    ///
+    /// # Errors
+    /// Refuses changed backend bindings, selected codecs, incomplete source
+    /// closure, false native inventories or unavailable installed qualification.
+    pub fn admit(
+        &self,
+        graph: &AdmittedGraph,
+        requirements: StateRequirements,
+        factory: &dyn HostWorldFactory,
+        limits: StateLimits,
+    ) -> Result<VerifiedCapture, StateError> {
+        require_supported_extensions(graph)?;
+        admit_capture(
+            graph,
+            self.artifact(),
+            requirements,
+            &ArchiveEvidence {
+                record: self,
+                factory,
+            },
+            limits,
+        )
+    }
+}
+
+pub(super) struct ArchiveEvidence<'a> {
+    pub record: &'a HostArchiveRecord,
+    pub factory: &'a dyn HostWorldFactory,
+}
+
+impl CaptureEvidence for ArchiveEvidence<'_> {
+    fn content(&self, reference: &ContentRef, maximum_bytes: usize) -> Result<Vec<u8>, StateError> {
+        let object = self.record.object(reference)?;
+        if object.bytes.len() > maximum_bytes {
+            return Err(limit("archive content allocation"));
+        }
+        Ok(object.bytes.clone())
+    }
+
+    fn dependencies(
+        &self,
+        reference: &ContentRef,
+        verified_bytes: &[u8],
+        maximum_dependencies: usize,
+    ) -> Result<Vec<ContentRef>, StateError> {
+        let object = self.record.object(reference)?;
+        if object.bytes != verified_bytes || object.dependencies.len() > maximum_dependencies {
+            return Err(limit("archive selected dependency inventory"));
+        }
+        Ok(object.dependencies.clone())
+    }
+
+    fn verify_owner_capture(
+        &self,
+        graph: &AdmittedGraph,
+        manifest: &CaptureManifest,
+        owner: &CapturedOwner,
+        requirements: &StateRequirements,
+        content: &VerifiedStateContent,
+    ) -> Result<NativeOwnerCaptureProof, StateError> {
+        if manifest != &self.record.manifest
+            || requirements.restore_mode != StateRestoreMode::DurableRestart
+            || owner.participant_ids.len() != 1
+        {
+            return Err(refusal(
+                "host archive owner, durable scope or manifest differs",
+            ));
+        }
+        let node = &owner.participant_ids[0];
+        let reference = owner
+            .state_ref
+            .as_ref()
+            .ok_or_else(|| refusal("durable host state absent"))?;
+        let native = content
+            .get(reference)
+            .ok_or_else(|| refusal("host state unavailable"))?;
+        let coordinator = self.coordinator(content)?;
+        let descriptor = graph
+            .descriptor(node)
+            .ok_or_else(|| refusal("host descriptor absent"))?;
+        let binding = graph
+            .binding(node)
+            .ok_or_else(|| refusal("host binding absent"))?;
+        let inventory = validate_host_continuation(
+            native,
+            &coordinator.runtime,
+            descriptor,
+            binding,
+            HostModelResources::default(),
+        )
+        .map_err(native_failure)?;
+        if owner.state_schema != self.factory.state_schema(graph, node)?
+            || inventory
+                .evidence
+                .iter()
+                .any(|object| content.get(&object.reference) != Some(object.bytes.as_slice()))
+        {
+            return Err(refusal(
+                "host codec or original native evidence unavailable",
+            ));
+        }
+        let receipt: OwnerReceipt = serde_json::from_slice(
+            content
+                .get(&owner.capture_receipt)
+                .ok_or_else(|| refusal("host capture receipt absent"))?,
+        )
+        .map_err(schema)?;
+        let expected = OwnerReceipt {
+            schema_version: 1,
+            node: node.clone(),
+            owner: owner.capture_owner_id.clone(),
+            state: reference.clone(),
+            coordinator: manifest.coordinator_state_ref.clone(),
+            cut: manifest.cut,
+            ordinal: manifest.event_ordinal,
+            domains: owner.state_domain_ids.clone(),
+        };
+        if receipt != expected {
+            return Err(refusal(
+                "signed native owner cut or complete domains differ",
+            ));
+        }
+        self.factory
+            .authenticate_source(graph, node, native, &coordinator.runtime, content)?;
+        Ok(NativeOwnerCaptureProof {
+            owner_id: owner.capture_owner_id.clone(),
+            state_domain_ids: owner.state_domain_ids.clone(),
+            cut: manifest.cut,
+            event_ordinal: manifest.event_ordinal,
+        })
+    }
+
+    fn verify_coordinator_capture(
+        &self,
+        graph: &AdmittedGraph,
+        manifest: &CaptureManifest,
+        content: &VerifiedStateContent,
+    ) -> Result<NativeCoordinatorCaptureProof, StateError> {
+        if manifest != &self.record.manifest {
+            return Err(refusal("signed coordinator manifest differs"));
+        }
+        let coordinator = self.coordinator(content)?;
+        if !matches!(coordinator.schema_version, 1..=3 | 5 | 6)
+            || (coordinator.schema_version == 6
+                && (coordinator.runtime.schema_version != 6
+                    || coordinator.scheduler.schema_version != 4))
+            || (coordinator.schema_version == 6)
+                != super::condition_coordinator::selected_manifest(manifest)
+            || (coordinator.schema_version == 5 && coordinator.runtime.schema_version != 2)
+            || (coordinator.schema_version == 5) != recorded_manifest(manifest)
+            || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
+            || (coordinator.schema_version == 3) != (coordinator.runtime.schema_version == 4)
+            || coordinator.world_repeatability != graph.world_repeatability()
+        {
+            return Err(refusal("signed coordinator edition or guarantee differs"));
+        }
+        if coordinator.schema_version == 6 {
+            self.factory.authenticate_condition_custody(
+                graph,
+                &coordinator.runtime,
+                &coordinator.scheduler,
+                Some(content),
+            )?;
+        }
+        if coordinator.schema_version == 2 {
+            self.factory.authenticate_terminal_custody(
+                graph,
+                &coordinator.runtime,
+                &coordinator.scheduler,
+                Some(content),
+            )?;
+        }
+        if coordinator.schema_version == 3 {
+            self.factory.authenticate_fault_custody(
+                graph,
+                &coordinator.runtime,
+                &coordinator.scheduler,
+                Some(content),
+            )?;
+        }
+        self.factory.authenticate_coordinator(
+            graph,
+            &coordinator.runtime,
+            &coordinator.scheduler,
+            content,
+        )?;
+        Ok(NativeCoordinatorCaptureProof {
+            source_owners: coordinator.runtime.source_activation.owners.clone(),
+            world_repeatability: coordinator.world_repeatability,
+            pending_native_acknowledgements: coordinator.runtime.pending_acknowledgements(),
+            scheduler: coordinator.scheduler,
+            runtime: coordinator.runtime,
+        })
+    }
+}
+
+impl ArchiveEvidence<'_> {
+    fn coordinator(&self, content: &VerifiedStateContent) -> Result<Coordinator, StateError> {
+        let reference = &self.record.manifest.coordinator_state_ref;
+        super::condition_coordinator::decode_selected(
+            content
+                .get(reference)
+                .ok_or_else(|| refusal("signed coordinator bytes absent"))?,
+            &self.record.manifest,
+        )
+    }
+}
+
+struct Objects {
+    objects: BTreeMap<HashRef, Object>,
+    total: usize,
+    limits: StateLimits,
+}
+
+impl Objects {
+    fn new(limits: StateLimits) -> Self {
+        Self {
+            objects: BTreeMap::new(),
+            total: 0,
+            limits,
+        }
+    }
+
+    fn insert(
+        &mut self,
+        reference: ContentRef,
+        bytes: Vec<u8>,
+        mut dependencies: Vec<ContentRef>,
+    ) -> Result<(), StateError> {
+        if bytes.len() > self.limits.maximum_content_bytes
+            || dependencies.len() > self.limits.maximum_content_objects
+        {
+            return Err(limit("host archive source object"));
+        }
+        reference.verify(&bytes).map_err(schema)?;
+        dependencies.sort();
+        dependencies.dedup();
+        if let Some(previous) = self.objects.get(&reference.hash) {
+            if previous.reference != reference
+                || previous.bytes != bytes
+                || previous.dependencies != dependencies
+            {
+                return Err(refusal(format!(
+                    "source hash metadata, bytes or selected dependency semantics differ: hash={}, metadata_match={}, bytes_match={}, dependency_match={}, existing_dependency_count={}, incoming_dependency_count={}",
+                    reference.hash.digest,
+                    previous.reference == reference,
+                    previous.bytes == bytes,
+                    previous.dependencies == dependencies,
+                    previous.dependencies.len(),
+                    dependencies.len(),
+                )));
+            }
+            return Ok(());
+        }
+        self.total = self
+            .total
+            .checked_add(bytes.len())
+            .ok_or_else(|| limit("host archive bytes"))?;
+        if self.total > self.limits.maximum_total_content_bytes
+            || self.objects.len() >= self.limits.maximum_content_objects
+        {
+            return Err(limit("host complete archive closure"));
+        }
+        self.objects.insert(
+            reference.hash.clone(),
+            Object {
+                reference,
+                dependencies,
+                bytes,
+            },
+        );
+        Ok(())
+    }
+
+    fn record(
+        &mut self,
+        value: &impl Serialize,
+        dependencies: Vec<ContentRef>,
+    ) -> Result<ContentRef, StateError> {
+        bounded_record(value, self.limits.maximum_record_bytes)?;
+        let bytes = canonical::canonical_json(&serde_json::to_value(value).map_err(schema)?)
+            .map_err(schema)?;
+        let reference = canonical::content_ref(&bytes, "application/json").map_err(schema)?;
+        self.insert(reference.clone(), bytes, dependencies)?;
+        Ok(reference)
+    }
+
+    fn finish(self) -> Vec<Object> {
+        self.objects.into_values().collect()
+    }
+}
+
+fn recorded_manifest(manifest: &CaptureManifest) -> bool {
+    manifest.owners.len() == 1
+        && manifest.owners[0].state_schema.id.as_str() == "host/native-recorded-block-v1"
+        && manifest.owners[0].state_schema.version == 1
+}
+
+fn recorded_binding(graph: &AdmittedGraph) -> bool {
+    graph.node_ids().count() == 1
+        && graph.node_ids().all(|node| {
+            graph.binding(node).is_some_and(|binding| {
+                binding
+                    .compatibility
+                    .implementation
+                    .formats
+                    .iter()
+                    .any(|format| {
+                        format.id.as_str() == "host/native-recorded-block-v1" && format.version == 1
+                    })
+            })
+        })
+}

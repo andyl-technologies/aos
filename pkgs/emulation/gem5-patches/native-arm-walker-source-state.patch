@@ -1,0 +1,34 @@
+--- a/src/arch/arm/table_walker.cc
++++ b/src/arch/arm/table_walker.cc
+@@ -73,6 +73,9 @@
+       walkUnitFunctionalS2(p.walk_unit_func_s2),
+       requestorId(p.sys->getRequestorId(this)),
+       port(new Port(*this, requestorId)),
++      release(nullptr),
++      pendingReqs(0),
++      pendingChangeTick(curTick()),
+       stats(this)
+ {
+     for (auto walk_unit : walkUnits) {
+@@ -100,6 +103,9 @@
+ TableWalker::setMmu(MMU *_mmu)
+ {
+     mmu = _mmu;
++    // MMU::init runs after its constructor initializes the actual release.
++    // Retain that same source-owned value for the later closure comparison.
++    release = _mmu->release();
+     for (auto walk_unit : walkUnits) {
+         walk_unit->setMmu(mmu);
+     }
+@@ -2876,7 +2882,10 @@
+         !inCompletionWalks.empty() || !walkUnitFunctionalS1 || !walkUnitFunctionalS2 ||
+         !port->crucibleNativeOwned(walk, this))
+         return false;
+-    if (!walk.object(this, mmu, 1) || !walk.object(this, release, 2) ||
++    if (!walk.object(this, mmu, 1)) return false;
++    // Authenticate the original MMU edge before reading its release getter.
++    if (release != mmu->release()) return false;
++    if (!walk.object(this, release, 2) ||
+         !walk.object(this, &crucibleNativeClockDomain(), 3) ||
+         !walk.object(this, powerState, 4) || !walk.port(this, port, 5))
+         return false;

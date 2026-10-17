@@ -781,6 +781,12 @@ pub enum QemuPluginAbiError {
         /// Missing QEMU symbol.
         symbol: &'static str,
     },
+    /// Independently negotiated native control preparation or callback registration failed.
+    #[error("native node-control preparation failed: {reason}")]
+    NativeNodeControl {
+        /// Underlying independently versioned controller failure.
+        reason: String,
+    },
     /// QEMU rejected the launch-provisioned process generation.
     #[error("QEMU rejected process generation {generation} with status {status}")]
     ProcessGenerationProvision {
@@ -2019,7 +2025,7 @@ fn install_owned_boundary(
     plugin_id: QemuPluginId,
     boundary: OwnedInstallBoundary,
     reservation: &mut crate::runtime::PluginRuntimeReservation,
-) -> Result<crate::PluginRuntimeOwner, crate::runtime::PluginLiveBoundaryError> {
+) -> Result<crate::runtime::RuntimeInstallation, crate::runtime::PluginLiveBoundaryError> {
     let clock_deadline_ps = resolve_qemu_clock_deadline_symbol();
     let advance_time_ticks = resolve_qemu_advance_time_ticks_symbol();
     let register_time_advance_cb = resolve_qemu_register_time_advance_cb_symbol();
@@ -2122,13 +2128,20 @@ fn install_owned_boundary(
         register_accelerator,
         fault_commands,
     };
+    if let Some(config) = boundary.args.native_node_control() {
+        crate::native_node_control::install(config).map_err(|source| {
+            QemuPluginAbiError::NativeNodeControl {
+                reason: source.to_string(),
+            }
+        })?;
+    }
     let callback_registrar = crate::runtime::FailClosedOwnedCallbackRegistrar::production(
         plugin_id,
         boundary.execution_model,
         boundary.target_architecture,
         &capabilities,
     );
-    crate::runtime::install_live_runtime(
+    crate::runtime::install_runtime_entry(
         plugin_id,
         boundary.args,
         capabilities,
@@ -2181,7 +2194,7 @@ pub unsafe extern "C" fn qemu_plugin_install(
             // QEMU info and argv allocations remain live for this call.
             let boundary = unsafe { copy_install_boundary(info, argc, argv) }?;
             let runtime = install_owned_boundary(id, boundary, &mut reservation)?;
-            reservation.publish(runtime);
+            reservation.publish_installation(runtime);
             Ok(())
         })
     }
@@ -2201,9 +2214,17 @@ where
         Ok(Ok(())) => QEMU_PLUGIN_INSTALL_OK,
         Ok(Err(error)) => {
             crate::runtime::emit_install_failure_diagnostic(&error);
+            if crate::native_node_control::registered_owner().is_some() {
+                // Returning an install refusal lets QEMU unload code that its
+                // registered native callback owner still references.
+                std::process::abort();
+            }
             QEMU_PLUGIN_INSTALL_ERROR
         }
         Err(_panic) => {
+            if crate::native_node_control::registered_owner().is_some() {
+                std::process::abort();
+            }
             use std::io::Write as _;
 
             let _write_result = std::io::stderr()

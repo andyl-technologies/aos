@@ -1,0 +1,50 @@
+--- a/arch/x86/kvm/crucible-q35-ps-clock.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-clock.inc.c
+@@ -134,6 +134,38 @@
+ 		request->quantum_ps == plan->quantum_ps && request->phase_ps == plan->phase_ps &&
+ 		request->physical_slice_ns == plan->physical_slice_ns &&
+ 		request->physical_stop_ns == plan->physical_stop_ns;
++}
++
++/* A readonly source getter may cross the autonomous ceiling edge while the
++ * same original RUNs still hold their credits. This never proves their stop,
++ * output completion or admission to a following window. Other phase changes
++ * retain the strict control protocol, including every legacy operation. */
++static bool q35_ps_observation_phase_locked(struct kvm *kvm,
++	const struct kvm_crucible_q35_ps_clock *request, u64 now_ns)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (request->expected_phase == ps->phase)
++		return true;
++	return request->version == 2 &&
++		request->operation == KVM_CRUCIBLE_Q35_PS_OBSERVE &&
++		q35_ps_same_plan(ps, request) && !READ_ONCE(kvm->vm_dead) &&
++		!kvm->crucible_memory_tainted && !kvm->crucible_irq_input.tainted &&
++		request->expected_phase == KVM_CRUCIBLE_PS_ACTIVE &&
++		ps->phase == KVM_CRUCIBLE_PS_STOP_REQUESTED &&
++		!clock->active && !kvm->crucible_active && clock->window_generation &&
++		request->generation == clock->window_generation &&
++		request->start_ps == ps->start_ps && request->end_ps == ps->end_ps &&
++		ps->start_ps < ps->end_ps && ps->current_ps == ps->end_ps &&
++		ps->end_ps - ps->start_ps == ps->plan.quantum_ps &&
++		clock->host_ceiling_ns > clock->host_origin_ns &&
++		clock->host_ceiling_ns - clock->host_origin_ns == ps->plan.physical_slice_ns &&
++		now_ns >= clock->host_ceiling_ns &&
++		ps->physical_stop_deadline_ns >= clock->host_ceiling_ns &&
++		ps->physical_stop_deadline_ns - clock->host_ceiling_ns == ps->plan.physical_stop_ns &&
++		now_ns <= ps->physical_stop_deadline_ns;
+ }
+ 
+ static void q35_ps_report_locked(struct kvm *kvm,
+@@ -243,7 +275,7 @@
+ 		}
+ 		if (request.operation_id != ps->last_request.operation_id + 1 ||
+ 		    ps->last_request.operation_id == U64_MAX ||
+-		    request.expected_phase != ps->phase ||
++		    !q35_ps_observation_phase_locked(kvm, &request, now) ||
+ 		    (request.operation != KVM_CRUCIBLE_Q35_PS_BEGIN &&
+ 		     (request.start_ps != ps->start_ps || request.end_ps != ps->end_ps)) ||
+ 		    request.generation != clock->window_generation +

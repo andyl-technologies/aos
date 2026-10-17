@@ -1,5 +1,6 @@
 ##! Cargo-only Crucible workspace source.
 {lib}: let
+  isCargoBuildDirectory = import ../../build-support/_cargo-build-directory.nix;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
 in
@@ -9,17 +10,23 @@ in
     filter = path: _type: let
       pathString = toString path;
       base = baseNameOf path;
+      nodeContract = "${repoRootString}/docs/rfcs/0025-crucible-node-contract";
     in
       base
       != ".git"
       && base != ".crucible"
-      && base != "target"
+      # Local daemon journals must not perturb Cargo source identities.
+      && base != "run-state"
+      && !(base == "target" && isCargoBuildDirectory repoRoot path)
       && pathString != "${repoRootString}/result"
       && (
         pathString
         == repoRootString
         || pathString == "${repoRootString}/crates"
         || lib.hasPrefix "${repoRootString}/crates" pathString
+        # The qualification catalogue embeds its normative RFC and wire vectors.
+        || pathString == nodeContract
+        || lib.hasPrefix "${nodeContract}/" pathString
         || builtins.elem pathString [
           "${repoRootString}/tests"
           "${repoRootString}/tests/crucible"

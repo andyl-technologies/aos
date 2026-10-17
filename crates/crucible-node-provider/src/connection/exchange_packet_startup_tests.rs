@@ -1,0 +1,265 @@
+//! Checks the startup heap counter independently of runtime wire admission.
+//!
+//! crucible-lint: panic-shortcut: fixture assertions intentionally stop the test.
+
+use super::*;
+use crate::bodies::{OperationState, ResponseShape};
+use crate::envelope::Nullable;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+const MAXIMUM: usize = usize::MAX;
+
+fn original_and_terminal(
+    authority: &ConnectionAuthority,
+) -> Result<
+    (
+        OriginalSerializationStorageData,
+        OriginalSerializationStorageData,
+    ),
+    ProviderError,
+> {
+    let body = serde_json::to_value(crate::bodies::ObserveRequest {
+        binding_hash: crucible_node_contract::canonical::hash(
+            "cnp.owner-binding.v1",
+            b"startup counter scope",
+        )?,
+        owner_generation: U64::new(1),
+        after_observation_sequence: U64::new(0),
+        maximum_items: U64::new(1),
+        extensions: crucible_node_contract::Extensions::new(),
+    })
+    .map_err(crucible_node_contract::ContractError::from)?;
+    let Value::Object(body) = body else {
+        return Err(refused());
+    };
+    let mut envelope = Envelope {
+        protocol: "CNP/1".into(),
+        message: MessageKind::Request,
+        session_id: Nullable(Some(authority.session_id().clone())),
+        incarnation_id: Nullable(Some(authority.incarnation_id().clone())),
+        node_id: Nullable(None),
+        execution_owner_id: Nullable(None),
+        capture_owner_id: Nullable(None),
+        operation_id: Nullable(None),
+        request_id: Nullable(Some(Id::new("original-startup-counter")?)),
+        sequence: U64::new(u64::MAX),
+        method: Method::Observe,
+        body,
+        extensions: crucible_node_contract::Extensions::new(),
+    };
+    let mut observer = MetadataObserver::new();
+    observer.observe(&envelope)?;
+    let original = actual_serialization_storage_data(&envelope, observer.finish(), MAXIMUM)?;
+    envelope.message = MessageKind::Response;
+    let result = serde_json::to_value(crate::bodies::ObserveResult {
+        observations: Vec::new(),
+        next_sequence: U64::new(0),
+        complete: true,
+        inventory_hash: crucible_node_contract::canonical::hash(
+            "node/inventory",
+            b"startup counter scope",
+        )?,
+    })
+    .map_err(crucible_node_contract::ContractError::from)?;
+    let Value::Object(result) = result else {
+        return Err(refused());
+    };
+    let terminal = serde_json::to_value(ResponseShape::Completed {
+        operation_state: OperationState::Completed,
+        result,
+        extensions: crucible_node_contract::Extensions::new(),
+    })
+    .map_err(crucible_node_contract::ContractError::from)?;
+    let Value::Object(terminal) = terminal else {
+        return Err(refused());
+    };
+    envelope.body = terminal;
+    let mut observer = MetadataObserver::new();
+    observer.observe(&envelope)?;
+    let terminal = actual_serialization_storage_data(&envelope, observer.finish(), MAXIMUM)?;
+    Ok((original, terminal))
+}
+
+#[test]
+fn prospective_heap_count_does_not_admit_or_require_a_wire_window() -> TestResult {
+    let (_handshake, authority, selection, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let (original, terminal) = original_and_terminal(&authority)?;
+    let objects: [OriginalContinuationContentExtent<'_>; 3] =
+        std::array::from_fn(|_| OriginalContinuationContentExtent {
+            maximum_payload_bytes: 65_536,
+            media_type: "application/json",
+        });
+    let data = quote_startup_parts(
+        (authority.session_id(), authority.incarnation_id()),
+        authority.limits(),
+        selection.provider.extensions_supported.len(),
+        OriginalPacketPrefixProjectionInput {
+            original: &original,
+            terminal: &terminal,
+            objects: &objects,
+            maximum_requested_bytes: MAXIMUM,
+        },
+        false,
+    )?;
+
+    assert!(data.exchange.requests > usize::try_from(authority.limits().requests.get())?);
+    assert!(data.exchange.original_slots_required > 64);
+    assert_eq!(
+        data.exchange.one_open_ack_requested_bytes,
+        acknowledgements::open_ack_storage(usize::try_from(authority.limits().frame_bytes.get())?)?
+    );
+    assert!(data.exchange.preparation_transient_requested_bytes > 0);
+    assert_eq!(
+        data.declared_counter_scratch_bytes + data.exchange.declared_quote_scratch_bytes,
+        original_packet_prefix_startup_counter_scratch_data()
+    );
+    Ok(())
+}
+
+#[test]
+fn startup_counter_preserves_content_cap_and_total_one_short_refusal() -> TestResult {
+    let (_handshake, authority, selection, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let (original, terminal) = original_and_terminal(&authority)?;
+    let mut objects = [OriginalContinuationContentExtent {
+        maximum_payload_bytes: 16_384,
+        media_type: "application/json",
+    }];
+    let count = |objects: &[OriginalContinuationContentExtent<'_>], maximum| {
+        quote_startup_parts(
+            (authority.session_id(), authority.incarnation_id()),
+            authority.limits(),
+            selection.provider.extensions_supported.len(),
+            OriginalPacketPrefixProjectionInput {
+                original: &original,
+                terminal: &terminal,
+                objects,
+                maximum_requested_bytes: maximum,
+            },
+            false,
+        )
+    };
+    let data = count(&objects, MAXIMUM)?;
+    let total = data.requested_bytes()?;
+
+    count(&objects, total)?;
+    assert!(count(&objects, total - 1).is_err());
+    objects[0].maximum_payload_bytes = 65_537;
+    assert!(count(&objects, MAXIMUM).is_err());
+    Ok(())
+}
+
+#[test]
+fn startup_and_current_proof_headers_use_the_same_closed_field_counter() -> TestResult {
+    let (_handshake, authority, selection, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let binding = selection.realization.bindings.first().ok_or_else(refused)?;
+    let extent = ContentExtent {
+        payload: 16_384,
+        media: 128,
+    };
+    for (method, body) in [
+        (Method::BlobBegin, ProjectedBody::Begin(36, &extent)),
+        (Method::BlobChunk, ProjectedBody::Chunk(36, 5464)),
+        (Method::BlobFinish, ProjectedBody::Finish(36)),
+    ] {
+        // The body enum is deliberately reconstructed for the two borrowed
+        // visits; it contains only scalar extents and the same reference loan.
+        let current_body = match &body {
+            ProjectedBody::Begin(a, b) => ProjectedBody::Begin(*a, b),
+            ProjectedBody::Chunk(a, b) => ProjectedBody::Chunk(*a, *b),
+            ProjectedBody::Finish(a) => ProjectedBody::Finish(*a),
+        };
+        let current =
+            continuation::projected_packet_frame(&authority, method, current_body, MAXIMUM)?;
+        let startup = continuation::projected_packet_startup_frame(
+            &binding.authority.session_id,
+            &binding.authority.incarnation_id,
+            method,
+            body,
+            MAXIMUM,
+        )?;
+        continuation::within(&current, &startup)?;
+        continuation::within(&startup, &current)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn startup_containment_charges_both_fresh_keys_for_one_feature() -> TestResult {
+    let (_handshake, authority, _, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let (original, _) = original_and_terminal(&authority)?;
+    let baseline = startup_containment(0, &original)?;
+    let selected = startup_containment(1, &original)?;
+
+    // Two separately retained keys are required before counting their tree nodes.
+    assert!(selected >= baseline.checked_add(2 * 128).ok_or_else(credit)?);
+    assert!(startup_containment(usize::MAX, &original).is_err());
+    Ok(())
+}
+
+#[test]
+fn native_retained_prefix_counts_real_independent_dom_copies_without_replacing_legacy_work()
+-> TestResult {
+    let (_handshake, authority, selection, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let actual = serde_json::to_value(crate::handshake::tests::original_hello_envelope())?;
+    let mut observer = MetadataObserver::new();
+    observer.observe(&actual)?;
+    let shape = actual_serialization_storage_data(&actual, observer.finish(), MAXIMUM)?;
+    let clones = [actual.clone(), actual.clone(), actual.clone()];
+    let mut owned = 0usize;
+    for value in &clones {
+        let mut observer = MetadataObserver::new();
+        observer.observe(value)?;
+        owned = add(owned, requested_facts(&observer.finish())?)?;
+    }
+    let objects: [OriginalContinuationContentExtent<'_>; 2] =
+        std::array::from_fn(|_| OriginalContinuationContentExtent {
+            maximum_payload_bytes: 128,
+            media_type: "application/json",
+        });
+    let quote = |baseline| {
+        quote_startup_parts(
+            (authority.session_id(), authority.incarnation_id()),
+            authority.limits(),
+            selection.provider.extensions_supported.len(),
+            OriginalPacketPrefixProjectionInput {
+                original: &shape,
+                terminal: &shape,
+                objects: &objects,
+                maximum_requested_bytes: MAXIMUM,
+            },
+            baseline,
+        )
+    };
+    let native = quote(true)?;
+    let legacy = quote(false)?;
+    assert!(
+        native
+            .exchange
+            .native_retained_backing_bytes
+            .ok_or_else(credit)?
+            >= add(owned, shape.canonical_output_requested_bytes)?
+    );
+    assert_eq!(
+        native.exchange.requested_bytes()?,
+        legacy.exchange.requested_bytes()?
+    );
+    assert_eq!(
+        native.source_owner_requested_bytes,
+        legacy.source_owner_requested_bytes
+    );
+    assert!(native.native_source_backing_bytes.is_some());
+    assert!(legacy.native_source_backing_bytes.is_none());
+
+    let mut backing_one_short = continuation::copy_storage(&shape);
+    backing_one_short.retained_value_backing_bytes = shape
+        .retained_value_backing_bytes
+        .checked_sub(1)
+        .ok_or_else(credit)?;
+    assert!(continuation::within(&shape, &backing_one_short).is_err());
+    Ok(())
+}

@@ -1,0 +1,115 @@
+diff --git a/src/dev/virtio/VirtIOQueueWitness.py b/src/dev/virtio/VirtIOQueueWitness.py
+--- a/src/dev/virtio/VirtIOQueueWitness.py
++++ b/src/dev/virtio/VirtIOQueueWitness.py
+@@ -33,5 +33,7 @@
+     cxx_exports = [
+         PyBindMethod("run"),
+         PyBindMethod("prepareNetwork"),
++        PyBindMethod("prepareHostRequest"),
++        PyBindMethod("reprogramHostQueue"),
+     ]
+     system = Param.System(Parent.any, "Actual physical memory used by the probe")
+diff --git a/src/dev/virtio/queue_witness.hh b/src/dev/virtio/queue_witness.hh
+--- a/src/dev/virtio/queue_witness.hh
++++ b/src/dev/virtio/queue_witness.hh
+@@ -32,6 +32,7 @@
+ #include "sim/sim_object.hh"
+ #include "sim/eventq.hh"
+ #include "dev/virtio/net.hh"
++#include "dev/virtio/host_request.hh"
+ 
+ namespace gem5
+ {
+@@ -46,6 +47,8 @@
+     explicit VirtIOQueueWitness(const VirtIOQueueWitnessParams &params);
+     std::vector<uint64_t> run(const std::string &test);
+     void prepareNetwork(VirtIONet *net);
++    void prepareHostRequest(VirtIOHostRequest *device, const std::string &kind);
++    void reprogramHostQueue(VirtIOHostRequest *device);
+ 
+   private:
+     System &system;
+diff --git a/src/dev/virtio/queue_witness.cc b/src/dev/virtio/queue_witness.cc
+--- a/src/dev/virtio/queue_witness.cc
++++ b/src/dev/virtio/queue_witness.cc
+@@ -28,6 +28,7 @@
+ #include "base/logging.hh"
+ #include "dev/virtio/base.hh"
+ #include "dev/virtio/net.hh"
++#include "dev/virtio/host_request.hh"
+ #include "params/VirtIOQueueWitness.hh"
+ #include "sim/system.hh"
+ 
+@@ -185,4 +186,72 @@
+     system.schedule(*publicationEvent, curTick());
+ }
+ 
++void
++VirtIOQueueWitness::reprogramHostQueue(VirtIOHostRequest *device)
++{
++    fatal_if(!device, "Native reconfiguration witness lacks endpoint");
++    device->setQueueSelect(0);
++    device->setQueueReady(false);
++    device->setModernQueueAddress(0, 0x2000);
++    device->setModernQueueAddress(1, 0x4000);
++    device->setModernQueueAddress(2, 0x8000);
++    device->setQueueReady(true);
++}
++
++void
++VirtIOQueueWitness::prepareHostRequest(VirtIOHostRequest *device,
++                                      const std::string &kind)
++{
++    fatal_if(!device || (kind != "block" && kind != "9p"),
++             "Native host-request witness lacks its actual endpoint");
++    device->registerKickCallback([this] { ++networkInterrupts; });
++    device->requireModernByteOrder();
++    device->setGuestFeatureWord(0, kind == "block" ? 518 : 1);
++    device->setGuestFeatureWord(1, 1);
++    device->setDeviceStatus(0x0b);
++    device->setQueueSelect(0);
++    device->setQueueSize(2);
++    device->setModernQueueAddress(0, 0x1000);
++    device->setModernQueueAddress(1, 0x3000);
++    device->setModernQueueAddress(2, 0x7000);
++    device->setQueueReady(true);
++
++    std::vector<uint8_t> request(kind == "block" ? 16 : 21, 0);
++    if (kind == "9p") {
++        request[0] = request.size();
++        request[4] = 100;
++        request[5] = 0xff;
++        request[6] = 0xff;
++        request[8] = 0x10;
++        request[11] = 8;
++        const std::string version = "9P2000.L";
++        std::copy(version.begin(), version.end(), request.begin() + 13);
++    }
++    system.physProxy.writeBlob(0x9000, request.data(), request.size());
++    vring_desc input{};
++    input.addr = htole(uint64_t(0x9000));
++    input.len = htole(uint32_t(request.size()));
++    input.flags = htole(uint16_t(VRING_DESC_F_NEXT));
++    input.next = htole(uint16_t(1));
++    vring_desc output{};
++    output.addr = htole(uint64_t(0xb000));
++    output.len = htole(uint32_t(kind == "block" ? 513 : 64));
++    output.flags = htole(uint16_t(VRING_DESC_F_WRITE));
++    system.physProxy.writeBlob(0x1000, &input, sizeof(input));
++    system.physProxy.writeBlob(0x1010, &output, sizeof(output));
++    const std::array<uint8_t, 32> zero{};
++    system.physProxy.writeBlob(0x3000, zero.data(), zero.size());
++    system.physProxy.writeBlob(0x7000, zero.data(), zero.size());
++    const uint16_t available = htole(uint16_t(1));
++    system.physProxy.writeBlob(0x3002, &available, sizeof(available));
++    device->setDeviceStatus(0x0f);
++    fatal_if(!device->setExecutionParent(17), "Native request has no sealed parent");
++    fatal_if(publicationEvent, "Native witness already owns a publication");
++    publicationEvent = std::make_unique<EventFunctionWrapper>([this, device] {
++        device->onNotify(0);
++        fatal_if(networkInterrupts != 0, "Request completed before a host reply");
++    }, name() + ".actual-request");
++    system.schedule(*publicationEvent, curTick());
++}
++
+ } // namespace gem5

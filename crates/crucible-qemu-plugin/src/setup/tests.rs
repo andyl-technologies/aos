@@ -52,7 +52,13 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
             Err(error) => panic!("valid setup should complete: {error}"),
         };
 
-    assert_eq!(completion.mapped_region().region_len(), layout.region_size);
+    assert_eq!(
+        completion
+            .mapped_region()
+            .unwrap_or_else(|error| panic!("current original setup mapping: {error}"))
+            .region_len(),
+        layout.region_size
+    );
     assert_eq!(completion.validated_region().region_len, layout.region_size);
     assert_eq!(completion.validated_layout(), layout);
     assert_nonblocking(completion.wake_fd().as_raw_fd());

@@ -1,0 +1,22 @@
+{
+  "schema": "crucible-kvm-byte-compatibility/v1",
+  "source_composition": "window2c8503+inventory06012f+initial9de174+destroy65912f",
+  "clock_functions": {
+    "execute_clock_component": {
+      "sha256": "57322633dabd9bcef62e0c0d55c9c12fc393cabfb1bf7e08916f4c3d7bf1f0d7",
+      "bytes": 2761
+    },
+    "qmp_x_crucible_kvm_clock": {
+      "sha256": "94320165a1b7116d844b2e6fadd3d96852f651936e795fef8fe2db0c5a0d85a9",
+      "bytes": 344
+    },
+    "qmp_x_crucible_kvm_clock_v3": {
+      "sha256": "dab285ea54ac93c2357fefa4d00dabe1570e3ae3817afbdc3766c371d7e9b04c",
+      "bytes": 347
+    }
+  },
+  "prior_wire": {
+    "sha256": "0a22831e4b5c80f833c0c4de850207c54e6e7d8ff6604cac38a7fb409efc01b6",
+    "bytes": 42486
+  }
+}

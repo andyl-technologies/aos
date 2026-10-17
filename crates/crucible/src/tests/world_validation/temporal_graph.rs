@@ -300,7 +300,7 @@ pub(in crate::tests) fn generated_world(seed: u64) -> World {
     )])
 }
 
-pub(in crate::tests) fn world_from_nodes(nodes: Vec<WorldNode>) -> World {
+pub(in crate::tests) fn world_from_nodes(nodes: Vec<ComputeNodeDef>) -> World {
     match World::from_nodes(nodes) {
         Ok(world) => world,
         Err(error) => panic!("test world should be valid: {error}"),
@@ -308,7 +308,7 @@ pub(in crate::tests) fn world_from_nodes(nodes: Vec<WorldNode>) -> World {
 }
 
 pub(in crate::tests) fn world_from_nodes_and_links(
-    nodes: Vec<WorldNode>,
+    nodes: Vec<ComputeNodeDef>,
     links: Vec<LinkDef>,
 ) -> World {
     match World::from_nodes_and_links(nodes, links) {
@@ -317,7 +317,7 @@ pub(in crate::tests) fn world_from_nodes_and_links(
     }
 }
 
-pub(in crate::tests) fn two_ready_nodes() -> Vec<WorldNode> {
+pub(in crate::tests) fn two_ready_nodes() -> Vec<ComputeNodeDef> {
     vec![
         ready_node(
             "a",
@@ -380,15 +380,15 @@ pub(in crate::tests) fn world_with_physical_layout_id(
     }
 }
 
-pub(in crate::tests) fn ready_node(name: &str, ready_point: ReadyPoint) -> WorldNode {
-    WorldNode {
+pub(in crate::tests) fn ready_node(name: &str, ready_point: ReadyPoint) -> ComputeNodeDef {
+    ComputeNodeDef {
         id: node_id(name),
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::new(),
         ready_point,
         white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,

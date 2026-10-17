@@ -6,7 +6,7 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScenarioFamily {
     pub(in crate::model) space: FamilySpace,
-    pub(in crate::model) node_template: NodeTemplate,
+    pub(in crate::model) node_template: ComputeNodeTemplate,
     pub(in crate::model) assertions: Vec<AssertionDef>,
     pub(in crate::model) fault_plan: FaultSignalPlan,
 }
@@ -14,7 +14,7 @@ pub struct ScenarioFamily {
 impl ScenarioFamily {
     /// Builds a scenario family from a parameter space and reusable node template.
     #[must_use]
-    pub fn new(space: FamilySpace, node_template: NodeTemplate) -> Self {
+    pub fn new(space: FamilySpace, node_template: ComputeNodeTemplate) -> Self {
         Self {
             space,
             node_template,

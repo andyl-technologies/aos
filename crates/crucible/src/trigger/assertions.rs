@@ -1504,6 +1504,21 @@ impl HostAssertionEvaluator {
         states
     }
 
+    /// Returns the earliest deadline of an original pending liveness obligation.
+    ///
+    /// This read does not evaluate a predicate or expire the obligation. Exact
+    /// node adapters use it to retain a future evaluation opportunity while
+    /// preserving the deadline's existing inclusive input semantics.
+    #[must_use]
+    pub fn next_eventually_deadline(&self) -> Option<VirtualTime> {
+        self.states
+            .iter()
+            .filter(|state| state.terminal.is_none())
+            .flat_map(|state| &state.pending_eventually)
+            .map(|obligation| obligation.deadline)
+            .min()
+    }
+
     fn observe_due_eventually_deadlines<O>(
         &mut self,
         prefix: &ConditionEventLogPrefix,
@@ -1555,6 +1570,27 @@ impl HostAssertionEvaluator {
                 }
             }
         }
+        outcomes
+    }
+
+    /// Reports retained terminal quiescence context without evaluating assertions.
+    pub(crate) fn has_terminal_scheduler_quiescence(&self) -> bool {
+        self.terminal_quiescence.is_some()
+    }
+
+    /// Reads original terminal outcomes without reevaluating the event prefix.
+    pub(crate) fn retained_terminal_outcomes(&self) -> Vec<HostAssertionOutcome> {
+        let mut outcomes = self
+            .states
+            .iter()
+            .filter_map(HostAssertionState::outcome)
+            .chain(
+                self.guest_marker_states
+                    .iter()
+                    .filter_map(GuestMarkerAssertionState::outcome),
+            )
+            .collect::<Vec<_>>();
+        sort_host_assertion_outcomes(&mut outcomes);
         outcomes
     }
 

@@ -1,0 +1,109 @@
+diff --git a/src/dev/virtio/VirtIOQueueWitness.py b/src/dev/virtio/VirtIOQueueWitness.py
+--- a/src/dev/virtio/VirtIOQueueWitness.py
++++ b/src/dev/virtio/VirtIOQueueWitness.py
+@@ -30,5 +30,8 @@
+     type = "VirtIOQueueWitness"
+     cxx_header = "dev/virtio/queue_witness.hh"
+     cxx_class = "gem5::VirtIOQueueWitness"
+-    cxx_exports = [PyBindMethod("run")]
++    cxx_exports = [
++        PyBindMethod("run"),
++        PyBindMethod("prepareNetwork"),
++    ]
+     system = Param.System(Parent.any, "Actual physical memory used by the probe")
+diff --git a/src/dev/virtio/queue_witness.hh b/src/dev/virtio/queue_witness.hh
+--- a/src/dev/virtio/queue_witness.hh
++++ b/src/dev/virtio/queue_witness.hh
+@@ -27,7 +27,11 @@
+ #include <string>
+ #include <vector>
+ 
++#include <memory>
++
+ #include "sim/sim_object.hh"
++#include "sim/eventq.hh"
++#include "dev/virtio/net.hh"
+ 
+ namespace gem5
+ {
+@@ -41,9 +45,12 @@
+   public:
+     explicit VirtIOQueueWitness(const VirtIOQueueWitnessParams &params);
+     std::vector<uint64_t> run(const std::string &test);
++    void prepareNetwork(VirtIONet *net);
+ 
+   private:
+     System &system;
++    std::unique_ptr<EventFunctionWrapper> publicationEvent;
++    uint64_t networkInterrupts = 0;
+ };
+ 
+ } // namespace gem5
+diff --git a/src/dev/virtio/queue_witness.cc b/src/dev/virtio/queue_witness.cc
+--- a/src/dev/virtio/queue_witness.cc
++++ b/src/dev/virtio/queue_witness.cc
+@@ -27,6 +27,7 @@
+ 
+ #include "base/logging.hh"
+ #include "dev/virtio/base.hh"
++#include "dev/virtio/net.hh"
+ #include "params/VirtIOQueueWitness.hh"
+ #include "sim/system.hh"
+ 
+@@ -132,4 +133,56 @@
+             queue.getSize(), queue.consumeDescriptor() == nullptr};
+ }
+ 
++void
++VirtIOQueueWitness::prepareNetwork(VirtIONet *net)
++{
++    fatal_if(!net, "Native network witness lacks its actual endpoint");
++    net->registerKickCallback([this] { ++networkInterrupts; });
++    net->requireModernByteOrder();
++    net->setGuestFeatureWord(0, uint32_t(1) << 5);
++    net->setGuestFeatureWord(1, 1);
++    net->setDeviceStatus(0x0b);
++
++    auto setup = [&](uint16_t queue, Addr descriptors, Addr driver, Addr device) {
++        net->setQueueSelect(queue);
++        net->setQueueSize(2);
++        net->setModernQueueAddress(0, descriptors);
++        net->setModernQueueAddress(1, driver);
++        net->setModernQueueAddress(2, device);
++        net->setQueueReady(true);
++        const std::array<uint8_t, 32> zero{};
++        system.physProxy.writeBlob(driver, zero.data(), zero.size());
++        system.physProxy.writeBlob(device, zero.data(), zero.size());
++    };
++    setup(0, 0x1000, 0x3000, 0x7000);
++    setup(1, 0x10000, 0x12000, 0x14000);
++
++    vring_desc receive{};
++    receive.addr = htole(uint64_t(0x9000));
++    receive.len = htole(uint32_t(64));
++    receive.flags = htole(uint16_t(VRING_DESC_F_WRITE));
++    system.physProxy.writeBlob(0x1000, &receive, sizeof(receive));
++    const uint16_t available = htole(uint16_t(1));
++    system.physProxy.writeBlob(0x3002, &available, sizeof(available));
++
++    std::array<uint8_t, 26> output{};
++    for (unsigned byte = 0; byte < 14; ++byte)
++        output[12 + byte] = byte;
++    system.physProxy.writeBlob(0x19000, output.data(), output.size());
++    vring_desc transmit{};
++    transmit.addr = htole(uint64_t(0x19000));
++    transmit.len = htole(uint32_t(output.size()));
++    system.physProxy.writeBlob(0x10000, &transmit, sizeof(transmit));
++    system.physProxy.writeBlob(0x12002, &available, sizeof(available));
++
++    net->setDeviceStatus(0x0f);
++    fatal_if(!net->setExecutionParent(17), "Native TX has no sealed parent");
++    fatal_if(publicationEvent, "Native witness already owns a publication");
++    publicationEvent = std::make_unique<EventFunctionWrapper>([this, net] {
++        net->onNotify(1);
++        fatal_if(networkInterrupts != 1, "Native TX did not raise transport IRQ");
++    }, name() + ".actual-transmit");
++    system.schedule(*publicationEvent, curTick());
++}
++
+ } // namespace gem5

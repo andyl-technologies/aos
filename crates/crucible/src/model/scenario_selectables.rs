@@ -406,23 +406,23 @@ mod tests {
 
     use super::*;
     use crate::{
-        Icount, NodeTemplate, Plan, Properties, ReadyPoint, ScenarioDefForm, Seed, WhiteBoxPolicy,
-        WorldNode,
+        ComputeNodeDef, ComputeNodeTemplate, Icount, Plan, Properties, ReadyPoint, ScenarioDefForm,
+        Seed, WhiteBoxPolicy,
     };
 
     fn selectable_world() -> Result<World, EngineError> {
-        World::from_nodes(vec![WorldNode {
+        World::from_nodes(vec![ComputeNodeDef {
             id: NodeId {
                 name: String::from("router-a"),
             },
-            arch: NodeTemplate::DEFAULT_ARCH,
-            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            arch: ComputeNodeTemplate::DEFAULT_ARCH,
+            memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
             cmdline: String::from("selectable-test"),
             ready_point: ReadyPoint::FixedIcount {
                 icount: Icount { retired: 1 },
             },
             white_box: WhiteBoxPolicy::Enabled,
-            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
             kernel: None,
             root_image: None,
             initrd: None,

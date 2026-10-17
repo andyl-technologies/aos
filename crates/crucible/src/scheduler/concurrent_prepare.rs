@@ -139,7 +139,7 @@ pub struct ConcurrentBackendRunOutcome {
 }
 
 /// Backend collection capable of executing independent scheduler RUNs in parallel.
-pub trait ConcurrentSimulationBackend: SimulationBackend {
+pub trait ConcurrentNodeRuntimeSet: SimulationBackend {
     /// Executes every scheduler-fixed RUN and returns outcomes in input order.
     ///
     /// Implementations must retain exclusive ownership of every node until its
@@ -208,6 +208,9 @@ pub trait ConcurrentSimulationBackend: SimulationBackend {
         })
     }
 }
+
+/// Retains the source name used by existing collection adapters.
+pub use self::ConcurrentNodeRuntimeSet as ConcurrentSimulationBackend;
 
 /// One scheduler RUN planned before host dispatch and committed after its evidence arrives.
 #[derive(Clone, Debug)]

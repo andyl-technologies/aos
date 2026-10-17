@@ -1,0 +1,317 @@
+--- a/src/base/random.hh
++++ b/src/base/random.hh
+@@ -46,6 +46,8 @@
+ #define __BASE_RANDOM_HH__
+ 
+ #include <random>
++#include <locale>
++#include <sstream>
+ #include <string>
+ #include <type_traits>
+ #include <vector>
+@@ -160,6 +162,27 @@
+ 
+     void init(uint32_t s);
+ 
++    /** Reads every registry slot and current engine without reseeding/drawing. */
++    static std::vector<std::string> crucibleEngineInventory()
++    {
++        std::vector<std::string> result;
++        if (!instances)
++            return result;
++
++        for (const auto &weak : *instances) {
++            auto engine = weak.lock();
++            if (!engine) {
++                result.emplace_back();
++                continue;
++            }
++            std::ostringstream stream;
++            stream.imbue(std::locale::classic());
++            stream << engine->gen;
++            result.push_back(stream.str());
++        }
++        return result;
++    }
++
+     /**
+      * Facility to reseed all live instances
+      * and ensure future default constructed
+--- a/src/python/m5/simulate.py
++++ b/src/python/m5/simulate.py
+@@ -302,6 +302,18 @@
+     return result
+ 
+ 
++def crucibleStateInventory():
++    """Reads native modeled diagnostics without startup or semantic advance.
++
++    The current inventory explicitly reports incomplete state-domain coverage.
++    It must not be promoted to an exact-profile certificate or a complete
++    microstate fingerprint by a consuming owner.
++    """
++    if need_startup:
++        raise RuntimeError("model startup has not completed")
++    return _m5_event.crucibleStateInventory()
++
++
+ def setMaxTick(tick: int) -> None:
+     """Sets the maximum tick the simulation may run to. When when using the
+     stdlib simulator module, reaching this max tick triggers a
+--- a/src/python/pybind11/event.cc
++++ b/src/python/pybind11/event.cc
+@@ -44,6 +44,10 @@
+ #include "pybind11/stl.h"
+ 
+ #include "base/logging.hh"
++#include "base/random.hh"
++#include "sim/async.hh"
++#include "sim/sim_object.hh"
++#include <stdexcept>
+ #include "sim/eventq.hh"
+ #include "sim/sim_events.hh"
+ #include "sim/sim_exit.hh"
+@@ -118,6 +122,67 @@
+                       py::return_value_policy::reference);
+     m.def("simulateUntilBoundary", &simulateUntilBoundary,
+           py::arg("exclusive_tick"), py::arg("max_events"));
++    m.def("crucibleStateInventory", []() {
++        if (numMainEventQueues != 1 || inParallelMode || async_event ||
++            crucibleModelIsExecuting()) {
++            throw std::runtime_error("model is not at an admitted parked boundary");
++        }
++
++        py::dict result;
++        result["schema"] = "crucible.gem5.modeled-state.v1";
++        result["complete"] = false;
++        result["native_tick"] = std::to_string(getEventQueue(0)->getCurTick());
++        py::list unsupported;
++        for (const char *domain : {"callback-payloads", "simobject-modeled-fields",
++                                  "cpu-pipeline-and-registers",
++                                  "cache-tags-data-and-transients",
++                                  "memory-controller-and-dram",
++                                  "device-dma-and-transport",
++                                  "owner-and-delivery-custody"})
++            unsupported.append(domain);
++        result["unsupported_domains"] = unsupported;
++
++        py::list events;
++        uint64_t ordinal = 0;
++        for (const auto &event : getEventQueue(0)->crucibleEventInventory()) {
++            py::dict item;
++            item["event_identity"] = event.identity;
++            item["queue_ordinal"] = std::to_string(ordinal++);
++            item["tick"] = std::to_string(event.when);
++            item["priority"] = std::to_string(event.priority);
++            item["flags"] = std::to_string(event.flags);
++            item["native_type"] = event.type;
++            item["description"] = event.description;
++            item["payload_complete"] = false;
++            events.append(item);
++        }
++        result["events"] = events;
++
++        py::list objects;
++        for (const auto &object : SimObject::crucibleObjectInventory()) {
++            py::dict item;
++            item["name"] = object.first;
++            item["native_type"] = object.second;
++            item["state_complete"] = false;
++            objects.append(item);
++        }
++        result["objects"] = objects;
++
++        py::dict random;
++        random["global_seed"] = std::to_string(Random::globalSeed);
++        py::list engines;
++        ordinal = 0;
++        for (const auto &engine : Random::crucibleEngineInventory()) {
++            py::dict item;
++            item["registry_ordinal"] = std::to_string(ordinal++);
++            item["expired"] = engine.empty();
++            item["engine_state"] = engine;
++            engines.append(item);
++        }
++        random["engines"] = engines;
++        result["rng"] = random;
++        return result;
++    });
+     m.def("setMaxTick", &set_max_tick, py::arg("tick"));
+     m.def("getMaxTick", &get_max_tick, py::return_value_policy::copy);
+     m.def("terminateEventQueueThreads", &terminateEventQueueThreads);
+--- a/src/sim/eventq.cc
++++ b/src/sim/eventq.cc
+@@ -42,6 +42,9 @@
+ #include "cpu/smt.hh"
+ #include "debug/Checkpoint.hh"
+ 
++#include <stdexcept>
++#include <typeinfo>
++
+ namespace gem5
+ {
+ 
+@@ -218,6 +221,35 @@
+     // we remove an item, it returns the new top item (which may be
+     // unchanged)
+     prev->nextBin = Event::removeItem(event, curr);
++}
++
++std::vector<CrucibleQueuedEvent>
++EventQueue::crucibleEventInventory()
++{
++    std::lock_guard<UncontendedMutex> service_lock(service_mutex);
++    std::lock_guard<UncontendedMutex> async_lock(async_queue_mutex);
++    if (!async_queue.empty()) {
++        throw std::runtime_error("pending asynchronous event insertion");
++    }
++
++    std::vector<CrucibleQueuedEvent> result;
++    for (Event *bin = head; bin; bin = bin->nextBin) {
++        for (Event *event = bin; event; event = event->nextInBin) {
++            if (result.size() >= 65536) {
++                throw std::runtime_error("native event inventory limit exceeded");
++            }
++#ifndef NDEBUG
++            result.push_back({std::to_string(event->instance), event->when(),
++                              event->priority(), unsigned(event->flags),
++                              typeid(*event).name(), event->description()});
++#else
++            // Fast builds lack stable native event identities. Never expose
++            // allocator addresses as public or canonical object references.
++            throw std::runtime_error("stable event identities are unavailable");
++#endif
++        }
++    }
++    return result;
+ }
+ 
+ Event *
+--- a/src/sim/eventq.hh
++++ b/src/sim/eventq.hh
+@@ -43,6 +43,7 @@
+ #include <list>
+ #include <memory>
+ #include <string>
++#include <vector>
+ 
+ #include "base/debug.hh"
+ #include "base/flags.hh"
+@@ -60,6 +61,18 @@
+ 
+ class EventQueue;       // forward declaration
+ class BaseGlobalEvent;
++
++/** Read-only queue membership; callback payloads remain separately qualified. */
++struct CrucibleQueuedEvent
++{
++    std::string identity;
++    Tick when;
++    int priority;
++    unsigned flags;
++    std::string type;
++    std::string description;
++};
++
+ 
+ //! Simulation Quantum for multiple eventq simulation.
+ //! The quantum value is the period length after which the queues
+@@ -848,6 +861,9 @@
+      * @ingroup api_eventq
+      */
+     Tick getCurTick() const { return _curTick; }
++
++    /** Reads exact native bin/stack order without servicing an event. */
++    std::vector<CrucibleQueuedEvent> crucibleEventInventory();
+     Event *getHead() const { return head; }
+ 
+     Event *serviceOne();
+--- a/src/sim/sim_object.cc
++++ b/src/sim/sim_object.cc
+@@ -37,6 +37,9 @@
+ #include "debug/Checkpoint.hh"
+ #include "sim/probe/probe.hh"
+ 
++#include <algorithm>
++#include <typeinfo>
++
+ namespace gem5
+ {
+ 
+@@ -51,6 +54,16 @@
+ //
+ SimObject::SimObjectList SimObject::simObjectList;
+ SimObjectResolver *SimObject::_objNameResolver = NULL;
++
++std::vector<std::pair<std::string, std::string>>
++SimObject::crucibleObjectInventory()
++{
++    std::vector<std::pair<std::string, std::string>> result;
++    for (const SimObject *object : simObjectList)
++        result.emplace_back(object->name(), typeid(*object).name());
++    std::sort(result.begin(), result.end());
++    return result;
++}
+ 
+ //
+ // SimObject constructor: used to maintain static simObjectList
+--- a/src/sim/sim_object.hh
++++ b/src/sim/sim_object.hh
+@@ -48,6 +48,7 @@
+ 
+ #include <string>
+ #include <vector>
++#include <utility>
+ 
+ #include "base/named.hh"
+ #include "base/stats/group.hh"
+@@ -338,6 +339,10 @@
+      */
+     static SimObject *find(const char *name);
+ 
++    /** Lists realized named types; does not claim complete state visitors. */
++    static std::vector<std::pair<std::string, std::string>>
++    crucibleObjectInventory();
++
+     /**
+      * There is a single object name resolver, and it is only set when
+      * simulation is restoring from checkpoints.
+--- a/src/sim/simulate.cc
++++ b/src/sim/simulate.cc
+@@ -256,9 +256,24 @@
+ }
+ 
+ 
++static bool crucible_model_executing = false;
++
++bool
++crucibleModelIsExecuting()
++{
++    return crucible_model_executing;
++}
++
+ EventBoundaryResult
+ simulateUntilBoundary(Tick exclusive_tick, uint64_t max_events)
+ {
++    fatal_if(crucible_model_executing,
++             "Bounded model execution cannot be entered recursively");
++    struct ExecutionGuard
++    {
++        ExecutionGuard() { crucible_model_executing = true; }
++        ~ExecutionGuard() { crucible_model_executing = false; }
++    } execution_guard;
+     fatal_if(numMainEventQueues != 1 || inParallelMode,
+              "Pre-event boundaries require one native event queue");
+     fatal_if(simulate_limit_event != nullptr,
+--- a/src/sim/simulate.hh
++++ b/src/sim/simulate.hh
+@@ -71,6 +71,9 @@
+ EventBoundaryResult simulateUntilBoundary(Tick exclusive_tick,
+                                          uint64_t max_events);
+ 
++/** Indicates that the bounded owner is currently executing a modeled event. */
++bool crucibleModelIsExecuting();
++
+ /**
+  * @brief Set the maximum tick.
+  *

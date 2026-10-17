@@ -46,18 +46,18 @@ impl<'a> WorldVmNodes<'a> {
 
     /// Returns the first VM node, if one exists.
     #[must_use]
-    pub fn first(self) -> Option<&'a WorldNode> {
+    pub fn first(self) -> Option<&'a ComputeNodeDef> {
         self.iter().next()
     }
 
     /// Returns the VM node at `index`, if one exists.
     #[must_use]
-    pub fn get(self, index: usize) -> Option<&'a WorldNode> {
+    pub fn get(self, index: usize) -> Option<&'a ComputeNodeDef> {
         self.iter().nth(index)
     }
 
     /// Iterates the VM nodes in canonical topology order.
-    pub fn iter(self) -> impl DoubleEndedIterator<Item = &'a WorldNode> + Clone {
+    pub fn iter(self) -> impl DoubleEndedIterator<Item = &'a ComputeNodeDef> + Clone {
         self.nodes.iter().filter_map(|node| match node {
             WorldNodeDef::Vm(node) => Some(node),
             WorldNodeDef::Io(_) => None,
@@ -66,7 +66,7 @@ impl<'a> WorldVmNodes<'a> {
 
     /// Copies the VM nodes into an owned collection.
     #[must_use]
-    pub fn to_vec(self) -> Vec<WorldNode> {
+    pub fn to_vec(self) -> Vec<ComputeNodeDef> {
         self.iter().cloned().collect()
     }
 }
@@ -86,14 +86,14 @@ impl PartialEq for WorldVmNodes<'_> {
 impl Eq for WorldVmNodes<'_> {}
 
 impl<'a> IntoIterator for WorldVmNodes<'a> {
-    type Item = &'a WorldNode;
+    type Item = &'a ComputeNodeDef;
     type IntoIter = std::iter::FilterMap<
         std::slice::Iter<'a, WorldNodeDef>,
-        fn(&'a WorldNodeDef) -> Option<&'a WorldNode>,
+        fn(&'a WorldNodeDef) -> Option<&'a ComputeNodeDef>,
     >;
 
     fn into_iter(self) -> Self::IntoIter {
-        fn vm_node(node: &WorldNodeDef) -> Option<&WorldNode> {
+        fn vm_node(node: &WorldNodeDef) -> Option<&ComputeNodeDef> {
             match node {
                 WorldNodeDef::Vm(node) => Some(node),
                 WorldNodeDef::Io(_) => None,

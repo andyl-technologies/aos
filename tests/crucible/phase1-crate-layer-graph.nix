@@ -27,12 +27,22 @@
       inVm = false;
     }
     {
+      package = "crucible-node-contract";
+      layer = 1;
+      inVm = false;
+    }
+    {
       package = "crucible-device";
       layer = 1;
       inVm = false;
     }
     {
       package = "crucible-qemu";
+      layer = 2;
+      inVm = false;
+    }
+    {
+      package = "crucible-node-provider";
       layer = 2;
       inVm = false;
     }
@@ -285,7 +295,7 @@ in
             check=checks.crucible.phase1.crateLayerGraph
             gate=gate:harness-lint
             tasks=T-ARCH-2,T-CRATE-3
-            runtime_crates=18
+            runtime_crates=${builtins.toString (builtins.length runtimeSpecs)}
             test_only_crates=1
             upward_edges=0
             host_adapter_upward_edge_exceptions=1

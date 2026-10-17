@@ -1,0 +1,104 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Source-extracted queue/EOI release model. Native queue, clock, original RUN
+ * and PIC geometry boundaries below are explicit modeled peers. No real
+ * worker callback, guest delivery or stopped-world authority is supplied. */
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#include <pthread.h>
+#include <errno.h>
+#include <limits.h>
+
+typedef uint64_t u64;
+typedef uint32_t u32;
+typedef int64_t ktime_t;
+#define KVM_MAX_VCPUS 8
+#define U32_MAX UINT32_MAX
+#define EXPORT_SYMBOL_FOR_KVM_INTERNAL(name)
+#define READ_ONCE(value) (value)
+#define KVM_CRUCIBLE_PIT_ISSUED 4096
+#define KVM_CRUCIBLE_PIT_PENDING 16
+@PIC_PHASES@
+struct task_struct { int identity; };
+struct kthread_worker { struct task_struct *task; };
+struct kthread_work { int identity; };
+struct kvm;
+struct kvm_vcpu { struct kvm *kvm; u32 vcpu_id; u64 crucible_timer_run_invocation; pthread_mutex_t mutex; };
+@JOURNALS@
+struct kvm_pit { struct kvm *kvm;
+    struct { struct kvm_crucible_pit_journal crucible; } pit_state;
+    struct kthread_worker *worker; struct kthread_work expired; };
+struct original_birth { u64 generation; };
+struct kvm_crucible_pic_pit_line { struct original_birth original; u32 phase; bool eoi_native_known;
+    bool eoi_inflight; u64 eoi_sequence, geometry, ack_invocation; };
+struct kvm_pic { struct kvm *kvm; struct kvm_crucible_pic_pit_line crucible_pit[1];
+    struct { u64 geometry; } pics[1]; pthread_mutex_t lock; };
+struct kvm_crucible_clock_domain { bool active; u64 window_generation; u32 timer_owners;
+    struct { bool uncertain; } continuation; };
+struct kvm { struct { struct kvm_pit *vpit; struct kvm_pic *vpic;
+    struct kvm_crucible_clock_domain crucible_clock; } arch;
+    struct { bool enabled, tainted; } crucible_irq_input;
+    bool crucible_continuation_roster_frozen, crucible_memory_tainted;
+    u64 crucible_host_ceiling_ns; u32 crucible_effect_owners; int crucible_stopped;
+    pthread_mutex_t crucible_gate_lock; struct kvm_vcpu cpu; };
+struct crucible_irq_device_lease { bool entered; u64 generation, invocation; };
+
+static struct kvm vm;
+static struct kvm_pit pit;
+static struct kvm_pic pic;
+static struct task_struct worker_task;
+#define current (&worker_task)
+static bool in_interrupt(void) { return false; }
+static struct kthread_worker worker;
+static u64 host_now;
+static unsigned int native_queues, stopped_wakes, contained;
+static bool gate_held, fail_queue, late_queue, wrong_original_run;
+static u32 queue_credit_seen;
+static bool hold_queue, queue_entered, release_queue;
+static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t queue_condition = PTHREAD_COND_INITIALIZER;
+#define lockdep_assert_held(lock) assert((lock) != NULL)
+#define raw_spin_lock_irqsave(lock, flags) do { (flags) = 0; \
+    assert(!pthread_mutex_lock(lock)); gate_held = true; } while (0)
+#define raw_spin_unlock_irqrestore(lock, flags) do { (void)(flags); \
+    gate_held = false; assert(!pthread_mutex_unlock(lock)); } while (0)
+#define spin_unlock(lock) assert(!pthread_mutex_unlock(lock))
+#define kvm_for_each_vcpu(index, vcpu, kvm) \
+    for ((index) = 0, (vcpu) = &(kvm)->cpu; (index) < 1; (index)++)
+static u64 ktime_get_ns(void) { return host_now; }
+static bool kvm_crucible_clock_admission_live(bool active, u64 end, u64 now)
+{ return active && now < end; }
+static void kvm_arch_crucible_irq_taint_locked(struct kvm *kvm)
+{ assert(gate_held); kvm->crucible_irq_input.tainted = true; }
+static void kvm_vm_dead(struct kvm *kvm)
+{ assert(kvm == &vm && !gate_held); contained++; }
+static bool kthread_queue_work(struct kthread_worker *owner, struct kthread_work *work)
+{
+    assert(gate_held && owner == &worker && work == &pit.expired);
+    queue_credit_seen = vm.crucible_effect_owners;
+    native_queues++;
+    if (hold_queue) {
+        /* A test-only held native return exposes the original effect span.
+         * This does not assert that the real kernel queue call blocks. */
+        assert(!pthread_mutex_lock(&queue_mutex));
+        queue_entered = true;
+        assert(!pthread_cond_broadcast(&queue_condition));
+        while (!release_queue)
+            assert(!pthread_cond_wait(&queue_condition, &queue_mutex));
+        assert(!pthread_mutex_unlock(&queue_mutex));
+    }
+    if (late_queue)
+        host_now = vm.crucible_host_ceiling_ns;
+    return !fail_queue;
+}
+static void pic_lock(struct kvm_pic *owner)
+{ assert(owner == &pic); assert(!pthread_mutex_lock(&owner->lock)); }
+static bool crucible_irq_device_run_locked(struct kvm *kvm, struct kvm_vcpu *vcpu)
+{ return kvm == &vm && vcpu == &vm.cpu && !wrong_original_run &&
+    gate_held && kvm_crucible_clock_admission_live(kvm->arch.crucible_clock.active,
+    kvm->crucible_host_ceiling_ns, host_now) && !kvm->crucible_irq_input.tainted; }
+static u64 pic_pit_geometry(const void *state)
+{ assert(state == &pic.pics[0]); return pic.pics[0].geometry; }
+static void wake_up_all(const void *unused)
+{ (void)unused; assert(!gate_held); stopped_wakes++; }

@@ -1,0 +1,33 @@
+--- a/src/mem/packet.hh
++++ b/src/mem/packet.hh
+@@ -408,16 +408,28 @@
+             writer.set(prefix + ".address", addr);
+         if (flags.isSet(VALID_SIZE)) {
+             writer.set(prefix + ".size", size);
+-            if (data) {
++            // Read requests own allocated storage before its bytes exist.
++            // Only commands carrying data define the complete payload.
++            if (data && cmd.hasData()) {
+                 if (size > 1048576)
+                     throw std::runtime_error("modeled packet byte extent exceeds admission");
+                 writer.bytes(prefix + ".data", data, size);
+             }
+         }
++        writer.set(prefix + ".data_defined", flags.isSet(VALID_SIZE) && data && cmd.hasData());
+         writer.set(prefix + ".has_storage", data != nullptr);
+         writer.set(prefix + ".functional_bytes", bytesValid.size());
+-        for (size_t i = 0; i < bytesValid.size(); ++i)
++        if (bytesValid.size() > 1048576 ||
++            (!bytesValid.empty() && (!flags.isSet(VALID_SIZE) || bytesValid.size() != size)))
++            throw std::runtime_error("modeled functional byte mask exceeds defined packet geometry");
++        for (size_t i = 0; i < bytesValid.size(); ++i) {
+             writer.set(prefix + ".functional_byte[" + std::to_string(i) + "]", bool(bytesValid[i]));
++            if (bytesValid[i]) {
++                if (!data)
++                    throw std::runtime_error("valid modeled functional byte lacks storage");
++                writer.set(prefix + ".functional_value[" + std::to_string(i) + "]", data[i]);
++            }
++        }
+         writer.string(prefix + ".coverage.unsupported", "request-private-fields-and-polymorphic-sender-payloads");
+     }
+ 

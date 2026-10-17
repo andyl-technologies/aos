@@ -21,6 +21,16 @@ struct LayerSpec {
 
 const RUNTIME_SPECS: &[LayerSpec] = &[
     LayerSpec {
+        package: "crucible-node-contract",
+        layer: 1,
+        in_vm: false,
+    },
+    LayerSpec {
+        package: "crucible-node-provider",
+        layer: 2,
+        in_vm: false,
+    },
+    LayerSpec {
         package: "crucible-sim",
         layer: 0,
         in_vm: false,

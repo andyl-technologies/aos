@@ -1,0 +1,187 @@
+--- a/arch/x86/kvm/crucible-clock.c
++++ b/arch/x86/kvm/crucible-clock.c
+@@ -548,6 +548,13 @@
+ 	if (!kvm_crucible_clock_enabled(vcpu->kvm))
+ 		return 0;
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (clock->ps.selected && clock->ps.plan.version == 2 &&
++	    (!kvm_arch_crucible_q35_ps_execution_ready_locked(kvm) ||
++	     clock->ps.phase != KVM_CRUCIBLE_PS_ACTIVE ||
++	     !kvm_arch_crucible_q35_ps_worker_current_locked(vcpu))) {
++		result = -EOPNOTSUPP;
++		goto unlock;
++	}
+ 	/* Frozen reentry with immediate_exit may finish old I/O, but may not
+ 	 * retire a subsequent guest instruction. Its owner is counted too.
+ 	 */
+@@ -560,7 +567,8 @@
+ 		result = -EAGAIN;
+ 	else {
+ 		/* Aggregate RUN ownership is not a timer-programming permit. */
+-		if (kvm->crucible_irq_input.enabled) {
++		if (kvm->crucible_irq_input.enabled ||
++		    (clock->ps.selected && clock->ps.plan.version == 2)) {
+ 			struct kvm_crucible_run_return_state *original =
+ 				&vcpu->crucible_run_return;
+ 
+@@ -597,7 +605,8 @@
+ 	if (!kvm_crucible_clock_enabled(vcpu->kvm))
+ 		return;
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+-	if (kvm->crucible_irq_input.enabled) {
++	if (kvm->crucible_irq_input.enabled ||
++	    (clock->ps.selected && clock->ps.plan.version == 2)) {
+ 		vcpu->crucible_timer_run_owner = NULL;
+ 		vcpu->crucible_timer_run_invocation = 0;
+ 	}
+--- a/arch/x86/kvm/crucible-clock.h
++++ b/arch/x86/kvm/crucible-clock.h
+@@ -20,6 +20,7 @@
+ bool kvm_arch_crucible_q35_ps_native_cut_locked(struct kvm *kvm,
+ 	u64 *closed_workers, u64 *pending_mask);
+ bool kvm_arch_crucible_q35_ps_execution_ready_locked(struct kvm *kvm);
++bool kvm_arch_crucible_q35_ps_worker_current_locked(struct kvm_vcpu *vcpu);
+ bool kvm_arch_crucible_q35_ps_timers_closed_locked(struct kvm *kvm);
+ int kvm_crucible_q35_ps_pit_bind_original_birth(struct kvm *kvm);
+ bool kvm_crucible_q35_ps_pit_birth_current_locked(struct kvm *kvm);
+--- a/arch/x86/kvm/crucible-q35-ps-native-cut.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-native-cut.inc.c
+@@ -1,5 +1,70 @@
+ /* SPDX-License-Identifier: GPL-2.0-only */
+ /* Original native resources, not a userspace roster, select this clock plan. */
++
++/* Counter preparation retains the same kernel Task/vCPU born by the original
++ * initializer. A reopened fd or another thread cannot become that RUN actor.
++ * Runtime loaded-intercept readback remains a separate source prerequisite.
++ */
++bool kvm_arch_crucible_q35_ps_worker_current_locked(struct kvm_vcpu *vcpu)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_pic_initializer_state *actor;
++	struct kvm_crucible_q35_counter_row *counter;
++	u32 index;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	lockdep_assert_held(&vcpu->mutex);
++	if (vcpu->vcpu_id >= 4 || kvm_get_vcpu(kvm, vcpu->vcpu_id) != vcpu ||
++	    !board->initializer_roster.selected || board->initializer_roster.uncertain ||
++	    READ_ONCE(kvm->vm_dead))
++		return false;
++	actor = &board->initializer_roster.actors[vcpu->vcpu_id];
++	counter = &board->counter_rows[vcpu->vcpu_id];
++	if (actor->task != current || actor->vcpu != vcpu ||
++	    actor->native_vcpu_id != vcpu->vcpu_id || actor->inflight || actor->uncertain ||
++	    !actor->issued || actor->issued > actor->maximum_effects ||
++	    counter->task != current || counter->vcpu != vcpu || !counter->applied ||
++	    counter->inflight || counter->uncertain || !counter->known || counter->native_result ||
++	    counter->original.configuration_enrollment_id != board->q35_configuration.enrollment_id ||
++	    counter->original.enrollment_id != actor->enrollment_id ||
++	    counter->original.initializer_tid != actor->initializer_tid ||
++	    counter->original.native_vcpu_id != vcpu->vcpu_id ||
++	    counter->output.observed_coverage != KVM_CRUCIBLE_Q35_COUNTER_COVERAGE ||
++	    counter->output.flags != (KVM_CRUCIBLE_Q35_COUNTER_KNOWN |
++		KVM_CRUCIBLE_Q35_COUNTER_LOADED | KVM_CRUCIBLE_Q35_COUNTER_CONSTRUCTOR))
++		return false;
++	for (index = 0; index < actor->issued; index++)
++		if (!actor->effects[index].known)
++			return false;
++	return true;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_q35_ps_worker_current_locked);
++
++/* This proves retained kernel RUN/response custody only. The original QEMU
++ * worker still has to park and seal its complete native output cohort.
++ */
++static bool q35_ps_run_output_closed_locked(struct kvm_vcpu *vcpu, u64 generation)
++{
++	struct kvm_crucible_run_return_state *state = &vcpu->crucible_run_return;
++	const struct kvm_crucible_run_return *original = &state->original;
++	u32 required = KVM_CRUCIBLE_RUN_RETURN_RETURNED |
++		KVM_CRUCIBLE_RUN_RETURN_CLOCK_ENTERED | KVM_CRUCIBLE_RUN_RETURN_BEGIN_ACTIVE;
++
++	lockdep_assert_held(&vcpu->mutex);
++	lockdep_assert_held(&vcpu->kvm->crucible_gate_lock);
++	if (!generation || state->outstanding || original->version != 1 ||
++	    !original->invocation || state->acknowledged_invocation != original->invocation ||
++	    original->native_vcpu_id != vcpu->vcpu_id ||
++	    original->generation_begin != generation || original->generation_end != generation ||
++	    (original->flags & required) != required || original->response_flags ||
++	    (original->pending_mask & ~(KVM_CRUCIBLE_RUN_PENDING_CALLBACK |
++		KVM_CRUCIBLE_RUN_PENDING_MMIO | KVM_CRUCIBLE_RUN_PENDING_PIO)) ||
++	    (original->run_result != 0 && original->run_result != -EINTR &&
++	     original->run_result != -EAGAIN))
++		return false;
++	return kvm_crucible_response_bytes_closed_locked(vcpu, generation);
++}
+ 
+ bool kvm_arch_crucible_q35_ps_plan_cut_locked(struct kvm *kvm,
+ 	const struct kvm_crucible_q35_ps_clock *request)
+@@ -92,7 +157,11 @@
+ 		*pending_mask |= (u64)pending << (index * 8);
+ 		if (!pending && !vcpu->crucible_timer_run_owner &&
+ 		    READ_ONCE(vcpu->mode) == OUTSIDE_GUEST_MODE &&
+-		    !vcpu->crucible_run_return.outstanding)
++		    !vcpu->crucible_run_return.outstanding &&
++		    (kvm->arch.crucible_clock.ps.plan.version != 2 ||
++		     !kvm->arch.crucible_clock.window_generation ||
++		     q35_ps_run_output_closed_locked(vcpu,
++			kvm->arch.crucible_clock.window_generation)))
+ 			*closed_workers |= BIT_ULL(index);
+ 	}
+ 	return true;
+--- a/include/linux/kvm_host.h
++++ b/include/linux/kvm_host.h
+@@ -1844,6 +1844,7 @@
+ 	u64 address, u64 data_offset, u32 length, u32 count, u32 size, u32 direction,
+ 	const void *data);
+ void kvm_crucible_response_bytes_consume_begin(struct kvm_vcpu *vcpu);
++bool kvm_crucible_response_bytes_closed_locked(struct kvm_vcpu *vcpu, u64 generation);
+ u32 kvm_crucible_response_bytes_reason(struct kvm_vcpu *vcpu);
+ const void *kvm_crucible_response_bytes_input(struct kvm_vcpu *vcpu,
+ 	const void *legacy, unsigned int length);
+--- a/virt/kvm/crucible-response-bytes.c
++++ b/virt/kvm/crucible-response-bytes.c
+@@ -29,6 +29,42 @@
+ 	bool active_input;
+ 	bool result_known;
+ };
++
++/* The original vCPU mutex retains every byte/result across this readback.
++ * Mechanical completion may follow its original RUN, but a stale last STEP
++ * or mutable kvm_run exit view cannot stand in for this invocation's output.
++ */
++bool kvm_crucible_response_bytes_closed_locked(struct kvm_vcpu *vcpu, u64 generation)
++{
++	struct kvm_crucible_response_bytes_state *bytes = vcpu->crucible_response_bytes;
++	const struct kvm_crucible_run_return *run = &vcpu->crucible_run_return.original;
++	struct kvm_crucible_response_state *state = &vcpu->crucible_response;
++	const struct kvm_crucible_response_bytes *request, *result;
++
++	lockdep_assert_held(&vcpu->mutex);
++	lockdep_assert_held(&vcpu->kvm->crucible_gate_lock);
++	if (!bytes || !generation || bytes->active_input || bytes->fragment.valid ||
++	    state->flags || kvm_crucible_response_pending(state) ||
++	    (state->phase != KVM_CRUCIBLE_COMPLETION_EMPTY &&
++	     state->phase != KVM_CRUCIBLE_COMPLETION_DONE))
++		return false;
++	if (!run->pending_mask)
++		return true;
++	request = &bytes->last_request;
++	result = &bytes->last_result;
++	return bytes->result_known && state->phase == KVM_CRUCIBLE_COMPLETION_DONE &&
++		state->sequence == state->consumed_sequence && !result->flags &&
++		request->operation == KVM_CRUCIBLE_RESPONSE_BYTES_STEP && request->operation_id &&
++		request->expected_invocation == run->invocation &&
++		request->expected_generation == generation &&
++		request->expected_sequence == state->consumed_sequence &&
++		result->operation_id == request->operation_id && result->invocation == run->invocation &&
++		result->native_vcpu_id == vcpu->vcpu_id &&
++		result->phase == KVM_CRUCIBLE_COMPLETION_DONE && result->callback_result >= 0 &&
++		result->pending_sequence == state->sequence &&
++		result->consumed_sequence == state->consumed_sequence && result->revision == state->revision;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_response_bytes_closed_locked);
+ 
+ int kvm_crucible_response_bytes_configure(struct kvm *kvm,
+ 	const struct kvm_enable_cap *cap)

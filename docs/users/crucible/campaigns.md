@@ -289,7 +289,7 @@ scenario_content = "crucible.campaign.scenario-artifact@scenario-v1-CONTENT_HASH
 genesis = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 genesis_content = "crucible.campaign.configuration-artifact@configuration-v1-CONTENT_HASH"
 crucible_version = "crucible-0.1.0"
-qemu_build = "qemu-11.1.1-crucible"
+backend_build_identity = "qemu-11.1.1-crucible"
 scenario_schema = 3
 exact_closure_schema = 5
 
@@ -305,6 +305,12 @@ imported Crucible configuration payloads use version 2 and are independently
 authenticated by `genesis_content`. A different requested root-envelope version
 is rejected before the packaged executor acquires host resources. Existing
 immutable lineage records are not rewritten at startup.
+
+`backend_build_identity` is an opaque backend compatibility identity, not a
+selection of a node implementation. The legacy `qemu_build` key remains accepted.
+If both keys are supplied, their values must agree; conflicting identities are
+rejected before an output record is created. This input-key change preserves the
+version-one canonical binary field order and existing lineage identities.
 
 The lineage and policy compilers reject unknown fields, noncanonical
 identities, and invalid typed values before creating output. They write new

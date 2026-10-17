@@ -1,0 +1,904 @@
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -88,6 +88,7 @@
+ #include <linux/sched/mm.h>
+ #include <linux/memcontrol.h>
+ #include <linux/crucible_allocator.h>
++#include <linux/crucible_percpu_boot.h>
+ #include <linux/overflow.h>
+ 
+ #include <asm/cacheflush.h>
+@@ -200,6 +201,7 @@
+ static bool pcpu_async_enabled __read_mostly;
+ static bool pcpu_atomic_alloc_failed;
+ 
++#include "crucible-percpu-boot-accounting.inc.c"
+ #include "crucible-percpu-first-chunk.inc.c"
+ #include "crucible-percpu-pool.inc.c"
+ 
+@@ -1372,7 +1374,9 @@
+ 	/* allocate chunk */
+ 	alloc_size = struct_size(chunk, populated,
+ 				 BITS_TO_LONGS(region_size >> PAGE_SHIFT));
+-	chunk = memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES);
++	chunk = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_CHUNK,
++		alloc_size, SMP_CACHE_BYTES, NULL,
++		memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES));
+ 
+ 	INIT_LIST_HEAD(&chunk->list);
+ 
+@@ -1384,14 +1388,20 @@
+ 	region_bits = pcpu_chunk_map_bits(chunk);
+ 
+ 	alloc_size = BITS_TO_LONGS(region_bits) * sizeof(chunk->alloc_map[0]);
+-	chunk->alloc_map = memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES);
++	chunk->alloc_map = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_ALLOC_MAP,
++		alloc_size, SMP_CACHE_BYTES, chunk,
++		memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES));
+ 
+ 	alloc_size =
+ 		BITS_TO_LONGS(region_bits + 1) * sizeof(chunk->bound_map[0]);
+-	chunk->bound_map = memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES);
++	chunk->bound_map = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_BOUND_MAP,
++		alloc_size, SMP_CACHE_BYTES, chunk,
++		memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES));
+ 
+ 	alloc_size = pcpu_chunk_nr_blocks(chunk) * sizeof(chunk->md_blocks[0]);
+-	chunk->md_blocks = memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES);
++	chunk->md_blocks = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_MD_BLOCKS,
++		alloc_size, SMP_CACHE_BYTES, chunk,
++		memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES));
+ #ifdef NEED_PCPUOBJ_EXT
+ 	/* first chunk is free to use */
+ 	chunk->obj_exts = NULL;
+@@ -2440,7 +2450,9 @@
+ 			  __alignof__(ai->groups[0].cpu_map[0]));
+ 	ai_size = base_size + nr_units * sizeof(ai->groups[0].cpu_map[0]);
+ 
+-	ptr = memblock_alloc(PFN_ALIGN(ai_size), PAGE_SIZE);
++	ptr = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_ALLOC_INFO,
++		PFN_ALIGN(ai_size), PAGE_SIZE, NULL,
++		memblock_alloc(PFN_ALIGN(ai_size), PAGE_SIZE));
+ 	if (!ptr)
+ 		return NULL;
+ 	ai = ptr;
+@@ -2623,16 +2635,24 @@
+ 
+ 	/* process group information and build config tables accordingly */
+ 	alloc_size = ai->nr_groups * sizeof(group_offsets[0]);
+-	group_offsets = memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES);
++	group_offsets = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_GROUP_OFFSETS,
++		alloc_size, SMP_CACHE_BYTES, NULL,
++		memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES));
+ 
+ 	alloc_size = ai->nr_groups * sizeof(group_sizes[0]);
+-	group_sizes = memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES);
++	group_sizes = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_GROUP_SIZES,
++		alloc_size, SMP_CACHE_BYTES, NULL,
++		memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES));
+ 
+ 	alloc_size = nr_cpu_ids * sizeof(unit_map[0]);
+-	unit_map = memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES);
++	unit_map = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_UNIT_MAP,
++		alloc_size, SMP_CACHE_BYTES, NULL,
++		memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES));
+ 
+ 	alloc_size = nr_cpu_ids * sizeof(unit_off[0]);
+-	unit_off = memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES);
++	unit_off = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_UNIT_OFFSETS,
++		alloc_size, SMP_CACHE_BYTES, NULL,
++		memblock_alloc_or_panic(alloc_size, SMP_CACHE_BYTES));
+ 
+ 	for (cpu = 0; cpu < nr_cpu_ids; cpu++)
+ 		unit_map[cpu] = UINT_MAX;
+@@ -2701,9 +2721,10 @@
+ 	pcpu_free_slot = pcpu_sidelined_slot + 1;
+ 	pcpu_to_depopulate_slot = pcpu_free_slot + 1;
+ 	pcpu_nr_slots = pcpu_to_depopulate_slot + 1;
+-	pcpu_chunk_lists = memblock_alloc_or_panic(pcpu_nr_slots *
+-					  sizeof(pcpu_chunk_lists[0]),
+-					  SMP_CACHE_BYTES);
++	pcpu_chunk_lists = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_SLOT_LIST,
++		pcpu_nr_slots * sizeof(pcpu_chunk_lists[0]), SMP_CACHE_BYTES, NULL,
++		memblock_alloc_or_panic(pcpu_nr_slots * sizeof(pcpu_chunk_lists[0]),
++			SMP_CACHE_BYTES));
+ 
+ 	for (i = 0; i < pcpu_nr_slots; i++)
+ 		INIT_LIST_HEAD(&pcpu_chunk_lists[i]);
+@@ -3048,14 +3069,18 @@
+ 	crucible_percpu_first_chunk_begin(true);
+ 	ai = pcpu_build_alloc_info(reserved_size, dyn_size, atom_size,
+ 				   cpu_distance_fn);
+-	if (IS_ERR(ai))
++	if (IS_ERR(ai)) {
++		crucible_percpu_boot_finish(PTR_ERR(ai));
+ 		return PTR_ERR(ai);
++	}
+ 
+ 	crucible_percpu_first_chunk_layout(ai);
+ 	size_sum = ai->static_size + ai->reserved_size + ai->dyn_size;
+ 	areas_size = PFN_ALIGN(ai->nr_groups * sizeof(void *));
+ 
+-	areas = memblock_alloc(areas_size, SMP_CACHE_BYTES);
++	areas = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_AREAS,
++		areas_size, SMP_CACHE_BYTES, NULL,
++		memblock_alloc(areas_size, SMP_CACHE_BYTES));
+ 	if (!areas) {
+ 		rc = -ENOMEM;
+ 		goto out_free;
+@@ -3076,7 +3101,9 @@
+ 		/* allocate space for the whole group */
+ 		source_token = crucible_percpu_first_chunk_group_begin(ai, group, cpu,
+ 			gi->nr_units * ai->unit_size, atom_size);
+-		ptr = pcpu_fc_alloc(cpu, gi->nr_units * ai->unit_size, atom_size, cpu_to_nd_fn);
++		ptr = CRUCIBLE_PCPU_BOOT_ALLOC(CRUCIBLE_PCPU_BOOT_GROUP,
++			gi->nr_units * ai->unit_size, atom_size, NULL,
++			pcpu_fc_alloc(cpu, gi->nr_units * ai->unit_size, atom_size, cpu_to_nd_fn));
+ 		crucible_percpu_first_chunk_group_complete(source_token, ptr);
+ 		if (!ptr) {
+ 			rc = -ENOMEM;
+@@ -3146,6 +3173,7 @@
+ 	pcpu_free_alloc_info(ai);
+ 	if (areas)
+ 		memblock_free(areas, areas_size);
++	crucible_percpu_boot_finish(rc);
+ 	return rc;
+ }
+ #endif /* BUILD_EMBED_FIRST_CHUNK */
+@@ -3233,13 +3261,16 @@
+ 
+ 	crucible_percpu_first_chunk_begin(false);
+ 	ai = pcpu_build_alloc_info(reserved_size, 0, PAGE_SIZE, NULL);
+-	if (IS_ERR(ai))
++	if (IS_ERR(ai)) {
++		crucible_percpu_boot_finish(PTR_ERR(ai));
+ 		return PTR_ERR(ai);
++	}
+ 	BUG_ON(ai->nr_groups != 1);
+ 	upa = ai->alloc_size/ai->unit_size;
+ 	nr_g0_units = roundup(num_possible_cpus(), upa);
+ 	if (WARN_ON(ai->groups[0].nr_units != nr_g0_units)) {
+ 		pcpu_free_alloc_info(ai);
++		crucible_percpu_boot_finish(-EINVAL);
+ 		return -EINVAL;
+ 	}
+ 
+@@ -3308,6 +3339,7 @@
+ out_free_ar:
+ 	memblock_free(pages, pages_size);
+ 	pcpu_free_alloc_info(ai);
++	crucible_percpu_boot_finish(rc);
+ 	return rc;
+ }
+ #endif /* BUILD_PAGE_FIRST_CHUNK */
+--- a/mm/memblock.c
++++ b/mm/memblock.c
+@@ -16,6 +16,7 @@
+ #include <linux/kmemleak.h>
+ #include <linux/seq_file.h>
+ #include <linux/memblock.h>
++#include <linux/crucible_percpu_boot.h>
+ #include <linux/mutex.h>
+ #include <linux/string_helpers.h>
+ 
+@@ -436,6 +437,7 @@
+ 	phys_addr_t old_size, new_size, addr, new_end;
+ 	int use_slab = slab_is_available();
+ 	int *in_slab;
++	struct crucible_percpu_boot_token source_token;
+ 
+ 	/* We don't allow resizing until we know about the reserved regions
+ 	 * of memory that aren't suitable for allocation
+@@ -459,6 +461,9 @@
+ 	else
+ 		in_slab = &memblock_reserved_in_slab;
+ 
++	source_token = crucible_percpu_boot_resize_begin(type, type->regions,
++		old_alloc_size, new_alloc_size, use_slab);
++
+ 	/* Try to find some space for it */
+ 	if (use_slab) {
+ 		new_array = kmalloc(new_size, GFP_KERNEL);
+@@ -485,9 +490,11 @@
+ 			new_array = NULL;
+ 		}
+ 	}
++	crucible_percpu_boot_resize_allocated(source_token, new_array);
+ 	if (!addr) {
+ 		pr_err("memblock: Failed to double %s array from %ld to %ld entries !\n",
+ 		       type->name, type->max, type->max * 2);
++		crucible_percpu_boot_resize_complete(source_token, new_array, -1);
+ 		return -1;
+ 	}
+ 
+@@ -506,6 +513,8 @@
+ 	type->regions = new_array;
+ 	type->max <<= 1;
+ 
++	crucible_percpu_boot_resize_old_closing(source_token, old_array);
++
+ 	/* Free old array. We needn't free it if the array is the static one */
+ 	if (*in_slab)
+ 		kfree(old_array);
+@@ -523,6 +532,7 @@
+ 	/* Update slab flag */
+ 	*in_slab = use_slab;
+ 
++	crucible_percpu_boot_resize_complete(source_token, new_array, 0);
+ 	return 0;
+ }
+ 
+@@ -1538,6 +1548,10 @@
+ {
+ 	enum memblock_flags flags = choose_memblock_flags();
+ 	phys_addr_t found;
++	struct crucible_percpu_boot_token source_token;
++
++	source_token = crucible_percpu_boot_range_begin(size, align, start, end,
++		nid, exact_nid, slab_is_available());
+ 
+ 	/*
+ 	 * Detect any accidental use of these APIs after slab is ready, as at
+@@ -1547,7 +1561,9 @@
+ 	if (WARN_ON_ONCE(slab_is_available())) {
+ 		void *vaddr = kzalloc_node(size, GFP_NOWAIT, nid);
+ 
+-		return vaddr ? virt_to_phys(vaddr) : 0;
++		found = vaddr ? virt_to_phys(vaddr) : 0;
++		crucible_percpu_boot_range_complete(source_token, found);
++		return found;
+ 	}
+ 
+ 	if (!align) {
+@@ -1577,6 +1593,7 @@
+ 		goto again;
+ 	}
+ 
++	crucible_percpu_boot_range_complete(source_token, 0);
+ 	return 0;
+ 
+ done:
+@@ -1602,6 +1619,7 @@
+ 	 */
+ 	accept_memory(found, size);
+ 
++	crucible_percpu_boot_range_complete(source_token, found);
+ 	return found;
+ }
+ 
+--- a/mm/crucible-percpu-pool.inc.c
++++ b/mm/crucible-percpu-pool.inc.c
+@@ -57,7 +57,8 @@
+ 
+ u64 crucible_allocator_percpu_pool_metadata_bytes(void)
+ {
+-	return sizeof(crucible_percpu_pool) + sizeof(crucible_percpu_first_chunk);
++	return sizeof(crucible_percpu_pool) + sizeof(crucible_percpu_first_chunk) +
++		crucible_percpu_boot_metadata_bytes();
+ }
+ EXPORT_SYMBOL_GPL(crucible_allocator_percpu_pool_metadata_bytes);
+ 
+@@ -144,14 +145,15 @@
+ 
+ bool crucible_allocator_percpu_pool_shape(struct crucible_percpu_pool_shape *shape)
+ {
+-	u64 data, mappings, resident;
++	u64 data, mappings, resident, boot_bound;
+ 
+ 	memset(shape, 0, sizeof(*shape));
+ 	/* These sanitizer profiles need their own literal shadow/origin backing
+ 	 * issuer. Do not infer one from the logical static arena's byte count.
+ 	 */
+ 	if (IS_ENABLED(CONFIG_KASAN) || IS_ENABLED(CONFIG_KMSAN) ||
+-	    (!crucible_percpu_pool_current() || !crucible_percpu_first_chunk_current()))
++	    (!crucible_percpu_pool_current() || !crucible_percpu_first_chunk_current() ||
++	     !crucible_percpu_boot_peak_bound(&boot_bound)))
+ 		return false;
+ 	/* Charge every original padded group request and the full linker template.
+ 	 * Hole/tail frees never reduce this bound; NUMA virtual gaps do not add
+@@ -161,7 +163,7 @@
+ 	 * overcharged rather than inferred from final-pointer addition.
+ 	 * Runtime pool operations allocate no pages, tables, shadow or scratch.
+ 	 */
+-	data = crucible_percpu_first_chunk.group_backing_bound;
++	data = boot_bound;
+ 	if (check_add_overflow(data, (u64)PAGE_ALIGN(crucible_percpu_first_chunk.static_bytes), &data) ||
+ 	    check_mul_overflow(data, 2ULL * CONFIG_PGTABLE_LEVELS, &mappings) ||
+ 	    check_add_overflow(data, mappings, &resident) ||
+--- a/mm/crucible-percpu-first-chunk.inc.c
++++ b/mm/crucible-percpu-first-chunk.inc.c
+@@ -61,6 +61,7 @@
+ {
+ 	struct crucible_percpu_first_chunk_birth *birth = &crucible_percpu_first_chunk;
+ 
++	crucible_percpu_boot_begin(embedded);
+ 	if (birth->attempted) {
+ 		birth->failed = true;
+ 		return;
+--- /dev/null
++++ b/include/linux/crucible_percpu_boot.h
+@@ -0,0 +1,71 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _LINUX_CRUCIBLE_PERCPU_BOOT_H
++#define _LINUX_CRUCIBLE_PERCPU_BOOT_H
++
++#include <linux/types.h>
++
++struct memblock_type;
++struct task_struct;
++
++enum crucible_percpu_boot_role {
++	CRUCIBLE_PCPU_BOOT_ALLOC_INFO = 1,
++	CRUCIBLE_PCPU_BOOT_AREAS,
++	CRUCIBLE_PCPU_BOOT_GROUP,
++	CRUCIBLE_PCPU_BOOT_GROUP_OFFSETS,
++	CRUCIBLE_PCPU_BOOT_GROUP_SIZES,
++	CRUCIBLE_PCPU_BOOT_UNIT_MAP,
++	CRUCIBLE_PCPU_BOOT_UNIT_OFFSETS,
++	CRUCIBLE_PCPU_BOOT_SLOT_LIST,
++	CRUCIBLE_PCPU_BOOT_CHUNK,
++	CRUCIBLE_PCPU_BOOT_ALLOC_MAP,
++	CRUCIBLE_PCPU_BOOT_BOUND_MAP,
++	CRUCIBLE_PCPU_BOOT_MD_BLOCKS,
++};
++
++/* This source-only value correlates a row already born in the fixed ledger.
++ * Neither callers nor public protocol bytes can create a retained row.
++ */
++struct crucible_percpu_boot_token {
++	u64 generation;
++	u32 index;
++	bool retained;
++};
++
++void crucible_percpu_boot_begin(bool embedded);
++void crucible_percpu_boot_finish(int native_result);
++struct crucible_percpu_boot_token crucible_percpu_boot_root_begin(
++	u32 role, u64 bytes, u64 alignment, const void *original_owner);
++void crucible_percpu_boot_root_complete(struct crucible_percpu_boot_token token,
++	const void *original_return);
++struct crucible_percpu_boot_token crucible_percpu_boot_range_begin(
++	u64 bytes, u64 alignment, u64 start, u64 end, int nid, bool exact_nid,
++	bool slab_available);
++void crucible_percpu_boot_range_complete(struct crucible_percpu_boot_token token,
++	u64 original_return);
++struct crucible_percpu_boot_token crucible_percpu_boot_resize_begin(
++	struct memblock_type *type, const void *old_array, u64 old_bytes, u64 new_bytes,
++	bool slab_available);
++void crucible_percpu_boot_resize_allocated(struct crucible_percpu_boot_token token,
++	const void *original_return);
++void crucible_percpu_boot_resize_old_closing(struct crucible_percpu_boot_token token,
++	const void *original_old_array);
++void crucible_percpu_boot_resize_complete(struct crucible_percpu_boot_token token,
++	const void *original_return, int native_result);
++bool crucible_percpu_boot_current(void);
++u64 crucible_percpu_boot_metadata_bytes(void);
++bool crucible_percpu_boot_peak_bound(u64 *bound);
++
++/* Native expressions stay in their original lexical function: ordinary panic
++ * diagnostics and allocator choice are preserved. Arguments are native locals.
++ */
++#define CRUCIBLE_PCPU_BOOT_ALLOC(role, bytes, alignment, owner, native_expression) \
++({ \
++	struct crucible_percpu_boot_token source_token; \
++	void *source_return; \
++	source_token = crucible_percpu_boot_root_begin(role, bytes, alignment, owner); \
++	source_return = (native_expression); \
++	crucible_percpu_boot_root_complete(source_token, source_return); \
++	source_return; \
++})
++
++#endif
+--- /dev/null
++++ b/mm/crucible-percpu-boot-accounting.inc.c
+@@ -0,0 +1,510 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* The fixed boot ledger follows literal per-CPU allocator calls, including
++ * their nested memblock retries and region-array replacement. It never allocates.
++ */
++
++#define CRUCIBLE_PCPU_BOOT_ROOTS (NR_CPUS + 32U)
++#define CRUCIBLE_PCPU_BOOT_EVENTS (8U * CRUCIBLE_PCPU_BOOT_ROOTS)
++#define CRUCIBLE_PCPU_BOOT_DEPTH 32U
++
++struct crucible_percpu_boot_root {
++	u64 generation;
++	u64 requested_bytes;
++	u64 alignment;
++	u64 rounded_bound;
++	const void *original_return;
++	const void *original_owner;
++	u32 role;
++	bool original_return_known;
++	bool completed;
++};
++
++struct crucible_percpu_boot_event {
++	u64 generation;
++	u64 requested_bytes;
++	u64 alignment;
++	u64 start;
++	u64 end;
++	u64 old_bytes;
++	u64 rounded_bound;
++	u64 original_return;
++	const struct memblock_type *original_type;
++	const void *original_old_array;
++	s64 native_result;
++	u64 completion_return;
++	bool native_result_known;
++	u32 root;
++	u32 parent;
++	s32 nid;
++	bool resize;
++	bool original_return_known;
++	bool old_closing;
++	bool exact_nid;
++	bool slab_available;
++	bool completed;
++};
++
++struct crucible_percpu_boot_ledger {
++	struct task_struct *original_task;
++	struct crucible_percpu_boot_root roots[CRUCIBLE_PCPU_BOOT_ROOTS];
++	struct crucible_percpu_boot_event events[CRUCIBLE_PCPU_BOOT_EVENTS];
++	u32 stack[CRUCIBLE_PCPU_BOOT_DEPTH];
++	u64 generation;
++	u64 attempted_bound;
++	u32 root_used;
++	u32 event_used;
++	u32 original_root;
++	u32 depth;
++	s32 native_result;
++	bool attempted;
++	bool active;
++	bool root_active;
++	bool complete;
++	bool failed;
++} __aligned(PAGE_SIZE);
++
++static struct crucible_percpu_boot_ledger crucible_percpu_boot_ledger;
++
++static bool crucible_percpu_boot_actor_current(void)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++
++	if (!ledger->active)
++		return false;
++	if (!in_task() || current != ledger->original_task) {
++		ledger->failed = true;
++		return false;
++	}
++	return true;
++}
++
++static bool crucible_percpu_boot_charge(u64 bytes, u64 *rounded)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	u64 page_bound, total;
++
++	if (!bytes || check_add_overflow(bytes, (u64)PAGE_SIZE - 1, &page_bound))
++		goto refuse;
++	page_bound &= PAGE_MASK;
++	if (check_add_overflow(ledger->attempted_bound, page_bound, &total))
++		goto refuse;
++	ledger->attempted_bound = total;
++	*rounded = page_bound;
++	return true;
++refuse:
++	ledger->failed = true;
++	return false;
++}
++
++void crucible_percpu_boot_begin(bool embedded)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++
++	if (ledger->attempted) {
++		ledger->failed = true;
++		return;
++	}
++	ledger->attempted = true;
++	ledger->original_task = current;
++	ledger->active = true;
++	ledger->generation = 1;
++	if (!embedded || !in_task() || !current)
++		ledger->failed = true;
++}
++
++static bool crucible_percpu_boot_roster_complete(void)
++{
++	const struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	u32 counts[CRUCIBLE_PCPU_BOOT_MD_BLOCKS + 1] = { };
++	u32 index, role, chunks = pcpu_reserved_chunk ? 2 : 1;
++
++	for (index = 0; index < ledger->root_used; index++) {
++		role = ledger->roots[index].role;
++		if (role < CRUCIBLE_PCPU_BOOT_ALLOC_INFO || role > CRUCIBLE_PCPU_BOOT_MD_BLOCKS)
++			return false;
++		counts[role]++;
++	}
++	for (role = CRUCIBLE_PCPU_BOOT_ALLOC_INFO; role <= CRUCIBLE_PCPU_BOOT_MD_BLOCKS; role++) {
++		u32 expected = role == CRUCIBLE_PCPU_BOOT_GROUP ? pcpu_nr_groups :
++			role >= CRUCIBLE_PCPU_BOOT_CHUNK ? chunks : 1;
++
++		if (counts[role] != expected)
++			return false;
++	}
++	return true;
++}
++
++void crucible_percpu_boot_finish(int native_result)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	u32 index;
++
++	if (!crucible_percpu_boot_actor_current() || ledger->complete)
++		goto refuse;
++	ledger->native_result = native_result;
++	if (native_result || ledger->root_active || ledger->depth ||
++	    !crucible_percpu_boot_roster_complete())
++		goto refuse;
++	for (index = 0; index < ledger->root_used; index++)
++		if (!ledger->roots[index].completed || !ledger->roots[index].original_return)
++			goto refuse;
++	for (index = 0; index < ledger->event_used; index++)
++		if (!ledger->events[index].completed)
++			goto refuse;
++	ledger->complete = true;
++	ledger->active = false;
++	return;
++refuse:
++	ledger->failed = true;
++	ledger->active = false;
++}
++
++struct crucible_percpu_boot_token crucible_percpu_boot_root_begin(
++	u32 role, u64 bytes, u64 alignment, const void *original_owner)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	struct crucible_percpu_boot_token token = { };
++	struct crucible_percpu_boot_root *row;
++	u64 rounded;
++
++	if (!ledger->active)
++		return token;
++	if (!crucible_percpu_boot_actor_current() || ledger->failed ||
++	    ledger->root_active || ledger->depth ||
++	    role < CRUCIBLE_PCPU_BOOT_ALLOC_INFO || role > CRUCIBLE_PCPU_BOOT_MD_BLOCKS ||
++	    !is_power_of_2(alignment) || ledger->root_used == CRUCIBLE_PCPU_BOOT_ROOTS ||
++	    ledger->generation == U64_MAX || !crucible_percpu_boot_charge(bytes, &rounded))
++		goto refuse;
++	row = &ledger->roots[ledger->root_used];
++	row->generation = ++ledger->generation;
++	row->requested_bytes = bytes;
++	row->alignment = alignment;
++	row->rounded_bound = rounded;
++	row->role = role;
++	row->original_owner = original_owner;
++	ledger->original_root = ledger->root_used++;
++	ledger->root_active = true;
++	token.generation = row->generation;
++	token.index = ledger->original_root;
++	token.retained = true;
++	return token;
++refuse:
++	ledger->failed = true;
++	return token;
++}
++
++void crucible_percpu_boot_root_complete(struct crucible_percpu_boot_token token,
++	const void *original_return)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	struct crucible_percpu_boot_root *row;
++
++	if (!token.retained)
++		return;
++	/* Only a row born before the native call may receive its first raw result.
++	 * Reconciliation cannot erase that result or let a duplicate replace it.
++	 */
++	if (token.index >= ledger->root_used)
++		goto refuse;
++	row = &ledger->roots[token.index];
++	if (row->generation != token.generation || row->original_return_known)
++		goto refuse;
++	row->original_return = original_return;
++	row->original_return_known = true;
++	if (!crucible_percpu_boot_actor_current() || ledger->failed ||
++	    token.index != ledger->original_root || !ledger->root_active || ledger->depth)
++		goto refuse;
++	row->completed = true;
++	ledger->root_active = false;
++	if (!original_return)
++		ledger->failed = true;
++	return;
++refuse:
++	ledger->failed = true;
++}
++
++static struct crucible_percpu_boot_token crucible_percpu_boot_event_begin(
++	u64 bytes, u64 alignment)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	struct crucible_percpu_boot_token token = { };
++	struct crucible_percpu_boot_event *row;
++	u64 rounded;
++
++	if (!ledger->active || !ledger->root_active)
++		return token;
++	if (!crucible_percpu_boot_actor_current() || ledger->failed ||
++	    ledger->depth == CRUCIBLE_PCPU_BOOT_DEPTH ||
++	    ledger->event_used == CRUCIBLE_PCPU_BOOT_EVENTS || ledger->generation == U64_MAX ||
++	    !crucible_percpu_boot_charge(bytes, &rounded))
++		goto refuse;
++	row = &ledger->events[ledger->event_used];
++	row->generation = ++ledger->generation;
++	row->requested_bytes = bytes;
++	row->alignment = alignment;
++	row->rounded_bound = rounded;
++	row->root = ledger->original_root;
++	row->parent = ledger->depth ? ledger->stack[ledger->depth - 1] : U32_MAX;
++	ledger->stack[ledger->depth++] = ledger->event_used;
++	token.index = ledger->event_used++;
++	token.generation = row->generation;
++	token.retained = true;
++	return token;
++refuse:
++	ledger->failed = true;
++	return token;
++}
++
++struct crucible_percpu_boot_token crucible_percpu_boot_range_begin(
++	u64 bytes, u64 alignment, u64 start, u64 end, int nid, bool exact_nid,
++	bool slab_available)
++{
++	struct crucible_percpu_boot_token token = crucible_percpu_boot_event_begin(bytes, alignment);
++	struct crucible_percpu_boot_event *row;
++
++	if (!token.retained)
++		return token;
++	row = &crucible_percpu_boot_ledger.events[token.index];
++	row->start = start;
++	row->end = end;
++	row->nid = nid;
++	row->exact_nid = exact_nid;
++	row->slab_available = slab_available;
++	/* A slab fallback needs the original allocator's rounded backing issuer. */
++	if (slab_available)
++		crucible_percpu_boot_ledger.failed = true;
++	return token;
++}
++
++static struct crucible_percpu_boot_event *crucible_percpu_boot_event_row(
++	struct crucible_percpu_boot_token token, bool resize)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	struct crucible_percpu_boot_event *row;
++
++	if (!token.retained)
++		return NULL;
++	if (token.index >= ledger->event_used)
++		goto refuse;
++	row = &ledger->events[token.index];
++	if (row->generation != token.generation || row->resize != resize)
++		goto refuse;
++	return row;
++refuse:
++	ledger->failed = true;
++	return NULL;
++}
++
++static bool crucible_percpu_boot_event_complete(struct crucible_percpu_boot_token token,
++	u64 original_return, int native_result, bool resize)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	struct crucible_percpu_boot_event *row;
++
++	if (!token.retained)
++		return true;
++	row = crucible_percpu_boot_event_row(token, resize);
++	if (!row || row->native_result_known)
++		goto refuse;
++	row->completion_return = original_return;
++	row->native_result = native_result;
++	row->native_result_known = true;
++	if (!resize) {
++		row->original_return = original_return;
++		row->original_return_known = true;
++	}
++	if (!crucible_percpu_boot_actor_current() || ledger->failed || row->completed ||
++	    !ledger->depth || ledger->stack[ledger->depth - 1] != token.index)
++		goto refuse;
++	if (resize && (!row->original_return_known ||
++	    row->original_return != original_return || (!native_result && !row->old_closing)))
++		goto refuse;
++	row->completed = true;
++	ledger->depth--;
++	return true;
++refuse:
++	ledger->failed = true;
++	return false;
++}
++
++void crucible_percpu_boot_range_complete(struct crucible_percpu_boot_token token,
++	u64 original_return)
++{
++	crucible_percpu_boot_event_complete(token, original_return, 0, false);
++}
++
++struct crucible_percpu_boot_token crucible_percpu_boot_resize_begin(
++	struct memblock_type *type, const void *old_array, u64 old_bytes, u64 new_bytes,
++	bool slab_available)
++{
++	struct crucible_percpu_boot_token token = crucible_percpu_boot_event_begin(new_bytes, PAGE_SIZE);
++	struct crucible_percpu_boot_event *row;
++	u64 rounded;
++
++	if (!token.retained)
++		return token;
++	row = &crucible_percpu_boot_ledger.events[token.index];
++	row->resize = true;
++	row->original_type = type;
++	row->original_old_array = old_array;
++	row->old_bytes = old_bytes;
++	row->slab_available = slab_available;
++	/* Keep old and new storage charged together even after native replacement.
++	 * This deliberately overcharges retries and sharing; no final-pointer sum.
++	 */
++	if (!old_array || !crucible_percpu_boot_charge(old_bytes, &rounded) || slab_available)
++		crucible_percpu_boot_ledger.failed = true;
++	return token;
++}
++
++static struct crucible_percpu_boot_event *crucible_percpu_boot_resize_row(
++	struct crucible_percpu_boot_token token)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	struct crucible_percpu_boot_event *row;
++
++	if (!token.retained)
++		return NULL;
++	if (!crucible_percpu_boot_actor_current() || token.index >= ledger->event_used ||
++	    !ledger->depth || ledger->stack[ledger->depth - 1] != token.index)
++		goto refuse;
++	row = &ledger->events[token.index];
++	if (row->generation != token.generation || row->completed || !row->resize)
++		goto refuse;
++	return row;
++refuse:
++	ledger->failed = true;
++	return NULL;
++}
++
++void crucible_percpu_boot_resize_allocated(struct crucible_percpu_boot_token token,
++	const void *original_return)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	struct crucible_percpu_boot_event *row;
++
++	row = crucible_percpu_boot_event_row(token, true);
++	if (!row)
++		return;
++	if (row->original_return_known) {
++		ledger->failed = true;
++		return;
++	}
++	row->original_return = (unsigned long)original_return;
++	row->original_return_known = true;
++	if (!crucible_percpu_boot_resize_row(token) || ledger->failed)
++		ledger->failed = true;
++}
++
++void crucible_percpu_boot_resize_old_closing(struct crucible_percpu_boot_token token,
++	const void *original_old_array)
++{
++	struct crucible_percpu_boot_event *row = crucible_percpu_boot_resize_row(token);
++
++	if (!row)
++		return;
++	if (!row->original_return_known || !row->original_return || row->old_closing ||
++	    row->original_old_array != original_old_array) {
++		crucible_percpu_boot_ledger.failed = true;
++		return;
++	}
++	row->old_closing = true;
++}
++
++void crucible_percpu_boot_resize_complete(struct crucible_percpu_boot_token token,
++	const void *original_return, int native_result)
++{
++	crucible_percpu_boot_event_complete(token, (unsigned long)original_return,
++		native_result, true);
++}
++
++static bool crucible_percpu_boot_binding_current(void)
++{
++	const struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	u32 index;
++
++	for (index = 0; index < ledger->root_used; index++) {
++		const struct crucible_percpu_boot_root *row = &ledger->roots[index];
++		const void *expected = NULL;
++
++		switch (row->role) {
++		case CRUCIBLE_PCPU_BOOT_GROUP_OFFSETS:
++			expected = pcpu_group_offsets;
++			break;
++		case CRUCIBLE_PCPU_BOOT_GROUP_SIZES:
++			expected = pcpu_group_sizes;
++			break;
++		case CRUCIBLE_PCPU_BOOT_UNIT_MAP:
++			expected = pcpu_unit_map;
++			break;
++		case CRUCIBLE_PCPU_BOOT_UNIT_OFFSETS:
++			expected = pcpu_unit_offsets;
++			break;
++		case CRUCIBLE_PCPU_BOOT_SLOT_LIST:
++			expected = pcpu_chunk_lists;
++			break;
++		case CRUCIBLE_PCPU_BOOT_CHUNK:
++			if (row->original_return != pcpu_first_chunk &&
++			    row->original_return != pcpu_reserved_chunk)
++				return false;
++			continue;
++		case CRUCIBLE_PCPU_BOOT_ALLOC_MAP:
++		case CRUCIBLE_PCPU_BOOT_BOUND_MAP:
++		case CRUCIBLE_PCPU_BOOT_MD_BLOCKS: {
++			const struct pcpu_chunk *chunk = NULL;
++			u32 original;
++
++			for (original = 0; original < ledger->root_used; original++) {
++				const struct crucible_percpu_boot_root *parent = &ledger->roots[original];
++
++				if (parent->role == CRUCIBLE_PCPU_BOOT_CHUNK && parent->completed &&
++				    parent->original_return == row->original_owner &&
++				    (parent->original_return == pcpu_first_chunk ||
++				     parent->original_return == pcpu_reserved_chunk)) {
++					chunk = parent->original_return;
++					break;
++				}
++			}
++			if (!chunk)
++				return false;
++			if (row->role == CRUCIBLE_PCPU_BOOT_ALLOC_MAP)
++				expected = chunk->alloc_map;
++			else if (row->role == CRUCIBLE_PCPU_BOOT_BOUND_MAP)
++				expected = chunk->bound_map;
++			else
++				expected = chunk->md_blocks;
++			break;
++		}
++		default:
++			/* Freed alloc_info/areas and charged group backing are historical;
++			 * their separate native lineage never supplies a new current object.
++			 */
++			continue;
++		}
++		if (!expected || row->original_return != expected)
++			return false;
++	}
++	return true;
++}
++
++bool crucible_percpu_boot_current(void)
++{
++	const struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++
++	return ledger->attempted && ledger->complete && !ledger->failed && !ledger->active &&
++		!ledger->root_active && !ledger->depth && !ledger->native_result &&
++		crucible_percpu_boot_binding_current();
++}
++
++u64 crucible_percpu_boot_metadata_bytes(void)
++{
++	return sizeof(crucible_percpu_boot_ledger);
++}
++
++bool crucible_percpu_boot_peak_bound(u64 *bound)
++{
++	if (!crucible_percpu_boot_current())
++		return false;
++	*bound = crucible_percpu_boot_ledger.attempted_bound;
++	return true;
++}

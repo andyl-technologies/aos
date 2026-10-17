@@ -11,6 +11,7 @@ pub(super) const REDUCTION_PATH_PACKAGES: &[&str] = &[
     "crucible-session",
 ];
 pub(super) const NONDETERMINISTIC_BOUNDARY_PACKAGES: &[&str] = &[
+    "crucible-node-provider",
     "crucible-daemon",
     "crucible-cli",
     "crucible-debug-gateway",

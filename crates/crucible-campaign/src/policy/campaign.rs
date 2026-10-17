@@ -237,7 +237,7 @@ impl CampaignAttemptTimeoutPolicy {
         self.execution_quanta
     }
 
-    /// Returns the operational host QEMU completion watchdog in milliseconds.
+    /// Returns the operational host completion watchdog in milliseconds.
     #[must_use]
     pub const fn host_completion_watchdog_ms(self) -> Option<u64> {
         self.host_completion_watchdog_ms

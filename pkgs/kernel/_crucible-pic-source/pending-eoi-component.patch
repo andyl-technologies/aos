@@ -1,0 +1,453 @@
+--- a/arch/x86/kvm/crucible-pit-ancestry.inc.c
++++ b/arch/x86/kvm/crucible-pit-ancestry.inc.c
+@@ -352,15 +352,22 @@
+ 	srcu = srcu_read_lock(&kvm->irq_srcu);
+ 	count = kvm_irq_map_gsi(kvm, routes, 0);
+ 	srcu_read_unlock(&kvm->irq_srcu, srcu);
+-	/* The usual dual PIC/IOAPIC route requires a separate PIC birth join.
+-	 * Validate the entire bounded route before performing either branch. */
++	/* Each supported profile has one original receiver. The ordinary dual
++	 * route remains refused until both recipients have joined dispositions. */
+ 	if (count != 1 || routes[0].type != KVM_IRQ_ROUTING_IRQCHIP ||
+-	    routes[0].irqchip.irqchip != KVM_IRQCHIP_IOAPIC || routes[0].irqchip.pin ||
+-	    routes[0].gsi || routes[0].set != kvm_ioapic_set_irq) {
++	    routes[0].irqchip.pin || routes[0].gsi) {
+ 		pit_native_fault(pit);
+ 		goto release;
+ 	}
+-	result = kvm_crucible_ioapic_pit_set_irq(kvm, birth);
++	if (routes[0].irqchip.irqchip == KVM_IRQCHIP_IOAPIC &&
++	    routes[0].set == kvm_ioapic_set_irq)
++		result = kvm_crucible_ioapic_pit_set_irq(kvm, birth);
++	else if (routes[0].irqchip.irqchip == KVM_IRQCHIP_PIC_MASTER &&
++		 routes[0].set == kvm_pic_set_irq)
++		result = kvm_crucible_pic_set_pit_irq(&routes[0], kvm,
++			KVM_PIT_IRQ_SOURCE_ID, birth->phase ? 0 : 1, false, birth);
++	else
++		pit_native_fault(pit);
+ 
+ release:
+ 	kvm_crucible_irq_source_leave(kvm, retained);
+@@ -599,6 +606,8 @@
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_pit_ioapic_ack);
+ 
++#include "crucible-pit-pic-ack.inc.c"
++
+ /* Unmasking cannot erase expired rows or a previously delivered IRQ credit.
+  * Its actual guest RUN may only resume the retained original worker obligation. */
+ static void pit_native_unmask(struct kvm_pit *pit)
+--- a/arch/x86/kvm/i8254.h
++++ b/arch/x86/kvm/i8254.h
+@@ -122,6 +122,9 @@
+ bool kvm_crucible_pit_ioapic_ack(struct kvm_vcpu *vcpu, int pin, int vector,
+ 	int trigger_mode, u64 original_route_bits);
+ 
++bool kvm_crucible_pit_pic_ack(struct kvm *kvm,
++	const struct kvm_crucible_pit_irq_birth *low);
++
+ struct kvm_pit *kvm_create_pit(struct kvm *kvm, u32 flags);
+ void kvm_free_pit(struct kvm *kvm);
+ void kvm_crucible_pit_freeze(struct kvm *kvm);
+--- a/arch/x86/kvm/i8259.c
++++ b/arch/x86/kvm/i8259.c
+@@ -34,6 +34,7 @@
+ 
+ #include "ioapic.h"
+ #include "irq.h"
++#include "i8254.h"
+ 
+ #include <linux/kvm_host.h>
+ #include "trace.h"
+@@ -248,6 +249,9 @@
+ 		a->host_ns == b->host_ns && a->logical_ns == b->logical_ns;
+ }
+ 
++static bool pic_pit_eoi_complete_locked(struct kvm_pic *pic,
++	const struct kvm_crucible_pit_irq_birth *low);
++
+ int kvm_crucible_pic_set_pit_irq(struct kvm_kernel_irq_routing_entry *e,
+ 	struct kvm *kvm, int irq_source_id, int level, bool line_status,
+ 	const struct kvm_crucible_pit_irq_birth *original)
+@@ -289,6 +293,7 @@
+ 		!pic->pics[1].irr && !pic->pics[1].isr;
+ 	if (valid && level) {
+ 		valid = (!row->phase || row->phase == CRUCIBLE_PIC_PIT_ACKED) &&
++			!row->eoi_inflight &&
+ 			!pic->irq_states[0] && !state->last_irr && !state->irr && !state->isr &&
+ 			pic->crucible_pit_issued < CRUCIBLE_PIC_PIT_ISSUED;
+ 		if (valid) {
+@@ -359,13 +364,17 @@
+ 	if (valid) {
+ 		if (level)
+ 			row->high_known = true;
+-		else
++		else {
+ 			row->low_known = true;
++			row->low_tail_known = true;
++		}
+ 	} else {
+ 		row->phase = CRUCIBLE_PIC_PIT_UNKNOWN;
+ 		kvm_arch_crucible_irq_taint_locked(kvm);
+ 	}
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (valid && !level)
++		valid = pic_pit_eoi_complete_locked(pic, original);
+ 	/* The original wake tail already ran; release without a second dispatch. */
+ 	spin_unlock(&pic->lock);
+ 	if (!valid) {
+@@ -377,6 +386,8 @@
+ 	return native_result < 0 ? 0 : native_result;
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_pic_set_pit_irq);
++
++#include "crucible-pic-eoi.inc.c"
+ 
+ /* The receiver record belongs to the PIC. EXTINT does not move a LAPIC vector
+  * into ISR, so no LAPIC consumption bit can substitute for this native tail. */
+@@ -502,8 +513,9 @@
+ 	if (!crucible_irq_device_selected(pic->kvm))
+ 		return true;
+ 	for (pin = 0; pin < PIC_NUM_PINS; pin++)
+-		if (pic->crucible_pit[pin].phase &&
+-		    pic->crucible_pit[pin].phase != CRUCIBLE_PIC_PIT_ACKED)
++		if (pic->crucible_pit[pin].eoi_inflight ||
++		    (pic->crucible_pit[pin].phase &&
++		     pic->crucible_pit[pin].phase != CRUCIBLE_PIC_PIT_ACKED))
+ 			return false;
+ 	return true;
+ }
+@@ -808,6 +820,10 @@
+ 		pr_pic_unimpl("non byte write\n");
+ 		return 0;
+ 	}
++	if (crucible_irq_device_selected(s->kvm) && addr == 0x20 &&
++	    (data == 0x20 || data == 0x60))
++		return pic_pit_original_eoi(vcpu, s, data);
++
+ 	switch (addr) {
+ 	case 0x20:
+ 	case 0x21:
+--- a/arch/x86/kvm/irq.h
++++ b/arch/x86/kvm/irq.h
+@@ -55,6 +55,7 @@
+ #define CRUCIBLE_PIC_PIT_CONSUMED 3
+ #define CRUCIBLE_PIC_PIT_ACKED 4
+ #define CRUCIBLE_PIC_PIT_UNKNOWN 5
++#define CRUCIBLE_PIC_PIT_EOI_PENDING 6
+ #define CRUCIBLE_PIC_PIT_ISSUED 4096ULL
+ 
+ struct kvm_crucible_pic_pit_line {
+@@ -62,12 +63,18 @@
+ 	u64 geometry;
+ 	u64 consume_invocation;
+ 	u64 ack_invocation;
++	u64 eoi_sequence;
++	u64 eoi_host_ns;
+ 	u32 phase;
+ 	u32 target_id;
+ 	u32 vector;
+ 	int native_result;
+ 	bool high_known;
+ 	bool low_known;
++	bool low_tail_known;
++	bool eoi_native_known;
++	bool eoi_inflight;
++	u8 eoi_byte;
+ };
+ 
+ struct kvm_pic {
+@@ -83,6 +90,7 @@
+ 	unsigned long irq_states[PIC_NUM_PINS];
+ 	/* Bounded original receiver records; no userspace pointer or wire layout. */
+ 	u64 crucible_pit_issued;
++	u64 crucible_eoi_issued;
+ 	struct kvm_crucible_pic_pit_line crucible_pit[PIC_NUM_PINS];
+ };
+ 
+--- /dev/null
++++ b/arch/x86/kvm/crucible-pic-eoi.inc.c
+@@ -0,0 +1,193 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Original guest EOI effects are distinct from later PIT low/ACK completion.
++ * An early EOI retains its native byte, RUN identity and receiver until the
++ * original low callback finishes. This does not admit a dual-route board. */
++
++static bool pic_pit_only_route(struct kvm_pic *pic)
++{
++	struct kvm_kernel_irq_routing_entry routes[KVM_NR_IRQCHIPS];
++	struct kvm *kvm = pic->kvm;
++	int count, srcu;
++
++	if (!kvm->arch.vpit || kvm->arch.vpit->kvm != kvm ||
++	    !atomic_read(&kvm->arch.vpit->pit_state.reinject))
++		return false;
++	srcu = srcu_read_lock(&kvm->irq_srcu);
++	count = kvm_irq_map_gsi(kvm, routes, 0);
++	srcu_read_unlock(&kvm->irq_srcu, srcu);
++	return count == 1 && routes[0].type == KVM_IRQ_ROUTING_IRQCHIP &&
++		routes[0].gsi == 0 && routes[0].irqchip.irqchip == KVM_IRQCHIP_PIC_MASTER &&
++		routes[0].irqchip.pin == 0 && routes[0].set == kvm_pic_set_irq;
++}
++
++/* Caller owns PIC and either the original PIO lease/vCPU mutex or the exact
++ * original LOW worker's source/timer leases. No ambient worker adopts an EOI. */
++static bool pic_pit_eoi_complete_locked(struct kvm_pic *pic,
++	const struct kvm_crucible_pit_irq_birth *low)
++{
++	struct kvm *kvm = pic->kvm;
++	struct kvm_crucible_pic_pit_line *row = &pic->crucible_pit[0];
++	unsigned long flags;
++	bool valid;
++
++	lockdep_assert_held(&pic->lock);
++	if (row->phase != CRUCIBLE_PIC_PIT_EOI_PENDING || !row->eoi_native_known ||
++	    !row->low_tail_known)
++		return true;
++
++	valid = kvm_crucible_pit_pic_ack(kvm, low);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = valid && row->phase == CRUCIBLE_PIC_PIT_EOI_PENDING &&
++		row->eoi_native_known && row->low_known && row->low_tail_known &&
++		row->original.generation == kvm->arch.crucible_clock.window_generation &&
++		row->geometry == pic_pit_geometry(&pic->pics[0]) &&
++		!pic->pics[0].irr && !pic->pics[0].isr && !pic->irq_states[0] &&
++		!kvm->crucible_irq_input.tainted && !kvm->crucible_memory_tainted &&
++		!kvm->arch.crucible_clock.continuation.uncertain &&
++		kvm_crucible_clock_admission_live(kvm->arch.crucible_clock.active,
++			kvm->crucible_host_ceiling_ns, ktime_get_ns());
++	row->phase = valid ? CRUCIBLE_PIC_PIT_ACKED : CRUCIBLE_PIC_PIT_UNKNOWN;
++	if (!valid)
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return valid;
++}
++
++/* The original PIO credit spans the row disposition. In particular, a late
++ * cut must publish UNKNOWN under PIC->gate before waking a stopped observer or
++ * invoking native containment. No callback is drained or effect rolled back. */
++static int pic_pit_eoi_finish(struct kvm_vcpu *vcpu, struct kvm_pic *pic,
++	struct crucible_irq_device_lease *lease, bool original_known)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_pit_line *row;
++	unsigned long flags;
++	bool valid;
++
++	lockdep_assert_held(&vcpu->mutex);
++	pic_lock(pic);
++	row = &pic->crucible_pit[0];
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = original_known && lease->entered && pic == kvm->arch.vpic &&
++		pic->kvm == kvm && crucible_irq_device_run_locked(kvm, vcpu) &&
++		(row->phase == CRUCIBLE_PIC_PIT_EOI_PENDING ||
++		 row->phase == CRUCIBLE_PIC_PIT_ACKED) && row->eoi_native_known &&
++		row->eoi_inflight &&
++		row->geometry == pic_pit_geometry(&pic->pics[0]) &&
++		lease->generation == row->original.generation &&
++		lease->generation == kvm->arch.crucible_clock.window_generation &&
++		lease->invocation == row->ack_invocation &&
++		lease->invocation == vcpu->crucible_timer_run_invocation;
++	if (!valid) {
++		row->phase = CRUCIBLE_PIC_PIT_UNKNOWN;
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	}
++	/* The row cannot be reused by a next HIGH until this exact original
++	 * release has reconciled it under the same native gate. */
++	row->eoi_inflight = false;
++	if (lease->entered) {
++		lease->entered = false;
++		kvm->crucible_effect_owners--;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	spin_unlock(&pic->lock);
++	wake_up_all(&kvm->crucible_stopped);
++	if (!valid) {
++		kvm_vm_dead(kvm);
++		return -EAGAIN;
++	}
++	return 0;
++}
++
++static int pic_pit_original_eoi(struct kvm_vcpu *vcpu, struct kvm_pic *pic,
++	unsigned char data)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_pit_line *row;
++	struct kvm_crucible_pit_journal *journal;
++	struct crucible_irq_device_lease lease;
++	unsigned long flags;
++	u64 sequence;
++	bool valid, route, completed;
++
++	lockdep_assert_held(&vcpu->mutex);
++	route = pic_pit_only_route(pic);
++	pic_lock(pic);
++	row = &pic->crucible_pit[0];
++	valid = route && pic == kvm->arch.vpic && pic->kvm == kvm &&
++		(data == 0x20 || data == 0x60) &&
++		row->phase == CRUCIBLE_PIC_PIT_CONSUMED && row->high_known &&
++		row->target_id == vcpu->vcpu_id && row->consume_invocation &&
++		row->original.sequence && row->original.invocation &&
++		row->geometry == pic_pit_geometry(&pic->pics[0]) &&
++		row->vector == pic->pics[0].irq_base &&
++		!pic->pics[0].auto_eoi && !pic->pics[0].rotate_on_auto_eoi &&
++		!pic->pics[0].poll && !pic->pics[0].init_state &&
++		!(pic->pics[0].elcr & 1) && !pic->pics[0].irr && pic->pics[0].isr == 1 &&
++		!pic->pics[1].irr && !pic->pics[1].isr &&
++		(row->low_known ? (!pic->irq_states[0] && !pic->pics[0].last_irr) :
++			(pic->irq_states[0] == BIT(KVM_PIT_IRQ_SOURCE_ID) &&
++			 pic->pics[0].last_irr == 1));
++	if (!crucible_irq_device_begin(kvm, vcpu, valid, &lease)) {
++		spin_unlock(&pic->lock);
++		kvm_vm_dead(kvm);
++		return -EAGAIN;
++	}
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	journal = &kvm->arch.vpit->pit_state.crucible;
++	valid = row->original.generation == lease.generation &&
++		crucible_irq_device_run_locked(kvm, vcpu) &&
++		journal->awaiting_ack &&
++		journal->ack_generation == row->original.generation &&
++		journal->ack_sequence == row->original.sequence &&
++		journal->ack_invocation == row->original.invocation &&
++		pic->crucible_eoi_issued < CRUCIBLE_PIC_PIT_ISSUED;
++	if (valid) {
++		sequence = ++pic->crucible_eoi_issued;
++		row->phase = CRUCIBLE_PIC_PIT_EOI_PENDING;
++		row->eoi_sequence = sequence;
++		row->ack_invocation = lease.invocation;
++		row->eoi_byte = data;
++		row->eoi_host_ns = ktime_get_ns();
++		row->eoi_native_known = false;
++		row->eoi_inflight = true;
++	} else {
++		sequence = 0;
++		row->phase = CRUCIBLE_PIC_PIT_UNKNOWN;
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (valid) {
++		/* Real EOI register effect; the generic scalar ACK notifier is bypassed.
++		 * The ordinary native PIC wake tail still runs exactly once. */
++		pic->pics[0].isr &= ~1;
++		pic_update_irq(pic);
++		pic_unlock(pic);
++		pic_lock(pic);
++	}
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = valid && row->phase == CRUCIBLE_PIC_PIT_EOI_PENDING &&
++		row->eoi_sequence == sequence && row->eoi_byte == data &&
++		row->ack_invocation == lease.invocation &&
++		row->geometry == pic_pit_geometry(&pic->pics[0]) &&
++		!pic->pics[0].irr && !pic->pics[0].isr &&
++		crucible_irq_device_run_locked(kvm, vcpu) &&
++		lease.generation == kvm->arch.crucible_clock.window_generation;
++	if (valid)
++		row->eoi_native_known = true;
++	else {
++		row->phase = CRUCIBLE_PIC_PIT_UNKNOWN;
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++	completed = valid && pic_pit_eoi_complete_locked(pic, NULL);
++	spin_unlock(&pic->lock);
++	if (pic_pit_eoi_finish(vcpu, pic, &lease, completed))
++		return -EAGAIN;
++	/* This is the known EOI register/wake result. If LOW has not returned,
++	 * the original ACK obligation remains EOI_PENDING; no new EOI is adopted. */
++	return 0;
++}
+--- /dev/null
++++ b/arch/x86/kvm/crucible-pit-pic-ack.inc.c
+@@ -0,0 +1,87 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Included by the original PIT ancestry implementation. A PIC EOI retains its
++ * original guest writer even when the admitted LOW worker finishes it later.
++ * Generic ACK notifiers and unrelated current RUNs cannot adopt that credit. */
++
++bool kvm_crucible_pit_pic_ack(struct kvm *kvm,
++	const struct kvm_crucible_pit_irq_birth *low)
++{
++	struct kvm_pit *pit = kvm->arch.vpit;
++	struct kvm_pic *pic = kvm->arch.vpic;
++	struct kvm_crucible_pit_journal *journal;
++	struct kvm_crucible_pic_pit_line *original;
++	struct kvm_vcpu *vcpu;
++	unsigned long flags, index;
++	bool valid, writer = false, schedule = false;
++
++	if (!pit || !pic || pit->kvm != kvm || pic->kvm != kvm ||
++	    !pit_native_selected(pit))
++		return false;
++	lockdep_assert_held(&pic->lock);
++	journal = &pit->pit_state.crucible;
++	original = &pic->crucible_pit[0];
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = pit_native_live_locked(kvm) &&
++		original->phase == CRUCIBLE_PIC_PIT_EOI_PENDING &&
++		original->eoi_native_known && original->high_known &&
++		original->low_known && original->low_tail_known &&
++		original->eoi_sequence && original->eoi_sequence <= pic->crucible_eoi_issued &&
++		original->eoi_sequence <= CRUCIBLE_PIC_PIT_ISSUED &&
++		original->eoi_host_ns && original->eoi_host_ns < kvm->crucible_host_ceiling_ns &&
++		(original->eoi_byte == 0x20 || original->eoi_byte == 0x60) &&
++		original->consume_invocation && original->ack_invocation &&
++		original->vector >= 16 && original->vector < 256 &&
++		journal->awaiting_ack && journal->ack_sequence && journal->ack_invocation &&
++		original->original.generation == journal->ack_generation &&
++		original->original.sequence == journal->ack_sequence &&
++		original->original.invocation == journal->ack_invocation &&
++		journal->ack_generation == kvm->arch.crucible_clock.window_generation &&
++		pit_native_birth_locked(pit, original->original.generation,
++			original->original.invocation, original->original.sequence,
++			original->original.native_vcpu_id);
++	if (valid && low) {
++		/* This is the actual retained LOW worker, not a new guest operation.
++		 * Its source/timer leases span the ACK fields and queue tail below. */
++		writer = low->phase == 1 &&
++			low->generation == original->original.generation &&
++			low->invocation == original->original.invocation &&
++			low->sequence == original->original.sequence &&
++			low->native_vcpu_id == original->original.native_vcpu_id &&
++			low->host_ns == original->original.host_ns &&
++			low->logical_ns == original->original.logical_ns &&
++			kvm_arch_crucible_pit_irq_birth_live_locked(kvm, low);
++	} else if (valid) {
++		/* Immediate completion retains the exact original EOI RUN, never
++		 * whichever vCPU happens to be current when a notifier arrives. */
++		kvm_for_each_vcpu(index, vcpu, kvm) {
++			if (index < KVM_MAX_VCPUS && vcpu->vcpu_id == original->target_id &&
++			    kvm->crucible_effect_owners && pit_native_run_locked(pit, vcpu) &&
++			    vcpu->crucible_timer_run_invocation == original->ack_invocation) {
++				lockdep_assert_held(&vcpu->mutex);
++				writer = true;
++				break;
++			}
++		}
++	}
++	valid = valid && writer;
++	if (valid) {
++		journal->last_acknowledged = journal->ack_sequence;
++		journal->last_ack_target_id = original->target_id;
++		journal->last_ack_vector = original->vector;
++		journal->last_ack_consume_invocation = original->consume_invocation;
++		journal->last_ack_writer_invocation = original->ack_invocation;
++		journal->awaiting_ack = false;
++		schedule = pit_native_schedule_locked(pit);
++	} else {
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++	/* The caller still holds its original effect lease and PIC lock. It
++	 * reconciles this actual queue return against the same live clock cut. */
++	if (valid && schedule)
++		kthread_queue_work(pit->worker, &pit->expired);
++	return valid;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_pit_pic_ack);

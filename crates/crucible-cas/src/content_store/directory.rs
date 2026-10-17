@@ -43,7 +43,12 @@ use super::admin::{
 };
 use super::*;
 
+mod publication_storage;
 mod ref_admin;
+
+pub use publication_storage::{
+    DirectoryPublicationConstructionStorageData, DirectoryRefNameConstructionData,
+};
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -78,6 +83,16 @@ impl DirectoryBlobBackend {
             name: name.into(),
             root: root.into(),
         }
+    }
+
+    /// Observes retained configuration capacities without accessing the store.
+    ///
+    /// Excludes this value's inline slot, allocator overhead and filesystem data.
+    /// Returns `None` when the checked requested-capacity sum overflows.
+    #[must_use]
+    pub fn retained_configuration_requested_storage_data(&self) -> Option<usize> {
+        let Self { name, root } = self;
+        name.capacity().checked_add(root.capacity())
     }
 
     /// Returns the physical loose-object root.

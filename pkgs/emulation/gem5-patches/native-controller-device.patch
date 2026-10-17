@@ -1,0 +1,108 @@
+--- a/native-controller-device.py
++++ b/native-controller-device.py
+@@ -31,7 +31,7 @@
+ MAX_OUTPUT = 65536
+ MAX_OPERATIONS = 65536
+ MAX_RETAINED_RECEIPT_BYTES = 16 * 1024 * 1024
+-MAX_DIAGNOSTIC_BYTES = 64 * 1024 * 1024
++MAX_DIAGNOSTIC_BYTES = 4 * 1024 * 1024
+ MAX_DIAGNOSTIC_TOTAL = 256 * 1024 * 1024
+ MAX_DIAGNOSTIC_FILES = 1024
+ U64_MAX = (1 << 64) - 1
+@@ -179,10 +179,10 @@
+             "unsupported_domains": ["native-modeled-state-observer-unavailable"],
+             "native_tick": str(m5.curTick()),
+         }
+-    inventory = m5.crucibleStateInventory()
++    inventory = model.native_inventory()
+     if (
+         not isinstance(inventory, dict)
+-        or inventory.get("schema") != "crucible.gem5.modeled-state.v1"
++        or inventory.get("schema") != "crucible.gem5.causal-device-state.v1"
+         or not isinstance(inventory.get("complete"), bool)
+         or not isinstance(inventory.get("unsupported_domains"), list)
+         or inventory.get("native_tick") != str(m5.curTick())
+@@ -535,6 +535,7 @@
+             if limit < m5.curTick() or not 0 < budget <= MAX_EVENTS:
+                 raise ValueError("native grant is unrepresentable or precedes the cursor")
+ 
++            model.validate_run(request)
+             exact_range = request["exact_range"]
+             if exact_range is not None:
+                 closed(exact_range, ("start", "limit", "maximum_microsteps"))
+@@ -564,6 +565,7 @@
+                 pending = operation
+                 send(stream, receipt)
+                 continue
++            model.reserve_callback_credit()
+             processed = 0
+             reason = "event_budget"
+             exit_cause = None
+@@ -571,6 +573,7 @@
+             output = b""
+             publications = []
+             while processed < budget:
++                model.reserve_callback_credit()
+                 previous_tick = m5.curTick()
+                 native_limit = limit
+                 if exact_range is not None:
+@@ -592,7 +595,8 @@
+                     if queued_position[0] == U64_MAX:
+                         raise ValueError("native physical exclusive ceiling is unrepresentable")
+                     native_limit = queued_position[0] + 1
+-                step = m5.simulateUntilBoundary(native_limit, 1)
++                native_budget = model.maximum_native_step_events(budget - processed, exact_range)
++                step = m5.simulateUntilBoundary(native_limit, native_budget)
+                 if step.processedEvents == 0:
+                     reason = "horizon" if step.hasNextEvent else "idle"
+                     break
+@@ -600,7 +604,10 @@
+                 if ordinal == U64_MAX:
+                     raise ValueError("native event ordinal exhausted")
+                 ordinal += step.processedEvents
+-                tick_ordinal = tick_ordinal + 1 if step.currentTick == previous_tick else 1
++                native_position = m5.crucibleEventPosition()
++                if native_position['active'] or u64(native_position['ordinal']) != ordinal:
++                    raise ValueError('closed native batch differs from actual callback counter')
++                tick_ordinal = u64(native_position['tick_ordinal'])
+                 if tick_ordinal > U64_MAX:
+                     raise ValueError("native per-instant event ordinal exhausted")
+                 reacted = reaction_position(step.currentTick, tick_ordinal)
+@@ -617,7 +624,7 @@
+                     exit_cause = step.exitEvent.getCause()
+                     exit_code = step.exitEvent.getCode()
+                     break
+-                if output:
++                if publications:
+                     reason = "output"
+                     break
+             if exact_range is not None and reason == "event_budget":
+@@ -661,6 +668,28 @@
+                 last_ack = operation
+             send(stream, {"kind": "refusal_acknowledged" if refused else "acknowledged",
+                           "operation": operation})
++        elif kind == "device_control":
++            # The model retains the exact attempted input before staging any
++            # native event. Diagnostic space is reserved before this effect;
++            # the original input and all prior run receipts remain in custody.
++            model.validate_control(request)
++            retry = model.control_retry(request)
++            if retry is not None:
++                send(stream, retry)
++                continue
++            original_boundary = boundary()
++            reservation, credit = reserve_diagnostic()
++            if reservation is None:
++                send(stream, model.refuse_control(request, original_boundary, credit))
++                continue
++            response = model.control(request)
++            after = boundary(reservation)
++            if any(after[key] != original_boundary[key] for key in (
++                "tick", "ordinal", "tick_ordinal", "logical_position"
++            )):
++                raise ValueError("native device control serviced a modeled callback")
++            send(stream, model.retain_control_response(
++                request, response, original_boundary, after))
+         elif kind == "capture":
+             closed(request, ("kind", "capture"))
+             library = ctypes.CDLL(None)

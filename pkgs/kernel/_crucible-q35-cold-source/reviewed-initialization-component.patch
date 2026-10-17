@@ -1,0 +1,3172 @@
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -1456,7 +1456,108 @@
+ 	bool close_acknowledged;
+ };
+ 
++/* This source-owned construction journal retains the original actor and
++ * native identities. Enrollment is distinct from clock/RUN permission. */
++#define KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES (1024 * 1024)
++#define KVM_CRUCIBLE_PIC_INITIALIZER_MAX_NESTED_BYTES (16 * 1024)
++
++struct kvm_crucible_pic_initializer_effect {
++	u32 native_ioctl;
++	long native_result;
++	bool known;
++	/* Exact copied pre-callback input; native normalization uses its own
++	 * local copy. This is history, not authenticated guest-state authority. */
++	struct kvm_vcpu_events input_events;
++	bool input_events_known;
++	/* Immutable exact header and payload, retained through native teardown. */
++	const struct kvm_nested_state *input_nested;
++	u32 input_nested_bytes;
++	bool input_nested_known;
++	const struct kvm_msrs *input_msrs;
++	struct kvm_msrs *output_msrs;
++	long native_msr_result;
++	bool input_msrs_known;
++	bool output_msrs_known;
++	bool native_msr_write;
++};
++
++/* Numeric IDs correlate the public journal; the retained actual task and
++ * VM-owned CPU object establish native incarnation. No row is recycled.
++ */
++struct kvm_crucible_pic_initializer_state {
++	struct task_struct *task;
++	struct kvm_vcpu *vcpu;
++	u64 enrollment_id;
++	u32 initializer_tid;
++	u32 native_vcpu_id;
++	u32 maximum_effects;
++	u32 issued;
++	u32 input_bytes;
++	bool inflight;
++	bool uncertain;
++	struct kvm_crucible_pic_initializer_effect
++		effects[KVM_CRUCIBLE_PIC_INITIALIZER_MAX_EFFECTS];
++};
++
++/* Private original setter journal; userspace addresses correlate geometry
++ * only. They never authenticate immutable backing bytes or a guest issuer.
++ */
++struct kvm_crucible_pic_memory_state {
++	struct kvm_crucible_pic_memory_initialization original;
++	s64 native_result;
++	bool attempted;
++	bool inflight;
++	bool known;
++	bool uncertain;
++};
++
++/* Each actual VM setter has one immutable request and one retained result.
++ * No public request identity is a constructor task or a guest permission. */
++struct kvm_crucible_pic_vm_setup_effect {
++	struct kvm_crucible_pic_vm_setup original;
++	s64 native_result;
++	bool attempted;
++	bool inflight;
++	bool known;
++	bool uncertain;
++};
++
++/* Captured from native public getters during the original constructor.
++ * Known is published only with the same successful enrollment cut. These
++ * bytes are immutable birth history, never current device-state authority.
++ */
++struct kvm_crucible_pic_device_birth_state {
++	struct kvm_pic_state pic[2];
++	struct kvm_ioapic_state ioapic;
++	struct kvm_pit_state2 pit;
++	bool known;
++};
++
++struct kvm_crucible_pic_board {
++	struct kvm_crucible_pic_device_birth_state birth;
++	struct kvm_crucible_pic_vm_setup_effect setup[3];
++	struct kvm_crucible_pic_memory_state memory;
++	struct kvm_crucible_pic_initializer_state initialization;
++	struct {
++		struct kvm_crucible_pic_initializer_state
++			actors[KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS];
++		u64 enrollment_id;
++		u32 maximum_effects;
++		bool selected;
++		bool uncertain;
++	} initializer_roster;
++	struct task_struct *constructor;
++	struct kvm_pic *pic;
++	struct kvm_ioapic *ioapic;
++	struct kvm_pit *pit;
++	struct kvm_irq_routing_table *routing;
++	u32 edition;
++	u32 phase;
++	int result;
++};
++
+ struct kvm_arch {
++	struct kvm_crucible_pic_board crucible_pic_board;
+ 	struct kvm_crucible_clock_domain crucible_clock;
+ 	unsigned long n_requested_mmu_pages;
+ 	unsigned long n_max_mmu_pages;
+@@ -2036,6 +2137,13 @@
+ 	int (*gmem_max_mapping_level)(struct kvm *kvm, kvm_pfn_t pfn, bool is_private);
+ };
+ 
++/* Selected nested callbacks use one retained kernel input. Legacy callers
++ * pass NULL and keep their original userspace-copy and fault semantics. */
++int kvm_nested_state_copy(void *destination, const void __user *user_source,
++	const struct kvm_nested_state *owned_state, size_t offset, size_t length);
++void *kvm_nested_state_memdup(const void __user *user_source,
++	const struct kvm_nested_state *owned_state, size_t offset, size_t length);
++
+ struct kvm_x86_nested_ops {
+ 	void (*leave_nested)(struct kvm_vcpu *vcpu);
+ 	bool (*is_exception_vmexit)(struct kvm_vcpu *vcpu, u8 vector,
+@@ -2048,7 +2156,8 @@
+ 			 unsigned user_data_size);
+ 	int (*set_state)(struct kvm_vcpu *vcpu,
+ 			 struct kvm_nested_state __user *user_kvm_nested_state,
+-			 struct kvm_nested_state *kvm_state);
++			 const struct kvm_nested_state *kvm_state,
++			 const struct kvm_nested_state *owned_state);
+ 	bool (*get_nested_state_pages)(struct kvm_vcpu *vcpu);
+ 	int (*write_log_dirty)(struct kvm_vcpu *vcpu, gpa_t l2_gpa);
+ 	gpa_t (*translate_nested_gpa)(struct kvm_vcpu *vcpu, gpa_t gpa,
+--- /dev/null
++++ b/arch/x86/kvm/crucible-pic-board-constructor.inc.c
+@@ -0,0 +1,373 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* A separate finite constructor edition. It creates actual native devices and
++ * one PIC route before any vCPU or custom clock. The existing clock/FirstBegin
++ * refusals remain: this journal is not a usable-board or guest-entry issuer. */
++#include <linux/kthread.h>
++#include <linux/sched/task.h>
++
++#define CRUCIBLE_PIC_BOARD_BUILDING 1
++#define CRUCIBLE_PIC_BOARD_ENROLLED 2
++#define CRUCIBLE_PIC_BOARD_UNKNOWN 3
++
++bool kvm_arch_crucible_pic_board_fenced(struct kvm *kvm)
++{
++	return smp_load_acquire(&kvm->arch.crucible_pic_board.phase) != 0;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_board_fenced);
++
++bool kvm_arch_crucible_pic_board_route_allowed(struct kvm *kvm)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	u32 phase = smp_load_acquire(&board->phase);
++
++	return !phase || (phase == CRUCIBLE_PIC_BOARD_BUILDING &&
++		READ_ONCE(board->constructor) == current);
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_board_route_allowed);
++
++#ifdef CONFIG_KVM_IOAPIC
++/* irq_lock retains the actual publication, including a routing writer which
++ * entered before enrollment. No public pointer/address is adopted here. */
++static bool pic_board_only_route(struct kvm *kvm,
++	struct kvm_irq_routing_table **original)
++{
++	struct kvm_irq_routing_table *table;
++	struct kvm_kernel_irq_routing_entry *entry;
++	unsigned int count = 0;
++
++	lockdep_assert_held(&kvm->irq_lock);
++	table = rcu_dereference_protected(kvm->irq_routing, 1);
++	if (!table || table->nr_rt_entries != 1)
++		return false;
++	hlist_for_each_entry(entry, &table->map[0], link) {
++		if (++count != 1 || entry->gsi ||
++		    entry->type != KVM_IRQ_ROUTING_IRQCHIP ||
++		    entry->irqchip.irqchip != KVM_IRQCHIP_PIC_MASTER ||
++		    entry->irqchip.pin || entry->set != kvm_pic_set_irq)
++			return false;
++	}
++	if (count != 1)
++		return false;
++	*original = table;
++	return true;
++}
++
++/* This is the actual native post-publication table, not a declared route
++ * roster. PIC slave pins are normalized by kvm_set_routing_entry to 8..15. */
++static bool q35_board_default_routes(struct kvm *kvm,
++	struct kvm_irq_routing_table **original)
++{
++	struct kvm_irq_routing_table *table;
++	struct kvm_kernel_irq_routing_entry *entry;
++	u32 gsi;
++
++	lockdep_assert_held(&kvm->irq_lock);
++	table = rcu_dereference_protected(kvm->irq_routing, 1);
++	if (!table || table->nr_rt_entries != KVM_IOAPIC_NUM_PINS)
++		return false;
++	for (gsi = 0; gsi < KVM_IOAPIC_NUM_PINS; gsi++) {
++		u32 chips = 0;
++
++		hlist_for_each_entry(entry, &table->map[gsi], link) {
++			u32 chip = entry->irqchip.irqchip;
++
++			if (entry->gsi != gsi || entry->type != KVM_IRQ_ROUTING_IRQCHIP ||
++			    entry->irqchip.pin != gsi || chip >= KVM_NR_IRQCHIPS ||
++			    (chips & BIT(chip)))
++				return false;
++			if (chip == KVM_IRQCHIP_IOAPIC) {
++				if (entry->set != kvm_ioapic_set_irq)
++					return false;
++			} else if (gsi >= PIC_NUM_PINS ||
++				   chip != (gsi < 8 ? KVM_IRQCHIP_PIC_MASTER :
++						     KVM_IRQCHIP_PIC_SLAVE) ||
++				   entry->set != kvm_pic_set_irq) {
++				return false;
++			}
++			chips |= BIT(chip);
++		}
++		if (chips != (BIT(KVM_IRQCHIP_IOAPIC) |
++			      (gsi < PIC_NUM_PINS ? BIT(gsi < 8 ?
++			       KVM_IRQCHIP_PIC_MASTER : KVM_IRQCHIP_PIC_SLAVE) : 0)))
++			return false;
++	}
++	*original = table;
++	return true;
++}
++
++/* Native locks serialize each public getter. The VM/control/configuration
++ * cut and selected source fence exclude independent initialization writers;
++ * the final gate rechecks that cut before these bytes become Known. */
++static int pic_board_capture_birth(struct kvm *kvm)
++{
++	struct kvm_crucible_pic_device_birth_state *birth =
++		&kvm->arch.crucible_pic_board.birth;
++	struct kvm_irqchip chip = {};
++	int result;
++
++	chip.chip_id = KVM_IRQCHIP_PIC_MASTER;
++	result = kvm_vm_ioctl_get_irqchip(kvm, &chip);
++	if (result)
++		return result;
++	birth->pic[0] = chip.chip.pic;
++
++	memset(&chip, 0, sizeof(chip));
++	chip.chip_id = KVM_IRQCHIP_PIC_SLAVE;
++	result = kvm_vm_ioctl_get_irqchip(kvm, &chip);
++	if (result)
++		return result;
++	birth->pic[1] = chip.chip.pic;
++
++	memset(&chip, 0, sizeof(chip));
++	chip.chip_id = KVM_IRQCHIP_IOAPIC;
++	result = kvm_vm_ioctl_get_irqchip(kvm, &chip);
++	if (result)
++		return result;
++	birth->ioapic = chip.chip.ioapic;
++
++	memset(&birth->pit, 0, sizeof(birth->pit));
++	return kvm_vm_ioctl_get_pit2(kvm, &birth->pit);
++}
++
++static bool pic_board_fresh_devices(struct kvm *kvm)
++{
++	struct kvm_pic *pic = kvm->arch.vpic;
++	struct kvm_ioapic *ioapic = kvm->arch.vioapic;
++	struct kvm_pit *pit = kvm->arch.vpit;
++	unsigned int index;
++	bool fresh = true;
++
++	/* These pointers are read from the actual VM only after the native
++	 * constructors returned under its mutex, never from caller input. */
++	if (!pic || !ioapic || !pit || pic->kvm != kvm ||
++	    ioapic->kvm != kvm || pit->kvm != kvm || !pit->worker ||
++	    !pit->worker->task || !atomic_read(&pit->pit_state.reinject))
++		return false;
++	spin_lock(&ioapic->lock);
++	for (index = 0; index < IOAPIC_NUM_PINS; index++)
++		if (!ioapic->redirtbl[index].fields.mask ||
++		    ioapic->irq_states[index] || ioapic->irq_eoi[index])
++			fresh = false;
++	fresh = fresh && !ioapic->irr && !ioapic->irr_delivered &&
++		!ioapic->crucible_eoi.issued && !ioapic->crucible_eoi.queued &&
++		!ioapic->crucible_eoi.active;
++	spin_unlock(&ioapic->lock);
++	if (!fresh)
++		return false;
++
++	spin_lock(&pic->lock);
++	fresh = !pic->output && !pic->pending_acks && !pic->wakeup_needed &&
++		!pic->crucible_pit_issued && !pic->crucible_eoi_issued;
++	for (index = 0; index < PIC_NUM_PINS; index++)
++		fresh = fresh && !pic->irq_states[index] &&
++			!pic->crucible_pit[index].phase;
++	for (index = 0; index < 2; index++)
++		fresh = fresh && !pic->pics[index].irr && !pic->pics[index].isr;
++	spin_unlock(&pic->lock);
++	if (!fresh)
++		return false;
++
++	mutex_lock(&pit->pit_state.lock);
++	fresh = !hrtimer_active(&pit->pit_state.timer) &&
++		!hrtimer_callback_running(&pit->pit_state.timer) &&
++		!pit->pit_state.crucible.issued &&
++		!pit->pit_state.crucible.count && !pit->pit_state.crucible.valid &&
++		!pit->pit_state.crucible.callback_active &&
++		!pit->pit_state.crucible.worker_active &&
++		!pit->pit_state.crucible.work_scheduled;
++	mutex_unlock(&pit->pit_state.lock);
++	return fresh;
++}
++#endif
++
++static int kvm_crucible_board_construct(struct kvm *kvm,
++	struct kvm_enable_cap *cap, u32 edition)
++{
++#ifdef CONFIG_KVM_IOAPIC
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_irq_routing_entry route = {
++		.gsi = 0,
++		.type = KVM_IRQ_ROUTING_IRQCHIP,
++		.u.irqchip = { .irqchip = KVM_IRQCHIP_PIC_MASTER, .pin = 0 },
++	};
++	unsigned long flags;
++	unsigned int bus_index;
++	int result;
++	bool entered = false;
++
++	if (cap->flags || cap->args[0] != edition ||
++	    cap->args[1] || cap->args[2] || cap->args[3])
++		return -EINVAL;
++	/* Existing control ordering is clock->configuration->VM. Nonblocking
++	 * acquisition refuses contention before original construction effects. */
++	if (!mutex_trylock(&clock->control_lock))
++		return -EBUSY;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock)) {
++		mutex_unlock(&clock->control_lock);
++		return -EBUSY;
++	}
++	if (!mutex_trylock(&kvm->lock)) {
++		result = -EBUSY;
++		goto unlock_configuration;
++	}
++	if (board->phase) {
++		/* Only the same retained original task can recover the constructor
++		 * result. This is a call receipt, not a live device-state query. */
++		result = board->constructor != current ? -EPERM :
++			board->edition != edition ? -ESTALE : board->result;
++		goto unlock_vm;
++	}
++	result = -EOPNOTSUPP;
++	if (kvm->created_vcpus || clock->enabled || kvm->crucible_controlled ||
++	    kvm->crucible_topology_writers || kvm->arch.vpic ||
++	    kvm->arch.vioapic || kvm->arch.vpit || irqchip_in_kernel(kvm) ||
++	    !list_empty(&kvm->devices) || kvm->arch.has_protected_eoi ||
++	    enable_vmware_backdoor)
++		goto unlock_vm;
++	mutex_lock(&kvm->slots_lock);
++	result = list_empty(&kvm->ioeventfds) ? 0 : -EOPNOTSUPP;
++#ifdef CONFIG_KVM_MMIO
++	if (!list_empty(&kvm->coalesced_zones))
++		result = -EOPNOTSUPP;
++#endif
++	for (bus_index = 0; bus_index < KVM_NR_BUSES; bus_index++) {
++		struct kvm_io_bus *bus = kvm_get_bus(kvm, bus_index);
++
++		if (!bus || bus->dev_count || bus->ioeventfd_count)
++			result = -EOPNOTSUPP;
++	}
++	mutex_unlock(&kvm->slots_lock);
++#ifdef CONFIG_HAVE_KVM_IRQCHIP
++	spin_lock_irqsave(&kvm->irqfds.lock, flags);
++	if (!list_empty(&kvm->irqfds.items))
++		result = -EOPNOTSUPP;
++	spin_unlock_irqrestore(&kvm->irqfds.lock, flags);
++#endif
++#ifdef CONFIG_KVM_XEN
++	if (kvm->arch.xen.hvm_config.msr || kvm->arch.xen.hvm_config.flags)
++		result = -EOPNOTSUPP;
++#endif
++	if (result)
++		goto unlock_vm;
++
++	/* Pre-reserve the sole original request before native constructors. A
++	 * partial allocation/publication cannot be repeated as a fresh request. */
++	mutex_lock(&kvm->irq_lock);
++	{
++		struct kvm_irq_routing_table *original =
++			rcu_dereference_protected(kvm->irq_routing, 1);
++
++		/* A caller-provided route is not silently replaced or adopted. */
++		if (!original || original->nr_rt_entries != 1 ||
++		    !hlist_empty(&original->map[0])) {
++			mutex_unlock(&kvm->irq_lock);
++			result = -EOPNOTSUPP;
++			goto unlock_vm;
++		}
++	}
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (kvm->crucible_irq_input.owners || kvm->crucible_irq_input.enabled ||
++	    kvm->crucible_irq_input.tainted || kvm->crucible_memory_tainted) {
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		mutex_unlock(&kvm->irq_lock);
++		result = -EOPNOTSUPP;
++		goto unlock_vm;
++	}
++	/* This gate also orders native source entry: a source which entered
++	 * before the cut retains an owner, and a later source cannot dispatch. */
++	get_task_struct(current);
++	board->constructor = current;
++	board->edition = edition;
++	board->result = -EIO;
++	smp_store_release(&board->phase, CRUCIBLE_PIC_BOARD_BUILDING);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	entered = true;
++	result = kvm_pic_init(kvm);
++	if (result)
++		goto original_finish;
++	result = kvm_ioapic_init(kvm);
++	if (result)
++		goto original_finish;
++	smp_wmb();
++	kvm->arch.irqchip_mode = KVM_IRQCHIP_KERNEL;
++	kvm_set_apicv_inhibit(kvm, APICV_INHIBIT_REASON_DISABLED);
++	/* The q35 edition preserves the native dual PIC/IOAPIC routes.
++	 * It never borrows the single-route V1 constructor result. */
++	result = edition == KVM_CRUCIBLE_Q35_BOARD_ONLY ?
++		kvm_setup_default_ioapic_and_pic_routing(kvm) :
++		kvm_set_irq_routing(kvm, &route, 1, 0);
++	if (result)
++		goto original_finish;
++	kvm->arch.vpit = kvm_create_pit(kvm, 0);
++	if (!kvm->arch.vpit) {
++		result = -ENOMEM;
++		goto original_finish;
++	}
++	if (!pic_board_fresh_devices(kvm)) {
++		result = -ESTALE;
++		goto original_finish;
++	}
++	result = pic_board_capture_birth(kvm);
++	if (result)
++		goto original_finish;
++	mutex_lock(&kvm->irq_lock);
++	if (!(edition == KVM_CRUCIBLE_Q35_BOARD_ONLY ?
++	      q35_board_default_routes(kvm, &board->routing) :
++	      pic_board_only_route(kvm, &board->routing))) {
++		mutex_unlock(&kvm->irq_lock);
++		result = -ESTALE;
++		goto original_finish;
++	}
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	/* A rejected source may have contained this VM during allocation.
++	 * The original cut must still hold at the enrollment publication. */
++	if (board->phase != CRUCIBLE_PIC_BOARD_BUILDING ||
++	    board->constructor != current || kvm->crucible_irq_input.owners ||
++	    kvm->crucible_irq_input.tainted || kvm->crucible_memory_tainted ||
++	    READ_ONCE(kvm->vm_dead)) {
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		mutex_unlock(&kvm->irq_lock);
++		result = -EAGAIN;
++		goto original_finish;
++	}
++	board->pic = kvm->arch.vpic;
++	board->ioapic = kvm->arch.vioapic;
++	board->pit = kvm->arch.vpit;
++	board->birth.known = true;
++	board->result = 0;
++	smp_store_release(&board->phase, CRUCIBLE_PIC_BOARD_ENROLLED);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	result = 0;
++
++original_finish:
++	if (result) {
++		board->result = result;
++		smp_store_release(&board->phase, CRUCIBLE_PIC_BOARD_UNKNOWN);
++	}
++unlock_vm:
++	mutex_unlock(&kvm->lock);
++unlock_configuration:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	mutex_unlock(&clock->control_lock);
++	if (entered && result)
++		kvm_vm_dead(kvm);
++	return result;
++#else
++	return -EOPNOTSUPP;
++#endif
++}
++
++static int kvm_crucible_pic_board_construct(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	return kvm_crucible_board_construct(kvm, cap, KVM_CRUCIBLE_PIC_BOARD_ONLY);
++}
++
++static int kvm_crucible_q35_board_construct(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	return kvm_crucible_board_construct(kvm, cap, KVM_CRUCIBLE_Q35_BOARD_ONLY);
++}
+--- /dev/null
++++ b/arch/x86/kvm/crucible-pic-device-birth.inc.c
+@@ -0,0 +1,168 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Original immutable constructor output for finite frontend adoption.
++ * This API never reads current native device state or invokes a setter.
++ */
++#ifdef CONFIG_KVM_IOAPIC
++
++static bool pic_device_birth_request_valid(
++	const struct kvm_crucible_pic_device_birth *request)
++{
++	return request->version == 1 && request->request_id &&
++		request->kind >= KVM_CRUCIBLE_PIC_DEVICE_BIRTH_MASTER &&
++		request->kind <= KVM_CRUCIBLE_PIC_DEVICE_BIRTH_PIT &&
++		!request->native_result && !request->payload_bytes &&
++		!request->flags && !request->reserved[0] &&
++		!request->reserved[1] && !request->reserved[2] &&
++		!request->reserved[3] &&
++		!memchr_inv(request->payload, 0, sizeof(request->payload));
++}
++
++static bool pic_device_birth_live_locked(struct kvm *kvm, u32 edition)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	unsigned int index;
++
++	lockdep_assert_held(&clock->control_lock);
++	lockdep_assert_held(&kvm->crucible_configuration_lock);
++	lockdep_assert_held(&kvm->lock);
++	lockdep_assert_held(&kvm->irq_lock);
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (board->edition != edition ||
++	    board->phase != CRUCIBLE_PIC_BOARD_ENROLLED ||
++	    board->constructor != current || board->result || !board->birth.known ||
++	    !board->pic || board->pic != kvm->arch.vpic ||
++	    !board->pit || board->pit != kvm->arch.vpit ||
++	    !board->ioapic || board->ioapic != kvm->arch.vioapic ||
++	    board->routing != rcu_dereference_protected(kvm->irq_routing, 1) ||
++	    board->memory.inflight || board->memory.uncertain ||
++	    board->initialization.inflight || board->initialization.uncertain ||
++	    clock->enabled || clock->active || clock->run_owners ||
++	    clock->timer_owners || kvm->crucible_controlled ||
++	    kvm->crucible_continuation_roster_frozen ||
++	    kvm->crucible_topology_writers || kvm->crucible_irq_input.enabled ||
++	    kvm->crucible_irq_input.owners || kvm->crucible_irq_input.tainted ||
++	    kvm->crucible_memory_tainted || READ_ONCE(kvm->vm_dead))
++		return false;
++	if (board->initializer_roster.uncertain)
++		return false;
++	for (index = 0; index < ARRAY_SIZE(board->initializer_roster.actors); index++)
++		if (board->initializer_roster.actors[index].inflight ||
++		    board->initializer_roster.actors[index].uncertain)
++			return false;
++	for (index = 0; index < ARRAY_SIZE(board->setup); index++)
++		if (board->setup[index].inflight || board->setup[index].uncertain)
++			return false;
++	return true;
++}
++
++static void pic_device_birth_report(struct kvm *kvm,
++	struct kvm_crucible_pic_device_birth *request)
++{
++	struct kvm_crucible_pic_device_birth_state *birth =
++		&kvm->arch.crucible_pic_board.birth;
++	const void *payload;
++	u32 bytes;
++
++	BUILD_BUG_ON(sizeof(birth->pic[0]) > sizeof(request->payload));
++	BUILD_BUG_ON(sizeof(birth->ioapic) > sizeof(request->payload));
++	BUILD_BUG_ON(sizeof(birth->pit) > sizeof(request->payload));
++	switch (request->kind) {
++	case KVM_CRUCIBLE_PIC_DEVICE_BIRTH_MASTER:
++	case KVM_CRUCIBLE_PIC_DEVICE_BIRTH_SLAVE:
++		payload = &birth->pic[request->kind - 1];
++		bytes = sizeof(birth->pic[0]);
++		break;
++	case KVM_CRUCIBLE_PIC_DEVICE_BIRTH_IOAPIC:
++		payload = &birth->ioapic;
++		bytes = sizeof(birth->ioapic);
++		break;
++	default:
++		payload = &birth->pit;
++		bytes = sizeof(birth->pit);
++		break;
++	}
++	/* Input validation requires zero trailing payload/reserved bytes. Only
++	 * the bounded original public structure is copied; no private pointers
++	 * or fresh GET state crosses the process boundary. */
++	memcpy(request->payload, payload, bytes);
++	request->payload_bytes = bytes;
++	request->native_result = 0;
++	request->flags = KVM_CRUCIBLE_PIC_DEVICE_BIRTH_KNOWN;
++}
++
++static int kvm_crucible_device_birth_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap, u32 edition)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_pic_device_birth request;
++	void __user *argument = u64_to_user_ptr(cap->args[0]);
++	unsigned long flags;
++	int result;
++
++	BUILD_BUG_ON(sizeof(request) != 576);
++	if (cap->flags || !cap->args[0] || cap->args[1] ||
++	    cap->args[2] || cap->args[3])
++		return -EINVAL;
++	if (copy_from_user(&request, argument, sizeof(request)))
++		return -EFAULT;
++	if (request.version != edition)
++		return -EINVAL;
++	/* Validate the unchanged bounded public payload shape; edition
++	 * is separately bound to the original constructor below. */
++	request.version = 1;
++	if (!pic_device_birth_request_valid(&request))
++		return -EINVAL;
++	if (!mutex_trylock(&clock->control_lock))
++		return -EBUSY;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock)) {
++		mutex_unlock(&clock->control_lock);
++		return -EBUSY;
++	}
++	if (!mutex_trylock(&kvm->lock)) {
++		result = -EBUSY;
++		goto unlock_configuration;
++	}
++	mutex_lock(&kvm->irq_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	result = -EOPNOTSUPP;
++	if (pic_device_birth_live_locked(kvm, edition)) {
++		pic_device_birth_report(kvm, &request);
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	mutex_unlock(&kvm->lock);
++unlock_configuration:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	mutex_unlock(&clock->control_lock);
++	/* Failed delivery can retry this immutable birth history without any
++	 * repeated native getter or setter. Returned bytes never assert that the
++	 * native device still has these values after the original birth. */
++	request.version = edition;
++	if (!result && copy_to_user(argument, &request, sizeof(request)))
++		return -EFAULT;
++	return result;
++}
++
++#else
++
++static int kvm_crucible_device_birth_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap, u32 edition)
++{
++	return -EOPNOTSUPP;
++}
++
++#endif /* CONFIG_KVM_IOAPIC */
++
++static int kvm_crucible_pic_device_birth_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	return kvm_crucible_device_birth_control(kvm, cap, KVM_CRUCIBLE_PIC_BOARD_ONLY);
++}
++
++static int kvm_crucible_q35_device_birth_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	return kvm_crucible_device_birth_control(kvm, cap, KVM_CRUCIBLE_Q35_BOARD_ONLY);
++}
+--- /dev/null
++++ b/arch/x86/kvm/crucible-pic-initializer-roster.inc.c
+@@ -0,0 +1,191 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Original sequential four-worker enrollment, separate from clock/RUN
++ * permission. A selected plan is incomplete until every real actor and CPU
++ * has been observed; no numeric slot creates a native object. */
++
++static bool pic_initializer_roster_request_valid(
++	const struct kvm_crucible_pic_initializer_v2 *request)
++{
++	u32 index;
++
++	if (request->version != 2 || !request->enrollment_id ||
++	    request->native_vcpu_count != KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS ||
++	    request->native_vcpu_id >= KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS ||
++	    !request->maximum_effects ||
++	    request->maximum_effects > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_EFFECTS ||
++	    request->issued_effects || request->native_result ||
++	    request->native_ioctl || request->flags)
++		return false;
++	for (index = 0; index < ARRAY_SIZE(request->reserved); index++)
++		if (request->reserved[index])
++			return false;
++
++	switch (request->operation) {
++	case KVM_CRUCIBLE_PIC_INITIALIZER_SELECT:
++		return !request->native_vcpu_id && !request->initializer_tid &&
++			!request->effect_index;
++	case KVM_CRUCIBLE_PIC_INITIALIZER_ACTOR_ENROLL:
++		return request->initializer_tid &&
++			request->initializer_tid <= INT_MAX && !request->effect_index;
++	case KVM_CRUCIBLE_PIC_INITIALIZER_ACTOR_QUERY:
++		return request->initializer_tid <= INT_MAX;
++	default:
++		return false;
++	}
++}
++
++static bool pic_initializer_roster_same_request(
++	struct kvm *kvm, const struct kvm_crucible_pic_initializer_v2 *request)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++
++	return board->initializer_roster.selected &&
++		board->initializer_roster.enrollment_id == request->enrollment_id &&
++		board->initializer_roster.maximum_effects == request->maximum_effects;
++}
++
++static int pic_initializer_roster_report_locked(struct kvm *kvm,
++	struct kvm_crucible_pic_initializer_v2 *request)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	const struct kvm_crucible_pic_initializer_state *state =
++		&board->initializer_roster.actors[request->native_vcpu_id];
++	const struct kvm_crucible_pic_initializer_effect *effect;
++
++	if (request->initializer_tid != state->initializer_tid)
++		return -ESTALE;
++	if (request->effect_index > state->issued)
++		return -ENOENT;
++	request->issued_effects = state->issued;
++	request->flags = (state->inflight ?
++		KVM_CRUCIBLE_PIC_INITIALIZER_INFLIGHT : 0) |
++		(state->uncertain || board->initializer_roster.uncertain ?
++		 KVM_CRUCIBLE_PIC_INITIALIZER_UNCERTAIN : 0) |
++		(state->task ? KVM_CRUCIBLE_PIC_INITIALIZER_ACTOR_PRESENT : 0) |
++		(state->vcpu ? KVM_CRUCIBLE_PIC_INITIALIZER_VCPU_PRESENT : 0);
++	if (!request->effect_index)
++		return 0;
++
++	effect = &state->effects[request->effect_index - 1];
++	request->native_ioctl = effect->native_ioctl;
++	request->native_result = effect->native_result;
++	if (effect->known)
++		request->flags |= KVM_CRUCIBLE_PIC_INITIALIZER_KNOWN;
++	return 0;
++}
++
++static int kvm_crucible_pic_initializer_roster_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_pic_initializer_v2 request;
++	struct kvm_crucible_pic_initializer_state *state;
++	struct task_struct *task = NULL;
++	struct mm_struct *mm;
++	void __user *argument = u64_to_user_ptr(cap->args[0]);
++	unsigned long flags;
++	u32 index;
++	int result;
++
++	if (cap->flags || !cap->args[0] || cap->args[1] ||
++	    cap->args[2] || cap->args[3])
++		return -EINVAL;
++	if (copy_from_user(&request, argument, sizeof(request)))
++		return -EFAULT;
++	if (!pic_initializer_roster_request_valid(&request))
++		return -EINVAL;
++
++	if (!mutex_trylock(&clock->control_lock))
++		return -EBUSY;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock)) {
++		mutex_unlock(&clock->control_lock);
++		return -EBUSY;
++	}
++	result = -EPERM;
++	if (board->constructor != current)
++		goto unlock_configuration;
++	result = -EOPNOTSUPP;
++	if (board->edition != KVM_CRUCIBLE_Q35_BOARD_ONLY || board->initialization.task)
++		goto unlock_configuration;
++
++	if (request.operation != KVM_CRUCIBLE_PIC_INITIALIZER_SELECT) {
++		result = -ESTALE;
++		if (!pic_initializer_roster_same_request(kvm, &request))
++			goto unlock_configuration;
++		state = &board->initializer_roster.actors[request.native_vcpu_id];
++		if (request.operation == KVM_CRUCIBLE_PIC_INITIALIZER_ACTOR_QUERY) {
++			result = pic_initializer_roster_report_locked(kvm, &request);
++			goto unlock_configuration;
++		}
++		result = -EALREADY;
++		if (state->task)
++			goto unlock_configuration;
++
++		/* Resolve only this actually born worker once. Cached observations
++		 * never resolve the same numeric TID into a replacement task. */
++		task = find_get_task_by_vpid(request.initializer_tid);
++		result = -ESRCH;
++		if (!task)
++			goto unlock_configuration;
++		mm = get_task_mm(task);
++		result = mm == kvm->mm && same_thread_group(task, current) &&
++			task != current ? 0 : -EPERM;
++		if (mm)
++			mmput(mm);
++		if (result)
++			goto unlock_configuration;
++		for (index = 0; index < KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS; index++) {
++			result = -EEXIST;
++			if (board->initializer_roster.actors[index].task == task)
++				goto unlock_configuration;
++		}
++	}
++
++	if (!mutex_trylock(&kvm->lock)) {
++		result = -EBUSY;
++		goto unlock_configuration;
++	}
++	mutex_lock(&kvm->irq_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	result = -EOPNOTSUPP;
++	if (!pic_initializer_live_locked(kvm) || kvm->crucible_topology_writers)
++		goto unlock_gate;
++
++	if (request.operation == KVM_CRUCIBLE_PIC_INITIALIZER_SELECT) {
++		if (board->initializer_roster.selected || kvm->created_vcpus)
++			goto unlock_gate;
++		board->initializer_roster.enrollment_id = request.enrollment_id;
++		board->initializer_roster.maximum_effects = request.maximum_effects;
++		for (index = 0; index < KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS; index++) {
++			state = &board->initializer_roster.actors[index];
++			state->enrollment_id = request.enrollment_id;
++			state->maximum_effects = request.maximum_effects;
++			state->native_vcpu_id = index;
++		}
++		smp_store_release(&board->initializer_roster.selected, true);
++	} else {
++		state = &board->initializer_roster.actors[request.native_vcpu_id];
++		if (state->task || state->issued || state->vcpu ||
++		    kvm->created_vcpus != request.native_vcpu_id)
++			goto unlock_gate;
++		state->initializer_tid = request.initializer_tid;
++		smp_store_release(&state->task, task);
++		task = NULL;
++	}
++	result = pic_initializer_roster_report_locked(kvm, &request);
++
++unlock_gate:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	mutex_unlock(&kvm->lock);
++unlock_configuration:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	mutex_unlock(&clock->control_lock);
++	if (task)
++		put_task_struct(task);
++	/* Selection/enrollment is already immutable if userspace writeback fails. */
++	if (!result && copy_to_user(argument, &request, sizeof(request)))
++		return -EFAULT;
++	return result;
++}
+--- /dev/null
++++ b/arch/x86/kvm/crucible-pic-initializer.inc.c
+@@ -0,0 +1,772 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Finite initialization effects on the original CPU thread. This component
++ * retains function-return facts, not complete architectural values. The
++ * separate clock/FirstBegin/RUN fences remain unchanged.
++ */
++#include <linux/sched/mm.h>
++
++static bool pic_initializer_request_valid(
++	const struct kvm_crucible_pic_initializer *request)
++{
++	return request->version == 1 && request->enrollment_id &&
++		request->initializer_tid && request->initializer_tid <= INT_MAX &&
++		!request->native_vcpu_id && request->maximum_effects &&
++		request->maximum_effects <= KVM_CRUCIBLE_PIC_INITIALIZER_MAX_EFFECTS &&
++		!request->issued_effects && !request->native_result &&
++		!request->native_ioctl && !request->flags &&
++		!request->reserved[0] && !request->reserved[1] &&
++		!request->reserved[2] &&
++		(request->operation == KVM_CRUCIBLE_PIC_INITIALIZER_QUERY ||
++		 (request->operation == KVM_CRUCIBLE_PIC_INITIALIZER_ENROLL &&
++		  !request->effect_index));
++}
++
++static bool pic_initializer_same_request(
++	const struct kvm_crucible_pic_initializer_state *state,
++	const struct kvm_crucible_pic_initializer *request)
++{
++	return state->task && state->enrollment_id == request->enrollment_id &&
++		state->initializer_tid == request->initializer_tid &&
++		state->maximum_effects == request->maximum_effects;
++}
++
++/* Only the selected source edition chooses the actor table. Numeric CPU
++ * IDs index immutable slots; actual retained task and vCPU refs authorize
++ * execution. The legacy single-CPU table remains a separate source lane. */
++static struct kvm_crucible_pic_initializer_state *
++pic_initializer_actor_state(struct kvm *kvm, struct kvm_vcpu *vcpu)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	u32 index;
++
++	if (!smp_load_acquire(&board->initializer_roster.selected))
++		return &board->initialization;
++	if (vcpu) {
++		if (vcpu->vcpu_id >= KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS)
++			return NULL;
++		return &board->initializer_roster.actors[vcpu->vcpu_id];
++	}
++	for (index = 0; index < KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS; index++)
++		if (smp_load_acquire(&board->initializer_roster.actors[index].task) == current)
++			return &board->initializer_roster.actors[index];
++	return NULL;
++}
++
++static u32 pic_initializer_cpu_count(struct kvm *kvm)
++{
++	return smp_load_acquire(&kvm->arch.crucible_pic_board.initializer_roster.selected) ?
++		KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS : 1;
++}
++
++/* configuration -> VM -> irq -> gate, matching the constructor order. The
++ * original writer credit prevents another initialization or a future roster
++ * seal while native allocation/state callbacks run with these locks dropped.
++ */
++static bool pic_initializer_live_locked(struct kvm *kvm)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++
++	lockdep_assert_held(&kvm->crucible_configuration_lock);
++	lockdep_assert_held(&kvm->irq_lock);
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return board->phase == CRUCIBLE_PIC_BOARD_ENROLLED &&
++		!board->initializer_roster.uncertain &&
++		board->pic == kvm->arch.vpic &&
++		board->ioapic == kvm->arch.vioapic &&
++		board->pit == kvm->arch.vpit &&
++		board->routing == rcu_dereference_protected(kvm->irq_routing, 1) &&
++		!clock->enabled && !clock->active && !clock->run_owners &&
++		!clock->timer_owners && !kvm->crucible_controlled &&
++		!kvm->crucible_continuation_roster_frozen &&
++		!kvm->crucible_irq_input.owners &&
++		!kvm->crucible_irq_input.tainted && !kvm->crucible_memory_tainted &&
++		!READ_ONCE(kvm->vm_dead);
++}
++
++static int pic_initializer_report_locked(
++	const struct kvm_crucible_pic_initializer_state *state,
++	struct kvm_crucible_pic_initializer *request)
++{
++	const struct kvm_crucible_pic_initializer_effect *effect;
++
++	if (request->effect_index > state->issued)
++		return -ENOENT;
++	request->issued_effects = state->issued;
++	request->flags = (state->inflight ?
++		KVM_CRUCIBLE_PIC_INITIALIZER_INFLIGHT : 0) |
++		(state->uncertain ? KVM_CRUCIBLE_PIC_INITIALIZER_UNCERTAIN : 0);
++	if (!request->effect_index)
++		return 0;
++
++	effect = &state->effects[request->effect_index - 1];
++	request->native_ioctl = effect->native_ioctl;
++	request->native_result = effect->native_result;
++	if (effect->known)
++		request->flags |= KVM_CRUCIBLE_PIC_INITIALIZER_KNOWN;
++	return 0;
++}
++
++static int kvm_crucible_pic_initializer_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_pic_initializer_state *state = &board->initialization;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_pic_initializer request;
++	struct task_struct *task = NULL;
++	struct mm_struct *mm;
++	void __user *argument = u64_to_user_ptr(cap->args[0]);
++	unsigned long flags;
++	int result;
++
++	if (cap->flags || !cap->args[0] || cap->args[1] ||
++	    cap->args[2] || cap->args[3])
++		return -EINVAL;
++	if (copy_from_user(&request, argument, sizeof(request)))
++		return -EFAULT;
++	if (!pic_initializer_request_valid(&request))
++		return -EINVAL;
++
++	if (!mutex_trylock(&clock->control_lock))
++		return -EBUSY;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock)) {
++		mutex_unlock(&clock->control_lock);
++		return -EBUSY;
++	}
++	/* The actual original constructor owns enrollment and observation.
++	 * A same-number replacement thread never acquires that authority. */
++	result = -EPERM;
++	if (board->edition != KVM_CRUCIBLE_PIC_BOARD_ONLY) {
++		result = -EOPNOTSUPP;
++		goto unlock_configuration;
++	}
++	if (board->constructor != current || board->initializer_roster.selected)
++		goto unlock_configuration;
++	if (state->task) {
++		result = pic_initializer_same_request(state, &request) ?
++			pic_initializer_report_locked(state, &request) : -ESTALE;
++		goto unlock_configuration;
++	}
++	result = -ENOENT;
++	if (request.operation != KVM_CRUCIBLE_PIC_INITIALIZER_ENROLL)
++		goto unlock_configuration;
++
++	/* Resolve the TID once, hold its actual task reference, and establish
++	 * its real address-space relationship. Cached queries never resolve it
++	 * again. An exited original may be retained but cannot execute calls. */
++	task = find_get_task_by_vpid(request.initializer_tid);
++	result = -ESRCH;
++	if (!task)
++		goto unlock_configuration;
++	mm = get_task_mm(task);
++	result = mm == kvm->mm ? 0 : -EPERM;
++	if (mm)
++		mmput(mm);
++	if (result)
++		goto unlock_configuration;
++	if (!mutex_trylock(&kvm->lock)) {
++		result = -EBUSY;
++		goto unlock_configuration;
++	}
++	mutex_lock(&kvm->irq_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	result = -EOPNOTSUPP;
++	if (pic_initializer_live_locked(kvm) && !kvm->created_vcpus &&
++	    !kvm->crucible_topology_writers && !state->task) {
++		state->task = task;
++		state->enrollment_id = request.enrollment_id;
++		state->initializer_tid = request.initializer_tid;
++		state->maximum_effects = request.maximum_effects;
++		task = NULL;
++		result = pic_initializer_report_locked(state, &request);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	mutex_unlock(&kvm->lock);
++
++unlock_configuration:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	mutex_unlock(&clock->control_lock);
++	if (task)
++		put_task_struct(task);
++	if (!result && copy_to_user(argument, &request, sizeof(request)))
++		return -EFAULT;
++	return result;
++}
++
++static bool pic_initializer_cpu_operation(unsigned int ioctl)
++{
++	/* GET callbacks can update native bookkeeping, so they consume the
++	 * same finite effect journal as setters. This pre-clock lane admits
++	 * only architectural state: injection, arbitrary capabilities, nested
++	 * execution and MSR timer/device effects need separate input owners. */
++	switch (ioctl) {
++	case KVM_GET_REGS:
++	case KVM_SET_REGS:
++	case KVM_GET_SREGS:
++	case KVM_SET_SREGS:
++	case KVM_GET_MP_STATE:
++	case KVM_SET_MP_STATE:
++	case KVM_SET_CPUID2:
++	case KVM_GET_SREGS2:
++	case KVM_SET_SREGS2:
++	case KVM_GET_FPU:
++	case KVM_SET_FPU:
++	case KVM_GET_XSAVE:
++	case KVM_GET_XSAVE2:
++	case KVM_SET_XSAVE:
++	case KVM_GET_XCRS:
++	case KVM_SET_XCRS:
++	case KVM_GET_VCPU_EVENTS:
++	case KVM_SET_VCPU_EVENTS:
++	case KVM_GET_DEBUGREGS:
++	case KVM_SET_DEBUGREGS:
++	case KVM_GET_TSC_KHZ:
++	case KVM_SET_TSC_KHZ:
++	case KVM_X86_SETUP_MCE:
++	case KVM_GET_MSRS:
++	case KVM_SET_MSRS:
++	case KVM_GET_NESTED_STATE:
++	case KVM_SET_NESTED_STATE:
++		return true;
++	default:
++		return false;
++	}
++}
++
++int kvm_arch_crucible_pic_initializer_enter(struct kvm *kvm,
++	struct kvm_vcpu *vcpu, unsigned int ioctl, unsigned long arg,
++	u32 *effect_index)
++{
++	struct kvm_crucible_pic_initializer_state *state;
++	struct kvm_crucible_pic_initializer_effect *effect;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	unsigned long flags;
++	int result = -EOPNOTSUPP;
++
++	*effect_index = 0;
++	if ((!vcpu && ioctl != KVM_CREATE_VCPU) ||
++	    (vcpu && !pic_initializer_cpu_operation(ioctl)))
++		return result;
++	if (!mutex_trylock(&clock->control_lock))
++		return -EBUSY;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock)) {
++		mutex_unlock(&clock->control_lock);
++		return -EBUSY;
++	}
++	state = pic_initializer_actor_state(kvm, vcpu);
++	if (!state || (!vcpu && arg != state->native_vcpu_id))
++		goto unlock_configuration;
++	if (!mutex_trylock(&kvm->lock)) {
++		result = -EBUSY;
++		goto unlock_configuration;
++	}
++	mutex_lock(&kvm->irq_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (!pic_initializer_live_locked(kvm) || state->task != current ||
++	    state->uncertain || state->inflight ||
++	    state->issued >= state->maximum_effects ||
++	    kvm->crucible_topology_writers)
++		goto unlock_gate;
++	/* The retained actual CPU pointer is born only at the original native
++	 * create return. VM lifetime owns it; a numeric fd is never authority. */
++	if ((!vcpu && (state->issued || state->vcpu ||
++		   kvm->created_vcpus != state->native_vcpu_id)) ||
++	    (vcpu && (vcpu != state->vcpu ||
++		      vcpu->vcpu_id != state->native_vcpu_id ||
++		      kvm->created_vcpus <= state->native_vcpu_id ||
++		      kvm->created_vcpus > pic_initializer_cpu_count(kvm) ||
++		      kvm_get_vcpu(kvm, state->native_vcpu_id) != vcpu)))
++		goto unlock_gate;
++
++	effect = &state->effects[state->issued++];
++	effect->native_ioctl = ioctl;
++	effect->native_result = -EINPROGRESS;
++	effect->known = false;
++	state->inflight = true;
++	kvm->crucible_topology_writers++;
++	*effect_index = state->issued;
++	result = 0;
++
++unlock_gate:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	mutex_unlock(&kvm->lock);
++unlock_configuration:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	mutex_unlock(&clock->control_lock);
++	return result;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_enter);
++
++/* The vCPU ioctl already owns this finite native operation. Its gate
++ * retains the same effect row and actual task/vCPU before the callback.
++ * Capture the validated local copy once; never read userspace a second time.
++ */
++static int pic_initializer_snapshot_events(struct kvm_vcpu *vcpu,
++	const struct kvm_vcpu_events *events)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_pic_initializer_state *state =
++		pic_initializer_actor_state(kvm, vcpu);
++	struct kvm_crucible_pic_initializer_effect *effect;
++	unsigned long flags;
++	int result = -EOPNOTSUPP;
++
++	if (!kvm_arch_crucible_pic_board_fenced(kvm))
++		return 0;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (!state || board->initializer_roster.uncertain ||
++	    board->phase != CRUCIBLE_PIC_BOARD_ENROLLED ||
++	    !state->inflight || state->uncertain || state->task != current ||
++	    state->vcpu != vcpu || kvm->crucible_topology_writers != 1 ||
++	    !state->issued || state->issued > state->maximum_effects)
++		goto unlock_gate;
++
++	effect = &state->effects[state->issued - 1];
++	if (effect->native_ioctl != KVM_SET_VCPU_EVENTS ||
++	    effect->input_events_known)
++		goto unlock_gate;
++	memcpy(&effect->input_events, events, sizeof(*events));
++	effect->input_events_known = true;
++	result = 0;
++
++unlock_gate:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return result;
++}
++
++/* Reset admission owns no nested guest, timer deadline, SMM or eVMCS
++ * publication. Both original vendor reset branches retire nested bookkeeping
++ * and return before reading payload; later restore requires its own owner. */
++static bool pic_initializer_nested_reset_valid(
++	const struct kvm_nested_state *input)
++{
++	struct kvm_nested_state reset;
++
++	memset(&reset, 0, sizeof(reset));
++	reset.size = input->size;
++	reset.format = input->format;
++	if (input->format == KVM_STATE_NESTED_FORMAT_VMX) {
++		reset.hdr.vmx.vmxon_pa = ~0ULL;
++		reset.hdr.vmx.vmcs12_pa = ~0ULL;
++	} else if (input->format != KVM_STATE_NESTED_FORMAT_SVM) {
++		return false;
++	}
++	return !memcmp(input, &reset, sizeof(reset));
++}
++
++static struct kvm_crucible_pic_initializer_effect *
++pic_initializer_nested_effect_locked(struct kvm_vcpu *vcpu)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_pic_initializer_state *state =
++		pic_initializer_actor_state(kvm, vcpu);
++	struct kvm_crucible_pic_initializer_effect *effect;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!state || board->initializer_roster.uncertain ||
++	    board->phase != CRUCIBLE_PIC_BOARD_ENROLLED ||
++	    !state->inflight || state->uncertain || state->task != current ||
++	    state->vcpu != vcpu || kvm->crucible_topology_writers != 1 ||
++	    !state->issued || state->issued > state->maximum_effects)
++		return NULL;
++	effect = &state->effects[state->issued - 1];
++	if (effect->native_ioctl != KVM_SET_NESTED_STATE ||
++	    effect->input_nested_known)
++		return NULL;
++	return effect;
++}
++
++/* The fixed header has already been copied exactly once. Capture only its
++ * tail from userspace, then bind the immutable whole buffer to this same
++ * original effect. Vendor callbacks consume this buffer, never a second
++ * userspace read. No allocation or user fault occurs under the native gate. */
++static int pic_initializer_snapshot_nested(struct kvm_vcpu *vcpu,
++	const struct kvm_nested_state *header,
++	const struct kvm_nested_state __user *user_state,
++	const struct kvm_nested_state **owned_state)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_initializer_state *state =
++		pic_initializer_actor_state(kvm, vcpu);
++	struct kvm_crucible_pic_initializer_effect *effect;
++	struct kvm_nested_state *input;
++	unsigned long flags;
++	int result = -EOPNOTSUPP;
++
++	*owned_state = NULL;
++	if (!kvm_arch_crucible_pic_board_fenced(kvm))
++		return 0;
++	if (header->size < sizeof(*header) ||
++	    header->size > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_NESTED_BYTES ||
++	    !pic_initializer_nested_reset_valid(header))
++		return result;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_nested_effect_locked(vcpu);
++	if (effect && state->input_bytes <=
++	    KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES - header->size)
++		result = 0;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result)
++		return result;
++
++	input = kmalloc(header->size, GFP_KERNEL);
++	if (!input)
++		return -ENOMEM;
++	memcpy(input, header, sizeof(*header));
++	if (copy_from_user((u8 *)input + sizeof(*header),
++			   (const u8 __user *)user_state + sizeof(*header),
++			   header->size - sizeof(*header))) {
++		kfree(input);
++		return -EFAULT;
++	}
++
++	result = -EOPNOTSUPP;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_nested_effect_locked(vcpu);
++	if (effect && state->input_bytes <=
++	    KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES - header->size) {
++		effect->input_nested = input;
++		effect->input_nested_bytes = header->size;
++		effect->input_nested_known = true;
++		state->input_bytes += header->size;
++		*owned_state = input;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result)
++		kfree(input);
++	return result;
++}
++
++/* Native common/vendor architectural setters may update MMU and CPU
++ * bookkeeping under the same original operation. Clock/IRQ/RAM-producing
++ * MSRs are admitted only in their disabled form. PMU programming, x2APIC
++ * writes, Hyper-V/Xen and unknown families require separate source owners. */
++static bool pic_initializer_msr_entry_valid(const struct kvm_msr_entry *entry,
++	bool write)
++{
++	if (entry->reserved)
++		return false;
++	switch (entry->index) {
++	case MSR_IA32_SYSENTER_CS:
++	case MSR_IA32_SYSENTER_ESP:
++	case MSR_IA32_SYSENTER_EIP:
++	case MSR_STAR:
++	case MSR_LSTAR:
++	case MSR_CSTAR:
++	case MSR_SYSCALL_MASK:
++	case MSR_KERNEL_GS_BASE:
++	case MSR_TSC_AUX:
++	case MSR_IA32_TSC:
++	case MSR_IA32_TSC_ADJUST:
++	case MSR_AMD64_TSC_RATIO:
++	case MSR_EFER:
++	case MSR_IA32_CR_PAT:
++	case MSR_IA32_APICBASE:
++	case MSR_IA32_MISC_ENABLE:
++	case MSR_IA32_SMBASE:
++	case MSR_SMI_COUNT:
++	case MSR_IA32_FEAT_CTL:
++	case MSR_IA32_UCODE_REV:
++	case MSR_IA32_ARCH_CAPABILITIES:
++	case MSR_IA32_CORE_CAPS:
++	case MSR_IA32_XSS:
++	case MSR_IA32_UMWAIT_CONTROL:
++	case MSR_IA32_SPEC_CTRL:
++	case MSR_IA32_TSX_CTRL:
++	case MSR_AMD64_VIRT_SPEC_CTRL:
++	case MSR_K7_HWCR:
++	case MSR_VM_HSAVE_PA:
++	case MSR_IA32_BNDCFGS:
++	case MSR_IA32_XFD:
++	case MSR_IA32_XFD_ERR:
++	case MSR_IA32_U_CET:
++	case MSR_IA32_S_CET:
++	case MSR_IA32_PL0_SSP ... MSR_IA32_PL3_SSP:
++	case MSR_IA32_INT_SSP_TAB:
++	case MSR_IA32_VMX_BASIC ... MSR_IA32_VMX_VMFUNC:
++	case MTRRphysBase_MSR(0) ... MSR_MTRRfix4K_F8000:
++	case MSR_MTRRdefType:
++	case MSR_IA32_MCG_CTL:
++	case MSR_IA32_MCG_STATUS:
++	case MSR_IA32_MCG_EXT_CTL:
++	case MSR_IA32_MC0_CTL ... MSR_IA32_MCx_CTL(KVM_MAX_MCE_BANKS) - 1:
++	case MSR_IA32_MC0_CTL2 ... MSR_IA32_MCx_CTL2(KVM_MAX_MCE_BANKS) - 1:
++		return true;
++	case MSR_IA32_PERF_CAPABILITIES:
++		return !write;
++	case MSR_IA32_TSC_DEADLINE:
++	case MSR_KVM_WALL_CLOCK:
++	case MSR_KVM_WALL_CLOCK_NEW:
++	case MSR_KVM_SYSTEM_TIME:
++	case MSR_KVM_SYSTEM_TIME_NEW:
++	case MSR_KVM_ASYNC_PF_EN:
++	case MSR_KVM_ASYNC_PF_INT:
++	case MSR_KVM_PV_EOI_EN:
++	case MSR_KVM_STEAL_TIME:
++	case MSR_IA32_PRED_CMD:
++	case MSR_IA32_FLUSH_CMD:
++		return !write || !entry->data;
++	case MSR_KVM_POLL_CONTROL:
++		return !write || entry->data <= 1;
++	default:
++		return false;
++	}
++}
++
++static struct kvm_crucible_pic_initializer_effect *
++pic_initializer_msr_effect_locked(struct kvm_vcpu *vcpu, bool write)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_pic_initializer_state *state =
++		pic_initializer_actor_state(kvm, vcpu);
++	struct kvm_crucible_pic_initializer_effect *effect;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!state || board->initializer_roster.uncertain ||
++	    board->phase != CRUCIBLE_PIC_BOARD_ENROLLED ||
++	    !state->inflight || state->uncertain || state->task != current ||
++	    state->vcpu != vcpu || kvm->crucible_topology_writers != 1 ||
++	    !state->issued || state->issued > state->maximum_effects)
++		return NULL;
++	effect = &state->effects[state->issued - 1];
++	if (effect->native_ioctl != (write ? KVM_SET_MSRS : KVM_GET_MSRS))
++		return NULL;
++	return effect;
++}
++
++/* Both buffers are allocated before any native callback. The admission
++ * predicate scans the exact memdup_user entries subsequently consumed by
++ * __msr_io; immutable input history never shares its mutable getter outputs. */
++static int pic_initializer_snapshot_msrs(struct kvm_vcpu *vcpu,
++	const struct kvm_msrs *header, const struct kvm_msr_entry *entries,
++	bool write)
++{
++	struct kvm *kvm;
++	struct kvm_crucible_pic_initializer_state *state;
++	struct kvm_crucible_pic_initializer_effect *effect;
++	struct kvm_msrs *input, *output;
++	unsigned long flags;
++	u32 index, bytes;
++	int result = -EOPNOTSUPP;
++
++	if (!vcpu || !kvm_arch_crucible_pic_board_fenced(vcpu->kvm))
++		return 0;
++	if (header->pad || header->nmsrs >= MAX_IO_MSRS)
++		return result;
++	for (index = 0; index < header->nmsrs; index++)
++		if (!pic_initializer_msr_entry_valid(&entries[index], write))
++			return result;
++
++	kvm = vcpu->kvm;
++	state = pic_initializer_actor_state(kvm, vcpu);
++	bytes = sizeof(*header) + header->nmsrs * sizeof(*entries);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_msr_effect_locked(vcpu, write);
++	if (effect && !effect->input_msrs_known && state->input_bytes <=
++	    KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES - 2 * bytes)
++		result = 0;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result)
++		return result;
++
++	input = kmalloc(bytes, GFP_KERNEL);
++	if (!input)
++		return -ENOMEM;
++	output = kmalloc(bytes, GFP_KERNEL);
++	if (!output) {
++		kfree(input);
++		return -ENOMEM;
++	}
++	memcpy(input, header, sizeof(*header));
++	memcpy(input->entries, entries, bytes - sizeof(*header));
++	memcpy(output, header, sizeof(*header));
++
++	result = -EOPNOTSUPP;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_msr_effect_locked(vcpu, write);
++	if (effect && !effect->input_msrs_known && state->input_bytes <=
++	    KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES - 2 * bytes) {
++		effect->input_msrs = input;
++		effect->output_msrs = output;
++		effect->native_msr_write = write;
++		effect->input_msrs_known = true;
++		state->input_bytes += 2 * bytes;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result) {
++		kfree(output);
++		kfree(input);
++	}
++	return result;
++}
++
++static int pic_initializer_complete_msrs(struct kvm_vcpu *vcpu,
++	const struct kvm_msrs *header, const struct kvm_msr_entry *entries,
++	bool write, long native_result)
++{
++	struct kvm_crucible_pic_initializer_effect *effect;
++	struct kvm *kvm;
++	unsigned long flags;
++	int result = -EOPNOTSUPP;
++
++	if (!vcpu || !kvm_arch_crucible_pic_board_fenced(vcpu->kvm))
++		return 0;
++	kvm = vcpu->kvm;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_msr_effect_locked(vcpu, write);
++	if (effect && effect->input_msrs_known && effect->input_msrs &&
++	    effect->output_msrs && !effect->output_msrs_known &&
++	    effect->native_msr_write == write &&
++	    !memcmp(header, effect->input_msrs, sizeof(*header))) {
++		memcpy(effect->output_msrs->entries, entries,
++		       header->nmsrs * sizeof(*entries));
++		effect->native_msr_result = native_result;
++		effect->output_msrs_known = true;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return result;
++}
++
++static void pic_initializer_release_actor_inputs(
++	struct kvm_crucible_pic_initializer_state *state)
++{
++	u32 index;
++
++	for (index = 0; index < state->issued; index++) {
++		kfree(state->effects[index].output_msrs);
++		kfree(state->effects[index].input_msrs);
++		kfree(state->effects[index].input_nested);
++	}
++}
++
++static void pic_initializer_release_inputs(struct kvm *kvm)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	u32 index;
++
++	/* VM/file lifetime has retired every native callback and vCPU first. */
++	pic_initializer_release_actor_inputs(&board->initialization);
++	for (index = 0; index < KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS; index++)
++		pic_initializer_release_actor_inputs(&board->initializer_roster.actors[index]);
++}
++
++/* CREATE returns a descriptor and GET_TSC_KHZ returns a positive frequency.
++ * Every other admitted architectural operation has an exact zero-success
++ * contract. A malformed positive setter result must become sticky Unknown
++ * before writer credit release or containment, just like a negative result.
++ */
++static bool pic_initializer_native_result_known(unsigned int ioctl,
++	long native_result)
++{
++	if (ioctl == KVM_CREATE_VCPU)
++		return native_result >= 0;
++	if (ioctl == KVM_GET_TSC_KHZ)
++		return native_result > 0;
++	if (ioctl == KVM_GET_MSRS || ioctl == KVM_SET_MSRS)
++		return native_result >= 0;
++	return native_result == 0;
++}
++
++static struct kvm_crucible_pic_initializer_state *
++pic_initializer_finish_state_locked(struct kvm *kvm, struct kvm_vcpu *vcpu)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_pic_initializer_state *state;
++	u32 index;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	state = pic_initializer_actor_state(kvm, vcpu);
++	if (state && state->inflight)
++		return state;
++	if (board->initializer_roster.selected) {
++		for (index = 0; index < KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS; index++)
++			if (board->initializer_roster.actors[index].inflight)
++				return &board->initializer_roster.actors[index];
++	}
++	return state ? state : &board->initialization;
++}
++
++long kvm_arch_crucible_pic_initializer_finish(struct kvm *kvm,
++	struct kvm_vcpu *vcpu, unsigned int ioctl, u32 effect_index,
++	long native_result)
++{
++	struct kvm_crucible_pic_initializer_state *state;
++	struct kvm_crucible_pic_initializer_effect *effect;
++	struct kvm_vcpu *original;
++	unsigned long flags;
++	bool known;
++
++	mutex_lock(&kvm->crucible_configuration_lock);
++	mutex_lock(&kvm->lock);
++	mutex_lock(&kvm->irq_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	state = pic_initializer_finish_state_locked(kvm, vcpu);
++	/* Every caller holds the VM/file reference across the native function.
++	 * Reconcile the original row before credit release, wake or containment.
++	 * A function-return receipt does not authenticate the input register bytes.
++	 */
++	known = effect_index && effect_index == state->issued &&
++		state->inflight && state->task == current &&
++		kvm->crucible_topology_writers == 1 &&
++		pic_initializer_live_locked(kvm) &&
++		pic_initializer_native_result_known(ioctl, native_result);
++	if (effect_index && effect_index <= state->issued) {
++		effect = &state->effects[effect_index - 1];
++		known = known && effect->native_ioctl == ioctl;
++		if (ioctl == KVM_SET_VCPU_EVENTS)
++			known = known && effect->input_events_known;
++		if (ioctl == KVM_SET_NESTED_STATE)
++			known = known && effect->input_nested_known &&
++				effect->input_nested &&
++				effect->input_nested_bytes == effect->input_nested->size;
++		if (ioctl == KVM_GET_MSRS || ioctl == KVM_SET_MSRS)
++			known = known && effect->input_msrs_known &&
++				effect->output_msrs_known && effect->input_msrs &&
++				effect->output_msrs &&
++				effect->native_msr_write == (ioctl == KVM_SET_MSRS) &&
++				effect->native_msr_result == effect->input_msrs->nmsrs &&
++				native_result == effect->native_msr_result;
++		original = vcpu ? vcpu : kvm_get_vcpu(kvm, state->native_vcpu_id);
++		known = known && original &&
++			original->vcpu_id == state->native_vcpu_id &&
++			kvm->created_vcpus > state->native_vcpu_id &&
++			kvm->created_vcpus <= pic_initializer_cpu_count(kvm) &&
++			kvm_get_vcpu(kvm, state->native_vcpu_id) == original &&
++			(vcpu ? state->vcpu == original : !state->vcpu);
++		if (known && !vcpu)
++			state->vcpu = original;
++		effect->native_result = native_result;
++		effect->known = known;
++	} else {
++		known = false;
++	}
++	if (!known) {
++		state->uncertain = true;
++		kvm->arch.crucible_pic_board.initializer_roster.uncertain = true;
++	}
++	state->inflight = false;
++	if (kvm->crucible_topology_writers)
++		kvm->crucible_topology_writers--;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	mutex_unlock(&kvm->lock);
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	if (!known) {
++		kvm_vm_dead(kvm);
++		return native_result < 0 ? native_result : -EAGAIN;
++	}
++	return native_result;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_finish);
++
++#include "crucible-pic-initializer-roster.inc.c"
+--- /dev/null
++++ b/arch/x86/kvm/crucible-pic-vm-setup.inc.c
+@@ -0,0 +1,185 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Three native VM setters required by ordinary x86 architecture setup. These
++ * original function-return receipts do not qualify MMU/RAM/device closure or
++ * a clock issuer. Direct legacy setter ioctls remain under their old fence.
++ */
++#ifdef CONFIG_KVM_IOAPIC
++
++static bool pic_vm_setup_request_valid(
++	const struct kvm_crucible_pic_vm_setup *request)
++{
++	if (request->version != 1 || !request->request_id ||
++	    (request->operation != KVM_CRUCIBLE_PIC_VM_SETUP_APPLY &&
++	     request->operation != KVM_CRUCIBLE_PIC_VM_SETUP_QUERY) ||
++	    request->effect < KVM_CRUCIBLE_PIC_VM_SETUP_IDENTITY ||
++	    request->effect > KVM_CRUCIBLE_PIC_VM_SETUP_MMU_PAGES ||
++	    request->index != request->effect - 1 || request->native_result ||
++	    request->flags || request->reserved[0] || request->reserved[1] ||
++	    request->reserved[2] || request->reserved[3])
++		return false;
++
++	if (request->effect == KVM_CRUCIBLE_PIC_VM_SETUP_MMU_PAGES)
++		return request->value >= KVM_MIN_ALLOC_MMU_PAGES &&
++			request->value <= 65536;
++	return request->value && !(request->value & (PAGE_SIZE - 1)) &&
++		request->value <= (u32)(-3 * PAGE_SIZE);
++}
++
++static bool pic_vm_setup_live_locked(struct kvm *kvm)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++
++	lockdep_assert_held(&clock->control_lock);
++	lockdep_assert_held(&kvm->crucible_configuration_lock);
++	lockdep_assert_held(&kvm->lock);
++	lockdep_assert_held(&kvm->irq_lock);
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return board->phase == 2 && board->constructor == current &&
++		board->pic == kvm->arch.vpic && board->pit == kvm->arch.vpit &&
++		board->ioapic == kvm->arch.vioapic &&
++		board->routing == rcu_dereference_protected(kvm->irq_routing, 1) &&
++		!board->initialization.task && !kvm->created_vcpus &&
++		!board->memory.inflight && !board->memory.uncertain &&
++		!clock->enabled && !clock->active && !clock->run_owners &&
++		!clock->timer_owners && !kvm->crucible_controlled &&
++		!kvm->crucible_continuation_roster_frozen &&
++		!kvm->crucible_irq_input.owners &&
++		!kvm->crucible_irq_input.tainted && !kvm->crucible_memory_tainted &&
++		!READ_ONCE(kvm->vm_dead);
++}
++
++static void pic_vm_setup_report(
++	const struct kvm_crucible_pic_vm_setup_effect *effect,
++	struct kvm_crucible_pic_vm_setup *request)
++{
++	request->native_result = effect->native_result;
++	request->flags = (effect->known ? KVM_CRUCIBLE_PIC_VM_SETUP_KNOWN : 0) |
++		(effect->inflight ? KVM_CRUCIBLE_PIC_VM_SETUP_INFLIGHT : 0) |
++		(effect->uncertain ? KVM_CRUCIBLE_PIC_VM_SETUP_UNCERTAIN : 0);
++}
++
++static int kvm_crucible_pic_vm_setup_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_pic_vm_setup request;
++	struct kvm_crucible_pic_vm_setup_effect *effect;
++	void __user *argument = u64_to_user_ptr(cap->args[0]);
++	unsigned long flags;
++	bool entered = false, contain = false;
++	int result, native_result;
++
++	BUILD_BUG_ON(sizeof(request) != 80);
++	if (cap->flags || !cap->args[0] || cap->args[1] ||
++	    cap->args[2] || cap->args[3])
++		return -EINVAL;
++	if (copy_from_user(&request, argument, sizeof(request)))
++		return -EFAULT;
++	if (!pic_vm_setup_request_valid(&request))
++		return -EINVAL;
++	if (!mutex_trylock(&clock->control_lock))
++		return -EBUSY;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock)) {
++		mutex_unlock(&clock->control_lock);
++		return -EBUSY;
++	}
++
++	effect = &board->setup[request.index];
++	result = -EPERM;
++	if (board->constructor != current)
++		goto unlock_configuration;
++	if (effect->attempted) {
++		/* Recover this exact original result before current live admission.
++		 * A lost userspace copy never authorizes a second native setter. */
++		result = effect->original.request_id == request.request_id &&
++			effect->original.effect == request.effect &&
++			effect->original.value == request.value ? 0 : -ESTALE;
++		if (!result)
++			pic_vm_setup_report(effect, &request);
++		goto unlock_configuration;
++	}
++	result = -ENOENT;
++	if (request.operation != KVM_CRUCIBLE_PIC_VM_SETUP_APPLY)
++		goto unlock_configuration;
++	if (!mutex_trylock(&kvm->lock)) {
++		result = -EBUSY;
++		goto unlock_configuration;
++	}
++	mutex_lock(&kvm->irq_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	result = -EOPNOTSUPP;
++	if (pic_vm_setup_live_locked(kvm) && !kvm->crucible_topology_writers &&
++	    (!request.index || board->setup[request.index - 1].known)) {
++		effect->original = request;
++		effect->native_result = -EINPROGRESS;
++		effect->attempted = true;
++		effect->inflight = true;
++		kvm->crucible_topology_writers++;
++		entered = true;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	mutex_unlock(&kvm->lock);
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	if (!entered)
++		goto unlock_control;
++
++	/* No configuration/VM/IRQ/gate lock crosses slots/MMU native work.
++	 * The original topology credit and control lock span its entire return. */
++	switch (request.effect) {
++	case KVM_CRUCIBLE_PIC_VM_SETUP_IDENTITY:
++		mutex_lock(&kvm->lock);
++		native_result = kvm_vm_ioctl_set_identity_map_addr(kvm, request.value);
++		mutex_unlock(&kvm->lock);
++		break;
++	case KVM_CRUCIBLE_PIC_VM_SETUP_TSS:
++		native_result = kvm_vm_ioctl_set_tss_addr(kvm, request.value);
++		break;
++	default:
++		native_result = kvm_vm_ioctl_set_nr_mmu_pages(kvm, request.value);
++		break;
++	}
++
++	mutex_lock(&kvm->crucible_configuration_lock);
++	mutex_lock(&kvm->lock);
++	mutex_lock(&kvm->irq_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect->native_result = native_result;
++	effect->known = !native_result && pic_vm_setup_live_locked(kvm) &&
++		kvm->crucible_topology_writers == 1;
++	effect->uncertain = !effect->known;
++	effect->inflight = false;
++	/* Publish Unknown before releasing the sole original effect credit or
++	 * asking native teardown to contain partial/unreconciled work. */
++	if (effect->uncertain) {
++		kvm->crucible_memory_tainted = true;
++		contain = true;
++	}
++	kvm->crucible_topology_writers--;
++	pic_vm_setup_report(effect, &request);
++	result = effect->known ? 0 : -EAGAIN;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	mutex_unlock(&kvm->lock);
++unlock_configuration:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++unlock_control:
++	mutex_unlock(&clock->control_lock);
++	if (contain)
++		kvm_vm_dead(kvm);
++	if ((entered || !result) && copy_to_user(argument, &request, sizeof(request)))
++		return -EFAULT;
++	return result;
++}
++
++#else
++
++static int kvm_crucible_pic_vm_setup_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	return -EOPNOTSUPP;
++}
++
++#endif /* CONFIG_KVM_IOAPIC */
+--- a/arch/x86/kvm/svm/nested.c
++++ b/arch/x86/kvm/svm/nested.c
+@@ -1949,7 +1949,8 @@
+ 
+ static int svm_set_nested_state(struct kvm_vcpu *vcpu,
+ 				struct kvm_nested_state __user *user_kvm_nested_state,
+-				struct kvm_nested_state *kvm_state)
++				const struct kvm_nested_state *kvm_state,
++				const struct kvm_nested_state *owned_state)
+ {
+ 	struct vcpu_svm *svm = to_svm(vcpu);
+ 	struct vmcb __user *user_vmcb = (struct vmcb __user *)
+@@ -1998,11 +1999,15 @@
+ 	if (kvm_state->size < sizeof(*kvm_state) + KVM_STATE_NESTED_SVM_VMCB_SIZE)
+ 		return -EINVAL;
+ 
+-	ctl = memdup_user(&user_vmcb->control, sizeof(*ctl));
++	ctl = kvm_nested_state_memdup(&user_vmcb->control, owned_state,
++				     offsetof(struct kvm_nested_state, data) +
++				     offsetof(struct vmcb, control), sizeof(*ctl));
+ 	if (IS_ERR(ctl))
+ 		return PTR_ERR(ctl);
+ 
+-	save = memdup_user(&user_vmcb->save, sizeof(*save));
++	save = kvm_nested_state_memdup(&user_vmcb->save, owned_state,
++				      offsetof(struct kvm_nested_state, data) +
++				      offsetof(struct vmcb, save), sizeof(*save));
+ 	if (IS_ERR(save)) {
+ 		kfree(ctl);
+ 		return PTR_ERR(save);
+--- a/arch/x86/kvm/vmx/nested.c
++++ b/arch/x86/kvm/vmx/nested.c
+@@ -6897,7 +6897,8 @@
+ 
+ static int vmx_set_nested_state(struct kvm_vcpu *vcpu,
+ 				struct kvm_nested_state __user *user_kvm_nested_state,
+-				struct kvm_nested_state *kvm_state)
++				const struct kvm_nested_state *kvm_state,
++				const struct kvm_nested_state *owned_state)
+ {
+ 	struct vcpu_vmx *vmx = to_vmx(vcpu);
+ 	struct vmcs12 *vmcs12;
+@@ -7016,7 +7017,11 @@
+ 	}
+ 
+ 	vmcs12 = get_vmcs12(vcpu);
+-	if (copy_from_user(vmcs12, user_vmx_nested_state->vmcs12, sizeof(*vmcs12)))
++	if (kvm_nested_state_copy(vmcs12, user_vmx_nested_state->vmcs12,
++				  owned_state,
++				  offsetof(struct kvm_nested_state, data) +
++				  offsetof(struct kvm_vmx_nested_state_data, vmcs12),
++				  sizeof(*vmcs12)))
+ 		return -EFAULT;
+ 
+ 	if (vmcs12->hdr.revision_id != VMCS12_REVISION)
+@@ -7044,9 +7049,12 @@
+ 			goto error_guest_mode;
+ 
+ 		ret = -EFAULT;
+-		if (copy_from_user(shadow_vmcs12,
+-				   user_vmx_nested_state->shadow_vmcs12,
+-				   sizeof(*shadow_vmcs12)))
++		if (kvm_nested_state_copy(shadow_vmcs12,
++				  user_vmx_nested_state->shadow_vmcs12,
++				  owned_state,
++				  offsetof(struct kvm_nested_state, data) +
++				  offsetof(struct kvm_vmx_nested_state_data, shadow_vmcs12),
++				  sizeof(*shadow_vmcs12)))
+ 			goto error_guest_mode;
+ 	}
+ 
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -4698,6 +4698,40 @@
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_get_msr_common);
+ 
++/* A retained kernel input has already captured its exact declared size.
++ * Check ranges without overflow; legacy NULL inputs keep userspace faults. */
++int kvm_nested_state_copy(void *destination, const void __user *user_source,
++	const struct kvm_nested_state *owned_state, size_t offset, size_t length)
++{
++	if (!owned_state)
++		return copy_from_user(destination, user_source, length) ? -EFAULT : 0;
++	if (offset > owned_state->size || length > owned_state->size - offset)
++		return -EINVAL;
++	memcpy(destination, (const u8 *)owned_state + offset, length);
++	return 0;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_nested_state_copy);
++
++/* Duplicate the same bounded retained bytes, or preserve the ordinary
++ * memdup_user allocation and fault behavior when no input owner is supplied. */
++void *kvm_nested_state_memdup(const void __user *user_source,
++	const struct kvm_nested_state *owned_state, size_t offset, size_t length)
++{
++	if (!owned_state)
++		return memdup_user(user_source, length);
++	if (offset > owned_state->size || length > owned_state->size - offset)
++		return ERR_PTR(-EINVAL);
++	return kmemdup((const u8 *)owned_state + offset, length, GFP_KERNEL);
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_nested_state_memdup);
++
++static int pic_initializer_snapshot_msrs(struct kvm_vcpu *vcpu,
++	const struct kvm_msrs *header, const struct kvm_msr_entry *entries,
++	bool write);
++static int pic_initializer_complete_msrs(struct kvm_vcpu *vcpu,
++	const struct kvm_msrs *header, const struct kvm_msr_entry *entries,
++	bool write, long native_result);
++
+ /*
+  * Read or write a bunch of msrs. All parameters are kernel addresses.
+  *
+@@ -4761,11 +4795,20 @@
+ 		goto out;
+ 	}
+ 
++	r = pic_initializer_snapshot_msrs(vcpu, &msrs, entries, !writeback);
++	if (r)
++		goto out_entries;
++
+ 	r = __msr_io(vcpu, &msrs, entries, do_msr);
++	if (pic_initializer_complete_msrs(vcpu, &msrs, entries, !writeback, r)) {
++		r = -EOPNOTSUPP;
++		goto out_entries;
++	}
+ 
+ 	if (writeback && copy_to_user(user_msrs->entries, entries, size))
+ 		r = -EFAULT;
+ 
++out_entries:
+ 	kfree(entries);
+ out:
+ 	return r;
+@@ -4828,11 +4871,32 @@
+ 	return kvm && kvm->arch.has_protected_state ? 0 : KVM_SYNC_X86_VALID_FIELDS;
+ }
+ 
++#include "crucible-pic-board-constructor.inc.c"
++#include "crucible-pic-initializer.inc.c"
++
+ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
+ {
+ 	int r = 0;
+ 
+ 	switch (ext) {
++	case KVM_CAP_CRUCIBLE_PIC_DEVICE_BIRTH_V1:
++		/* Original constructor outputs, never live state or guest admission. */
++		return IS_ENABLED(CONFIG_KVM_IOAPIC);
++	case KVM_CAP_CRUCIBLE_PIC_VM_SETUP_V1:
++		/* Typed pre-vCPU setter custody, never guest admission. */
++		return IS_ENABLED(CONFIG_KVM_IOAPIC);
++	case KVM_CAP_CRUCIBLE_PIC_INITIALIZER_V1:
++	case KVM_CAP_CRUCIBLE_PIC_INITIALIZER_V2:
++		/* Initialization call custody never admits guest entry. */
++		return IS_ENABLED(CONFIG_KVM_IOAPIC);
++	case KVM_CAP_CRUCIBLE_PIC_MEMORY_INITIALIZATION_V1:
++		/* Native setter ABI, never immutable RAM or guest admission. */
++		return IS_ENABLED(CONFIG_KVM_IOAPIC);
++	case KVM_CAP_CRUCIBLE_Q35_BOARD_CONSTRUCTOR_V2:
++	case KVM_CAP_CRUCIBLE_Q35_DEVICE_BIRTH_V2:
++	case KVM_CAP_CRUCIBLE_PIC_BOARD_CONSTRUCTOR_V1:
++		/* Constructor ABI availability does not admit clocks or guest entry. */
++		return IS_ENABLED(CONFIG_KVM_IOAPIC);
+ 	case KVM_CAP_CRUCIBLE_IRQ_INPUT_V1:
+ 		/* ABI availability is not guest/device/IRQ qualification. */
+ 		return 1;
+@@ -6464,6 +6528,25 @@
+ 		if (copy_from_user(&events, argp, sizeof(struct kvm_vcpu_events)))
+ 			break;
+ 
++		/* An initial state mirror may carry interrupt shadow bookkeeping,
++		 * but no pending/injected external event. Validate the exact copied
++		 * payload before its native callback; later ingress needs an owner.
++		 */
++		if (kvm_arch_crucible_pic_board_fenced(vcpu->kvm) &&
++		    (events.exception.injected || events.exception.pending ||
++		     events.interrupt.injected || events.nmi.injected ||
++		     events.nmi.pending || events.sipi_vector || events.smi.smm ||
++		     events.smi.pending || events.smi.smm_inside_nmi ||
++		     events.smi.latched_init || events.triple_fault.pending ||
++		     events.exception_has_payload || events.exception_payload)) {
++			r = -EOPNOTSUPP;
++			break;
++		}
++
++		r = pic_initializer_snapshot_events(vcpu, &events);
++		if (r)
++			break;
++
+ 		kvm_vcpu_srcu_read_lock(vcpu);
+ 		r = kvm_vcpu_ioctl_x86_set_vcpu_events(vcpu, &events);
+ 		kvm_vcpu_srcu_read_unlock(vcpu);
+@@ -6645,6 +6728,7 @@
+ 	case KVM_SET_NESTED_STATE: {
+ 		struct kvm_nested_state __user *user_kvm_nested_state = argp;
+ 		struct kvm_nested_state kvm_state;
++		const struct kvm_nested_state *owned_state;
+ 		int idx;
+ 
+ 		r = -EINVAL;
+@@ -6670,8 +6754,15 @@
+ 		    && !(kvm_state.flags & KVM_STATE_NESTED_GUEST_MODE))
+ 			break;
+ 
++		r = pic_initializer_snapshot_nested(vcpu, &kvm_state,
++					    user_kvm_nested_state, &owned_state);
++		if (r)
++			break;
++
+ 		idx = srcu_read_lock(&vcpu->kvm->srcu);
+-		r = kvm_x86_ops.nested_ops->set_state(vcpu, user_kvm_nested_state, &kvm_state);
++		r = kvm_x86_ops.nested_ops->set_state(vcpu, user_kvm_nested_state,
++					       owned_state ? owned_state : &kvm_state,
++					       owned_state);
+ 		srcu_read_unlock(&vcpu->kvm->srcu, idx);
+ 		break;
+ 	}
+@@ -6792,6 +6883,9 @@
+ 	return 0;
+ }
+ 
++#include "crucible-pic-vm-setup.inc.c"
++#include "crucible-pic-device-birth.inc.c"
++
+ void kvm_arch_sync_dirty_log(struct kvm *kvm, struct kvm_memory_slot *memslot)
+ {
+ 
+@@ -6820,6 +6914,20 @@
+ 		return -EINVAL;
+ 
+ 	switch (cap->cap) {
++	case KVM_CAP_CRUCIBLE_PIC_DEVICE_BIRTH_V1:
++		return kvm_crucible_pic_device_birth_control(kvm, cap);
++	case KVM_CAP_CRUCIBLE_PIC_VM_SETUP_V1:
++		return kvm_crucible_pic_vm_setup_control(kvm, cap);
++	case KVM_CAP_CRUCIBLE_PIC_INITIALIZER_V1:
++		return kvm_crucible_pic_initializer_control(kvm, cap);
++	case KVM_CAP_CRUCIBLE_PIC_INITIALIZER_V2:
++		return kvm_crucible_pic_initializer_roster_control(kvm, cap);
++	case KVM_CAP_CRUCIBLE_Q35_BOARD_CONSTRUCTOR_V2:
++		return kvm_crucible_q35_board_construct(kvm, cap);
++	case KVM_CAP_CRUCIBLE_Q35_DEVICE_BIRTH_V2:
++		return kvm_crucible_q35_device_birth_control(kvm, cap);
++	case KVM_CAP_CRUCIBLE_PIC_BOARD_CONSTRUCTOR_V1:
++		return kvm_crucible_pic_board_construct(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_INITIALIZATION_V1:
+ 		return kvm_crucible_initialization_control(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_CLOCK_CONTINUATION_V1:
+@@ -12152,6 +12260,10 @@
+ 	bool selected;
+ 	int r;
+ 
++	/* This constructor edition has no complete board execution issuer. */
++	if (kvm_arch_crucible_pic_board_fenced(vcpu->kvm))
++		return -EOPNOTSUPP;
++
+ 	r = kvm_crucible_run_input_cut(vcpu, &selected);
+ 	if (r)
+ 		return r;
+@@ -13721,6 +13833,8 @@
+ 
+ void kvm_arch_destroy_vm(struct kvm *kvm)
+ {
++	u32 index;
++
+ 	if (current->mm == kvm->mm) {
+ 		/*
+ 		 * Free memory regions allocated on behalf of userspace,
+@@ -13750,6 +13864,20 @@
+ 	kvm_xen_destroy_vm(kvm);
+ 	kvm_hv_destroy_vm(kvm);
+ 	kvm_x86_call(vm_destroy)(kvm);
++	/* Buses/PIT, native vCPUs and architecture callbacks have been retired.
++	 * Keep the original actor referenced through every native destructor. */
++	pic_initializer_release_inputs(kvm);
++	if (kvm->arch.crucible_pic_board.initialization.task)
++		put_task_struct(kvm->arch.crucible_pic_board.initialization.task);
++	for (index = 0; index < KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS; index++) {
++		struct task_struct *task =
++			kvm->arch.crucible_pic_board.initializer_roster.actors[index].task;
++
++		if (task)
++			put_task_struct(task);
++	}
++	if (kvm->arch.crucible_pic_board.constructor)
++		put_task_struct(kvm->arch.crucible_pic_board.constructor);
+ }
+ 
+ static void memslot_rmap_free(struct kvm_memory_slot *slot)
+--- a/include/linux/kvm_host.h
++++ b/include/linux/kvm_host.h
+@@ -760,6 +760,42 @@
+ 
+ bool kvm_arch_irqchip_in_kernel(struct kvm *kvm);
+ 
++#ifdef CONFIG_X86
++bool kvm_arch_crucible_pic_board_fenced(struct kvm *kvm);
++bool kvm_arch_crucible_pic_board_route_allowed(struct kvm *kvm);
++int kvm_arch_crucible_pic_initializer_enter(struct kvm *kvm,
++	struct kvm_vcpu *vcpu, unsigned int ioctl, unsigned long arg,
++	u32 *effect_index);
++long kvm_arch_crucible_pic_initializer_finish(struct kvm *kvm,
++	struct kvm_vcpu *vcpu, unsigned int ioctl, u32 effect_index,
++	long native_result);
++#else
++static inline bool kvm_arch_crucible_pic_board_fenced(struct kvm *kvm)
++{
++	return false;
++}
++
++static inline bool kvm_arch_crucible_pic_board_route_allowed(struct kvm *kvm)
++{
++	return true;
++}
++
++static inline int kvm_arch_crucible_pic_initializer_enter(struct kvm *kvm,
++	struct kvm_vcpu *vcpu, unsigned int ioctl, unsigned long arg,
++	u32 *effect_index)
++{
++	*effect_index = 0;
++	return -EOPNOTSUPP;
++}
++
++static inline long kvm_arch_crucible_pic_initializer_finish(struct kvm *kvm,
++	struct kvm_vcpu *vcpu, unsigned int ioctl, u32 effect_index,
++	long native_result)
++{
++	return -EOPNOTSUPP;
++}
++#endif
++
+ #ifndef KVM_INTERNAL_MEM_SLOTS
+ #define KVM_INTERNAL_MEM_SLOTS 0
+ #endif
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -879,6 +879,134 @@
+ /* Read-only pre-Begin native roster observations. This independent ABI never
+  * issues a guest-entry permit or certifies architectural/device state values.
+  */
++/* Constructs a fixed pre-vCPU PIC/PIT component; never admits guest entry. */
++#define KVM_CAP_CRUCIBLE_PIC_BOARD_CONSTRUCTOR_V1 0xa02e
++#define KVM_CRUCIBLE_PIC_BOARD_ONLY 1
++
++/* One bounded original constructor RAM registration, before native CPU birth.
++ * This is a native call receipt, not frozen backing bytes or guest permission.
++ */
++/* Finite original VM setters before native CPU birth. Availability never
++ * admits a board clock or guest entry. Existing VM ioctl bodies stay closed. */
++/* Immutable native constructor output, not a live GET/SET or guest permit.
++ * Payloads use the existing public x86 kvm_pic/ioapic/pit state layouts only.
++ */
++#define KVM_CAP_CRUCIBLE_PIC_DEVICE_BIRTH_V1 0xa032
++#define KVM_CRUCIBLE_PIC_DEVICE_BIRTH_MASTER 1
++#define KVM_CRUCIBLE_PIC_DEVICE_BIRTH_SLAVE 2
++#define KVM_CRUCIBLE_PIC_DEVICE_BIRTH_IOAPIC 3
++#define KVM_CRUCIBLE_PIC_DEVICE_BIRTH_PIT 4
++#define KVM_CRUCIBLE_PIC_DEVICE_BIRTH_KNOWN (1U << 0)
++
++struct kvm_crucible_pic_device_birth {
++	__u32 version;
++	__u32 kind;
++	__u64 request_id;
++	__s64 native_result;
++	__u32 payload_bytes;
++	__u32 flags;
++	__u8 payload[512];
++	__u64 reserved[4];
++};
++
++#define KVM_CAP_CRUCIBLE_PIC_VM_SETUP_V1 0xa031
++#define KVM_CRUCIBLE_PIC_VM_SETUP_APPLY 1
++#define KVM_CRUCIBLE_PIC_VM_SETUP_QUERY 2
++#define KVM_CRUCIBLE_PIC_VM_SETUP_IDENTITY 1
++#define KVM_CRUCIBLE_PIC_VM_SETUP_TSS 2
++#define KVM_CRUCIBLE_PIC_VM_SETUP_MMU_PAGES 3
++#define KVM_CRUCIBLE_PIC_VM_SETUP_KNOWN (1U << 0)
++#define KVM_CRUCIBLE_PIC_VM_SETUP_INFLIGHT (1U << 1)
++#define KVM_CRUCIBLE_PIC_VM_SETUP_UNCERTAIN (1U << 2)
++
++struct kvm_crucible_pic_vm_setup {
++	__u32 version;
++	__u32 operation;
++	__u64 request_id;
++	__u64 effect;
++	__u64 value;
++	__s64 native_result;
++	__u32 flags;
++	__u32 index;
++	__u64 reserved[4];
++};
++
++#define KVM_CAP_CRUCIBLE_PIC_MEMORY_INITIALIZATION_V1 0xa030
++#define KVM_CRUCIBLE_PIC_MEMORY_REGISTER 1
++#define KVM_CRUCIBLE_PIC_MEMORY_QUERY 2
++#define KVM_CRUCIBLE_PIC_MEMORY_MAX_BYTES (1ULL << 30)
++#define KVM_CRUCIBLE_PIC_MEMORY_KNOWN (1U << 0)
++#define KVM_CRUCIBLE_PIC_MEMORY_INFLIGHT (1U << 1)
++#define KVM_CRUCIBLE_PIC_MEMORY_UNCERTAIN (1U << 2)
++
++struct kvm_crucible_pic_memory_initialization {
++	__u32 version;
++	__u32 operation;
++	__u64 request_id;
++	__u64 userspace_addr;
++	__u64 memory_size;
++	__s64 native_result;
++	__u32 flags;
++	__u32 slot;
++	__u64 reserved[4];
++};
++
++/* Original pre-clock CPU initialization calls, not an architectural-state or
++ * guest-entry attestation. ENABLE_CAP args[0] points to this closed record.
++ * A query selects one retained native-call receipt by effect_index (1..N);
++ * zero selects only the enrollment summary. Output fields must be zero on
++ * input. Lost copyout does not roll back enrollment or a native effect.
++ */
++#define KVM_CAP_CRUCIBLE_PIC_INITIALIZER_V1 0xa02f
++#define KVM_CRUCIBLE_PIC_INITIALIZER_ENROLL 1
++#define KVM_CRUCIBLE_PIC_INITIALIZER_QUERY 2
++#define KVM_CRUCIBLE_PIC_INITIALIZER_MAX_EFFECTS 64
++#define KVM_CRUCIBLE_PIC_INITIALIZER_KNOWN (1U << 0)
++#define KVM_CRUCIBLE_PIC_INITIALIZER_INFLIGHT (1U << 1)
++#define KVM_CRUCIBLE_PIC_INITIALIZER_UNCERTAIN (1U << 2)
++
++struct kvm_crucible_pic_initializer {
++	__u32 version;
++	__u32 operation;
++	__u64 enrollment_id;
++	__u32 initializer_tid;
++	__u32 native_vcpu_id;
++	__u32 maximum_effects;
++	__u32 effect_index;
++	__u64 issued_effects;
++	__s64 native_result;
++	__u32 native_ioctl;
++	__u32 flags;
++	__u64 reserved[3];
++};
++/* Four original CPU threads are enrolled once as they are actually born.
++ * A selected but incomplete roster never authorizes clocks or guest entry. */
++#define KVM_CAP_CRUCIBLE_PIC_INITIALIZER_V2 0xa033
++#define KVM_CAP_CRUCIBLE_Q35_BOARD_CONSTRUCTOR_V2 0xa034
++#define KVM_CAP_CRUCIBLE_Q35_DEVICE_BIRTH_V2 0xa035
++#define KVM_CRUCIBLE_Q35_BOARD_ONLY 2
++#define KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS 4
++#define KVM_CRUCIBLE_PIC_INITIALIZER_SELECT 1
++#define KVM_CRUCIBLE_PIC_INITIALIZER_ACTOR_ENROLL 2
++#define KVM_CRUCIBLE_PIC_INITIALIZER_ACTOR_QUERY 3
++#define KVM_CRUCIBLE_PIC_INITIALIZER_ACTOR_PRESENT (1U << 3)
++#define KVM_CRUCIBLE_PIC_INITIALIZER_VCPU_PRESENT (1U << 4)
++struct kvm_crucible_pic_initializer_v2 {
++	__u32 version;
++	__u32 operation;
++	__u64 enrollment_id;
++	__u32 maximum_effects;
++	__u32 native_vcpu_count;
++	__u32 native_vcpu_id;
++	__u32 initializer_tid;
++	__u32 effect_index;
++	__u32 issued_effects;
++	__s64 native_result;
++	__u32 native_ioctl;
++	__u32 flags;
++	__u64 reserved[9];
++};
++
+ #define KVM_CAP_CRUCIBLE_IRQ_INPUT_V1 0xa02d
+ #define KVM_CAP_CRUCIBLE_INITIALIZATION_V1 0xa02c
+ #define KVM_CRUCIBLE_INIT_ARCH_VALUES (1ULL << 0)
+--- /dev/null
++++ b/virt/kvm/crucible-pic-memory-initialization.inc.c
+@@ -0,0 +1,184 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* One original constructor-owned RAM registration before CPU birth/clock.
++ * This retains native call/publication facts. It does not freeze userspace
++ * bytes, close direct RAM writers, issue a board clock or permit guest entry.
++ */
++#define PIC_MEMORY_BOARD_ENROLLED 2
++
++static bool pic_memory_request_valid(
++	const struct kvm_crucible_pic_memory_initialization *request)
++{
++	return request->version == 1 && request->request_id &&
++		(request->operation == KVM_CRUCIBLE_PIC_MEMORY_REGISTER ||
++		 request->operation == KVM_CRUCIBLE_PIC_MEMORY_QUERY) &&
++		request->userspace_addr && request->memory_size &&
++		!(request->userspace_addr & (PAGE_SIZE - 1)) &&
++		!(request->memory_size & (PAGE_SIZE - 1)) &&
++		request->memory_size <= KVM_CRUCIBLE_PIC_MEMORY_MAX_BYTES &&
++		request->memory_size <= ULONG_MAX &&
++		request->userspace_addr <= ULONG_MAX - request->memory_size &&
++		!request->slot && !request->native_result && !request->flags &&
++		!request->reserved[0] && !request->reserved[1] &&
++		!request->reserved[2] && !request->reserved[3];
++}
++
++static bool pic_memory_same_request(
++	const struct kvm_crucible_pic_memory_state *state,
++	const struct kvm_crucible_pic_memory_initialization *request)
++{
++	return state->original.request_id == request->request_id &&
++		state->original.userspace_addr == request->userspace_addr &&
++		state->original.memory_size == request->memory_size;
++}
++
++static bool pic_memory_live_locked(struct kvm *kvm)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++
++	lockdep_assert_held(&clock->control_lock);
++	lockdep_assert_held(&kvm->crucible_configuration_lock);
++	lockdep_assert_held(&kvm->lock);
++	lockdep_assert_held(&kvm->irq_lock);
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return board->phase == PIC_MEMORY_BOARD_ENROLLED &&
++		board->constructor == current &&
++		board->pic == kvm->arch.vpic && board->pit == kvm->arch.vpit &&
++		board->ioapic == kvm->arch.vioapic &&
++		board->routing == rcu_dereference_protected(kvm->irq_routing, 1) &&
++		!board->initialization.task && !kvm->created_vcpus &&
++		!clock->enabled && !clock->active && !clock->run_owners &&
++		!clock->timer_owners && !kvm->crucible_controlled &&
++		!kvm->crucible_continuation_roster_frozen &&
++		!kvm->crucible_irq_input.owners &&
++		!kvm->crucible_irq_input.tainted && !kvm->crucible_memory_tainted &&
++		!READ_ONCE(kvm->vm_dead);
++}
++
++static void pic_memory_report(
++	const struct kvm_crucible_pic_memory_state *state,
++	struct kvm_crucible_pic_memory_initialization *request)
++{
++	request->native_result = state->native_result;
++	request->flags = (state->known ? KVM_CRUCIBLE_PIC_MEMORY_KNOWN : 0) |
++		(state->inflight ? KVM_CRUCIBLE_PIC_MEMORY_INFLIGHT : 0) |
++		(state->uncertain ? KVM_CRUCIBLE_PIC_MEMORY_UNCERTAIN : 0);
++}
++
++static int kvm_crucible_pic_memory_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_pic_memory_state *state = &board->memory;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_pic_memory_initialization request;
++	struct kvm_userspace_memory_region2 memory = { 0 };
++	struct kvm_memory_slot *slot;
++	void __user *argument = u64_to_user_ptr(cap->args[0]);
++	unsigned long flags;
++	bool entered = false, published = false, contain = false;
++	int native_result = -EINPROGRESS;
++	int result;
++
++	if (cap->flags || !cap->args[0] || cap->args[1] ||
++	    cap->args[2] || cap->args[3])
++		return -EINVAL;
++	if (copy_from_user(&request, argument, sizeof(request)))
++		return -EFAULT;
++	if (!pic_memory_request_valid(&request))
++		return -EINVAL;
++	if (!mutex_trylock(&clock->control_lock))
++		return -EBUSY;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock)) {
++		mutex_unlock(&clock->control_lock);
++		return -EBUSY;
++	}
++	result = -EPERM;
++	if (board->constructor != current)
++		goto unlock_configuration;
++	if (state->attempted) {
++		/* Exact cached delivery precedes current-state admission. Never
++		 * repeat a registration or substitute another address/size. */
++		result = pic_memory_same_request(state, &request) ? 0 : -ESTALE;
++		if (!result)
++			pic_memory_report(state, &request);
++		goto unlock_configuration;
++	}
++	result = -ENOENT;
++	if (request.operation != KVM_CRUCIBLE_PIC_MEMORY_REGISTER)
++		goto unlock_configuration;
++	if (!mutex_trylock(&kvm->lock)) {
++		result = -EBUSY;
++		goto unlock_configuration;
++	}
++	mutex_lock(&kvm->irq_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	result = -EOPNOTSUPP;
++	if (pic_memory_live_locked(kvm) && !kvm->crucible_topology_writers) {
++		state->original = request;
++		state->attempted = true;
++		state->inflight = true;
++		kvm->crucible_topology_writers++;
++		entered = true;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	mutex_unlock(&kvm->lock);
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	if (!entered)
++		goto unlock_control;
++
++	/* The source lease and control mutex span the actual setter, while
++	 * configuration/VM/IRQ/gate are released before native slots/MMU work.
++	 * The ordinary selected VM topology entry remains refused. */
++	memory.memory_size = request.memory_size;
++	memory.userspace_addr = request.userspace_addr;
++	mutex_lock(&kvm->slots_lock);
++	if (!kvm->nr_memslot_pages) {
++		native_result = kvm_set_memory_region(kvm, &memory);
++		if (!native_result) {
++			slot = id_to_memslot(__kvm_memslots(kvm, 0), 0);
++			published = slot && !slot->base_gfn && !slot->flags &&
++				slot->npages == (request.memory_size >> PAGE_SHIFT) &&
++				slot->userspace_addr == request.userspace_addr &&
++				kvm->nr_memslot_pages == slot->npages;
++		}
++	} else {
++		native_result = -EEXIST;
++	}
++	mutex_unlock(&kvm->slots_lock);
++
++	mutex_lock(&kvm->crucible_configuration_lock);
++	mutex_lock(&kvm->lock);
++	mutex_lock(&kvm->irq_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	state->native_result = native_result;
++	state->known = !native_result && published &&
++		state->inflight && pic_memory_same_request(state, &request) &&
++		pic_memory_live_locked(kvm) && kvm->crucible_topology_writers == 1;
++	state->uncertain = !state->known;
++	contain = state->uncertain;
++	if (contain)
++		kvm->crucible_memory_tainted = true;
++	/* The same original row becomes Unknown before its credit, wake or
++	 * containment can escape. The native call is never rolled back here. */
++	state->inflight = false;
++	if (kvm->crucible_topology_writers)
++		kvm->crucible_topology_writers--;
++	pic_memory_report(state, &request);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->irq_lock);
++	mutex_unlock(&kvm->lock);
++	result = 0;
++
++unlock_configuration:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++unlock_control:
++	mutex_unlock(&clock->control_lock);
++	if (contain)
++		kvm_vm_dead(kvm);
++	if (!result && copy_to_user(argument, &request, sizeof(request)))
++		return -EFAULT;
++	return result;
++}
+--- a/virt/kvm/irqchip.c
++++ b/virt/kvm/irqchip.c
+@@ -50,6 +50,12 @@
+ 		input->owners++;
+ 		*retained = true;
+ 	}
++	/* Constructor enrollment is not an IRQ input permit. Only its original
++	 * fixed routing publication is allowed while the board is BUILDING. */
++	if (kvm_arch_crucible_pic_board_fenced(kvm) &&
++	    !(source_kind == KVM_CRUCIBLE_IRQ_SOURCE_ROUTING &&
++	      kvm_arch_crucible_pic_board_route_allowed(kvm)))
++		tainted = true;
+ 	if (input->enabled && kvm->crucible_continuation_roster_frozen) {
+ 		/* A previously uncertain source cannot claim an otherwise matching
+ 		 * enrolled input or original PIT worker after containment began. */
+@@ -496,6 +502,11 @@
+ 	}
+ 
+ 	mutex_lock(&kvm->irq_lock);
++	if (!kvm_arch_crucible_pic_board_route_allowed(kvm)) {
++		mutex_unlock(&kvm->irq_lock);
++		r = -EPERM;
++		goto out;
++	}
+ 	old = rcu_dereference_protected(kvm->irq_routing, 1);
+ 	rcu_assign_pointer(kvm->irq_routing, new);
+ 	kvm_irq_routing_update(kvm);
+@@ -526,8 +537,9 @@
+ 
+ 	/* Existing integer-returning configuration API can refuse before any new
+ 	 * route publication. Native safety producers remain a separate class. */
+-	if (READ_ONCE(kvm->crucible_irq_input.enabled) &&
+-	    READ_ONCE(kvm->crucible_continuation_roster_frozen))
++	if (!kvm_arch_crucible_pic_board_route_allowed(kvm) ||
++	    (READ_ONCE(kvm->crucible_irq_input.enabled) &&
++	     READ_ONCE(kvm->crucible_continuation_roster_frozen)))
+ 		result = -EPERM;
+ 	else
+ 		result = kvm_set_irq_routing_native(kvm, entries, nr, flags);
+--- a/virt/kvm/kvm_main.c
++++ b/virt/kvm/kvm_main.c
+@@ -719,6 +719,55 @@
+ 	return kvm_unmap_gfn_range(kvm, range);
+ }
+ 
++/* A native memory callback cannot be blocked or dropped: its original safety
++ * work still runs. Retain source ownership before that work and taint a published
++ * roster before any foreign memory effect. Legacy-disabled callbacks remain on
++ * their original paths; this is not a complete MMU/backing/DMA issuer. */
++static bool kvm_crucible_memory_notifier_enter(struct kvm *kvm)
++{
++	unsigned long flags;
++	bool retained = false, tainted = false;
++
++	/* Count original callbacks from VM creation, like configuration leases.
++	 * Opt-in must not miss an operation already admitted by its old caller.
++	 * Disabled mode preserves native effects/returns; it never freezes or
++	 * publishes this private count as an architectural result. */
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (kvm->crucible_memory_notifier_owners == U32_MAX) {
++		if (kvm->crucible_controlled) {
++			kvm_arch_crucible_memory_taint_locked(kvm);
++			tainted = true;
++		} else {
++			kvm->crucible_memory_tainted = true;
++		}
++	} else {
++		kvm->crucible_memory_notifier_owners++;
++		retained = true;
++		if (kvm->crucible_continuation_roster_frozen) {
++			kvm_arch_crucible_memory_taint_locked(kvm);
++			tainted = true;
++		}
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	/* VM_DEAD requests containment; it does not certify exact stop or discard
++	 * any pending original RUN/completion/return record. */
++	if (tainted)
++		kvm_vm_dead(kvm);
++	return retained;
++}
++
++static void kvm_crucible_memory_notifier_leave(struct kvm *kvm, bool retained)
++{
++	unsigned long flags;
++
++	if (!retained)
++		return;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	kvm->crucible_memory_notifier_owners--;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	wake_up_all(&kvm->crucible_stopped);
++}
++
+ static int kvm_mmu_notifier_invalidate_range_start(struct mmu_notifier *mn,
+ 					const struct mmu_notifier_range *range)
+ {
+@@ -732,6 +781,8 @@
+ 		.may_block	= mmu_notifier_range_blockable(range),
+ 	};
+ 
++	bool retained = kvm_crucible_memory_notifier_enter(kvm);
++
+ 	trace_kvm_unmap_hva_range(range->start, range->end);
+ 
+ 	/*
+@@ -766,6 +817,7 @@
+ 	if (kvm_handle_hva_range(kvm, &hva_range).found_memslot)
+ 		kvm_arch_guest_memory_reclaimed(kvm);
+ 
++	kvm_crucible_memory_notifier_leave(kvm, retained);
+ 	return 0;
+ }
+ 
+@@ -829,15 +881,25 @@
+ static bool kvm_mmu_notifier_clear_flush_young(struct mmu_notifier *mn,
+ 		struct mm_struct *mm, unsigned long start, unsigned long end)
+ {
++	struct kvm *kvm = mmu_notifier_to_kvm(mn);
++	bool retained = kvm_crucible_memory_notifier_enter(kvm);
++	bool result;
++
+ 	trace_kvm_age_hva(start, end);
+ 
+-	return kvm_age_hva_range(mn, start, end, kvm_age_gfn,
++	result = kvm_age_hva_range(mn, start, end, kvm_age_gfn,
+ 				 !IS_ENABLED(CONFIG_KVM_ELIDE_TLB_FLUSH_IF_YOUNG));
++	kvm_crucible_memory_notifier_leave(kvm, retained);
++	return result;
+ }
+ 
+ static bool kvm_mmu_notifier_clear_young(struct mmu_notifier *mn,
+ 		struct mm_struct *mm, unsigned long start, unsigned long end)
+ {
++	struct kvm *kvm = mmu_notifier_to_kvm(mn);
++	bool retained = kvm_crucible_memory_notifier_enter(kvm);
++	bool result;
++
+ 	trace_kvm_age_hva(start, end);
+ 
+ 	/*
+@@ -853,16 +915,24 @@
+ 	 * cadence. If we find this inaccurate, we might come up with a
+ 	 * more sophisticated heuristic later.
+ 	 */
+-	return kvm_age_hva_range_no_flush(mn, start, end, kvm_age_gfn);
++	result = kvm_age_hva_range_no_flush(mn, start, end, kvm_age_gfn);
++	kvm_crucible_memory_notifier_leave(kvm, retained);
++	return result;
+ }
+ 
+ static bool kvm_mmu_notifier_test_young(struct mmu_notifier *mn,
+ 		struct mm_struct *mm, unsigned long address)
+ {
++	struct kvm *kvm = mmu_notifier_to_kvm(mn);
++	bool retained = kvm_crucible_memory_notifier_enter(kvm);
++	bool result;
++
+ 	trace_kvm_test_age_hva(address);
+ 
+-	return kvm_age_hva_range_no_flush(mn, address, address + 1,
++	result = kvm_age_hva_range_no_flush(mn, address, address + 1,
+ 					  kvm_test_age_gfn);
++	kvm_crucible_memory_notifier_leave(kvm, retained);
++	return result;
+ }
+ 
+ static void kvm_mmu_notifier_release(struct mmu_notifier *mn,
+@@ -870,10 +940,13 @@
+ {
+ 	struct kvm *kvm = mmu_notifier_to_kvm(mn);
+ 	int idx;
++
++	bool retained = kvm_crucible_memory_notifier_enter(kvm);
+ 
+ 	idx = srcu_read_lock(&kvm->srcu);
+ 	kvm_flush_shadow_all(kvm);
+ 	srcu_read_unlock(&kvm->srcu, idx);
++	kvm_crucible_memory_notifier_leave(kvm, retained);
+ }
+ 
+ static const struct mmu_notifier_ops kvm_mmu_notifier_ops = {
+@@ -2150,6 +2223,10 @@
+ 	guard(mutex)(&kvm->slots_lock);
+ 	return kvm_set_memory_region(kvm, mem);
+ }
++
++#ifdef CONFIG_X86
++#include "crucible-pic-memory-initialization.inc.c"
++#endif
+ 
+ #ifndef CONFIG_KVM_GENERIC_DIRTYLOG_READ_PROTECT
+ /**
+@@ -4172,6 +4249,10 @@
+ 		return -EINVAL;
+ 
+ 	mutex_lock(&kvm->lock);
++	if (kvm->crucible_continuation_roster_frozen) {
++		mutex_unlock(&kvm->lock);
++		return -EBUSY;
++	}
+ 	if (kvm->created_vcpus >= kvm->max_vcpus) {
+ 		mutex_unlock(&kvm->lock);
+ 		return -EINVAL;
+@@ -4413,7 +4494,48 @@
+ 	return 0;
+ }
+ 
+-static long kvm_vcpu_ioctl(struct file *filp,
++/* A selected continued-window configuration has a permanent topology cut.
++ * Leases are counted under the existing configuration mutex, but never hold
++ * that mutex across an architecture/slots/device operation. First Begin owns
++ * the same mutex before freezing, so it cannot race an admitted writer.
++ * Count writers from VM creation: a later opt-in must not miss an operation
++ * admitted before configuration. Disabled windows never freeze this count.
++ * This protects ioctl configuration only, not userspace memory contents,
++ * device-fd release/mmap, MMU notifiers or independent vCPU state setters.
++ */
++static int kvm_crucible_topology_enter(struct kvm *kvm, bool *owned)
++{
++	int result = 0;
++
++	*owned = false;
++	mutex_lock(&kvm->crucible_configuration_lock);
++	if (kvm_arch_crucible_pic_board_fenced(kvm))
++		result = -EOPNOTSUPP;
++	else if (kvm->crucible_continuation_roster_frozen)
++		result = -EBUSY;
++	else if (kvm->crucible_topology_writers == U32_MAX)
++		result = -EOVERFLOW;
++	else {
++		kvm->crucible_topology_writers++;
++		*owned = true;
++	}
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	return result;
++}
++
++static void kvm_crucible_topology_leave(struct kvm *kvm, bool owned)
++{
++	if (!owned)
++		return;
++
++	mutex_lock(&kvm->crucible_configuration_lock);
++	WARN_ON_ONCE(!kvm->crucible_topology_writers);
++	if (kvm->crucible_topology_writers)
++		kvm->crucible_topology_writers--;
++	mutex_unlock(&kvm->crucible_configuration_lock);
++}
++
++static long kvm_vcpu_ioctl_inner(struct file *filp,
+ 			   unsigned int ioctl, unsigned long arg)
+ {
+ 	struct kvm_vcpu *vcpu = filp->private_data;
+@@ -4569,6 +4691,20 @@
+ 			kvm_sregs = NULL;
+ 			goto out;
+ 		}
++		/* A copied interrupt bitmap would create an unrelated vector while
++		 * the PIC initialization issuer is absent. Check the same private
++		 * bytes the native setter consumes, never a second user read.
++		 */
++		if (kvm_arch_crucible_pic_board_fenced(vcpu->kvm)) {
++			unsigned int index;
++
++			for (index = 0; index < ARRAY_SIZE(kvm_sregs->interrupt_bitmap); index++) {
++				if (kvm_sregs->interrupt_bitmap[index]) {
++					r = -EOPNOTSUPP;
++					goto out;
++				}
++			}
++		}
+ 		r = kvm_arch_vcpu_ioctl_set_sregs(vcpu, kvm_sregs);
+ 		break;
+ 	}
+@@ -4590,6 +4726,11 @@
+ 		r = -EFAULT;
+ 		if (copy_from_user(&mp_state, argp, sizeof(mp_state)))
+ 			goto out;
++		if (kvm_arch_crucible_pic_board_fenced(vcpu->kvm) &&
++		    mp_state.mp_state != KVM_MP_STATE_RUNNABLE) {
++			r = -EOPNOTSUPP;
++			goto out;
++		}
+ 		r = kvm_arch_vcpu_ioctl_set_mpstate(vcpu, &mp_state);
+ 		break;
+ 	}
+@@ -4692,8 +4833,62 @@
+ 	return r;
+ }
+ 
++/* The private RUN/return/response protocols own their original admissions.
++ * Every other vCPU ioctl is configuration, including GET commands whose
++ * architecture callbacks may mutate native bookkeeping. Lease before the
++ * unlocked architecture hook and keep that lease through the whole result.
++ * A continued roster seal forbids these calls; a future execution issuer
++ * must initialize architectural state before the first native Begin.
++ */
++static int kvm_crucible_vcpu_ioctl_enter(struct kvm *kvm, unsigned int ioctl,
++				       bool *owned)
++{
++	*owned = false;
++	switch (ioctl) {
++	case KVM_RUN:
++	case KVM_CRUCIBLE_COMPLETION:
++	case KVM_CRUCIBLE_RUN_RETURN:
++	case KVM_CRUCIBLE_RESPONSE_BYTES:
++		return 0;
++	default:
++		return kvm_crucible_topology_enter(kvm, owned);
++	}
++}
++
++static long kvm_vcpu_ioctl(struct file *filp, unsigned int ioctl,
++			   unsigned long arg)
++{
++	struct kvm_vcpu *vcpu = filp->private_data;
++	bool owned;
++	long result;
++
++	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
++		return -EIO;
++	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
++		return -EINVAL;
++
++	if (kvm_arch_crucible_pic_board_fenced(vcpu->kvm)) {
++		u32 effect_index;
++
++		result = kvm_arch_crucible_pic_initializer_enter(vcpu->kvm,
++			vcpu, ioctl, arg, &effect_index);
++		if (result)
++			return result;
++		result = kvm_vcpu_ioctl_inner(filp, ioctl, arg);
++		return kvm_arch_crucible_pic_initializer_finish(vcpu->kvm,
++			vcpu, ioctl, effect_index, result);
++	}
++
++	result = kvm_crucible_vcpu_ioctl_enter(vcpu->kvm, ioctl, &owned);
++	if (result)
++		return result;
++	result = kvm_vcpu_ioctl_inner(filp, ioctl, arg);
++	kvm_crucible_topology_leave(vcpu->kvm, owned);
++	return result;
++}
++
+ #ifdef CONFIG_KVM_COMPAT
+-static long kvm_vcpu_compat_ioctl(struct file *filp,
++static long kvm_vcpu_compat_ioctl_inner(struct file *filp,
+ 				  unsigned int ioctl, unsigned long arg)
+ {
+ 	struct kvm_vcpu *vcpu = filp->private_data;
+@@ -4727,15 +4922,46 @@
+ 		break;
+ 	}
+ 	default:
+-		r = kvm_vcpu_ioctl(filp, ioctl, arg);
++		r = kvm_vcpu_ioctl_inner(filp, ioctl, arg);
+ 	}
+ 
+ out:
+ 	return r;
+ }
++
++static long kvm_vcpu_compat_ioctl(struct file *filp, unsigned int ioctl,
++				  unsigned long arg)
++{
++	struct kvm_vcpu *vcpu = filp->private_data;
++	bool owned;
++	long result;
++
++	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
++		return -EIO;
++
++	if (kvm_arch_crucible_pic_board_fenced(vcpu->kvm)) {
++		u32 effect_index;
++
++		result = kvm_arch_crucible_pic_initializer_enter(vcpu->kvm,
++			vcpu, ioctl, arg, &effect_index);
++		if (result)
++			return result;
++		result = kvm_vcpu_compat_ioctl_inner(filp, ioctl, arg);
++		return kvm_arch_crucible_pic_initializer_finish(vcpu->kvm,
++			vcpu, ioctl, effect_index, result);
++	}
++
++	result = kvm_crucible_vcpu_ioctl_enter(vcpu->kvm, ioctl, &owned);
++	if (result)
++		return result;
++	result = kvm_vcpu_compat_ioctl_inner(filp, ioctl, arg);
++	kvm_crucible_topology_leave(vcpu->kvm, owned);
++	return result;
++}
++
+ #endif
+ 
+-static int kvm_device_mmap(struct file *filp, struct vm_area_struct *vma)
++static int kvm_device_mmap_inner(struct file *filp, struct vm_area_struct *vma)
+ {
+ 	struct kvm_device *dev = filp->private_data;
+ 
+@@ -4743,6 +4969,20 @@
+ 		return dev->ops->mmap(dev, vma);
+ 
+ 	return -ENODEV;
++}
++
++static int kvm_device_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++	struct kvm_device *dev = filp->private_data;
++	bool owned;
++	int result;
++
++	result = kvm_crucible_topology_enter(dev->kvm, &owned);
++	if (result)
++		return result;
++	result = kvm_device_mmap_inner(filp, vma);
++	kvm_crucible_topology_leave(dev->kvm, owned);
++	return result;
+ }
+ 
+ static int kvm_device_ioctl_attr(struct kvm_device *dev,
+@@ -4761,7 +5001,7 @@
+ 	return accessor(dev, &attr);
+ }
+ 
+-static long kvm_device_ioctl(struct file *filp, unsigned int ioctl,
++static long kvm_device_ioctl_inner(struct file *filp, unsigned int ioctl,
+ 			     unsigned long arg)
+ {
+ 	struct kvm_device *dev = filp->private_data;
+@@ -4784,10 +5024,40 @@
+ 	}
+ }
+ 
++static long kvm_device_ioctl(struct file *filp, unsigned int ioctl,
++			     unsigned long arg)
++{
++	struct kvm_device *dev = filp->private_data;
++	bool owned;
++	long result;
++
++	if (dev->kvm->mm != current->mm || dev->kvm->vm_dead)
++		return -EIO;
++	/* A generic device getter may contain implementation-private effects.
++	 * No unqualified device callback is assumed observational after sealing.
++	 */
++	result = kvm_crucible_topology_enter(dev->kvm, &owned);
++	if (result)
++		return result;
++	result = kvm_device_ioctl_inner(filp, ioctl, arg);
++	kvm_crucible_topology_leave(dev->kvm, owned);
++	return result;
++}
++
+ static int kvm_device_release(struct inode *inode, struct file *filp)
+ {
+ 	struct kvm_device *dev = filp->private_data;
+ 	struct kvm *kvm = dev->kvm;
++	bool owned;
++	int admitted;
++
++	/* File release cannot be refused. If it crosses a sealed original cut,
++	 * invalidate the native VM before any device destructor/list mutation.
++	 * Death remains a failure, not a stopped-state or publication receipt.
++	 */
++	admitted = kvm_crucible_topology_enter(kvm, &owned);
++	if (admitted)
++		kvm_vm_dead(kvm);
+ 
+ 	if (dev->ops->release) {
+ 		mutex_lock(&kvm->lock);
+@@ -4797,6 +5067,7 @@
+ 		mutex_unlock(&kvm->lock);
+ 	}
+ 
++	kvm_crucible_topology_leave(kvm, owned);
+ 	kvm_put_kvm(kvm);
+ 	return 0;
+ }
+@@ -5065,10 +5336,35 @@
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_are_all_memslots_empty);
+ 
+-static int kvm_vm_ioctl_enable_cap_generic(struct kvm *kvm,
++/* Unknown VM commands are configuration writers. Only these observational or
++ * already clock-gated event commands bypass the permanent topology cut.
++ * ENABLE_CAP is classified after its complete original request is copied.
++ */
++static bool kvm_crucible_vm_ioctl_needs_topology(unsigned int ioctl)
++{
++	switch (ioctl) {
++	case KVM_CHECK_EXTENSION:
++	case KVM_GET_STATS_FD:
++	case KVM_ENABLE_CAP:
++#ifdef CONFIG_HAVE_KVM_MSI
++	case KVM_SIGNAL_MSI:
++#endif
++#ifdef __KVM_HAVE_IRQ_LINE
++	case KVM_IRQ_LINE_STATUS:
++	case KVM_IRQ_LINE:
++#endif
++		return false;
++	default:
++		return true;
++	}
++}
++
++static int kvm_vm_ioctl_enable_cap_inner(struct kvm *kvm,
+ 					   struct kvm_enable_cap *cap)
+ {
+ 	switch (cap->cap) {
++	case KVM_CAP_CRUCIBLE_IRQ_INPUT_V1:
++		return kvm_crucible_irq_input_control(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1:
+ 		return kvm_crucible_response_bytes_configure(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_RUN_RETURN_V1:
+@@ -5139,6 +5435,49 @@
+ 	}
+ }
+ 
++static int kvm_vm_ioctl_enable_cap_generic(struct kvm *kvm,
++					   struct kvm_enable_cap *cap)
++{
++	bool owned;
++	int result;
++
++	/* These closed control APIs perform their own original admission under
++	 * the configuration lock. Never lease/reclassify their copied request.
++	 */
++	switch (cap->cap) {
++#ifdef CONFIG_X86
++	case KVM_CAP_CRUCIBLE_PIC_MEMORY_INITIALIZATION_V1:
++		return kvm_crucible_pic_memory_control(kvm, cap);
++#endif
++	case KVM_CAP_CRUCIBLE_PIC_DEVICE_BIRTH_V1:
++	case KVM_CAP_CRUCIBLE_PIC_VM_SETUP_V1:
++	case KVM_CAP_CRUCIBLE_PIC_INITIALIZER_V1:
++	case KVM_CAP_CRUCIBLE_Q35_BOARD_CONSTRUCTOR_V2:
++	case KVM_CAP_CRUCIBLE_Q35_DEVICE_BIRTH_V2:
++	case KVM_CAP_CRUCIBLE_PIC_INITIALIZER_V2:
++	case KVM_CAP_CRUCIBLE_PIC_BOARD_CONSTRUCTOR_V1:
++	case KVM_CAP_CRUCIBLE_CLOCK_V1:
++	case KVM_CAP_CRUCIBLE_CLOCK_V2:
++	case KVM_CAP_CRUCIBLE_CLOCK_V3:
++	case KVM_CAP_CRUCIBLE_COMPLETION_V1:
++	case KVM_CAP_CRUCIBLE_RUN_RETURN_V1:
++	case KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1:
++	case KVM_CAP_CRUCIBLE_CLOCK_CONTINUATION_V1:
++	case KVM_CAP_CRUCIBLE_IRQ_INPUT_V1:
++	case KVM_CAP_CRUCIBLE_INITIALIZATION_V1:
++		return kvm_vm_ioctl_enable_cap_inner(kvm, cap);
++	default:
++		break;
++	}
++
++	result = kvm_crucible_topology_enter(kvm, &owned);
++	if (result)
++		return result;
++	result = kvm_vm_ioctl_enable_cap_inner(kvm, cap);
++	kvm_crucible_topology_leave(kvm, owned);
++	return result;
++}
++
+ static ssize_t kvm_vm_stats_read(struct file *file, char __user *user_buffer,
+ 			      size_t size, loff_t *offset)
+ {
+@@ -5194,7 +5533,7 @@
+ 		     sizeof_field(struct kvm_userspace_memory_region2, field));	\
+ } while (0)
+ 
+-static long kvm_vm_ioctl(struct file *filp,
++static long kvm_vm_ioctl_inner(struct file *filp,
+ 			   unsigned int ioctl, unsigned long arg)
+ {
+ 	struct kvm *kvm = filp->private_data;
+@@ -5454,6 +5793,39 @@
+ 	return r;
+ }
+ 
++static long kvm_vm_ioctl(struct file *filp,
++			   unsigned int ioctl, unsigned long arg)
++{
++	struct kvm *kvm = filp->private_data;
++	bool owned = false;
++	long result;
++
++	if (kvm->mm != current->mm || kvm->vm_dead)
++		return -EIO;
++	if (ioctl == KVM_CREATE_VCPU &&
++	    kvm_arch_crucible_pic_board_fenced(kvm)) {
++		u32 effect_index;
++
++		result = kvm_arch_crucible_pic_initializer_enter(kvm, NULL,
++			ioctl, arg, &effect_index);
++		if (result)
++			return result;
++		result = kvm_vm_ioctl_inner(filp, ioctl, arg);
++		return kvm_arch_crucible_pic_initializer_finish(kvm, NULL,
++			ioctl, effect_index, result);
++	}
++
++	if (kvm_crucible_vm_ioctl_needs_topology(ioctl)) {
++		result = kvm_crucible_topology_enter(kvm, &owned);
++		if (result)
++			return result;
++	}
++
++	result = kvm_vm_ioctl_inner(filp, ioctl, arg);
++	kvm_crucible_topology_leave(kvm, owned);
++	return result;
++}
++
+ #ifdef CONFIG_KVM_COMPAT
+ struct compat_kvm_dirty_log {
+ 	__u32 slot;
+@@ -5480,7 +5852,7 @@
+ 	return -ENOTTY;
+ }
+ 
+-static long kvm_vm_compat_ioctl(struct file *filp,
++static long kvm_vm_compat_ioctl_inner(struct file *filp,
+ 			   unsigned int ioctl, unsigned long arg)
+ {
+ 	struct kvm *kvm = filp->private_data;
+@@ -5528,9 +5900,47 @@
+ 		break;
+ 	}
+ 	default:
+-		r = kvm_vm_ioctl(filp, ioctl, arg);
++		r = kvm_vm_ioctl_inner(filp, ioctl, arg);
+ 	}
+ 	return r;
++}
++
++static long kvm_vm_compat_ioctl(struct file *filp,
++			   unsigned int ioctl, unsigned long arg)
++{
++	struct kvm *kvm = filp->private_data;
++	bool owned = false;
++	long result;
++
++	if (kvm->mm != current->mm || kvm->vm_dead)
++		return -EIO;
++	/* Cap requests have the same layout and must reach the same classifier,
++	 * not an architecture compat hook before original request admission.
++	 */
++	if (ioctl == KVM_ENABLE_CAP)
++		return kvm_vm_ioctl(filp, ioctl, arg);
++	if (ioctl == KVM_CREATE_VCPU &&
++	    kvm_arch_crucible_pic_board_fenced(kvm)) {
++		u32 effect_index;
++
++		result = kvm_arch_crucible_pic_initializer_enter(kvm, NULL,
++			ioctl, arg, &effect_index);
++		if (result)
++			return result;
++		result = kvm_vm_ioctl_inner(filp, ioctl, arg);
++		return kvm_arch_crucible_pic_initializer_finish(kvm, NULL,
++			ioctl, effect_index, result);
++	}
++
++	if (kvm_crucible_vm_ioctl_needs_topology(ioctl)) {
++		result = kvm_crucible_topology_enter(kvm, &owned);
++		if (result)
++			return result;
++	}
++
++	result = kvm_vm_compat_ioctl_inner(filp, ioctl, arg);
++	kvm_crucible_topology_leave(kvm, owned);
++	return result;
+ }
+ #endif
+ 

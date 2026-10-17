@@ -4,6 +4,7 @@
   selectedCrates ? null,
   extraPaths ? [],
 }: let
+  isCargoBuildDirectory = import ../../build-support/_cargo-build-directory.nix;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   cratesRoot = "${repoRootString}/crates";
@@ -41,8 +42,8 @@ in
           || base == ".worktrees"
           || base == "result"
           || lib.hasPrefix "result-" base
-          || base == "target"
-          || lib.hasPrefix "target-" base
+          || base == "__pycache__"
+          || isCargoBuildDirectory repoRoot path
         );
       # Cargo builds need the workspace, JSON fixtures included by Rust tests,
       # and API manifests consumed by build scripts. Nix-only test edits must
@@ -91,5 +92,8 @@ in
         || pathString == "${repoRootString}/justfile";
     in
       !generatedDir
+      # Local Python bytecode depends on host tooling, not package source.
+      && !lib.hasSuffix ".pyc" base
+      && !lib.hasSuffix ".pyo" base
       && (workspaceInput || (includeIntegrationInputs && integrationInput));
   }

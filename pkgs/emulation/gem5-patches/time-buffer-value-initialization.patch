@@ -1,0 +1,23 @@
+--- a/src/cpu/timebuf.hh
++++ b/src/cpu/timebuf.hh
+@@ -143,7 +143,10 @@
+         for (unsigned i = 0; i < size; i++) {
+             index[i] = ptr;
+             std::memset(ptr, 0, sizeof(T));
+-            new (ptr) T;
++            // Initialize scalars during the new object's lifetime. Byte
++            // stores before default construction can be eliminated by
++            // lifetime dead-store analysis, leaving pipeline sizes stale.
++            new (ptr) T();
+             ptr += sizeof(T);
+         }
+ 
+@@ -191,7 +194,7 @@
+             ptr -= size;
+         (reinterpret_cast<T *>(index[ptr]))->~T();
+         std::memset(index[ptr], 0, sizeof(T));
+-        new (index[ptr]) T;
++        new (index[ptr]) T();
+     }
+ 
+   protected:

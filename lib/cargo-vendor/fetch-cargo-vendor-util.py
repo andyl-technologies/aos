@@ -5,6 +5,10 @@ Port of nixpkgs's fetch-cargo-vendor-util-v2.py, adapted for AOS to use only
 the Python standard library (no `requests`, no `tomli_w`) and a direct
 `git clone` instead of `nix-prefetch-git`.
 
+Both subcommands accept an optional ``--expected-lock-sha256 <64hex>``.
+When supplied, the raw lockfile must match before any vendoring effects; the
+verified byte snapshot is then used for parsing and the output lockfile.
+
 Two subcommands:
 
 * create-vendor-staging <Cargo.lock> <out_dir>
@@ -24,6 +28,7 @@ vendor directory path in `.cargo/config.toml`; the cargoPhases build phase
 substitutes the real path before invoking cargo.
 """
 
+import argparse
 import functools
 import hashlib
 import json
@@ -191,6 +196,42 @@ def load_toml(path: Path) -> dict[str, Any]:
         return tomllib.load(f)
 
 
+def normalize_lock_sha256(value: str) -> str:
+    """Checks the optional raw-lockfile digest syntax without touching files."""
+    if re.fullmatch(r"[0-9a-fA-F]{64}", value) is None:
+        raise ValueError("expected lock SHA-256 must contain exactly 64 hexadecimal digits")
+    return value.lower()
+
+
+def verified_lockfile_bytes(path: Path, expected_sha256: str | None) -> bytes | None:
+    """Retains the exact checked bytes before parsing or output mutation."""
+    if expected_sha256 is None:
+        return None
+    expected = normalize_lock_sha256(expected_sha256)
+    contents = path.read_bytes()
+    actual = hashlib.sha256(contents).hexdigest()
+    if actual != expected:
+        raise ValueError(
+            f"Cargo.lock SHA-256 mismatch: {path} got {actual}, expected {expected}"
+        )
+    return contents
+
+
+def load_lockfile(path: Path, verified_contents: bytes | None) -> dict[str, Any]:
+    if verified_contents is None:
+        return load_toml(path)
+    return tomllib.loads(verified_contents.decode("utf-8"))
+
+
+def copy_lockfile(source: Path, destination: Path, verified_contents: bytes | None) -> None:
+    if verified_contents is None:
+        shutil.copy(source, destination)
+    else:
+        # Do not reread mutable input after checking the digest.
+        destination.write_bytes(verified_contents)
+        shutil.copymode(source, destination)
+
+
 def get_lockfile_version(cargo_lock_toml: dict[str, Any]) -> int:
     return cargo_lock_toml.get("version", 2)
 
@@ -314,8 +355,11 @@ def download_git_tree(url: str, git_sha_rev: str, out_dir: Path) -> None:
     shutil.rmtree(tree_out_dir / ".git", ignore_errors=True)
 
 
-def create_vendor_staging(lockfile_path: Path, out_dir: Path) -> None:
-    cargo_lock_toml = load_toml(lockfile_path)
+def create_vendor_staging(
+    lockfile_path: Path, out_dir: Path, *, expected_lock_sha256: str | None = None
+) -> None:
+    verified_contents = verified_lockfile_bytes(lockfile_path, expected_lock_sha256)
+    cargo_lock_toml = load_lockfile(lockfile_path, verified_contents)
     lockfile_version = get_lockfile_version(cargo_lock_toml)
 
     git_packages: list[dict[str, Any]] = []
@@ -339,7 +383,7 @@ def create_vendor_staging(lockfile_path: Path, out_dir: Path) -> None:
         git_sha_rev_to_url[source_info["git_sha_rev"]] = source_info["url"]
 
     out_dir.mkdir(exist_ok=True)
-    shutil.copy(lockfile_path, out_dir / "Cargo.lock")
+    copy_lockfile(lockfile_path, out_dir / "Cargo.lock", verified_contents)
 
     if len(git_packages) != 0:
         (out_dir / "git").mkdir(exist_ok=True)
@@ -470,12 +514,15 @@ def make_registry_source_selector(source: str) -> dict[str, str]:
     return {"registry": registry}
 
 
-def create_vendor(vendor_staging_dir: Path, out_dir: Path) -> None:
+def create_vendor(
+    vendor_staging_dir: Path, out_dir: Path, *, expected_lock_sha256: str | None = None
+) -> None:
     lockfile_path = vendor_staging_dir / "Cargo.lock"
+    verified_contents = verified_lockfile_bytes(lockfile_path, expected_lock_sha256)
     out_dir.mkdir(exist_ok=True)
-    shutil.copy(lockfile_path, out_dir / "Cargo.lock")
+    copy_lockfile(lockfile_path, out_dir / "Cargo.lock", verified_contents)
 
-    cargo_lock_toml = load_toml(lockfile_path)
+    cargo_lock_toml = load_lockfile(lockfile_path, verified_contents)
     lockfile_version = get_lockfile_version(cargo_lock_toml)
 
     source_to_ind: dict[str, str] = {}
@@ -565,18 +612,27 @@ def create_vendor(vendor_staging_dir: Path, out_dir: Path) -> None:
             raise Exception(f"Can't process source: {source}.")
 
 
-def main() -> None:
-    subcommand = sys.argv[1]
-    if subcommand == "create-vendor-staging":
-        create_vendor_staging(Path(sys.argv[2]), Path(sys.argv[3]))
-    elif subcommand == "create-vendor":
-        create_vendor(Path(sys.argv[2]), Path(sys.argv[3]))
-    else:
-        raise Exception(
-            f"Unknown subcommand: {subcommand!r}. "
-            "Expected 'create-vendor-staging' or 'create-vendor'."
-        )
-
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("subcommand", choices=("create-vendor-staging", "create-vendor"))
+    parser.add_argument("source", type=Path, help="Cargo.lock or vendor staging directory")
+    parser.add_argument("out_dir", type=Path, help="vendor staging or final output directory")
+    parser.add_argument(
+        "--expected-lock-sha256",
+        type=normalize_lock_sha256,
+        help="require this raw Cargo.lock digest before vendoring effects",
+    )
+    arguments = parser.parse_args(argv)
+    action = (
+        create_vendor_staging
+        if arguments.subcommand == "create-vendor-staging"
+        else create_vendor
+    )
+    action(
+        arguments.source,
+        arguments.out_dir,
+        expected_lock_sha256=arguments.expected_lock_sha256,
+    )
 
 if __name__ == "__main__":
     main()

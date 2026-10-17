@@ -1,0 +1,162 @@
+--- a/include/linux/crucible_allocator.h
++++ b/include/linux/crucible_allocator.h
+@@ -25,6 +25,20 @@
+ 	u32 allocation_flags;
+ };
+ 
++enum crucible_allocator_family {
++	CRUCIBLE_ALLOCATOR_SLAB = 1,
++	CRUCIBLE_ALLOCATOR_LARGE = 2,
++	CRUCIBLE_ALLOCATOR_BULK = 3,
++};
++
++struct crucible_uncovered_request {
++	u64 requested_bytes;
++	u64 requested_objects;
++	u32 family;
++	u32 allocation_flags;
++	s32 native_node;
++};
++
+ /* This is the original post-hook native result. Backing may be shared with
+  * other live objects; consumers must retain its identity instead of summing
+  * the same slab pages once for each object. KFENCE has no SLUB slab identity. */
+@@ -48,6 +62,8 @@
+ 		const struct crucible_slab_request *request, void **lease);
+ 	void (*complete_slab)(void *owner, void *lease,
+ 		const struct crucible_slab_output *output);
++	void (*refuse_uncovered)(void *owner,
++		const struct crucible_uncovered_request *request);
+ };
+ 
+ struct crucible_allocator_scope {
+@@ -71,6 +87,7 @@
+ bool crucible_allocator_leave(struct crucible_allocator_scope *scope);
+ bool crucible_allocator_slab_reserve(const struct crucible_slab_request *request,
+ 	struct crucible_allocator_token *token);
++bool crucible_allocator_uncovered(const struct crucible_uncovered_request *request);
+ void crucible_allocator_slab_complete(struct crucible_allocator_token *token,
+ 	const struct crucible_slab_output *output);
+ 
+--- a/mm/crucible_allocator.c
++++ b/mm/crucible_allocator.c
+@@ -128,3 +128,25 @@
+ 		WRITE_ONCE(scope->failed, true);
+ }
+ EXPORT_SYMBOL_GPL(crucible_allocator_slab_complete);
++
++/* An installed scope cannot silently reach an uninstrumented allocator family.
++ * Ordinary/interrupt inverse remains explicit; this is a refusal fence, not an
++ * implementation or coverage claim for the missing allocator. */
++bool crucible_allocator_uncovered(const struct crucible_uncovered_request *request)
++{
++	struct crucible_allocator_scope *scope;
++
++	scope = READ_ONCE(current->crucible_allocator_scope);
++	if (!scope || !in_task())
++		return true;
++	if (request && crucible_allocator_actor(scope) &&
++	    !READ_ONCE(scope->callback_active) &&
++	    scope->original_ops->refuse_uncovered) {
++		WRITE_ONCE(scope->callback_active, true);
++		scope->original_ops->refuse_uncovered(scope->original_owner, request);
++		WRITE_ONCE(scope->callback_active, false);
++	}
++	WRITE_ONCE(scope->failed, true);
++	return false;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_uncovered);
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -5304,7 +5304,18 @@
+ {
+ 	struct page *page;
+ 	void *ptr = NULL;
+-	unsigned int order = get_order(size);
++	struct crucible_uncovered_request request = {
++		.requested_bytes = size,
++		.requested_objects = 1,
++		.family = CRUCIBLE_ALLOCATOR_LARGE,
++		.allocation_flags = flags,
++		.native_node = node,
++	};
++	unsigned int order;
++
++	if (!crucible_allocator_uncovered(&request))
++		return NULL;
++	order = get_order(size);
+ 
+ 	if (unlikely(flags & GFP_SLAB_BUG_MASK))
+ 		flags = kmalloc_fix_flags(flags);
+@@ -7424,7 +7435,17 @@
+ 		.alloc_flags = SLAB_ALLOC_DEFAULT,
+ 	};
+ 
++	struct crucible_uncovered_request request = {
++		.requested_bytes = s->object_size,
++		.requested_objects = size,
++		.family = CRUCIBLE_ALLOCATOR_BULK,
++		.allocation_flags = flags,
++		.native_node = NUMA_NO_NODE,
++	};
++
+ 	if (!size)
++		return false;
++	if (!crucible_allocator_uncovered(&request))
+ 		return false;
+ 
+ 	s = slab_pre_alloc_hook(s, flags);
+--- a/virt/kvm/crucible-original-kernel-resource.inc.c
++++ b/virt/kvm/crucible-original-kernel-resource.inc.c
+@@ -40,6 +40,7 @@
+ 	u32 state;
+ 	struct crucible_slab_request slab_request;
+ 	struct crucible_slab_output slab_output;
++	struct crucible_uncovered_request uncovered_request;
+ 	u32 control_index;
+ 	bool source_reservation_known;
+ 	bool native_attempted;
+@@ -230,6 +231,7 @@
+ 	row->generation = context->generation;
+ 	row->slab_request = *request;
+ 	row->control_index = control;
++	row->family = CRUCIBLE_ALLOCATOR_SLAB;
+ 	row->requested_bytes = request->requested_bytes;
+ 	row->quoted_rounded_bytes = request->stride_bytes;
+ 	row->reserved_bytes = bound;
+@@ -289,8 +291,35 @@
+ 	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
+ }
+ 
++static void crucible_resource_allocator_refuse_uncovered(void *owner,
++	const struct crucible_uncovered_request *request)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	if (crucible_resource_allocator_current(context) &&
++	    context->allocations_used < CRUCIBLE_RESOURCE_ALLOCATION_ROWS) {
++		row = &context->allocations[context->allocations_used++];
++		row->actor = current;
++		row->vm = context->original_vm;
++		row->generation = context->generation;
++		row->control_index = context->current_delivery;
++		row->requested_bytes = request->requested_bytes;
++		row->uncovered_request = *request;
++		row->family = request->family;
++		/* This source refusal row records no native allocator attempt. It
++		 * does not substitute requested geometry for implemented coverage. */
++		row->state = 3;
++	}
++	WRITE_ONCE(context->uncertain, true);
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
+ static const struct crucible_allocator_ops crucible_resource_allocator_ops = {
+ 	.source_current = crucible_resource_allocator_current,
++	.refuse_uncovered = crucible_resource_allocator_refuse_uncovered,
+ 	.reserve_slab = crucible_resource_allocator_reserve,
+ 	.complete_slab = crucible_resource_allocator_complete,
+ };

@@ -1,0 +1,228 @@
+set -eu
+export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+export PATH="@coreutils@/bin:@binutils@/bin:@compiler@/bin:@gnumake@/bin:@sed@/bin:@grep@/bin:@gawk@/bin:@findutils@/bin:@tar@/bin:@gzip@/bin:@diffutils@/bin:@bash@/bin:@patch@/bin:@m4@/bin:@flex@/bin:@bison@/bin:@autoconf@/bin:@automake@/bin:@texinfo@/bin:@help2man@/bin"
+export CONFIG_SHELL="@bash@/bin/bash"
+export SHELL="$CONFIG_SHELL"
+
+cd "$source"
+
+mkdir gcc-16.2.0 && (cd @gccSource@ && @tar@/bin/tar cf - .) | (cd gcc-16.2.0 && @tar@/bin/tar xf -)
+
+cd gcc-16.2.0
+chmod -R u+w .
+
+mkdir gmp && (cd @gmpSource@ && @tar@/bin/tar cf - .) | (cd gmp && @tar@/bin/tar xf -)
+chmod -R u+w gmp
+
+mkdir mpfr && (cd @mpfrSource@ && @tar@/bin/tar cf - .) | (cd mpfr && @tar@/bin/tar xf -)
+chmod -R u+w mpfr
+
+mkdir mpc && (cd @mpcSource@ && @tar@/bin/tar cf - .) | (cd mpc && @tar@/bin/tar xf -)
+chmod -R u+w mpc
+
+mkdir isl && (cd @islSource@ && @tar@/bin/tar cf - .) | (cd isl && @tar@/bin/tar xf -)
+chmod -R u+w isl
+
+# Preserve the libtool ABI probe while replacing its undeclared FHS helper.
+@python3@/bin/python3 -I -B @normalizeProbe@ . @file@/bin/file @probeCatalog@
+
+# Upstream helpers can be executed directly by configure or make.
+AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+  "$CONFIG_SHELL" @runtimeScripts@ .
+
+@patch@/bin/patch --fuzz=0 -p1 < @bootstrapPatch@
+
+# GCC bootstrap runs "make all" for bundled ISL. ISL 0.26 includes its
+# C++17 test programs in noinst_PROGRAMS, so remove those test-only
+# binaries from the generated makefile before GCC configures it.
+@sed@/bin/sed -i \
+  -e 's|^@HAVE_CPP_ISL_H_TRUE@@HAVE_CXX17_TRUE@am__append_3 =.*|@HAVE_CPP_ISL_H_TRUE@@HAVE_CXX17_TRUE@am__append_3 =|' \
+  -e 's|^@HAVE_CPP_ISL_H_TRUE@@HAVE_CXX17_TRUE@am__append_4 =.*|@HAVE_CPP_ISL_H_TRUE@@HAVE_CXX17_TRUE@am__append_4 =|' \
+  -e 's|^@HAVE_CPP_ISL_H_TRUE@@HAVE_CXX17_TRUE@am__EXEEXT_2 =.*|@HAVE_CPP_ISL_H_TRUE@@HAVE_CXX17_TRUE@am__EXEEXT_2 =|' \
+  -e 's|^@HAVE_CPP_ISL_H_TRUE@@HAVE_CXX17_TRUE@[[:space:]]*isl_test_cpp17.*|@HAVE_CPP_ISL_H_TRUE@@HAVE_CXX17_TRUE@# disabled|' \
+  isl/Makefile.in
+if @grep@/bin/grep -Eq '^@HAVE_CPP_ISL_H_TRUE@@HAVE_CXX17_TRUE@(am__append_[34]|am__EXEEXT_2) =.*isl_test_cpp17' isl/Makefile.in; then
+  echo "bundled ISL C++17 test programs are still in the default build" >&2
+  exit 1
+fi
+
+# Force GCC's generated limits.h to chain to this tier's glibc limits.h
+# in every bootstrap stage. The default test checks BUILD_SYSTEM_HEADER_DIR,
+# which does not reliably see the sysroot header layout used here.
+@sed@/bin/sed -i 's|^LIMITS_H_TEST = .*|LIMITS_H_TEST = true|' gcc/Makefile.in
+@grep@/bin/grep -q '^LIMITS_H_TEST = true$' gcc/Makefile.in
+
+# The post-stage1 C++ bootstrap override rebuilds CXX separately from CC
+# and otherwise drops XGCC_FLAGS_FOR_TARGET. Keep those sysroot and
+# library-search flags so stage2 host C++ configure probes link against
+# this tier's glibc instead of searching an empty default sysroot.
+@sed@/bin/sed -i \
+  's|-B$(build_tooldir)/bin/ -nostdinc++|-B$(build_tooldir)/bin/ $(XGCC_FLAGS_FOR_TARGET) $$TFLAGS -nostdinc++|' \
+  Makefile.in
+@grep@/bin/grep -Fq -- '-B$(build_tooldir)/bin/ $(XGCC_FLAGS_FOR_TARGET) $$TFLAGS -nostdinc++' Makefile.in
+
+# libitm compiles target-specific .S sources through libtool. With xgcc
+# as CCAS, libtool cannot infer a language tag for assembly and fails
+# before compiling config/x86/sjlj.S, so make the generated assembly rule
+# use the C compiler tag explicitly.
+@sed@/bin/sed -i \
+  's|^LTCPPASCOMPILE = $(LIBTOOL) $(AM_V_lt) $(AM_LIBTOOLFLAGS) \\|LTCPPASCOMPILE = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \\|' \
+  libitm/Makefile.in
+@grep@/bin/grep -Fq 'LTCPPASCOMPILE = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \' libitm/Makefile.in
+
+for dir in . gmp mpfr mpc isl; do
+  find "$dir" -type f \( -name '*.y' -o -name '*.l' -o -name 'Makefile.am' -o -name 'configure.ac' -o -name 'configure.in' -o -name 'acinclude.m4' \) -exec touch {} + 2>/dev/null || true
+done
+sleep 1
+for dir in . gmp mpfr mpc isl; do
+  find "$dir" -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
+done
+sleep 1
+for dir in . gmp mpfr mpc isl; do
+  find "$dir" \( -name 'configure' -o -name 'Makefile.in' -o -name 'aclocal.m4' -o -name 'config.h.in' \) -exec touch {} + 2>/dev/null || true
+done
+
+
+# Target feature/header probes must see the QEMU host libc before GCC configure.
+mkdir -p "$TMPDIR/target-sysroot/usr/include" "$TMPDIR/target-sysroot/usr/lib" "$TMPDIR/target-sysroot/lib"
+for entry in @targetGlibcDev@/include/*; do
+  ln -s "$entry" "$TMPDIR/target-sysroot/usr/include/$(basename "$entry")"
+done
+headers="@targetHeaders@"
+if test -d "$headers/include/linux"; then headers="$headers/include"; fi
+for entry in "$headers"/*; do
+  name=$(basename "$entry")
+  rm -f "$TMPDIR/target-sysroot/usr/include/$name"
+  ln -s "$entry" "$TMPDIR/target-sysroot/usr/include/$name"
+done
+for entry in @targetGlibc@/lib/* @targetGlibcStatic@/lib/*.a; do
+  ln -sf "$entry" "$TMPDIR/target-sysroot/usr/lib/$(basename "$entry")"
+  ln -sf "$entry" "$TMPDIR/target-sysroot/lib/$(basename "$entry")"
+done
+
+
+mkdir -p "$TMPDIR/build"
+cd "$TMPDIR/build"
+
+# Build-machine sysroot for native generator compilation and link inputs.
+mkdir -p "$TMPDIR/sysroot/usr/include"
+ln -sf @glibcDev@/include/* "$TMPDIR/sysroot/usr/include/"
+for d in @linuxHeaders@/*; do
+  bn=$(basename "$d")
+  rm -f "$TMPDIR/sysroot/usr/include/$bn"
+  ln -sf "$d" "$TMPDIR/sysroot/usr/include/$bn"
+done
+mkdir -p "$TMPDIR/sysroot/usr/lib" "$TMPDIR/sysroot/lib"
+for f in @glibc@/lib/* @glibcStatic@/lib/*.a; do
+  bn=$(basename "$f")
+  ln -sf "$f" "$TMPDIR/sysroot/usr/lib/$bn"
+  ln -sf "$f" "$TMPDIR/sysroot/lib/$bn"
+done
+
+# CC wrapper:
+# -B selects this tier's binutils and crt*.o, -no-pie avoids static PIE
+# host links, and -idirafter restores the stage1 specs header paths.
+mkdir -p "$TMPDIR/ccwrap"
+cat > "$TMPDIR/ccwrap/gcc" <<AOS_GCC_CC
+#!@bash@/bin/bash
+exec @compiler@/bin/gcc -B@binutils@/bin/ -B@glibc@/lib -static -no-pie -L@glibcStatic@/lib -L@glibc@/lib -idirafter @glibcDev@/include -idirafter @linuxHeaders@ "\$@"
+AOS_GCC_CC
+cat > "$TMPDIR/ccwrap/g++" <<AOS_GCC_CXX
+#!@bash@/bin/bash
+exec @compiler@/bin/g++ -B@binutils@/bin/ -B@glibc@/lib -static -no-pie -L@glibcStatic@/lib -L@glibc@/lib -idirafter @glibcDev@/include -idirafter @linuxHeaders@ "\$@"
+AOS_GCC_CXX
+chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
+ln -sf gcc "$TMPDIR/ccwrap/cc"
+ln -sf g++ "$TMPDIR/ccwrap/c++"
+
+
+CC="$TMPDIR/ccwrap/gcc" \
+        CXX="$TMPDIR/ccwrap/g++" \
+        CFLAGS="-O2 -static" \
+        CXXFLAGS="-O2 -static" \
+        LDFLAGS="-L@glibcStatic@/lib -L@glibc@/lib -static" \
+"$CONFIG_SHELL" "$source/gcc-16.2.0/configure" \
+  --prefix="$TMPDIR/prefix" \
+          --build=@build@ \
+          --host=@build@ \
+          --target=@target@ \
+          --enable-languages=c,c++ \
+          --disable-shared \
+          --disable-nls \
+          --enable-threads=posix \
+          --disable-multilib \
+          --disable-libsanitizer \
+          --disable-libvtv \
+          --enable-default-pie \
+          --enable-default-ssp \
+          --with-native-system-header-dir="/usr/include" \
+          --with-build-sysroot="$TMPDIR/target-sysroot" \
+          --program-transform-name= \
+          @cetArgument@
+
+# Preserve the native GCC header-generation flags. Target binutils are only
+# passed as FOR_TARGET tools; all executed generators use build-native tools.
+make_arguments=(
+  SHELL="$CONFIG_SHELL" BOOT_CFLAGS="-O2 -static" TFLAGS="-static"
+  AR="@binutils@/bin/ar" AS="@binutils@/bin/as" LD="@binutils@/bin/ld"
+  NM="@binutils@/bin/nm" RANLIB="@binutils@/bin/ranlib" STRIP="@binutils@/bin/strip"
+  AR_FOR_TARGET="@targetAr@" AS_FOR_TARGET="@targetAs@" LD_FOR_TARGET="@targetLd@"
+  NM_FOR_TARGET="@targetNm@" RANLIB_FOR_TARGET="@targetRanlib@" STRIP_FOR_TARGET="@targetStrip@"
+  CFLAGS_FOR_TARGET="-O2 -fPIC" CXXFLAGS_FOR_TARGET="-O2 -fPIC" LDFLAGS_FOR_TARGET="-static"
+  CC_FOR_BUILD="$TMPDIR/ccwrap/gcc" CXX_FOR_BUILD="$TMPDIR/ccwrap/g++"
+  AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+)
+# GNU defaults cross-target contexts to non-bootstrap. Native retains the
+# reviewed serial stage initialization before parallel configure prerequisites.
+if test "@build@" = "@target@"; then
+  make -j1 stage1-start "${make_arguments[@]}"
+  gcc_configure=configure-stage1-gcc
+else
+  gcc_configure=configure-gcc
+fi
+make -j"$NIX_BUILD_CORES" "$gcc_configure" all-build-libiberty "${make_arguments[@]}"
+
+mkdir -p "$TMPDIR/build/gcc/include-fixed"
+cat > "$TMPDIR/build/gcc/include-fixed/limits.h" <<'LIMITS_EOF'
+#ifndef _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
+#define _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
+#include_next <limits.h>
+#endif
+LIMITS_EOF
+make -C "$TMPDIR/build/gcc" SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" \
+  tconfig.h tm.h options.h insn-constants.h insn-modes.h \
+  AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+make -C "$TMPDIR/build/gcc" -f Makefile -f @memberVariables@ \
+  SHELL="$CONFIG_SHELL" -j1 qom-libgcc-mvars
+
+# The member compiler targets the QEMU host. It is never the Canadian-cross
+# compiler installed for execution on that host, nor the generator compiler.
+
+mkdir -p "$TMPDIR/build/@target@/libgcc"
+cd "$TMPDIR/build/@target@/libgcc"
+# config.host and generated Makefile select target tmake fragments, linked
+# headers and flags. Only header/link and dry-run command targets are requested.
+CC="@compilerExecutable@ -B@targetBinutils@/bin/ --sysroot=$TMPDIR/target-sysroot" \
+CFLAGS="-O2 -g -fPIC" CXXFLAGS="-O2 -g -fPIC" \
+AR="@targetAr@" AS="@targetAs@" LD="@targetLd@" NM="@targetNm@" \
+RANLIB="@targetRanlib@" STRIP="@targetStrip@" \
+"$CONFIG_SHELL" "$source/gcc-16.2.0/libgcc/configure" \
+  --build=@build@ --host=@target@ --target=@target@ \
+  --with-target-subdir=@target@ --enable-threads=posix \
+  --enable-shared --disable-multilib --prefix="$TMPDIR/prefix"
+make SHELL="$CONFIG_SHELL" gcc_objdir="$TMPDIR/build/gcc" -j1 libgcc_tm.h unwind.h md-unwind-def.h md-unwind-support.h gthr-default.h
+for member in unwind-dw2 unwind-dw2-fde-dip; do
+  make SHELL="$CONFIG_SHELL" gcc_objdir="$TMPDIR/build/gcc" --no-print-directory -n "$member.o" > "$member.command"
+done
+@python3@/bin/python3 -I -B @captureCommands@ \
+  --source "$source/gcc-16.2.0" --gcc-build "$TMPDIR/build/gcc" \
+  --local "$PWD" --compiler @compilerExecutable@ \
+  --target @target@ --elf-machine @elfMachine@
+
+cat > "$TMPDIR/target-abi.c" <<'ABI_EOF'
+/* Source-owned target geometry probe; never executed by a cross producer. */
+typedef char require_64_bit_pointer[(sizeof(void *) == 8) ? 1 : -1];
+int qom_unwind_target_geometry(void) { return sizeof(void *); }
+ABI_EOF
+@compilerExecutable@ -B@targetBinutils@/bin/ --sysroot="$TMPDIR/target-sysroot" \
+  -c "$TMPDIR/target-abi.c" -o "$TMPDIR/target-abi.o"

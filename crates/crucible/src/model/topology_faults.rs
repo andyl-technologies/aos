@@ -57,9 +57,9 @@ impl VmArchitecture {
     }
 }
 
-/// One node's model-level ready-point configuration inside a [`World`].
+/// One compute node's model-level configuration inside a [`World`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct WorldNode {
+pub struct ComputeNodeDef {
     /// Stable node identity within the world.
     pub id: NodeId,
     /// Guest virtual-machine architecture.
@@ -72,7 +72,7 @@ pub struct WorldNode {
     pub ready_point: ReadyPoint,
     /// Whether this node opts into the white-box guest-host channel.
     pub white_box: WhiteBoxPolicy,
-    /// Fixed QEMU vCPU count for this node.
+    /// Fixed virtual CPU count for this compute node.
     pub smp_vcpus: u16,
     /// Optional content-addressed guest kernel blob.
     pub kernel: Option<ContentAddressedBlobRef>,
@@ -81,6 +81,12 @@ pub struct WorldNode {
     /// Optional content-addressed initrd blob.
     pub initrd: Option<ContentAddressedBlobRef>,
 }
+
+/// Preserves the earlier source name for [`ComputeNodeDef`] during migration.
+///
+/// This re-export denotes the same type. It introduces no declaration variant,
+/// canonical encoding, content-address domain, or fault-target identity.
+pub use self::ComputeNodeDef as WorldNode;
 
 /// The deterministic I/O family owned by a world-declared I/O sub-node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -283,7 +289,7 @@ impl WorldIoNode {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum WorldNodeDef {
     /// A QEMU virtual-machine node.
-    Vm(WorldNode),
+    Vm(ComputeNodeDef),
     /// A deterministic block or 9p scheduling sub-node.
     Io(WorldIoNode),
 }
@@ -299,7 +305,7 @@ impl WorldNodeDef {
     }
 }
 
-impl WorldNode {
+impl ComputeNodeDef {
     /// Returns the supported in-guest workload selected by this node, if any.
     #[must_use]
     pub fn guest_workload(&self) -> Option<GuestWorkloadBinary> {

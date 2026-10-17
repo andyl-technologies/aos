@@ -1,0 +1,246 @@
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -71,6 +71,8 @@
+ #include <linux/bitmap.h>
+ #include <linux/cpumask.h>
+ #include <linux/memblock.h>
++#include <linux/memory_hotplug.h>
++#include <linux/pageblock-flags.h>
+ #include <linux/err.h>
+ #include <linux/list.h>
+ #include <linux/log2.h>
+--- a/mm/crucible-percpu-pool.inc.c
++++ b/mm/crucible-percpu-pool.inc.c
+@@ -55,10 +55,15 @@
+ static struct crucible_percpu_bank crucible_percpu_pool;
+ static DEFINE_RAW_SPINLOCK(crucible_percpu_pool_lock);
+ 
++static bool crucible_percpu_pool_geometry_current(void);
++
++#include "crucible-percpu-backing.inc.c"
++
+ u64 crucible_allocator_percpu_pool_metadata_bytes(void)
+ {
+ 	return sizeof(crucible_percpu_pool) + sizeof(crucible_percpu_first_chunk) +
+-		crucible_percpu_boot_metadata_bytes();
++		crucible_percpu_boot_metadata_bytes() +
++		crucible_percpu_backing_metadata_bytes();
+ }
+ EXPORT_SYMBOL_GPL(crucible_allocator_percpu_pool_metadata_bytes);
+ 
+@@ -125,7 +130,7 @@
+ 	birth->complete = true;
+ }
+ 
+-static bool crucible_percpu_pool_current(void)
++static bool crucible_percpu_pool_geometry_current(void)
+ {
+ 	const struct crucible_percpu_birth *birth = &crucible_percpu_pool.birth;
+ 	unsigned int cpu;
+@@ -141,6 +146,11 @@
+ 		if (birth->native_arenas[cpu] != per_cpu_ptr(&crucible_percpu_storage, cpu))
+ 			return false;
+ 	return true;
++}
++
++static bool crucible_percpu_pool_current(void)
++{
++	return crucible_percpu_pool_geometry_current() && crucible_percpu_backing_current();
+ }
+ 
+ bool crucible_allocator_percpu_pool_shape(struct crucible_percpu_pool_shape *shape)
+--- /dev/null
++++ b/mm/crucible-percpu-backing.inc.c
+@@ -0,0 +1,192 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Permanent per-CPU copies and source keeper pages, after page metadata exists.
++ * The original linker template is init memory and is deliberately not pinned.
++ */
++
++#define CRUCIBLE_PERCPU_ARENA_PAGES (CRUCIBLE_PERCPU_ARENA_BYTES / PAGE_SIZE)
++#define CRUCIBLE_PERCPU_KEEPER_PAGES \
++	(DIV_ROUND_UP(sizeof(crucible_percpu_pool), PAGE_SIZE) + \
++	 DIV_ROUND_UP(sizeof(crucible_percpu_first_chunk), PAGE_SIZE) + \
++	 DIV_ROUND_UP(sizeof(crucible_percpu_boot_ledger), PAGE_SIZE))
++#define CRUCIBLE_PERCPU_BACKING_BASE_PAGES \
++	(NR_CPUS * CRUCIBLE_PERCPU_ARENA_PAGES + CRUCIBLE_PERCPU_KEEPER_PAGES)
++#define CRUCIBLE_PERCPU_BACKING_ROWS (2U * CRUCIBLE_PERCPU_BACKING_BASE_PAGES + 8U)
++
++struct crucible_percpu_backing_page {
++	void *original_address;
++	struct page *original_page;
++	unsigned long original_pfn;
++	u64 generation;
++	bool pin_attempted;
++	bool native_result_known;
++	bool original_pin_result;
++};
++
++struct crucible_percpu_backing_bank {
++	struct crucible_percpu_backing_page pages[CRUCIBLE_PERCPU_BACKING_ROWS];
++	struct task_struct *original_boot_task;
++	u64 generation;
++	u32 used;
++	bool attempted;
++	bool complete;
++	bool failed;
++} __aligned(PAGE_SIZE);
++
++static struct crucible_percpu_backing_bank crucible_percpu_backing;
++
++static u64 crucible_percpu_backing_metadata_bytes(void)
++{
++	return sizeof(crucible_percpu_backing);
++}
++
++static bool crucible_percpu_backing_page_current(
++	const struct crucible_percpu_backing_page *row)
++{
++	if (!row->pin_attempted || !row->native_result_known || !row->original_pin_result ||
++	    !virt_addr_valid(row->original_address))
++		return false;
++	if (virt_to_page(row->original_address) != row->original_page)
++		return false;
++	return page_to_pfn(row->original_page) == row->original_pfn &&
++		PageReserved(row->original_page) && !is_migrate_cma_page(row->original_page) &&
++		page_ref_count(row->original_page) > 0;
++}
++
++static bool crucible_percpu_backing_pin_range(void *address, u64 bytes)
++{
++	struct crucible_percpu_backing_bank *bank = &crucible_percpu_backing;
++	u64 rounded, index, end;
++
++	if (!bank->attempted || bank->complete || bank->failed || !in_task() ||
++	    current != bank->original_boot_task ||
++	    !address || offset_in_page(address) || !bytes ||
++	    check_add_overflow(bytes, (u64)PAGE_SIZE - 1, &rounded))
++		goto refuse;
++	rounded &= PAGE_MASK;
++	if (check_add_overflow((u64)(unsigned long)address, rounded, &end))
++		goto refuse;
++	for (index = 0; index < rounded; index += PAGE_SIZE) {
++		struct crucible_percpu_backing_page *row;
++		void *original_address = address + index;
++		struct page *page;
++
++		if (!in_task() || current != bank->original_boot_task ||
++		    bank->used == CRUCIBLE_PERCPU_BACKING_ROWS || bank->generation == U64_MAX ||
++		    !virt_addr_valid(original_address))
++			goto refuse;
++		page = virt_to_page(original_address);
++		/* Boot-reserved, non-CMA pages are unmovable in the native isolation
++		 * path. Runtime checks need no sleeping hotplug lock inside pool locks.
++		 */
++		if (!PageReserved(page) || is_migrate_cma_page(page))
++			goto refuse;
++		row = &bank->pages[bank->used++];
++		row->generation = ++bank->generation;
++		row->original_address = original_address;
++		row->original_page = page;
++		row->original_pfn = page_to_pfn(page);
++		row->pin_attempted = true;
++		row->original_pin_result = get_page_unless_zero(page);
++		row->native_result_known = true;
++		if (!in_task() || current != bank->original_boot_task ||
++		    !row->original_pin_result || !crucible_percpu_backing_page_current(row))
++			goto refuse;
++	}
++	return true;
++refuse:
++	bank->failed = true;
++	return false;
++}
++
++static bool crucible_percpu_backing_range_current(void *address, u64 bytes, u32 *cursor)
++{
++	const struct crucible_percpu_backing_bank *bank = &crucible_percpu_backing;
++	u64 offset;
++
++	for (offset = 0; offset < PAGE_ALIGN(bytes); offset += PAGE_SIZE) {
++		const struct crucible_percpu_backing_page *row;
++
++		if (*cursor >= bank->used)
++			return false;
++		row = &bank->pages[*cursor];
++		if (row->generation != (u64)*cursor + 1 ||
++		    row->original_address != address + offset ||
++		    !crucible_percpu_backing_page_current(row))
++			return false;
++		(*cursor)++;
++	}
++	return true;
++}
++
++static bool crucible_percpu_backing_current(void)
++{
++	const struct crucible_percpu_backing_bank *bank = &crucible_percpu_backing;
++	u32 cursor = 0;
++	unsigned int cpu;
++
++	if (!bank->attempted || !bank->complete || bank->failed || !bank->used ||
++	    bank->used > CRUCIBLE_PERCPU_BACKING_ROWS || bank->generation != bank->used)
++		return false;
++	for_each_cpu(cpu, &crucible_percpu_pool.birth.original_possible)
++		if (!crucible_percpu_backing_range_current(
++		    crucible_percpu_pool.birth.native_arenas[cpu], CRUCIBLE_PERCPU_ARENA_BYTES, &cursor))
++			return false;
++	if (!crucible_percpu_backing_range_current(&crucible_percpu_pool,
++	    sizeof(crucible_percpu_pool), &cursor) ||
++	    !crucible_percpu_backing_range_current(&crucible_percpu_first_chunk,
++	    sizeof(crucible_percpu_first_chunk), &cursor) ||
++	    !crucible_percpu_backing_range_current(&crucible_percpu_boot_ledger,
++	    sizeof(crucible_percpu_boot_ledger), &cursor) ||
++	    !crucible_percpu_backing_range_current(&crucible_percpu_backing,
++	    sizeof(crucible_percpu_backing), &cursor))
++		return false;
++	return cursor == bank->used;
++}
++
++static int __init crucible_percpu_backing_install(void)
++{
++	struct crucible_percpu_backing_bank *bank = &crucible_percpu_backing;
++	unsigned int cpu;
++
++	BUILD_BUG_ON(CRUCIBLE_PERCPU_ARENA_BYTES % PAGE_SIZE);
++	BUILD_BUG_ON(CRUCIBLE_PERCPU_BACKING_ROWS < CRUCIBLE_PERCPU_BACKING_BASE_PAGES +
++		DIV_ROUND_UP(sizeof(crucible_percpu_backing), PAGE_SIZE));
++	if (bank->attempted) {
++		bank->failed = true;
++		return 0;
++	}
++	bank->attempted = true;
++	bank->original_boot_task = current;
++	if (!in_task() || !crucible_percpu_pool_geometry_current() ||
++	    !crucible_percpu_first_chunk_current() || !crucible_percpu_boot_current())
++		goto refuse;
++
++	get_online_mems();
++	for_each_cpu(cpu, &crucible_percpu_pool.birth.original_possible)
++		if (!crucible_percpu_backing_pin_range(
++		    crucible_percpu_pool.birth.native_arenas[cpu], CRUCIBLE_PERCPU_ARENA_BYTES))
++			goto unlock;
++	if (!crucible_percpu_backing_pin_range(&crucible_percpu_pool,
++	    sizeof(crucible_percpu_pool)) ||
++	    !crucible_percpu_backing_pin_range(&crucible_percpu_first_chunk,
++	    sizeof(crucible_percpu_first_chunk)) ||
++	    !crucible_percpu_backing_pin_range(&crucible_percpu_boot_ledger,
++	    sizeof(crucible_percpu_boot_ledger)) ||
++	    !crucible_percpu_backing_pin_range(bank, sizeof(*bank)))
++		goto unlock;
++	if (current != bank->original_boot_task || !crucible_percpu_pool_geometry_current() ||
++	    !crucible_percpu_first_chunk_current() || !crucible_percpu_boot_current())
++		goto unlock;
++	bank->complete = true;
++	put_online_mems();
++	return 0;
++unlock:
++	put_online_mems();
++refuse:
++	/* Keep every successful or uncertain prefix reference for boot lifetime.
++	 * Refusal never unwinds native boot or silently reissues a backing lease.
++	 */
++	bank->failed = true;
++	return 0;
++}
++late_initcall_sync(crucible_percpu_backing_install);

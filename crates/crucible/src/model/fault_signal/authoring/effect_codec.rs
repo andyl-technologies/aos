@@ -362,11 +362,11 @@ pub(super) fn hex_digit(value: u8) -> Result<u8, FaultSignalAuthoringError> {
 mod tests {
     use super::*;
     use crate::model::{
-        Icount, LinkDef, NodeId, ReadyPoint, VmArchitecture, WhiteBoxPolicy, WorldNode,
+        ComputeNodeDef, Icount, LinkDef, NodeId, ReadyPoint, VmArchitecture, WhiteBoxPolicy,
     };
 
     fn authored_test_world() -> World {
-        let nodes = ["left", "right"].map(|name| WorldNode {
+        let nodes = ["left", "right"].map(|name| ComputeNodeDef {
             id: NodeId {
                 name: String::from(name),
             },

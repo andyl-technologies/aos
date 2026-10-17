@@ -43,11 +43,13 @@ pub trait QemuAttemptOperationalBoundary {
     fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError>;
 }
 
-/// Checked per-attempt execution-quantum counter for concrete resource guards.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Checked per-attempt execution-quantum counter for concrete QEMU guards.
+///
+/// This compatibility adapter retains the original QEMU error identity while
+/// common accounting is owned by [`crate::AttemptExecutionQuantumCounter`].
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct QemuExecutionQuantumCounter {
-    ceiling: u64,
-    charged: u64,
+    counter: crate::AttemptExecutionQuantumCounter,
 }
 
 impl QemuExecutionQuantumCounter {
@@ -55,21 +57,20 @@ impl QemuExecutionQuantumCounter {
     #[must_use]
     pub const fn new(resources: AttemptResourceLimits) -> Self {
         Self {
-            ceiling: resources.maximum_execution_quanta(),
-            charged: 0,
+            counter: crate::AttemptExecutionQuantumCounter::new(resources),
         }
     }
 
     /// Returns the exact admitted quantum ceiling.
     #[must_use]
     pub const fn ceiling(self) -> u64 {
-        self.ceiling
+        self.counter.ceiling()
     }
 
     /// Returns the number of quanta charged so far.
     #[must_use]
     pub const fn charged(self) -> u64 {
-        self.charged
+        self.counter.charged()
     }
 
     /// Charges one quantum before guest progress.
@@ -79,14 +80,22 @@ impl QemuExecutionQuantumCounter {
     /// Returns [`QemuVmRealizationError::Executor`] without changing the
     /// counter when the exact admitted ceiling has already been spent.
     pub fn charge(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.charged >= self.ceiling {
-            return Err(QemuVmRealizationError::Executor {
+        self.counter
+            .charge()
+            .map_err(|_| QemuVmRealizationError::Executor {
                 operation: "charge QEMU execution quantum",
                 message: String::from("execution quantum ceiling is exhausted"),
-            });
-        }
-        self.charged += 1;
-        Ok(())
+            })
+    }
+}
+
+impl std::fmt::Debug for QemuExecutionQuantumCounter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuExecutionQuantumCounter")
+            .field("ceiling", &self.ceiling())
+            .field("charged", &self.charged())
+            .finish()
     }
 }
 

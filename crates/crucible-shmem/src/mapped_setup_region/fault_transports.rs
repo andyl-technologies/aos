@@ -43,6 +43,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedFaultCommandTransportMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -90,6 +93,9 @@ impl MappedSetupRegion {
                 index: vm_slot,
             }
         })?;
+        selected_lifecycle::authorize_mutable_headers(self, &[ring_offset])
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let base = self.base_ptr();
         // SAFETY: the helpers validate complete, pairwise-disjoint aligned
         // ranges for this VM. The exclusive mapping borrow prevents another
@@ -129,6 +135,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedFaultResultTransportMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -176,6 +185,9 @@ impl MappedSetupRegion {
                 index: vm_slot,
             }
         })?;
+        selected_lifecycle::authorize_mutable_headers(self, &[ring_offset])
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let base = self.base_ptr();
         // SAFETY: the helpers validate complete, pairwise-disjoint aligned
         // ranges for this VM. The exclusive mapping borrow prevents another
@@ -215,6 +227,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedFaultEventTransportMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -262,6 +277,9 @@ impl MappedSetupRegion {
                 index: vm_slot,
             }
         })?;
+        selected_lifecycle::authorize_mutable_headers(self, &[ring_offset])
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let base = self.base_ptr();
         // SAFETY: all event transport ranges are validated, aligned, and
         // disjoint; the exclusive mapping borrow prevents another mutable view.

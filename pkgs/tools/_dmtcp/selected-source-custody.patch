@@ -1,0 +1,670 @@
+--- a/src/crucible_exec_state.h
++++ b/src/crucible_exec_state.h
+@@ -245,7 +245,7 @@
+ 
+ // Quiescent exec transfers no stack-owned in-flight lease. Failed original
+ // writes and frames still retain their full attempted debit and error history.
+-inline bool consistent(const State &state)
++inline bool consistent_attempts(const State &state, unsigned expected_exec_attempts)
+ {
+     const auto &log = state.log;
+     if (!log.initialized || log.process <= 0 || log.count > log_writer::MessageLimit ||
+@@ -256,7 +256,8 @@
+         std::memchr(log.log_path, 0, sizeof(log.log_path)) == nullptr ||
+         std::memchr(log.log_leaf, 0, sizeof(log.log_leaf)) == nullptr ||
+         state.control.count > ControlFrames || state.channels.count > ControlFrames ||
+-        state.requests > 64 || state.probes > 1 || state.exec_attempts != 1) {
++        state.requests > 64 || state.probes > 1 ||
++        expected_exec_attempts > 1 || state.exec_attempts != expected_exec_attempts) {
+         return false;
+     }
+ 
+@@ -317,6 +318,14 @@
+     return true;
+ }
+ 
++// Exec import retains its original exactly-one attempt requirement. A native
++// coordinator source capsule validates its actual zero attempts separately;
++// that source path never manufactures a launch attempt to reuse this codec.
++inline bool consistent(const State &state)
++{
++    return consistent_attempts(state, 1);
++}
++
+ inline size_t encode(State &state, unsigned char *body, size_t capacity)
+ {
+     if (!consistent(state)) return 0;
+--- a/src/dmtcp_coordinator.cpp
++++ b/src/dmtcp_coordinator.cpp
+@@ -60,6 +60,7 @@
+ #include "crucible_single_worker.h"
+ #include "crucible_control_frame.h"
+ #include "crucible_final_frame.h"
++#include "crucible_source_custody.h"
+ #include <arpa/inet.h>
+ #include <fcntl.h>
+ #include <limits.h>  // for HOST_NAME_MAX
+@@ -652,6 +653,8 @@
+           !dmtcp_crucible::selected_receive_final(client->sock().sockfd(), msg,
+                                                  client->realPid(), selectedDeadline,
+                                                  *selectedOriginal)) _exit(86);
++      if (!dmtcp_crucible::source_custody::publish_and_hold(client->sock().sockfd(),
++                                                         client->realPid())) _exit(86);
+       return;
+     }
+     if (!dmtcp_crucible::selected_read_body(client->sock().sockfd(), msg,
+@@ -1786,6 +1789,7 @@
+ int
+ main(int argc, char **argv)
+ {
++  if (!dmtcp_crucible::source_custody::admit()) _exit(86);
+   initializeJalib();
+ 
+   flags.progName = argv[0];
+--- /dev/null
++++ b/src/crucible_source_capsule.h
+@@ -0,0 +1,151 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Bounded original coordinator preservation capsule; no execution authority.
++ */
++#ifndef DMTCP_CRUCIBLE_SOURCE_CAPSULE_H
++#define DMTCP_CRUCIBLE_SOURCE_CAPSULE_H
++
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++
++namespace dmtcp_crucible {
++namespace source_capsule {
++
++constexpr size_t HeaderBytes = 160;
++constexpr size_t MaximumBytes = 10 * 1024 * 1024;
++constexpr unsigned SectionCount = 4;
++constexpr size_t SectionLimits[SectionCount] = {
++    6 * 1024 * 1024, 64 * 1024, 2 * 1024 * 1024 + 1024, 128 * 1024
++};
++
++struct Header {
++    std::uint64_t process = 0;
++    std::uint64_t thread = 0;
++    std::uint64_t uid = 0;
++    std::uint64_t worker = 0;
++    std::uint64_t descriptor = 0;
++    std::uint64_t device = 0;
++    std::uint64_t inode = 0;
++    std::uint64_t section_bytes[SectionCount] = {};
++    unsigned char cookie[32] = {};
++};
++
++inline void number(unsigned char *output, std::uint64_t value)
++{
++    for (unsigned index = 0; index < 8; ++index) {
++        output[index] = static_cast<unsigned char>(value >> (56 - 8 * index));
++    }
++}
++
++inline std::uint64_t number(const unsigned char *input)
++{
++    std::uint64_t value = 0;
++    for (unsigned index = 0; index < 8; ++index) value = (value << 8) | input[index];
++    return value;
++}
++
++inline size_t extent(const Header &header)
++{
++    if (header.process == 0 || header.thread == 0 || header.worker == 0 ||
++        header.process > INT32_MAX || header.thread > INT32_MAX ||
++        header.worker > INT32_MAX || header.uid > UINT32_MAX ||
++        header.process == header.worker || header.descriptor >= 1024 || header.inode == 0) {
++        return 0;
++    }
++
++    size_t size = HeaderBytes;
++    for (unsigned section = 0; section < SectionCount; ++section) {
++        const auto bytes = header.section_bytes[section];
++        if (bytes == 0 || bytes > SectionLimits[section] || bytes > MaximumBytes - size) {
++            return 0;
++        }
++        size += static_cast<size_t>(bytes);
++    }
++    return size;
++}
++
++inline bool encode(const Header &header, unsigned char *output, size_t capacity)
++{
++    const size_t size = extent(header);
++    if (size == 0 || output == nullptr || capacity < HeaderBytes) return false;
++
++    std::memset(output, 0, HeaderBytes);
++    std::memcpy(output, "DCPCCP01", 8);
++    number(output + 8, 1);
++    number(output + 16, size);
++    const std::uint64_t fields[] = {
++        header.process, header.thread, header.uid, header.worker,
++        header.descriptor, header.device, header.inode
++    };
++    for (unsigned index = 0; index < 7; ++index) number(output + 24 + 8 * index, fields[index]);
++    for (unsigned index = 0; index < SectionCount; ++index) {
++        number(output + 80 + 8 * index, header.section_bytes[index]);
++    }
++    std::memcpy(output + 112, header.cookie, sizeof(header.cookie));
++    // The trailing sixteen bytes are reserved and always zero in edition1.
++    return true;
++}
++
++inline bool decode(const unsigned char *body, size_t size, Header &header)
++{
++    if (body == nullptr || size < HeaderBytes || size > MaximumBytes ||
++        std::memcmp(body, "DCPCCP01", 8) != 0 || number(body + 8) != 1 ||
++        number(body + 16) != size) return false;
++    for (unsigned index = 144; index < HeaderBytes; ++index) {
++        if (body[index] != 0) return false;
++    }
++
++    Header candidate;
++    candidate.process = number(body + 24);
++    candidate.thread = number(body + 32);
++    candidate.uid = number(body + 40);
++    candidate.worker = number(body + 48);
++    candidate.descriptor = number(body + 56);
++    candidate.device = number(body + 64);
++    candidate.inode = number(body + 72);
++    for (unsigned index = 0; index < SectionCount; ++index) {
++        candidate.section_bytes[index] = number(body + 80 + 8 * index);
++    }
++    std::memcpy(candidate.cookie, body + 112, sizeof(candidate.cookie));
++    if (extent(candidate) != size) return false;
++    header = candidate;
++    return true;
++}
++
++// This pre-write account charges the complete one-shot export before the
++// syscall. Its byte record says nothing about completion or permission. The
++// actual native owner retains short-write/error outcome without renewal.
++struct OriginalExport {
++    bool admitted = false;
++    bool attempted = false;
++    bool settled = false;
++    std::uint64_t charged = 0;
++    std::int64_t written = -1;
++    int error = 0;
++
++    bool reserve(size_t size)
++    {
++        if (!admitted || attempted || settled || size < HeaderBytes || size > MaximumBytes) {
++            return false;
++        }
++        attempted = true;
++        charged = size;
++        return true;
++    }
++
++    bool finish(std::int64_t result, int failure)
++    {
++        if (!attempted || settled || result < -1 || failure < 0 ||
++            (result >= 0 && static_cast<std::uint64_t>(result) > charged) ||
++            (result >= 0 && failure != 0) || (result == -1 && failure == 0)) return false;
++        written = result;
++        error = failure;
++        settled = true;
++        return true;
++    }
++};
++
++} // namespace source_capsule
++} // namespace dmtcp_crucible
++#endif
+--- /dev/null
++++ b/src/crucible_source_custody.h
+@@ -0,0 +1,273 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Native original coordinator export and hold; no SourceReady authority.
++ */
++#ifndef DMTCP_CRUCIBLE_SOURCE_CUSTODY_H
++#define DMTCP_CRUCIBLE_SOURCE_CUSTODY_H
++
++#include "crucible_source_capsule.h"
++#include "crucible_exec_custody.h"
++#include "crucible_final_frame.h"
++#include "crucible_restart_writer.h"
++
++namespace dmtcp_crucible {
++namespace source_custody {
++
++constexpr int Descriptor = 843;
++
++struct OriginalSource {
++    source_capsule::OriginalExport output;
++    source_capsule::Header header;
++    std::uint64_t reserved_bytes = 0;
++    int descriptor_status = 0;
++    int descriptor_flags = 0;
++    bool selected = false;
++    bool sealed = false;
++    std::uint32_t hold_word = 0;
++    unsigned char body[source_capsule::MaximumBytes] = {};
++    exec_state::State state_candidate;
++    exec_custody::Transfer descriptors;
++};
++
++inline OriginalSource &original()
++{
++    static OriginalSource source;
++    return source;
++}
++
++inline bool selected()
++{
++    return std::getenv("CRUCIBLE_CAPTURE_SOURCE_CUSTODY_POLICY") != nullptr ||
++           original().selected;
++}
++
++// Runs before logger initialization. No descriptor is born here. The outer
++// original owner supplied one private disk file; this native account reserves
++// its complete storage and sole attempted write before observing that role.
++inline bool admit()
++{
++    if (!selected()) return true;
++    OriginalSource &source = original();
++    if (source.selected || source.reserved_bytes != 0) return false;
++    source.selected = true;
++    source.reserved_bytes = source_capsule::MaximumBytes;
++
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_SOURCE_CUSTODY_POLICY");
++    if (policy == nullptr || std::strcmp(policy, "source-custody.v1") != 0 ||
++        !writer_cohort_admitted() || !terminal_control_park_admitted() ||
++        !restart_writer::admitted() || !load_control_cookie(source.header.cookie)) return false;
++
++    // Admission inspects the actual kernel namespace; lowering RLIMIT cannot
++    // hide an inherited descriptor outside the source capsule's finite table.
++    exec_custody::DescriptorOperations operations;
++    if (!descriptor_scope::bounded_namespace(operations)) return false;
++
++    struct stat identity = {};
++    const long process = kernel_identity::read(SYS_getpid);
++    const long thread = kernel_identity::read(SYS_gettid);
++    const long uid = exec_custody::syscall(SYS_geteuid);
++    const long status = exec_custody::syscall(SYS_fcntl, Descriptor, F_GETFL);
++    const long flags = exec_custody::syscall(SYS_fcntl, Descriptor, F_GETFD);
++    if (process <= 0 || thread != process || uid < 0 || status < 0 ||
++        flags < 0 ||
++        (status & O_ACCMODE) != O_WRONLY ||
++        (status & (O_APPEND | O_NONBLOCK)) != 0 ||
++        exec_custody::syscall(SYS_fstat, Descriptor, exec_custody::pointer(&identity)) != 0 ||
++        !S_ISREG(identity.st_mode) || identity.st_uid != static_cast<uid_t>(uid) ||
++        (identity.st_mode & 0777) != 0600 || identity.st_nlink != 1 || identity.st_size != 0 ||
++        exec_custody::syscall(SYS_lseek, Descriptor, 0, SEEK_CUR) != 0) return false;
++
++    source.header.process = process;
++    source.header.thread = thread;
++    source.header.uid = uid;
++    source.header.descriptor = Descriptor;
++    source.header.device = identity.st_dev;
++    source.header.inode = identity.st_ino;
++    source.descriptor_status = static_cast<int>(status);
++    source.descriptor_flags = static_cast<int>(flags);
++    source.output.admitted = true;
++    return true;
++}
++
++template<class Codec>
++inline void restart_fields(Codec &codec, restart_writer::OriginalAccount &account)
++{
++    codec.boolean(account.initialized);
++    codec.signed_value(account.process);
++    codec.unsigned_value(account.uid);
++    codec.signed_value(account.root_descriptor);
++    codec.unsigned_value(account.device);
++    codec.unsigned_value(account.root_inode);
++    codec.bytes(account.root, sizeof(account.root));
++    codec.unsigned_value(account.count);
++    codec.unsigned_value(account.attempted_links);
++    codec.unsigned_value(account.charged);
++
++    for (auto &file : account.files) {
++        codec.bytes(file.leaf, sizeof(file.leaf));
++        codec.signed_value(file.descriptor);
++        codec.unsigned_value(file.device);
++        codec.unsigned_value(file.inode);
++        codec.unsigned_value(file.charged);
++        codec.boolean(file.adopted);
++        codec.boolean(file.close_attempted);
++        codec.boolean(file.closed);
++    }
++    for (auto &link : account.links) {
++        codec.bytes(link.alias, sizeof(link.alias));
++        codec.unsigned_value(link.file_index);
++        codec.unsigned_value(link.charged);
++        codec.boolean(link.unlink_attempted);
++        codec.boolean(link.unlinked);
++        codec.boolean(link.create_attempted);
++        codec.boolean(link.created);
++    }
++}
++
++template<class Codec>
++inline void final_fields(Codec &codec, OriginalFinalExchange &exchange)
++{
++    exec_state::boolean(codec, exchange.settled);
++    codec.boolean(exchange.attempted);
++    codec.boolean(exchange.received);
++    codec.boolean(exchange.acknowledged);
++    codec.signed_value(exchange.process);
++    codec.unsigned_value(exchange.body_length);
++    codec.unsigned_value(exchange.request_transferred);
++    codec.unsigned_value(exchange.response_transferred);
++    codec.signed_value(exchange.error);
++    codec.bytes(exchange.request, sizeof(exchange.request));
++    codec.bytes(exchange.response, sizeof(exchange.response));
++    // Retain the complete source storage, not just its transferred prefix.
++    codec.bytes(exchange.body, sizeof(exchange.body));
++}
++
++inline bool capture_accounts(OriginalSource &source, unsigned char *body, size_t &extent)
++{
++    auto &log = log_writer::account();
++    if (log.lock.test_and_set(std::memory_order_acquire)) return false;
++    OriginalControlSnapshot control(control_bank());
++    auto &channels = control_channels();
++    const bool acquired_channels = !channels.reservation.test_and_set(std::memory_order_acquire);
++
++    unsigned requests = original_control_requests().load();
++    unsigned probes = original_probe_reservations().load();
++    unsigned exec_attempts = exec_custody::attempts();
++    exec_state::Writer writer(body, source_capsule::SectionLimits[0]);
++    if (control.acquired && acquired_channels) {
++        exec_state::fields(writer, log, control_bank(), channels,
++                           requests, probes, exec_attempts);
++    }
++    if (acquired_channels) channels.reservation.clear(std::memory_order_release);
++    log.lock.clear(std::memory_order_release);
++    if (!control.acquired || !acquired_channels || !writer.valid()) return false;
++
++    extent = writer.size();
++    exec_state::Reader check(body, extent);
++    auto &candidate = source.state_candidate;
++    exec_state::fields(check, candidate.log, candidate.control, candidate.channels,
++                       candidate.requests, candidate.probes, candidate.exec_attempts);
++    return check.complete() && exec_state::consistent_attempts(candidate, 0) &&
++           candidate.log.process == static_cast<pid_t>(source.header.process) &&
++           candidate.control.terminal.load() && candidate.channels.terminal.load();
++}
++
++// Called once after the original final-copy ACK has completed. Every emitted
++// section is custody data. Whole guest/clock/image closure and source-issued
++// permission remain separate and cannot be inferred from this function.
++inline bool publish_and_hold(int fd, pid_t worker)
++{
++    if (!selected()) return true;
++    OriginalSource &source = original();
++    auto &exchange = final_exchange();
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_SOURCE_CUSTODY_POLICY");
++    if (!source.output.admitted || source.output.attempted || source.sealed ||
++        policy == nullptr || std::strcmp(policy, "source-custody.v1") != 0 ||
++        !control_cookie_matches(source.header.cookie) ||
++        kernel_identity::read(SYS_getpid) != static_cast<long>(source.header.process) ||
++        kernel_identity::read(SYS_gettid) != static_cast<long>(source.header.thread) ||
++        worker <= 0 || worker == static_cast<pid_t>(source.header.process) ||
++        !exchange.settled.load() || !exchange.attempted || !exchange.received ||
++        !exchange.acknowledged || exchange.error != 0 || exchange.body_length == 0 ||
++        exchange.body_length > FinalPayloadBytes) return false;
++
++    struct stat channel = {};
++    if (!seal_terminal_control_channel(fd, source.header.process, source.header.uid, channel)) {
++        return false;
++    }
++    source.sealed = true;
++    source.header.worker = worker;
++    size_t offset = source_capsule::HeaderBytes;
++    size_t bytes = 0;
++    if (!capture_accounts(source, source.body + offset, bytes)) return false;
++    source.header.section_bytes[0] = bytes;
++    offset += bytes;
++
++    auto &restart = restart_writer::account();
++    if (restart.lock.test_and_set(std::memory_order_acquire)) return false;
++    exec_state::Writer scripts(source.body + offset, source_capsule::SectionLimits[1]);
++    const bool owns_scripts = restart_writer::owns_root() && restart.count <= restart_writer::FileLimit &&
++                              restart.attempted_links <= restart_writer::LinkLimit;
++    if (owns_scripts) restart_fields(scripts, restart);
++    restart.lock.clear(std::memory_order_release);
++    if (!owns_scripts || !scripts.valid()) return false;
++    source.header.section_bytes[1] = scripts.size();
++    offset += scripts.size();
++
++    exec_state::Writer final(source.body + offset, source_capsule::SectionLimits[2]);
++    final_fields(final, exchange);
++    if (!final.valid()) return false;
++    source.header.section_bytes[2] = final.size();
++    offset += final.size();
++
++    const dmtcp::UniquePid *peers[] = {&dmtcp::UniquePid::ThisProcess(true),
++                                     &dmtcp::UniquePid::ParentProcess()};
++    exec_custody::PeerIdentity *retained[] = {&source.descriptors.process,
++                                            &source.descriptors.parent};
++    for (unsigned index = 0; index < 2; ++index) {
++        retained[index]->host = peers[index]->hostid();
++        retained[index]->process = peers[index]->pid();
++        retained[index]->time = peers[index]->time();
++        retained[index]->generation = peers[index]->upid()._computation_generation;
++    }
++    std::memcpy(source.descriptors.cookie, source.header.cookie, sizeof(source.header.cookie));
++    exec_custody::require_bounded_namespace();
++    exec_custody::census(source.descriptors);
++    exec_state::Writer descriptors(source.body + offset, source_capsule::SectionLimits[3]);
++    exec_custody::descriptor_fields(descriptors, source.descriptors);
++    if (!descriptors.valid()) return false;
++    source.header.section_bytes[3] = descriptors.size();
++    offset += descriptors.size();
++    if (source_capsule::extent(source.header) != offset ||
++        !source_capsule::encode(source.header, source.body, sizeof(source.body)) ||
++        !source.output.reserve(offset)) return false;
++
++    struct stat output = {};
++    if (exec_custody::syscall(SYS_fstat, Descriptor, exec_custody::pointer(&output)) != 0 ||
++        !S_ISREG(output.st_mode) || output.st_uid != source.header.uid ||
++        (output.st_mode & 0777) != 0600 || output.st_nlink != 1 || output.st_size != 0 ||
++        output.st_dev != source.header.device || output.st_ino != source.header.inode ||
++        exec_custody::syscall(SYS_lseek, Descriptor, 0, SEEK_CUR) != 0 ||
++        exec_custody::syscall(SYS_fcntl, Descriptor, F_GETFL) != source.descriptor_status ||
++        exec_custody::syscall(SYS_fcntl, Descriptor, F_GETFD) != source.descriptor_flags) return false;
++
++    // One whole bounded attempt; a short/error write retains its full debit.
++    // This capsule contains the original accounts before its own output write.
++    // Completion stays in the held native account and is not predeclared.
++    const long written = exec_custody::syscall(SYS_write, Descriptor,
++                                              exec_custody::pointer(source.body), offset);
++    const int failure = written < 0 ? errno : 0;
++    if (!source.output.finish(written, failure) || written != static_cast<long>(offset)) return false;
++
++    source.hold_word = 1;
++    for (;;) {
++        const long result = _real_syscall(SYS_futex, &source.hold_word,
++                                          FUTEX_WAIT_PRIVATE, 1, nullptr, nullptr, 0);
++        if (result == 0 || errno == EINTR) continue;
++        return false;
++    }
++}
++
++} // namespace source_custody
++} // namespace dmtcp_crucible
++#endif
+--- /dev/null
++++ b/src/crucible_source_capsule_reader.h
+@@ -0,0 +1,174 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Borrowed native capsule validation; never source or execution authority.
++ */
++#ifndef DMTCP_CRUCIBLE_SOURCE_CAPSULE_READER_H
++#define DMTCP_CRUCIBLE_SOURCE_CAPSULE_READER_H
++
++#include "crucible_source_custody.h"
++
++namespace dmtcp_crucible {
++namespace source_capsule {
++
++struct Candidate {
++    Header header;
++    exec_state::State accounts;
++    restart_writer::OriginalAccount scripts;
++    OriginalFinalExchange exchange;
++    exec_custody::Transfer descriptors;
++};
++
++inline bool scripts_consistent(const Candidate &candidate)
++{
++    const auto &account = candidate.scripts;
++    if (!account.initialized || account.process != static_cast<pid_t>(candidate.header.process) ||
++        account.uid != candidate.header.uid || account.root_descriptor < 0 ||
++        account.root_descriptor >= 1024 || account.root_inode == 0 ||
++        std::memchr(account.root, 0, sizeof(account.root)) == nullptr ||
++        account.count > restart_writer::FileLimit ||
++        account.attempted_links > restart_writer::LinkLimit ||
++        account.charged > restart_writer::AttemptedBytes) return false;
++
++    std::uint64_t charged = 0;
++    for (unsigned index = 0; index < account.count; ++index) {
++        const auto &file = account.files[index];
++        const void *end = std::memchr(file.leaf, 0, sizeof(file.leaf));
++        if (end == nullptr || end == file.leaf || file.descriptor < 0 || file.descriptor >= 1024 ||
++            !file.adopted || !file.close_attempted || !file.closed ||
++            file.device != account.device || file.inode == 0 ||
++            file.charged > restart_writer::FileBytes ||
++            file.charged > restart_writer::AttemptedBytes - charged) return false;
++        const size_t length = static_cast<const char *>(end) - file.leaf;
++        if (std::memchr(file.leaf, '/', length) != nullptr ||
++            std::strcmp(file.leaf, ".") == 0 || std::strcmp(file.leaf, "..") == 0) return false;
++        for (unsigned earlier = 0; earlier < index; ++earlier) {
++            if (std::strcmp(account.files[earlier].leaf, file.leaf) == 0) return false;
++        }
++        charged += file.charged;
++    }
++    for (unsigned index = 0; index < account.attempted_links; ++index) {
++        const auto &link = account.links[index];
++        const void *end = std::memchr(link.alias, 0, sizeof(link.alias));
++        if (end == nullptr || end == link.alias || link.file_index >= account.count ||
++            !link.unlink_attempted || !link.unlinked || !link.create_attempted || !link.created ||
++            link.charged != std::strlen(account.files[link.file_index].leaf) + 1 ||
++            link.charged > restart_writer::AttemptedBytes - charged) return false;
++        const size_t length = static_cast<const char *>(end) - link.alias;
++        if (std::memchr(link.alias, '/', length) != nullptr ||
++            std::strcmp(link.alias, ".") == 0 || std::strcmp(link.alias, "..") == 0) return false;
++        charged += link.charged;
++    }
++    return charged == account.charged;
++}
++
++template<class Integer>
++inline Integer native_integer(const unsigned char *body, size_t offset)
++{
++    static_assert(std::is_integral<Integer>::value, "only scalar native fields are inspected");
++    Integer value = 0;
++    std::memcpy(&value, body + offset, sizeof(value));
++    return value;
++}
++
++inline bool final_header_consistent(const unsigned char *body, dmtcp::DmtcpMessageType type,
++                                    std::uint64_t worker, size_t extent,
++                                    const unsigned char *cookie, bool response)
++{
++    using Native = dmtcp::DmtcpMessage;
++    using Kind = std::underlying_type<dmtcp::DmtcpMessageType>::type;
++    static_assert(std::is_standard_layout<Native>::value, "native field offsets require standard layout");
++    const char magic[16] = DMTCP_MAGIC_STRING;
++    return std::memcmp(body + offsetof(Native, _magicBits), magic, sizeof(magic)) == 0 &&
++           native_integer<std::uint32_t>(body, offsetof(Native, _msgSize)) == ControlHeaderBytes &&
++           native_integer<Kind>(body, offsetof(Native, type)) == static_cast<Kind>(type) &&
++           native_integer<pid_t>(body, offsetof(Native, realPid)) == static_cast<pid_t>(worker) &&
++           native_integer<std::uint32_t>(body, offsetof(Native, extraBytes)) == extent &&
++           native_integer<std::uint64_t>(body, offsetof(Native, coordTimeStamp)) == 1 &&
++           (!response || native_integer<std::int32_t>(body, offsetof(Native, coordCmdStatus)) == 0) &&
++           std::memcmp(body + offsetof(Native, barrier), cookie, 32) == 0;
++}
++
++inline bool final_consistent(const Candidate &candidate)
++{
++    const auto &original = candidate.exchange;
++    if (!original.settled.load() || !original.attempted || !original.received ||
++        !original.acknowledged || original.process != static_cast<pid_t>(candidate.header.process) ||
++        original.body_length < 56 || original.body_length > FinalPayloadBytes ||
++        original.request_transferred != ControlHeaderBytes + original.body_length ||
++        original.response_transferred != ControlHeaderBytes || original.error != 0 ||
++        std::memcmp(original.body, "DCPBUD01", 8) != 0 ||
++        number(original.body + 8) != candidate.header.worker) return false;
++
++    // Inspect scalar fields without running a native message constructor,
++    // which would create a fresh peer identity while parsing borrowed bytes.
++    return final_header_consistent(original.request, dmtcp::DMT_CRUCIBLE_WRITER_FINAL,
++                                   candidate.header.worker, original.body_length,
++                                   candidate.header.cookie, false) &&
++           final_header_consistent(original.response, dmtcp::DMT_CRUCIBLE_WRITER_FINAL_ACK,
++                                   candidate.header.worker, 0,
++                                   candidate.header.cookie, true);
++}
++
++inline bool descriptor_consistent(const Candidate &candidate)
++{
++    const auto &descriptors = candidate.descriptors;
++    if (descriptors.process.process != static_cast<pid_t>(candidate.header.process) ||
++        std::memcmp(descriptors.cookie, candidate.header.cookie, 32) != 0) return false;
++    for (const auto &descriptor : descriptors.descriptors) {
++        if (descriptor.present && (descriptor.flags < 0 || descriptor.status < 0 ||
++            descriptor.offset < -1 || descriptor.inode == 0)) return false;
++    }
++
++    const auto &output = descriptors.descriptors[candidate.header.descriptor];
++    const auto &log = candidate.accounts.log;
++    const auto &scripts = candidate.scripts;
++    const auto &log_root = descriptors.descriptors[log.root_descriptor];
++    const auto &script_root = descriptors.descriptors[scripts.root_descriptor];
++    return output.present && S_ISREG(output.mode) && output.uid == candidate.header.uid &&
++           output.device == candidate.header.device && output.inode == candidate.header.inode &&
++           (output.status & O_ACCMODE) == O_WRONLY && output.offset == 0 &&
++           log_root.present && S_ISDIR(log_root.mode) && log_root.uid == log.uid &&
++           log_root.device == log.root_device && log_root.inode == log.root_inode &&
++           script_root.present && S_ISDIR(script_root.mode) && script_root.uid == scripts.uid &&
++           script_root.device == scripts.device && script_root.inode == scripts.root_inode;
++}
++
++// Decodes only into a caller-owned candidate. No original account, descriptor,
++// kernel peer, activation or readiness transition is changed by parsing.
++inline bool decode_preservation(const unsigned char *body, size_t extent, Candidate &candidate)
++{
++    if (!decode(body, extent, candidate.header)) return false;
++    size_t position = HeaderBytes;
++    auto section = [&](unsigned index) {
++        const size_t bytes = static_cast<size_t>(candidate.header.section_bytes[index]);
++        const unsigned char *start = body + position;
++        position += bytes;
++        return exec_state::Reader(start, bytes);
++    };
++
++    auto accounts = section(0);
++    auto &state = candidate.accounts;
++    exec_state::fields(accounts, state.log, state.control, state.channels,
++                       state.requests, state.probes, state.exec_attempts);
++    if (!accounts.complete() || !exec_state::consistent_attempts(state, 0) ||
++        state.log.process != static_cast<pid_t>(candidate.header.process) ||
++        state.log.uid != candidate.header.uid || state.log.root_descriptor < 0 ||
++        state.log.root_descriptor >= 1024 || !state.control.terminal.load() ||
++        !state.channels.terminal.load()) return false;
++
++    auto scripts = section(1);
++    source_custody::restart_fields(scripts, candidate.scripts);
++    if (!scripts.complete() || !scripts_consistent(candidate)) return false;
++
++    auto final = section(2);
++    source_custody::final_fields(final, candidate.exchange);
++    if (!final.complete() || !final_consistent(candidate)) return false;
++
++    auto descriptors = section(3);
++    exec_custody::descriptor_fields(descriptors, candidate.descriptors);
++    return descriptors.complete() && position == extent && descriptor_consistent(candidate);
++}
++
++} // namespace source_capsule
++} // namespace dmtcp_crucible
++#endif

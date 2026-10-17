@@ -21,7 +21,7 @@ impl World {
     /// errors as [`World::from_nodes_and_links`].
     pub fn from_recorded_parts(
         id: ContentHash,
-        nodes: Vec<WorldNode>,
+        nodes: Vec<ComputeNodeDef>,
         links: Vec<LinkDef>,
     ) -> Result<Self, EngineError> {
         Self::from_recorded_node_defs_and_links(
@@ -172,7 +172,7 @@ impl World {
     /// when reserved workload, seed, scalar-parameter, config-tree, load-pattern,
     /// spike-mode, or time-source command-line config is malformed, duplicated,
     /// unsupported, or inconsistent with its declared delivery surface.
-    pub fn from_nodes(nodes: Vec<WorldNode>) -> Result<Self, EngineError> {
+    pub fn from_nodes(nodes: Vec<ComputeNodeDef>) -> Result<Self, EngineError> {
         Self::from_nodes_and_links(nodes, Vec::new())
     }
 
@@ -207,7 +207,7 @@ impl World {
     /// [`EngineError::WorldLinkJitterBelowLatencyFloor`] when a link's
     /// transport configuration violates the latency floor.
     pub fn from_nodes_and_links(
-        nodes: Vec<WorldNode>,
+        nodes: Vec<ComputeNodeDef>,
         links: Vec<LinkDef>,
     ) -> Result<Self, EngineError> {
         Self::from_node_defs_and_links(nodes.into_iter().map(WorldNodeDef::Vm).collect(), links)

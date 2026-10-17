@@ -446,13 +446,12 @@ pub struct SingleScheduler {
     pub(super) event_sequences: EventSequenceState,
     /// Exact-completion I/O scheduling sub-nodes (disk/9p) keyed by target VM.
     ///
-    /// Each [`DeviceSchedulingSubNode`](crate::device_subnode::DeviceSchedulingSubNode)
+    /// Each [`ScheduledIoNode`](crate::device_subnode::ScheduledIoNode)
     /// holds an L1 `crucible-device` whose in-flight completions become the owning
     /// node's exact I/O-completion horizon term and are delivered at their exact
     /// icount through [`SingleScheduler::resolve_device_completions`] ([IO-1],
     /// [IO-3], [SCHED-29]).
-    pub(super) device_sub_nodes:
-        BTreeMap<NodeId, Vec<crate::device_subnode::DeviceSchedulingSubNode>>,
+    pub(super) device_sub_nodes: BTreeMap<NodeId, Vec<crate::device_subnode::ScheduledIoNode>>,
     /// Concrete directed network links derived from the logical World.
     ///
     /// Each symmetric [`LinkDef`] produces two scheduler-owned [`crucible_device::NetLink`]

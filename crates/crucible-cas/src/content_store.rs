@@ -49,7 +49,10 @@ pub use admin::{
     RefStoreAdmin,
 };
 pub use compressed_directory::CompressedDirectoryBlobBackend;
-pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
+pub use directory::{
+    DirectoryBlobBackend, DirectoryPublicationConstructionStorageData, DirectoryRefBackend,
+    DirectoryRefNameConstructionData,
+};
 pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
 };
@@ -380,6 +383,48 @@ impl BlobHandle {
     #[must_use]
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self::new(Arc::new(BytesBlobSource::new(bytes.into())))
+    }
+
+    /// Quotes the retained backing created by the concrete in-memory constructor.
+    ///
+    /// This DATA describes only a handle made by [`Self::from_bytes`] from an
+    /// independently owned byte bank of the given length. It includes the
+    /// private byte-source allocation and its separate shared slice allocation.
+    /// The containing handle and the incoming Vec remain separate caller rows.
+    /// It neither observes an arbitrary BlobSource nor grants storage authority.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Quota`] if the requested layout sum overflows.
+    pub fn from_bytes_retained_requested_storage_data(bytes: usize) -> Result<usize, StoreError> {
+        use std::mem::{align_of, size_of};
+
+        let header = 2usize
+            .checked_mul(size_of::<usize>())
+            .ok_or(StoreError::Quota)?;
+        // Both concrete Arc allocations align their two counters and payload.
+        // Include possible padding on both sides without claiming allocator size.
+        let padding = 2usize
+            .checked_mul(align_of::<BytesBlobSource>().max(align_of::<usize>()) - 1)
+            .ok_or(StoreError::Quota)?;
+        let source = size_of::<BytesBlobSource>()
+            .checked_add(header)
+            .ok_or(StoreError::Quota)?
+            .checked_add(padding)
+            .ok_or(StoreError::Quota)?;
+        bytes
+            .checked_add(header)
+            .ok_or(StoreError::Quota)?
+            .checked_add(padding)
+            .ok_or(StoreError::Quota)?
+            .checked_add(source)
+            .ok_or(StoreError::Quota)
+    }
+
+    /// Names the fixed views of the concrete in-memory backing quote.
+    pub fn from_bytes_retained_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        4 * size_of::<usize>() + size_of::<Option<usize>>() + size_of::<Result<usize, StoreError>>()
     }
 
     pub(crate) fn from_authenticated_bytes(id: ContentId, bytes: Arc<[u8]>) -> Self {
@@ -720,6 +765,13 @@ impl DurabilityRequirement {
 pub struct RefName(String);
 
 impl RefName {
+    /// Observes the retained name's allocation capacity without encoding it.
+    #[must_use]
+    pub fn retained_requested_storage_data(&self) -> usize {
+        let Self(name) = self;
+        name.capacity()
+    }
+
     /// Validates a slash-separated reference name.
     ///
     /// Segments may contain ASCII letters, digits, `.`, `_`, and `-`. Empty,

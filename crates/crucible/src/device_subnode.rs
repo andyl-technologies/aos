@@ -7,7 +7,7 @@
 //! block and 9p exact-completion sub-nodes into the
 //! [`SingleScheduler`](crate::SingleScheduler) (L3) so that **cross-node I/O
 //! injection is icount-deterministic** (Contract B, [IO-2], [IO-4],
-//! [SCHED-29]). A [`DeviceSchedulingSubNode`] holds a concrete device's
+//! [SCHED-29]). A [`ScheduledIoNode`] holds a concrete device's
 //! [`IoCore`] — the in-flight queue of
 //! computed-not-delivered responses — together with its scheduling identity.
 //! Network-link sub-nodes have their own delivery
@@ -17,14 +17,14 @@
 //! # The two scheduler couplings
 //!
 //! 1. **Horizon term.** A sub-node's
-//!    [`next_exact_local_event`](DeviceSchedulingSubNode::next_exact_local_event)
+//!    [`next_exact_local_event`](ScheduledIoNode::next_exact_local_event)
 //!    is its in-flight head's **final** (post-fault) `delivery_icount` ([IO-31]).
 //!    The scheduler folds it into the owning VM node's
 //!    [`ExactLocalEvent::IoCompletion`](crate::scheduler::ExactLocalEvent::IoCompletion)
 //!    term, so an otherwise-idle requester is fast-forwarded **exactly** to its
 //!    next I/O completion with no conservative slack ([IO-3], [SCHED-10]).
 //! 2. **RESOLVE delivery.** When the requester's frontier reaches a completion's
-//!    `delivery_icount`, [`DeviceSchedulingSubNode::deliver_due`] makes the
+//!    `delivery_icount`, [`ScheduledIoNode::deliver_due`] makes the
 //!    response visible at exactly that icount in the canonical
 //!    `(delivery_icount, src_node, seq)` total order ([IO-10], [SCHED-29]),
 //!    transport-timing-independent. Signal-driven storage and 9p mutations are
@@ -245,7 +245,7 @@ pub enum WorldIoInstantiationError {
 /// 9p), re-hashed by the binding path, and attached to a physical layout derived
 /// only at this instantiation boundary. Results follow canonical I/O-node order.
 /// This is the production bridge from logical World declarations to concrete
-/// [`DeviceSchedulingSubNode`] values.
+/// [`ScheduledIoNode`] values.
 ///
 /// # Errors
 ///
@@ -257,7 +257,7 @@ pub fn instantiate_world_io_sub_nodes(
     store: &dyn DagStore,
     seed: Seed,
     policy: WorldIoLayoutPolicy,
-) -> Result<Vec<DeviceSchedulingSubNode>, WorldIoInstantiationError> {
+) -> Result<Vec<ScheduledIoNode>, WorldIoInstantiationError> {
     let layout = WorldIoInstantiationLayout::derive(world, policy)?;
     let mut sub_nodes = Vec::with_capacity(world.io_nodes().count());
     for node in world.io_nodes() {
@@ -272,7 +272,7 @@ pub fn instantiate_world_io_sub_nodes(
             }
         })?;
         let sub_node = match &node.kind {
-            WorldIoNodeKind::Block { .. } => DeviceSchedulingSubNode::bind_world_block_with_layout(
+            WorldIoNodeKind::Block { .. } => ScheduledIoNode::bind_world_block_with_layout(
                 world,
                 &layout,
                 &node.id,
@@ -286,9 +286,7 @@ pub fn instantiate_world_io_sub_nodes(
                         source,
                     }
                 })?;
-                DeviceSchedulingSubNode::bind_world_ninep_with_layout(
-                    world, &layout, &node.id, tree, seed,
-                )
+                ScheduledIoNode::bind_world_ninep_with_layout(world, &layout, &node.id, tree, seed)
             }
         }
         .map_err(|source| WorldIoInstantiationError::Binding {
@@ -306,11 +304,11 @@ pub fn instantiate_world_io_sub_nodes(
 /// ([`SchedulerNodeId`]), the target VM [`NodeId`] that observes its completions,
 /// and the exact completions already produced by its authoritative adapter. The
 /// scheduler reads
-/// [`DeviceSchedulingSubNode::next_exact_local_event`] to bound the requester's
-/// horizon and calls [`DeviceSchedulingSubNode::deliver_due`] at RESOLVE to make
+/// [`ScheduledIoNode::next_exact_local_event`] to bound the requester's
+/// horizon and calls [`ScheduledIoNode::deliver_due`] at RESOLVE to make
 /// completions visible at their exact icount.
 #[derive(Clone, Debug)]
-pub struct DeviceSchedulingSubNode {
+pub struct ScheduledIoNode {
     sub_node: SchedulerNodeId,
     target: NodeId,
     device_id: DeviceId,
@@ -321,7 +319,13 @@ pub struct DeviceSchedulingSubNode {
     resolved: Vec<PendingCompletion>,
 }
 
-impl DeviceSchedulingSubNode {
+/// Preserves the earlier source name for [`ScheduledIoNode`] during migration.
+///
+/// Both names refer to the same authoritative device and completion queues.
+/// Checkpoint encodings and scheduler identities retain their existing formats.
+pub use self::ScheduledIoNode as DeviceSchedulingSubNode;
+
+impl ScheduledIoNode {
     /// Binds and instantiates a declared block I/O node over `base`.
     ///
     /// The world is authoritative for scheduling identity, owning VM, logical
@@ -355,7 +359,7 @@ impl DeviceSchedulingSubNode {
     ///
     /// # Errors
     ///
-    /// Returns the errors documented by [`DeviceSchedulingSubNode::bind_world_block`]
+    /// Returns the errors documented by [`ScheduledIoNode::bind_world_block`]
     /// and rejects a layout derived from another World or lacking the selected
     /// I/O node, before constructing the device.
     pub fn bind_world_block_with_layout(
@@ -517,7 +521,7 @@ impl DeviceSchedulingSubNode {
     ///
     /// # Errors
     ///
-    /// Returns the errors documented by [`DeviceSchedulingSubNode::bind_world_ninep`]
+    /// Returns the errors documented by [`ScheduledIoNode::bind_world_ninep`]
     /// and rejects a layout derived from another World or lacking the selected
     /// I/O node, before constructing the device.
     pub fn bind_world_ninep_with_layout(
@@ -612,7 +616,7 @@ impl DeviceSchedulingSubNode {
 
     /// Builds a scheduling sub-node over a 9p device for a target VM node.
     ///
-    /// This is the filesystem twin of [`DeviceSchedulingSubNode::new`]: the same
+    /// This is the filesystem twin of [`ScheduledIoNode::new`]: the same
     /// scheduler-facing machinery owns the device and exposes its exact in-flight
     /// head as the requester's local event.
     #[must_use]
@@ -678,7 +682,7 @@ impl DeviceSchedulingSubNode {
     /// Computes the exact `(delivery_icount, payload)` through the device and
     /// records it in delivery-key order. The device's own clock
     /// is never advanced here; delivery is driven solely by the scheduler through
-    /// [`DeviceSchedulingSubNode::deliver_due`].
+    /// [`ScheduledIoNode::deliver_due`].
     ///
     /// # Errors
     ///
@@ -699,9 +703,9 @@ impl DeviceSchedulingSubNode {
 
     /// Submits a raw 9p request frame at `request_icount` and COMPUTEs its reply.
     ///
-    /// This mirrors [`DeviceSchedulingSubNode::submit_fifo`] for the 9p sub-node:
+    /// This mirrors [`ScheduledIoNode::submit_fifo`] for the 9p sub-node:
     /// COMPUTE pins the exact modeled reply and
-    /// [`DeviceSchedulingSubNode::deliver_due`] later makes it visible.
+    /// [`ScheduledIoNode::deliver_due`] later makes it visible.
     ///
     /// # Errors
     ///
@@ -789,6 +793,18 @@ impl DeviceSchedulingSubNode {
             .iter()
             .find(|completion| !completion.delivered)
             .map(|head| head.delivery_icount)
+    }
+
+    /// Returns every retained completion identity in canonical delivery order.
+    ///
+    /// This immutable inventory lets common node adapters bind actual newly
+    /// computed responses to their original causal input without guessing from
+    /// request IDs or exposing mutable device internals.
+    pub fn pending_completion_keys(&self) -> impl Iterator<Item = (u64, u32, u32)> + '_ {
+        self.resolved
+            .iter()
+            .filter(|completion| !completion.delivered)
+            .map(PendingCompletion::delivery_key)
     }
 
     /// DELIVERs every completion due at or before `consumer_icount` in canonical
@@ -940,14 +956,14 @@ mod tests {
     }
 
     /// Builds a fault-free disk sub-node over a small base image.
-    fn fresh_disk(seed: Seed) -> DeviceSchedulingSubNode {
+    fn fresh_disk(seed: Seed) -> ScheduledIoNode {
         let core = match IoCore::new(7, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
         };
         let base = BaseImage::new(vec![0xab; 4096]);
         let device = BlockDevice::new(core, base, BlockLatency::default());
-        DeviceSchedulingSubNode::new(
+        ScheduledIoNode::new(
             sub_node_id("disk-sub"),
             node_id("vm-a"),
             device_id("disk"),
@@ -957,7 +973,7 @@ mod tests {
     }
 
     /// Builds a 9p sub-node over a read-only tree.
-    fn fresh_ninep(seed: Seed) -> DeviceSchedulingSubNode {
+    fn fresh_ninep(seed: Seed) -> ScheduledIoNode {
         let core = match IoCore::new(9, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
@@ -972,7 +988,7 @@ mod tests {
         let tree = FsTree::try_new(Node::Directory { children: root })
             .expect("test 9p tree components are valid");
         let device = NinepDevice::new(core, tree, NinepLatency::default());
-        DeviceSchedulingSubNode::new_ninep(
+        ScheduledIoNode::new_ninep(
             ninep_sub_node_id("ninep-sub"),
             node_id("vm-a"),
             device_id("fs"),

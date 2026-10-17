@@ -1,0 +1,169 @@
+--- a/src/sim/simulate.hh
++++ b/src/sim/simulate.hh
+@@ -50,6 +50,27 @@
+ 
+ GlobalSimLoopExitEvent *simulate(Tick num_cycles = -1);
+ 
++/** A pre-event pause result. This is not a durable capture certificate. */
++struct EventBoundaryResult
++{
++    uint64_t processedEvents = 0;
++    Tick currentTick = 0;
++    bool hasNextEvent = false;
++    Tick nextTick = 0;
++    int nextPriority = 0;
++    GlobalSimLoopExitEvent *exitEvent = nullptr;
++};
++
++/**
++ * Service at most max_events events strictly before exclusive_tick.
++ *
++ * No limit event is scheduled, and an idle queue's clock is not advanced.
++ * This entry point admits one event queue and rejects asynchronous host
++ * inputs. Capture/transport closure and model qualification are separate.
++ */
++EventBoundaryResult simulateUntilBoundary(Tick exclusive_tick,
++                                         uint64_t max_events);
++
+ /**
+  * @brief Set the maximum tick.
+  *
+--- a/src/sim/simulate.cc
++++ b/src/sim/simulate.cc
+@@ -55,6 +55,7 @@
+ #include "sim/init_signals.hh"
+ #include "sim/sim_events.hh"
+ #include "sim/sim_exit.hh"
++#include "sim/simulate.hh"
+ #include "sim/stat_control.hh"
+ 
+ namespace gem5
+@@ -254,6 +255,58 @@
+     return global_exit_event;
+ }
+ 
++
++EventBoundaryResult
++simulateUntilBoundary(Tick exclusive_tick, uint64_t max_events)
++{
++    fatal_if(numMainEventQueues != 1 || inParallelMode,
++             "Pre-event boundaries require one native event queue");
++    fatal_if(simulate_limit_event != nullptr,
++             "Pre-event boundaries cannot mix with stock limit events");
++    fatal_if(async_event,
++             "Pre-event boundaries do not admit asynchronous host inputs");
++
++    EventQueue *eventq = getEventQueue(0);
++    curEventQueue(eventq);
++    fatal_if(exclusive_tick < curTick(),
++             "Pre-event boundary precedes the current native tick");
++
++    // An actual modeled exit has already been acknowledged by the caller.
++    // Its bookkeeping cleanup does not introduce a new modeled exit event.
++    if (global_exit_event) {
++        global_exit_event->clean();
++        global_exit_event = nullptr;
++    }
++
++    EventBoundaryResult result;
++    while (!eventq->empty() && result.processedEvents < max_events &&
++           eventq->nextTick() < exclusive_tick) {
++        fatal_if(async_event,
++                 "Asynchronous input appeared during bounded execution");
++        fatal_if(curTick() > eventq->nextTick(),
++                 "Native event is scheduled before the current tick");
++
++        Event *local_exit = eventq->serviceOne();
++        ++result.processedEvents;
++        if (local_exit) {
++            global_exit_event = dynamic_cast<GlobalSimLoopExitEvent *>(
++                local_exit->globalEvent());
++            fatal_if(!global_exit_event,
++                     "Bounded execution encountered a non-global exit");
++            result.exitEvent = global_exit_event;
++            break;
++        }
++    }
++
++    result.currentTick = curTick();
++    result.hasNextEvent = !eventq->empty();
++    if (result.hasNextEvent) {
++        result.nextTick = eventq->getHead()->when();
++        result.nextPriority = eventq->getHead()->priority();
++    }
++    return result;
++}
++
+ void set_max_tick(Tick tick)
+ {
+     if (!simulate_limit_event) {
+--- a/src/python/pybind11/event.cc
++++ b/src/python/pybind11/event.cc
+@@ -107,6 +107,17 @@
+ 
+     m.def("simulate", &simulate,
+           py::arg("ticks") = MaxTick);
++
++    py::class_<EventBoundaryResult>(m, "EventBoundaryResult")
++        .def_readonly("processedEvents", &EventBoundaryResult::processedEvents)
++        .def_readonly("currentTick", &EventBoundaryResult::currentTick)
++        .def_readonly("hasNextEvent", &EventBoundaryResult::hasNextEvent)
++        .def_readonly("nextTick", &EventBoundaryResult::nextTick)
++        .def_readonly("nextPriority", &EventBoundaryResult::nextPriority)
++        .def_readonly("exitEvent", &EventBoundaryResult::exitEvent,
++                      py::return_value_policy::reference);
++    m.def("simulateUntilBoundary", &simulateUntilBoundary,
++          py::arg("exclusive_tick"), py::arg("max_events"));
+     m.def("setMaxTick", &set_max_tick, py::arg("tick"));
+     m.def("getMaxTick", &get_max_tick, py::return_value_policy::copy);
+     m.def("terminateEventQueueThreads", &terminateEventQueueThreads);
+--- a/src/python/m5/simulate.py
++++ b/src/python/m5/simulate.py
+@@ -244,7 +244,7 @@
+ need_startup = True
+ 
+ 
+-def simulate(*args, **kwargs):
++def _prepare_simulation(resume_drained=True):
+     global need_startup
+     global _instantiated
+ 
+@@ -268,17 +268,38 @@
+         stats.reset()
+ 
+     if _drain_manager.isDrained():
++        if not resume_drained:
++            fatal("Pre-event boundaries cannot resume a drained owner.")
+         _drain_manager.resume()
+ 
+     # We flush stdout and stderr before and after the simulation to ensure the
+     # output arrive in order.
+     sys.stdout.flush()
+     sys.stderr.flush()
++
++
++def simulate(*args, **kwargs):
++    _prepare_simulation()
+     sim_out = _m5_event.simulate(*args, **kwargs)
+     sys.stdout.flush()
+     sys.stderr.flush()
+ 
+     return sim_out
++
++
++def simulateUntilBoundary(exclusive_tick, max_events):
++    """Runs a bounded prefix without adding a synthetic exit event.
++
++    The exclusive tick and event budget leave the next native event queued.
++    An idle interval does not advance the native clock. One event queue and
++    absence of asynchronous host input are required. This primitive alone
++    does not qualify exact snapshots, external resources or model state.
++    """
++    _prepare_simulation(resume_drained=False)
++    result = _m5_event.simulateUntilBoundary(exclusive_tick, max_events)
++    sys.stdout.flush()
++    sys.stderr.flush()
++    return result
+ 
+ 
+ def setMaxTick(tick: int) -> None:

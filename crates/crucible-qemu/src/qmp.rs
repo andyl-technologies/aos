@@ -33,6 +33,8 @@ mod fingerprint_projection;
 mod hot_fork;
 mod hot_fork_coordinator;
 mod hot_fork_stages;
+#[cfg(target_os = "linux")]
+mod kvm_profile;
 mod ram_delta;
 use command::{
     HotForkAsyncWorkerBarrierAction, HotForkBlockBarrierAction, HotForkChildConsoleAction,
@@ -45,6 +47,22 @@ use fingerprint_projection::{
 };
 pub(crate) use fingerprint_projection::{
     QmpFingerprintProjectionManifest, QmpFingerprintProjectionManifestRow,
+};
+#[cfg(target_os = "linux")]
+pub use kvm_profile::{
+    QmpKvmAccelerationState, QmpKvmClockComponentState, QmpKvmClockOperation, QmpKvmClockRequest,
+    QmpKvmClockV3ComponentState, QmpKvmCompletionSummary, QmpKvmCompletionTransaction,
+    QmpKvmInitialResponseObservation, QmpKvmInitialResponseOperation, QmpKvmInitialResponseRequest,
+    QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction, QmpKvmMoreResponseObservation,
+    QmpKvmMoreResponseOperation, QmpKvmMoreResponseRequest, QmpKvmMoreResponseState,
+    QmpKvmMoreResponseTransaction, QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnIdentity,
+    QmpKvmOriginalReturnObservation, QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest,
+    QmpKvmOriginalReturnState, QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest,
+    QmpKvmOriginalReturnsState, QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation,
+    QmpKvmOriginalWindowRequest, QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction,
+    QmpKvmResponseBytesObservation, QmpKvmResponseBytesOperation, QmpKvmResponseBytesPayloadKind,
+    QmpKvmResponseBytesRequest, QmpKvmResponseBytesState, QmpKvmUserspaceComponentState,
+    QmpKvmUserspaceExitPhase, QmpKvmUserspaceExitRecord, QmpKvmUserspaceInventory,
 };
 #[cfg(all(test, target_os = "linux"))]
 mod checkpoint_delta_flight_tests;
@@ -1327,6 +1345,36 @@ impl QmpRunStateKind {
 /// Supported QMP command kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QmpCommandKind {
+    /// Observes the actual native KVM accelerator without controller qualification.
+    #[cfg(target_os = "linux")]
+    QueryKvm,
+    /// Controls an experimental partial native clock without profile qualification.
+    #[cfg(target_os = "linux")]
+    KvmClockComponent,
+    /// Controls the edition-three partial native clock without profile qualification.
+    #[cfg(target_os = "linux")]
+    KvmClockComponentV3,
+    /// Observes original userspace exit inventory without completion or qualification.
+    #[cfg(target_os = "linux")]
+    KvmUserspaceExits,
+    /// Submits or polls the original first response without execution authority.
+    #[cfg(target_os = "linux")]
+    KvmInitialResponse,
+    /// Queries or completes original kernel-owned response bytes without a guest RUN.
+    #[cfg(target_os = "linux")]
+    KvmResponseBytes,
+    /// Submits or polls an original More callback without another guest RUN.
+    #[cfg(target_os = "linux")]
+    KvmMoreResponse,
+    /// Controls an original native window component without whole-node qualification.
+    #[cfg(target_os = "linux")]
+    KvmOriginalWindow,
+    /// Queries or acknowledges one original kernel return without device closure.
+    #[cfg(target_os = "linux")]
+    KvmOriginalReturn,
+    /// Observes retained native return identities without ACK or dispatch permission.
+    #[cfg(target_os = "linux")]
+    KvmOriginalReturns,
     /// QMP capability negotiation.
     Capabilities,
     /// VMState snapshot save.
@@ -1410,6 +1458,26 @@ pub enum QmpCommandKind {
 impl QmpCommandKind {
     const fn wire_name(self) -> &'static str {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::QueryKvm => "query-kvm",
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponent => "x-crucible-kvm-clock",
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponentV3 => "x-crucible-kvm-clock-v3",
+            #[cfg(target_os = "linux")]
+            Self::KvmUserspaceExits => "x-crucible-kvm-userspace-exits",
+            #[cfg(target_os = "linux")]
+            Self::KvmInitialResponse => "x-crucible-kvm-initial-response",
+            #[cfg(target_os = "linux")]
+            Self::KvmResponseBytes => "x-crucible-kvm-response-bytes",
+            #[cfg(target_os = "linux")]
+            Self::KvmMoreResponse => "x-crucible-kvm-response-service",
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalWindow => "x-crucible-kvm-original-window",
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturn => "x-crucible-kvm-original-return",
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturns => "x-crucible-kvm-original-returns",
             Self::Capabilities => QMP_CAPABILITIES_COMMAND,
             Self::SaveVm => QMP_SNAPSHOT_SAVE_COMMAND,
             Self::DeleteSnapshot => QMP_SNAPSHOT_DELETE_COMMAND,

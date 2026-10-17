@@ -443,19 +443,19 @@ pub(super) fn workload_pattern_cmdline(
     }
 }
 
-pub(super) fn workload_pattern_node(name: &str, cmdline: String) -> WorldNode {
-    WorldNode {
+pub(super) fn workload_pattern_node(name: &str, cmdline: String) -> ComputeNodeDef {
+    ComputeNodeDef {
         id: NodeId {
             name: String::from(name),
         },
         arch: VmArchitecture::X86_64,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline,
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 1 },
         },
         white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -485,7 +485,7 @@ pub(super) fn canonical_world_node_defs(nodes: &[WorldNodeDef]) -> Vec<WorldNode
     nodes
 }
 
-pub(super) fn world_vm_node_projection(nodes: &[WorldNodeDef]) -> Vec<WorldNode> {
+pub(super) fn world_vm_node_projection(nodes: &[WorldNodeDef]) -> Vec<ComputeNodeDef> {
     nodes
         .iter()
         .filter_map(|node| match node {
@@ -852,7 +852,7 @@ pub(super) fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> Strin
     }
 }
 
-pub(super) fn world_nodes_material(nodes: &[WorldNode]) -> String {
+pub(super) fn world_nodes_material(nodes: &[ComputeNodeDef]) -> String {
     let mut lines = Vec::with_capacity(nodes.len().saturating_mul(5) + 1);
     lines.push(format!("nodes={}", nodes.len()));
     for node in nodes {
@@ -916,7 +916,7 @@ pub(super) fn world_io_node_material(node: &WorldIoNode) -> String {
     )
 }
 
-pub(super) fn world_node_material(node: &WorldNode) -> String {
+pub(super) fn world_node_material(node: &ComputeNodeDef) -> String {
     format!(
         "node_id_len={}\nnode_id={}\narch={}\nmemory_mib={}\ncmdline_len={}\ncmdline={}\nsmp_vcpus={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
         node.id.name.len(),

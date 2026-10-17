@@ -166,6 +166,7 @@ pub struct QemuLaunchPluginConfig {
         Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
+    whole_constructor: Option<crucible_protocol::whole_control::staged::selection::WholeConstructorSelection>,
 }
 
 impl QemuLaunchPluginConfig {
@@ -189,6 +190,7 @@ impl QemuLaunchPluginConfig {
             selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
+            whole_constructor: None,
         }
     }
 
@@ -359,13 +361,34 @@ impl QemuLaunchPluginConfig {
         }
     }
 
+    /// Selects the complete original staged constructor before process creation.
+    ///
+    /// The selection retains launch and queue-role bytes but grants no native
+    /// readiness. Guarded spawn seals the exact plan and source image objects
+    /// before the child can construct a board, load images or allocate guest RAM.
+    #[must_use]
+    pub fn with_whole_constructor(
+        mut self,
+        selection: crucible_protocol::whole_control::staged::selection::WholeConstructorSelection,
+    ) -> Self {
+        self.whole_constructor = Some(selection);
+        self
+    }
+
     /// Returns the complete process-neutral plugin setup plan.
     #[must_use]
     pub fn plugin_setup_plan(&self) -> crucible_protocol::plugin_setup_plan::PluginSetupPlan {
-        crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(
-            self.app_random_branch_plan().clone(),
-            self.selectable_catalog_plan().clone(),
-        )
+        match &self.whole_constructor {
+            Some(selection) => crucible_protocol::plugin_setup_plan::PluginSetupPlan::new_whole(
+                self.app_random_branch_plan().clone(),
+                self.selectable_catalog_plan().clone(),
+                selection.clone(),
+            ),
+            None => crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(
+                self.app_random_branch_plan().clone(),
+                self.selectable_catalog_plan().clone(),
+            ),
+        }
     }
 
     /// Returns the single-VM fingerprint sampling switch passed to the plugin.

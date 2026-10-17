@@ -1,0 +1,70 @@
+{
+  "corrected": {
+    "expected_assertion": null,
+    "expected_assertion_line": null
+  },
+  "known-high": {
+    "expected_assertion": "pic.pics[0].isr == 1 && !native_eoi_tails",
+    "expected_assertion_line": 1485
+  },
+  "locked-geometry": {
+    "expected_assertion": "pic.pics[0].isr == 1 && !native_eoi_tails",
+    "expected_assertion_line": 1485
+  },
+  "original-target": {
+    "expected_assertion": "pic.pics[0].isr == 1 && !native_eoi_tails",
+    "expected_assertion_line": 1485
+  },
+  "pending-original": {
+    "expected_assertion": "pic.pics[0].isr == 1 && !pic.crucible_eoi_issued && !native_eoi_tails",
+    "expected_assertion_line": 1629
+  },
+  "original-sequence": {
+    "expected_assertion": "pic.pics[0].isr == 1 && !native_eoi_tails",
+    "expected_assertion_line": 1485
+  },
+  "original-generation": {
+    "expected_assertion": "pic.pics[0].isr == 1 && !native_eoi_tails",
+    "expected_assertion_line": 1485
+  },
+  "original-invocation": {
+    "expected_assertion": "pic.pics[0].isr == 1 && !native_eoi_tails",
+    "expected_assertion_line": 1485
+  },
+  "finite-eoi": {
+    "expected_assertion": "pic.pics[0].isr == 1 && !native_eoi_tails",
+    "expected_assertion_line": 1643
+  },
+  "pending-result": {
+    "expected_assertion": "kvm_crucible_pic_set_pit_irq(&route, &vm, KVM_PIT_IRQ_SOURCE_ID, 0, false, &low) >= 0",
+    "expected_assertion_line": 1452
+  },
+  "pending-low-tail": {
+    "expected_assertion": "!pic_pit_original_eoi(&vm.target, &pic, 0x60)",
+    "expected_assertion_line": 1405
+  },
+  "original-run": {
+    "expected_assertion": "pic.pics[0].isr == 1 && !pic.crucible_eoi_issued && !native_eoi_tails",
+    "expected_assertion_line": 1636
+  },
+  "finish-row-reconciliation": {
+    "expected_assertion": "pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN",
+    "expected_assertion_line": 345
+  },
+  "next-high-reuse": {
+    "expected_assertion": "kvm_crucible_pic_set_pit_irq(&route, &vm, KVM_PIT_IRQ_SOURCE_ID, 1, false, &next) == -EAGAIN",
+    "expected_assertion_line": 1553
+  },
+  "original-release-predecessor": {
+    "expected_assertion": "pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN",
+    "expected_assertion_line": 345
+  },
+  "controller-inflight": {
+    "expected_assertion": "picdev_write(&writer, &pic, 0x21, 1, &mask) == -EAGAIN",
+    "expected_assertion_line": 1594
+  },
+  "finish-geometry": {
+    "expected_assertion": "pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN",
+    "expected_assertion_line": 1615
+  }
+}

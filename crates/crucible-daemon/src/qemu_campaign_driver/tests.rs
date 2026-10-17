@@ -127,7 +127,7 @@ struct TerminalCrossingLifecycle {
     terminal: bool,
 }
 
-impl QemuModeledAttemptLifecycle for TerminalCrossingLifecycle {
+impl ModeledAttemptLifecycle for TerminalCrossingLifecycle {
     fn set_attempt_stop_frontier(
         &mut self,
         frontier: Option<VirtualTime>,
@@ -168,6 +168,18 @@ impl QemuModeledAttemptLifecycle for TerminalCrossingLifecycle {
         Ok(true)
     }
 
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("terminal-crossing fixture has no execution fingerprint"),
+        })
+    }
+}
+
+impl QemuModeledAttemptLifecycle for TerminalCrossingLifecycle {
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
@@ -186,19 +198,9 @@ impl QemuModeledAttemptLifecycle for TerminalCrossingLifecycle {
             message: String::from("terminal-crossing fixture has no selectable transport"),
         })
     }
-
-    fn pending_network_output_count(&self) -> usize {
-        0
-    }
-
-    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
-        Err(SchedulerError::BoundaryViolation {
-            message: String::from("terminal-crossing fixture has no execution fingerprint"),
-        })
-    }
 }
 
-impl QemuModeledAttemptLifecycle for RestoredFrontierLifecycle {
+impl ModeledAttemptLifecycle for RestoredFrontierLifecycle {
     fn set_attempt_stop_frontier(
         &mut self,
         _frontier: Option<VirtualTime>,
@@ -233,6 +235,18 @@ impl QemuModeledAttemptLifecycle for RestoredFrontierLifecycle {
         Ok(false)
     }
 
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("restored-frontier fixture has no execution fingerprint"),
+        })
+    }
+}
+
+impl QemuModeledAttemptLifecycle for RestoredFrontierLifecycle {
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
@@ -249,16 +263,6 @@ impl QemuModeledAttemptLifecycle for RestoredFrontierLifecycle {
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("restored-frontier fixture has no selectable transport"),
-        })
-    }
-
-    fn pending_network_output_count(&self) -> usize {
-        0
-    }
-
-    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
-        Err(SchedulerError::BoundaryViolation {
-            message: String::from("restored-frontier fixture has no execution fingerprint"),
         })
     }
 }

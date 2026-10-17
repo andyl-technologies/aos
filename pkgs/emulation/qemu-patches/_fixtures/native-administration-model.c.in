@@ -1,0 +1,184 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Extracted enrollment with synthetic controller predicates; OS identity is real. */
+#include "qemu/osdep.h"
+#include "qemu/bswap.h"
+#include "qemu/sockets.h"
+#include "plugins/qemu-plugin.h"
+#include "accel/tcg/tcg-accel-ops-sim-shmem.h"
+#include <pthread.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+static QemuPluginCrucibleNodePhasePolicy node_phase_policy;
+static QemuPluginCrucibleNodeInitializationCommand initialization_authorization;
+static bool node_phase_launch_pinned = true;
+static bool initialization_launch_pinned = true;
+static uint64_t modeled_counter;
+bool crucible_node_control_registered(void)
+{
+    return true;
+}
+static bool current_accel_is_sim(void)
+{
+    return true;
+}
+static bool icount_crucible_sim_configuration_valid(void)
+{
+    return true;
+}
+uint64_t qemu_plugin_icount_raw(void)
+{
+    return modeled_counter;
+}
+int qemu_get_thread_id(void)
+{
+    return syscall(SYS_gettid);
+}
+static int initialization_hex_digit(char byte)
+{
+    if (byte >= '0' && byte <= '9') {
+        return byte - '0';
+    }
+    if (byte >= 'a' && byte <= 'f') {
+        return byte - 'a' + 10;
+    }
+    return -1;
+}
+
+static bool initialization_digest_present(const uint8_t digest[32])
+{
+    uint8_t present = 0;
+
+    for (uint32_t index = 0; index < 32; index++) {
+        present |= digest[index];
+    }
+    return present != 0;
+}
+
+@NATIVE_ADMINISTRATION@
+
+static QemuPluginCrucibleNodeAdministrationFacts retained;
+static int enrolled_status, foreign_status;
+
+static void *enroll_original(void *opaque)
+{
+    QemuPluginCrucibleNodeAdministrationFacts repeated;
+
+    enrolled_status = qemu_plugin_register_crucible_node_administration(
+        &node_administration_policy, &retained);
+    assert(!enrolled_status && retained.thread_id == syscall(SYS_gettid));
+    modeled_counter = 7;
+    assert(!qemu_plugin_register_crucible_node_administration(
+        &node_administration_policy, &repeated));
+    assert(!memcmp(&repeated, &retained, sizeof(retained)));
+    return NULL;
+}
+
+static void *enroll_foreign(void *opaque)
+{
+    QemuPluginCrucibleNodeAdministrationFacts facts, zero = { 0 };
+
+    foreign_status = qemu_plugin_register_crucible_node_administration(
+        &node_administration_policy, &facts);
+    assert(foreign_status == -EALREADY);
+    assert(!memcmp(&facts, &zero, sizeof(facts)));
+    return NULL;
+}
+
+int main(void)
+{
+    QemuPluginCrucibleNodeAdministrationFacts facts, zero = { 0 };
+    QemuPluginCrucibleNodeAdministrationPolicy substituted;
+    uint8_t bytes[160] = { 0 }, foreign[32];
+    char argument[324];
+    static const char hex[] = "0123456789abcdef";
+    pthread_t original_thread, foreign_thread;
+    struct stat identity;
+    int sockets[2], replacements[2], status;
+    pid_t child;
+
+    assert(!socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, sockets));
+    assert(!fstat(sockets[0], &identity));
+    for (unsigned index = 0; index < 4; index++) {
+        bytes[32 * index] = index + 1;
+    }
+    stl_le_p(bytes + 128, 1);
+    stl_le_p(bytes + 132, 1);
+    stl_le_p(bytes + 136, sockets[0]);
+    stq_le_p(bytes + 144, identity.st_dev);
+    stq_le_p(bytes + 152, identity.st_ino);
+    memcpy(argument, "v1:", 3);
+    for (unsigned index = 0; index < 160; index++) {
+        argument[3 + index * 2] = hex[bytes[index] >> 4];
+        argument[4 + index * 2] = hex[bytes[index] & 15];
+    }
+    argument[323] = 0;
+    memcpy(node_phase_policy.prepared_scope_hash, bytes, 32);
+    memcpy(initialization_authorization.prepared_scope_hash, bytes, 32);
+    memcpy(node_phase_policy.realize_request_digest, bytes + 64, 32);
+    memcpy(initialization_authorization.realize_request_digest, bytes + 64, 32);
+    assert(!crucible_node_administration_pin_early(argument));
+    assert(crucible_node_administration_pin_early(argument) == -EINVAL);
+    assert(crucible_node_administration_pin_matches_phase());
+    node_phase_policy.realize_request_digest[0] ^= 1;
+    assert(!crucible_node_administration_pin_matches_phase());
+    node_phase_policy.realize_request_digest[0] ^= 1;
+    initialization_authorization.prepared_scope_hash[0] ^= 1;
+    assert(!crucible_node_administration_pin_matches_phase());
+    initialization_authorization.prepared_scope_hash[0] ^= 1;
+    assert(crucible_node_administration_pin_matches_phase());
+    assert(qemu_plugin_crucible_node_query_administration(bytes, bytes + 32,
+                                                         &facts) == -ESTALE);
+    assert(!memcmp(&facts, &zero, sizeof(facts)));
+    assert(!pthread_create(&original_thread, NULL, enroll_original, NULL));
+    assert(!pthread_join(original_thread, NULL));
+    assert(retained.flags == 7 && retained.registration_id == 1);
+    assert(retained.process_id == getpid());
+    assert(!pthread_create(&foreign_thread, NULL, enroll_foreign, NULL));
+    assert(!pthread_join(foreign_thread, NULL));
+    assert(!qemu_plugin_crucible_node_query_administration(bytes, bytes + 32,
+                                                          &facts));
+    assert(!memcmp(&facts, &retained, sizeof(facts)));
+    memcpy(foreign, bytes, 32);
+    foreign[0] ^= 1;
+    assert(qemu_plugin_crucible_node_query_administration(foreign, bytes + 32,
+                                                         &facts) == -ESTALE);
+    assert(!memcmp(&facts, &zero, sizeof(facts)));
+    substituted = node_administration_policy;
+    substituted.policy_digest[0] ^= 1;
+    assert(qemu_plugin_register_crucible_node_administration(&substituted,
+                                                            &facts) == -EINVAL);
+    assert(!memcmp(&facts, &zero, sizeof(facts)));
+    assert(crucible_node_administration_manifest_matches(bytes, bytes + 32,
+                                                         sockets[0]));
+    assert(!crucible_node_administration_manifest_matches(bytes, bytes + 32,
+                                                          sockets[1]));
+
+    /* Fork while the parent's registry mutex is actually locked. The child
+     * must refuse before touching that inherited lock, not hang under BQL. */
+    assert(!pthread_mutex_lock(&node_administration_mutex));
+    child = fork();
+    assert(child >= 0);
+    if (!child) {
+        alarm(2);
+        assert(qemu_plugin_crucible_node_query_administration(bytes, bytes + 32,
+                                                             &facts) == -ESTALE);
+        assert(!memcmp(&facts, &zero, sizeof(facts)));
+        _exit(0);
+    }
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(!pthread_mutex_unlock(&node_administration_mutex));
+
+    assert(!socketpair(AF_UNIX, SOCK_DGRAM, 0, replacements));
+    assert(dup2(replacements[0], sockets[0]) == sockets[0]);
+    assert(!crucible_node_administration_manifest_matches(bytes, bytes + 32,
+                                                          sockets[0]));
+    assert(qemu_plugin_register_crucible_node_administration(
+        &node_administration_policy, &facts) == -EINVAL);
+    assert(!memcmp(&facts, &zero, sizeof(facts)));
+    assert(!qemu_plugin_crucible_node_query_administration(bytes, bytes + 32,
+                                                          &facts));
+    assert(!memcmp(&facts, &retained, sizeof(facts)));
+    puts("PASS actual OS socket/thread identity, foreign-thread refusal, descriptor replacement, original retry, locked-fork pre-lock refusal; controller predicates remain synthetic");
+    return 0;
+}

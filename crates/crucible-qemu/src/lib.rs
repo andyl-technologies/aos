@@ -51,6 +51,8 @@ mod fault_implementation;
 #[cfg(target_os = "linux")]
 mod host_setup;
 mod inertness;
+#[cfg(target_os = "linux")]
+pub mod kvm_profile;
 mod launch;
 #[cfg(target_os = "linux")]
 mod linux_attempt_host;
@@ -71,6 +73,12 @@ mod live_plugin_gate;
 mod live_plugin_gate;
 #[cfg(unix)]
 mod mapped_quantum;
+#[cfg(target_os = "linux")]
+pub mod native_node_control;
+#[cfg(target_os = "linux")]
+pub mod native_staged_control;
+#[cfg(target_os = "linux")]
+pub mod native_whole_control;
 mod node;
 #[cfg(target_os = "linux")]
 mod node_factory;
@@ -327,8 +335,11 @@ pub use shutdown::{
 pub(crate) use spawn::spawn_prepared_qemu_child_with_fds_in_directory_guarded;
 #[cfg(target_os = "linux")]
 pub use spawn::{
-    QemuChildProcessContract, QemuPreparedRunDirectory, QemuSpawnError, QemuSpawnHostResources,
-    QemuSpawnSetupResources, QemuSpawnedChild,
+    QemuChildProcessContract, QemuOriginalWholeLaunch, QemuPreparedRunDirectory, QemuSpawnError,
+    QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild, QemuWholeLaunchCustody,
+    QemuWholeLaunchCustodySlot, spawn_selected_qemu_child_for_stopped_initialization,
+    spawn_selected_qemu_child_for_stopped_rr_preparation,
+    spawn_selected_qemu_child_in_directory_guarded,
 };
 pub use storage_array::{
     StorageArrayError, StorageArrayMemberWrite, StorageArrayWritePlan, plan_storage_array_write,

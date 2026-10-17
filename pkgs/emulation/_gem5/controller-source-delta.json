@@ -1,0 +1,14 @@
+{
+  "schema": "crucible.gem5.device-controller-source-delta.v1",
+  "baseline_sha256": "dc9c79e6a6c5df9c6de55de043c7f52688ff9b4478e36d7ce5de1d12dd20da8f",
+  "patch_sha256": "45d65abd4cd5a171b5dc86e40aabc9c7b9f0c0302df550ede542bbeb0b417145",
+  "derived_sha256": "f990b51c08552330aca7511700105dc20e00684e4a9d303998af22aa14504cc1",
+  "production_se_or_root_replaced": false,
+  "changes": [
+    "explicit selected partial device/FIFO diagnostics",
+    "finite 4MiB source-selected diagnostic object reservation",
+    "model-owned closed boot native batching and actual native counters",
+    "stop on a publication even if original payload is empty",
+    "retained original future device inputs with pre-effect reservation"
+  ]
+}

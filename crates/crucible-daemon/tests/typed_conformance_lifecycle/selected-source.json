@@ -1,0 +1,158 @@
+{
+  "descriptor": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/implementation.json",
+  "package": {
+    "hash": {
+      "algorithm": "blake3-256",
+      "digest": "7aa842518c587aed08662e0030c988d8c383d44f9d0fdfe22d11215065fb99ae",
+      "domain": "cnp.blob.v1"
+    },
+    "length": "5030",
+    "media_type": "application/json"
+  },
+  "roles": {
+    "provider": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "c5c4a36dc2fc8d4b5dff2224dfd302a05ee1f4708fb1ed5a1828e1a08a2de816",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "4002808",
+        "media_type": "application/octet-stream"
+      },
+      "path": "/nix/store/b01wjijcciwipa1vma5pmafpnpqk1lg0-crucible-reference-lineage-reader-typed-binaries-0.1.0/bin/crucible-reference-lineage-reader-typed-provider"
+    },
+    "native": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "2a66e770e71e6388af8e6f6f6d5867ab7e05de8613028a926604004cd1e71dc4",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "815952",
+        "media_type": "application/octet-stream"
+      },
+      "path": "/nix/store/b01wjijcciwipa1vma5pmafpnpqk1lg0-crucible-reference-lineage-reader-typed-binaries-0.1.0/bin/crucible-reference-lineage-device"
+    },
+    "build_closure": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "7b872d08e10fb91029ecd402480160de47d329915f6350fa4346a4b1c7cf5a2a",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "87598",
+        "media_type": "application/json"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/runtime-closure.json"
+    },
+    "contract": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "794f28b3fa807d864e00a0e6651f3bae6d0fdb28e5dc4a85e86d2aaf5b918452",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "104233",
+        "media_type": "application/gzip"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/contract.tar.gz"
+    },
+    "event": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "9b71d2bf6a8898d46461e0b40240717296e539a73facf61a426d60175b81b3c6",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "15711",
+        "media_type": "text/plain"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/event-definition.rs"
+    },
+    "handler": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "126f4673c9cfa0baba009630683b7ef0c78b1f20dd25a6ab20313dc86feb1f33",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "1316",
+        "media_type": "application/json"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/reader-handler.json"
+    },
+    "input": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "9b71d2bf6a8898d46461e0b40240717296e539a73facf61a426d60175b81b3c6",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "15711",
+        "media_type": "text/plain"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/input-definition.rs"
+    },
+    "namespace_publication": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "c8167db8e9c9b76324bbb7715296f54748b25e5cde70e0c030ceedb54b3d5304",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "264",
+        "media_type": "application/json"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/namespace-origin.json"
+    },
+    "reader_definition": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "9f4dd7872e1e63f649a66f38ff1949a1c66670f1edb84e3c87be82fdcf26a94c",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "12309",
+        "media_type": "application/json"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/reader-definition.json"
+    },
+    "recipe": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "de41c926566fe7271ccb4ca69f841d714cdf5cd652ea04308167cd8aade9d61e",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "7536",
+        "media_type": "text/plain"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/recipe.nix"
+    },
+    "source": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "055183c06bcf62adeef7c54827010a2f4742e73ea9a02f11aa624c4c89f4673e",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "129161370",
+        "media_type": "application/gzip"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/source.tar.gz"
+    },
+    "stop": {
+      "content": {
+        "hash": {
+          "algorithm": "blake3-256",
+          "digest": "0143bd37d1bfe2a7af3f8d50bf248395388cf26cc00bf59cbe7b4df95f13d9f5",
+          "domain": "cnp.blob.v1"
+        },
+        "length": "11128",
+        "media_type": "text/plain"
+      },
+      "path": "/nix/store/4ac8a9w60vm7w5lxsazp141znl44rkn2-crucible-reference-lineage-reader-typed-implementation-1/share/crucible/reference-lineage-reader-typed/stop-definition.rs"
+    }
+  }
+}

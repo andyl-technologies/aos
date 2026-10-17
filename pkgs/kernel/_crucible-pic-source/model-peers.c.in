@@ -1,0 +1,213 @@
+/* Source-extracted PIC controls. Scheduling, PIT birth validation, architecture
+ * injection and the common stopped-cut peers are modeled; no guest is run. */
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <pthread.h>
+#include <errno.h>
+#include <limits.h>
+
+typedef uint8_t u8;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef pthread_mutex_t spinlock_t;
+#define PIC_NUM_PINS 16
+#define KVM_PIT_IRQ_SOURCE_ID 1
+#define KVM_IRQ_ROUTING_IRQCHIP 1
+#define KVM_IRQCHIP_PIC_MASTER 0
+#define KVM_CRUCIBLE_RUN_RETURN_RETURNED 1
+#define U32_MAX UINT32_MAX
+#define BIT(n) (1UL << (n))
+#define READ_ONCE(value) (value)
+#define EXPORT_SYMBOL_FOR_KVM_INTERNAL(name)
+#define lockdep_assert_held(lock) ((void)(lock))
+#define __acquires(lock)
+#define __releases(lock)
+#define kvm_for_each_vcpu(index, vcpu, kvm) \
+    for ((index) = 0; (index) < 1 && ((vcpu) = &(kvm)->target, true); (index)++)
+#define raw_spin_lock_irqsave(lock, flags) \
+    do { (flags) = 0; assert(!pthread_mutex_lock(lock)); } while (0)
+#define raw_spin_unlock_irqrestore(lock, flags) \
+    do { (void)(flags); assert(!pthread_mutex_unlock(lock)); } while (0)
+
+struct kvm;
+struct kvm_pic;
+struct kvm_vcpu {
+    struct kvm *kvm;
+    pthread_mutex_t mutex;
+    /* This peer contains only native-created nonnegative IDs. The actual
+     * source declaration stays int; no signed native refusal is rewritten. */
+    u32 vcpu_id;
+    void *crucible_timer_run_owner;
+    u64 crucible_timer_run_invocation;
+    struct {
+        bool outstanding;
+        struct { u64 invocation, generation_begin; u32 native_vcpu_id, flags; } original;
+    } crucible_run_return;
+    struct {
+        bool injection_active;
+        u64 injection_invocation;
+    } crucible_apic_target;
+    struct { struct { bool injected, soft; u8 nr; } interrupt; } arch;
+};
+
+struct kvm {
+    pthread_mutex_t crucible_gate_lock;
+    struct { struct kvm_pic *vpic;
+        struct { bool active; u64 window_generation;
+            struct { bool uncertain; } continuation; } crucible_clock;
+    } arch;
+    struct { bool enabled, tainted; } crucible_irq_input;
+    bool crucible_continuation_roster_frozen, crucible_memory_tainted;
+    u64 crucible_host_ceiling_ns;
+    u32 crucible_effect_owners;
+    int crucible_stopped;
+    struct kvm_vcpu target;
+};
+
+struct kvm_io_device { int unused; };
+struct kvm_kernel_irq_routing_entry {
+    u32 gsi, type;
+    struct { u32 irqchip, pin; } irqchip;
+    int (*set)(struct kvm_kernel_irq_routing_entry *, struct kvm *, int, int, bool);
+};
+
+static struct kvm vm;
+static struct kvm_pic pic;
+static struct kvm_kernel_irq_routing_entry route;
+static u64 host_now;
+static int owner;
+#define current ((void *)&owner)
+static unsigned native_wakes, native_requests, native_queues, native_injections;
+static unsigned dead_calls, generic_notifiers;
+static bool birth_live, accept_pic, close_after_injection, change_queued_vector;
+static bool close_after_pic_collection;
+
+static bool in_interrupt(void) { return false; }
+static u64 ktime_get_ns(void) { return host_now; }
+
+static bool kvm_crucible_clock_admission_live(bool active, u64 ceiling, u64 now)
+{
+    return active && now < ceiling;
+}
+
+static void kvm_arch_crucible_irq_taint_locked(struct kvm *kvm)
+{
+    kvm->crucible_irq_input.tainted = true;
+    kvm->arch.crucible_clock.continuation.uncertain = true;
+}
+
+static void kvm_vm_dead(struct kvm *kvm)
+{
+    assert(kvm == &vm);
+    dead_calls++;
+}
+
+static void spin_lock(spinlock_t *lock) { assert(!pthread_mutex_lock(lock)); }
+static void spin_unlock(spinlock_t *lock)
+{
+    if (lock == &pic.lock && close_after_pic_collection &&
+        pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_CONSUMED) {
+        /* A modeled ceiling fires after local collection but before the final
+         * architecture admission. Native credit must span reconciliation. */
+        assert(vm.crucible_effect_owners == 1);
+        assert(vm.target.crucible_apic_target.injection_active);
+        host_now = vm.crucible_host_ceiling_ns;
+        close_after_pic_collection = false;
+    }
+    assert(!pthread_mutex_unlock(lock));
+}
+static void wake_up_all(int *wait) { assert(wait == &vm.crucible_stopped); }
+
+static bool kvm_apic_accept_pic_intr(struct kvm_vcpu *vcpu)
+{
+    assert(vcpu == &vm.target);
+    return accept_pic;
+}
+
+static void kvm_make_request(int request, struct kvm_vcpu *vcpu)
+{
+    assert(request == 1 && vcpu == &vm.target);
+    native_requests++;
+}
+
+#define KVM_REQ_EVENT 1
+static void kvm_vcpu_kick(struct kvm_vcpu *vcpu)
+{
+    assert(vcpu == &vm.target);
+    native_wakes++;
+}
+
+static int __kvm_irq_line_state(unsigned long *state, int source, int level)
+{
+    if (level)
+        *state |= BIT(source);
+    else
+        *state &= ~BIT(source);
+    return !!*state;
+}
+
+static void trace_kvm_pic_set_irq(int chip, int pin, u8 elcr, u8 imr, bool coalesced)
+{
+    (void)elcr; (void)imr; (void)coalesced;
+    assert(chip == 0 && pin == 0);
+}
+
+static void pic_clear_isr(struct kvm_kpic_state *state, int irq)
+{
+    state->isr &= ~(1 << irq);
+    generic_notifiers++;
+}
+
+static bool kvm_arch_crucible_pit_irq_birth_live_locked(struct kvm *kvm,
+    const struct kvm_crucible_pit_irq_birth *original)
+{
+    /* The actual parent helper owns the PIT worker/source journals. This peer
+     * supplies that admission result and lets controls revoke it explicitly. */
+    return birth_live && original->sequence == 11 && original->invocation == 5 &&
+        original->generation == kvm->arch.crucible_clock.window_generation &&
+        kvm_crucible_clock_admission_live(kvm->arch.crucible_clock.active,
+            kvm->crucible_host_ceiling_ns, host_now) &&
+        !kvm->crucible_irq_input.tainted;
+}
+
+static bool kvm_crucible_apic_injection_finish_locked(struct kvm_vcpu *vcpu, bool injected)
+{
+    /* PIC EXTINT has no LAPIC ISR record. The actual PIC tail must validate it. */
+    (void)injected;
+    assert(vcpu == &vm.target);
+    return true;
+}
+
+static bool kvm_cpu_has_injectable_intr(struct kvm_vcpu *vcpu)
+{
+    assert(vcpu == &vm.target);
+    return pic.output;
+}
+
+static int modeled_interrupt_allowed(struct kvm_vcpu *vcpu, bool guest)
+{
+    assert(vcpu == &vm.target && guest);
+    return 1;
+}
+
+static void modeled_inject_irq(struct kvm_vcpu *vcpu, bool reinject)
+{
+    assert(vcpu == &vm.target && !reinject);
+    native_injections++;
+    if (close_after_injection)
+        vm.arch.crucible_clock.active = false;
+    if (change_queued_vector)
+        vcpu->arch.interrupt.nr ^= 8;
+}
+
+static void modeled_enable_irq_window(struct kvm_vcpu *vcpu)
+{
+    assert(vcpu == &vm.target);
+}
+
+#define kvm_x86_call(name) modeled_##name
+#define WARN_ON_ONCE(condition) (condition)
+#define WARN_ON(condition) ((void)(condition))

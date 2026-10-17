@@ -20,7 +20,7 @@ impl SingleScheduler {
     /// This consumes every static topology product: VM participants must match
     /// the runtime scenario, LinkDefs become the effective lookahead graph and
     /// first-class network scheduling identities, and block/9p declarations are
-    /// resolved from `store` into concrete [`DeviceSchedulingSubNode`](crate::DeviceSchedulingSubNode)
+    /// resolved from `store` into concrete [`ScheduledIoNode`](crate::ScheduledIoNode)
     /// values. Physical ring capacities and source numbers come from `policy` at
     /// this boundary and do not affect World/scenario identity ([SPAT-14],
     /// [SPAT-15]). The per-device RNG uses the scenario's authoritative seed.
@@ -323,7 +323,7 @@ impl SingleScheduler {
     #[must_use]
     pub fn with_device_sub_node(
         mut self,
-        sub_node: crate::device_subnode::DeviceSchedulingSubNode,
+        sub_node: crate::device_subnode::ScheduledIoNode,
     ) -> Self {
         self.device_sub_nodes
             .entry(sub_node.target().clone())

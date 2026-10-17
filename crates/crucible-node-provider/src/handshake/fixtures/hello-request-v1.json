@@ -1,0 +1,1 @@
+{"versions":["CNP/1"],"session_id":"session","controller_nonce":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","required_features":["cnp.core/1"],"optional_features":["cnp.resume/1"],"limits":{"frame_bytes":"65536","nesting":"64","requests":"16","journal_entries":"64","blob_chunk_bytes":"4096"},"admission_token":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc","extensions":{}}

@@ -8,6 +8,7 @@
 }: let
   qemu = qemu-crucible.passthru;
   atomicPatch = qemu.atomicPatch;
+  qomPrivateUnwindSource = qemu.qomPrivateUnwindSource or null;
   version = atomicPatch.qemuVersion;
   atomicPatchPath = ./qemu-patches + "/${atomicPatch.file}";
   crucibleSource = import ../tools/crucible/_source.nix {inherit lib;};
@@ -53,6 +54,8 @@
       base
       != ".git"
       && base != ".crucible"
+      # Runtime journals are neither rebuild inputs nor corresponding source.
+      && base != "run-state"
       && base != ".worktrees"
       && base != "target"
       && base != "result"
@@ -81,6 +84,8 @@
   cargoDepsHash = import ../tools/crucible/_cargo-deps-hash.nix;
   crucibleCargoDeps = fetchCargoVendor {
     src = crucibleSource;
+    # The complete lockfile is authenticated again in both vendor stages.
+    lockFile = ../../crates/Cargo.lock;
     name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = cargoDepsHash;
@@ -88,8 +93,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -151,7 +167,7 @@ in
       hash = atomicPatch.qemuSourceHash;
     };
 
-    runtimeDeps = [];
+    runtimeDeps = lib.optional (qomPrivateUnwindSource != null) qomPrivateUnwindSource;
     propagatedDeps = [];
     # Corresponding source must remain byte-for-byte identical to its fixed
     # source inputs. Stripping would mutate vendored static archives, while
@@ -165,6 +181,10 @@ in
         script = ''
           set -eu
           source_root="$out/share/aos/qemu-crucible-source"
+          ${lib.optionalString (qomPrivateUnwindSource != null) ''
+            mkdir -p "$source_root"
+            ln -s ${qomPrivateUnwindSource} "$source_root/private-qom-unwind-source"
+          ''}
           mkdir -p "$source_root/upstream" "$source_root/patches" \
             "$source_root/build" "$source_root/interfaces" \
             "$source_root/licenses" "$source_root/plugin" "$out/nix-support"
@@ -183,6 +203,7 @@ in
           tar -xOf "$src" "qemu-${version}/LICENSE" > "$source_root/licenses/QEMU-LICENSE.txt"
           cp ${../../LICENSES/Apache-2.0.txt} "$source_root/licenses/Apache-2.0.txt"
           cp ${../../LICENSES/MIT.txt} "$source_root/licenses/MIT.txt"
+          cp ${../../LICENSES/BSL-1.0.txt} "$source_root/licenses/BSL-1.0.txt"
           cp ${../../LICENSES/GPL-2.0-only.txt} "$source_root/licenses/GPL-2.0-only.txt"
           cp ${../../LICENSES/GPL-2.0-or-later.txt} "$source_root/licenses/GPL-2.0-or-later.txt"
           cp ${./qemu-patches/LICENSES.md} "$source_root/licenses/AOS-QEMU-PATCHES.md"
@@ -214,7 +235,7 @@ in
           shmem_abi=${qemu.shmemAbi}
           shmem_header_file=interfaces/crucible_shmem_abi.h
           shmem_header_hash=${qemu.shmemHeaderHash}
-          licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,BSD-2-Clause,BSD-3-Clause
+          licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,BSD-2-Clause,BSD-3-Clause,BSL-1.0
           qemu_license=GPL-2.0-only
           qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT,BSD-2-Clause,BSD-3-Clause
           qemu_combined_work_license=GPL-2.0-only
@@ -227,6 +248,7 @@ in
           plugin_cargo_deps_hash=${cargoDepsHash}
           plugin_license=GPL-2.0-only
           boundary_crates_license_option=MIT
+          jcs_number_formatter_license_option=BSL-1.0
           third_party_license_metadata=plugin/cargo-vendor/*/Cargo.toml
           corresponding_source_scope=qemu-crucible,crucible-qemu-plugin
           MANIFEST
@@ -270,6 +292,7 @@ in
           test -s "$source_root/licenses/QEMU-LICENSE.txt"
           test -s "$source_root/licenses/Apache-2.0.txt"
           test -s "$source_root/licenses/MIT.txt"
+          test -s "$source_root/licenses/BSL-1.0.txt"
           test -s "$source_root/licenses/GPL-2.0-only.txt"
           test -s "$source_root/licenses/GPL-2.0-or-later.txt"
           test -s "$source_root/licenses/AOS-QEMU-PATCHES.md"
@@ -284,8 +307,11 @@ in
           test -f "$source_root/build/aos/crates/crucible-shmem/include/crucible_shmem_abi.h"
           test -f "$source_root/build/aos/LICENSES/GPL-2.0-or-later.txt"
           test -z "$(find "$source_root/build/aos" -type f -regex '.*/core[.][0-9]+' -print -quit)"
+          # Runtime journals must never enter either corresponding-source tree.
+          test -z "$(find "$source_root/build/aos" "$source_root/plugin/workspace" -name run-state -print -quit)"
           test -f "$source_root/plugin/workspace/crates/Cargo.lock"
           test -f "$source_root/plugin/workspace/crates/crucible-qemu-plugin/Cargo.toml"
+          test -f "$source_root/plugin/workspace/crates/crucible-node-contract/Cargo.toml"
           test -f "$source_root/plugin/workspace/pkgs/emulation/crucible-qemu-plugin.nix"
           test -n "$(find "$source_root/plugin/cargo-vendor" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 
@@ -300,7 +326,7 @@ in
           shmem_header_hash=${qemu.shmemHeaderHash}
           plugin_cargo_deps_hash=${cargoDepsHash}
           corresponding_source_scope=qemu-crucible,crucible-qemu-plugin
-          licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,BSD-2-Clause,BSD-3-Clause
+          licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,BSD-2-Clause,BSD-3-Clause,BSL-1.0
           qemu_combined_work_license=GPL-2.0-only
           qemu_created_source_license=GPL-2.0-or-later
           INFO
@@ -326,6 +352,6 @@ in
     meta = {
       description = "Corresponding source for qemu-crucible and its in-process plugin";
       homepage = "https://www.qemu.org";
-      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];
+      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "BSD-2-Clause" "BSD-3-Clause" "BSL-1.0"];
     };
   }

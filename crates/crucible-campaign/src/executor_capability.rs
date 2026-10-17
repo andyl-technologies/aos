@@ -20,7 +20,7 @@ use crate::{
 };
 
 const EXECUTOR_CAPABILITY_SCHEMA_VERSION: u32 = 1;
-const MAX_QEMU_PROFILES: usize = 32;
+const MAX_BACKEND_PROFILES: usize = 32;
 const MAX_STORE_NAMESPACES: usize = 64;
 const MAX_MATERIALIZATION_LOCALITIES: usize = 64;
 
@@ -110,7 +110,7 @@ impl Canonical for ExecutorMaterializationCapability {
 pub struct ExecutorCapabilitySet {
     compatibility: ExecutorCompatibilityProfile,
     host_architecture: String,
-    qemu_profiles: BTreeSet<String>,
+    backend_profiles: BTreeSet<String>,
     materialization: BTreeSet<ExecutorMaterializationCapability>,
     maximum_slots: u32,
     resource_ceiling: AttemptResourceLimits,
@@ -128,7 +128,7 @@ impl ExecutorCapabilitySet {
     pub fn new(
         compatibility: ExecutorCompatibilityProfile,
         host_architecture: impl Into<String>,
-        qemu_profiles: BTreeSet<String>,
+        backend_profiles: BTreeSet<String>,
         materialization: BTreeSet<ExecutorMaterializationCapability>,
         maximum_slots: u32,
         resource_ceiling: AttemptResourceLimits,
@@ -136,12 +136,13 @@ impl ExecutorCapabilitySet {
     ) -> Result<Self, CampaignCodecError> {
         let host_architecture = host_architecture.into();
         validate_identifier(&host_architecture, "executor host architecture is invalid")?;
-        if qemu_profiles.is_empty() || qemu_profiles.len() > MAX_QEMU_PROFILES {
+        // Retain the original diagnostic spelling for codec compatibility.
+        if backend_profiles.is_empty() || backend_profiles.len() > MAX_BACKEND_PROFILES {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "executor QEMU profile set is empty or oversized",
             });
         }
-        for profile in &qemu_profiles {
+        for profile in &backend_profiles {
             validate_identifier(profile, "executor QEMU profile is invalid")?;
         }
         if !materialization.contains(&ExecutorMaterializationCapability::ThinReplay) {
@@ -162,7 +163,7 @@ impl ExecutorCapabilitySet {
         let value = Self {
             compatibility,
             host_architecture,
-            qemu_profiles,
+            backend_profiles,
             materialization,
             maximum_slots,
             resource_ceiling,
@@ -188,10 +189,22 @@ impl ExecutorCapabilitySet {
         &self.host_architecture
     }
 
-    /// Returns the admitted deterministic QEMU launch profiles.
+    /// Returns the admitted backend launch profile identifiers.
+    ///
+    /// These identifiers belong to this executor's compatibility profile;
+    /// they do not grant support for an additional backend implementation.
+    #[must_use]
+    pub const fn backend_profiles(&self) -> &BTreeSet<String> {
+        &self.backend_profiles
+    }
+
+    /// Returns the backend launch profiles under the legacy accessor name.
+    ///
+    /// This compatibility alias borrows the same set as [`Self::backend_profiles`].
+    /// The canonical format retains its original positional encoding.
     #[must_use]
     pub const fn qemu_profiles(&self) -> &BTreeSet<String> {
-        &self.qemu_profiles
+        self.backend_profiles()
     }
 
     /// Returns the supported realization paths.
@@ -229,7 +242,7 @@ impl Canonical for ExecutorCapabilitySet {
     fn encode(&self, encoder: &mut Encoder) {
         self.compatibility.encode(encoder);
         self.host_architecture.encode(encoder);
-        self.qemu_profiles.encode(encoder);
+        self.backend_profiles.encode(encoder);
         self.materialization.encode(encoder);
         self.maximum_slots.encode(encoder);
         self.resource_ceiling.encode(encoder);
@@ -240,7 +253,7 @@ impl Canonical for ExecutorCapabilitySet {
         Self::new(
             ExecutorCompatibilityProfile::decode(decoder)?,
             String::decode(decoder)?,
-            decoder.set_bounded(MAX_QEMU_PROFILES, "executor-qemu-profile-count")?,
+            decoder.set_bounded(MAX_BACKEND_PROFILES, "executor-qemu-profile-count")?,
             decoder.set_bounded(3, "executor-materialization-capability-count")?,
             u32::decode(decoder)?,
             AttemptResourceLimits::decode(decoder)?,
@@ -779,6 +792,127 @@ mod tests {
             b"executor-local-configuration",
         ))
         .expect("configuration ID")
+    }
+
+    // This spells the legacy positional grammar independently of the capability
+    // encoder. The frozen description digest below anchors its original bytes.
+    fn legacy_capability_prefix() -> Encoder {
+        let mut encoder = Encoder::new();
+        encoder.string("crucible-v1");
+        encoder.string("qemu-build-v1");
+        encoder.u64(2);
+        encoder.string("control");
+        encoder.u32(1);
+        encoder.string("shared-memory");
+        encoder.u32(2);
+        encoder.u32(2);
+        encoder.u32(3);
+        encoder.string("x86_64");
+        encoder
+    }
+
+    #[test]
+    fn backend_profiles_preserve_golden_legacy_encoding_and_same_borrow() {
+        let mut legacy = legacy_capability_prefix();
+        legacy.u64(1);
+        legacy.string("deterministic-tcg-v1");
+        legacy.u64(2);
+        legacy.u8(0);
+        legacy.u8(1);
+        legacy.u32(8);
+        legacy.u32(8);
+        legacy.u64(16 * 1024 * 1024 * 1024);
+        legacy.u64(64 * 1024 * 1024);
+        legacy.u64(1_000_000);
+        legacy.u64(1);
+        CampaignHash::derive("crucible.test.executor-store-namespace.v1", b"local")
+            .encode(&mut legacy);
+        let legacy_bytes = legacy.finish();
+
+        let original = capabilities();
+        assert_eq!(codec::encode(&original), legacy_bytes);
+        let decoded: ExecutorCapabilitySet = codec::decode(&legacy_bytes).expect("legacy decode");
+        assert_eq!(decoded, original);
+        assert_eq!(codec::encode(&decoded), legacy_bytes);
+        assert_eq!(decoded.backend_profiles(), decoded.qemu_profiles());
+        assert!(std::ptr::eq(
+            decoded.backend_profiles(),
+            decoded.qemu_profiles()
+        ));
+        assert_eq!(
+            decoded.digest(),
+            CampaignHash::derive("crucible.executor-capability-set.v1", &legacy_bytes),
+        );
+
+        let mut legacy_description = Encoder::new();
+        legacy_description.u32(1);
+        legacy_description.fixed(&[0x44; 16]);
+        legacy_description.fixed(&legacy_bytes);
+        let legacy_description = legacy_description.finish();
+        let description = ExecutorDescription::from_canonical_bytes(&legacy_description)
+            .expect("legacy schema and description decode");
+        assert_eq!(description.capabilities(), &original);
+        assert_eq!(description.canonical_bytes(), legacy_description);
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.executor-description-vector.v1",
+                &legacy_description,
+            )
+            .to_hex(),
+            "add97fb6d82e682a49e5848e22c6ef80c5171d8e58e5a731c85998eb4eb6de05",
+        );
+    }
+
+    #[test]
+    fn backend_profile_limit_preserves_legacy_constructor_and_decoder_diagnostics() {
+        let build = |profiles| {
+            let fixture = capabilities();
+            ExecutorCapabilitySet::new(
+                fixture.compatibility,
+                fixture.host_architecture,
+                profiles,
+                fixture.materialization,
+                fixture.maximum_slots,
+                fixture.resource_ceiling,
+                fixture.store_namespaces,
+            )
+        };
+        let profiles: BTreeSet<String> =
+            (0..32).map(|index| format!("backend-{index:02}")).collect();
+        let at_limit = build(profiles.clone()).expect("exact legacy profile bound");
+        let encoded = codec::encode(&at_limit);
+        assert_eq!(
+            codec::decode::<ExecutorCapabilitySet>(&encoded).expect("bounded decode"),
+            at_limit
+        );
+
+        let mut oversized = profiles;
+        oversized.insert(String::from("backend-32"));
+        for rejected in [BTreeSet::new(), oversized] {
+            assert_eq!(
+                build(rejected),
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "executor QEMU profile set is empty or oversized",
+                })
+            );
+        }
+        assert_eq!(
+            build(BTreeSet::from([String::from("invalid profile")])),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "executor QEMU profile is invalid",
+            })
+        );
+
+        // A count-only oversized input must fail at the original decoder limit,
+        // before attempting to decode or allocate any profile strings.
+        let mut oversized_wire = legacy_capability_prefix();
+        oversized_wire.u64(33);
+        assert_eq!(
+            codec::decode::<ExecutorCapabilitySet>(&oversized_wire.finish()),
+            Err(CampaignCodecError::LimitExceeded {
+                limit: "executor-qemu-profile-count",
+            })
+        );
     }
 
     #[test]

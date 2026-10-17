@@ -1,0 +1,45 @@
+--- a/src/dev/serial/Terminal.py
++++ b/src/dev/serial/Terminal.py
+@@ -53,6 +53,7 @@
+     cxx_exports = [PyBindMethod(name) for name in (
+         "crucibleConfigureOutput", "crucibleOutputMetadata",
+         "crucibleOutputBytes", "crucibleAcknowledgeOutput",
++        "crucibleOutputInventory",
+         "crucibleSetOutputParent",
+     )]
+     port = Param.HostSocket(3456, "listen port/socket")
+--- a/src/dev/serial/terminal.hh
++++ b/src/dev/serial/terminal.hh
+@@ -154,6 +154,7 @@
+     void crucibleConfigureOutput();
+     std::vector<uint64_t> crucibleOutputMetadata() const;
+     std::vector<uint8_t> crucibleOutputBytes() const;
++    std::vector<std::vector<uint64_t>> crucibleOutputInventory() const;
+     bool crucibleAcknowledgeOutput(uint64_t original_identifier);
+     bool crucibleSetOutputParent(uint64_t original_parent);
+ 
+--- a/src/dev/serial/terminal.cc
++++ b/src/dev/serial/terminal.cc
+@@ -422,6 +422,22 @@
+     return {crucibleRetainedOutput.front().byte};
+ }
+ 
++std::vector<std::vector<uint64_t>>
++Terminal::crucibleOutputInventory() const
++{
++    crucibleRequireStopped();
++    std::vector<std::vector<uint64_t>> result;
++    result.reserve(crucibleRetainedOutput.size());
++    // One callback may emit several bytes. Reading the complete original FIFO
++    // must not require releasing any byte before the external receipt ACK.
++    for (const auto &output : crucibleRetainedOutput) {
++        result.push_back({output.identifier, output.birth.tick,
++                          output.birth.ordinal, output.birth.tickOrdinal,
++                          output.parent, output.byte});
++    }
++    return result;
++}
++
+ bool
+ Terminal::crucibleAcknowledgeOutput(uint64_t original_identifier)
+ {

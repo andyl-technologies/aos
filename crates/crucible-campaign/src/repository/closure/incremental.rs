@@ -307,7 +307,23 @@ impl CampaignRepository {
                 }));
                 continue;
             }
-            let envelope = ObjectEnvelope::from_canonical_bytes(&bytes)?;
+            let envelope = match ObjectEnvelope::from_canonical_bytes(&bytes) {
+                Ok(envelope) => envelope,
+                Err(legacy_error) => {
+                    let envelope = ContentEnvelope::from_canonical_bytes(&bytes)
+                        .map_err(CampaignCodecError::from)?;
+                    let Some(record) =
+                        crate::observed_node_attempt::ObservedEnvelopeRecord::decode(
+                            id, &envelope,
+                        )?
+                    else {
+                        return Err(legacy_error.into());
+                    };
+                    self.validate_observed_closure_record(&record)?;
+                    stack.extend(envelope.children().iter().map(|child| (child.id(), false)));
+                    continue;
+                }
+            };
             if envelope.content_id() != id {
                 return Err(integrity("campaign-closure-envelope-id-mismatch"));
             }

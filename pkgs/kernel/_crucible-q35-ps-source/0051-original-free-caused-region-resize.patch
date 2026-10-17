@@ -1,0 +1,221 @@
+--- a/include/linux/crucible_percpu_boot.h
++++ b/include/linux/crucible_percpu_boot.h
+@@ -51,6 +51,10 @@
+ 	const void *original_old_array);
+ void crucible_percpu_boot_resize_complete(struct crucible_percpu_boot_token token,
+ 	const void *original_return, int native_result);
++struct crucible_percpu_boot_token crucible_percpu_boot_free_begin(
++	u64 original_base, u64 bytes, bool slab_available);
++void crucible_percpu_boot_free_complete(struct crucible_percpu_boot_token token,
++	int native_result);
+ bool crucible_percpu_boot_current(void);
+ u64 crucible_percpu_boot_metadata_bytes(void);
+ bool crucible_percpu_boot_peak_bound(u64 *bound);
+--- a/mm/crucible-percpu-boot-accounting.inc.c
++++ b/mm/crucible-percpu-boot-accounting.inc.c
+@@ -44,13 +44,31 @@
+ 	bool completed;
+ };
+ 
++struct crucible_percpu_boot_free {
++	u64 generation;
++	u64 original_base;
++	u64 requested_bytes;
++	s64 native_result;
++	u32 original_root;
++	u32 original_resize;
++	u32 event_depth;
++	u32 parent;
++	bool entered_root;
++	bool native_result_known;
++	bool completed;
++};
++
+ struct crucible_percpu_boot_ledger {
+ 	struct task_struct *original_task;
+ 	struct crucible_percpu_boot_root roots[CRUCIBLE_PCPU_BOOT_ROOTS];
+ 	struct crucible_percpu_boot_event events[CRUCIBLE_PCPU_BOOT_EVENTS];
++	struct crucible_percpu_boot_free frees[CRUCIBLE_PCPU_BOOT_EVENTS];
++	u32 free_stack[CRUCIBLE_PCPU_BOOT_DEPTH];
+ 	u32 stack[CRUCIBLE_PCPU_BOOT_DEPTH];
+ 	u64 generation;
+ 	u64 attempted_bound;
++	u32 free_used;
++	u32 free_depth;
+ 	u32 root_used;
+ 	u32 event_used;
+ 	u32 original_root;
+@@ -142,7 +160,7 @@
+ 	if (!crucible_percpu_boot_actor_current() || ledger->complete)
+ 		goto refuse;
+ 	ledger->native_result = native_result;
+-	if (native_result || ledger->root_active || ledger->depth ||
++	if (native_result || ledger->root_active || ledger->depth || ledger->free_depth ||
+ 	    !crucible_percpu_boot_roster_complete())
+ 		goto refuse;
+ 	for (index = 0; index < ledger->root_used; index++)
+@@ -150,6 +168,9 @@
+ 			goto refuse;
+ 	for (index = 0; index < ledger->event_used; index++)
+ 		if (!ledger->events[index].completed)
++			goto refuse;
++	for (index = 0; index < ledger->free_used; index++)
++		if (!ledger->frees[index].completed || ledger->frees[index].native_result)
+ 			goto refuse;
+ 	ledger->complete = true;
+ 	ledger->active = false;
+@@ -416,6 +437,125 @@
+ {
+ 	crucible_percpu_boot_event_complete(token, (unsigned long)original_return,
+ 		native_result, true);
++}
++
++/* A trim/removal can itself allocate a larger region array. It therefore
++ * enters the SAME original allocation lineage before native isolate/resize,
++ * even when the original allocation's immediate call has already completed.
++ * No release observation subtracts backing or grants reuse permission.
++ */
++struct crucible_percpu_boot_token crucible_percpu_boot_free_begin(
++	u64 original_base, u64 bytes, bool slab_available)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	struct crucible_percpu_boot_token token = { };
++	struct crucible_percpu_boot_free *row;
++	u64 end;
++	u32 index, root = U32_MAX, resize = U32_MAX;
++
++	if (!ledger->active)
++		return token;
++	if (!crucible_percpu_boot_actor_current() || ledger->failed || slab_available ||
++	    !bytes || check_add_overflow(original_base, bytes, &end) ||
++	    ledger->free_depth == CRUCIBLE_PCPU_BOOT_DEPTH ||
++	    ledger->free_used == CRUCIBLE_PCPU_BOOT_EVENTS || ledger->generation == U64_MAX)
++		goto refuse;
++
++	/* Match retained native returns; never follow the freed candidate pointer.
++	 * These are the original direct-map memblock allocations, not arbitrary
++	 * virtual aliases or a new physical incarnation inferred from an address.
++	 */
++	if (ledger->root_active && ledger->depth) {
++		index = ledger->stack[ledger->depth - 1];
++		if (index < ledger->event_used) {
++			const struct crucible_percpu_boot_event *event = &ledger->events[index];
++
++			if (event->resize && event->old_closing && event->original_old_array &&
++			    original_base == __pa(event->original_old_array) && bytes == event->old_bytes) {
++				root = ledger->original_root;
++				resize = index;
++			}
++		}
++	}
++	for (index = ledger->root_used; root == U32_MAX && index > 0; index--) {
++		const struct crucible_percpu_boot_root *allocation = &ledger->roots[index - 1];
++		u64 base, limit;
++
++		if (!allocation->original_return_known || !allocation->original_return)
++			continue;
++		base = __pa(allocation->original_return);
++		if (check_add_overflow(base, allocation->requested_bytes, &limit))
++			goto refuse;
++		if (original_base >= base && end <= limit) {
++			root = index - 1;
++			break;
++		}
++	}
++	if (root == U32_MAX || (ledger->root_active && root != ledger->original_root))
++		goto refuse;
++	/* A repeated/overlapping removal of the same retained allocation cannot
++	 * become a fresh release merely because the native range was reused.
++	 */
++	for (index = 0; index < ledger->free_used; index++) {
++		const struct crucible_percpu_boot_free *previous = &ledger->frees[index];
++		u64 previous_end;
++
++		if (previous->original_root != root || previous->original_resize != resize)
++			continue;
++		if (check_add_overflow(previous->original_base, previous->requested_bytes,
++			&previous_end) || (original_base < previous_end && previous->original_base < end))
++			goto refuse;
++	}
++	row = &ledger->frees[ledger->free_used];
++	row->generation = ++ledger->generation;
++	row->original_base = original_base;
++	row->requested_bytes = bytes;
++	row->original_root = root;
++	row->original_resize = resize;
++	row->event_depth = ledger->depth;
++	row->parent = ledger->free_depth ? ledger->free_stack[ledger->free_depth - 1] : U32_MAX;
++	row->entered_root = !ledger->root_active;
++	if (row->entered_root) {
++		ledger->original_root = root;
++		ledger->root_active = true;
++	}
++	ledger->free_stack[ledger->free_depth++] = ledger->free_used;
++	token.index = ledger->free_used++;
++	token.generation = row->generation;
++	token.retained = true;
++	return token;
++refuse:
++	ledger->failed = true;
++	return token;
++}
++
++void crucible_percpu_boot_free_complete(struct crucible_percpu_boot_token token,
++	int native_result)
++{
++	struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
++	struct crucible_percpu_boot_free *row;
++
++	if (!token.retained)
++		return;
++	if (token.index >= ledger->free_used)
++		goto refuse;
++	row = &ledger->frees[token.index];
++	if (row->generation != token.generation || row->native_result_known)
++		goto refuse;
++	row->native_result = native_result;
++	row->native_result_known = true;
++	if (!crucible_percpu_boot_actor_current() || ledger->failed || native_result ||
++	    !ledger->free_depth || ledger->free_stack[ledger->free_depth - 1] != token.index ||
++	    ledger->depth != row->event_depth || !ledger->root_active ||
++	    ledger->original_root != row->original_root)
++		goto refuse;
++	row->completed = true;
++	ledger->free_depth--;
++	if (row->entered_root)
++		ledger->root_active = false;
++	return;
++refuse:
++	ledger->failed = true;
+ }
+ 
+ static bool crucible_percpu_boot_binding_current(void)
+@@ -492,7 +632,7 @@
+ 	const struct crucible_percpu_boot_ledger *ledger = &crucible_percpu_boot_ledger;
+ 
+ 	return ledger->attempted && ledger->complete && !ledger->failed && !ledger->active &&
+-		!ledger->root_active && !ledger->depth && !ledger->native_result &&
++		!ledger->root_active && !ledger->depth && !ledger->free_depth && !ledger->native_result &&
+ 		crucible_percpu_boot_binding_current();
+ }
+ 
+--- a/mm/memblock.c
++++ b/mm/memblock.c
+@@ -1000,6 +1000,9 @@
+ {
+ 	phys_addr_t end = base + size - 1;
+ 	int ret = 0;
++	struct crucible_percpu_boot_token source_token;
++
++	source_token = crucible_percpu_boot_free_begin(base, size, slab_is_available());
+ 
+ 	memblock_dbg("%s: [%pa-%pa] %pS\n", __func__,
+ 		     &base, &end, (void *)_RET_IP_);
+@@ -1012,6 +1015,7 @@
+ 	if (slab_is_available())
+ 		__free_reserved_area(base, base + size, -1);
+ 
++	crucible_percpu_boot_free_complete(source_token, ret);
+ 	return ret;
+ }
+ 

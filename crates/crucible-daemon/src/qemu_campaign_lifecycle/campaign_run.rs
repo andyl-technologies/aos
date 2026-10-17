@@ -38,12 +38,12 @@ use crucible_cas::content_store::{
 use thiserror::Error;
 
 use super::{
-    QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot,
     QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
     QemuFreshExecutionRunner, QemuFreshExecutionRunnerError, QemuFreshScenarioResourceError,
     QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
     validate_fresh_qemu_scenario_resources,
 };
+use crate::attempt_evidence::{AttemptExecutionEvidence, AttemptExecutionEvidenceSnapshot};
 use crate::automatic_finding_runner::CampaignRunFindingExactRetentionSource;
 use crate::qemu_campaign_driver::QemuFreshSupplementalModeledDriver;
 use crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory;
@@ -106,7 +106,6 @@ pub mod test_support;
 const DEFAULT_RUN_MAX_CHOICES: u64 = 65_536;
 const DEFAULT_RUN_REPOSITORY_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_RUN_EXECUTOR_SCAN: usize = 1_024;
-const DEFAULT_RUN_PLANNER_SCAN: u32 = 1_024;
 const DEFAULT_RUN_MAX_SUPERVISOR_STEPS: usize = 1_000_000;
 const DEFAULT_RUN_RECONCILIATION_STEPS: usize = 64;
 
@@ -433,7 +432,7 @@ pub struct GuardedDefaultCampaignObservation {
     configuration: Configuration,
     properties: crucible_campaign::PropertyVerdictSet,
     coverage: crucible_campaign::CoverageProjection,
-    evidence: QemuAttemptExecutionEvidenceSnapshot,
+    evidence: AttemptExecutionEvidenceSnapshot,
     observation_evidence: Option<CrucibleMeasurementReplayEvidence>,
     replay_closure: GuardedCampaignReplayClosure,
     supplemental_finding: Option<GuardedCampaignSupplementalFinding>,
@@ -479,7 +478,7 @@ impl GuardedDefaultCampaignObservation {
 
     /// Returns bounded scheduler evidence captured for this exact attempt.
     #[must_use]
-    pub const fn evidence(&self) -> &QemuAttemptExecutionEvidenceSnapshot {
+    pub const fn evidence(&self) -> &AttemptExecutionEvidenceSnapshot {
         &self.evidence
     }
 
@@ -921,7 +920,7 @@ pub struct GuardedDefaultCampaignRun {
     exploration_completion: Option<GuardedCampaignExplorationCompletion>,
     state_updates: Vec<CampaignState>,
     watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
-    evidence: QemuAttemptExecutionEvidenceSnapshot,
+    evidence: AttemptExecutionEvidenceSnapshot,
     replay_closure: GuardedCampaignReplayClosure,
     savepoint: Option<GuardedDefaultCampaignSavepoint>,
     resume: Option<GuardedDefaultCampaignResumeProof>,
@@ -935,7 +934,7 @@ pub struct GuardedDefaultCampaignSavepoint {
     checkpoint: ExactCheckpointId,
     configuration: crucible_campaign::ConfigurationId,
     stop: StopCondition,
-    evidence: QemuAttemptExecutionEvidenceSnapshot,
+    evidence: AttemptExecutionEvidenceSnapshot,
 }
 
 impl GuardedDefaultCampaignSavepoint {
@@ -971,7 +970,7 @@ impl GuardedDefaultCampaignSavepoint {
 
     /// Returns the scheduler evidence recorded by the exact-capture replay.
     #[must_use]
-    pub const fn evidence(&self) -> &QemuAttemptExecutionEvidenceSnapshot {
+    pub const fn evidence(&self) -> &AttemptExecutionEvidenceSnapshot {
         &self.evidence
     }
 }
@@ -1045,7 +1044,7 @@ impl GuardedDefaultCampaignRun {
 
     /// Returns the bounded scheduler-authored evidence from the terminal attempt.
     #[must_use]
-    pub const fn evidence(&self) -> &QemuAttemptExecutionEvidenceSnapshot {
+    pub const fn evidence(&self) -> &AttemptExecutionEvidenceSnapshot {
         &self.evidence
     }
 
@@ -1330,7 +1329,7 @@ where
 fn run_guarded_default_campaign_with_runner<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
-    execution_evidence: QemuAttemptExecutionEvidence,
+    execution_evidence: AttemptExecutionEvidence,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
 where
     R: CrucibleExecutionRunner,
@@ -1346,7 +1345,7 @@ where
 fn run_guarded_default_campaign_with_validated_runner<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
-    execution_evidence: QemuAttemptExecutionEvidence,
+    execution_evidence: AttemptExecutionEvidence,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
 where
     R: CrucibleExecutionRunner,
@@ -1368,7 +1367,7 @@ where
 fn run_guarded_default_campaign_with_store<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
-    execution_evidence: QemuAttemptExecutionEvidence,
+    execution_evidence: AttemptExecutionEvidence,
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
@@ -1397,7 +1396,7 @@ where
 fn run_guarded_default_campaign_with_repository<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
-    execution_evidence: QemuAttemptExecutionEvidence,
+    execution_evidence: AttemptExecutionEvidence,
     repository: Arc<CampaignRepository>,
     planner_authority: PlannerAuthorityKey,
     exact_retention: Arc<CampaignRunFindingExactRetentionSource>,
@@ -1823,7 +1822,7 @@ struct DefaultRunExecution {
 struct DefaultRunAcceptedObservation {
     id: ObservationId,
     virtual_time_ticks: u64,
-    evidence: QemuAttemptExecutionEvidenceSnapshot,
+    evidence: AttemptExecutionEvidenceSnapshot,
     supplemental_finding: Option<GuardedCampaignSupplementalFinding>,
 }
 
@@ -1832,7 +1831,7 @@ struct DefaultRunPendingSavepointCapture {
     description: SavepointCaptureRequest,
     reached: crucible_campaign::ConfigurationId,
     reached_content: crucible_campaign::ConfigurationArtifactId,
-    expected_evidence: QemuAttemptExecutionEvidenceSnapshot,
+    expected_evidence: AttemptExecutionEvidenceSnapshot,
     resume_source_observation: Option<ObservationId>,
 }
 
@@ -1842,13 +1841,13 @@ struct DefaultRunSavepointCapture {
     description: SavepointCaptureRequest,
     checkpoint: ExactCheckpointId,
     reached: crucible_campaign::ConfigurationId,
-    evidence: QemuAttemptExecutionEvidenceSnapshot,
+    evidence: AttemptExecutionEvidenceSnapshot,
 }
 
 struct DefaultRunContext<'a, S> {
     repository: &'a Arc<CampaignRepository>,
     client: &'a CampaignClient<S>,
-    execution_evidence: &'a QemuAttemptExecutionEvidence,
+    execution_evidence: &'a AttemptExecutionEvidence,
     principal: &'a CampaignPrincipal,
     campaign: &'a CampaignName,
     policy: crucible_campaign::CampaignPolicyId,
@@ -2596,7 +2595,7 @@ struct DefaultRunSavepointCaptureInput<'a> {
     observation: &'a Observation,
     stop: &'a StopCondition,
     reason: &'a str,
-    expected_evidence: QemuAttemptExecutionEvidenceSnapshot,
+    expected_evidence: AttemptExecutionEvidenceSnapshot,
     resume_source_observation: Option<ObservationId>,
 }
 

@@ -1,0 +1,18 @@
+--- a/src/cpu/o3/lsq.cc
++++ b/src/cpu/o3/lsq.cc
+@@ -1132,8 +1132,13 @@
+     writer.set(prefix + ".pending_packets", _numOutstandingPackets);
+     writer.set(prefix + ".stale_translation", _hasStaleTranslation);
+     writer.set(prefix + ".data_present", _data != nullptr);
+-    if (_data && !isLoad())
+-        writer.bytes(prefix + ".store_input_data", _data, _size);
++    // _data borrows a caller's input buffer. A valid outstanding store does
++    // not establish that this old caller storage remains initialized or live.
++    // SQEntry::data, DynInst::memData and defined packet payloads have their
++    // own visitors; opaque process images retain the unresolved borrowed state.
++    writer.set(prefix + ".store_input_data.defined", false);
++    writer.string(prefix + ".store_input_data.coverage.unsupported",
++        "borrowed-caller-storage-lifetime-and-byte-extent");
+     writer.set(prefix + ".result_storage_present", _res != nullptr);
+     writer.set(prefix + ".atomic_operation_present", _amo_op != nullptr);
+     writer.set(prefix + ".fragment_count", _reqs.size());

@@ -43,7 +43,7 @@ fn canonical_debug_breakpoint_uses_out_of_band_mechanisms() -> Result<(), Box<dy
     );
     assert_eq!(
         software_report.mechanism,
-        DebugBreakpointMechanism::QemuHardwareBreakpoint
+        DebugBreakpointMechanism::BackendHardwareBreakpoint
     );
     assert!(software_report.is_canonical_out_of_band());
     assert!(software_report.transparently_satisfies_software_request());

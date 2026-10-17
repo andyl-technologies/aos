@@ -22,6 +22,20 @@ pub struct CrateSpecIndexEntry {
 /// The canonical crate-to-spec index in workspace package order.
 pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
     CrateSpecIndexEntry {
+        package: "crucible-node-contract",
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0025 files 00, 01, 02, 03, 04, 05, 06, 08, 09"),
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
+        package: "crucible-node-provider",
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0025 files 06, 07, 08"),
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
         package: "crucible-cas",
         root: "src/lib.rs",
         spec_files: &["35"],

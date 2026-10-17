@@ -1,0 +1,125 @@
+--- a/include/dmtcp.h
++++ b/include/dmtcp.h
+@@ -482,6 +482,28 @@
+                                    uint32_t *real_tid, int *state, int *role,
+                                    void *bytes, size_t capacity);
+ int dmtcp_crucible_operational_shared_region(uint64_t *start, uint64_t *end);
++
++/* Native64 capture FD record; raw body is independently checked against the
++ * private process image. The single-process closed profile owns every
++ * non-operational descriptor and reconstructs it before model execution.
++ */
++typedef struct {
++  int32_t fd;
++  uint32_t descriptorFlags;
++  uint32_t statusFlags;
++  uint32_t mode;
++  int64_t position;
++  uint64_t device;
++  uint64_t inode;
++  uint64_t size;
++  uint64_t links;
++  uint32_t protectedDescriptor;
++  uint32_t reserved;
++  char target[4096];
++} DmtcpCrucibleCapturedFd;
++int dmtcp_crucible_checkpoint_fd_count(void);
++int dmtcp_crucible_checkpoint_fd(int index, uint64_t *address,
++                               void *bytes, size_t capacity);
+ DmtcpUniqueProcessId dmtcp_get_uniquepid();
+ DmtcpUniqueProcessId dmtcp_get_coord_id();
+ DmtcpUniqueProcessId dmtcp_get_computation_id();
+--- a/src/threadlist.cpp
++++ b/src/threadlist.cpp
+@@ -1,4 +1,8 @@
+ #include <linux/version.h>
++#include <limits.h>
++#include <dirent.h>
++#include <fcntl.h>
++#include <sys/stat.h>
+ #include <pthread.h>
+ #include <semaphore.h>
+ #include <signal.h>
+@@ -76,6 +80,74 @@
+ };
+ static CrucibleThreadContext crucibleContexts[CrucibleMaxThreads];
+ static int crucibleContextCount = -1;
++static constexpr size_t CrucibleMaxDescriptors = 1024;
++static DmtcpCrucibleCapturedFd crucibleDescriptors[CrucibleMaxDescriptors];
++static int crucibleDescriptorCount = -1;
++
++static void
++crucibleRecordDescriptors()
++{
++  crucibleDescriptorCount = -1;
++  DIR *directory = _real_opendir("/proc/self/fd");
++  JASSERT(directory != NULL);
++  const int censusFd = dirfd(directory);
++  size_t count = 0;
++  while (struct dirent *entry = readdir(directory)) {
++    if (entry->d_name[0] == '.')
++      continue;
++    char *end = NULL;
++    const long fd = strtol(entry->d_name, &end, 10);
++    JASSERT(end && *end == '\0' && fd >= 0 && fd <= INT_MAX);
++    if (fd == censusFd)
++      continue;
++    JASSERT(count < CrucibleMaxDescriptors);
++    auto &record = crucibleDescriptors[count++];
++    memset(&record, 0, sizeof(record));
++    record.fd = fd;
++    const long descriptorFlags = _real_syscall(SYS_fcntl, fd, F_GETFD);
++    const long statusFlags = _real_syscall(SYS_fcntl, fd, F_GETFL);
++    JASSERT(descriptorFlags >= 0 && statusFlags >= 0);
++    record.descriptorFlags = descriptorFlags;
++    record.statusFlags = statusFlags;
++    struct stat metadata;
++    JASSERT(_real_syscall(SYS_fstat, fd, &metadata) == 0);
++    record.mode = metadata.st_mode;
++    record.device = metadata.st_dev;
++    record.inode = metadata.st_ino;
++    record.size = metadata.st_size;
++    record.links = metadata.st_nlink;
++    record.position = _real_syscall(SYS_lseek, fd, 0, SEEK_CUR);
++    record.protectedDescriptor = dmtcp_is_protected_fd(fd);
++    char path[64];
++    const int length = snprintf(path, sizeof(path), "/proc/self/fd/%ld", fd);
++    JASSERT(length > 0 && length < (int)sizeof(path));
++    const ssize_t targetLength = _real_readlink(path, record.target,
++                                              sizeof(record.target) - 1);
++    JASSERT(targetLength >= 0 && targetLength < (ssize_t)sizeof(record.target));
++  }
++  JASSERT(_real_closedir(directory) == 0);
++  crucibleDescriptorCount = count;
++}
++
++extern "C" int
++dmtcp_crucible_checkpoint_fd_count(void)
++{
++  return crucibleDescriptorCount;
++}
++
++extern "C" int
++dmtcp_crucible_checkpoint_fd(int index, uint64_t *address,
++                           void *bytes, size_t capacity)
++{
++  if (index < 0 || index >= crucibleDescriptorCount || !address || !bytes ||
++      capacity < sizeof(DmtcpCrucibleCapturedFd)) {
++    return -1;
++  }
++  const auto &record = crucibleDescriptors[index];
++  *address = (uint64_t)&record;
++  memcpy(bytes, &record, sizeof(record));
++  return sizeof(record);
++}
+ 
+ static void
+ crucibleRecordThreadContexts()
+@@ -381,6 +453,7 @@
+   // const ssize_t pagesize = Util::pageSize();
+   // ASSERT_EQ(sizeof(header) % pagesize, 0ul);
+ 
++  crucibleRecordDescriptors();
+   crucibleRecordThreadContexts();
+   CkptSerializer::writeCkptImage(header, ckptFilename);
+ }

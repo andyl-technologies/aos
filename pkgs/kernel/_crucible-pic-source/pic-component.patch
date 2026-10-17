@@ -1,0 +1,556 @@
+--- a/arch/x86/kvm/crucible-irq-injection.h
++++ b/arch/x86/kvm/crucible-irq-injection.h
+@@ -1,6 +1,8 @@
+ /* SPDX-License-Identifier: GPL-2.0-only */
+ #ifndef KVM_CRUCIBLE_IRQ_INJECTION_H
+ #define KVM_CRUCIBLE_IRQ_INJECTION_H
++
++#include "crucible-pic-run.h"
+ 
+ /* Synchronous original RUN custody spans intack, queue and architecture tails.
+  * This lease does not enroll a new input, device producer or interrupt root. */
+@@ -73,19 +75,26 @@
+ {
+ 	struct kvm *kvm = vcpu->kvm;
+ 	unsigned long flags;
+-	bool valid;
++	bool valid, pic_valid;
+ 
+ 	if (!lease->entered)
+ 		return 0;
++	/* The original injection credit spans the PIC-to-gate receiver check.
++	 * Acquiring PIC under the gate would invert the actual intack lock order. */
++	pic_valid = kvm_crucible_pic_injection_finish(vcpu, injected);
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+-	valid = crucible_irq_injection_run_locked(kvm, vcpu) &&
++	valid = pic_valid && crucible_irq_injection_run_locked(kvm, vcpu) &&
+ 		lease->generation == kvm->arch.crucible_clock.window_generation &&
+ 		lease->invocation == vcpu->crucible_timer_run_invocation;
+ 	if (!kvm_crucible_apic_injection_finish_locked(vcpu, valid && injected))
+ 		valid = false;
++	if (!valid) {
++		kvm_arch_crucible_irq_taint_locked(kvm);
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		kvm_crucible_pic_injection_failed(vcpu);
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	}
+ 	vcpu->crucible_apic_target.injection_active = false;
+-	if (!valid)
+-		kvm_arch_crucible_irq_taint_locked(kvm);
+ 	lease->entered = false;
+ 	kvm->crucible_effect_owners--;
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+--- a/arch/x86/kvm/crucible-pic-run.h
++++ b/arch/x86/kvm/crucible-pic-run.h
+@@ -6,4 +6,20 @@
+ /* Internal source entry point; it grants no userspace ioctl or native permission. */
+ int kvm_crucible_pic_read_irq(struct kvm_vcpu *vcpu);
+ 
++#ifdef CONFIG_KVM_IOAPIC
++/* Native PIC intack/EXTINT tail custody; this is not a guest-delivery receipt. */
++bool kvm_crucible_pic_injection_finish(struct kvm_vcpu *vcpu, bool injected);
++void kvm_crucible_pic_injection_failed(struct kvm_vcpu *vcpu);
++#else
++static inline bool kvm_crucible_pic_injection_finish(struct kvm_vcpu *vcpu,
++	bool injected)
++{
++	return true;
++}
++
++static inline void kvm_crucible_pic_injection_failed(struct kvm_vcpu *vcpu)
++{
++}
+ #endif
++
++#endif
+--- a/arch/x86/kvm/i8259.c
++++ b/arch/x86/kvm/i8259.c
+@@ -185,6 +185,15 @@
+ 
+ void kvm_pic_update_irq(struct kvm_pic *s)
+ {
++	if (crucible_irq_device_selected(s->kvm)) {
++		unsigned long flags;
++
++		raw_spin_lock_irqsave(&s->kvm->crucible_gate_lock, flags);
++		kvm_arch_crucible_irq_taint_locked(s->kvm);
++		raw_spin_unlock_irqrestore(&s->kvm->crucible_gate_lock, flags);
++		kvm_vm_dead(s->kvm);
++		return;
++	}
+ 	pic_lock(s);
+ 	pic_update_irq(s);
+ 	pic_unlock(s);
+@@ -199,6 +208,12 @@
+ 
+ 	if (WARN_ON_ONCE(irq < 0 || irq >= PIC_NUM_PINS))
+ 		return -1;
++
++	/* A scalar GSI callback cannot invent the original expiry receiver record.
++	 * The explicit PIT dispatcher must supply its retained native capsule. */
++	if (crucible_irq_device_selected(kvm))
++		return kvm_crucible_pic_set_pit_irq(e, kvm, irq_source_id,
++			level, line_status, NULL);
+ 
+ 	pic_lock(s);
+ 	irq_level = __kvm_irq_line_state(&s->irq_states[irq],
+@@ -210,6 +225,287 @@
+ 	pic_unlock(s);
+ 
+ 	return ret;
++}
++
++/* Immutable routing geometry is distinct from native IRR/ISR state. A later
++ * controller reprogramming cannot silently retarget this original expiry. */
++static u64 pic_pit_geometry(struct kvm_kpic_state *state)
++{
++	return (u64)state->irq_base | ((u64)state->elcr << 8) |
++		((u64)state->imr << 16) | ((u64)state->priority_add << 24) |
++		((u64)state->special_mask << 32) |
++		((u64)state->special_fully_nested_mode << 40) |
++		((u64)state->init_state << 48) | ((u64)state->init4 << 56);
++}
++
++static bool pic_pit_original_equal(const struct kvm_crucible_pit_irq_birth *a,
++	const struct kvm_crucible_pit_irq_birth *b)
++{
++	/* The IOAPIC route is another receiver's identity. It can bind between the
++	 * same original PIT high/low calls without changing the PIC birth itself. */
++	return a->generation == b->generation && a->invocation == b->invocation &&
++		a->sequence == b->sequence && a->native_vcpu_id == b->native_vcpu_id &&
++		a->host_ns == b->host_ns && a->logical_ns == b->logical_ns;
++}
++
++int kvm_crucible_pic_set_pit_irq(struct kvm_kernel_irq_routing_entry *e,
++	struct kvm *kvm, int irq_source_id, int level, bool line_status,
++	const struct kvm_crucible_pit_irq_birth *original)
++{
++	struct kvm_pic *pic = kvm->arch.vpic;
++	struct kvm_kpic_state *state;
++	struct kvm_crucible_pic_pit_line *row;
++	unsigned long flags;
++	u64 geometry;
++	bool valid, masked;
++	int irq_level, native_result = -EAGAIN;
++
++	if (!crucible_irq_device_selected(kvm))
++		return kvm_pic_set_irq(e, kvm, irq_source_id, level, line_status);
++	if (!pic || !e || !original || e->gsi ||
++	    e->type != KVM_IRQ_ROUTING_IRQCHIP ||
++	    e->irqchip.irqchip != KVM_IRQCHIP_PIC_MASTER || e->irqchip.pin ||
++	    e->set != kvm_pic_set_irq || irq_source_id != KVM_PIT_IRQ_SOURCE_ID ||
++	    line_status || level < 0 || level > 1) {
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++		kvm_arch_crucible_irq_taint_locked(kvm);
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		kvm_vm_dead(kvm);
++		return -EAGAIN;
++	}
++
++	pic_lock(pic);
++	state = &pic->pics[0];
++	row = &pic->crucible_pit[0];
++	geometry = pic_pit_geometry(state);
++	masked = state->imr & 1;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = pic->kvm == kvm && kvm->arch.vpic == pic &&
++		kvm_arch_crucible_pit_irq_birth_live_locked(kvm, original) &&
++		original->phase == (level ? 0 : 1) &&
++		!(state->elcr & 1) && !state->auto_eoi && !state->rotate_on_auto_eoi &&
++		!state->poll && !state->init_state &&
++		!(state->irr & ~1) && !(state->isr & ~1) &&
++		!pic->pics[1].irr && !pic->pics[1].isr;
++	if (valid && level) {
++		valid = (!row->phase || row->phase == CRUCIBLE_PIC_PIT_ACKED) &&
++			!pic->irq_states[0] && !state->last_irr && !state->irr && !state->isr &&
++			pic->crucible_pit_issued < CRUCIBLE_PIC_PIT_ISSUED;
++		if (valid) {
++			pic->crucible_pit_issued++;
++			*row = (struct kvm_crucible_pic_pit_line) {
++				.original = *original, .geometry = geometry,
++				.vector = state->irq_base, .phase = CRUCIBLE_PIC_PIT_PENDING,
++			};
++		}
++	} else if (valid) {
++		valid = row->phase && row->phase != CRUCIBLE_PIC_PIT_UNKNOWN &&
++			row->high_known && !row->low_known && row->geometry == geometry &&
++			pic_pit_original_equal(&row->original, original) &&
++			pic->irq_states[0] == BIT(KVM_PIT_IRQ_SOURCE_ID) && (state->last_irr & 1);
++	}
++	if (!valid)
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid) {
++		/* Ordinary pic_unlock itself mutates wake fields and kicks receivers. */
++		spin_unlock(&pic->lock);
++		kvm_vm_dead(kvm);
++		return -EAGAIN;
++	}
++
++	irq_level = __kvm_irq_line_state(&pic->irq_states[0], irq_source_id, level);
++	native_result = pic_set_irq1(state, 0, irq_level);
++	pic_update_irq(pic);
++	trace_kvm_pic_set_irq(0, 0, state->elcr, state->imr, native_result == 0);
++	/* Publish the native field result before the actual wake tail lets the
++	 * original destination perform intack. A later tail failure stays Unknown. */
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = kvm_arch_crucible_pit_irq_birth_live_locked(kvm, original) &&
++		(native_result == 0 || native_result == 1 || (masked && native_result == -1)) &&
++		pic_pit_geometry(state) == geometry &&
++		(level ? ((state->last_irr & 1) && (state->irr & 1)) :
++			 (!(state->last_irr & 1) && !pic->irq_states[0]));
++	row->native_result = native_result;
++	if (valid) {
++		if (level)
++			row->high_known = true;
++		else
++			row->low_known = true;
++	} else {
++		row->phase = CRUCIBLE_PIC_PIT_UNKNOWN;
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid) {
++		spin_unlock(&pic->lock);
++		kvm_vm_dead(kvm);
++		return -EAGAIN;
++	}
++	/* The original source lease and PIT worker credit span this native wake
++	 * tail. A stopped cut cannot conclude until the dispatcher releases them. */
++	pic_unlock(pic);
++
++	/* Reacquire the actual controller lock after its wake tail. Another guest
++	 * controller writer cannot make a changed geometry look like our receipt. */
++	pic_lock(pic);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = kvm_arch_crucible_pit_irq_birth_live_locked(kvm, original) &&
++		pic_pit_original_equal(&row->original, original) &&
++		row->geometry == geometry && pic_pit_geometry(state) == geometry &&
++		row->phase != CRUCIBLE_PIC_PIT_UNKNOWN &&
++		(native_result == 0 || native_result == 1 || (masked && native_result == -1));
++	row->native_result = native_result;
++	if (valid) {
++		if (level)
++			row->high_known = true;
++		else
++			row->low_known = true;
++	} else {
++		row->phase = CRUCIBLE_PIC_PIT_UNKNOWN;
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	/* The original wake tail already ran; release without a second dispatch. */
++	spin_unlock(&pic->lock);
++	if (!valid) {
++		kvm_vm_dead(kvm);
++		return -EAGAIN;
++	}
++	/* Native -1 is the documented masked-line outcome after field changes,
++	 * not a failed before-effect admission. Retain it verbatim in the row. */
++	return native_result < 0 ? 0 : native_result;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_pic_set_pit_irq);
++
++/* The receiver record belongs to the PIC. EXTINT does not move a LAPIC vector
++ * into ISR, so no LAPIC consumption bit can substitute for this native tail. */
++static bool pic_pit_consume_begin_locked(struct kvm_pic *pic,
++	struct kvm_vcpu *vcpu, int irq)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_kpic_state *state = &pic->pics[0];
++	struct kvm_crucible_pic_pit_line *row = &pic->crucible_pit[0];
++	unsigned long flags;
++	bool valid;
++
++	lockdep_assert_held(&pic->lock);
++	lockdep_assert_held(&vcpu->mutex);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = irq == 0 && pic == kvm->arch.vpic && pic->kvm == kvm &&
++		crucible_irq_device_run_locked(kvm, vcpu) &&
++		vcpu->crucible_apic_target.injection_active &&
++		vcpu->crucible_apic_target.injection_invocation ==
++			vcpu->crucible_timer_run_invocation &&
++		kvm_apic_accept_pic_intr(vcpu) &&
++		row->phase == CRUCIBLE_PIC_PIT_PENDING && row->high_known &&
++		row->original.sequence && row->original.invocation &&
++		row->original.generation == kvm->arch.crucible_clock.window_generation &&
++		row->vector >= 16 && row->vector < 256 &&
++		row->vector == state->irq_base && row->geometry == pic_pit_geometry(state) &&
++		!state->auto_eoi && !state->rotate_on_auto_eoi && !state->poll &&
++		!state->init_state && !(state->elcr & 1) && !(state->imr & 1) &&
++		state->irr == 1 && !state->isr &&
++		!pic->pics[1].irr && !pic->pics[1].isr;
++	if (valid) {
++		/* Reservation precedes output clearing and the actual IRR-to-ISR move. */
++		row->phase = CRUCIBLE_PIC_PIT_CONSUMING;
++		row->target_id = vcpu->vcpu_id;
++		row->consume_invocation = vcpu->crucible_timer_run_invocation;
++	} else {
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return valid;
++}
++
++/* The architecture caller retains its original injection credit while this
++ * helper takes PIC then gate. It never acquires PIC while holding the gate. */
++bool kvm_crucible_pic_injection_finish(struct kvm_vcpu *vcpu, bool injected)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_pic *pic = kvm->arch.vpic;
++	struct kvm_crucible_pic_pit_line *row;
++	unsigned long flags;
++	bool valid;
++
++	if (!crucible_irq_device_selected(kvm) || !pic)
++		return true;
++	lockdep_assert_held(&vcpu->mutex);
++	pic_lock(pic);
++	row = &pic->crucible_pit[0];
++	if (row->phase != CRUCIBLE_PIC_PIT_CONSUMING ||
++	    row->target_id != vcpu->vcpu_id) {
++		/* This invocation may instead have taken an ordinary LAPIC vector. */
++		spin_unlock(&pic->lock);
++		return true;
++	}
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = injected && pic == kvm->arch.vpic && pic->kvm == kvm &&
++		crucible_irq_device_run_locked(kvm, vcpu) &&
++		vcpu->crucible_apic_target.injection_active &&
++		vcpu->crucible_apic_target.injection_invocation == row->consume_invocation &&
++		row->consume_invocation == vcpu->crucible_timer_run_invocation &&
++		row->original.generation == kvm->arch.crucible_clock.window_generation &&
++		row->geometry == pic_pit_geometry(&pic->pics[0]) &&
++		vcpu->arch.interrupt.nr == row->vector &&
++		!(pic->pics[0].irr & 1) && (pic->pics[0].isr & 1);
++	row->phase = valid ? CRUCIBLE_PIC_PIT_CONSUMED : CRUCIBLE_PIC_PIT_UNKNOWN;
++	if (!valid)
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	/* No second native wake tail is needed for collecting the receiver fact. */
++	spin_unlock(&pic->lock);
++	return valid;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_pic_injection_finish);
++
++/* The architecture check can fail after the local intack/inject fact was
++ * collected. Original injection credit and identity remain held until this
++ * receiver disposition is reconciled, with PIC before gate on every path. */
++void kvm_crucible_pic_injection_failed(struct kvm_vcpu *vcpu)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_pic *pic = kvm->arch.vpic;
++	struct kvm_crucible_pic_pit_line *row;
++	unsigned long flags;
++
++	if (!crucible_irq_device_selected(kvm) || !pic)
++		return;
++	lockdep_assert_held(&vcpu->mutex);
++	pic_lock(pic);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row = &pic->crucible_pit[0];
++	if ((row->phase == CRUCIBLE_PIC_PIT_CONSUMING ||
++	     row->phase == CRUCIBLE_PIC_PIT_CONSUMED) &&
++	    row->target_id == vcpu->vcpu_id &&
++	    vcpu->crucible_apic_target.injection_active &&
++	    row->consume_invocation ==
++		vcpu->crucible_apic_target.injection_invocation &&
++	    row->consume_invocation == vcpu->crucible_timer_run_invocation)
++		row->phase = CRUCIBLE_PIC_PIT_UNKNOWN;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	spin_unlock(&pic->lock);
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_pic_injection_failed);
++
++
++/* Pending controller geometry is original custody. A generic PIC programming
++ * call cannot clear ISR, run a scalar notifier or retarget the retained birth.
++ * The explicit original EOI/disposition join is a separate source prerequisite. */
++static bool pic_pit_controller_write_safe_locked(struct kvm_pic *pic)
++{
++	unsigned int pin;
++
++	lockdep_assert_held(&pic->lock);
++	if (!crucible_irq_device_selected(pic->kvm))
++		return true;
++	for (pin = 0; pin < PIC_NUM_PINS; pin++)
++		if (pic->crucible_pit[pin].phase &&
++		    pic->crucible_pit[pin].phase != CRUCIBLE_PIC_PIT_ACKED)
++			return false;
++	return true;
+ }
+ 
+ /*
+@@ -270,54 +566,49 @@
+ 
+ /* Selected intack retains the original guest RUN across native ACK and wake.
+  * The ordinary entry point above keeps its exact disabled source body. */
++/* Selected intack reserves the exact original PIC birth before native fields.
++ * Cascade, spurious and auto-EOI paths lack this receipt and remain refused. */
+ int kvm_crucible_pic_read_irq(struct kvm_vcpu *vcpu)
+ {
+ 	struct kvm *kvm = vcpu->kvm;
+ 	struct crucible_irq_device_lease lease;
+-	int irq, irq2, intno;
+-	struct kvm_pic *s = kvm->arch.vpic;
+-
+-	if (!s) {
++	struct kvm_pic *pic = kvm->arch.vpic;
++	int irq, vector;
++	bool valid;
++
++	if (!crucible_irq_device_selected(kvm))
++		return kvm_pic_read_irq(kvm);
++	if (!pic) {
+ 		crucible_irq_device_begin(kvm, vcpu, false, &lease);
+ 		kvm_vm_dead(kvm);
+ 		return -EAGAIN;
+ 	}
+-	pic_lock(s);
+-	if (!crucible_irq_device_begin(kvm, vcpu, kvm->arch.vpic == s, &lease)) {
+-		/* Ordinary pic_unlock would itself clear wake fields and kick CPUs. */
+-		spin_unlock(&s->lock);
++	lockdep_assert_held(&vcpu->mutex);
++	pic_lock(pic);
++	if (!crucible_irq_device_begin(kvm, vcpu, pic == kvm->arch.vpic, &lease)) {
++		spin_unlock(&pic->lock);
+ 		kvm_vm_dead(kvm);
+ 		return -EAGAIN;
+ 	}
+-	s->output = 0;
+-	irq = pic_get_irq(&s->pics[0]);
+-	if (irq >= 0) {
+-		pic_intack(&s->pics[0], irq);
+-		if (irq == 2) {
+-			irq2 = pic_get_irq(&s->pics[1]);
+-			if (irq2 >= 0)
+-				pic_intack(&s->pics[1], irq2);
+-			else
+-				/*
+-				 * spurious IRQ on slave controller
+-				 */
+-				irq2 = 7;
+-			intno = s->pics[1].irq_base + irq2;
+-		} else
+-			intno = s->pics[0].irq_base + irq;
+-	} else {
+-		/*
+-		 * spurious IRQ on host controller
+-		 */
+-		irq = 7;
+-		intno = s->pics[0].irq_base + irq;
+-	}
+-	pic_update_irq(s);
+-	pic_unlock(s);
+-
+-	if (crucible_irq_device_finish(kvm, vcpu, &lease))
++
++	irq = pic_get_irq(&pic->pics[0]);
++	if (!pic_pit_consume_begin_locked(pic, vcpu, irq)) {
++		/* Refusal releases only the reservation, with no native wake or intack. */
++		spin_unlock(&pic->lock);
++		crucible_irq_device_finish(kvm, vcpu, &lease);
++		kvm_vm_dead(kvm);
+ 		return -EAGAIN;
+-	return intno;
++	}
++	vector = pic->pics[0].irq_base;
++	pic->output = 0;
++	pic_intack(&pic->pics[0], irq);
++	pic_update_irq(pic);
++	pic_unlock(pic);
++
++	/* The encompassing architecture injection lease remains outstanding until
++ * its queue/inject tail validates this same target, vector and invocation. */
++	valid = !crucible_irq_device_finish(kvm, vcpu, &lease);
++	return valid ? vector : -EAGAIN;
+ }
+ 
+ static void kvm_pic_reset(struct kvm_kpic_state *s)
+@@ -522,7 +813,7 @@
+ 	case 0x21:
+ 		pic_lock(s);
+ 		if (!crucible_irq_device_begin(s->kvm, vcpu,
+-			s->kvm->arch.vpic == s, &lease)) {
++			s->kvm->arch.vpic == s && pic_pit_controller_write_safe_locked(s), &lease)) {
+ 			/* Refusal must not run pic_unlock's wake/field side effects. */
+ 			spin_unlock(&s->lock);
+ 			kvm_vm_dead(s->kvm);
+@@ -537,7 +828,7 @@
+ 	case 0xa1:
+ 		pic_lock(s);
+ 		if (!crucible_irq_device_begin(s->kvm, vcpu,
+-			s->kvm->arch.vpic == s, &lease)) {
++			s->kvm->arch.vpic == s && pic_pit_controller_write_safe_locked(s), &lease)) {
+ 			/* Refusal must not run pic_unlock's wake/field side effects. */
+ 			spin_unlock(&s->lock);
+ 			kvm_vm_dead(s->kvm);
+@@ -552,7 +843,7 @@
+ 	case 0x4d1:
+ 		pic_lock(s);
+ 		if (!crucible_irq_device_begin(s->kvm, vcpu,
+-			s->kvm->arch.vpic == s, &lease)) {
++			s->kvm->arch.vpic == s && pic_pit_controller_write_safe_locked(s), &lease)) {
+ 			/* Refusal must not run pic_unlock's wake/field side effects. */
+ 			spin_unlock(&s->lock);
+ 			kvm_vm_dead(s->kvm);
+@@ -590,7 +881,7 @@
+ 	case 0xa1:
+ 		pic_lock(s);
+ 		if (!crucible_irq_device_begin(s->kvm, vcpu,
+-			s->kvm->arch.vpic == s, &lease)) {
++			s->kvm->arch.vpic == s && !s->pics[addr >> 7].poll, &lease)) {
+ 			/* Refusal must not run pic_unlock's wake/field side effects. */
+ 			spin_unlock(&s->lock);
+ 			kvm_vm_dead(s->kvm);
+--- a/arch/x86/kvm/irq.h
++++ b/arch/x86/kvm/irq.h
+@@ -48,6 +48,28 @@
+ 	struct kvm_pic *pics_state;
+ };
+ 
++/* Private pending PIT birth at the PIC receiver. These phases describe native
++ * controller call custody, not guest delivery or a whole-board permission. */
++#define CRUCIBLE_PIC_PIT_PENDING 1
++#define CRUCIBLE_PIC_PIT_CONSUMING 2
++#define CRUCIBLE_PIC_PIT_CONSUMED 3
++#define CRUCIBLE_PIC_PIT_ACKED 4
++#define CRUCIBLE_PIC_PIT_UNKNOWN 5
++#define CRUCIBLE_PIC_PIT_ISSUED 4096ULL
++
++struct kvm_crucible_pic_pit_line {
++	struct kvm_crucible_pit_irq_birth original;
++	u64 geometry;
++	u64 consume_invocation;
++	u64 ack_invocation;
++	u32 phase;
++	u32 target_id;
++	u32 vector;
++	int native_result;
++	bool high_known;
++	bool low_known;
++};
++
+ struct kvm_pic {
+ 	spinlock_t lock;
+ 	bool wakeup_needed;
+@@ -59,12 +81,18 @@
+ 	struct kvm_io_device dev_slave;
+ 	struct kvm_io_device dev_elcr;
+ 	unsigned long irq_states[PIC_NUM_PINS];
++	/* Bounded original receiver records; no userspace pointer or wire layout. */
++	u64 crucible_pit_issued;
++	struct kvm_crucible_pic_pit_line crucible_pit[PIC_NUM_PINS];
+ };
+ 
+ int kvm_pic_init(struct kvm *kvm);
+ void kvm_pic_destroy(struct kvm *kvm);
+ int kvm_pic_read_irq(struct kvm *kvm);
+ void kvm_pic_update_irq(struct kvm_pic *s);
++int kvm_crucible_pic_set_pit_irq(struct kvm_kernel_irq_routing_entry *e,
++	struct kvm *kvm, int irq_source_id, int level, bool line_status,
++	const struct kvm_crucible_pit_irq_birth *original);
+ int kvm_pic_set_irq(struct kvm_kernel_irq_routing_entry *e, struct kvm *kvm,
+ 		    int irq_source_id, int level, bool line_status);
+ 

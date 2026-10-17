@@ -1144,10 +1144,16 @@ impl SelectableCatalogPlan {
         Ok(value)
     }
 
-    fn encoded_len(&self) -> Result<usize, SelectableCatalogPlanError> {
+    /// Counts the full canonical continuation without allocating nested bodies.
+    ///
+    /// The pending request includes its entire original zero-filled reply space.
+    ///
+    /// # Errors
+    /// Rejects invalid nested messages or checked aggregate length overflow.
+    pub fn encoded_len(&self) -> Result<usize, SelectableCatalogPlanError> {
         let mut total = SELECTABLE_CATALOG_PLAN_HEADER_BYTES;
         for declaration in self.declarations.values() {
-            let bytes = declaration.registration.encode()?.len();
+            let bytes = declaration.registration.encoded_len()?;
             total = checked_add(total, EXPECTED_ENTRY_HEADER_BYTES)?;
             total = checked_add(total, bytes)?;
         }
@@ -1161,7 +1167,7 @@ impl SelectableCatalogPlan {
             total = checked_add(total, 8)?;
         }
         if let Some(pending) = &self.continuation.pending {
-            total = checked_add(total, pending.request.encode()?.len())?;
+            total = checked_add(total, pending.request.encoded_len()?)?;
         }
         Ok(total)
     }

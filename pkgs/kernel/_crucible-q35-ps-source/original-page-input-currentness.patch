@@ -1,0 +1,11 @@
+--- a/mm/crucible_allocator.c
++++ b/mm/crucible_allocator.c
+@@ -166,7 +166,7 @@
+ 	scope = READ_ONCE(current->crucible_allocator_scope);
+ 	if (!scope || !in_task())
+ 		return true;
+-	if (!crucible_allocator_actor(scope) || READ_ONCE(scope->callback_active)) {
++	if (!crucible_allocator_current(scope)) {
+ 		WRITE_ONCE(scope->failed, true);
+ 		return false;
+ 	}

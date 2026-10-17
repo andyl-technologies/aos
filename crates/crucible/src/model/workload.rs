@@ -11,7 +11,7 @@ pub const DEFAULT_APP_RANDOM_DRAW_CAP: u64 = u64::MAX;
 
 /// Kernel command-line key that selects a supported in-guest workload binary.
 ///
-/// The value is part of [`WorldNode::cmdline`], so changing the selected
+/// The value is part of [`ComputeNodeDef::cmdline`], so changing the selected
 /// workload changes the world's content address and the enclosing
 /// [`ScenarioDef`].
 pub const WORKLOAD_SCENARIO_PARAMETER: &str = "crucible.workload";
@@ -21,7 +21,7 @@ pub(super) const WORKLOAD_SCENARIO_PARAMETER_PREFIX: &str = "crucible.workload="
 /// Kernel command-line key that delivers an explicit in-guest workload seed.
 ///
 /// The seed is delivered as plain scenario configuration on
-/// [`WorldNode::cmdline`]. This black-box path is sufficient without the
+/// [`ComputeNodeDef::cmdline`]. This black-box path is sufficient without the
 /// optional guest-host channel, and changing the value changes the world's
 /// content address and the enclosing [`ScenarioDef`].
 pub const WORKLOAD_SEED_SCENARIO_PARAMETER: &str = "wseed";
@@ -30,7 +30,7 @@ pub(super) const WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX: &str = "wseed=";
 
 /// Kernel command-line key that selects a classic in-guest load pattern.
 ///
-/// The pattern is plain scenario configuration on [`WorldNode::cmdline`]. It
+/// The pattern is plain scenario configuration on [`ComputeNodeDef::cmdline`]. It
 /// changes the world content address and scenario identity without introducing a
 /// host-side load-generation subsystem.
 pub const WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER: &str = "load_pattern";
@@ -58,7 +58,7 @@ pub(super) const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX: &str = "load_ti
 /// Kernel command-line key that declares a structured workload config tree.
 ///
 /// The value is a content-addressed, read-only tree reference. It is still plain
-/// scenario configuration on [`WorldNode::cmdline`], and the referenced content
+/// scenario configuration on [`ComputeNodeDef::cmdline`], and the referenced content
 /// hash therefore contributes to the world's canonical material.
 pub const WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER: &str = "wcfg";
 

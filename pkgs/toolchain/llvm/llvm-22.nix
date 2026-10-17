@@ -14,6 +14,7 @@
   bootstrapTools,
   stdenv,
   buildPackages,
+  additionalTargets ? [],
 }: let
   mkLLVM = import ./_llvm.nix {
     inherit
@@ -120,5 +121,5 @@ in
     # rejects `-wasm-enable-eh`. Scoped here (not in the shared `_llvm.nix`
     # default) so the bootstrap LLVMs 17–21 and the rust-bootstrap ladder are
     # not needlessly rebuilt.
-    targets = ["X86" "AArch64" "BPF" "WebAssembly"];
+    targets = ["X86" "AArch64" "BPF" "WebAssembly"] ++ additionalTargets;
   }

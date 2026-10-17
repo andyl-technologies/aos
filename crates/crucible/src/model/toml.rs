@@ -942,7 +942,7 @@ pub(super) fn world_io_node_from_toml(toml: WorldIoNodeToml) -> Result<WorldIoNo
     })
 }
 
-pub(super) fn world_node_to_toml(node: &WorldNode) -> Result<WorldNodeToml, EngineError> {
+pub(super) fn world_node_to_toml(node: &ComputeNodeDef) -> Result<WorldNodeToml, EngineError> {
     Ok(WorldNodeToml {
         id: node.id.name.clone(),
         arch: vm_arch_to_toml(node.arch),
@@ -957,11 +957,11 @@ pub(super) fn world_node_to_toml(node: &WorldNode) -> Result<WorldNodeToml, Engi
     })
 }
 
-pub(super) fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, EngineError> {
+pub(super) fn world_node_from_toml(toml: WorldNodeToml) -> Result<ComputeNodeDef, EngineError> {
     let kernel = parse_optional_blob_ref("kernel", toml.kernel)?;
     let root_image = parse_optional_blob_ref("root_image", toml.root_image)?;
     let initrd = parse_optional_blob_ref("initrd", toml.initrd)?;
-    Ok(WorldNode {
+    Ok(ComputeNodeDef {
         id: NodeId { name: toml.id },
         arch: vm_arch_from_toml(toml.arch),
         memory_mib: toml.memory_mib,
@@ -976,11 +976,11 @@ pub(super) fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, Eng
 }
 
 pub(super) fn default_vm_arch_toml() -> VmArchitectureToml {
-    vm_arch_to_toml(NodeTemplate::DEFAULT_ARCH)
+    vm_arch_to_toml(ComputeNodeTemplate::DEFAULT_ARCH)
 }
 
 pub(super) fn default_world_node_memory_mib() -> u32 {
-    NodeTemplate::DEFAULT_MEMORY_MIB
+    ComputeNodeTemplate::DEFAULT_MEMORY_MIB
 }
 
 pub(super) fn vm_arch_to_toml(arch: VmArchitecture) -> VmArchitectureToml {

@@ -1,0 +1,455 @@
+--- a/SConstruct
++++ b/SConstruct
+@@ -828,6 +828,9 @@
+     env['HAVE_PKG_CONFIG'] = env.Detect('pkg-config') == 'pkg-config'
+ 
+     with gem5_scons.Configure(env) as conf:
++        if not conf.CheckLibWithHeader('crypto', 'openssl/sha.h', 'C++',
++                                       call='SHA256(nullptr, 0, nullptr);'):
++            error('Read-only modeled-state byte digests require libcrypto.')
+         # On Solaris you need to use libsocket for socket ops
+         if not conf.CheckLibWithHeader(
+                 [None, 'socket'], 'sys/socket.h', 'C++',
+--- a/src/mem/cache/tags/base.cc
++++ b/src/mem/cache/tags/base.cc
+@@ -44,6 +44,7 @@
+  */
+ 
+ #include "mem/cache/tags/base.hh"
++#include "sim/crucible_state.hh"
+ 
+ #include <cassert>
+ 
+@@ -58,6 +59,42 @@
+ 
+ namespace gem5
+ {
++
++std::map<std::string, std::string>
++BaseTags::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.set("tags.block_size", blkSize);
++    writer.set("tags.size", size);
++    writer.set("tags.num_blocks", numBlocks);
++    writer.set("tags.warmed_up", warmedUp);
++    size_t ordinal = 0;
++    const_cast<BaseTags *>(this)->forEachBlk([&](CacheBlk &block) {
++        const auto prefix = "tags.block[" + std::to_string(ordinal++) + "]";
++        writer.set(prefix + ".valid", block.isValid());
++        writer.set(prefix + ".secure", block.isSecure());
++        writer.set(prefix + ".tag", block.getTag());
++        writer.set(prefix + ".set", block.getSet());
++        writer.set(prefix + ".way", block.getWay());
++        writer.set(prefix + ".when_ready", block.whenReady);
++        writer.set(prefix + ".writable", block.isSet(CacheBlk::WritableBit));
++        writer.set(prefix + ".readable", block.isSet(CacheBlk::ReadableBit));
++        writer.set(prefix + ".dirty", block.isSet(CacheBlk::DirtyBit));
++        writer.set(prefix + ".prefetched", block.wasPrefetched());
++        writer.set(prefix + ".task_id", block.getTaskId());
++        writer.set(prefix + ".requestor_id", block.getSrcRequestorId());
++        writer.set(prefix + ".partition_id", block.getPartitionId());
++        writer.set(prefix + ".ref_count", block.getRefCount());
++        if (block.isValid()) {
++            writer.set(prefix + ".inserted_at", curTick() - block.getAge());
++            writer.bytes(prefix + ".data", block.data, blkSize);
++        }
++    });
++    writer.set("tags.visited_blocks", ordinal);
++    writer.string("coverage.unsupported", "block-locks-replacement-and-tag-policy-state");
++    return std::move(writer.fields);
++}
++
+ 
+ BaseTags::BaseTags(const Params &p)
+     : ClockedObject(p), blkSize(p.block_size), blkMask(blkSize - 1),
+--- a/src/mem/cache/tags/base.hh
++++ b/src/mem/cache/tags/base.hh
+@@ -161,6 +161,9 @@
+     } stats;
+ 
+   public:
++    /** Reads explicitly covered fields without servicing modeled work. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+     PARAMS(BaseTags);
+     BaseTags(const Params &p);
+ 
+--- a/src/mem/dram_interface.cc
++++ b/src/mem/dram_interface.cc
+@@ -39,6 +39,7 @@
+  */
+ 
+ #include "mem/dram_interface.hh"
++#include "sim/crucible_state.hh"
+ 
+ #include "base/bitfield.hh"
+ #include "base/cprintf.hh"
+@@ -55,6 +56,66 @@
+ 
+ namespace memory
+ {
++
++std::map<std::string, std::string>
++DRAMInterface::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.fields = MemInterface::crucibleModeledFields();
++    writer.set("dram.timestamp_offset", timeStampOffset);
++    writer.set("dram.active_rank", activeRank);
++    writer.set("dram.powerdown_enabled", enableDRAMPowerdown);
++    writer.set("dram.ranks", ranks.size());
++    size_t ordinal = 0;
++    for (const auto rank : ranks) {
++        if (!rank)
++            throw std::runtime_error("null modeled DRAM rank");
++        const auto prefix = "dram.rank[" + std::to_string(ordinal++) + "]";
++        writer.set(prefix + ".pending_power_state", rank->pwrStateTrans);
++        writer.set(prefix + ".post_refresh_power_state", rank->pwrStatePostRefresh);
++        writer.set(prefix + ".power_state_tick", rank->pwrStateTick);
++        writer.set(prefix + ".refresh_due_at", rank->refreshDueAt);
++        writer.set(prefix + ".power_state", rank->pwrState);
++        writer.set(prefix + ".refresh_state", rank->refreshState);
++        writer.set(prefix + ".low_power", rank->inLowPowerState);
++        writer.set(prefix + ".index", rank->rank);
++        writer.set(prefix + ".read_entries", rank->readEntries);
++        writer.set(prefix + ".write_entries", rank->writeEntries);
++        writer.set(prefix + ".outstanding_events", rank->outstandingEvents);
++        writer.set(prefix + ".wake_allowed_at", rank->wakeUpAllowedAt);
++        writer.set(prefix + ".active_banks", rank->numBanksActive);
++        writer.set(prefix + ".last_burst_tick", rank->lastBurstTick);
++        writer.set(prefix + ".banks", rank->banks.size());
++        size_t bank_ordinal = 0;
++        for (const auto &bank : rank->banks) {
++            const auto key = prefix + ".bank[" + std::to_string(bank_ordinal++) + "]";
++            writer.set(key + ".open_row", bank.openRow);
++            writer.set(key + ".bank", bank.bank);
++            writer.set(key + ".group", bank.bankgr);
++            writer.set(key + ".read_allowed_at", bank.rdAllowedAt);
++            writer.set(key + ".write_allowed_at", bank.wrAllowedAt);
++            writer.set(key + ".precharge_allowed_at", bank.preAllowedAt);
++            writer.set(key + ".activate_allowed_at", bank.actAllowedAt);
++            writer.set(key + ".row_accesses", bank.rowAccesses);
++            writer.set(key + ".bytes_accessed", bank.bytesAccessed);
++        }
++        writer.set(prefix + ".pending_commands", rank->cmdList.size());
++        size_t command_ordinal = 0;
++        for (const auto &command : rank->cmdList) {
++            const auto key = prefix + ".command[" + std::to_string(command_ordinal++) + "]";
++            writer.set(key + ".type", command.type);
++            writer.set(key + ".bank", command.bank);
++            writer.set(key + ".timestamp", command.timeStamp);
++        }
++        writer.set(prefix + ".activate_ticks", rank->actTicks.size());
++        size_t tick_ordinal = 0;
++        for (const auto tick : rank->actTicks)
++            writer.set(prefix + ".activate_tick[" + std::to_string(tick_ordinal++) + "]", tick);
++    }
++    writer.fields["coverage.unsupported"] += ",rank-callback-payloads-and-dram-power";
++    return std::move(writer.fields);
++}
++
+ 
+ std::pair<MemPacketQueue::iterator, Tick>
+ DRAMInterface::chooseNextFRFCFS(MemPacketQueue& queue, Tick min_col_at) const
+--- a/src/mem/dram_interface.hh
++++ b/src/mem/dram_interface.hh
+@@ -228,6 +228,7 @@
+      */
+     class Rank : public EventManager
+     {
++        friend class DRAMInterface;
+       private:
+ 
+         /**
+@@ -663,6 +664,9 @@
+     }
+ 
+   public:
++    /** Reads explicitly covered fields without servicing modeled work. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+     /**
+      * Initialize the DRAM interface and verify parameters
+      */
+--- a/src/mem/mem_ctrl.cc
++++ b/src/mem/mem_ctrl.cc
+@@ -39,6 +39,7 @@
+  */
+ 
+ #include "mem/mem_ctrl.hh"
++#include "sim/crucible_state.hh"
+ 
+ #include "base/trace.hh"
+ #include "debug/DRAM.hh"
+@@ -56,6 +57,63 @@
+ 
+ namespace memory
+ {
++
++std::map<std::string, std::string>
++MemCtrl::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.set("controller.timing_mode", isTimingMode);
++    writer.set("controller.retry_read", retryRdReq);
++    writer.set("controller.retry_write", retryWrReq);
++    writer.string("controller.media", dram ? dram->name() : "null");
++    auto visit = [&](const std::string &prefix, const MemPacketQueue &queue) {
++        writer.set(prefix + ".size", queue.size());
++        size_t ordinal = 0;
++        for (const auto packet : queue) {
++            if (!packet)
++                throw std::runtime_error("null modeled controller packet");
++            const auto key = prefix + "[" + std::to_string(ordinal++) + "]";
++            writer.set(key + ".entry_time", packet->entryTime);
++            writer.set(key + ".ready_time", packet->readyTime);
++            writer.set(key + ".requestor", packet->_requestorId);
++            writer.set(key + ".read", packet->read);
++            writer.set(key + ".dram", packet->dram);
++            writer.set(key + ".pseudo_channel", packet->pseudoChannel);
++            writer.set(key + ".rank", packet->rank);
++            writer.set(key + ".bank", packet->bank);
++            writer.set(key + ".row", packet->row);
++            writer.set(key + ".bank_id", packet->bankId);
++            writer.set(key + ".address", packet->addr);
++            writer.set(key + ".size", packet->size);
++            writer.set(key + ".qos", packet->_qosValue);
++            writer.set(key + ".split", packet->burstHelper != nullptr);
++            if (packet->burstHelper) {
++                writer.set(key + ".burst_count", packet->burstHelper->burstCount);
++                writer.set(key + ".bursts_serviced", packet->burstHelper->burstsServiced);
++            }
++        }
++    };
++    writer.set("controller.read_priorities", readQueue.size());
++    writer.set("controller.write_priorities", writeQueue.size());
++    for (size_t i = 0; i < readQueue.size(); ++i)
++        visit("controller.read[" + std::to_string(i) + "]", readQueue[i]);
++    for (size_t i = 0; i < writeQueue.size(); ++i)
++        visit("controller.write[" + std::to_string(i) + "]", writeQueue[i]);
++    visit("controller.response", respQueue);
++    auto addresses = std::vector<Addr>(isInWriteQueue.begin(), isInWriteQueue.end());
++    std::sort(addresses.begin(), addresses.end());
++    writer.set("controller.write_address_count", addresses.size());
++    for (size_t i = 0; i < addresses.size(); ++i)
++        writer.set("controller.write_address[" + std::to_string(i) + "]", addresses[i]);
++    auto bursts = std::vector<Tick>(burstTicks.begin(), burstTicks.end());
++    std::sort(bursts.begin(), bursts.end());
++    writer.set("controller.burst_tick_count", bursts.size());
++    for (size_t i = 0; i < bursts.size(); ++i)
++        writer.set("controller.burst_tick[" + std::to_string(i) + "]", bursts[i]);
++    writer.string("coverage.unsupported", "packet-request-aliases-payloads-port-events-and-qos-state");
++    return std::move(writer.fields);
++}
++
+ 
+ MemCtrl::MemCtrl(const MemCtrlParams &p) :
+     qos::MemCtrl(p),
+--- a/src/mem/mem_ctrl.hh
++++ b/src/mem/mem_ctrl.hh
+@@ -674,6 +674,9 @@
+     virtual void pruneBurstTick();
+ 
+   public:
++    /** Reads explicitly covered fields without servicing modeled work. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+ 
+     MemCtrl(const MemCtrlParams &p);
+ 
+--- a/src/mem/mem_interface.cc
++++ b/src/mem/mem_interface.cc
+@@ -39,6 +39,7 @@
+  */
+ 
+ #include "mem/mem_interface.hh"
++#include "sim/crucible_state.hh"
+ 
+ #include "base/bitfield.hh"
+ #include "base/cprintf.hh"
+@@ -50,6 +51,22 @@
+ 
+ namespace memory
+ {
++
++std::map<std::string, std::string>
++MemInterface::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.string("media.controller", ctrl ? ctrl->name() : "null");
++    writer.set("media.next_burst_at", nextBurstAt);
++    writer.set("media.next_request_at", nextReqTime);
++    writer.set("media.reads_this_turn", readsThisTime);
++    writer.set("media.writes_this_turn", writesThisTime);
++    writer.set("media.bus_state", busState);
++    writer.set("media.next_bus_state", busStateNext);
++    writer.string("coverage.unsupported", "abstract-memory-locks-address-map-qos-and-media-configuration");
++    return std::move(writer.fields);
++}
++
+ 
+ MemInterface::MemInterface(const MemInterfaceParams &_p)
+     : AbstractMemory(_p),
+--- a/src/mem/mem_interface.hh
++++ b/src/mem/mem_interface.hh
+@@ -166,6 +166,9 @@
+     Tick rankToRankDelay() const { return tBURST + tCS; }
+ 
+   public:
++    /** Reads explicitly covered fields without servicing modeled work. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+ 
+     /**
+       * Buffer sizes for read and write queues in the controller
+--- a/src/python/pybind11/event.cc
++++ b/src/python/pybind11/event.cc
+@@ -164,6 +164,10 @@
+             item["name"] = object.first;
+             item["native_type"] = object.second;
+             item["state_complete"] = false;
++            auto native = SimObject::find(object.first.c_str());
++            if (!native)
++                throw std::runtime_error("modeled object disappeared");
++            item["modeled_fields"] = native->crucibleModeledFields();
+             objects.append(item);
+         }
+         result["objects"] = objects;
+--- /dev/null
++++ b/src/sim/crucible_state.hh
+@@ -0,0 +1,58 @@
++// SPDX-License-Identifier: MIT
++#ifndef __SIM_CRUCIBLE_STATE_HH__
++#define __SIM_CRUCIBLE_STATE_HH__
++
++#include <algorithm>
++#include <cstdint>
++#include <cstddef>
++#include <map>
++#include <stdexcept>
++#include <string>
++#include <type_traits>
++#include <openssl/sha.h>
++
++namespace gem5
++{
++
++/** Canonical, address-free field values for explicitly audited native visitors. */
++class CrucibleStateWriter
++{
++  public:
++    std::map<std::string, std::string> fields;
++
++    void string(const std::string &key, const std::string &value)
++    {
++        if (!fields.emplace(key, value).second)
++            throw std::runtime_error("duplicate modeled field: " + key);
++    }
++
++    template<class T>
++    void set(const std::string &key, T value)
++    {
++        if constexpr (std::is_enum_v<T>)
++            set(key, static_cast<std::underlying_type_t<T>>(value));
++        else
++            string(key, std::to_string(value));
++    }
++
++    void bytes(const std::string &key, const uint8_t *data, size_t size)
++    {
++        if (!data && size)
++            throw std::runtime_error("missing modeled byte storage: " + key);
++        unsigned char digest[SHA256_DIGEST_LENGTH];
++        if (!SHA256(data, size, digest))
++            throw std::runtime_error("modeled byte digest failed: " + key);
++        static constexpr char hex[] = "0123456789abcdef";
++        std::string encoded;
++        encoded.reserve(2 * sizeof(digest));
++        for (unsigned char value : digest) {
++            encoded.push_back(hex[value >> 4]);
++            encoded.push_back(hex[value & 15]);
++        }
++        set(key + ".bytes", size);
++        string(key + ".sha256", encoded);
++    }
++};
++
++} // namespace gem5
++#endif
+--- a/src/sim/sim_object.hh
++++ b/src/sim/sim_object.hh
+@@ -48,6 +48,7 @@
+ 
+ #include <string>
+ #include <vector>
++#include <map>
+ #include <utility>
+ 
+ #include "base/named.hh"
+@@ -169,6 +170,11 @@
+ 
+   public:
+     typedef SimObjectParams Params;
++
++    /** Reports only fields handled by a concrete, read-only native visitor. */
++    virtual std::map<std::string, std::string> crucibleModeledFields() const
++    { return {}; }
++
+     /**
+      * @return This function returns the cached copy of the object parameters.
+      *
+--- a/src/sim/system.cc
++++ b/src/sim/system.cc
+@@ -40,6 +40,7 @@
+  */
+ 
+ #include "sim/system.hh"
++#include "sim/crucible_state.hh"
+ 
+ #include <algorithm>
+ 
+@@ -64,6 +65,31 @@
+ 
+ namespace gem5
+ {
++
++std::map<std::string, std::string>
++System::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.set("memory.total_bytes", getPhysMem().totalSize());
++    size_t ordinal = 0;
++    for (const auto &entry : getPhysMem().getBackingStore()) {
++        const auto prefix = "memory.backing[" + std::to_string(ordinal++) + "]";
++        writer.set(prefix + ".guest_start", entry.range.start());
++        writer.set(prefix + ".guest_end", entry.range.end());
++        writer.set(prefix + ".configuration_table", entry.confTableReported);
++        writer.set(prefix + ".address_map", entry.inAddrMap);
++        writer.set(prefix + ".kvm_map", entry.kvmMap);
++        if (entry.shmFd >= 0) {
++            writer.string(prefix + ".unsupported", "external-shared-storage");
++        } else {
++            writer.bytes(prefix + ".data", entry.pmem, entry.range.size());
++        }
++    }
++    writer.set("memory.backing_count", ordinal);
++    writer.string("coverage.unsupported", "system-fields-and-memory-mapping-custody");
++    return std::move(writer.fields);
++}
++
+ 
+ std::vector<System *> System::systemList;
+ 
+--- a/src/sim/system.hh
++++ b/src/sim/system.hh
+@@ -117,6 +117,9 @@
+     AddrRangeList externalMemRanges;
+ 
+   public:
++    /** Reads explicitly covered fields without servicing modeled work. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+ 
+     class Threads
+     {

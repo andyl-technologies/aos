@@ -339,6 +339,23 @@ pub struct LinuxProjectQuotaBinding {
 }
 
 impl LinuxProjectQuotaBinding {
+    /// Observes the retained path capacity without querying or changing quotas.
+    ///
+    /// The descriptor is inline. Kernel state, allocator overhead and the
+    /// enclosing binding's inline layout are separate accounting terms.
+    #[must_use]
+    pub fn retained_requested_storage_data(&self) -> usize {
+        let Self {
+            directory: _,
+            path,
+            device: _,
+            inode: _,
+            project_id: _,
+            limits: _,
+        } = self;
+        path.capacity()
+    }
+
     /// Pins and verifies one already configured project-quota directory.
     ///
     /// # Errors

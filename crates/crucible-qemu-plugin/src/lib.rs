@@ -73,6 +73,7 @@ pub mod idle_loop;
 pub mod inbound;
 pub mod inertness;
 pub mod io_wire_fuzz;
+pub mod native_node_control;
 pub mod network_rx;
 pub mod network_tx;
 pub mod ninep_io;

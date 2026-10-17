@@ -1601,7 +1601,7 @@ fn disk_with_reads(
     target: &str,
     device_name: &str,
     reads: &[(u64, u32)],
-) -> crate::device_subnode::DeviceSchedulingSubNode {
+) -> crate::device_subnode::ScheduledIoNode {
     use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
     let core = match IoCore::new(1, 16, 16) {
@@ -1613,7 +1613,7 @@ fn disk_with_reads(
         BaseImage::new(vec![0x5a; 4096]),
         BlockLatency::default(),
     );
-    let mut sub_node = crate::device_subnode::DeviceSchedulingSubNode::new(
+    let mut sub_node = crate::device_subnode::ScheduledIoNode::new(
         scheduler_node(device_name, SchedulingNodeKind::Disk),
         NodeId {
             name: target.to_string(),

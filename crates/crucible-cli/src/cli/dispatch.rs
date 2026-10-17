@@ -91,6 +91,9 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     if let Commands::Store(args) = &cli.command {
         return run_store_invocation(cli, args);
     }
+    if let Commands::Node(args) = &cli.command {
+        return crate::cli_node::run_node_invocation(cli, args);
+    }
     let mut seed_entropy = OsSeedEntropySource;
     let ergonomics_plan =
         plan_determinism_ergonomics(cli, &ProcessSeedEnvironment, &mut seed_entropy)?;
@@ -436,7 +439,8 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         | Commands::Debug(_)
         | Commands::Serve(_)
         | Commands::Campaign(_)
-        | Commands::Store(_) => Ok(()),
+        | Commands::Store(_)
+        | Commands::Node(_) => Ok(()),
         Commands::Completions(args) => {
             write_completions(args.shell, &mut io::stdout());
             Ok(())

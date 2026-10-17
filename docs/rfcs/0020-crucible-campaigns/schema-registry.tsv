@@ -415,6 +415,7 @@ crucible.qemu.vmstate.cpu%2ftimers-wide	1	qemu-patch::vmstate	device-state	gate:
 crucible.qemu.vmstate.cpu-crucible-clock	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu-crucible-hardware-error	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu_timer%2fclock-wide	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.crucible-node-service-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.crucible-sim-preemption	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.env%2ftimer-wide	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.hda-audio-stream-buffer-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming

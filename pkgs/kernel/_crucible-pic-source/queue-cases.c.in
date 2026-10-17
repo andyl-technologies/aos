@@ -1,0 +1,169 @@
+
+static void setup(void)
+{
+    static bool initialized;
+    if (initialized) {
+        assert(!pthread_mutex_destroy(&vm.crucible_gate_lock));
+        assert(!pthread_mutex_destroy(&pic.lock));
+        assert(!pthread_mutex_destroy(&vm.cpu.mutex));
+    }
+    memset(&vm, 0, sizeof(vm));
+    memset(&pit, 0, sizeof(pit));
+    memset(&pic, 0, sizeof(pic));
+    assert(!pthread_mutex_init(&vm.crucible_gate_lock, NULL));
+    assert(!pthread_mutex_init(&pic.lock, NULL));
+    initialized = true;
+    vm.arch.vpit = &pit;
+    vm.arch.vpic = &pic;
+    vm.arch.crucible_clock.active = true;
+    vm.arch.crucible_clock.window_generation = 7;
+    vm.crucible_host_ceiling_ns = 1000;
+    vm.crucible_irq_input.enabled = true;
+    vm.crucible_continuation_roster_frozen = true;
+    vm.crucible_effect_owners = 1;
+    vm.cpu = (struct kvm_vcpu) { .kvm = &vm, .vcpu_id = 0,
+        .crucible_timer_run_invocation = 99 };
+    assert(!pthread_mutex_init(&vm.cpu.mutex, NULL));
+    pit.kvm = &vm;
+    pit.worker = &worker;
+    worker.task = &worker_task;
+    pit.pit_state.crucible.issued = 12;
+    pit.pit_state.crucible.count = 1;
+    pit.pit_state.crucible.pending[0] = (struct kvm_crucible_pit_expiry) {
+        .sequence = 12, .generation = 7, .invocation = 5, .native_vcpu_id = 0 };
+    pic.kvm = &vm;
+    pic.pics[0].geometry = 42;
+    pic.crucible_pit[0] = (struct kvm_crucible_pic_pit_line) { .original.generation = 7,
+        .phase = CRUCIBLE_PIC_PIT_ACKED, .eoi_native_known = true,
+        .eoi_inflight = true, .eoi_sequence = 11, .geometry = 42,
+        .ack_invocation = 99 };
+    host_now = 200;
+    native_queues = stopped_wakes = contained = queue_credit_seen = 0;
+    gate_held = fail_queue = late_queue = wrong_original_run = false;
+    hold_queue = queue_entered = release_queue = false;
+}
+
+static struct crucible_irq_device_lease original_lease(void)
+{ return (struct crucible_irq_device_lease) { .entered = true,
+    .generation = 7, .invocation = 99 }; }
+
+static void defer_original(void)
+{
+    unsigned long flags;
+    raw_spin_lock_irqsave(&vm.crucible_gate_lock, flags);
+    assert(!pit_native_schedule_locked(&pit));
+    assert(!native_queues);
+    assert(pit.pit_state.crucible.deferred_eoi_sequence == 11);
+    raw_spin_unlock_irqrestore(&vm.crucible_gate_lock, flags);
+}
+
+static int original_finish(struct crucible_irq_device_lease *lease)
+{
+    assert(!pthread_mutex_lock(&vm.cpu.mutex));
+    int result = pic_pit_eoi_finish(&vm.cpu, &pic, lease, true);
+    assert(!pthread_mutex_unlock(&vm.cpu.mutex));
+    return result;
+}
+
+static void positive_case(void)
+{
+    setup();
+    defer_original();
+    struct crucible_irq_device_lease lease = original_lease();
+    assert(!original_finish(&lease));
+    assert(native_queues == 1 && queue_credit_seen == 1);
+    assert(pit.pit_state.crucible.queue_known && pit.pit_state.crucible.work_scheduled);
+    assert(pit.pit_state.crucible.queue_generation == 7);
+    assert(pit.pit_state.crucible.queue_head_sequence == 12);
+    assert(!pit.pit_state.crucible.deferred_eoi_sequence);
+    assert(!vm.crucible_effect_owners && !lease.entered && stopped_wakes == 1);
+}
+
+static void refused_cases(void)
+{
+    for (unsigned int fault = 0; fault < 5; fault++) {
+        setup();
+        defer_original();
+        switch (fault) {
+        case 0: pit.pit_state.crucible.deferred_head_sequence++; break;
+        case 1: pit.pit_state.crucible.deferred_generation++; break;
+        case 2: pit.pit_state.crucible.queue_issued = KVM_CRUCIBLE_PIT_ISSUED; break;
+        case 3: fail_queue = true; break;
+        case 4: late_queue = true; break;
+        }
+        struct crucible_irq_device_lease lease = original_lease();
+        assert(original_finish(&lease) == -EAGAIN);
+        assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+        assert(vm.crucible_irq_input.tainted && !vm.crucible_effect_owners);
+        assert(!pit.pit_state.crucible.queue_known);
+        assert(contained == 1 && stopped_wakes == 1);
+    }
+}
+
+static void worker_admission_cases(void)
+{
+    for (unsigned int fault = 0; fault < 3; fault++) {
+        setup();
+        defer_original();
+        struct crucible_irq_device_lease lease = original_lease();
+        assert(!original_finish(&lease));
+        if (fault == 1)
+            pit.pit_state.crucible.queue_known = false;
+        if (fault == 2)
+            pit.pit_state.crucible.queue_head_sequence++;
+        // The exact native prefix ends after owner reservation, before any
+        // IRQ/NMI producer effect. It cannot supply a whole worker result.
+        pit_native_work(&pit);
+        if (fault) {
+            assert(!pit.pit_state.crucible.worker_active);
+            assert(!vm.arch.crucible_clock.timer_owners && contained == 1);
+            assert(pit.pit_state.crucible.work_scheduled);
+        } else {
+            assert(pit.pit_state.crucible.worker_active);
+            assert(vm.arch.crucible_clock.timer_owners == 1 && !contained);
+        }
+    }
+}
+
+static void *held_original_finish(void *result)
+{
+    struct crucible_irq_device_lease lease = original_lease();
+    *(int *)result = original_finish(&lease);
+    return NULL;
+}
+
+static void held_queue_case(void)
+{
+    pthread_t original;
+    int result = -EINPROGRESS;
+
+    setup();
+    defer_original();
+    hold_queue = true;
+    assert(!pthread_create(&original, NULL, held_original_finish, &result));
+    assert(!pthread_mutex_lock(&queue_mutex));
+    while (!queue_entered)
+        assert(!pthread_cond_wait(&queue_condition, &queue_mutex));
+
+    /* The original modeled native return remains held. A stopped observer
+     * cannot acquire the real model gate or see a released effect credit. */
+    assert(pthread_mutex_trylock(&vm.crucible_gate_lock) == EBUSY);
+    assert(vm.crucible_effect_owners == 1 && !stopped_wakes);
+    assert(native_queues == 1 && !pit.pit_state.crucible.queue_known);
+    release_queue = true;
+    assert(!pthread_cond_broadcast(&queue_condition));
+    assert(!pthread_mutex_unlock(&queue_mutex));
+    assert(!pthread_join(original, NULL));
+
+    assert(!result && pit.pit_state.crucible.queue_known);
+    assert(!vm.crucible_effect_owners && stopped_wakes == 1);
+}
+
+int main(void)
+{
+    positive_case();
+    refused_cases();
+    worker_admission_cases();
+    held_queue_case();
+    return 0;
+}
