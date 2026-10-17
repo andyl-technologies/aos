@@ -1735,6 +1735,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   restore, hot-fork admission, replay proofs, guarded replay planning, and
   finding checkpoint authentication (CCOMP-33, CMEAS-28). The live log and its
   condition prefix still hold complete histories in memory until T-CAM-3.7.
+- [x] **T-CAM-4.20** Retain only the scheduler's search frontiers at its
+  current boundary, count the retired ones so per-quantum discovery names its
+  frontiers by sequence, compare a frontier's time and parent before
+  normalizing it during branch authentication, and name each retained parent
+  by prefix length and identity in single-scheduler continuation version 10
+  (CCOMP-36).
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,

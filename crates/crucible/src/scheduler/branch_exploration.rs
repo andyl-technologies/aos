@@ -147,10 +147,66 @@ impl SingleScheduler {
         Ok(())
     }
 
-    /// Returns live World-network frontiers captured in execution order.
+    /// Returns the search frontiers retained at the current admission boundary.
+    ///
+    /// Frontiers are kept in execution order. Recording a frontier first
+    /// retires every leading frontier whose virtual time precedes the scheduler
+    /// frontier, because such a frontier can no longer authenticate a branch or
+    /// be published as a discovery. The retained window therefore stays bounded
+    /// by the choices offered at one boundary rather than growing with the run.
     #[must_use]
     pub fn search_frontiers(&self) -> &[SearchRuntimeFrontier] {
         &self.search_frontiers
+    }
+
+    /// Returns the number of search frontiers ever recorded, retired or not.
+    ///
+    /// The count is a stable sequence position: a caller captures it before a
+    /// quantum and passes it to [`Self::search_frontiers_since`] afterwards.
+    #[must_use]
+    pub fn search_frontier_count(&self) -> u64 {
+        self.retired_search_frontiers
+            .saturating_add(u64::try_from(self.search_frontiers.len()).unwrap_or(u64::MAX))
+    }
+
+    /// Returns the retained frontiers recorded at or after sequence `first`.
+    ///
+    /// Frontiers from that range that were already retired precede the
+    /// scheduler frontier and are omitted, as they could not be published.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `first` lies beyond
+    /// [`Self::search_frontier_count`].
+    pub fn search_frontiers_since(
+        &self,
+        first: u64,
+    ) -> Result<&[SearchRuntimeFrontier], SchedulerError> {
+        if first > self.search_frontier_count() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("search frontier sequence lies beyond the recorded history"),
+            });
+        }
+        let start = usize::try_from(first.saturating_sub(self.retired_search_frontiers))
+            .unwrap_or(usize::MAX)
+            .min(self.search_frontiers.len());
+        Ok(&self.search_frontiers[start..])
+    }
+
+    /// Records one search frontier after retiring every passed frontier.
+    pub(super) fn record_search_frontier(&mut self, frontier: SearchRuntimeFrontier) {
+        let passed = self
+            .search_frontiers
+            .iter()
+            .take_while(|retained| retained.at < self.frontier)
+            .count();
+        if passed != 0 {
+            self.search_frontiers.drain(..passed);
+            self.retired_search_frontiers = self
+                .retired_search_frontiers
+                .saturating_add(u64::try_from(passed).unwrap_or(u64::MAX));
+        }
+        self.search_frontiers.push(frontier);
     }
 
     /// Records finite signal-fault choices at their pre-evaluation boundary.
@@ -185,7 +241,7 @@ impl SingleScheduler {
                     message: format!("invalid signal-fault search choice: {error}"),
                 }
             })?;
-            self.search_frontiers.push(SearchRuntimeFrontier {
+            self.record_search_frontier(SearchRuntimeFrontier {
                 configuration: parent.clone(),
                 at,
                 choices: SearchFrontierChoices::from_decision_sequences(decisions),

@@ -1294,6 +1294,82 @@ fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
 }
 
 #[test]
+fn search_frontier_window_retires_passed_boundaries_and_checkpoints_by_prefix() {
+    let node = test_scenario_node(
+        "a",
+        0,
+        SchedulerNodeActivity::Runnable,
+        NetworkLookahead::Infinite,
+        ExactLocalEvent::NoArmedTimer,
+    );
+    let mut scheduler = test_scheduler(vec![node.clone()], Vec::new());
+    let choice = |name: &[u8]| BindingSearchChoice {
+        id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(name)),
+        candidates_digest: ContentHash::from_bytes(b"window-candidates"),
+        candidate_count: 2,
+        candidate_semantics: BindingSearchCandidateSemantics::Outcome,
+        selected_index: None,
+        overridden: false,
+    };
+    let record = |scheduler: &mut SingleScheduler, ticks: u64, name: &[u8]| {
+        let parent = scheduler.configuration().clone();
+        scheduler
+            .record_signal_fault_search_frontiers(&parent, VirtualTime { ticks }, &[choice(name)])
+            .unwrap_or_else(|error| panic!("window frontier should record: {error}"));
+    };
+
+    // Two frontiers at the current boundary: the first names a strict prefix
+    // of the configuration the second one records.
+    record(&mut scheduler, 0, b"first");
+    let decision = crate::Decision::RngDraw(crate::RngDecision {
+        stream: crate::RngStreamId::from_name("window"),
+        value: 3,
+    });
+    scheduler.configuration = accepted_step!(scheduler.configuration(), decision);
+    record(&mut scheduler, 0, b"second");
+
+    assert_eq!(scheduler.search_frontiers().len(), 2);
+    assert_eq!(scheduler.search_frontier_count(), 2);
+    let encoded = scheduler
+        .checkpoint()
+        .and_then(|checkpoint| checkpoint.canonical_bytes())
+        .unwrap_or_else(|error| panic!("window checkpoint should encode: {error}"));
+    let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&encoded)
+        .unwrap_or_else(|error| panic!("window checkpoint should decode: {error}"));
+    let mut restored = test_scheduler(vec![node], Vec::new());
+    decoded
+        .restore_into(&mut restored)
+        .unwrap_or_else(|error| panic!("window checkpoint should restore: {error}"));
+    assert_eq!(restored.search_frontiers(), scheduler.search_frontiers());
+    assert_eq!(restored.search_frontier_count(), 2);
+    assert_eq!(
+        restored
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("restored window should encode: {error}")),
+        encoded
+    );
+
+    // Once the scheduler passes their boundary, the next record retires both.
+    scheduler.frontier = VirtualTime { ticks: 9 };
+    record(&mut scheduler, 9, b"third");
+
+    assert_eq!(scheduler.search_frontiers().len(), 1);
+    assert_eq!(scheduler.search_frontier_count(), 3);
+    assert_eq!(scheduler.search_frontiers()[0].at, VirtualTime { ticks: 9 });
+    for (first, retained) in [(0, 1), (1, 1), (2, 1), (3, 0)] {
+        assert_eq!(
+            scheduler
+                .search_frontiers_since(first)
+                .unwrap_or_else(|error| panic!("recorded sequence should resolve: {error}"))
+                .len(),
+            retained
+        );
+    }
+    assert!(scheduler.search_frontiers_since(4).is_err());
+}
+
+#[test]
 fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
     let node = test_scenario_node(
         "a",

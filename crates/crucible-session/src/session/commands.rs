@@ -323,7 +323,8 @@ pub enum QueryResult {
     EventLogLength(usize),
     /// Scheduler-derived choices available at the current boundary.
     SearchFrontier {
-        /// Runtime RESOLVE frontiers captured in execution order.
+        /// Runtime RESOLVE frontiers retained at the current boundary, in
+        /// execution order. Frontiers the run has passed are not retained.
         frontiers: Vec<crucible::SearchRuntimeFrontier>,
         /// Explorer-forced choices that have not reached their RESOLVE point.
         pending_branch_choices: usize,

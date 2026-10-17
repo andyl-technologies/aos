@@ -9,7 +9,7 @@ mod event_log_continuation;
 pub use event_log_continuation::CheckpointEventLogEntries;
 use event_log_continuation::{EventLogWire, restore_event_log};
 
-const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v9\0";
+const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v10\0";
 /// Maximum canonical byte length of one complete single-scheduler continuation.
 pub const MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES: usize =
     MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES + MAGIC.len();
@@ -49,6 +49,7 @@ struct SingleSchedulerWire {
     decision_rng_cursor: DecisionRngState,
     branch_network_choices: Vec<SelectionDecision>,
     search_frontiers: Vec<SearchRuntimeFrontierWire>,
+    retired_search_frontiers: u64,
     event_log: EventLogWire,
     trigger_actions: TriggerActionState,
     frontier: u64,
@@ -75,11 +76,16 @@ struct RuntimeNodeWire {
     vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
 }
 
+/// One retained search frontier, named relative to the checkpoint schedule.
+///
+/// Every frontier parent is a prefix of the scheduler configuration that
+/// recorded it, so the wire keeps only the prefix length and the parent's
+/// canonical identity instead of a second copy of the schedule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchRuntimeFrontierWire {
-    scenario: ContentHash,
-    schedule: Vec<u8>,
+    parent_len: u64,
+    parent: ContentHash,
     at: u64,
     choices: Vec<Vec<u8>>,
 }
@@ -146,8 +152,11 @@ impl SingleScheduler {
                 search_frontiers: self
                     .search_frontiers
                     .iter()
-                    .map(SearchRuntimeFrontierWire::from)
-                    .collect(),
+                    .map(|frontier| {
+                        SearchRuntimeFrontierWire::capture(&self.configuration, frontier)
+                    })
+                    .collect::<Result<_, _>>()?,
+                retired_search_frontiers: self.retired_search_frontiers,
                 event_log: EventLogWire::from(&self.event_log),
                 trigger_actions: self.trigger_actions.clone(),
                 frontier: self.frontier.ticks,
@@ -212,11 +221,24 @@ impl From<&RuntimeSchedulerNode> for RuntimeNodeWire {
     }
 }
 
-impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
-    fn from(frontier: &SearchRuntimeFrontier) -> Self {
-        Self {
-            scenario: frontier.configuration.def.id(),
-            schedule: frontier.configuration.schedule.to_compact_binary(),
+impl SearchRuntimeFrontierWire {
+    /// Names `frontier` as a prefix of the scheduler's `configuration`.
+    ///
+    /// A parent that is not a prefix of the scheduler configuration has no
+    /// compact name, so capture fails closed instead of copying its schedule.
+    fn capture(
+        configuration: &Configuration,
+        frontier: &SearchRuntimeFrontier,
+    ) -> Result<Self, SingleSchedulerCheckpointError> {
+        let parent = &frontier.configuration;
+        if parent.def != configuration.def || !configuration.schedule.starts_with(&parent.schedule)
+        {
+            return Err(SingleSchedulerCheckpointError::Configuration);
+        }
+        Ok(Self {
+            parent_len: u64::try_from(parent.schedule.len())
+                .map_err(|_| SingleSchedulerCheckpointError::Configuration)?,
+            parent: parent.id(),
             at: frontier.at.ticks,
             choices: frontier
                 .choices
@@ -226,7 +248,7 @@ impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
                     Schedule::from_decisions(choice.decisions().to_vec()).to_compact_binary()
                 })
                 .collect(),
-        }
+        })
     }
 }
 
@@ -548,7 +570,7 @@ impl SingleSchedulerCheckpoint {
         restore_nodes(&mut staged, &self.wire.nodes)?;
         restore_event_log(&mut staged.event_log, &self.wire.event_log)?;
         let search_frontiers =
-            restore_search_frontiers(&configuration.def, &self.wire.search_frontiers)?;
+            restore_search_frontiers(&configuration, &self.wire.search_frontiers)?;
 
         staged.configuration = configuration;
         staged.quantum_budget = self.wire.quantum_budget;
@@ -595,6 +617,7 @@ impl SingleSchedulerCheckpoint {
         staged.branch_network_choices = self.wire.branch_network_choices.clone();
         staged.app_random_branch_selections.clear();
         staged.search_frontiers = search_frontiers;
+        staged.retired_search_frontiers = self.wire.retired_search_frontiers;
         staged.trigger_actions = self.wire.trigger_actions.clone();
         staged.frontier = VirtualTime {
             ticks: self.wire.frontier,
@@ -681,8 +704,6 @@ fn validate_wire(wire: &SingleSchedulerWire) -> Result<(), SingleSchedulerCheckp
     }
     wire.event_log.validate()?;
     for frontier in &wire.search_frontiers {
-        Schedule::from_compact_binary(&frontier.schedule)
-            .map_err(|_| SingleSchedulerCheckpointError::State)?;
         for choice in &frontier.choices {
             Schedule::from_compact_binary(choice)
                 .map_err(|_| SingleSchedulerCheckpointError::State)?;
@@ -743,17 +764,13 @@ fn restore_nodes(
 }
 
 fn restore_search_frontiers(
-    scenario: &ScenarioDef,
+    configuration: &Configuration,
     checkpoints: &[SearchRuntimeFrontierWire],
 ) -> Result<Vec<SearchRuntimeFrontier>, SingleSchedulerCheckpointError> {
     checkpoints
         .iter()
         .map(|checkpoint| {
-            if checkpoint.scenario != scenario.id() {
-                return Err(SingleSchedulerCheckpointError::Configuration);
-            }
-            let schedule = Schedule::from_compact_binary(&checkpoint.schedule)
-                .map_err(|_| SingleSchedulerCheckpointError::State)?;
+            let parent = restore_frontier_parent(configuration, checkpoint)?;
             let choices = checkpoint
                 .choices
                 .iter()
@@ -764,10 +781,7 @@ fn restore_search_frontiers(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(SearchRuntimeFrontier {
-                configuration: Configuration {
-                    def: scenario.clone(),
-                    schedule,
-                },
+                configuration: parent,
                 at: VirtualTime {
                     ticks: checkpoint.at,
                 },
@@ -775,6 +789,34 @@ fn restore_search_frontiers(
             })
         })
         .collect()
+}
+
+/// Rebuilds one frontier parent from its prefix of the restored schedule.
+///
+/// The whole-schedule parent shares the restored configuration; a shorter
+/// prefix is materialized once. Either way the canonical identity must equal
+/// the recorded parent identity.
+fn restore_frontier_parent(
+    configuration: &Configuration,
+    checkpoint: &SearchRuntimeFrontierWire,
+) -> Result<Configuration, SingleSchedulerCheckpointError> {
+    let len = usize::try_from(checkpoint.parent_len)
+        .map_err(|_| SingleSchedulerCheckpointError::Configuration)?;
+    let parent = if len == configuration.schedule.len() {
+        configuration.clone()
+    } else {
+        Configuration {
+            def: configuration.def.clone(),
+            schedule: configuration
+                .schedule
+                .prefix(len)
+                .map_err(|_| SingleSchedulerCheckpointError::Configuration)?,
+        }
+    };
+    if parent.id() != checkpoint.parent {
+        return Err(SingleSchedulerCheckpointError::Configuration);
+    }
+    Ok(parent)
 }
 
 /// Failure to encode, decode, validate, or restore an exact scheduler continuation.

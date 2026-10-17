@@ -184,6 +184,7 @@ impl SingleScheduler {
             branch_network_choices: Vec::new(),
             app_random_branch_selections: BTreeMap::new(),
             search_frontiers: Vec::new(),
+            retired_search_frontiers: 0,
             event_log,
             trigger_actions,
             trigger_static_topology: scenario.trigger_static_topology,

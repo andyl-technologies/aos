@@ -680,7 +680,11 @@ impl SignalFaultCampaignBranch {
     /// override instead and therefore never match this sentinel-only helper.
     #[must_use]
     pub fn matches_runtime_frontier(&self, frontier: &SearchRuntimeFrontier) -> bool {
+        // The time and parent checks are cheap; normalizing the frontier
+        // rebuilds every candidate, so it runs only for a plausible match.
         self.selected_candidate.is_none()
+            && frontier.at == self.frontier
+            && self.parent.matches(&frontier.configuration)
             && Self::runtime_frontier_basis(frontier).is_some_and(
                 |(parent, at, choice, candidates_digest, candidate_count, candidate_semantics)| {
                     parent == self.parent

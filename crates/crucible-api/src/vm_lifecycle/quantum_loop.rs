@@ -41,7 +41,7 @@ pub(super) struct PendingLiveNetworkPrefix {
     decisions: Vec<Decision>,
     appends: Vec<SchedulerEventLogAppend>,
     pub(super) discoveries: Vec<crucible::campaign::ChoiceDiscovery>,
-    signal_fault_frontier_start: usize,
+    signal_fault_frontier_start: u64,
 }
 pub(in crate::vm_lifecycle) use lifecycle::map_journal_limit;
 pub(super) use lifecycle::{
@@ -138,7 +138,7 @@ impl ProductionVmLifecycleLoop {
                     decisions: Vec::new(),
                     appends: Vec::new(),
                     discoveries: Vec::new(),
-                    signal_fault_frontier_start: self.inner.loop_impl().search_frontiers().len(),
+                    signal_fault_frontier_start: self.inner.loop_impl().search_frontier_count(),
                 };
                 if self.inner.live_network_preselection().is_some() {
                     self.pending_live_network_prefix = Some(prefix);
@@ -178,7 +178,7 @@ impl ProductionVmLifecycleLoop {
             })?;
         let operation = (|| {
             self.reconcile_indeterminate_debug_ownership()?;
-            let signal_fault_frontier_start = self.inner.loop_impl().search_frontiers().len();
+            let signal_fault_frontier_start = self.inner.loop_impl().search_frontier_count();
             let mut pre_quantum_appends = Vec::new();
             if let Some(append) = self.settle_genesis_entrypoints()? {
                 pre_quantum_appends.push(append);
@@ -233,7 +233,7 @@ impl ProductionVmLifecycleLoop {
                     decisions: Vec::new(),
                     appends: pre_quantum_appends.clone(),
                     discoveries: std::mem::take(&mut discoveries),
-                    signal_fault_frontier_start: self.inner.loop_impl().search_frontiers().len(),
+                    signal_fault_frontier_start: self.inner.loop_impl().search_frontier_count(),
                 });
                 prepend_event_log_appends(&mut outcome, pre_quantum_appends);
                 outcome.scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);

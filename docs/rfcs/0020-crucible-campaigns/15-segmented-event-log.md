@@ -527,7 +527,7 @@ content hash, so seal points depend only on the entry sequence and a
 restored log seals where the uninterrupted log would.
 
 ```text
-continuation event log (single-scheduler continuation v9):
+continuation event log (single-scheduler continuation v10):
   prefix, appended_segment, bytes, events   // chain position (offset)
   base_events                               // first sequence covered
   segments: [{ object, first_sequence, entry_count, encoded_bytes }, ...]
@@ -558,6 +558,32 @@ prefix still retains its complete history until the bounded fold of
   time, and an exact closure MUST charge each segment against its byte bounds
   by its referenced length rather than by reading it.
 
+The scheduler also records a runtime search frontier for every finite
+signal-fault binding choice and every live network frame that offers branch
+alternatives. A frontier can authenticate an unmodified campaign branch, or be
+published as a discovery, only while the scheduler stands at the frontier's
+own virtual time, and that time never moves backward. Recording a frontier
+therefore first retires every leading frontier whose time precedes the
+scheduler frontier, and the scheduler counts retired frontiers so a caller can
+still name the frontiers first recorded by one quantum. Each retained
+frontier's parent is a prefix of the scheduler configuration, so the
+continuation names it by prefix length and configuration identity:
+
+```text
+search frontiers (single-scheduler continuation v10):
+  search_frontiers: [{ parent_len, parent, at, choices }, ...]
+  retired_search_frontiers                  // frontiers retired so far
+```
+
+- **[CCOMP-36]** The single scheduler MUST retain only the search frontiers
+  whose virtual time is not before its frontier, plus the count of retired
+  frontiers, so retained frontiers do not grow with the run. A
+  single-scheduler continuation MUST name each retained frontier's parent by
+  its prefix length of the continuation schedule and its canonical
+  configuration identity, never by a copy of the schedule, and restore MUST
+  check that identity. Branch authentication MUST compare a frontier's time
+  and parent before normalizing its candidates.
+
 ## 15.13 Compatibility
 
 Version 2 measurement replay evidence remains readable for retained findings
@@ -567,7 +593,10 @@ Named host predicates change from history-reading functions to accumulators;
 this is a source-level breaking change for host predicate implementations.
 Single-scheduler continuation version 9 replaces version 8: it keeps the
 imported I/O ledger in its pruned form, names the event log's sealed segments,
-and carries only the open tail; version 8 continuations are refused. The
+and carries only the open tail; version 8 continuations are refused.
+Version 10 replaces version 9: it keeps only the current boundary's search
+frontiers and names their parents by prefix length and identity
+([CCOMP-36]); version 9 continuations are refused. The
 production exact closure stays at version 10, because sealed segments occupy
 the closure's existing event-log object role.
 The resolved-effect trace manifest replaces the version 3 whole-trace object

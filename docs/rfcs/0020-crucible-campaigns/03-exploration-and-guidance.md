@@ -895,9 +895,9 @@ Retrospective search frontiers MUST NOT be mislabeled as discoveries at a later
 observation child.
 
 The production lifecycle implements that live boundary by snapshotting the
-retained frontier count before each scheduler quantum. Only a frontier first
-recorded during that call whose parent and virtual time still equal the current
-scheduler boundary is eligible. The lifecycle returns it through a zero-node-
+scheduler's recorded-frontier sequence before each scheduler quantum. Only a
+frontier first recorded during that call whose parent and virtual time still
+equal the current scheduler boundary is eligible. The lifecycle returns it through a zero-node-
 progress quantum result before further guest execution; decisions already
 settled at that same pre-quantum boundary remain in the result. At most 4,096
 such frontiers and 128 MiB of unique canonical declaration, domain, and

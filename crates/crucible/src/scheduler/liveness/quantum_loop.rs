@@ -579,7 +579,7 @@ impl SingleScheduler {
                     projected.remove(0);
                 }
                 if selected_here.is_none() && !branch_choices.is_empty() {
-                    self.search_frontiers.push(SearchRuntimeFrontier {
+                    self.record_search_frontier(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: admission_boundary,
                         choices: SearchFrontierChoices::from_decision_sequences(branch_choices),
