@@ -353,6 +353,23 @@ allowance is recorded as incomplete, never truncated.
   segment against its manifest and fail closed on a missing, substituted, or
   unnamed segment. Signature construction, coverage folding, and
   paired-divergence comparison MUST stream segments in order.
+The CLI's live QEMU fuzz corpus folds each accepted attempt log, segment by
+segment, into a coverage set that keeps every distinct basic block or named
+marker once, with the same fingerprint as the attempt's coverage projection.
+Corpus schema 2 stores that set, the reproduction artifact, and the replay
+closure as immutable objects when a candidate is admitted. Opening a corpus
+authenticates the entries one at a time and keeps a fixed handle per entry:
+its descriptor, artifact and scenario-form identities, coverage fingerprint
+and identity set, and selection inputs. Only the entry chosen as a parent has
+its artifact and closure read back.
+
+- **[CMEAS-31]** The live fuzz corpus MUST retain coverage as the distinct
+  observations of each entry, never as one record per coverage hit, and MUST
+  keep only a handle per entry resident: reproduction artifacts and replay
+  closures MUST stay in the corpus store and be read only for the selected
+  parent. Opening a corpus MUST authenticate entries one at a time, and
+  coverage guidance MUST be computed from fingerprints with the same index
+  rule as guidance computed from complete feedback.
 - **[CCOMP-30]** Resume from a checkpoint MUST continue from the checkpoint's
   chain position and bounded fold state. Resume proofs MUST compare the
   checkpoint's chain position, not a retained entry vector.

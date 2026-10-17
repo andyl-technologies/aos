@@ -21,7 +21,7 @@ pub use backend_loop::{
     FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, HeldHostStopKind,
     HeldHostStopWitness, NoopBackendNetworkOutputInterceptor,
 };
-pub use coverage_fold::EventLogCoverageFold;
+pub use coverage_fold::{EventLogCoverageFold, EventLogCoverageSet};
 pub(super) use sealed_segments::{ConditionBatcher, entry_encodings, validate_segment_refs};
 pub use sealed_segments::{EVENT_LOG_SEAL_TARGET_BYTES, EventLogSegmentReader, EventLogSegmentRef};
 

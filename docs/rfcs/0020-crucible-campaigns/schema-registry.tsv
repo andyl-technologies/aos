@@ -315,8 +315,9 @@ crucible.cli.store-status	1	crucible-cli::cli::campaign::gc	cli-output	gate:camp
 crucible.cli.store-verify	2	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
 
 # Current QEMU fuzz durable corpus records
-crucible.cli.live-fuzz-corpus-index	1	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	administrative-record	gate:campaign-replay
-crucible.cli.live-fuzz-corpus-descriptor	1	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	physical-record	gate:campaign-replay
+crucible.cli.live-fuzz-corpus-index	2	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	administrative-record	gate:campaign-replay
+crucible.cli.live-fuzz-corpus-descriptor	2	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	physical-record	gate:campaign-replay
+crucible.cli.live-fuzz-corpus-coverage-set	2	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	physical-record	gate:campaign-replay
 
 # Current CLI replay artifacts and authored inputs
 crucible.reproduction-artifact	4	crucible-cli::cli::artifact	physical-record	gate:campaign-replay

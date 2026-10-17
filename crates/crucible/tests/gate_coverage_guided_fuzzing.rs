@@ -47,6 +47,15 @@ fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible() -> Result<(), Box<d
         assert_eq!(sample_index, iteration.sample_index);
         assert_eq!(pinned, iteration.scenario);
         assert_eq!(energy, iteration.energy);
+        // Fingerprint-only guidance samples exactly as complete feedback does.
+        assert_eq!(
+            family.sample_coverage_guided_by_fingerprint(
+                config,
+                iteration.sequence,
+                &[expected_feedback],
+            )?,
+            (sample_index, pinned, energy)
+        );
 
         assert!(family.space().contains(iteration.params));
         assert_eq!(iteration.scenario.params(), iteration.params);

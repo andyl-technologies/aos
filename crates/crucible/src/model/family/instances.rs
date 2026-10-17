@@ -119,8 +119,37 @@ impl ScenarioFamily {
         sequence: u64,
         feedback: &[EventLogCoverageFeedback],
     ) -> Result<(u64, PinnedScenario, u64), EngineError> {
-        let cardinality = self.space.cardinality()?;
         let fingerprint = coverage_guided_fuzz_feedback_fingerprint(feedback, sequence);
+        self.sample_coverage_guided_with_fingerprint(config, sequence, fingerprint)
+    }
+
+    /// Selects one pinned family instance from retained coverage fingerprints.
+    ///
+    /// Guidance consults only each feedback's fingerprint, so a caller that
+    /// keeps fingerprints instead of complete coverage projections samples the
+    /// same instance and energy as [`Self::sample_coverage_guided`] given the
+    /// fingerprints of the same feedback in the same order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the family space or selected instance is invalid.
+    pub fn sample_coverage_guided_by_fingerprint(
+        &self,
+        config: CoverageGuidedFuzzConfig,
+        sequence: u64,
+        fingerprints: &[ContentHash],
+    ) -> Result<(u64, PinnedScenario, u64), EngineError> {
+        let fingerprint = coverage_guided_fuzz_fingerprint_at(fingerprints, sequence);
+        self.sample_coverage_guided_with_fingerprint(config, sequence, fingerprint)
+    }
+
+    fn sample_coverage_guided_with_fingerprint(
+        &self,
+        config: CoverageGuidedFuzzConfig,
+        sequence: u64,
+        fingerprint: ContentHash,
+    ) -> Result<(u64, PinnedScenario, u64), EngineError> {
+        let cardinality = self.space.cardinality()?;
         let sample_index =
             coverage_guided_fuzz_sample_index(config, sequence, fingerprint, cardinality);
         let energy = coverage_guided_fuzz_energy(config, sequence, fingerprint);

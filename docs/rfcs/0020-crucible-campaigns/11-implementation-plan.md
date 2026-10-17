@@ -1741,6 +1741,11 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   normalizing it during branch authentication, and name each retained parent
   by prefix length and identity in single-scheduler continuation version 10
   (CCOMP-36).
+- [x] **T-CAM-4.21** Fold live fuzz attempt logs into distinct coverage
+  sets, store admitted corpus entries' artifacts, closures, and coverage sets
+  at admission under corpus schema 2, keep a fixed resident handle per entry,
+  read payloads back only for the chosen parent, and sample guidance from
+  retained fingerprints (CMEAS-31).
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,
