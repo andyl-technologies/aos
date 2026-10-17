@@ -8868,10 +8868,13 @@ phase-specific canonical file custody and checked active-memory overlaps before
 compilation. The separate bounded existing-Original inspection producer passes
 source review; its eleven new tests remain unrun. It retains genuine native
 exclusion without granting fresh-creator or host-readiness authority.
-The module privacy correction likewise passes source review: tmpfiles must
-retain non-public roots at mode `0750`, including override paths, without a
-second declaration widening them to `0755`. Module evaluation and actual
-four-role composition remain pending. The combined surface and configured
+The module privacy correction passes source review and all eighty-eight
+declarative module checks at `655b57b853`, including both privacy regressions.
+Independent review verifies all 6,324 tracked inputs and the evaluated report.
+Tmpfiles retain non-public roots at mode `0750`, including override paths,
+without a
+second declaration widening them to `0755`. Actual four-role composition and
+full module-task acceptance remain pending. The combined surface and configured
 SDK candidate is assembled without changing their reviewed implementations;
 fresh task gates, aggregate checks and application qualification remain pending.
 
