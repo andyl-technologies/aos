@@ -8,14 +8,17 @@ use serde::{Serialize, Serializer};
 impl NativeRestoredSuffixStartupOwner {
     /// Borrows all native suffix owners without requiring their success or reopening failure.
     ///
-    /// The caller's genuine Capture/currentness admission remains separate. A
-    /// failed ledger must remain representable; decoded history cannot spend it.
+    /// Both record and alias banks are caller-preallocated and independently
+    /// admitted before this non-growing walk; their actual allocation facts are
+    /// separate from the component encoding. Capture admission remains separate.
+    /// A failed ledger must remain representable; decoded history cannot spend it.
     pub(in crate::reference_packet::service::ack_emitter::native_boot) fn borrowed_settled_history_data<
         'a,
     >(
         &'a self,
         first: &Option<Rc<RefCell<NativeRestorationObservationAttempt>>>,
         records: &'a mut crate::retained_metadata::records::MetadataRecordBank,
+        aliases: &'a mut crate::retained_metadata::aliases::MetadataAliasBank,
     ) -> Result<impl Serialize + 'a, ProviderError> {
         if self.creator != std::process::id() || self.thread != std::thread::current().id() {
             return Err(refused());
@@ -33,13 +36,13 @@ impl NativeRestoredSuffixStartupOwner {
             return Err(refused());
         }
         self.ledger.historical_data()?;
-        records.clear();
-        let mut observer = MetadataObserver::recording(records);
+        let mut observer = MetadataObserver::recording_with_aliases(records, aliases);
         self.observe_retained_data(&mut observer)?;
         let facts = observer.finish();
         Ok(SuffixHistory {
             owner: self,
             records,
+            _aliases: aliases,
             facts,
         })
     }
@@ -48,6 +51,10 @@ impl NativeRestoredSuffixStartupOwner {
 struct SuffixHistory<'a> {
     owner: &'a NativeRestoredSuffixStartupOwner,
     records: &'a crate::retained_metadata::records::MetadataRecordBank,
+    // Keep the production alias walk borrowed until serialization completes.
+    // Component1 remains capacity-only inert DATA; complete alias encoding is
+    // a separately versioned prerequisite before any whole class17 consumer.
+    _aliases: &'a crate::retained_metadata::aliases::MetadataAliasBank,
     facts: crate::retained_metadata::RetainedProtocolMetadataFacts,
 }
 
@@ -147,13 +154,14 @@ impl NativeAckBoot {
     pub(crate) fn borrowed_restored_suffix_history_data<'a>(
         &'a self,
         records: &'a mut crate::retained_metadata::records::MetadataRecordBank,
+        aliases: &'a mut crate::retained_metadata::aliases::MetadataAliasBank,
     ) -> Result<impl Serialize + 'a, ProviderError> {
         self.ensure_origin()?;
         self.startup
             .as_ref()
             .and_then(|startup| startup.restored_suffix.as_ref())
             .ok_or_else(refused)?
-            .borrowed_settled_history_data(&self.restoration_observation, records)
+            .borrowed_settled_history_data(&self.restoration_observation, records, aliases)
     }
 }
 
