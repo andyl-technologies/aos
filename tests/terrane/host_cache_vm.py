@@ -534,7 +534,13 @@ def main():
                          else root(case) / "state/unhandled.tmp" if case == "state-file" else None)
             before = {str(candidate): hashlib.sha256(candidate.read_bytes()).hexdigest()} if candidate else {}
             directory_identity = (root(case) / "state/old-policy").stat().st_ino if case == "state-directory" else None
-            actor(case, "refuse", uuid)
+            if case == "unknown":
+                output = actor(case, "late-refuse", uuid)
+                require(output.splitlines() == [
+                    "PASS actual late refusal retained funded hold, faulted custody and unchanged unknown inode; no Resume"
+                ], "missing exact funded late-refusal witness")
+            else:
+                actor(case, "refuse", uuid)
             for name, digest in before.items():
                 require(pathlib.Path(name).is_file() and hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == digest,
                         "cold candidate was changed or deleted: " + name)
