@@ -25,10 +25,9 @@ pub use manifest_source::NativeManifestSource;
 pub use metadata::NativeHostMetadataReader;
 #[cfg(feature = "tokio")]
 pub(crate) use owner::{
-    AcceptedRecoveryManifestEffect, LiveManifestRecoveryContext, PublisherResumeTurn,
-    PublisherRunningTurn, RecoveryManifestBackingRetention, RecoveryManifestBodyFailure,
-    RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
-    RecoveryRetainedManifest,
+    AcceptedRecoveryManifestEffect, PublisherResumeTurn, PublisherRunningTurn,
+    RecoveryManifestBodyFailure, RecoveryManifestBodyRetention, RecoveryManifestEffect,
+    RecoveryManifestEffectFailure, RecoveryRetainedManifest,
 };
 #[cfg(feature = "tokio")]
 pub use owner::{

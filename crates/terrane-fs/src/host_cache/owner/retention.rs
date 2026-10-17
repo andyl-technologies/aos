@@ -42,9 +42,9 @@ pub(super) use executor::NativeOwnerExecutor;
 pub(crate) use executor::{PublisherResumeTurn, PublisherRunningTurn};
 use manifest::retain;
 pub(crate) use recovery_manifest::{
-    AcceptedRecoveryManifestEffect, LiveManifestRecoveryContext, RecoveryManifestBackingRetention,
-    RecoveryManifestBodyFailure, RecoveryManifestBodyRetention, RecoveryManifestEffect,
-    RecoveryManifestEffectFailure, RecoveryRetainedManifest,
+    AcceptedRecoveryManifestEffect, RecoveryManifestBackingRetention, RecoveryManifestBodyFailure,
+    RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
+    RecoveryRetainedManifest,
 };
 
 /// Retains a native queue for durable metadata pins and missing-index repair.

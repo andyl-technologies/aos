@@ -37,9 +37,7 @@ impl<'phase, 'executor> RecoveryManifestEffect<'phase, 'executor> {
     /// # Errors
     /// Refuses changed original phase/session, source or durable pin custody.
     /// No new native RPC is submitted here; existing physical ownership remains.
-    pub(super) fn begin(
-        mut receipt: RecoveryRetainedManifest<'phase, 'executor>,
-    ) -> io::Result<Self> {
+    pub(super) fn begin(receipt: RecoveryRetainedManifest<'phase, 'executor>) -> io::Result<Self> {
         receipt.check_current()?;
         receipt.live.executor.reserve_manifest_body_slots()?;
         let flight = InFlightRetention::begin_effect(&receipt.live.phase);
@@ -99,7 +97,7 @@ impl<'phase, 'executor> RecoveryManifestEffect<'phase, 'executor> {
     /// before any later fallible correlation/completion step. Insertion alone
     /// asserts no canonical correlation or serving authority.
     pub(crate) fn accept_body(
-        mut self,
+        self,
         body: crate::publisher_local::client::PeerPublishedObject<HostDomainLocation>,
     ) -> AcceptedRecoveryManifestEffect<'phase, 'executor> {
         let body = Arc::new(body);
