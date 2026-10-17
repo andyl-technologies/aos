@@ -945,15 +945,40 @@ including changed-token, changed-schema, same-authority and occupied-output
 refusals. The separate sibling-declaration control also passes. The combined
 run has two passes and one native startup failure in 315.85 seconds.
 
-Startup now passes report projection and reaches native admission. Its report
-peak is 2,417,224,182 bytes; native admission starts at a projected 3,840,422,905
-bytes and refuses an additional 910,930,414 bytes against the unchanged 4 GiB
-limit. This is an admission projection, not measured resident memory. Its phase
-accounting still needs investigation. Temporary diagnostics were removed after
-the run. No successful native startup, complete restoration or recapture is
-claimed. The two-world fixture compiles but has not passed execution. Current
-six-crate all-feature/all-target checking passes in 2 minutes 2 seconds, and the
-prepared installer and four fixture modules pass their scoped formatting checks.
+Commit `7984660b5a` separates sequential native and report temporary peaks while
+retaining simultaneous owned banks. The real full-roster, three-source no-Child
+admission control passes against the unchanged 4 GiB limit. Native admission
+then reaches a projected 3,342,478,453 bytes; report projection is 2,417,245,929
+bytes. These are admission projections, not measured resident memory. The real
+startup progresses to SDK admission, where it still refuses `ResourceLimit`.
+Temporary diagnostics were removed after each run.
+
+Commit `760970029d` records actual retained SDK request, raw response and typed
+response history without granting restoration or Capture authority. The Provider
+suite passes 1,039 tests, zero failures and thirteen ignored in 9.30 seconds.
+Commit `9c9d5530bf` joins restored Producer admission, real C-input lineage,
+durable publication, retirement and fresh observation. The two-world fixture now
+requires a nonempty Producer result in each fresh world and removes the original
+mutable scene/blob/reference stores before either load. Its exact selected
+legacy Capture schema is authenticated against the complete actual binding;
+the new settled-history family is not admitted by that compatibility path.
+
+The joined tree passes 1,741 Core tests, zero failures and 32 ignored in 5.69
+seconds. The preceding all-feature/all-target check passes across six crates.
+The code-only schema-roster optimization retains full current-file checks before
+and after the existing definition callbacks, including callback failure, with
+an unchanged individual-schema fallback. Its Core equivalence, fallback and
+revocation controls pass; native file-backed controls and performance measurement
+are being qualified separately. No overall boot improvement is claimed.
+
+A subsequent SDK phase-accounting change shares sequential native/report
+transient space while retaining the previous complete native and report retained
+commitments. It compiles and passes the full Core suite, but both the new
+full-roster no-Child SDK control and the real initial startup still fail at SDK
+admission: zero passes, two failures in 23.42 seconds after 3 minutes 46 seconds
+of compilation. The remaining charge requires investigation; the phase change
+is not a successful startup fix. The fixture has not reached native Capture,
+source removal, either restored operation or recapture successfully.
 
 ## Known gaps and exit criteria
 
