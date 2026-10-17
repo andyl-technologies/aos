@@ -795,17 +795,16 @@ pub(crate) use source_retention::{
 mod evidence;
 #[cfg(test)]
 pub(crate) use evidence::QemuTerminalEvidenceExecutionRunnerError;
+pub(crate) use evidence::{
+    MAX_RESOLVED_EFFECT_TRACE_BYTES, QemuObservedFreshAttemptLifecycle,
+    QemuTerminalEvidenceExecutionRunner, map_observed_evidence_failure, map_observed_inner_failure,
+};
 pub use evidence::{
     QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot,
     QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
 };
-pub(crate) use evidence::{
-    QemuObservedFreshAttemptLifecycle, QemuTerminalEvidenceExecutionRunner,
-    map_observed_evidence_failure, map_observed_inner_failure,
-};
 
 mod campaign_run;
-pub(crate) use campaign_run::GuardedCampaignReplaySelection;
 #[cfg(any(test, feature = "test-support"))]
 pub use campaign_run::test_support::{
     GuardedDefaultCampaignTestTrace, run_guarded_default_campaign_test_fixture,
@@ -832,6 +831,7 @@ pub use campaign_run::{
     GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
     run_guarded_default_campaign, validate_remote_resume_replay_closure,
 };
+pub(crate) use campaign_run::{GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_BYTES};
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
 ///

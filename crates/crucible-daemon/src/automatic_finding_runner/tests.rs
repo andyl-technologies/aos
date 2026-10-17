@@ -47,15 +47,12 @@ use crate::{
     ExecutionCheckpointRequest, PreparedSemanticAttemptResult,
 };
 
-fn replay_capture_limits() -> crate::FindingProductionReplayCaptureLimits {
-    crate::FindingProductionReplayCaptureLimits {
-        max_events_per_side: 16,
-        max_event_bytes_per_side: 16 * 1024,
-        max_lifecycle_objects: 0,
-        max_lifecycle_bytes: 0,
-        max_guest_asset_bytes: 0,
-        max_encoded_bytes: 16 * 1024,
-    }
+/// Reads a captured side's complete log back, for assertions.
+fn side_entries(side: &crate::FindingProductionReplayExecutionSide) -> Vec<SchedulerEventLogEntry> {
+    side.event_log()
+        .entries()
+        .collect::<Result<_, _>>()
+        .expect("captured side log reads back")
 }
 
 #[test]
@@ -106,13 +103,12 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
         &snapshot,
         Some(&record),
         Some(&policy),
-        replay_capture_limits(),
     )
     .expect("authenticated timeout capture");
     assert!(matches!(
         captured,
         crate::FindingProductionReplayCaptureOutcome::Complete(side)
-            if side.event_log() == complete_log
+            if side_entries(&side) == complete_log
     ));
 
     for forged in [
@@ -132,7 +128,6 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
                 &snapshot,
                 Some(&record),
                 Some(&policy),
-                replay_capture_limits(),
             ),
             Err(crate::FindingProductionReplayCaptureError::InvalidEventLog)
         ));
@@ -144,7 +139,6 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
             &snapshot,
             Some(&record),
             Some(&policy),
-            replay_capture_limits(),
         ),
         Err(crate::FindingProductionReplayCaptureError::InvalidEventLog)
     ));
@@ -170,10 +164,9 @@ fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
             &snapshot,
             None,
             None,
-            replay_capture_limits(),
-        ),
+            ),
         Ok(crate::FindingProductionReplayCaptureOutcome::Complete(side))
-            if side.event_log() == [native]
+            if side_entries(&side) == [native]
     ));
     let changed_native =
         SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "virtual-time");
@@ -184,7 +177,6 @@ fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
             &snapshot,
             None,
             None,
-            replay_capture_limits(),
         ),
         Err(crate::FindingProductionReplayCaptureError::InvalidEventLog)
     ));

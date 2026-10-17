@@ -9,7 +9,10 @@ mod causal_digest;
 pub(super) use backend_loop::HeldDeliveryCeiling;
 pub(super) use backend_loop::HeldRunLineage;
 use causal_digest::causal_projection_entry;
-pub use causal_digest::{EventLogCausalDigest, EventLogCausalSummary, is_causal_event_log_entry};
+pub use causal_digest::{
+    EventLogCausalDigest, EventLogCausalSummary, first_event_log_causal_mismatch,
+    is_causal_event_log_entry,
+};
 mod coverage_fold;
 mod observation_append;
 pub use backend_loop::{

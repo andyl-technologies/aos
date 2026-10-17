@@ -26,7 +26,7 @@ use thiserror::Error;
 
 const REPLAY_CLOSURE_MAGIC: &[u8; 8] = b"CCRC\0\0\0\x01";
 const MAX_REPLAY_CLOSURE_SELECTIONS: usize = 65_536;
-const MAX_REPLAY_CLOSURE_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const MAX_REPLAY_CLOSURE_BYTES: usize = 128 * 1024 * 1024;
 
 /// A bounded canonical set of records needed to authenticate schedule selections.
 #[derive(Clone, Debug, PartialEq, Eq)]

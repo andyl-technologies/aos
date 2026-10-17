@@ -299,22 +299,21 @@ fn compare_side(
 
 /// Compares the segmented execution evidence with a retained event log.
 ///
-/// An unreadable segment is a mismatch, so the comparison fails closed.
+/// Both logs are read in lockstep, one segment at a time on each side, so
+/// neither is held whole. An unreadable segment is a mismatch, so the
+/// comparison fails closed.
 fn evidence_event_log_matches(
     evidence: &crucible_daemon::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
-    retained: &[crucible::SchedulerEventLogEntry],
+    retained: &crucible_daemon::FindingProductionReplayEventLog,
 ) -> bool {
-    if evidence.event_log_len() != retained.len() as u64 {
+    if evidence.event_log_len() != retained.entry_count() {
         return false;
     }
-    let mut expected = retained.iter();
+    let mut expected = retained.entries();
     evidence
-        .try_for_each_event_log_entry(|entry| {
-            if expected.next() == Some(entry) {
-                Ok(())
-            } else {
-                Err(())
-            }
+        .try_for_each_event_log_entry(|entry| match expected.next() {
+            Some(Ok(retained)) if retained == *entry => Ok(()),
+            _ => Err(()),
         })
         .is_ok()
 }

@@ -268,12 +268,12 @@ pub use scheduler::{
     event_log_assertion_proximity_projection, event_log_causal_projection,
     event_log_coverage_projection, exact_local_event_from_io_completion,
     exact_local_event_from_scheduled_event, exact_local_event_from_timer_deadline_ns,
-    horizon_from_exact_local_event, horizon_from_network_lookahead, is_causal_event_log_entry,
-    is_live_world_network_selection, lookahead_for_node, network_horizon_from_lookahead,
-    next_exact_local_event, next_scheduled_event_key, ordered_scheduled_events,
-    ordered_timeline_keys, rendezvous_cap_for, resolve_due_scheduled_events,
-    scheduled_event_delivery_time, scheduled_event_resolve_class, scheduler_rr_run_subdivision,
-    unresolved_cross_node_dependencies,
+    first_event_log_causal_mismatch, horizon_from_exact_local_event,
+    horizon_from_network_lookahead, is_causal_event_log_entry, is_live_world_network_selection,
+    lookahead_for_node, network_horizon_from_lookahead, next_exact_local_event,
+    next_scheduled_event_key, ordered_scheduled_events, ordered_timeline_keys, rendezvous_cap_for,
+    resolve_due_scheduled_events, scheduled_event_delivery_time, scheduled_event_resolve_class,
+    scheduler_rr_run_subdivision, unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]
 pub use sim_backend::{

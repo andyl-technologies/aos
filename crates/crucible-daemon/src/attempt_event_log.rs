@@ -598,6 +598,52 @@ impl AttemptLogManifest {
     ) -> Result<(), E> {
         self.try_for_each_entry_in(source, 0..self.entry_count, visit)
     }
+
+    /// Returns a pull reader over every entry, in order.
+    ///
+    /// The reader decodes one segment when its first entry is requested and
+    /// authenticates it against its reference first, so it holds at most one
+    /// segment's entries. After yielding an error it yields nothing more.
+    #[must_use]
+    pub fn entries<'a>(&'a self, source: &'a dyn AttemptLogSegmentSource) -> AttemptLogEntries<'a> {
+        AttemptLogEntries {
+            source,
+            segments: self.segments.iter(),
+            current: Vec::new().into_iter(),
+            failed: false,
+        }
+    }
+}
+
+/// Pull reader over a manifest's entries; see [`AttemptLogManifest::entries`].
+pub struct AttemptLogEntries<'a> {
+    source: &'a dyn AttemptLogSegmentSource,
+    segments: std::slice::Iter<'a, AttemptLogSegmentRef>,
+    current: std::vec::IntoIter<SchedulerEventLogEntry>,
+    failed: bool,
+}
+
+impl Iterator for AttemptLogEntries<'_> {
+    type Item = Result<SchedulerEventLogEntry, AttemptEventLogError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        loop {
+            if let Some(entry) = self.current.next() {
+                return Some(Ok(entry));
+            }
+            let segment = self.segments.next()?;
+            match read_segment(self.source, segment) {
+                Ok(entries) => self.current = entries.into_iter(),
+                Err(error) => {
+                    self.failed = true;
+                    return Some(Err(error));
+                }
+            }
+        }
+    }
 }
 
 /// Reads one segment from `source` and authenticates it.

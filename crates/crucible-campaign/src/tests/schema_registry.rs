@@ -373,14 +373,14 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner, kind) in [
         (
             "crucible.executor.finding-production-replay-capture",
-            "3",
+            "4",
             "crucible-daemon::finding_production_replay",
-            "trace",
+            "exact-manifest",
         ),
         (
-            "crucible.executor.finding-replay-capture-chunk",
+            "crucible.executor.finding-production-replay-capture-leaf",
             "1",
-            "crucible-daemon::finding_replay_capture_store",
+            "crucible-daemon::finding_production_replay",
             "trace",
         ),
         (

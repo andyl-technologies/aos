@@ -19,8 +19,8 @@ use super::{
 };
 use crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES;
 use crate::attempt_event_log::{
-    AttemptEventLog, AttemptEventLogError, AttemptEventLogVisitError, AttemptLogSegmentRef,
-    AttemptLogStore, MAX_ATTEMPT_LOG_ENTRY_BYTES,
+    AttemptEventLog, AttemptEventLogError, AttemptEventLogVisitError, AttemptLogManifest,
+    AttemptLogSegmentRef, AttemptLogSegmentSources, AttemptLogStore, MAX_ATTEMPT_LOG_ENTRY_BYTES,
 };
 
 /// Scheduler progress and reproduction evidence from one QEMU attempt.
@@ -108,6 +108,67 @@ impl QemuAttemptExecutionEvidenceSnapshot {
         visit: impl FnMut(&SchedulerEventLogEntry) -> Result<(), E>,
     ) -> Result<(), AttemptEventLogVisitError<E>> {
         self.event_log.try_for_each_from(0, visit)
+    }
+
+    /// Seals a complete replay log of `prefix`, the recorded entries, and an
+    /// optional host-owned `terminal` entry, and returns its manifest.
+    ///
+    /// The recorded sealed segments are referenced, not copied. Only the
+    /// prefix and the recorded open tail with the terminal entry are encoded
+    /// as new segments, written to the recording's own store, so the returned
+    /// sources read every segment the manifest names. `prefix` must end where
+    /// the recording begins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptEventLogError`] when the parts are not dense from
+    /// sequence zero, a new segment cannot be encoded or stored, or the
+    /// combined log references more segments than one manifest may.
+    pub(crate) fn seal_replay_capture_log(
+        &self,
+        prefix: &[SchedulerEventLogEntry],
+        terminal: Option<&SchedulerEventLogEntry>,
+    ) -> Result<(AttemptLogManifest, AttemptLogSegmentSources), AttemptEventLogError> {
+        let mut store = match &self.event_log.log {
+            Some(log) => log.store().clone(),
+            None => self.event_log.store.clone().unwrap_or_default(),
+        };
+        let mut segments = Vec::new();
+
+        // The prefix precedes the recording, so its segments come first.
+        if !prefix.is_empty() {
+            let mut log = AttemptEventLog::new(store, u64::MAX, 0);
+            log.append_all(prefix)?;
+            log.seal()?;
+            segments.extend_from_slice(log.sealed_segments());
+            store = log.into_store();
+        }
+
+        let prefix_end = prefix.len() as u64;
+        let (tail, tail_start) = match &self.event_log.log {
+            Some(log) => {
+                if log.first_sequence() != prefix_end {
+                    return Err(AttemptEventLogError::NonDense {
+                        expected: prefix_end,
+                        actual: log.first_sequence(),
+                    });
+                }
+                segments.extend_from_slice(log.sealed_segments());
+                let tail = log.tail();
+                (tail, log.next_sequence() - tail.len() as u64)
+            }
+            None => (&[][..], prefix_end),
+        };
+
+        // The open tail and the terminal entry close the log as new segments.
+        let mut log = AttemptEventLog::new(store, u64::MAX, tail_start);
+        log.append_all(tail)?;
+        log.append_all(terminal.map(std::slice::from_ref).unwrap_or_default())?;
+        log.seal()?;
+        segments.extend_from_slice(log.sealed_segments());
+
+        let manifest = AttemptLogManifest::new(segments)?;
+        Ok((manifest, log.into_store().into()))
     }
 
     /// Copies every retained scheduler entry into memory, for assertions.
@@ -887,6 +948,67 @@ mod tests {
             early.event_log_entries().expect("read early evidence"),
             entries[..150]
         );
+    }
+
+    #[test]
+    fn replay_capture_log_references_recorded_segments_by_identity() {
+        let evidence = QemuAttemptExecutionEvidence::default();
+        let frontier = VirtualTime { ticks: 19 };
+        let reason = "segment-fixture-".repeat(4096);
+        let entries = (0..401)
+            .map(|sequence| {
+                SchedulerEventLogEntry::execution_budget_exhausted(sequence, frontier, &reason)
+            })
+            .collect::<Vec<_>>();
+        let (prefix, rest) = entries.split_at(10);
+        let (recorded, terminal) = rest.split_at(390);
+
+        // A resumed attempt records only what follows its prefix.
+        evidence
+            .record(1, frontier, recorded)
+            .expect("record the resumed attempt");
+        let snapshot = evidence.snapshot().expect("snapshot");
+        let recorded_segments = snapshot
+            .event_log
+            .log
+            .as_ref()
+            .expect("recorded log")
+            .sealed_segments()
+            .to_vec();
+        assert!(recorded_segments.len() > 1, "the fixture spans segments");
+
+        let (manifest, sources) = snapshot
+            .seal_replay_capture_log(prefix, terminal.first())
+            .expect("seal capture log");
+        let read_back = manifest
+            .entries(&sources)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read capture log");
+
+        assert_eq!(read_back, entries);
+        assert_eq!(manifest.entry_count(), 401);
+        // The recording's sealed segments are reused, not re-encoded; only the
+        // prefix and the closing tail become new segments around them.
+        let start = manifest
+            .segments()
+            .iter()
+            .position(|segment| *segment == recorded_segments[0])
+            .expect("recorded segments are referenced");
+        assert_eq!(start, 1, "the prefix fits in one leading segment");
+        assert_eq!(
+            manifest.segments()[start..start + recorded_segments.len()],
+            recorded_segments[..]
+        );
+        assert_eq!(
+            manifest.segments().len(),
+            recorded_segments.len() + 2,
+            "one prefix segment and one closing tail segment"
+        );
+
+        assert!(matches!(
+            snapshot.seal_replay_capture_log(&prefix[..9], None),
+            Err(AttemptEventLogError::NonDense { .. })
+        ));
     }
 
     #[test]

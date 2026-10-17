@@ -278,6 +278,19 @@ by the carrier's own message limit. A bundle is a transport form; it never
 enters production identity, and decoding it requires exactly the referenced
 segments.
 
+A finding production replay capture is a version 4 exact manifest whose
+children are trace leaves: the model reproduction, the campaign replay
+closure, each guest asset and lifecycle object, any resolved-effect trace,
+and, for each execution side, the attempt-log segments in manifest order.
+A side's recorded segments are referenced as sealed; only the replay prefix
+before a resumed recording and the closing tail are sealed as new segments.
+Selecting the side that explains a divergence streams both side logs to the
+first causal mismatch. The four roles of one finding share equal leaves, and
+each distinct leaf is charged once to one of two per-finding allowances:
+segments to the run-length allowance and every other leaf, with the
+manifests, to the static allowance. A role that would exceed either
+allowance is recorded as incomplete, never truncated.
+
 - **[CMEAS-22]** A reader MUST NOT materialize a complete attempt log. Every
   service response that carries log content MUST carry at most one segment and
   remain within the ordinary 64 MiB component-message bound. Digests, density

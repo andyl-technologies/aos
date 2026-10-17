@@ -1,6 +1,7 @@
 //! Capture validation and bounded producer regression tests.
 
 use super::capture::validate_execution_side;
+use super::test_support::*;
 use super::*;
 use crucible::model::{
     FaultReplayMode, FaultResourceLimits, FaultSignalPlan, NormalizedSpatialArtifact,
@@ -9,56 +10,12 @@ use crucible::model::{
     SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType, SpatialArtifactKind,
 };
 use crucible::{
-    Configuration, ContentAddressedBlobRef, EventAttributeValue, EventLevel, EventLogTime,
-    EventPayload, EventSource, Icount, NodeTemplate, Plan, Properties, ReadyPoint, ScenarioDefForm,
-    ScenarioSelectableLimits, ScenarioSelectables, Schedule, SchedulerEventLogClass, Seed,
-    WhiteBoxPolicy, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldNode,
+    ContentAddressedBlobRef, Plan, Properties, ScenarioDefForm, ScenarioSelectableLimits,
+    ScenarioSelectables, Seed, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode,
     WorldNodeDef,
 };
-use crucible_campaign::{CampaignHash, FindingKind, FindingSignature};
-
-fn vm_node() -> WorldNode {
-    WorldNode {
-        id: NodeId {
-            name: String::from("node-0"),
-        },
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
-        cmdline: String::from("finding-production-replay"),
-        ready_point: ReadyPoint::FixedIcount {
-            icount: Icount { retired: 1 },
-        },
-        white_box: WhiteBoxPolicy::Enabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        kernel: None,
-        root_image: None,
-        initrd: None,
-    }
-}
-
-fn finding_for_world_and_plan(world: World, plan: Plan) -> FindingReproductionArtifact {
-    let form =
-        ScenarioDefForm::from_components(&world, &plan, &Properties::empty(), Seed::from_u64(1))
-            .expect("scenario");
-    let artifact = crucible::ReproductionArtifact::capture(&form, &Schedule::empty())
-        .expect("model reproduction");
-    let replay = artifact.replay().expect("model replay");
-    FindingReproductionArtifact {
-        artifact,
-        replay,
-        finding_fingerprint: ContentHash::from_bytes(b"finding"),
-        configuration: Configuration::genesis(form.scenario_def()).id(),
-        discovery_path: crucible::FindingDiscoveryPath::StateSpaceSearch,
-    }
-}
-
-fn finding_for_world(world: World) -> FindingReproductionArtifact {
-    finding_for_world_and_plan(world, Plan::empty())
-}
-
-fn finding() -> FindingReproductionArtifact {
-    finding_for_world(World::from_nodes(vec![vm_node()]).expect("world"))
-}
+use crucible_campaign::FindingKind;
+use crucible_cas::content_store::BlobHandle;
 
 fn finding_with_signal_artifact() -> (FindingReproductionArtifact, MemoryDagStore, ContentHash) {
     let world = World::from_nodes(vec![vm_node()]).expect("world");
@@ -107,124 +64,45 @@ fn finding_with_signal_artifact() -> (FindingReproductionArtifact, MemoryDagStor
     (finding_for_world_and_plan(world, plan), store, identity)
 }
 
-fn campaign_binding(
-    finding: &FindingReproductionArtifact,
-    kind: FindingKind,
-) -> (ReproductionArtifactId, FindingSignature) {
-    let scenario = crate::encode_crucible_scenario_artifact(finding.artifact.scenario_form())
-        .expect("campaign scenario");
-    let configuration =
-        crate::encode_crucible_configuration_artifact(&scenario, finding.artifact.schedule())
-            .expect("campaign configuration");
-    let reproduction = crucible_campaign::ReproductionArtifact::new(
-        crucible_campaign::ReproductionArtifactBasis::new(
-            scenario.scenario(),
-            scenario.id().expect("scenario id"),
-            configuration.configuration(),
-            configuration.id().expect("configuration id"),
-            CampaignHash::from_bytes(finding.finding_fingerprint.bytes),
-        ),
-        crate::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-        finding.artifact.to_compact_binary(),
-    )
-    .expect("campaign reproduction")
-    .id()
-    .expect("reproduction id");
-    let signature = FindingSignature::new(
-        kind,
-        CampaignHash::from_bytes(finding.finding_fingerprint.bytes),
-        (kind == FindingKind::PropertyViolation).then(|| String::from("property")),
-        match kind {
-            FindingKind::PropertyViolation => String::from("property.violation"),
-            FindingKind::Divergence => String::from("qemu.replay-divergence"),
-            FindingKind::Timeout => String::from("execution-budget"),
-        },
-        None,
-        BTreeSet::new(),
-    )
-    .expect("finding signature");
-    (reproduction, signature)
-}
-
-fn deployment() -> FindingProductionReplayDeployment {
-    let runtime = FindingProductionReplayRuntimeIdentity::new(
-        "sha256:qemu-build",
-        "sha256:qemu-patches",
-        format!("crucible-shmem-abi-v{}", crucible::SHMEM_ABI_VERSION),
-        crucible::SHMEM_ABI_VERSION.to_string(),
-    )
-    .expect("runtime identity");
-    FindingProductionReplayDeployment::new(
-        runtime,
-        FindingProductionReplayRootImageFormat::Raw,
-        vec![FindingProductionReplayGuestAssets::new(
-            VmArchitecture::X86_64,
-            FindingProductionReplayAsset::from_bytes(b"kernel".to_vec()),
-            FindingProductionReplayAsset::from_bytes(b"root-image".to_vec()),
-            Some(String::from("console=ttyS0")),
-        )],
-        None,
-    )
-}
-
-fn side_event(sequence: u64, kind: &str) -> SchedulerEventLogEntry {
-    let mut attributes = BTreeMap::new();
-    attributes.insert(
-        String::from("canonical_selection"),
-        EventAttributeValue::String(kind.to_owned()),
-    );
-    let event = SchedulerEventLogEntry::from_retained_open_event(
-        sequence,
-        EventLogTime::from_virtual_time(VirtualTime { ticks: 7 }),
-        EventSource::Engine,
-        EventLevel::Info,
-        SchedulerEventLogClass::Causal,
-        EventPayload::new("campaign_selection", attributes),
-    )
-    .expect("fixture event");
-    assert!(
-        event.has_valid_content_hash(),
-        "fixture event must authenticate"
-    );
-    event
-}
-
-fn side(kind: &str) -> FindingProductionReplayExecutionSide {
-    FindingProductionReplayExecutionSide {
-        outcome: FindingProductionReplayTerminalOutcome::Failed,
-        completed_quanta: 1,
-        frontier: VirtualTime { ticks: 7 },
-        event_log: vec![side_event(0, kind)],
-        terminal_fingerprints: vec![FingerprintSample {
-            node: NodeId {
-                name: String::from("node-0"),
-            },
-            at: VirtualTime { ticks: 7 },
-            fingerprint: crucible::ExecutionFingerprint {
-                hash: ContentHash::from_bytes(b"terminal"),
-            },
-        }],
-        resolved_effect_trace: None,
-    }
-}
-
 #[test]
-fn continuation_event_parts_require_dense_nonoverlapping_sequences() {
+fn snapshot_capture_requires_a_dense_prefix_before_the_recording() {
+    let frontier = VirtualTime { ticks: 7 };
     let prefix = side_event(0, "prefix");
     let suffix = side_event(1, "suffix");
+    let snapshot = QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
+        1,
+        frontier,
+        std::slice::from_ref(&suffix),
+    )
+    .expect("resumed snapshot");
+    let failed = FindingProductionReplayTerminalOutcome::Failed;
 
-    assert!(
-        validate_event_log_parts(
+    let FindingProductionReplayCaptureOutcome::Complete(captured) =
+        FindingProductionReplayExecutionSide::from_snapshot(
+            failed,
             std::slice::from_ref(&prefix),
-            &[suffix],
-            VirtualTime { ticks: 7 }
+            &snapshot,
         )
-        .is_ok()
-    );
+        .expect("dense prefix and recording")
+    else {
+        panic!("complete snapshot was reported incomplete");
+    };
+    assert_eq!(side_entries(&captured), vec![prefix.clone(), suffix]);
 
-    let overlap = side_event(0, "prefix");
     assert!(matches!(
-        validate_event_log_parts(&[prefix], &[overlap], VirtualTime { ticks: 7 }),
+        FindingProductionReplayExecutionSide::from_snapshot(failed, &[], &snapshot),
+        Ok(FindingProductionReplayCaptureOutcome::Incomplete(
+            FindingProductionReplayIncomplete::MissingEventLogPrefix
+        ))
+    ));
+    let overlap = QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
+        1,
+        frontier,
+        std::slice::from_ref(&side_event(0, "overlap")),
+    )
+    .expect("fresh snapshot");
+    assert!(matches!(
+        FindingProductionReplayExecutionSide::from_snapshot(failed, &[prefix], &overlap),
         Err(FindingProductionReplayCaptureError::InvalidEventLog)
     ));
 }
@@ -232,17 +110,16 @@ fn continuation_event_parts_require_dense_nonoverlapping_sequences() {
 #[test]
 fn terminal_fingerprint_may_precede_but_not_exceed_shared_frontier() {
     let finding = finding();
-    let limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
     let recipe = FindingProductionReplayRecipe::new(10_000, 64, true).expect("valid recipe");
     let mut paused = side("paused-selectable");
     paused.terminal_fingerprints[0].at = VirtualTime { ticks: 5 };
 
-    validate_execution_side(&paused, finding.artifact.scenario_form(), recipe, limits)
+    validate_execution_side(&paused, finding.artifact.scenario_form(), recipe)
         .expect("a stopped node may be behind the shared frontier");
 
     paused.terminal_fingerprints[0].at = VirtualTime { ticks: 8 };
     assert!(matches!(
-        validate_execution_side(&paused, finding.artifact.scenario_form(), recipe, limits),
+        validate_execution_side(&paused, finding.artifact.scenario_form(), recipe),
         Err(FindingProductionReplayCaptureError::InvalidTerminalFingerprints)
     ));
 }
@@ -274,31 +151,21 @@ fn network_only_finding_accepts_canonical_effect_trace() {
     .canonical_bytes()
     .expect("canonical network trace");
     let mut execution = side("network-fault");
-    execution.resolved_effect_trace = Some(trace);
-    let limits = FindingProductionReplayCaptureLimits::for_finding(&finding());
+    execution.resolved_effect_trace = Some(Arc::from(trace));
     let recipe = FindingProductionReplayRecipe::new(10_000, 64, true).expect("valid recipe");
 
-    validate_execution_side(&execution, &scenario, recipe, limits)
+    validate_execution_side(&execution, &scenario, recipe)
         .expect("network-only scenario accepts its canonical trace");
 }
 
 #[test]
 fn decoder_rejects_hostile_declared_container_length_before_deserialization() {
-    let finding = finding();
-    let mut limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
-    limits.max_encoded_bytes = 64;
     let hostile = [0x9b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
 
     assert!(matches!(
-        FindingProductionReplayCapture::from_canonical_bytes(&hostile, limits),
+        manifest::decode_manifest_body(&hostile),
         Err(FindingProductionReplayCaptureError::DecodeBounds)
     ));
-}
-
-fn timeout_side() -> FindingProductionReplayExecutionSide {
-    let mut side = side("quantum-budget");
-    side.outcome = FindingProductionReplayTerminalOutcome::Timeout;
-    side
 }
 
 #[test]
@@ -348,28 +215,86 @@ fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
         FindingProductionReplaySelectedSide::Expected
     );
 
-    let bytes = capture.to_canonical_bytes(limits).expect("encode");
-    let decoded =
-        FindingProductionReplayCapture::from_canonical_bytes(&bytes, limits).expect("decode");
+    let objects = capture.prepare_objects().expect("prepare capture objects");
+    let leaves = leaf_handles(&objects);
+    let decoded = FindingProductionReplayCapture::from_objects(
+        objects.root(),
+        objects.manifest_bytes(),
+        &leaves,
+        limits,
+    )
+    .expect("decode");
     assert_eq!(decoded, capture);
+    assert_eq!(
+        decoded.prepare_objects().expect("re-prepare").root(),
+        objects.root(),
+        "a decoded capture derives the same manifest identity"
+    );
+    let segments = objects
+        .leaves()
+        .values()
+        .filter(|leaf| leaf.role() == FindingProductionReplayLeafRole::EventLogSegment)
+        .count();
+    assert_eq!(segments, 2, "each side log is referenced by its segments");
 
-    let mut old_schema = bytes.clone();
-    let schema_key = b"schema_version";
-    let encoded_version = old_schema
-        .windows(schema_key.len() + 1)
-        .position(|window| window.starts_with(schema_key) && window[schema_key.len()] == 3)
-        .expect("canonical capture contains its version byte")
-        + schema_key.len();
-    old_schema[encoded_version] = 2;
+    let envelope =
+        decode_finding_production_replay_manifest(objects.root(), objects.manifest_bytes())
+            .expect("manifest envelope");
+    let old_schema = crucible_cas::content_envelope::ContentEnvelope::new(
+        FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA,
+        3,
+        envelope.children().clone(),
+        envelope.body().to_vec(),
+    )
+    .expect("version 3 envelope");
+    let old_root = crucible_campaign::FindingReplayCaptureEvidenceId::from_manifest_content_id(
+        old_schema.content_id(crucible_cas::content_store::ObjectKind::ExactManifest),
+    );
+    assert!(
+        old_root.is_err(),
+        "a version 3 identity is not a capture root"
+    );
     assert!(matches!(
-        FindingProductionReplayCapture::from_canonical_bytes(&old_schema, limits),
-        Err(FindingProductionReplayCaptureError::UnsupportedSchema { actual: 2 })
+        FindingProductionReplayCapture::from_objects(
+            objects.root(),
+            &old_schema.canonical_bytes(),
+            &leaves,
+            limits,
+        ),
+        Err(FindingProductionReplayCaptureError::UnsupportedSchema { actual: 3 })
     ));
 
-    assert_eq!(
-        decoded.content_hash(limits).expect("decoded content hash"),
-        capture.content_hash(limits).expect("capture content hash")
-    );
+    let mut missing = leaves.clone();
+    let segment = objects
+        .leaves()
+        .iter()
+        .find(|(_, leaf)| leaf.role() == FindingProductionReplayLeafRole::EventLogSegment)
+        .map(|(id, _)| *id)
+        .expect("segment leaf");
+    missing.remove(&segment);
+    assert!(matches!(
+        FindingProductionReplayCapture::from_objects(
+            objects.root(),
+            objects.manifest_bytes(),
+            &missing,
+            limits,
+        ),
+        Err(FindingProductionReplayCaptureError::MissingLeaf { id }) if id == segment
+    ));
+
+    let mut substituted = leaves;
+    substituted.insert(segment, BlobHandle::from_bytes(vec![0; 1]));
+    assert!(matches!(
+        FindingProductionReplayCapture::from_objects(
+            objects.root(),
+            objects.manifest_bytes(),
+            &substituted,
+            limits,
+        ),
+        Err(FindingProductionReplayCaptureError::InvalidManifest {
+            reason: "leaf length"
+        })
+    ));
 }
 
 #[test]
@@ -543,7 +468,7 @@ fn signal_lifecycle_capture_requires_authenticates_and_bounds_its_store() {
 }
 
 #[test]
-fn capture_enforces_small_asset_and_encoded_byte_caps() {
+fn capture_enforces_guest_asset_caps_when_captured_and_decoded() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
@@ -584,30 +509,15 @@ fn capture_enforces_small_asset_and_encoded_byte_caps() {
         ),
     )
     .expect("capture");
-    let mut encoded_limits = limits;
-    encoded_limits.max_encoded_bytes = 8;
-    assert!(matches!(
-        capture.to_canonical_bytes(encoded_limits),
-        Err(FindingProductionReplayCaptureError::LimitExceeded {
-            limit: "finding-production-replay-encoded-bytes"
-        })
-    ));
-
-    let bytes = capture.to_canonical_bytes(limits).expect("encode capture");
-    assert!(matches!(
-        FindingProductionReplayCapture::from_canonical_bytes(&bytes, encoded_limits),
-        Err(FindingProductionReplayCaptureError::LimitExceeded {
-            limit: "finding-production-replay-encoded-bytes"
-        })
-    ));
     let mut decoded_asset_limits = limits;
     decoded_asset_limits.max_guest_asset_bytes = 1;
     assert!(matches!(
-        FindingProductionReplayCapture::from_canonical_bytes(&bytes, decoded_asset_limits),
+        round_trip(&capture, decoded_asset_limits),
         Err(FindingProductionReplayCaptureError::LimitExceeded {
             limit: "finding-production-replay-guest-asset-bytes"
         })
     ));
+    round_trip(&capture, limits).expect("capture decodes under its own limits");
 }
 
 #[test]
@@ -866,22 +776,12 @@ fn capture_rejects_progress_beyond_recipe_or_terminal_frontier() {
         })
     ));
 
-    let mut late_event = timeout_side();
-    late_event.frontier = VirtualTime { ticks: 6 };
-    late_event.terminal_fingerprints[0].at = VirtualTime { ticks: 6 };
     assert!(matches!(
-        FindingProductionReplayCapture::new(
-            &finding,
-            reproduction,
-            signature,
-            &closure,
-            FindingProductionReplayCaptureInput::new(
-                FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
-                deployment(),
-                vec![late_event],
-                BTreeMap::new(),
-                limits,
-            ),
+        side_with(
+            FindingProductionReplayTerminalOutcome::Timeout,
+            1,
+            VirtualTime { ticks: 6 },
+            vec![side_event(0, "quantum-budget")],
         ),
         Err(FindingProductionReplayCaptureError::InvalidEventLog)
     ));

@@ -37,7 +37,7 @@ const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NOD
 const MAX_TERMINAL_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES;
 
 /// Largest encoded resolved-effect trace retained for one attempt.
-const MAX_RESOLVED_EFFECT_TRACE_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_RESOLVED_EFFECT_TRACE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Lifecycle wrapper that records exact process-local execution evidence.
 ///

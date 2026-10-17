@@ -1690,7 +1690,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
 - [ ] **T-CAM-4.12** Convert finding replay captures, CLI explanation,
   objective and observation-stop verification, remote resume, hot-fork
   materialization, and the campaign trace protocol to segment-by-segment
-  readers.
+  readers. Finding replay captures reference side-log segments as manifest
+  leaves under a per-finding run-length allowance, and CLI midpoint and
+  exact-bundle checks stream them; the remaining readers remain open.
 - [ ] **T-CAM-4.13** Make replay-target matching, network-fault discovery,
   guest-marker observation, console matching, scheduler staging, schedule
   identity, stop checks, imported I/O inventory, and fault accounting

@@ -614,7 +614,7 @@ impl CampaignExecutorStore {
 }
 
 impl CampaignExecutorPublicationGuard<'_> {
-    /// Reads one capture chunk or manifest while GC remains excluded.
+    /// Reads one capture leaf or manifest while GC remains excluded.
     ///
     /// # Errors
     ///
@@ -627,7 +627,7 @@ impl CampaignExecutorPublicationGuard<'_> {
         self.repository.read_finding_replay_capture_object(id)
     }
 
-    /// Idempotently writes one capture chunk or manifest while GC remains excluded.
+    /// Idempotently writes one capture leaf or manifest while GC remains excluded.
     ///
     /// # Errors
     ///
@@ -646,7 +646,7 @@ impl CampaignExecutorPublicationGuard<'_> {
 }
 
 impl CampaignRepository {
-    /// Reads one immutable finding replay capture manifest or chunk.
+    /// Reads one immutable finding replay capture manifest or leaf.
     ///
     /// This read-only path is used after an imported archive has authenticated
     /// the complete finding closure. Publication still requires the separate
@@ -665,10 +665,14 @@ impl CampaignRepository {
     }
 }
 
+/// Admits a version 4 capture manifest or one of its version 1 trace leaves.
 fn validate_finding_replay_capture_object_id(id: ContentId) -> Result<(), CampaignRepositoryError> {
-    if id.schema_version() != 1
-        || !matches!(id.kind(), ObjectKind::ExactManifest | ObjectKind::Trace)
-    {
+    let admitted = match id.kind() {
+        ObjectKind::ExactManifest => id.schema_version() == 4,
+        ObjectKind::Trace => id.schema_version() == 1,
+        _ => false,
+    };
+    if !admitted {
         return Err(integrity("finding-replay-capture-object-kind"));
     }
     Ok(())

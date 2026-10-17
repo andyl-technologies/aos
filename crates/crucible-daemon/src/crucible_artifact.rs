@@ -183,26 +183,20 @@ impl PreparedFindingProductionReplays {
     ) -> Result<[crate::FindingReplayCaptureInput; 4], crate::FindingProductionReplayCaptureError>
     {
         Ok([
-            replay_capture_input(&self.minimization_original, self.limits)?,
-            replay_capture_input(&self.minimization_selected, self.limits)?,
-            replay_capture_input(&self.verification_original, self.limits)?,
-            replay_capture_input(&self.verification_selected, self.limits)?,
+            replay_capture_input(&self.minimization_original)?,
+            replay_capture_input(&self.minimization_selected)?,
+            replay_capture_input(&self.verification_original)?,
+            replay_capture_input(&self.verification_selected)?,
         ])
     }
 }
 
 fn replay_capture_input(
     outcome: &crate::FindingProductionReplayCaptureOutcome,
-    limits: crate::FindingProductionReplayCaptureLimits,
 ) -> Result<crate::FindingReplayCaptureInput, crate::FindingProductionReplayCaptureError> {
     Ok(match outcome {
         crate::FindingProductionReplayCaptureOutcome::Complete(capture) => {
-            let bytes = capture.to_canonical_bytes(limits)?;
-            let content_hash = ContentHash::from_bytes(&bytes);
-            crate::FindingReplayCaptureInput::Complete {
-                bytes,
-                content_hash,
-            }
+            crate::FindingReplayCaptureInput::Complete(Box::new(capture.prepare_objects()?))
         }
         crate::FindingProductionReplayCaptureOutcome::Incomplete(reason) => {
             crate::FindingReplayCaptureInput::Incomplete(match reason {

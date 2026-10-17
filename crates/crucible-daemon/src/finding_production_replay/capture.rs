@@ -58,7 +58,7 @@ pub(super) fn validate_capture_content(
         _ => return Err(FindingProductionReplayCaptureError::InvalidSideCount),
     }
     for side in sides {
-        validate_execution_side(side, scenario, shared_context.recipe, limits)?;
+        validate_execution_side(side, scenario, shared_context.recipe)?;
     }
     Ok(())
 }
@@ -157,6 +157,9 @@ pub enum FindingProductionReplayCaptureError {
     /// One scheduler entry is unauthenticated or out of sequence.
     #[error("finding production replay event log is invalid")]
     InvalidEventLog,
+    /// A replay-side log segment could not be sealed, stored, or read.
+    #[error("finding production replay event log storage failed: {0}")]
+    EventLogStore(#[source] crate::AttemptEventLogError),
     /// Terminal fingerprints do not name every scenario VM exactly once.
     #[error("finding production replay terminal fingerprint set is incomplete or inconsistent")]
     InvalidTerminalFingerprints,
@@ -198,6 +201,24 @@ pub enum FindingProductionReplayCaptureError {
     /// The payload decoded but was not byte-canonical.
     #[error("finding production replay encoding is not canonical")]
     Noncanonical,
+    /// The manifest envelope is malformed or disagrees with its body.
+    #[error("finding production replay manifest has invalid {reason}")]
+    InvalidManifest {
+        /// Stable rejected field or relationship.
+        reason: &'static str,
+    },
+    /// The manifest envelope could not be built or decoded.
+    #[error("finding production replay manifest envelope is invalid: {0}")]
+    Envelope(#[source] crucible_cas::content_envelope::ContentEnvelopeError),
+    /// A manifest child is absent from the supplied leaves.
+    #[error("finding production replay leaf {id} is missing")]
+    MissingLeaf {
+        /// Content identity of the absent leaf.
+        id: crucible_cas::content_store::ContentId,
+    },
+    /// A referenced leaf could not be read or failed authentication.
+    #[error("finding production replay leaf could not be read: {0}")]
+    LeafStore(#[source] crucible_cas::content_store::StoreError),
     /// A retained DAG store operation failed.
     #[error("finding production replay lifecycle store failed: {0}")]
     Store(#[source] crucible::DagStoreError),
@@ -399,11 +420,14 @@ pub(super) fn selected_side(
     match sides {
         [_] => Ok(FindingProductionReplaySelectedSide::Observed),
         [expected, reproduced] => {
-            let comparison =
-                compare_event_log_determinism(&expected.event_log, &reproduced.event_log);
-            let mismatch = comparison
-                .mismatch()
-                .ok_or(FindingProductionReplayCaptureError::PairedSidesDoNotDiverge)?;
+            // Both logs stream one segment at a time and the comparison stops
+            // at the first causal difference, so neither log is held whole.
+            let mismatch = crucible::first_event_log_causal_mismatch(
+                expected.event_log.entries(),
+                reproduced.event_log.entries(),
+            )
+            .map_err(|_| FindingProductionReplayCaptureError::InvalidEventLog)?
+            .ok_or(FindingProductionReplayCaptureError::PairedSidesDoNotDiverge)?;
             mismatch
                 .first_location()
                 .ok_or(FindingProductionReplayCaptureError::PairedSidesDoNotDiverge)?;
@@ -532,31 +556,12 @@ pub(super) fn validate_execution_side(
     side: &FindingProductionReplayExecutionSide,
     scenario: &crucible::ScenarioDefForm,
     recipe: FindingProductionReplayRecipe,
-    limits: FindingProductionReplayCaptureLimits,
 ) -> Result<(), FindingProductionReplayCaptureError> {
-    if side.completed_quanta > recipe.lifecycle_quantum_budget
-        || side.event_log.len() > limits.max_events_per_side
-    {
+    // The side's log was authenticated when the side was built, so only its
+    // bounded scalar and fingerprint evidence is checked here.
+    if side.completed_quanta > recipe.lifecycle_quantum_budget {
         return Err(FindingProductionReplayCaptureError::LimitExceeded {
-            limit: if side.completed_quanta > recipe.lifecycle_quantum_budget {
-                "finding-production-replay-completed-quanta"
-            } else {
-                "finding-production-replay-event-count"
-            },
-        });
-    }
-    validate_event_log_parts(&side.event_log, &[], side.frontier)?;
-    let mut event_bytes = 0usize;
-    for entry in &side.event_log {
-        event_bytes = event_bytes
-            .checked_add(entry.canonical_material_len())
-            .ok_or(FindingProductionReplayCaptureError::LimitExceeded {
-                limit: "finding-production-replay-event-bytes",
-            })?;
-    }
-    if event_bytes > limits.max_event_bytes_per_side {
-        return Err(FindingProductionReplayCaptureError::LimitExceeded {
-            limit: "finding-production-replay-event-bytes",
+            limit: "finding-production-replay-completed-quanta",
         });
     }
 

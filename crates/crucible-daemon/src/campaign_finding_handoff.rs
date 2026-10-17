@@ -527,8 +527,8 @@ pub fn load_archived_finding_production_capture(
         .into_iter()
         .nth(index)
         .ok_or(CampaignFindingHandoffError::MissingCaptureSet)?;
-    let bytes = match selected {
-        LoadedFindingReplayCapture::Complete { bytes, .. } => bytes,
+    let objects = match selected {
+        LoadedFindingReplayCapture::Complete(objects) => objects,
         LoadedFindingReplayCapture::Incomplete(reason) => {
             return Err(CampaignFindingHandoffError::IncompleteCapture { reason });
         }
@@ -537,7 +537,14 @@ pub fn load_archived_finding_production_capture(
     let reproduction = repository.load_reproduction_artifact(reproduction_id)?;
     let model = ReproductionArtifact::from_compact_binary(reproduction.payload())?;
     let limits = FindingProductionReplayCaptureLimits::for_reproduction(&model);
-    let capture = FindingProductionReplayCapture::from_canonical_bytes(&bytes, limits)?;
+    // Side logs keep reading their segments through the repository handles,
+    // one segment at a time, after this returns.
+    let capture = FindingProductionReplayCapture::from_objects(
+        objects.root(),
+        objects.manifest(),
+        objects.leaves(),
+        limits,
+    )?;
     capture.validate_binding(reproduction_id, finding.signature())?;
     if capture.model_reproduction() != reproduction.payload() {
         return Err(CampaignFindingHandoffError::ModelReproductionMismatch);

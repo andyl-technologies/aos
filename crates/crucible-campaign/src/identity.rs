@@ -630,12 +630,13 @@ content_object_id!(
 content_object_id!(
     FindingReplayCaptureEvidenceId,
     ObjectKind::ExactManifest,
+    4,
     "crucible.campaign.finding-replay-capture-evidence",
     "Identifies one manifest-rooted portable production replay capture."
 );
 
 impl FindingReplayCaptureEvidenceId {
-    /// Claims a version-one finding replay capture manifest identity.
+    /// Claims a version-four finding replay capture manifest identity.
     ///
     /// # Errors
     ///

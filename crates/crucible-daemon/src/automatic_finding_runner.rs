@@ -555,7 +555,6 @@ fn capture_qemu_finding_replay_material(
                 first,
                 evidence.timeout_record(),
                 evidence.policy_timeout(),
-                limits,
             )?;
             match side {
                 crate::FindingProductionReplayCaptureOutcome::Complete(side) => sides.push(side),
@@ -579,7 +578,6 @@ fn capture_qemu_finding_replay_material(
                     snapshot,
                     None,
                     None,
-                    limits,
                 )? {
                     crate::FindingProductionReplayCaptureOutcome::Complete(side) => {
                         sides.push(side);
@@ -616,7 +614,6 @@ fn capture_qemu_finding_replay_side(
         crucible_campaign::PolicyTimeoutKind,
         crucible_campaign::BoundedStopProof,
     )>,
-    limits: crate::FindingProductionReplayCaptureLimits,
 ) -> Result<
     crate::FindingProductionReplayCaptureOutcome<crate::FindingProductionReplayExecutionSide>,
     crate::FindingProductionReplayCaptureError,
@@ -676,7 +673,6 @@ fn capture_qemu_finding_replay_side(
         &complete_log[..prefix_len],
         snapshot,
         terminal_entry,
-        limits,
     )
 }
 

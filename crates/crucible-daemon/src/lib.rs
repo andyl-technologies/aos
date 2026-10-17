@@ -191,9 +191,10 @@ pub use assignment_ledger::{
 };
 pub use attempt_event_log::{
     ATTEMPT_LOG_SEGMENT_SCHEMA, ATTEMPT_LOG_SEGMENT_TARGET_BYTES, AttemptEventLogError,
-    AttemptEventLogVisitError, AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSource,
-    AttemptLogSegmentSources, MAX_ATTEMPT_LOG_ENTRY_BYTES, MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS,
-    MAX_ATTEMPT_LOG_SEGMENT_BYTES, MemorySegmentStore, decode_segment,
+    AttemptEventLogVisitError, AttemptLogEntries, AttemptLogManifest, AttemptLogSegmentRef,
+    AttemptLogSegmentSource, AttemptLogSegmentSources, MAX_ATTEMPT_LOG_ENTRY_BYTES,
+    MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS, MAX_ATTEMPT_LOG_SEGMENT_BYTES, MemorySegmentStore,
+    decode_segment,
 };
 pub(crate) use attempt_event_log::{AttemptLogNamespace, AttemptLogStore};
 pub use automatic_finding_runner::{
@@ -437,8 +438,9 @@ pub use finding_production_replay::{
     FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION, FindingProductionReplayAsset,
     FindingProductionReplayCapture, FindingProductionReplayCaptureError,
     FindingProductionReplayCaptureInput, FindingProductionReplayCaptureLimits,
-    FindingProductionReplayCaptureMaterial, FindingProductionReplayCaptureOutcome,
-    FindingProductionReplayDeployment, FindingProductionReplayExecutionSide,
+    FindingProductionReplayCaptureMaterial, FindingProductionReplayCaptureObjects,
+    FindingProductionReplayCaptureOutcome, FindingProductionReplayDeployment,
+    FindingProductionReplayEventLog, FindingProductionReplayExecutionSide,
     FindingProductionReplayGuestAssets, FindingProductionReplayIncomplete,
     FindingProductionReplayRecipe, FindingProductionReplayRootImageFormat,
     FindingProductionReplayRuntimeIdentity, FindingProductionReplaySelectedSide,
@@ -448,7 +450,7 @@ pub use finding_production_replay::{
 };
 pub use finding_replay_capture_store::{
     FindingReplayCaptureInput, FindingReplayCaptureStore, FindingReplayCaptureStoreError,
-    LoadedFindingReplayCapture, PreparedFindingReplayCaptureSet,
+    LoadedFindingReplayCapture, LoadedFindingReplayCaptureObjects, PreparedFindingReplayCaptureSet,
 };
 pub use guest_selectable::{
     GuestSelectableBoundaryDiagnosticConfig, GuestSelectableBoundaryDiagnosticConfigError,
@@ -577,8 +579,7 @@ pub use qemu_campaign_driver::{
 pub use qemu_campaign_lifecycle::{
     InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
     QemuFinalBoundaryDrain, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
-    QemuFreshDriveOutcome,
-    QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
+    QemuFreshDriveOutcome, QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
     build_guarded_interactive_qemu_session,
 };

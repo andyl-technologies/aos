@@ -86,11 +86,11 @@ pub use finding_export::{
 };
 
 mod replay_closure;
-pub(crate) use replay_closure::GuardedCampaignReplaySelection;
 pub use replay_closure::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     validate_remote_resume_replay_closure,
 };
+pub(crate) use replay_closure::{GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_BYTES};
 
 mod resume;
 pub use resume::GuardedDefaultCampaignResumeProof;

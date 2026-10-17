@@ -20,7 +20,7 @@ pub(super) struct PreparedFindingBundleMidpoint {
     pub(super) lifecycle: crucible_api::ProductionVmLifecycleConfig,
     pub(super) host: crucible_daemon::LinuxQemuAttemptHostConfig,
     pub(super) resources: AttemptResourceLimits,
-    pub(super) report: Value,
+    pub(super) report: MidpointReport,
     pub(super) private: tempfile::TempDir,
 }
 
@@ -304,7 +304,7 @@ fn midpoint_report(
     capture: &crucible_daemon::FindingProductionReplayCapture,
     selected: &crucible_daemon::FindingProductionReplayExecutionSide,
     fault_trace: Option<&crucible::ResolvedEffectTrace>,
-) -> Result<Value, CliError> {
+) -> Result<MidpointReport, CliError> {
     let mut selections = Vec::new();
     for decision in bundle
         .evidence
@@ -351,7 +351,7 @@ fn midpoint_report(
         bundle.evidence.finding.id().map_err(|error| {
             backend_error(format!("verified finding identity is invalid: {error}"))
         })?;
-    Ok(json!({
+    let fields = json!({
         "schema": "crucible.cli.campaign-finding-bundle-midpoint.v1",
         "operation": "open-finding-bundle-midpoint",
         "archive_manifest": bundle.archive_id.to_string(),
@@ -368,14 +368,17 @@ fn midpoint_report(
         "failure_detail": failure_detail,
         "observation_stop": format!("{:?}", bundle.evidence.observation.stop()),
         "causal_entries": bundle.evidence.report.causal_entries,
-        "events": selected.event_log(),
         "signal_effects": fault_trace,
         "metrics": {
             "payload_schema": evaluation.payload_schema(),
             "payload_hex": lower_hex(evaluation.payload()),
             "evidence": evaluation.evidence().iter().map(ToString::to_string).collect::<Vec<_>>(),
         },
-    }))
+    });
+    Ok(MidpointReport {
+        fields,
+        events: selected.event_log().clone(),
+    })
 }
 
 fn lower_hex(bytes: &[u8]) -> String {
@@ -386,15 +389,75 @@ fn lower_hex(bytes: &[u8]) -> String {
     encoded
 }
 
-pub(super) fn print_midpoint_report(report: &Value, format: OutputFormat) -> Result<(), CliError> {
+/// Machine-readable midpoint report whose event log is streamed when printed.
+///
+/// The selected side's scheduler log grows with the replayed run, so the
+/// report keeps it by reference and writes its `events` array one segment at
+/// a time instead of building it as a JSON value (RFC-0020 CMEAS-22).
+pub(super) struct MidpointReport {
+    fields: Value,
+    events: crucible_daemon::FindingProductionReplayEventLog,
+}
+
+impl std::ops::Index<&str> for MidpointReport {
+    type Output = Value;
+
+    fn index(&self, key: &str) -> &Value {
+        &self.fields[key]
+    }
+}
+
+impl std::ops::IndexMut<&str> for MidpointReport {
+    fn index_mut(&mut self, key: &str) -> &mut Value {
+        &mut self.fields[key]
+    }
+}
+
+impl serde::Serialize for MidpointReport {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error as _, SerializeMap as _};
+
+        let Value::Object(fields) = &self.fields else {
+            return Err(S::Error::custom("finding midpoint report is not an object"));
+        };
+        let mut report = serializer.serialize_map(Some(fields.len() + 1))?;
+        for (key, value) in fields {
+            report.serialize_entry(key, value)?;
+        }
+        report.serialize_entry("events", &StreamedEvents(&self.events))?;
+        report.end()
+    }
+}
+
+/// Serializes a side log as a JSON array, reading one segment at a time.
+struct StreamedEvents<'a>(&'a crucible_daemon::FindingProductionReplayEventLog);
+
+impl serde::Serialize for StreamedEvents<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error as _, SerializeSeq as _};
+
+        let length = usize::try_from(self.0.entry_count()).ok();
+        let mut events = serializer.serialize_seq(length)?;
+        for entry in self.0.entries() {
+            let entry = entry.map_err(S::Error::custom)?;
+            events.serialize_element(&entry)?;
+        }
+        events.end()
+    }
+}
+
+pub(super) fn print_midpoint_report(
+    report: &MidpointReport,
+    format: OutputFormat,
+) -> Result<(), CliError> {
     match format {
         OutputFormat::Json | OutputFormat::Jsonl => {
-            println!(
-                "{}",
-                serde_json::to_string(report).map_err(|error| {
-                    backend_error(format!("finding midpoint report encoding failed: {error}"))
-                })?
-            );
+            let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
+            serde_json::to_writer(&mut stdout, report).map_err(|error| {
+                backend_error(format!("finding midpoint report encoding failed: {error}"))
+            })?;
+            writeln!(stdout).map_err(CliError::Io)?;
+            stdout.flush().map_err(CliError::Io)?;
         }
         OutputFormat::Table | OutputFormat::Markdown => {
             println!(
