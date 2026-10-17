@@ -633,6 +633,26 @@ impl AttemptExecutionContext {
             .transpose()
     }
 
+    /// Creates the sink that receives one attempt's resolved-effect trace segments.
+    ///
+    /// Segments go to a new directory under the event-log namespace and are
+    /// charged against `maximum_event_log_bytes`, like each retained copy of
+    /// the attempt log. Returns `None` when the executor configured no
+    /// namespace, in which case the lifecycle keeps its trace in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the trace directory cannot be created.
+    pub(crate) fn create_fault_trace_sink(
+        &self,
+    ) -> std::io::Result<Option<Arc<dyn crucible_cas::segment_store::SegmentSink>>> {
+        let Some(namespace) = self.event_log_namespace.as_deref() else {
+            return Ok(None);
+        };
+        let sink = namespace.create_trace_sink(self.maximum_event_log_bytes)?;
+        Ok(Some(Arc::new(sink)))
+    }
+
     /// Creates the store that receives one finding preparation's replay records.
     ///
     /// Records go to a new directory under the event-log namespace, or stay in

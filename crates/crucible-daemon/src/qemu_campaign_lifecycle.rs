@@ -79,6 +79,10 @@ pub use remote_observation_resume::RemoteObservationResumeFactory;
 mod resume_admission;
 use resume_admission::validate_exact_resume_request;
 
+mod attempt_config;
+pub(crate) use attempt_config::config_for_assignment_host_watchdog;
+use attempt_config::config_for_attempt_trace_storage;
+
 mod network_fault_replay;
 use network_fault_replay::{
     cross_replayed_network_fault_boundary, park_replayed_network_fault_markers,
@@ -142,6 +146,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// The modeled continuation control is malformed for the authenticated scenario.
     #[error("derive modeled continuation control")]
     InvalidContinuationInput,
+    /// The attempt's resolved-effect trace directory could not be created.
+    #[error("create production VM resolved-effect trace storage: {0}")]
+    TraceStorage(#[source] std::io::Error),
 }
 
 mod resource_admission;
@@ -2150,25 +2157,6 @@ enum QemuFreshRunnerResult<P> {
     Checkpoint(AttemptCheckpointResult),
 }
 
-/// Applies the remaining assignment deadline to one newly constructed QEMU lifecycle.
-pub(crate) fn config_for_assignment_host_watchdog(
-    config: ProductionVmLifecycleConfig,
-    context: &AttemptExecutionContext,
-) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
-    let Some(remaining) = context.remaining_host_watchdog() else {
-        // Campaign advances use virtual bounds. The finite per-operation
-        // ceiling remains a polling slice and transport/lifecycle safety bound.
-        return Ok(config.with_unbounded_advance_completion());
-    };
-    if remaining.is_zero() {
-        return Err(QemuAttemptProductionVmLifecycleError::HostWatchdogExpired);
-    }
-    // The campaign's explicit assignment watchdog supersedes the fixed
-    // transport fallback. Its separate timer interrupts a child even when
-    // many short QEMU awaits would each finish within this initial remainder.
-    Ok(config.with_completion_timeout(remaining))
-}
-
 impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
     /// Creates a factory from trusted lifecycle configuration and host resources.
     #[must_use]
@@ -2261,6 +2249,7 @@ where
             &[],
         )?;
         let config = config_for_assignment_host_watchdog(config, context)?;
+        let config = config_for_attempt_trace_storage(config, context)?;
         let decoded = installed.into_decoded();
         self.with_attempt_launcher(context, source, maximum_nodes, |launcher| {
             build_production_vm_exact_resume_lifecycle(scenario, source, &config, decoded, launcher)
@@ -2347,6 +2336,7 @@ where
         }
 
         let config = config_for_assignment_host_watchdog(config, context)?;
+        let config = config_for_attempt_trace_storage(config, context)?;
         self.with_attempt_launcher(context, source, maximum_nodes, |launcher| {
             build_production_vm_lifecycle_loop_with_launcher(scenario, source, &config, launcher)
         })

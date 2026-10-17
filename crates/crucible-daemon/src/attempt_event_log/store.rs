@@ -11,6 +11,8 @@
 //!   callers, transport bundles, and tests.
 //! - [`AttemptLogStore`] is the store an executor attempt writes: a directory
 //!   created in the executor's [`AttemptLogNamespace`], or memory without one.
+//! - [`BoundedSegmentSink`] admits an attempt's resolved-effect trace segments
+//!   into their own attempt directory under a byte budget.
 //!
 //! The read trait and the source chain are the shared
 //! [`crucible_cas::segment_store`] contracts, so a directory that holds an
@@ -135,6 +137,21 @@ impl DirectorySegmentStore {
     pub(crate) fn directory(&self) -> &Arc<AttemptLogDirectory> {
         &self.directory
     }
+
+    /// Reports whether the directory already holds a complete segment for `id`.
+    ///
+    /// Complete segment files appear only by rename, so a present file holds
+    /// exactly the bytes its identity names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the file's presence cannot be determined.
+    pub(crate) fn contains(&self, id: ContentId) -> io::Result<bool> {
+        self.directory
+            .path()
+            .join(format!("{}{SEGMENT_FILE_SUFFIX}", digest_hex(id)))
+            .try_exists()
+    }
 }
 
 /// Two stores are equal when they read and write the same directory.
@@ -174,6 +191,88 @@ impl AttemptLogSegmentSource for DirectorySegmentStore {
             SEGMENT_FILE_SUFFIX,
             MAX_ATTEMPT_LOG_SEGMENT_BYTES,
         )
+    }
+}
+
+/// Directory sink that charges each newly stored segment against a byte budget.
+///
+/// An executor attempt's resolved-effect trace grows with virtual time like
+/// its event log, so its segments go to host storage rather than memory and
+/// observe the same operational bound, the deployment's
+/// `maximum_event_log_bytes`. Each identity is charged once, when it is first
+/// written; storing a present identity again is free, because the directory
+/// already holds its bytes. A write that would exceed the budget is refused
+/// before any byte reaches the directory.
+#[derive(Debug)]
+pub(crate) struct BoundedSegmentSink {
+    store: DirectorySegmentStore,
+    maximum_bytes: u64,
+    charged_bytes: AtomicU64,
+}
+
+impl BoundedSegmentSink {
+    /// Admits at most `maximum_bytes` of distinct segments into `store`.
+    pub(crate) const fn new(store: DirectorySegmentStore, maximum_bytes: u64) -> Self {
+        Self {
+            store,
+            maximum_bytes,
+            charged_bytes: AtomicU64::new(0),
+        }
+    }
+
+    /// Returns the encoded bytes of every distinct segment stored so far.
+    pub(crate) fn charged_bytes(&self) -> u64 {
+        self.charged_bytes.load(Ordering::Acquire)
+    }
+
+    /// Reserves `length` bytes of the budget, or refuses without charging.
+    fn reserve(&self, length: u64) -> io::Result<()> {
+        self.charged_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |charged| {
+                charged
+                    .checked_add(length)
+                    .filter(|total| *total <= self.maximum_bytes)
+            })
+            .map(|_| ())
+            .map_err(|charged| {
+                io::Error::new(
+                    io::ErrorKind::QuotaExceeded,
+                    format!(
+                        "resolved-effect trace segments would use {} of the attempt's \
+                         {}-byte maximum_event_log_bytes",
+                        charged.saturating_add(length),
+                        self.maximum_bytes
+                    ),
+                )
+            })
+    }
+}
+
+impl AttemptLogSegmentSource for BoundedSegmentSink {
+    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
+        self.store.segment(id)
+    }
+}
+
+impl SegmentSink for BoundedSegmentSink {
+    fn put_segment(&self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
+        if !id.authenticates(bytes) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "segment bytes do not derive their identity",
+            ));
+        }
+        if self.store.contains(id)? {
+            return Ok(());
+        }
+
+        // Two writers racing on one new identity may both be charged. The
+        // overcount is conservative: it can only refuse earlier.
+        let length = bytes.len() as u64;
+        self.reserve(length)?;
+        self.store.put_segment(id, bytes).inspect_err(|_| {
+            self.charged_bytes.fetch_sub(length, Ordering::AcqRel);
+        })
     }
 }
 
@@ -387,6 +486,7 @@ impl From<AttemptLogStore> for AttemptLogSegmentSources {
 /// ```text
 /// <namespace>/
 ///   attempt-<16 hex digits>/      one attempt log's AttemptLogDirectory
+///   trace-<16 hex digits>/        one attempt's resolved-effect trace segments
 ///   records-<16 hex digits>/      one finding preparation's replay records
 /// ```
 #[derive(Debug)]
@@ -428,6 +528,22 @@ impl AttemptLogNamespace {
         Ok(AttemptLogStore::Directory(DirectorySegmentStore::new(
             directory,
         )))
+    }
+
+    /// Creates a new, empty trace-segment sink bounded by `maximum_bytes`.
+    ///
+    /// The directory is removed when the last handle to it drops, so it
+    /// lives as long as any trace that reads from it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory cannot be created.
+    pub(crate) fn create_trace_sink(&self, maximum_bytes: u64) -> io::Result<BoundedSegmentSink> {
+        let directory = self.create_directory("trace")?;
+        Ok(BoundedSegmentSink::new(
+            DirectorySegmentStore::new(directory),
+            maximum_bytes,
+        ))
     }
 
     /// Creates a new, empty directory named `<family>-<ordinal>`.

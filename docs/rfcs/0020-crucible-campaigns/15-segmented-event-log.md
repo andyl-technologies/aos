@@ -396,6 +396,12 @@ coordinate and same-coordinate sequence, signal work first on ties, and a
 replay partitions a supplied trace back into those two owners while
 streaming.
 
+An executor attempt seals its trace segments into their own directory in the
+executor's attempt storage, beside the attempt log, and each distinct segment
+is charged against the deployment's `maximum_event_log_bytes`, the
+operational bound every retained run-length stream of the attempt observes.
+Exceeding it is an operational refusal, never modeled evidence.
+
 ## 15.11 Compatibility
 
 Version 2 measurement replay evidence remains readable for retained findings

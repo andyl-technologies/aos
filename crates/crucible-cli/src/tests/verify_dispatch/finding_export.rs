@@ -897,11 +897,26 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         foreign_native_replay.signature().property,
         native_replay.signature().property
     );
-    let foreign_original = publish_triage_replay(
+
+    // In isolation, a record whose native payload names another property is
+    // refused by the signature binding alone.
+    let foreign_evidence = FindingTriageReplayEvidence::new(
         original,
-        &signature,
+        signature.clone(),
+        crucible::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
         foreign_native_replay.to_compact_binary()?,
     )?;
+    assert!(matches!(
+        crate::cli_triage_debug::campaign_evidence::decode_campaign_triage_replay_record(
+            &foreign_evidence,
+            &repository.load_reproduction_artifact(original)?,
+            model_finding.clone(),
+        ),
+        Err(CliError::Artifact(message))
+            if message.contains("disagrees with its observed campaign signature")
+    ));
+
+    let foreign_original = repository.publish_finding_triage_replay_evidence(&foreign_evidence)?;
     let foreign_bundle = FindingCandidateBundle::new_with_exact_retention(
         FindingCandidateCore::new(
             observed.observation,

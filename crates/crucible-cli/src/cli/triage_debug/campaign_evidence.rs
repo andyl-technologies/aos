@@ -255,7 +255,7 @@ fn campaign_model_finding_reproduction(
 ///
 /// The record's role and evidence identity are already bound by
 /// authentication; this checks its reproduction and signature bindings.
-fn decode_campaign_triage_replay_record(
+pub(crate) fn decode_campaign_triage_replay_record(
     record: &crucible_campaign::FindingTriageReplayEvidence,
     reproduction: &crucible_campaign::ReproductionArtifact,
     finding: crucible::FindingReproductionArtifact,
