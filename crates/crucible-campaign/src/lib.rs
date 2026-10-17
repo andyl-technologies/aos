@@ -136,18 +136,14 @@ pub use executor_capability::{
 };
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptContinuationInput, AttemptStart,
-    BranchAcceptanceCount, BranchAcceptanceRange, BranchAcceptanceSummary, BranchBudget,
-    BranchEdgeVisitStatistics, BranchPath, BranchPathSegment, BranchPuctProjection, BranchRequest,
-    BranchRequestCause, BranchRequestIdentity, CandidateSource, ContinuationProjection,
-    ContinuationState, ExpansionCredit, ExpansionState, ExpansionStatistics, FeedbackWait,
-    FiniteCandidateSource, GUIDANCE_MICROS_PER_UNIT, GuidanceEvidence,
-    MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES, MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS,
-    MAX_BRANCH_FINDING_OCCURRENCE_VISITS, MAX_BRANCH_FINDING_PROJECTION_BYTES,
-    MAX_BRANCH_FINDING_ROOT_ENTRIES, MAX_BRANCH_NOVELTY_IDENTITIES,
-    MAX_BRANCH_NOVELTY_IDENTITY_VISITS, MAX_BRANCH_NOVELTY_OBSERVATIONS,
-    MAX_BRANCH_NOVELTY_PROJECTION_BYTES, MAX_BRANCH_NOVELTY_ROOT_ENTRIES,
-    MAX_BRANCH_OBJECTIVE_EVALUATIONS, MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES,
-    MAX_BRANCH_PRIOR_NORMALIZATION_VISITS, MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, ObservationCondition,
+    BRANCH_RARITY_SCALE, BranchAcceptanceCount, BranchAcceptanceRange, BranchAcceptanceSummary,
+    BranchBudget, BranchEdgeVisitStatistics, BranchPath, BranchPathSegment, BranchPuctProjection,
+    BranchRequest, BranchRequestCause, BranchRequestIdentity, CandidateSource,
+    ContinuationProjection, ContinuationState, ExpansionCredit, ExpansionState,
+    ExpansionStatistics, FeedbackWait, FiniteCandidateSource, GUIDANCE_MICROS_PER_UNIT,
+    GuidanceEvidence, MAX_BRANCH_FINDING_OCCURRENCE_VISITS, MAX_BRANCH_FINDING_PROJECTION_BYTES,
+    MAX_BRANCH_FINDING_ROOT_ENTRIES, MAX_BRANCH_PRIOR_NORMALIZATION_VISITS,
+    MAX_BRANCH_PROJECTION_EDGES, MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, ObservationCondition,
     PlannerBeamBarrier, PlannerBeamCandidate, PlannerBeamClosureSummary, PlannerBeamCohortState,
     PlannerCandidateBudget, PlannerCandidateGuidance, PlannerDisposition,
     PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
@@ -218,11 +214,11 @@ pub use objective::{
     SurvivorSelectionBundle, evaluate_objectives, rank_survivors,
 };
 pub use observation::{
-    AssertionViolationWitness, BoundedStopProof, CoverageProjection, MeasurementEvaluationPayload,
-    MeasurementSet, Observation, ObservationEventLogProof, ObservationOutcome,
-    ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
-    PolicyTimeoutKind, PropertyEvidence, PropertyVerdict, PropertyVerdictSet,
-    ResolvedEffectTraceRef, StopOutcome, choice_set_key,
+    AssertionViolationWitness, BoundedStopProof, COVERAGE_IDENTITY_FREQUENCY_SATURATION,
+    CoverageIdentityFrequency, CoverageProjection, MeasurementEvaluationPayload, MeasurementSet,
+    Observation, ObservationEventLogProof, ObservationOutcome, ObservationQuantumBoundary,
+    ObservationStopProof, ObservationStopSatisfaction, PolicyTimeoutKind, PropertyEvidence,
+    PropertyVerdict, PropertyVerdictSet, ResolvedEffectTraceRef, StopOutcome, choice_set_key,
 };
 pub use planner_service::{
     AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_BEAM_SURVIVORS_CAPABILITY,

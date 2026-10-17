@@ -253,6 +253,15 @@ pub(super) fn branch_point_opportunity_key(
     CampaignHash::derive("crucible.campaign-branch-point-opportunity.v1", &bytes)
 }
 
+/// Derives the coverage-root key of one identity's global frequency record.
+///
+/// The key lives directly in the coverage root beside the coverage-projection
+/// keys. Every identity of a canonical observation's coverage projection has
+/// one, so an absent key for a credited identity is an integrity failure.
+pub(super) fn coverage_identity_frequency_key(identity: CampaignHash) -> CampaignHash {
+    map_key_hash("coverage.identity-frequency", identity)
+}
+
 pub(super) fn branch_credit_index_key(branch_point: crate::BranchPointId) -> CampaignHash {
     CampaignHash::derive(
         "crucible.campaign-branch-credit-index.v1",

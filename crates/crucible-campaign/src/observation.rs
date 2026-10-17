@@ -1430,7 +1430,9 @@ pub(crate) fn scenario_failure_hash(reasons: &[String]) -> CampaignHash {
     )
 }
 
+mod coverage_frequency;
 mod record;
+pub use coverage_frequency::{COVERAGE_IDENTITY_FREQUENCY_SATURATION, CoverageIdentityFrequency};
 pub use record::{Observation, ObservationOutcome, ResolvedEffectTraceRef};
 pub(crate) use record::{
     RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA, RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA,

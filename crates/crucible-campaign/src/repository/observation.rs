@@ -20,6 +20,9 @@ struct ObservationProjection {
     observations: BTreeMap<CampaignHash, ContentId>,
     corpus: BTreeMap<CampaignHash, ContentId>,
     coverage: BTreeMap<CampaignHash, ContentId>,
+    // Distinct frequency records named by the coverage upserts; publication
+    // stores them before it advances the coverage root.
+    coverage_frequencies: BTreeSet<crate::CoverageIdentityFrequency>,
     accounting: BTreeMap<CampaignHash, ContentId>,
 }
 
@@ -350,6 +353,13 @@ impl CampaignRepository {
         roots.exploration = self.insert_upserts(roots.exploration, &projection.exploration)?;
         roots.observations = self.insert_upserts(roots.observations, &projection.observations)?;
         roots.corpus = self.insert_upserts(roots.corpus, &projection.corpus)?;
+        for frequency in &projection.coverage_frequencies {
+            if self.put_coverage_identity_frequency(*frequency)? != frequency.content_id()? {
+                return Err(integrity(
+                    "coverage-identity-frequency-publication-id-mismatch",
+                ));
+            }
+        }
         roots.coverage = self.insert_upserts(roots.coverage, &projection.coverage)?;
         roots.accounting = self.insert_upserts(roots.accounting, &projection.accounting)?;
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
@@ -371,6 +381,7 @@ impl CampaignRepository {
             projection.direct_selection.is_some(),
             projection.indexed_path.is_some(),
             projection.frontier_updates.len(),
+            projection.coverage.len(),
         )?;
         let checkpoint = self.prepare_local_successor_checkpoint(
             current_content,
@@ -536,6 +547,7 @@ impl CampaignRepository {
                 )]),
                 corpus: BTreeMap::new(),
                 coverage: BTreeMap::new(),
+                coverage_frequencies: BTreeSet::new(),
                 accounting: BTreeMap::new(),
             });
         }
@@ -714,10 +726,12 @@ impl CampaignRepository {
             );
         }
 
-        let coverage = BTreeMap::from([(
+        let mut coverage = BTreeMap::from([(
             map_key_content("coverage.projection", observation.coverage().content_id()),
             observation.coverage().content_id(),
         )]);
+        let coverage_frequencies =
+            self.coverage_frequency_upserts(roots.coverage, observation.coverage(), &mut coverage)?;
         let mut accounting = BTreeMap::from([
             (
                 map_key_content(
@@ -806,8 +820,63 @@ impl CampaignRepository {
             observations,
             corpus,
             coverage,
+            coverage_frequencies,
             accounting,
         })
+    }
+
+    /// Adds one canonical observation's coverage to the global
+    /// coverage-identity frequency index.
+    ///
+    /// Every identity of the coverage projection gains one count, except
+    /// identities already at the saturation point, which add no upsert.
+    /// Absent identities start at one. The returned records are the distinct
+    /// values the upserts name.
+    pub(super) fn coverage_frequency_upserts(
+        &self,
+        coverage_root: ContentId,
+        coverage: crate::CoverageProjectionId,
+        upserts: &mut BTreeMap<CampaignHash, ContentId>,
+    ) -> Result<BTreeSet<crate::CoverageIdentityFrequency>, CampaignRepositoryError> {
+        let projection = self.read_coverage_projection(coverage.content_id())?;
+        let first = crate::CoverageIdentityFrequency::new(1)?;
+
+        // Records are shared by value, so a campaign holds at most one per
+        // count and this map stays small however many identities it serves.
+        let mut decoded = BTreeMap::<ContentId, crate::CoverageIdentityFrequency>::new();
+        let mut encoded = BTreeMap::<crate::CoverageIdentityFrequency, ContentId>::new();
+        let mut records = BTreeSet::new();
+        for identity in projection.identities() {
+            let key = coverage_identity_frequency_key(*identity);
+            let next = match self.merkle.get(coverage_root, key)? {
+                None => first,
+                Some(content) => {
+                    let current = match decoded.get(&content) {
+                        Some(current) => *current,
+                        None => {
+                            let current = self.read_coverage_identity_frequency(content)?;
+                            decoded.insert(content, current);
+                            current
+                        }
+                    };
+                    if current.is_saturated() {
+                        continue;
+                    }
+                    current.incremented()
+                }
+            };
+            let content = match encoded.get(&next) {
+                Some(content) => *content,
+                None => {
+                    let content = next.content_id()?;
+                    encoded.insert(next, content);
+                    content
+                }
+            };
+            upserts.insert(key, content);
+            records.insert(next);
+        }
+        Ok(records)
     }
 
     fn expansion_credits(

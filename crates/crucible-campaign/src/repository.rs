@@ -91,7 +91,8 @@ const MERKLE_UPDATE_NODE_UPPER: usize = 64;
 // nested credit insertion, one outer observation-index update, and one immutable
 // credit record. A first direct integer selection adds one per-branch-point
 // insertion, one nested anchor-map update, and one outer observation-index
-// update.
+// update. Coverage-root upserts, which include one global frequency update per
+// unsaturated coverage identity, are charged separately by their count.
 const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 16;
 const OBSERVATION_PER_CHOICE_OWNER_UPSERTS: usize = 4;
 const OBSERVATION_DIRECT_SELECTION_UPSERTS: usize = 3;
@@ -801,6 +802,7 @@ fn observation_successor_growth(
     indexes_direct_selection: bool,
     indexes_path: bool,
     frontier_update_count: usize,
+    coverage_upsert_count: usize,
 ) -> Result<usize, CampaignRepositoryError> {
     let direct_selection_upserts = if indexes_direct_selection {
         OBSERVATION_DIRECT_SELECTION_UPSERTS
@@ -838,6 +840,13 @@ fn observation_successor_growth(
             } else {
                 nodes.checked_add(MERKLE_UPDATE_NODE_UPPER)
             }
+        })
+        .and_then(|nodes| {
+            // Each coverage upsert rewrites one trie path and may name one
+            // new shared frequency record.
+            coverage_upsert_count
+                .checked_mul(MERKLE_UPDATE_NODE_UPPER + 1)
+                .and_then(|coverage| nodes.checked_add(coverage))
         })
         .and_then(|nodes| nodes.checked_add(1))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;

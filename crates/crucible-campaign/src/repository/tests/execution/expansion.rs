@@ -1025,6 +1025,14 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         root_puct.edge_scores()[&first_edge].novelty_bonus_micros(),
         1
     );
+    // Rarity reads the saturating frequency index, which counts only the two
+    // canonical observations: the shared identity contributes Q / 2 from each
+    // of them and every path-unique identity contributes Q.
+    let rarity_scale = crate::BRANCH_RARITY_SCALE;
+    assert_eq!(
+        root_puct.edge_rarity_weights(),
+        &BTreeMap::from([(first_edge, 3 * rarity_scale)])
+    );
     assert!(root_puct.edge_scores().contains_key(&first_edge));
     let nested_puct = repository
         .project_branch_puct(evaluated.new_snapshot, nested_branch_point)
@@ -1038,6 +1046,10 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         &BTreeMap::from([(nested_edge, 1)])
     );
     assert!(nested_puct.edge_statistics()[&nested_edge].is_novel());
+    assert_eq!(
+        nested_puct.edge_rarity_weights(),
+        &BTreeMap::from([(nested_edge, rarity_scale / 2 + rarity_scale)])
+    );
     assert_eq!(
         nested_puct.edge_objective_reward_micros(),
         &BTreeMap::from([(nested_edge, -3_000_000)])
@@ -1284,23 +1296,6 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
 #[test]
 fn branch_guidance_work_budgets_accept_only_the_exact_boundary() {
     assert_eq!(
-        super::super::projection::charge_branch_edge_visit_credits(
-            crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS - 1,
-            1,
-        )
-        .expect("exact aggregate credit boundary"),
-        crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS
-    );
-    assert!(matches!(
-        super::super::projection::charge_branch_edge_visit_credits(
-            crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS,
-            1,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "branch-edge-visit-projection-count"
-        })
-    ));
-    assert_eq!(
         super::super::projection::charge_branch_prior_normalization_visits(
             crate::MAX_BRANCH_PRIOR_NORMALIZATION_VISITS - 1,
             1,
@@ -1315,40 +1310,6 @@ fn branch_guidance_work_budgets_accept_only_the_exact_boundary() {
         ),
         Err(CampaignRepositoryError::Integrity {
             reason: "planner-prior-normalization-visit-count"
-        })
-    ));
-    assert_eq!(
-        super::super::projection::charge_branch_novelty_work(
-            crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES - 1,
-            1,
-        )
-        .expect("exact novelty byte boundary"),
-        crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES
-    );
-    assert!(matches!(
-        super::super::projection::charge_branch_novelty_work(
-            crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES,
-            1,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "branch-novelty-projection-byte-limit"
-        })
-    ));
-    assert_eq!(
-        super::super::projection::charge_branch_novelty_identity_visits(
-            crate::MAX_BRANCH_NOVELTY_IDENTITY_VISITS - 1,
-            1,
-        )
-        .expect("exact novelty identity boundary"),
-        crate::MAX_BRANCH_NOVELTY_IDENTITY_VISITS
-    );
-    assert!(matches!(
-        super::super::projection::charge_branch_novelty_identity_visits(
-            crate::MAX_BRANCH_NOVELTY_IDENTITY_VISITS,
-            1,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "branch-novelty-identity-visit-limit"
         })
     ));
     assert_eq!(
@@ -1386,37 +1347,25 @@ fn branch_guidance_work_budgets_accept_only_the_exact_boundary() {
         })
     ));
     assert_eq!(
-        super::super::projection::charge_branch_objective_evaluations(
-            crate::MAX_BRANCH_OBJECTIVE_EVALUATIONS - 1,
-        )
-        .expect("exact objective evaluation boundary"),
-        crate::MAX_BRANCH_OBJECTIVE_EVALUATIONS
+        super::super::projection::branch_rarity_contribution(1),
+        65_536
     );
-    assert!(matches!(
-        super::super::projection::charge_branch_objective_evaluations(
-            crate::MAX_BRANCH_OBJECTIVE_EVALUATIONS,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "branch-objective-evaluation-count"
-        })
-    ));
     assert_eq!(
-        super::super::projection::charge_branch_objective_work(
-            crate::MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES - 1,
-            1,
-        )
-        .expect("exact objective byte boundary"),
-        crate::MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES
-    );
-    assert!(matches!(
-        super::super::projection::charge_branch_objective_work(
-            crate::MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES,
-            1,
+        super::super::projection::branch_rarity_contribution(
+            crate::COVERAGE_IDENTITY_FREQUENCY_SATURATION - 1
         ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "branch-objective-projection-byte-limit"
-        })
-    ));
+        2
+    );
+    assert_eq!(
+        super::super::projection::branch_rarity_contribution(
+            crate::COVERAGE_IDENTITY_FREQUENCY_SATURATION
+        ),
+        1
+    );
+    assert_eq!(
+        super::super::projection::branch_rarity_contribution(crate::BRANCH_RARITY_SCALE + 1),
+        1
+    );
     assert_eq!(
         super::super::projection::charge_planner_guidance_domain_work(
             crate::MAX_PLANNER_GUIDANCE_DOMAIN_BYTES - 1,

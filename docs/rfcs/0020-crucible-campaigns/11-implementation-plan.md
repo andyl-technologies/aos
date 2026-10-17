@@ -1746,6 +1746,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   at admission under corpus schema 2, keep a fixed resident handle per entry,
   read payloads back only for the chosen parent, and sample guidance from
   retained fingerprints (CMEAS-31).
+- [x] **T-CAM-4.22** Maintain a saturating global coverage-identity frequency
+  index in the coverage root at each canonical observation, and fold branch
+  visits, priors, coverage novelty and rarity, finding occurrences, and
+  objective rewards in one streamed pass over each branch point's credit
+  index with `max(1, Q / f)` rarity, so branch guidance never scans the
+  observation root or buffers credited observations (CCOMP-37).
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,

@@ -93,6 +93,8 @@ pub enum CampaignRecordKind {
     PropertyVerdictSet,
     /// Grow-only coverage identities and derivation evidence.
     CoverageProjection,
+    /// Saturating global canonical-observation count of one coverage identity.
+    CoverageIdentityFrequency,
     /// Canonical modeled result of one admitted attempt.
     Observation,
     /// Exact policy-bound objective vector and admissibility evidence.
@@ -135,7 +137,7 @@ pub enum CampaignRecordKind {
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 48] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -183,6 +185,7 @@ impl CampaignRecordKind {
         Self::PlannerSearchCandidate,
         Self::FindingTriageReplayEvidence,
         Self::FindingTriageReplayEvidenceChunk,
+        Self::CoverageIdentityFrequency,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -217,6 +220,7 @@ impl CampaignRecordKind {
             Self::MeasurementSet => "crucible.campaign.measurement-set",
             Self::PropertyVerdictSet => "crucible.campaign.property-verdict-set",
             Self::CoverageProjection => "crucible.campaign.coverage-projection",
+            Self::CoverageIdentityFrequency => "crucible.campaign.coverage-identity-frequency",
             Self::Observation => "crucible.campaign.observation",
             Self::ObjectiveEvaluation => "crucible.campaign.objective-evaluation",
             Self::RankingExplanation => "crucible.campaign.ranking-explanation",
@@ -300,6 +304,7 @@ impl CampaignRecordKind {
             | Self::PlannerBeamCandidate
             | Self::PlannerSearchCandidate
             | Self::CoverageProjection
+            | Self::CoverageIdentityFrequency
             | Self::RankingExplanation => ObjectKind::Projection,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => ObjectKind::Projection,
             Self::MeasurementSet
@@ -383,6 +388,7 @@ impl Canonical for CampaignRecordKind {
             Self::PlannerSearchCandidate => 44,
             Self::FindingTriageReplayEvidence => 45,
             Self::FindingTriageReplayEvidenceChunk => 46,
+            Self::CoverageIdentityFrequency => 47,
         });
     }
 
@@ -435,6 +441,7 @@ impl Canonical for CampaignRecordKind {
             44 => Ok(Self::PlannerSearchCandidate),
             45 => Ok(Self::FindingTriageReplayEvidence),
             46 => Ok(Self::FindingTriageReplayEvidenceChunk),
+            47 => Ok(Self::CoverageIdentityFrequency),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,

@@ -11,13 +11,77 @@ fn observation_ordinal_key_preserves_the_persisted_two_layer_identity() {
 }
 
 #[test]
+fn coverage_frequency_upserts_count_new_identities_and_skip_saturated_ones() {
+    let (repository, _, _) = fixture();
+    let fresh = CampaignHash::derive("test.coverage-frequency", b"fresh");
+    let repeated = CampaignHash::derive("test.coverage-frequency", b"repeated");
+    let saturated = CampaignHash::derive("test.coverage-frequency", b"saturated");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(
+                BTreeSet::from([fresh, repeated, saturated]),
+                BTreeSet::new(),
+            )
+            .expect("coverage"),
+        )
+        .expect("publish coverage");
+    let record = |count| {
+        let value = crate::CoverageIdentityFrequency::new(count).expect("frequency");
+        repository
+            .put_coverage_identity_frequency(value)
+            .expect("publish frequency")
+    };
+    let mut root = repository.merkle.empty().expect("empty root").content_id();
+    root = repository
+        .merkle
+        .insert(root, coverage_identity_frequency_key(repeated), record(3))
+        .expect("index repeated identity")
+        .content_id();
+    root = repository
+        .merkle
+        .insert(
+            root,
+            coverage_identity_frequency_key(saturated),
+            record(crate::COVERAGE_IDENTITY_FREQUENCY_SATURATION),
+        )
+        .expect("index saturated identity")
+        .content_id();
+
+    let mut upserts = BTreeMap::new();
+    let records = repository
+        .coverage_frequency_upserts(root, coverage, &mut upserts)
+        .expect("frequency upserts");
+
+    let expected = |count| {
+        crate::CoverageIdentityFrequency::new(count)
+            .expect("frequency")
+            .content_id()
+            .expect("frequency id")
+    };
+    assert_eq!(
+        upserts,
+        BTreeMap::from([
+            (coverage_identity_frequency_key(fresh), expected(1)),
+            (coverage_identity_frequency_key(repeated), expected(4)),
+        ])
+    );
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.count())
+            .collect::<Vec<_>>(),
+        vec![1, 4]
+    );
+}
+
+#[test]
 fn observation_growth_bound_rebases_and_remains_restart_readable() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, observation) =
         admitted_observation_fixture(&repository, &lineage, &policy, "observation-growth");
     let discovered = usize::try_from(observation.discovered_choices().entry_count())
         .expect("fixture discovered-choice count");
-    let growth = observation_successor_growth(discovered, 0, false, true, 0)
+    let growth = observation_successor_growth(discovered, 0, false, true, 0, 1)
         .expect("fixture observation growth");
     repository
         .validated_heads

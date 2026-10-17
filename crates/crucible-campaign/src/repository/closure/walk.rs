@@ -659,6 +659,9 @@ impl CampaignRepository {
             crate::CampaignRecordKind::CoverageProjection => {
                 self.read_coverage_projection(id)?;
             }
+            crate::CampaignRecordKind::CoverageIdentityFrequency => {
+                self.read_coverage_identity_frequency(id)?;
+            }
             crate::CampaignRecordKind::Observation => {
                 let observation = self.decode_observation(id)?;
                 self.validate_observation_references_cached(&observation, choice_cache)?;

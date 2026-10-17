@@ -72,6 +72,30 @@ impl CampaignRepository {
         Ok(value)
     }
 
+    pub(in crate::repository) fn read_coverage_identity_frequency(
+        &self,
+        id: ContentId,
+    ) -> Result<crate::CoverageIdentityFrequency, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::CoverageIdentityFrequency)?;
+        let value = crate::CoverageIdentityFrequency::from_canonical_bytes(envelope.body())?;
+        if value.content_id()? != id {
+            return Err(integrity("coverage-identity-frequency-envelope-shape"));
+        }
+        Ok(value)
+    }
+
+    pub(in crate::repository) fn put_coverage_identity_frequency(
+        &self,
+        value: crate::CoverageIdentityFrequency,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(crate::ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::CoverageIdentityFrequency,
+            BTreeSet::new(),
+            value.canonical_bytes(),
+        )?)
+    }
+
     pub(in crate::repository) fn read_coverage_projection(
         &self,
         id: ContentId,

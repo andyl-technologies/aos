@@ -65,6 +65,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             CampaignRecordKind::MeasurementSet
             | CampaignRecordKind::PropertyVerdictSet
             | CampaignRecordKind::CoverageProjection
+            | CampaignRecordKind::CoverageIdentityFrequency
             | CampaignRecordKind::Observation => "crucible-campaign::observation",
             CampaignRecordKind::ObjectiveEvaluation
             | CampaignRecordKind::RankingExplanation

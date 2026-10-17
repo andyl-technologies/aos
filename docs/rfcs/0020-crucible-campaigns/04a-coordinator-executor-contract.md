@@ -1398,9 +1398,10 @@ weight or implicit weight one, and fairness reserved. Guidance schema v2 always
 includes `objective_reward_micros`; any other schema is rejected rather than
 assigned an implicit neutral reward.
 
-The owner computes one batch per page. Aggregate credited observations and
-credit/path bodies retain the RFC 03 65,536-record/128-MiB limits; the canonical
-observation and finding roots are each scanned at most once; unique decoded
+The owner computes one batch per page. Each served branch point's credit
+index is streamed once into per-edge accumulators, coverage frequencies come
+from the RFC 03 coverage-identity frequency index, and the finding root is
+scanned at most once; the observation root is never scanned. Unique decoded
 choice-domain bodies are capped at 128 MiB; and distinct prospective raw
 weights charge at most 1,000,000 completed-edge normalization visits. Guidance
 schema v2 ranks higher exact total
