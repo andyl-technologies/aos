@@ -173,6 +173,60 @@ class ContinuityFences(unittest.TestCase):
         finally:
             child.communicate(timeout=5)
 
+    def test_packaged_launcher_pins_the_exact_native_exec_arguments(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            launcher = Path(temporary) / 'publisher'
+            native = launcher.with_name('.publisher-unwrapped')
+            native.symlink_to(sys.executable)
+            launcher.write_text(f'#!{sys.executable}\nexec "{native}" "$@"\n')
+            launch = [str(launcher), '-c', 'import sys; sys.stdin.read()']
+            arguments = sparse._publisher_process_arguments(launch)
+            self.assertEqual(arguments, [str(native), *launch[1:]])
+
+            # This is the actual kernel process after the installed wrapper's
+            # final exec. The recorded launch command remains the wrapper.
+            child = subprocess.Popen(arguments, stdin=subprocess.PIPE)
+            try:
+                pinned = sparse._pin(child.pid, arguments, os.path.realpath(native), os.getuid())
+                self.assertEqual(pinned['argvSha256'], sparse._commitment(arguments))
+                with self.assertRaises(ValueError):
+                    sparse._pin(child.pid, launch, os.path.realpath(launcher), os.getuid())
+            finally:
+                child.communicate(timeout=5)
+
+    def test_launcher_refuses_unknown_exec_targets_and_non_native_payloads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            launcher = Path(temporary) / 'publisher'
+            native = launcher.with_name('.publisher-unwrapped')
+            native.write_text('controlled non-native payload')
+            launcher.write_text(f'#!{sys.executable}\nexec "{native}" "$@"\n')
+            with self.assertRaises(ValueError):
+                sparse._publisher_process_arguments([str(launcher)])
+            launcher.write_text(f'#!{sys.executable}\nexec "{sys.executable}" "$@"\n')
+            with self.assertRaises(ValueError):
+                sparse._publisher_process_arguments([str(launcher)])
+
+    def test_known_interpreter_startup_requires_the_exact_arguments_and_parent(self):
+        directory = Path('/proc/self')
+        supervisor = {
+            'supervisorPid': os.getpid(),
+            'supervisorUid': os.getuid(),
+            'supervisorExecutable': os.readlink(directory / 'exe'),
+            'supervisorArguments': [x.decode() for x in
+                (directory / 'cmdline').read_bytes().split(b'\x00')[:-1]],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            launcher = Path(temporary) / 'publisher'
+            launcher.write_text(f'#!{sys.executable}\nimport sys; sys.stdin.read()\n')
+            arguments = [str(launcher), 'controlled-original']
+            child = subprocess.Popen([sys.executable, *arguments], stdin=subprocess.PIPE)
+            try:
+                self.assertTrue(sparse._publisher_starting(child.pid, arguments, supervisor))
+                self.assertFalse(sparse._publisher_starting(
+                    child.pid, [str(launcher), 'changed-original'], supervisor))
+            finally:
+                child.communicate(timeout=5)
+
     def test_child_scan_rejects_malformed_stats_and_ignores_exited_children(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

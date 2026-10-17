@@ -92,6 +92,42 @@ def _same_pin(actual, expected):
         raise ValueError("publisher process lifetime or arguments changed")
 
 
+def _publisher_process_arguments(arguments):
+    """Resolve the installed launcher's final exec without bypassing its environment."""
+    launcher = Path(arguments[0]).resolve(strict=True)
+    with launcher.open('rb') as source:
+        body = source.read(65_537)
+    if body.startswith(b'\x7fELF'):
+        return arguments
+    native = launcher.with_name('.' + launcher.name + '-unwrapped')
+    if (len(body) > 65_536 or not body.startswith(b'#!')
+            or body.decode().splitlines()[-1] != f'exec "{native}" "$@"'):
+        raise ValueError('publisher launcher has an unknown exec target')
+    with native.open('rb') as source:
+        if source.read(4) != b'\x7fELF':
+            raise ValueError('publisher launcher does not select a native executable')
+    return [str(native), *arguments[1:]]
+
+
+def _publisher_starting(pid, arguments, process):
+    """Recognize only the pinned supervisor's fork and the known script interpreter."""
+    candidates = [(process['supervisorArguments'], process['supervisorExecutable'])]
+    with open(arguments[0], 'rb') as source:
+        header = source.readline(4097)
+    if header.startswith(b'#!'):
+        interpreter = header[2:].decode().strip().split()
+        if len(interpreter) != 1:
+            raise ValueError('publisher launcher interpreter is ambiguous')
+        candidates.append(([interpreter[0], *arguments], os.path.realpath(interpreter[0])))
+    for startup_arguments, executable in candidates:
+        try:
+            _pin(pid, startup_arguments, executable, process['supervisorUid'])
+        except ValueError:
+            continue
+        return pid in _child_pids(process['supervisorPid'])
+    return False
+
+
 def _child_pids(parent_pid, proc_root=Path('/proc')):
     # Minimal guest kernels may omit PROC_CHILDREN. Read the actual parent
     # relationship instead; callers still pin the selected child's identity.
@@ -153,6 +189,7 @@ def _decode_environment(body):
 
 def _retain_environment(root, publisher, arguments):
     """Keep the actual pinned child's environment only in private guest custody."""
+    arguments = _publisher_process_arguments(arguments)
     _same_pin(_pin(publisher['pid'], arguments, publisher['executable'],
         publisher['uid'], publisher['startTicks']), publisher)
     with open(Path('/proc', str(publisher['pid']), 'environ'), 'rb') as environment:
@@ -177,6 +214,7 @@ def _retain_environment(root, publisher, arguments):
 
 
 def _original_environment(root, arguments, uid):
+    arguments = _publisher_process_arguments(arguments)
     receipt_path = root / 'sparse-child.environment.json'
     _private_path(receipt_path)
     receipt_body = receipt_path.read_bytes()
@@ -418,7 +456,18 @@ def observe_direct_sparse_publisher(client, tools, process, signed, corpus):
                     raise SystemExit(0)
                 if len(children) != 1:
                     raise ValueError('recorded publisher supervisor has no unique CLI child')
-                publisher = _pin(int(children[0]), inputs['arguments'], os.path.realpath(inputs['arguments'][0]), os.getuid())
+                arguments = _publisher_process_arguments(inputs['arguments'])
+                try:
+                    publisher = _pin(int(children[0]), arguments, os.path.realpath(arguments[0]), os.getuid())
+                except ValueError:
+                    if _publisher_starting(int(children[0]), inputs['arguments'], process):
+                        _pin(process['supervisorPid'], process['supervisorArguments'],
+                            process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
+                        print(json.dumps({'version': 1, 'state': 'settling', 'sparse': False}))
+                        raise SystemExit(0)
+                    # exec may finish between the separate /proc reads. A
+                    # second exact native pin still rejects every other image.
+                    publisher = _pin(int(children[0]), arguments, os.path.realpath(arguments[0]), os.getuid())
                 _pin(process['supervisorPid'], process['supervisorArguments'],
                     process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
                 journal = Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite'
@@ -457,12 +506,13 @@ def interrupt_direct_sparse_publisher(client, tools, process, signed, corpus, ob
         if (root / 'result.json').exists():
             raise ValueError('publisher reached terminal result before sparse interruption')
         inputs = _inputs(root, selected['signed'], process)
+        arguments = _publisher_process_arguments(inputs['arguments'])
         _pin(process['supervisorPid'], process['supervisorArguments'], process['supervisorExecutable'],
             process['supervisorUid'], process['supervisorStartTicks'])
         publisher = observed['publisher']
         descriptor = os.pidfd_open(publisher['pid'], 0)
         try:
-            current = _pin(publisher['pid'], inputs['arguments'], os.path.realpath(inputs['arguments'][0]),
+            current = _pin(publisher['pid'], arguments, os.path.realpath(arguments[0]),
                 publisher['uid'], publisher['startTicks'])
             _same_pin(current, publisher)
             saved = root / 'sparse-before.sqlite'
