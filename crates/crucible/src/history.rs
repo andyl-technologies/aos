@@ -295,6 +295,54 @@ impl<T: Clone> History<T> {
         *self = Self::new();
     }
 
+    /// Returns the first `len` elements as a history that shares this one's
+    /// sealed chunks, or `None` when `len` exceeds the length.
+    ///
+    /// Only the chunk pointer table and at most one partial chunk are copied,
+    /// so a prefix of a long history costs memory proportional to its chunk
+    /// count rather than to its elements.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use crucible::History;
+    ///
+    /// let mut log = History::new();
+    /// log.extend(0..200);
+    /// let prefix = log.prefix(130).expect("prefix within the history");
+    ///
+    /// assert_eq!(prefix.len(), 130);
+    /// assert!(log.starts_with(&prefix));
+    /// assert!(log.prefix(201).is_none());
+    /// ```
+    #[must_use]
+    pub fn prefix(&self, len: usize) -> Option<Self> {
+        if len > self.len() {
+            return None;
+        }
+        if len == self.len() {
+            return Some(self.clone());
+        }
+
+        // Every sealed chunk is full, so the prefix keeps the first `full`
+        // chunks whole and copies `partial` elements of the next one.
+        let full = len / CHUNK_LEN;
+        let partial = len % CHUNK_LEN;
+        let sealed = if full == self.sealed.len() {
+            Arc::clone(&self.sealed)
+        } else {
+            Arc::new(self.sealed.get(..full)?.to_vec())
+        };
+        let next: &[T] = match self.sealed.get(full) {
+            Some(chunk) => chunk,
+            None => &self.tail,
+        };
+        Some(Self {
+            sealed,
+            tail: Arc::new(next.get(..partial)?.to_vec()),
+        })
+    }
+
     /// Copies the elements into an owned vector.
     #[must_use]
     pub fn to_vec(&self) -> Vec<T> {
@@ -529,6 +577,39 @@ mod tests {
 
     fn reference(len: usize) -> Vec<usize> {
         (0..len).collect()
+    }
+
+    #[test]
+    fn prefixes_share_sealed_chunks_and_grow_independently() {
+        let source_len = 3 * CHUNK_LEN + 7;
+        let mut source = History::new();
+        source.extend(reference(source_len));
+
+        for len in [
+            0,
+            1,
+            CHUNK_LEN - 1,
+            CHUNK_LEN,
+            CHUNK_LEN + 1,
+            3 * CHUNK_LEN,
+            source_len - 1,
+            source_len,
+        ] {
+            let Some(mut prefix) = source.prefix(len) else {
+                panic!("prefix {len} is within the source");
+            };
+
+            assert_eq!(prefix.to_vec(), reference(len));
+            assert!(source.starts_with(&prefix));
+            for chunk in 0..len / CHUNK_LEN {
+                assert!(Arc::ptr_eq(&prefix.sealed[chunk], &source.sealed[chunk]));
+            }
+
+            prefix.extend([usize::MAX; CHUNK_LEN + 1]);
+            assert_eq!(prefix.len(), len + CHUNK_LEN + 1);
+            assert_eq!(source.to_vec(), reference(source_len));
+        }
+        assert!(source.prefix(source_len + 1).is_none());
     }
 
     #[test]

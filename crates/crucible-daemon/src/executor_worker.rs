@@ -121,6 +121,17 @@ impl ResolvedAttemptOrigin {
     pub const fn source_stop_bytes(&self) -> u64 {
         self.source_stop_bytes
     }
+
+    /// Binds an origin without repository resolution, for decode tests.
+    #[cfg(test)]
+    pub(crate) const fn from_test_parts(attempt: Attempt, reached: ConfigurationArtifact) -> Self {
+        Self {
+            attempt,
+            reached,
+            source_stop: None,
+            source_stop_bytes: 0,
+        }
+    }
 }
 
 /// Immutable repository-resolved input for one local guest execution.

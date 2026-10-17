@@ -196,6 +196,37 @@ fn delivery_at(ticks: u64) -> Decision {
 }
 
 #[test]
+fn schedule_prefixes_share_storage_and_match_rebuilt_schedules() {
+    let def = ScenarioDef::from_canonical_material("schedule-prefix-sharing", "fixture");
+    let schedule = Schedule::from_decisions((0..200).map(delivery_at));
+
+    for len in [0, 1, 63, 64, 65, 130, 199, 200] {
+        let prefix = schedule.prefix(len).expect("prefix within the schedule");
+        let rebuilt =
+            Schedule::from_decisions(schedule.decision_history().iter().take(len).cloned());
+
+        assert_eq!(prefix, rebuilt);
+        assert_eq!(prefix.decision_chain(), rebuilt.decision_chain());
+        assert_eq!(
+            prefix.app_random_decisions(),
+            rebuilt.app_random_decisions()
+        );
+        assert_eq!(
+            Configuration {
+                def: def.clone(),
+                schedule: prefix,
+            }
+            .id(),
+            Configuration {
+                def: def.clone(),
+                schedule: rebuilt,
+            }
+            .id()
+        );
+    }
+}
+
+#[test]
 fn admission_digest_binds_the_exact_schedule_without_rehashing_it() {
     let def = ScenarioDef::from_canonical_material("admission-digest", "fixture");
     let first = Schedule::from_decisions([delivery_at(1), delivery_at(2)]);

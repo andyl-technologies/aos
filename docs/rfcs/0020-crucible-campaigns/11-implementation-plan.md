@@ -1741,6 +1741,11 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   observation, and the resume source observation in the result, port the CLI
   run, replay, resume, search, and fuzz consumers to sinks, and make the
   funded choice budget the run's only choice bound (CMEAS-29).
+- [x] **T-CAM-4.18** Decode a selected continuation's intermediate origins one
+  at a time against the terminal origin, retain each matching origin as a
+  prefix length rebuilt over shared decision storage, release its transient
+  decode charge, and port thin replay, continuation validation, and finding
+  replay to rebuild origins on demand (CCOMP-34).
 - [x] **T-CAM-4.20** Retain only the scheduler's search frontiers at its
   current boundary, count the retired ones so per-quantum discovery names its
   frontiers by sequence, compare a frontier's time and parent before

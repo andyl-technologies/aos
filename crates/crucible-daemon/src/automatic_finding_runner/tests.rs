@@ -488,6 +488,10 @@ fn replay_continuation_controls(
             "private replay has no descendant continuation basis",
         ))
     })?;
+    let origins = origins
+        .iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))?;
     Ok(origins
         .iter()
         .filter_map(|origin| origin.attempt().continuation_input())

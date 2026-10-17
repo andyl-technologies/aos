@@ -743,21 +743,48 @@ impl Schedule {
 
     /// Returns a schedule containing the first `len` decisions.
     ///
+    /// The prefix shares this schedule's sealed decision storage (see
+    /// [`crate::History::prefix`]), so a prefix of a long schedule copies at
+    /// most one partial chunk of decisions.
+    ///
     /// # Errors
     ///
     /// Returns [`ScheduleError::PrefixTooLong`] when `len` is greater than the
     /// number of decisions in this schedule.
     pub fn prefix(&self, len: usize) -> Result<Self, ScheduleError> {
-        if len > self.decisions.len() {
-            return Err(ScheduleError::PrefixTooLong {
+        let decisions = self
+            .decisions
+            .prefix(len)
+            .ok_or(ScheduleError::PrefixTooLong {
                 requested: len,
                 available: self.decisions.len(),
-            });
-        }
+            })?;
 
-        Ok(Self::from_decisions(
-            self.decisions.iter().take(len).cloned(),
-        ))
+        Ok(Self::over_decisions(decisions))
+    }
+
+    /// Builds a schedule over existing decision storage.
+    ///
+    /// The values derived on append are recomputed in one pass exactly as
+    /// [`Schedule::push`] maintains them, without copying the decisions.
+    fn over_decisions(decisions: crate::History<Decision>) -> Self {
+        let mut schedule = Self::empty();
+        let mut previous = None;
+        for decision in decisions.iter() {
+            if crate::decision::is_app_random_decision_after(previous, decision) {
+                schedule.app_random_decisions = schedule.app_random_decisions.saturating_add(1);
+            }
+            schedule.decision_chain =
+                canonical::decision_chain_step(&schedule.decision_chain, decision);
+            if let Decision::Selection(selection) = decision {
+                schedule
+                    .selected_opportunities
+                    .insert(selection.opportunity());
+            }
+            previous = Some(decision);
+        }
+        schedule.decisions = decisions;
+        schedule
     }
 
     /// Returns the suffix after the first `len` decisions.

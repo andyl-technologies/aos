@@ -1709,6 +1709,7 @@ fn private_fresh_replay_can_preserve_descendant_continuation_controls() {
     let controls = validated_attempt_continuations(&replay)
         .unwrap_or_else(|()| panic!("private replay continuation controls should validate"));
     let actual = controls
+        .controls()
         .iter()
         .map(|control| {
             (

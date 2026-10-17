@@ -1373,9 +1373,10 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
         F: QemuFreshAttemptLifecycleFactory,
         D: crate::qemu_campaign_driver::QemuFindingReplayDriver,
     {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuations = validated_continuations.controls();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -1944,6 +1945,9 @@ pub enum QemuFreshStartReplayError {
     /// Origin replay stopped at a configuration different from the claimed boundary.
     #[error("selected continuation origin replay reached a different configuration")]
     OriginReachedMismatch,
+    /// An earlier origin could not be rebuilt from the decoded terminal origin.
+    #[error("selected continuation origin materialization failed: {0}")]
+    OriginMaterialization(#[source] crate::crucible_execution::CrucibleOriginMaterializationError),
     /// Replay exhausted the attempt's admitted execution-quanta ceiling.
     #[error("fresh start replay exhausted the admitted execution-quanta ceiling")]
     QuantumLimit,

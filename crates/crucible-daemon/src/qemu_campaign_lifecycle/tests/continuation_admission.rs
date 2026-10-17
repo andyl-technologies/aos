@@ -114,10 +114,14 @@ fn continuation_accepts_an_authenticated_observation_source_frontier() {
     );
 
     let controls = validated_attempt_continuations(&input)
-        .unwrap_or_else(|()| panic!("authenticated observation source should validate"));
+        .unwrap_or_else(|()| panic!("authenticated observation source should validate"))
+        .controls()
+        .into_iter()
+        .map(|control| control.input().clone())
+        .collect::<Vec<_>>();
 
     assert_eq!(controls.len(), 1);
-    assert_eq!(controls[0].input().source_frontier_ticks(), 1);
+    assert_eq!(controls[0].source_frontier_ticks(), 1);
 }
 
 #[test]

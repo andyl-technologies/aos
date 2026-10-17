@@ -50,9 +50,7 @@ impl SelectedOriginDecodeBudget {
         budget.charge(origins.peak_intermediate_encoded_bytes())?;
         let origin_slots = u64::try_from(origins.len())
             .ok()
-            .and_then(|count| {
-                count.checked_mul(std::mem::size_of::<CrucibleAttemptOrigin>() as u64)
-            })
+            .and_then(|count| count.checked_mul(std::mem::size_of::<OriginLink>() as u64))
             .ok_or_else(selected_origin_memory_error)?;
         budget.charge(origin_slots)?;
         Ok(budget)
@@ -120,6 +118,20 @@ impl SelectedOriginDecodeBudget {
             .ok_or_else(selected_origin_memory_error)?;
         usize::try_from(remaining / SELECTION_RESOLUTION_EXPANSION)
             .map_err(|_| selected_origin_memory_error())
+    }
+
+    /// Returns the current charge, to release a transient decode back to it.
+    pub(super) const fn mark(&self) -> u64 {
+        self.retained
+    }
+
+    /// Releases every charge made since `mark`.
+    ///
+    /// Decoding an intermediate origin is charged in full, so the peak check
+    /// covers it; once the origin is retained only as a terminal prefix, its
+    /// decoded configuration is dropped and its charge is released.
+    pub(super) fn release_to(&mut self, mark: u64) {
+        self.retained = self.retained.min(mark);
     }
 
     pub(super) fn charge_branch_start(
@@ -337,6 +349,133 @@ mod tests {
         ));
         assert_eq!(retained_after_one, one_plan_bytes);
         assert_eq!(budget.retained, retained_after_one);
+        Ok(())
+    }
+
+    #[test]
+    fn a_deep_prefix_chain_decodes_within_its_peak_budget() -> Result<(), Box<dyn std::error::Error>>
+    {
+        const DEPTH: u64 = 64;
+        const STEP: u64 = 64;
+
+        let scenario = crucible::happy_path_scenario()?.scenario;
+        let scenario_artifact = crate::encode_crucible_scenario_artifact(&scenario)?;
+        let store = CampaignExecutorStore::new(std::sync::Arc::new(
+            crucible_campaign::CampaignRepository::new(
+                std::sync::Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
+                    "origin-decode",
+                    1024 * 1024,
+                )),
+                std::sync::Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+            ),
+        ));
+        let path = BranchPath::new(Vec::new())?.id()?;
+        let configuration = |index: u64| Configuration {
+            def: scenario.scenario_def(),
+            schedule: Schedule::from_decisions((0..STEP * (index + 1)).map(|tick| {
+                Decision::DeliveryOrder(DeliveryOrderDecision {
+                    at: VirtualTime { ticks: tick },
+                    order: Vec::new(),
+                })
+            })),
+        };
+        let origin = |index: u64| -> Result<ResolvedAttemptOrigin, Box<dyn std::error::Error>> {
+            let reached = crate::encode_crucible_configuration_artifact(
+                &scenario_artifact,
+                &configuration(index).schedule,
+            )?;
+            let attempt = Attempt::new(
+                AttemptStart::Discover {
+                    configuration: reached.id()?,
+                },
+                path,
+                crucible_campaign::StopCondition::ExecutionQuanta(index + 1),
+            )?;
+            Ok(ResolvedAttemptOrigin::from_test_parts(attempt, reached))
+        };
+        let charge = |index: u64| -> Result<u64, String> {
+            decoded_configuration_logical_bytes(&configuration(index))
+                .and_then(|bytes| bytes.checked_mul(CONFIGURATION_INSTANCES))
+                .ok_or_else(|| String::from("configuration charge overflowed"))
+        };
+
+        let terminal = origin(DEPTH)?;
+        let intermediates = (0..DEPTH).map(origin).collect::<Result<Vec<_>, _>>()?;
+        let terminal_charge = charge(DEPTH)?;
+        let preflight = u64::try_from(terminal.reached().payload().len())?
+            * CONFIGURATION_DECODE_PREFLIGHT_EXPANSION;
+        // Room for the terminal, the decode preflight, and one transient
+        // intermediate, which the chain's summed decodes exceed.
+        let maximum = terminal_charge * 2 + preflight;
+        let summed = (0..DEPTH).map(charge).sum::<Result<u64, _>>()?;
+        assert!(terminal_charge + summed > maximum);
+        let mut budget = SelectedOriginDecodeBudget {
+            maximum,
+            retained: 0,
+        };
+
+        let decoded = decode_origin_ancestry(
+            &store,
+            &scenario,
+            &scenario_artifact,
+            &terminal,
+            &mut budget,
+            |visit| intermediates.iter().try_for_each(|origin| visit(origin)),
+        )?;
+        let reached = decoded
+            .iter()
+            .map(|origin| origin.map(|origin| origin.reached().clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(reached, (0..=DEPTH).map(configuration).collect::<Vec<_>>());
+        assert_eq!(budget.retained, terminal_charge);
+        Ok(())
+    }
+
+    #[test]
+    fn released_intermediate_decodes_charge_only_their_peak() -> Result<(), String> {
+        let fixture = crucible::happy_path_scenario().map_err(|error| error.to_string())?;
+        let configuration = Configuration {
+            def: fixture.scenario.scenario_def(),
+            schedule: Schedule::from_decisions([Decision::DeliveryOrder(DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            })]),
+        };
+        let one_plan_bytes = decoded_configuration_logical_bytes(&configuration)
+            .ok_or_else(|| String::from("logical configuration byte count overflowed"))?
+            .checked_mul(CONFIGURATION_INSTANCES)
+            .ok_or_else(|| String::from("replay-plan multiplicity overflowed"))?;
+        // Room for the resident terminal and one transient intermediate.
+        let mut budget = SelectedOriginDecodeBudget {
+            maximum: one_plan_bytes
+                .checked_mul(2)
+                .ok_or_else(|| String::from("test budget overflowed"))?,
+            retained: 0,
+        };
+        budget
+            .charge_decoded_configuration(&configuration, 0)
+            .map_err(|error| error.to_string())?;
+
+        for _ in 0..64 {
+            let before = budget.mark();
+            budget
+                .charge_decoded_configuration(&configuration, 0)
+                .map_err(|error| error.to_string())?;
+            budget.release_to(before);
+        }
+        budget
+            .charge_decoded_configuration(&configuration, 0)
+            .map_err(|error| error.to_string())?;
+        let unreleased = budget.charge_decoded_configuration(&configuration, 0);
+
+        assert_eq!(budget.retained, one_plan_bytes * 2);
+        assert!(matches!(
+            unreleased,
+            Err(CrucibleArtifactError::ResourceLimit {
+                resource: "selected-origin-decoded-resident-bytes"
+            })
+        ));
         Ok(())
     }
 }

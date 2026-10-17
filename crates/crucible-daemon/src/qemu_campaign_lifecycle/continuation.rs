@@ -97,11 +97,12 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<crate::QemuSavepointReplayProof, QemuCheckpointReplayFailure<F::Error>> {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::InvalidContinuationInput,
             ))
         })?;
+        let continuations = validated_continuations.controls();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -384,9 +385,10 @@ where
                 QemuFreshExecutionRunnerError::PriorRetentionPending,
             ));
         }
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuations = validated_continuations.controls();
         let continuation_free = continuations.is_empty();
         if !self
             .lifecycles
@@ -781,9 +783,10 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuations = validated_continuations.controls();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -912,7 +915,14 @@ pub(super) fn replay_selected_origins<F, D>(
     let mut segment_start = base.as_ref().clone();
     let mut signal_fault_replay = base_signal_fault_replay.clone();
 
+    // Origins are materialized one at a time, so only the current segment's
+    // reached configuration is resident beside the terminal origin.
     for origin in origins.iter() {
+        let origin = origin.map_err(|error| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::OriginMaterialization(error),
+            ))
+        })?;
         let segment =
             input.for_origin_replay(origin.attempt().clone(), segment_start, signal_fault_replay);
         let mut facade = QemuFreshAttemptLifecycle::new(lifecycle);

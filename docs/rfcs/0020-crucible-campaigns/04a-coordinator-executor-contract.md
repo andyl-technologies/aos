@@ -2227,6 +2227,28 @@ dependencies are decoded once while they fit its bounded cache. A
 selected-origin restore bounds the resolver's resident decoded records by its
 memory reservation.
 
+A selected continuation replays every origin attempt from its base, and each
+origin's reached configuration is a prefix of its successor's. Decoding keeps
+only the terminal origin's configuration and replay plan. It decodes every
+intermediate origin in turn under the restore's memory reservation and
+compares it with the terminal's restriction: its configuration is the
+terminal's prefix of the same length over shared decision storage, and its
+replay plan holds the terminal plan's branches inside that prefix. A matching
+origin keeps only its attempt, source stop, and length, and its decode charge
+is released, so the reservation is charged the largest single intermediate
+decode rather than the sum. An origin that is not such a restriction stays
+decoded and charged. Thin replay, continuation validation, and finding replay
+then rebuild one origin at a time. Thin replay time still grows with chain
+depth, so a long campaign should resume from an exact checkpoint at its last
+origin.
+
+- **[CCOMP-34]** Decoding a selected continuation's origin ancestry MUST keep
+  resident decoded configuration state independent of the number of origins
+  whose reached configurations are prefixes of the terminal origin's, charging
+  the restore's memory reservation the terminal origin and the largest single
+  intermediate decode, and every origin rebuilt from the terminal MUST equal
+  its independently decoded form.
+
 A mutable compare-and-swap error may be commit-indeterminate because rename
 precedes directory fsync. The supervisor reloads the exact state, and a
 successful directory reload re-fsyncs its containing directory before it can
