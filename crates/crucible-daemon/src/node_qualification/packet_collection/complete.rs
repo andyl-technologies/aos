@@ -28,6 +28,7 @@ pub(crate) mod retained;
 mod roster;
 pub use installed::{
     InstalledCompleteRestoration, InstalledCompleteScene, InstalledCompleteSceneManifest,
+    PreparedCompleteRestoration,
 };
 
 pub use graph::{

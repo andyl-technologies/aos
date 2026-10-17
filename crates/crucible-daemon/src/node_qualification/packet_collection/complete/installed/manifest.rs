@@ -63,7 +63,7 @@ pub(super) struct Measurement {
     pub(super) sources: Vec<FileSelection>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FileSelection {
     pub(super) role: String,
@@ -91,7 +91,7 @@ pub(super) struct Participant {
 // The generic installation intentionally has no decoder. This local declaration
 // is not an implementation of any evidence trait; only the concrete compiled
 // source constructors below can turn it into a collecting source allocation.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct NativeSelection {
     provider: ProviderManifest,

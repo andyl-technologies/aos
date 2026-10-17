@@ -402,8 +402,8 @@ pub use complete::{
     PacketCompleteCollectionRequest, PacketCompleteGraphOwner, PacketCompleteGraphRequest,
     PacketCompleteNativeOracle, PacketCompleteOracleRequest, PacketCompletePopulationRequest,
     PacketCompletePublicationRequest, PacketCompleteRoster, PacketCompleteWitnessPopulation,
-    StoredPacketCompleteResultPublisher, packet_complete_independent_graph_contract,
-    packet_complete_measured_graph_proof,
+    PreparedCompleteRestoration, StoredPacketCompleteResultPublisher,
+    packet_complete_independent_graph_contract, packet_complete_measured_graph_proof,
 };
 
 pub use complete::PacketCompleteFreshRestorationInputs;

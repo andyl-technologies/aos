@@ -26,6 +26,7 @@ pub struct InstalledCompleteRestoration {
     plan: Rc<InstalledConformancePlan>,
     runtime_limits: RuntimeLimits,
     write_watchdog: Duration,
+    _code_owners: Option<prepared::CodeOwners>,
 }
 
 impl InstalledCompleteRestoration {
@@ -177,6 +178,7 @@ impl InstalledCompleteRestoration {
                 maximum_retained_outputs: selected.maximum_retained_outputs,
             },
             write_watchdog: Duration::from_millis(selected.write_watchdog_ms),
+            _code_owners: None,
         });
 
         let owner = output.as_ref().ok_or_else(refused)?;
@@ -302,3 +304,7 @@ impl InstalledCompleteRestoration {
             + size_of::<Result<ValidatedSchedulingObservation, RuntimePollFailure>>()
     }
 }
+
+#[path = "fresh_target/prepared.rs"]
+mod prepared;
+pub use prepared::PreparedCompleteRestoration;
