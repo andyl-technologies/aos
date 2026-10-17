@@ -151,6 +151,7 @@ crucible.executor.finding-production-replay-capture	3	crucible-daemon::finding_p
 crucible.executor.finding-replay-capture-manifest	1	crucible-daemon::finding_replay_capture_store	exact-manifest	gate:campaign-replay,gate:content-address
 crucible.executor.finding-replay-capture-chunk	1	crucible-daemon::finding_replay_capture_store	trace	gate:campaign-replay,gate:content-address
 crucible.executor.prepared-result-journal-state	3	crucible-daemon::prepared_result_journal	operational-record	gate:campaign-component-contract,gate:campaign-replay
+crucible.daemon.finding-export-transcript	1	crucible-daemon::qemu_campaign_lifecycle::campaign_run::finding_export	operational-record	gate:campaign-component-contract
 crucible.executor.measurement-replay-evidence	2	crucible-daemon::crucible_measurement::evidence	trace	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
 crucible.executor.exact-pin-materialization-selection	1	crucible-daemon::exact_pin_retention	administrative-record	gate:campaign-store-composition

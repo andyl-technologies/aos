@@ -157,7 +157,11 @@ write their corresponding registered records. `crucible_measurement::evidence`
 encodes the registered measurement replay evidence. `campaign_policy` reads
 the registered local-policy TOML. `anchored_fs` and transfer journal I/O are
 generic persistence helpers for those records; `campaign_finding_handoff`
-writes authenticated guest-asset bytes without a new wrapper schema.
+writes authenticated guest-asset bytes without a new wrapper schema. The
+guarded campaign run's `finding_export` appends its final-snapshot proof
+exchanges to the registered `crucible.daemon.finding-export-transcript`, a
+private frame file under the run-state root that is removed with the run
+result and rejected on read unless its header, frames, and trailer match.
 
 The Nix-generated Crucible guest-input review covered
 `modules/services/crucible-campaign.nix`, the packaged-executor TOML emitted

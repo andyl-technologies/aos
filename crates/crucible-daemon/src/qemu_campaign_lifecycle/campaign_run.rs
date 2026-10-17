@@ -74,13 +74,15 @@ pub use exploration::{
 };
 
 mod finding_export;
-use finding_export::capture_final_finding_export;
+use finding_export::{
+    FINDING_EXPORT_DIRECTORY, FindingExportStorage, capture_final_finding_export,
+};
 pub use finding_export::{
-    GuardedCampaignFindingExport, GuardedCampaignFindingObjectProof,
-    GuardedCampaignFindingOccurrenceObjectProof, GuardedCampaignFindingOccurrenceProof,
-    GuardedCampaignFindingProof, GuardedCampaignFindingQueryProof,
-    GuardedCampaignFindingTriageReplayProof, GuardedCampaignFindingTriageReplaySegmentProof,
-    GuardedCampaignFindingTriageReplaySet,
+    GuardedCampaignFindingExport, GuardedCampaignFindingExportFrame,
+    GuardedCampaignFindingExportFrames, GuardedCampaignFindingExportReadError,
+    GuardedCampaignFindingObjectProof, GuardedCampaignFindingOccurrenceObjectProof,
+    GuardedCampaignFindingOccurrenceQueryProof, GuardedCampaignFindingQueryProof,
+    GuardedCampaignFindingTriageReplaySegmentProof,
 };
 
 mod replay_closure;
@@ -1144,6 +1146,9 @@ where
     /// A recorded logical resume checkpoint could not be reconstructed exactly.
     #[error("guarded default campaign resume checkpoint failed: {0}")]
     ResumeCheckpoint(#[source] crucible::EngineError),
+    /// The final finding proof transcript could not be written.
+    #[error("guarded default campaign finding export transcript failed: {0}")]
+    FindingExport(#[source] std::io::Error),
     /// A fixed default-run invariant was violated.
     #[error("guarded default campaign invariant failed: {0}")]
     Invariant(#[source] GuardedDefaultCampaignInvariantError),
@@ -1155,8 +1160,8 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// Final finding proof export was canceled before a transfer or return.
     #[error("final finding proof export was canceled")]
     FindingExportCanceled,
-    /// Final finding proof export exceeded its fixed operation or byte bound.
-    #[error("final finding proof export exceeded its fixed bound")]
+    /// Final finding proof export exceeded its transcript disk quota.
+    #[error("final finding proof export exceeded its transcript disk quota")]
     FindingExportLimit,
     /// Final finding proof export exceeded its finite wall-clock deadline.
     #[error("final finding proof export exceeded its finite deadline")]
@@ -1650,12 +1655,21 @@ where
         request.resume_source.as_ref(),
         &mut supervisor,
     )?;
+    // The transcript shares the run's admitted disk limit with its other
+    // run-state files and is removed when the last result handle drops.
     let finding_export = capture_final_finding_export(
         &client,
         &principal,
         &campaign,
         execution.final_snapshot,
         &request.cancellation,
+        &FindingExportStorage {
+            directory: request
+                .lifecycle
+                .run_state_root()
+                .join(FINDING_EXPORT_DIRECTORY),
+            maximum_bytes: request.resources.maximum_disk_bytes(),
+        },
     )?;
     materialize_result(
         &repository,

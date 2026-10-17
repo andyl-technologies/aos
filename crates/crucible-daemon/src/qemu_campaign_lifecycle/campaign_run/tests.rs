@@ -103,7 +103,7 @@ fn supplemental_finding_source_round_trips_and_reopens_by_exact_identity() {
 
 #[test]
 fn determinism_finding_verification_is_explicitly_opt_in() {
-    let (request, _) = request();
+    let (request, _, _run_state) = request();
     assert!(!request.verifies_determinism_findings());
 
     let request = request.with_determinism_finding_verification();
@@ -695,7 +695,7 @@ impl QemuFreshAttemptLifecycleFactory for ResumeLifecycleFactory {
 
 #[test]
 fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
-    let (request, node) = request();
+    let (request, node, _run_state) = request();
     let request = request.with_watch_frames();
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
@@ -800,7 +800,7 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
 
 #[test]
 fn selected_schedule_replays_through_a_fresh_authenticated_repository() {
-    let (request, node) = selectable_request();
+    let (request, node, _run_state) = selectable_request();
     let scenario = request.scenario.clone();
     let first_starts = Arc::new(AtomicUsize::new(0));
     let first = run_selectable_campaign(request, node.clone(), Arc::clone(&first_starts));
@@ -823,7 +823,7 @@ fn selected_schedule_replays_through_a_fresh_authenticated_repository() {
         .validate_for_schedule(&scenario, &first.terminal_configuration().schedule)
         .expect("closure must cover the exact selected schedule");
 
-    let (replay_request, replay_node) = selectable_request();
+    let (replay_request, replay_node, _run_state) = selectable_request();
     let replay_request = replay_request.with_initial_replay(
         first.terminal_configuration().schedule.clone(),
         Some(closure),
@@ -848,7 +848,7 @@ fn selected_schedule_replays_through_a_fresh_authenticated_repository() {
 
 #[test]
 fn unpublished_default_selection_survives_root_closure_restart_without_repository_records() {
-    let (request, node) = selectable_request();
+    let (request, node, _run_state) = selectable_request();
     let scenario = request.scenario.clone();
     let completed = run_selectable_campaign(request, node.clone(), Arc::new(AtomicUsize::new(0)));
     let branch_schedule = &completed.terminal_configuration().schedule;
@@ -924,7 +924,7 @@ fn unpublished_default_selection_survives_root_closure_restart_without_repositor
 
 #[test]
 fn bounded_exploration_uses_accepted_branch_requests_and_observations() {
-    let (request, node) = selectable_request();
+    let (request, node, _run_state) = selectable_request();
     let exploration = GuardedCampaignExploration::new(
         3,
         None,
@@ -993,7 +993,7 @@ fn bounded_exploration_lazily_admits_a_full_width_integer_domain() {
         Vec::new(),
     )
     .expect("full-width integer domain");
-    let (request, node) = selectable_request_with_domain(
+    let (request, node, _run_state) = selectable_request_with_domain(
         ChoiceDomain::Integer(integer),
         ChoiceValue::Integer(IntegerValue::Unsigned(0)),
     );
@@ -1025,7 +1025,7 @@ fn bounded_exploration_lazily_admits_a_full_width_integer_domain() {
 
 #[test]
 fn bounded_exploration_reports_a_pruned_depth_boundary() {
-    let (request, node) = selectable_request();
+    let (request, node, _run_state) = selectable_request();
     let exploration = GuardedCampaignExploration::new(
         3,
         Some(0),
@@ -1052,7 +1052,7 @@ fn bounded_exploration_reports_a_pruned_depth_boundary() {
 
 #[test]
 fn bounded_exploration_stops_on_an_accepted_scenario_finding() {
-    let (request, node) = selectable_request();
+    let (request, node, _run_state) = selectable_request();
     let exploration = GuardedCampaignExploration::new(
         3,
         None,
@@ -1096,7 +1096,7 @@ fn bounded_exploration_stops_on_an_accepted_property_finding() {
         AssertionId::from_name(property_name),
         "the selected branch reports success",
     );
-    let (request, node) = selectable_request_with_domain_and_assertion(
+    let (request, node, _run_state) = selectable_request_with_domain_and_assertion(
         ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain")),
         ChoiceValue::Boolean(false),
         Some(assertion),
@@ -1132,11 +1132,52 @@ fn bounded_exploration_stops_on_an_accepted_property_finding() {
         completed.exploration_completion(),
         Some(GuardedCampaignExplorationCompletion::Finding)
     );
+
+    let export = completed.finding_export();
+    let transcript = export.transcript_path().to_path_buf();
+    let frames = export
+        .frames()
+        .expect("open finding export transcript")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("finding export transcript validates on read-back");
+    assert_eq!(export.campaign(), completed.campaign());
+    assert_eq!(export.snapshot(), completed.final_snapshot());
+    assert_eq!(u64::try_from(frames.len()).ok(), Some(export.frame_count()));
+    let finding_pages = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            GuardedCampaignFindingExportFrame::FindingQuery(page) => Some(page),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        frames.first(),
+        Some(GuardedCampaignFindingExportFrame::FindingQuery(_))
+    ));
+    assert_eq!(
+        finding_pages
+            .iter()
+            .filter(|page| !page.response().entries().is_empty())
+            .count(),
+        usize::try_from(export.findings()).expect("finding count"),
+    );
+    assert_eq!(
+        finding_pages
+            .last()
+            .and_then(|page| page.response().next_after()),
+        None,
+    );
+
+    drop(completed);
+    assert!(
+        !transcript.exists(),
+        "dropping the run result removes its finding export transcript"
+    );
 }
 
 #[test]
 fn explicit_terminal_discovery_precedes_supervisor_automatic_discovery() {
-    let (request, node) = selectable_request();
+    let (request, node, _run_state) = selectable_request();
     let request = request.with_discovery_stop(StopCondition::Terminal);
     let starts = Arc::new(AtomicUsize::new(0));
 
@@ -1160,7 +1201,7 @@ fn explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadl
     let deadline = 2_000_000;
     let quantum_nanoseconds = 1_100_000;
     let completed_frontier = quantum_nanoseconds * 2;
-    let (request, node) = request();
+    let (request, node, _run_state) = request();
     let request = request.with_discovery_stop(StopCondition::VirtualTimePicoseconds(deadline));
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
@@ -1190,7 +1231,7 @@ fn virtual_time_savepoint_capture_replays_and_authenticates_the_same_boundary() 
     let deadline = 2_000_000;
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (request, node) = checkpoint_request();
+    let (request, node, _run_state) = checkpoint_request();
     let request = request
         .with_discovery_stop(StopCondition::VirtualTimePicoseconds(deadline))
         .with_reached_stop_savepoint_capture(Arc::clone(&checkpoints));
@@ -1294,7 +1335,7 @@ fn observation_capture_only_stops_before_any_continuation_attempt_or_quantum() {
     let condition = ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
         execution_quanta: 1,
     };
-    let (source_request, node) = checkpoint_request();
+    let (source_request, node, _run_state) = checkpoint_request();
     let source_request =
         source_request.with_discovery_stop(StopCondition::Observation(condition.clone()));
     let (source_factory, source_evidence) =
@@ -1321,7 +1362,7 @@ fn observation_capture_only_stops_before_any_continuation_attempt_or_quantum() {
 
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (capture_request, capture_node) = checkpoint_request();
+    let (capture_request, capture_node, _run_state) = checkpoint_request();
     let checkpoint = guarded_resume_checkpoint(
         &capture_request,
         &source_schedule,
@@ -1369,7 +1410,7 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
     let schedule = Schedule::empty();
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (request, node) = checkpoint_request();
+    let (request, node, _run_state) = checkpoint_request();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
         .expect("selection-free replay closure");
@@ -1455,7 +1496,7 @@ fn selection_free_resume_terminal_at_source_needs_no_continuation() {
     let source_frontier = VirtualTime { ticks: 7 };
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (request, node) = checkpoint_request();
+    let (request, node, _run_state) = checkpoint_request();
     let schedule = Schedule::empty();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
@@ -1495,7 +1536,7 @@ fn selection_free_resume_rejects_terminal_before_the_source_boundary() {
     let source_frontier = VirtualTime { ticks: 8 };
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (request, node) = request();
+    let (request, node, _run_state) = request();
     let schedule = Schedule::empty();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
@@ -1534,7 +1575,7 @@ fn selection_free_resume_rejects_a_checkpoint_for_another_configuration() {
     let source_frontier = VirtualTime { ticks: 5 };
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (request, node) = request();
+    let (request, node, _run_state) = request();
     let checkpoint = guarded_resume_checkpoint(&request, &Schedule::empty(), source_frontier);
     let schedule = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
         crucible::DeliveryOrderDecision {
@@ -1592,7 +1633,7 @@ fn portable_resume_rejects_override_before_execution() {
     for schedule in schedules {
         let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
         let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-        let (request, node) = request();
+        let (request, node, _run_state) = request();
         let checkpoint = guarded_resume_checkpoint(&request, &schedule, VirtualTime::default());
         let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
             .expect("non-selection decisions require no separate choice records");
@@ -1632,7 +1673,7 @@ fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() 
     let final_stop = StopCondition::VirtualTimePicoseconds(3);
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (request, node) = checkpoint_request();
+    let (request, node, _run_state) = checkpoint_request();
     let schedule = Schedule::empty();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
@@ -1683,7 +1724,7 @@ fn selection_free_resume_completes_at_the_requested_next_choice() {
     let source_frontier = VirtualTime { ticks: 2_000 };
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (request, node) = checkpoint_request();
+    let (request, node, _run_state) = checkpoint_request();
     let schedule = Schedule::empty();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
@@ -1729,7 +1770,7 @@ fn selection_free_resume_completes_at_the_requested_next_choice() {
 fn savepoint_capture_rejects_a_terminal_outcome_before_the_requested_deadline() {
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (request, node) = checkpoint_request();
+    let (request, node, _run_state) = checkpoint_request();
     let request = request
         .with_discovery_stop(StopCondition::VirtualTimePicoseconds(2_000_000))
         .with_reached_stop_savepoint_capture(checkpoints);
@@ -1762,7 +1803,7 @@ fn savepoint_capture_rejects_a_terminal_outcome_before_the_requested_deadline() 
 fn savepoint_capture_rejects_mismatched_replay_evidence() {
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
-    let (request, node) = checkpoint_request();
+    let (request, node, _run_state) = checkpoint_request();
     let request = request
         .with_discovery_stop(StopCondition::VirtualTimePicoseconds(2_000_000))
         .with_reached_stop_savepoint_capture(checkpoints);
@@ -1807,7 +1848,7 @@ fn savepoint_default_choice_preserves_the_requested_continuation_stop() {
 fn explicit_execution_quanta_discovery_stops_at_the_absolute_coordinate() {
     let execution_quanta = 3;
     let quantum_nanoseconds = 11;
-    let (request, node) = request();
+    let (request, node, _run_state) = request();
     let request = request.with_discovery_stop(StopCondition::ExecutionQuanta(execution_quanta));
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
@@ -1844,7 +1885,7 @@ fn explicit_combined_discovery_stops_at_the_first_reached_bound() {
         virtual_time_picoseconds,
         execution_quanta,
     };
-    let (request, node) = request();
+    let (request, node, _run_state) = request();
     let request = request.with_discovery_stop(stop.clone());
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
@@ -1891,7 +1932,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
     let (graph, admin) = StoreGraph::build_with_admin(graph_config()).expect("campaign graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let (request, node) = selectable_request();
+    let (request, node, _run_state) = selectable_request();
     let scenario = request.scenario.clone();
     let request = request.with_discovery_stop(StopCondition::Terminal);
     let starts = Arc::new(AtomicUsize::new(0));
@@ -2022,7 +2063,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
 
     let closure = GuardedCampaignReplayClosure::collect(&store, &scenario, &decoded.schedule)
         .expect("collect replay closure after GC");
-    let (mut replay_request, replay_node) = selectable_request();
+    let (mut replay_request, replay_node, _run_state) = selectable_request();
     replay_request.seed = Seed::from_u64(0x7265_706c_6179_6564);
     let replay_request = replay_request
         .with_initial_replay(decoded.schedule.clone(), Some(closure))
@@ -2042,7 +2083,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
 
 #[test]
 fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_start() {
-    let (request, node) = selectable_request();
+    let (request, node, _run_state) = selectable_request();
     let starts = Arc::new(AtomicUsize::new(0));
     let completed = run_selectable_campaign(request, node, starts);
     let schedule = completed.terminal_configuration().schedule.clone();
@@ -2051,7 +2092,7 @@ fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_st
         .to_canonical_bytes()
         .expect("selected replay closure");
 
-    let (mut missing_request, missing_node) = selectable_request();
+    let (mut missing_request, missing_node, _run_state) = selectable_request();
     missing_request.initial_schedule = schedule.clone();
     let missing_starts = Arc::new(AtomicUsize::new(0));
     let missing =
@@ -2065,7 +2106,7 @@ fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_st
     ));
     assert_eq!(missing_starts.load(Ordering::Relaxed), 0);
 
-    let (extra_request, extra_node) = selectable_request();
+    let (extra_request, extra_node, _run_state) = selectable_request();
     let extra_request = extra_request.with_initial_replay(Schedule::empty(), Some(closure));
     let extra_starts = Arc::new(AtomicUsize::new(0));
     let extra = try_selectable_campaign(extra_request, extra_node, Arc::clone(&extra_starts))
@@ -2082,7 +2123,7 @@ fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_st
         .replay_closure()
         .with_alternate_boolean_branch_selection()
         .expect("canonical closure with another legal branch selection");
-    let (wrong_request, wrong_node) = selectable_request();
+    let (wrong_request, wrong_node, _run_state) = selectable_request();
     let wrong_request = wrong_request.with_initial_replay(schedule, Some(wrong_selection));
     let wrong_starts = Arc::new(AtomicUsize::new(0));
     let wrong = try_selectable_campaign(wrong_request, wrong_node, Arc::clone(&wrong_starts))
@@ -2116,7 +2157,7 @@ fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_st
 
 #[test]
 fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes() {
-    let (request, node) = selectable_request();
+    let (request, node, _run_state) = selectable_request();
     let scenario = request.scenario.clone();
     let completed = run_selectable_campaign(request, node, Arc::new(AtomicUsize::new(0)));
     let configuration = completed.terminal_configuration().clone();
@@ -2205,7 +2246,7 @@ fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes(
 
 #[test]
 fn shared_owner_preserves_the_terminal_lifecycle_error_source() {
-    let (request, node) = request();
+    let (request, node, _run_state) = request();
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
             node,
@@ -2239,7 +2280,7 @@ fn shared_owner_preserves_the_terminal_lifecycle_error_source() {
     );
 }
 
-fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
+fn request() -> (GuardedDefaultCampaignRunRequest, NodeId, tempfile::TempDir) {
     let node = NodeId {
         name: String::from("guarded-node"),
     };
@@ -2277,8 +2318,10 @@ fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
     .expect("guarded host configuration");
     let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 1024 * 1024 * 1024, 10_000)
         .expect("guarded attempt resources");
+    // The run writes its finding-export transcript below the run-state root.
+    let run_state = tempfile::tempdir().expect("guarded run-state root");
     let lifecycle =
-        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
+        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", run_state.path());
 
     (
         GuardedDefaultCampaignRunRequest::new(
@@ -2291,10 +2334,11 @@ fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
             resources,
         ),
         node,
+        run_state,
     )
 }
 
-fn checkpoint_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
+fn checkpoint_request() -> (GuardedDefaultCampaignRunRequest, NodeId, tempfile::TempDir) {
     // Derive the request from the same authenticated fixed fixture used by
     // checkpoint capture. This keeps the fake on the production closure
     // authentication path without exposing a source-parameterized test API.
@@ -2325,8 +2369,10 @@ fn checkpoint_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
     .expect("guarded checkpoint host configuration");
     let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 1024 * 1024 * 1024, 10_000)
         .expect("guarded checkpoint resources");
+    // The run writes its finding-export transcript below the run-state root.
+    let run_state = tempfile::tempdir().expect("guarded run-state root");
     let lifecycle =
-        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
+        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", run_state.path());
 
     (
         GuardedDefaultCampaignRunRequest::new(
@@ -2339,6 +2385,7 @@ fn checkpoint_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
             resources,
         ),
         node,
+        run_state,
     )
 }
 
@@ -2383,7 +2430,7 @@ fn guarded_resume_checkpoint(
     .expect("guarded campaign resume logical checkpoint")
 }
 
-fn selectable_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
+fn selectable_request() -> (GuardedDefaultCampaignRunRequest, NodeId, tempfile::TempDir) {
     selectable_request_with_domain(
         ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain")),
         ChoiceValue::Boolean(false),
@@ -2393,7 +2440,7 @@ fn selectable_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
 fn selectable_request_with_domain(
     domain: ChoiceDomain,
     default: ChoiceValue,
-) -> (GuardedDefaultCampaignRunRequest, NodeId) {
+) -> (GuardedDefaultCampaignRunRequest, NodeId, tempfile::TempDir) {
     selectable_request_with_domain_and_assertion(domain, default, None)
 }
 
@@ -2401,7 +2448,7 @@ fn selectable_request_with_domain_and_assertion(
     domain: ChoiceDomain,
     default: ChoiceValue,
     assertion: Option<AssertionDef>,
-) -> (GuardedDefaultCampaignRunRequest, NodeId) {
+) -> (GuardedDefaultCampaignRunRequest, NodeId, tempfile::TempDir) {
     let node = NodeId {
         name: String::from("guarded-choice-node"),
     };
@@ -2461,8 +2508,10 @@ fn selectable_request_with_domain_and_assertion(
     .expect("guarded selectable host configuration");
     let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 1024 * 1024 * 1024, 10_000)
         .expect("guarded selectable resources");
+    // The run writes its finding-export transcript below the run-state root.
+    let run_state = tempfile::tempdir().expect("guarded run-state root");
     let lifecycle =
-        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
+        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", run_state.path());
 
     (
         GuardedDefaultCampaignRunRequest::new(
@@ -2475,6 +2524,7 @@ fn selectable_request_with_domain_and_assertion(
             resources,
         ),
         node,
+        run_state,
     )
 }
 
