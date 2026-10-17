@@ -50,7 +50,7 @@ pub enum CrucibleArtifactError {
         expected: u32,
     },
     /// Configuration payload bytes do not carry the required Schedule version.
-    #[error("Crucible configuration payload requires Schedule compact binary V4")]
+    #[error("Crucible configuration payload requires Schedule compact binary V5")]
     UnsupportedScheduleEncoding,
     /// Compact Crucible bytes were malformed or semantically invalid.
     #[error("invalid Crucible {artifact} payload: {source}")]

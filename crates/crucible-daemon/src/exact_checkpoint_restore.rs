@@ -617,12 +617,12 @@ fn validate_production_attempt_continuation(
     restored: &Configuration,
     checkpoint: ExactCheckpointId,
 ) -> Result<(), ProductionAttemptCheckpointRestoreError> {
-    let prefix = effective_start.schedule.decisions();
-    let decisions = restored.schedule.decisions();
+    let prefix = effective_start.schedule.decision_history();
+    let decisions = restored.schedule.decision_history();
     if effective_start.def != restored.def || !decisions.starts_with(prefix) {
         return Err(ProductionAttemptCheckpointRestoreError::AttemptPrefixMismatch { checkpoint });
     }
-    if decisions[prefix.len()..].iter().any(|decision| {
+    if decisions.iter_from(prefix.len()).any(|decision| {
         matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
     }) {
         return Err(ProductionAttemptCheckpointRestoreError::NestedCampaignBranch {
@@ -636,8 +636,8 @@ fn validate_production_post_selection(
     initial: &Configuration,
     selected: &Configuration,
 ) -> Result<(), ProductionAttemptCheckpointRestoreError> {
-    let prefix = initial.schedule.decisions();
-    let decisions = selected.schedule.decisions();
+    let prefix = initial.schedule.decision_history();
+    let decisions = selected.schedule.decision_history();
     let expected_length = prefix
         .len()
         .checked_add(1)

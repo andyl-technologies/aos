@@ -433,7 +433,7 @@ pub(super) fn production_app_random_checkpoint_config(
             message: format!("decode scheduler checkpoint configuration: {error}"),
         }
     })?;
-    let decisions = configuration.schedule.decisions();
+    let decisions = configuration.schedule.decision_history();
     let streams = decisions
         .iter()
         .enumerate()
@@ -468,7 +468,7 @@ pub(super) fn production_app_random_checkpoint_config(
 }
 
 fn app_random_request_count(configuration: &Configuration, node: &NodeId) -> u64 {
-    let decisions = configuration.schedule.decisions();
+    let decisions = configuration.schedule.decision_history();
     decisions
         .iter()
         .enumerate()
@@ -477,7 +477,7 @@ fn app_random_request_count(configuration: &Configuration, node: &NodeId) -> u64
 }
 
 fn app_random_request_stream<'a>(
-    decisions: &'a [Decision],
+    decisions: &'a crucible::History<Decision>,
     index: usize,
     node: &NodeId,
 ) -> Option<&'a crucible::RngStreamId> {

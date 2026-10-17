@@ -1621,11 +1621,11 @@ fn validate_checkpoint_set(
 fn validate_recorded_controls(
     checkpoint: &ProductionVmExactCheckpointSet,
 ) -> Result<(), SchedulerError> {
-    let current = checkpoint.configuration.schedule.decisions();
+    let current = checkpoint.configuration.schedule.decision_history();
     let mut prior_schedule_len = 0_usize;
     let mut prior_sequence = None;
     for record in &checkpoint.recorded_controls {
-        let recorded = record.configuration.schedule.decisions();
+        let recorded = record.configuration.schedule.decision_history();
         if record.configuration.def.id() != checkpoint.configuration.def.id()
             || recorded.len() < prior_schedule_len
             || !current.starts_with(recorded)

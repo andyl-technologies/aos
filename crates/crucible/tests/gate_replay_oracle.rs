@@ -1079,7 +1079,8 @@ fn assertion_replay_schedule(payload: AssertionReplayPayload) -> Schedule {
 fn assertion_replay_payload_from_schedule(
     schedule: &Schedule,
 ) -> Result<AssertionReplayPayload, Box<dyn Error>> {
-    let [Decision::RngDraw(draw)] = schedule.decisions() else {
+    let decisions = schedule.decision_history().to_vec();
+    let [Decision::RngDraw(draw)] = decisions.as_slice() else {
         return Err(Box::new(IoError::new(
             ErrorKind::InvalidData,
             "assertion replay artifact schedule must contain one rng draw",
@@ -1108,7 +1109,7 @@ fn assertion_replay_event_log_from_artifact(
     let payload = assertion_replay_payload_from_schedule(artifact.schedule())?;
     let decision = artifact
         .schedule()
-        .decisions()
+        .decision_history()
         .first()
         .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "missing replay decision"))?
         .clone();
@@ -1447,7 +1448,7 @@ fn schedule_delta(ancestor: &Schedule, schedule: &Schedule) -> Result<Schedule, 
     assert_eq!(prefix, *ancestor);
 
     let mut delta = Schedule::empty();
-    for decision in &schedule.decisions()[ancestor.len()..] {
+    for decision in schedule.decision_history().iter_from(ancestor.len()) {
         delta = delta.appended(decision.clone());
     }
     Ok(delta)
@@ -1455,7 +1456,7 @@ fn schedule_delta(ancestor: &Schedule, schedule: &Schedule) -> Result<Schedule, 
 
 fn replay_schedule(ancestor: &Schedule, delta: &Schedule) -> Schedule {
     let mut schedule = ancestor.clone();
-    for decision in delta.decisions() {
+    for decision in delta.decision_history() {
         schedule = schedule.appended(decision.clone());
     }
     schedule

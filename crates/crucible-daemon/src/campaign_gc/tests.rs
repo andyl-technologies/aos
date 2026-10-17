@@ -525,8 +525,12 @@ fn publish_pending_finding_fixture_with_observation(
             child,
             child_artifact,
             fingerprint,
-            1,
-            b"pending finding original reproduction".to_vec(),
+            crucible_campaign::ReproductionPayload::new(
+                1,
+                b"pending finding original reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish pending finding reproduction");
     let replayed_state = hash("crucible.test.pending-finding.replayed-state", 0x18);
@@ -552,8 +556,12 @@ fn publish_pending_finding_fixture_with_observation(
             child,
             child_artifact,
             fingerprint,
-            1,
-            b"pending finding minimized reproduction".to_vec(),
+            crucible_campaign::ReproductionPayload::new(
+                1,
+                b"pending finding minimized reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("publish pending finding minimized reproduction");

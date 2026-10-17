@@ -55,7 +55,7 @@ fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible() -> Result<(), Box<d
             iteration.scenario.scenario_def()
         );
         assert_eq!(
-            iteration.schedule().decisions(),
+            iteration.schedule().decision_history(),
             std::slice::from_ref(&iteration.mutation)
         );
         assert!(matches!(iteration.mutation, Decision::Selection(_)));

@@ -799,7 +799,7 @@ mod tests {
     fn fixture() -> (ReproductionArtifactId, FindingSignature) {
         let reproduction = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"triage-replay-reproduction",
         ))
         .expect("reproduction ID");

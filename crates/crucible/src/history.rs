@@ -152,13 +152,40 @@ impl<T> History<T> {
         }
     }
 
+    /// Returns an iterator over the elements whose indices fall in `range`.
+    ///
+    /// Positioning costs constant time, like [`History::iter_from`]. A range
+    /// that ends beyond the history is clipped to its length.
+    pub fn range(&self, range: std::ops::Range<usize>) -> std::iter::Take<Iter<'_, T>> {
+        let len = range.end.min(self.len()).saturating_sub(range.start);
+        self.iter_from(range.start).take(len)
+    }
+
     /// Returns `true` when `prefix` equals the first `prefix.len()` elements.
+    ///
+    /// Like [`History::prefix_eq`], sealed chunks the two histories share are
+    /// not compared element by element.
     #[must_use]
     pub fn starts_with(&self, prefix: &Self) -> bool
     where
         T: PartialEq,
     {
-        prefix.len() <= self.len() && self.iter().zip(prefix.iter()).all(|(a, b)| a == b)
+        self.prefix_eq(prefix, prefix.len())
+    }
+
+    /// Returns `true` when the elements from `start` onward begin with `other`.
+    ///
+    /// The comparison positions at `start` in constant time and reads only
+    /// `other.len()` elements of this history.
+    #[must_use]
+    pub fn has_run_at(&self, start: usize, other: &[T]) -> bool
+    where
+        T: PartialEq,
+    {
+        start
+            .checked_add(other.len())
+            .is_some_and(|end| end <= self.len())
+            && self.iter_from(start).zip(other).all(|(a, b)| a == b)
     }
 
     /// Returns `true` when both histories hold at least `len` elements and
@@ -616,6 +643,61 @@ mod tests {
         assert!(!grown.prefix_eq(&base, 2 * CHUNK_LEN + 4));
         assert!(changed.prefix_eq(&base, CHUNK_LEN + 1));
         assert!(!changed.prefix_eq(&base, CHUNK_LEN + 2));
+    }
+
+    #[test]
+    fn range_clips_to_the_history_and_crosses_chunks() {
+        let history = History::from(reference(2 * CHUNK_LEN + 5));
+
+        let middle = (CHUNK_LEN - 2)..(CHUNK_LEN + 3);
+        assert!(
+            history
+                .range(middle.clone())
+                .eq(reference(2 * CHUNK_LEN + 5)[middle].iter())
+        );
+        assert!(
+            history
+                .range((2 * CHUNK_LEN)..usize::MAX)
+                .copied()
+                .eq((2 * CHUNK_LEN)..(2 * CHUNK_LEN + 5))
+        );
+        assert_eq!(history.range(5..5).count(), 0);
+        // A reversed range is empty rather than a panic.
+        assert_eq!(
+            history.range(std::ops::Range { start: 9, end: 3 }).count(),
+            0
+        );
+        assert_eq!(history.range((3 * CHUNK_LEN)..(4 * CHUNK_LEN)).count(), 0);
+    }
+
+    #[test]
+    fn starts_with_compares_unshared_chunks_by_content() {
+        let prefix = History::from(reference(CHUNK_LEN + 3));
+        let mut extended = prefix.clone();
+        extended.extend((CHUNK_LEN + 3)..(3 * CHUNK_LEN));
+        let rebuilt = History::from(reference(3 * CHUNK_LEN));
+        let mut diverged = rebuilt.clone();
+        if let Some(first) = diverged.get_mut(0) {
+            *first = usize::MAX;
+        }
+
+        assert!(extended.starts_with(&prefix));
+        assert!(rebuilt.starts_with(&prefix));
+        assert!(!diverged.starts_with(&prefix));
+        assert!(!prefix.starts_with(&extended));
+        assert!(prefix.starts_with(&History::new()));
+    }
+
+    #[test]
+    fn has_run_at_matches_only_complete_runs() {
+        let history = History::from(reference(CHUNK_LEN + 4));
+        let run = reference(CHUNK_LEN + 4)[(CHUNK_LEN - 1)..(CHUNK_LEN + 2)].to_vec();
+
+        assert!(history.has_run_at(CHUNK_LEN - 1, &run));
+        assert!(!history.has_run_at(CHUNK_LEN, &run));
+        assert!(!history.has_run_at(CHUNK_LEN + 3, &[CHUNK_LEN + 3, CHUNK_LEN + 4]));
+        assert!(!history.has_run_at(usize::MAX, &[0]));
+        assert!(history.has_run_at(CHUNK_LEN + 4, &[]));
     }
 
     #[test]

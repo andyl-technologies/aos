@@ -123,12 +123,16 @@ pub(crate) fn verify_exported_finding(
         .id()
         .map_err(|error| backend_error(format!("verified finding identity is invalid: {error}")))?;
     let minimized = args.role.is_selected();
-    let reproduction = if minimized {
-        finding.minimized_reproduction.as_ref().ok_or_else(|| {
-            usage_error("finding bundle has no authenticated minimized reproduction")
-        })?
+    let (reproduction, artifact) = if minimized {
+        finding
+            .minimized_reproduction
+            .as_ref()
+            .zip(finding.minimized_artifact.as_ref())
+            .ok_or_else(|| {
+                usage_error("finding bundle has no authenticated minimized reproduction")
+            })?
     } else {
-        &finding.reproduction
+        (&finding.reproduction, &finding.report.finding.artifact)
     };
     let model_replay = replay_finding_object(
         &finding.campaign,
@@ -136,6 +140,7 @@ pub(crate) fn verify_exported_finding(
         finding_id,
         minimized,
         reproduction,
+        artifact,
     )?;
     let exact_replay = args
         .exact
@@ -315,9 +320,20 @@ pub(crate) fn export_finding_bundle(
                 &evidence, &artifacts, &ledger,
             )?;
         let verified = loaded.evidence.finding(0)?;
-        replay_finding_object(&campaign, snapshot, finding, false, &verified.reproduction)?;
-        if let Some(minimized) = &verified.minimized_reproduction {
-            replay_finding_object(&campaign, snapshot, finding, true, minimized)?;
+        replay_finding_object(
+            &campaign,
+            snapshot,
+            finding,
+            false,
+            &verified.reproduction,
+            &verified.report.finding.artifact,
+        )?;
+        if let Some((minimized, artifact)) = verified
+            .minimized_reproduction
+            .as_ref()
+            .zip(verified.minimized_artifact.as_ref())
+        {
+            replay_finding_object(&campaign, snapshot, finding, true, minimized, artifact)?;
         }
         crate::cli_triage_debug::campaign_evidence::sync_evidence_store(evidence.root())?;
 

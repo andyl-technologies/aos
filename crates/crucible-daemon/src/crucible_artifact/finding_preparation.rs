@@ -109,8 +109,7 @@ pub(super) fn prepare_original_reproduction(
             configuration_record.id()?,
             CampaignHash::from_bytes(finding.finding_fingerprint.bytes),
         ),
-        CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-        finding.artifact.to_compact_binary(),
+        super::crucible_reproduction_payload(&finding.artifact)?,
     )?;
     Ok((scenario_record, configuration_record, reproduction))
 }
@@ -154,8 +153,7 @@ pub(super) fn prepare_minimized_reproduction(
             configuration_record.id()?,
             CampaignHash::from_bytes(minimized.finding_fingerprint.bytes),
         ),
-        CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-        minimized.artifact.to_compact_binary(),
+        super::crucible_reproduction_payload(&minimized.artifact)?,
         minimization,
     )?;
     Ok((configuration_record, reproduction))

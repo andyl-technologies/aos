@@ -941,7 +941,7 @@ pub(super) fn replay_suffix(
     }
 
     let mut replayed = start.clone();
-    for decision in suffix.decisions() {
+    for decision in suffix.decision_history() {
         replayed = try_step(&replayed, decision.clone())?;
     }
 
@@ -971,7 +971,7 @@ pub(super) fn replay_suffix(
         scheduler.search_frontier = SearchFrontierChoices::empty();
     }
     let event_log = runtime.event_log;
-    scheduler.apply_decisions(suffix.decisions());
+    scheduler.apply_decisions(suffix.decision_history());
     runtime_for_configuration_with_scheduler(
         &replayed,
         node_blobs,
@@ -1444,7 +1444,9 @@ pub(super) fn partial_order_canonical_representative(
     configuration: &Configuration,
     policy: &PartialOrderReductionPolicy,
 ) -> Option<Configuration> {
-    let mut decisions = configuration.schedule.decisions().to_vec();
+    // The canonical-representative search reorders decisions in place, so it
+    // works on its own owned copy of the schedule.
+    let mut decisions = configuration.schedule.decision_history().to_vec();
     let mut changed = false;
     let mut swapped = true;
     while swapped {

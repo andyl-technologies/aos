@@ -44,11 +44,12 @@ use crate::{
     PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
     PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
     RankingExplanation, RankingExplanationId, ReproductionArtifact, ReproductionArtifactId,
-    RetainedPlannerRequestId, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointCaptureResolution, SavepointContinuationSelection, ScenarioArtifact,
-    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
-    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse, SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
+    ReproductionPayload, ReproductionPayloadSegment, RetainedPlannerRequestId,
+    SavepointCaptureOutcome, SavepointCaptureRequest, SavepointCaptureResolution,
+    SavepointContinuationSelection, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, SurvivorSelection,
+    SurvivorSelectionBundle, SurvivorSelectionId,
 };
 use crate::{
     BranchAcceptanceCount, BranchAcceptanceSummary, ResolvedEffectTraceRef, choice_set_key,

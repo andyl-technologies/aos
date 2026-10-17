@@ -262,6 +262,17 @@ pub(super) fn read_scenario_form_binary(
     Ok(form)
 }
 
+/// Encodes the logical version 4 schedule bytes.
+///
+/// Version 5 replaced this as the schedule transport. The logical bytes remain
+/// the input of preemption alternative identities, which hash a one-decision
+/// schedule and so never approach a segment bound.
+pub(super) fn schedule_v4_bytes(schedule: &Schedule) -> Vec<u8> {
+    let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V4);
+    write_schedule_binary(schedule, &mut writer);
+    writer.finish()
+}
+
 pub(super) fn write_schedule_binary(schedule: &Schedule, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(schedule.content_hash());
     writer.write_count(schedule.decision_history().len());

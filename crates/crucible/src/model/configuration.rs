@@ -578,8 +578,7 @@ impl Decision {
 /// Decisions are stored in a structurally shared [`crate::History`], so a
 /// configuration can be cloned and extended once per quantum without copying
 /// everything recorded before it. [`Schedule::decision_history`] reads that
-/// storage directly; [`Schedule::decisions`] additionally offers a contiguous
-/// slice, materialized once per schedule value on first use.
+/// storage directly; the schedule never keeps a second, contiguous copy.
 #[derive(Clone, Default)]
 pub struct Schedule {
     decisions: crate::History<Decision>,
@@ -593,12 +592,9 @@ pub struct Schedule {
     // Opportunities chosen by selection decisions among `decisions`, also
     // maintained on append, so stop checks never rescan the history.
     selected_opportunities: PersistentSet<crucible_campaign::ChoiceOpportunityId>,
-    // Contiguous copy of `decisions` for slice readers. Clones share it until
-    // one of them appends, which discards its own handle.
-    contiguous: Arc<OnceLock<Vec<Decision>>>,
-    // Canonical configuration id computed over exactly `decisions`, shared
-    // and reset on append like `contiguous`. It never leaves the process:
-    // equality, hashing, and every codec ignore it.
+    // Canonical configuration id computed over exactly `decisions`. Clones
+    // share it until one of them appends, which discards its own handle. It
+    // never leaves the process: equality, hashing, and every codec ignore it.
     configuration_id: Arc<OnceLock<ConfigurationIdMemo>>,
 }
 
@@ -614,8 +610,8 @@ struct ConfigurationIdMemo {
 }
 
 // Equality, hashing, and debug output cover the decisions alone; the count,
-// the decision chain, the selected opportunities, the contiguous copy, and
-// the memoized configuration id are derived from them.
+// the decision chain, the selected opportunities, and the memoized
+// configuration id are derived from them.
 impl PartialEq for Schedule {
     fn eq(&self, other: &Self) -> bool {
         self.decisions == other.decisions
@@ -674,20 +670,30 @@ impl Schedule {
         self.decisions.len()
     }
 
-    /// Returns the decisions in their canonical order as a contiguous slice.
-    ///
-    /// The first call on a schedule value copies its decisions once; clones
-    /// share that copy until they append. Readers on a per-quantum path should
-    /// prefer [`Schedule::decision_history`], which never copies.
-    #[must_use]
-    pub fn decisions(&self) -> &[Decision] {
-        self.contiguous.get_or_init(|| self.decisions.to_vec())
-    }
-
     /// Returns the decisions in their canonical order without copying them.
     #[must_use]
     pub fn decision_history(&self) -> &crate::History<Decision> {
         &self.decisions
+    }
+
+    /// Returns the decision at `index`, or `None` when it is out of bounds.
+    #[must_use]
+    pub fn decision(&self, index: usize) -> Option<&Decision> {
+        self.decisions.get(index)
+    }
+
+    /// Returns whether this schedule's first decisions are exactly `prefix`.
+    ///
+    /// A schedule is a prefix of itself.
+    #[must_use]
+    pub fn starts_with(&self, prefix: &Self) -> bool {
+        self.decisions.starts_with(&prefix.decisions)
+    }
+
+    /// Returns whether the decisions from `start` onward begin with `run`.
+    #[must_use]
+    pub fn has_decisions_at(&self, start: usize, run: &[Decision]) -> bool {
+        self.decisions.has_run_at(start, run)
     }
 
     /// Returns the running digest of every decision in recorded order.
@@ -781,7 +787,7 @@ impl Schedule {
         schedule
     }
 
-    fn push(&mut self, decision: Decision) {
+    pub(super) fn push(&mut self, decision: Decision) {
         if crate::decision::is_app_random_decision_after(self.decisions.last(), &decision) {
             self.app_random_decisions = self.app_random_decisions.saturating_add(1);
         }
@@ -791,8 +797,7 @@ impl Schedule {
         }
         self.decisions.push(decision);
 
-        // Derived caches no longer match the decisions.
-        reset_derived_cell(&mut self.contiguous);
+        // The memoized configuration id no longer matches the decisions.
         reset_derived_cell(&mut self.configuration_id);
     }
 
@@ -805,12 +810,14 @@ impl Schedule {
         canonical::schedule_hash(self)
     }
 
-    /// Serializes this schedule as compact canonical bytes.
+    /// Serializes this schedule as its self-contained segmented transport.
+    ///
+    /// The bytes carry the [`ScheduleManifest`] followed by every segment in
+    /// order, so a reader decodes one segment at a time. Carriers with a
+    /// segment store keep only the manifest; see [`Schedule::write_segments`].
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V4);
-        write_schedule_binary(self, &mut writer);
-        writer.finish()
+        schedule_v5_bytes(self)
     }
 
     /// Parses and validates a compact binary schedule.
@@ -818,12 +825,10 @@ impl Schedule {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed input, a
-    /// schedule identity mismatch, or any schema other than current version 4.
+    /// segment that does not derive its reference, a schedule identity
+    /// mismatch, or any schema other than current version 5.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC_V4)?;
-        let schedule = read_schedule_binary(&mut reader)?;
-        reader.finish()?;
-        Ok(schedule)
+        schedule_from_v5_bytes(bytes)
     }
 }
 

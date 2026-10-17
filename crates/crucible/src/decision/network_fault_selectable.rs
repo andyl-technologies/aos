@@ -481,9 +481,9 @@ impl NetworkFaultCampaignReplayPlan {
                 || start < previous_end
                 || end != start + 1
                 || end > target.schedule.len()
-                || branch.parent.schedule.decisions() != &target.schedule.decisions()[..start]
+                || !target.schedule.starts_with(&branch.parent.schedule)
                 || branch.decision != target.schedule.decision_history()[start]
-                || branch.selected.schedule.decisions() != &target.schedule.decisions()[..end]
+                || !target.schedule.starts_with(&branch.selected.schedule)
                 || !phases.insert(branch.phase)
                 || (branch.phase == NetworkFaultPhase::Followup
                     && !first_at.is_some_and(|at| at < branch.at))

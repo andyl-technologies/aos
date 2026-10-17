@@ -1805,7 +1805,7 @@ fn example_script_from_schedule(
 ) -> Result<Vec<ExampleReplayStep>, ExampleCorpusError> {
     let mut steps = Vec::new();
     let expected_prefix = format!("{EXAMPLE_REPLAY_STEP_POINT_PREFIX}{scenario_name}/");
-    for decision in schedule.decisions() {
+    for decision in schedule.decision_history() {
         let Decision::Override(override_decision) = decision else {
             return Err(invalid_replay_schedule(
                 scenario_name,

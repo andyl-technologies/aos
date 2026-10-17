@@ -493,8 +493,7 @@ impl CampaignRepository {
             original.configuration(),
             original.configuration_artifact(),
             original.finding_fingerprint(),
-            original.payload_schema(),
-            original.payload().to_vec(),
+            original.reproduction_payload().clone(),
             minimization.clone(),
         )?;
         let signature_minimization = FindingSignatureMinimizationEvidence::new(

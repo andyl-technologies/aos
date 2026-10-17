@@ -1117,7 +1117,7 @@ descriptor: the kept schedule prefix plus the few additional kept indexes, the
 kept schedule's content address, and its seeded order key, both streamed from
 the original schedule. A candidate's schedule is materialized only for its own
 replay, one candidate at a time, and its removed decisions are recorded as
-index ranges into the original schedule. Campaign reproduction schema v2
+index ranges into the original schedule. Campaign reproduction schema v3
 retains minimization policy v4 (the seed, the 4,096-candidate bound, and any
 automatic interesting window) as the exact policy, every attempted candidate's
 artifact/schedule/replayed-state identities and observed fingerprint, and the

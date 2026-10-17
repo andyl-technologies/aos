@@ -575,12 +575,12 @@ impl SchedulerState {
     #[must_use]
     pub fn from_schedule(schedule: &Schedule) -> Self {
         let mut state = Self::empty();
-        state.apply_decisions(schedule.decisions());
+        state.apply_decisions(schedule.decision_history());
         state
     }
 
     /// Applies causal decisions that mutate materialized scheduler state.
-    pub fn apply_decisions(&mut self, decisions: &[Decision]) {
+    pub fn apply_decisions<'a>(&mut self, decisions: impl IntoIterator<Item = &'a Decision>) {
         for decision in decisions {
             self.apply_decision(decision);
         }

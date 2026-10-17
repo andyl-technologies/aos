@@ -311,7 +311,7 @@ fn midpoint_report(
         .finding
         .artifact
         .schedule()
-        .decisions()
+        .decision_history()
     {
         let crucible::Decision::Selection(decision) = decision else {
             continue;

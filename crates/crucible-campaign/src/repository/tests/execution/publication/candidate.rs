@@ -265,8 +265,8 @@ fn forged_assertion_boundary_fails_closed_at_executor_publication() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"original".to_vec(),
+            crate::ReproductionPayload::new(1, b"original".to_vec(), Vec::new())
+                .expect("reproduction payload"),
         )
         .expect("original reproduction");
     let final_state = CampaignHash::derive("test.assertion", b"final-state");
@@ -292,8 +292,8 @@ fn forged_assertion_boundary_fails_closed_at_executor_publication() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"minimized".to_vec(),
+            crate::ReproductionPayload::new(1, b"minimized".to_vec(), Vec::new())
+                .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("minimized reproduction");
@@ -906,8 +906,8 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"authenticated original".to_vec(),
+            crate::ReproductionPayload::new(1, b"authenticated original".to_vec(), Vec::new())
+                .expect("reproduction payload"),
         )
         .expect("publish authenticated original");
     let final_state = CampaignHash::derive("test-finding", b"authenticated final state");
@@ -933,8 +933,8 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"authenticated minimized".to_vec(),
+            crate::ReproductionPayload::new(1, b"authenticated minimized".to_vec(), Vec::new())
+                .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("publish authenticated minimized reproduction");

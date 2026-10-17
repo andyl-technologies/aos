@@ -537,8 +537,12 @@ fn publish_observed_branch(
         child,
         child_content,
         fingerprint,
-        1,
-        b"portable continuity reproduction".to_vec(),
+        crucible_campaign::ReproductionPayload::new(
+            1,
+            b"portable continuity reproduction".to_vec(),
+            Vec::new(),
+        )
+        .expect("reproduction payload"),
     )?;
     let signature = FindingSignature::new(
         FindingKind::Divergence,
@@ -562,8 +566,12 @@ fn publish_observed_branch(
         child,
         child_content,
         fingerprint,
-        1,
-        b"portable continuity reproduction".to_vec(),
+        crucible_campaign::ReproductionPayload::new(
+            1,
+            b"portable continuity reproduction".to_vec(),
+            Vec::new(),
+        )
+        .expect("reproduction payload"),
         minimization.clone(),
     )?;
     let signature_minimization = FindingSignatureMinimizationEvidence::new(

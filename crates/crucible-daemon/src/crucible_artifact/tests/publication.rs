@@ -613,7 +613,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .expect("encode typed incompatibility result");
     let decoded_incompatibility = PreparedSemanticAttemptResult::from_canonical_bytes(
         &incompatibility_bytes,
-        crate::AttemptLogSegmentSources::default(),
+        incompatibility_result.log_segments().clone(),
         incompatibility_result.replay_record_sources(),
     )
     .expect("decode typed incompatibility result");
@@ -938,7 +938,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &observed_finding_bytes,
-            crate::AttemptLogSegmentSources::default(),
+            observed_finding_result.log_segments().clone(),
             observed_finding_result.replay_record_sources(),
         )
         .expect("decode observed finding result"),
@@ -1076,7 +1076,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .expect("encode prepared semantic result");
     let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
         &durable_bytes,
-        crate::AttemptLogSegmentSources::default(),
+        durable_result.log_segments().clone(),
         durable_result.replay_record_sources(),
     )
     .expect("decode prepared semantic result");
@@ -1087,7 +1087,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert!(matches!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &trailing,
-            crate::AttemptLogSegmentSources::default(),
+            durable_result.log_segments().clone(),
             durable_result.replay_record_sources(),
         ),
         Err(PreparedSemanticResultCodecError::TrailingBytes)

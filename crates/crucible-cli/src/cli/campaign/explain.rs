@@ -140,7 +140,7 @@ struct CampaignExplainedReproduction {
     configuration_artifact: String,
     finding_fingerprint: String,
     payload_schema: u32,
-    payload_bytes: usize,
+    payload_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -494,7 +494,8 @@ where
         CampaignFindingObject::Observation(value) => value,
         CampaignFindingObject::LatestOccurrence(_)
         | CampaignFindingObject::Reproduction(_)
-        | CampaignFindingObject::MinimizedReproduction(_) => {
+        | CampaignFindingObject::MinimizedReproduction(_)
+        | CampaignFindingObject::ReproductionPayloadSegment { .. } => {
             return Err(backend_error(
                 "campaign finding observation response carried another dependency kind",
             ));
@@ -524,7 +525,8 @@ where
         CampaignFindingObject::Reproduction(value) => value,
         CampaignFindingObject::Observation(_)
         | CampaignFindingObject::LatestOccurrence(_)
-        | CampaignFindingObject::MinimizedReproduction(_) => {
+        | CampaignFindingObject::MinimizedReproduction(_)
+        | CampaignFindingObject::ReproductionPayloadSegment { .. } => {
             return Err(backend_error(
                 "campaign finding reproduction response carried another dependency kind",
             ));
@@ -879,7 +881,13 @@ fn explained_reproduction(
         configuration_artifact: reproduction.configuration_artifact().to_string(),
         finding_fingerprint: reproduction.finding_fingerprint().to_hex(),
         payload_schema: reproduction.payload_schema(),
-        payload_bytes: reproduction.payload().len(),
+        // The inline static part plus every run-length segment.
+        payload_bytes: reproduction
+            .payload_segments()
+            .iter()
+            .fold(reproduction.payload().len() as u64, |total, segment| {
+                total.saturating_add(segment.bytes())
+            }),
     })
 }
 

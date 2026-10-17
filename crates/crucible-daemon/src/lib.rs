@@ -311,7 +311,7 @@ pub use control_responsiveness::{
 };
 pub use crucible_artifact::{
     AutomaticFindingPreparationError, AutomaticFindingReplayOutcome,
-    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
+    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V5, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V5,
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript,
     FindingProductionReplayMaterialOutcome, FindingReplayIncompatibility,
@@ -319,8 +319,9 @@ pub use crucible_artifact::{
     MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
     MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedCrucibleFindingCandidate,
     PreparedSemanticAttemptResult, PreparedSemanticResultCodecError,
+    RepositoryReproductionSegments, crucible_reproduction_payload,
     decode_crucible_configuration_artifact, decode_crucible_configuration_artifact_with_selections,
-    decode_crucible_configuration_artifact_with_signal_fault_replay,
+    decode_crucible_configuration_artifact_with_signal_fault_replay, decode_crucible_reproduction,
     decode_crucible_scenario_artifact, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact,
 };

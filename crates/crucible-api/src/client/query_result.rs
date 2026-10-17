@@ -103,7 +103,7 @@ pub(super) fn parse_query_result_line(
                             "invalid query result search frontier choice: {error}"
                         ))
                     })?;
-                    choices.push(schedule.decisions().to_vec());
+                    choices.push(schedule.decision_history().to_vec());
                 }
                 frontiers.push(crucible::SearchRuntimeFrontier {
                     configuration: Configuration {

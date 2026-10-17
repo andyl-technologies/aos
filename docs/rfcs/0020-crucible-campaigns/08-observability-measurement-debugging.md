@@ -631,10 +631,12 @@ is the authenticated parent snapshot at which the first observation was already
 visible; using the successor that publishes the finding would create a
 content-address cycle.
 
-The sole current `ReproductionArtifact` schema v2 binds the semantic scenario and configuration,
+The sole current `ReproductionArtifact` schema v3 binds the semantic scenario and configuration,
 their exact `ScenarioArtifactId` and `ConfigurationArtifactId`, the stable
-failure fingerprint, and at most 32 MiB of self-contained execution-model
-bytes. The campaign layer does not trust those opaque bytes by inspection. A
+failure fingerprint, at most 34 MiB of static execution-model bytes, and the
+ordered run-length segments those bytes reference, each a trace-leaf child
+with its encoded length ([§15.11](15-segmented-event-log.md#1511-segmented-reproduction-schedules)).
+The campaign layer does not trust those opaque bytes by inspection. A
 typed execution-model adapter replays them, re-derives all identities and the
 failure fingerprint, and only then publishes the immutable record.
 
@@ -680,7 +682,8 @@ checkpoint bodies they name.
 
 The separate checked `GetCampaignFindingObject` capability authenticates one
 exact finding membership and returns only its requested representative/latest
-observation or original/minimized reproduction artifact. The
+observation, original/minimized reproduction artifact, or one schedule
+segment of either reproduction. The
 `explain-finding` porcelain composes the representative-observation and
 original-reproduction reads, then requires both responses to carry the same
 finding and the reproduction's exact configuration artifact to equal the
@@ -717,7 +720,9 @@ and response as its own blob in an evidence store as it arrives. A per-finding
 evidence record names the finding-level exchanges, the report projection, and
 occurrence chunks of at most 1,024 occurrences; each chunk entry names its page
 exchange, its three object exchanges, and the ordered segment exchanges of all
-four replay roles. The ledger itself is a manifest of `(finding, record)` pairs
+four replay roles. The record and each chunk entry also name, for the original
+and any minimized reproduction, a content-addressed list of the reproduction's
+schedule-segment exchanges in manifest order. The ledger itself is a manifest of `(finding, record)` pairs
 in canonical finding-ID order, bounded at 16 MiB, whose content address is the
 triage result's stored-ledger key. Offline import authenticates one finding and
 one occurrence at a time: a store-backed service answers only requests whose
@@ -742,7 +747,9 @@ typed route details from the failover marker, and unsigned guest metric samples;
 raw packet payloads and unrelated guest marker details are not rendered.
 
 - **[CMEAS-11]** Every finding MUST carry a self-contained `(scenario, seed,
-  schedule)` reproduction artifact and verify it before publication.
+  schedule)` reproduction artifact and verify it before publication. The
+  artifact's schedule segments are part of it; they are retained as its
+  content children ([CCOMP-32]).
 - **[CMEAS-12]** Retaining an exact closure improves debug startup but MUST NOT be
   required to reproduce the finding.
 

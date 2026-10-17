@@ -804,7 +804,7 @@ fn replay_to_savepoint_decision_fixtures(
     schedule: &crucible::Schedule,
 ) -> Vec<ReplayToSavepointDecisionFixture> {
     schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .map(|(index, decision)| {

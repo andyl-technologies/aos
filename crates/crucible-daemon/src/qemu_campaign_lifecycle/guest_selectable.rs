@@ -253,13 +253,13 @@ pub(super) fn publish_replayed_host_outcomes<F, D>(
     if outcome.configuration.def != target.def
         || !target
             .schedule
-            .decisions()
-            .starts_with(outcome.configuration.schedule.decisions())
+            .decision_history()
+            .starts_with(outcome.configuration.schedule.decision_history())
         || !outcome
             .configuration
             .schedule
-            .decisions()
-            .starts_with(current.schedule.decisions())
+            .decision_history()
+            .starts_with(current.schedule.decision_history())
         || outcome
             .event_log_entries
             .iter()

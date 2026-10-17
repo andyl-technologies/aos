@@ -84,10 +84,11 @@ configuration record binds its semantic `ConfigurationId`, its
 Repository reads resolve these records and recheck every cross-record binding;
 validation is not limited to the campaign-creation path.
 
-Finding reproduction uses the same exact-artifact rule. The current schema-v2
+Finding reproduction uses the same exact-artifact rule. The current schema-v3
 `ReproductionArtifact` binds semantic and exact scenario/configuration
-identities, a stable failure fingerprint, verifier-checked self-contained
-execution-model bytes, its original reproduction, the exact minimization
+identities, a stable failure fingerprint, verifier-checked static
+execution-model bytes with the ordered schedule segments they reference, its
+original reproduction, the exact minimization
 policy, bounded candidate history, and the final replayed state. The current
 schema-v4 `Finding` binds its normalized signature, representative and
 occurrence observations, reproduction artifacts, authenticated first-seen

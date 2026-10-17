@@ -17,7 +17,7 @@ type AppRandomBranchReplay = (
 pub(super) fn app_random_branch_replay(
     target: &Configuration,
 ) -> Result<AppRandomBranchReplay, String> {
-    let decisions = target.schedule.decisions();
+    let decisions = target.schedule.decision_history();
     let mut draw_indexes = BTreeMap::<NodeId, u64>::new();
     let mut selections = BTreeMap::new();
     let mut plan_entries = BTreeMap::<NodeId, Vec<AppRandomBranchPlanEntry>>::new();

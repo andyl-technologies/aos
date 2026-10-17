@@ -288,8 +288,13 @@ fn authenticate_campaign_finding(
     record: &CampaignFindingEvidenceRecord,
 ) -> Result<CampaignTriageFindingEvidence, CliError> {
     let head = authenticate_campaign_finding_head(index, evidence, record)?;
-    let report =
-        load_campaign_finding_report(evidence, artifacts, index, record, &head.reproduction)?;
+    let report = load_campaign_finding_report(
+        evidence,
+        artifacts,
+        index,
+        record,
+        &head.reproduction_artifact,
+    )?;
     let item = CampaignTriageFindingEvidence {
         campaign: record.campaign.clone(),
         snapshot: record.snapshot,
@@ -297,6 +302,7 @@ fn authenticate_campaign_finding(
         observation: head.observation,
         reproduction: head.reproduction,
         minimized_reproduction: head.minimized_reproduction,
+        minimized_artifact: head.minimized_artifact,
         report,
         occurrence_count: record.occurrence_count,
     };
@@ -304,13 +310,14 @@ fn authenticate_campaign_finding(
     Ok(item)
 }
 
-/// Reads one report projection and binds it to the authenticated reproduction.
+/// Reads one report projection and binds it to the authenticated
+/// reproduction's Crucible artifact.
 fn load_campaign_finding_report(
     evidence: &crucible::LocalDagStore,
     artifacts: &crucible::LocalDagStore,
     index: usize,
     record: &CampaignFindingEvidenceRecord,
-    reproduction: &crucible_campaign::ReproductionArtifact,
+    reproduction: &crucible::ReproductionArtifact,
 ) -> Result<TriageFindingEvidence, CliError> {
     let bytes = read_evidence_blob(
         evidence,
@@ -321,7 +328,7 @@ fn load_campaign_finding_report(
     let fields = parse_finding_report_fields(&bytes)?;
     let expected_model_artifact = parse_required_hash_field(&fields, "artifact")?;
     let stored_model_artifact = artifacts
-        .put(reproduction.payload())
+        .put(&reproduction.to_compact_binary())
         .map_err(CliError::Store)?;
     if stored_model_artifact != expected_model_artifact {
         return Err(artifact_error(format!(

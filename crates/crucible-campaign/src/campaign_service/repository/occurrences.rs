@@ -150,6 +150,30 @@ where
                         .load_finding_triage_replay_evidence(evidence.verification_selected())?,
                 )
             }
+            CampaignFindingOccurrenceObjectKind::ReproductionPayloadSegment {
+                minimized,
+                index,
+            } => {
+                let reproduction = if minimized {
+                    bundle.minimized()
+                } else {
+                    bundle.reproduction()
+                };
+                let record = self.repository.load_reproduction_artifact(reproduction)?;
+                let segment = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| record.payload_segments().get(index))
+                    .ok_or(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-finding-reproduction-segment-index",
+                    })?;
+                CampaignFindingOccurrenceObject::ReproductionPayloadSegment {
+                    minimized,
+                    index,
+                    bytes: self
+                        .repository
+                        .read_reproduction_payload_segment(reproduction, segment.content())?,
+                }
+            }
         };
         Ok(GetCampaignFindingOccurrenceObjectResponse::new(
             request,

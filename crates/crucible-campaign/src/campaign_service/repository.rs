@@ -686,6 +686,33 @@ where
                         .read_reproduction_artifact(minimized.content_id())?,
                 )
             }
+            CampaignFindingObjectKind::ReproductionPayloadSegment { minimized, index } => {
+                let reproduction = if minimized {
+                    finding
+                        .minimized()
+                        .ok_or(CampaignRepositoryError::InvalidRequest {
+                            reason: "campaign-finding-has-no-minimized-reproduction",
+                        })?
+                } else {
+                    finding.reproduction()
+                };
+                let record = self
+                    .repository
+                    .read_reproduction_artifact(reproduction.content_id())?;
+                let segment = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| record.payload_segments().get(index))
+                    .ok_or(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-finding-reproduction-segment-index",
+                    })?;
+                CampaignFindingObject::ReproductionPayloadSegment {
+                    minimized,
+                    index,
+                    bytes: self
+                        .repository
+                        .read_reproduction_payload_segment(reproduction, segment.content())?,
+                }
+            }
         };
         Ok(GetCampaignFindingObjectResponse::new(
             request,

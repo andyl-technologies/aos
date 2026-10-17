@@ -927,8 +927,14 @@ fn validate_replayed_failure_boundary(
     for replay_id in replay_ids {
         let record = repository.load_finding_triage_replay_evidence(replay_id)?;
         let reproduction = repository.load_reproduction_artifact(record.reproduction())?;
-        let artifact =
-            crucible_core::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+        let artifact = crucible_daemon::decode_crucible_reproduction(
+            &reproduction,
+            &crucible_daemon::RepositoryReproductionSegments::new(
+                &repository,
+                record.reproduction(),
+            ),
+            "retained reproduction",
+        )?;
         let replay = artifact.replay()?;
         let configuration = crucible_core::Configuration {
             def: artifact.scenario_def(),
@@ -1002,7 +1008,7 @@ fn validate_replayed_failure_boundary(
 
 fn validate_fast_q7_schedule(schedule: &Schedule) -> Result<(), Box<dyn Error>> {
     let selections = schedule
-        .decisions()
+        .decision_history()
         .iter()
         .filter_map(|decision| match decision {
             Decision::Selection(selection) => Some(selection.selection()),

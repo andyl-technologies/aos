@@ -603,7 +603,10 @@ fn quantum_outcome_carries_step_decisions() {
         scheduler_quiescence: None,
     };
 
-    assert_eq!(outcome.configuration.schedule.decisions(), &[decision]);
+    assert_eq!(
+        outcome.configuration.schedule.decision_history(),
+        &[decision]
+    );
 }
 
 #[test]

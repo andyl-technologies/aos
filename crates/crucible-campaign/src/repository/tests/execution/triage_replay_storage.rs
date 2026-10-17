@@ -64,8 +64,8 @@ fn triage_replay_chunk_storage_fails_closed_under_repository_adversaries() {
             lineage.genesis(),
             lineage.genesis_content(),
             fingerprint,
-            1,
-            b"triage chunk reproduction".to_vec(),
+            crate::ReproductionPayload::new(1, b"triage chunk reproduction".to_vec(), Vec::new())
+                .expect("reproduction payload"),
         )
         .expect("publish triage chunk reproduction");
     let signature = FindingSignature::new(
@@ -360,8 +360,12 @@ fn maximum_triage_replay_evidence_survives_gc_and_restart() {
             lineage.genesis(),
             lineage.genesis_content(),
             fingerprint,
-            1,
-            b"maximum triage replay reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"maximum triage replay reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish maximum triage reproduction");
     let signature = FindingSignature::new(

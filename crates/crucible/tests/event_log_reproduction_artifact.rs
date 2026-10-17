@@ -66,7 +66,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
 fn artifact_decision(artifact: &ReproductionArtifact) -> Decision {
     artifact
         .schedule()
-        .decisions()
+        .decision_history()
         .first()
         .expect("test artifact should carry one replay decision")
         .clone()

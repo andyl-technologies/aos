@@ -149,31 +149,41 @@ where
         .initial_replay_closure
         .as_ref()
         .ok_or(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch)?;
-    if request.initial_schedule.decisions().iter().any(|decision| {
-        !matches!(
-            decision,
-            crucible::Decision::DeliveryOrder(_)
-                | crucible::Decision::RngDraw(_)
-                | crucible::Decision::Preemption(_)
-                | crucible::Decision::Selection(_)
-        )
-    }) {
+    if request
+        .initial_schedule
+        .decision_history()
+        .iter()
+        .any(|decision| {
+            !matches!(
+                decision,
+                crucible::Decision::DeliveryOrder(_)
+                    | crucible::Decision::RngDraw(_)
+                    | crucible::Decision::Preemption(_)
+                    | crucible::Decision::Selection(_)
+            )
+        })
+    {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
     closure
         .validate_for_schedule(&request.scenario, &request.initial_schedule)
         .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
-    if request.initial_schedule.decisions().iter().any(|decision| {
-        let crucible::Decision::Selection(decision) = decision else {
-            return false;
-        };
-        decision.selection().is_ok_and(|selection| {
-            matches!(
-                selection.origin(),
-                crucible_campaign::SelectionOrigin::ModelSample(_)
-            )
+    if request
+        .initial_schedule
+        .decision_history()
+        .iter()
+        .any(|decision| {
+            let crucible::Decision::Selection(decision) = decision else {
+                return false;
+            };
+            decision.selection().is_ok_and(|selection| {
+                matches!(
+                    selection.origin(),
+                    crucible_campaign::SelectionOrigin::ModelSample(_)
+                )
+            })
         })
-    }) {
+    {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
     if request

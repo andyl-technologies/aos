@@ -175,7 +175,7 @@ fn content_identities_admit_only_current_registry_versions() {
     assert_current_version!(FindingId, ObjectKind::Finding, 4);
     assert_current_version!(FindingCandidateBundleId, ObjectKind::Finding, 7);
     assert_current_version!(FindingTriageReplayEvidenceId, ObjectKind::Finding, 2);
-    assert_current_version!(ReproductionArtifactId, ObjectKind::Finding, 2);
+    assert_current_version!(ReproductionArtifactId, ObjectKind::Finding, 3);
     assert_current_version!(PlannerBeamCandidateId, ObjectKind::Projection, 2);
 }
 
@@ -2809,8 +2809,8 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
             configuration_artifact_id,
             fingerprint,
         ),
-        1,
-        b"self-contained reproduction".to_vec(),
+        crate::ReproductionPayload::new(1, b"self-contained reproduction".to_vec(), Vec::new())
+            .expect("reproduction payload"),
     )
     .expect("reproduction");
     let reproduction_id = reproduction.id().expect("reproduction id");
@@ -2947,12 +2947,12 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
             original_configuration_artifact_id,
             fingerprint,
         ),
-        1,
-        b"original reproduction".to_vec(),
+        crate::ReproductionPayload::new(1, b"original reproduction".to_vec(), Vec::new())
+            .expect("reproduction payload"),
     )
     .expect("original reproduction");
     let original_id = original.id().expect("original reproduction id");
-    assert_eq!(original.schema_version(), 2);
+    assert_eq!(original.schema_version(), 3);
     assert!(original.minimization().is_none());
 
     let minimized_configuration = ConfigurationId::from_hash(hash("finding-current-minimized"));
@@ -3016,14 +3016,14 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
             minimized_configuration_artifact_id,
             fingerprint,
         ),
-        1,
-        b"minimized reproduction".to_vec(),
+        crate::ReproductionPayload::new(1, b"minimized reproduction".to_vec(), Vec::new())
+            .expect("reproduction payload"),
         minimization,
     )
     .expect("minimized reproduction");
     let minimized_id = minimized.id().expect("minimized reproduction id");
-    assert_eq!(minimized.schema_version(), 2);
-    assert_eq!(minimized_id.content_id().schema_version(), 2);
+    assert_eq!(minimized.schema_version(), 3);
+    assert_eq!(minimized_id.content_id().schema_version(), 3);
     let decoded = ReproductionArtifact::from_canonical_bytes(&minimized.canonical_bytes())
         .expect("decode minimized reproduction");
     assert_eq!(decoded, minimized);

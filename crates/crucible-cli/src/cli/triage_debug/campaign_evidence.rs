@@ -13,6 +13,8 @@ use super::*;
 mod ledger;
 #[path = "campaign_evidence/record.rs"]
 mod record;
+#[path = "campaign_evidence/reproduction.rs"]
+mod reproduction;
 #[path = "campaign_evidence/service.rs"]
 mod service;
 #[path = "campaign_evidence/store.rs"]
@@ -22,6 +24,7 @@ pub(crate) use ledger::{
     CampaignTriageEvidence, campaign_findings_ledger_bytes, load_campaign_findings_ledger,
     load_campaign_findings_ledger_bytes, write_campaign_findings_ledger,
 };
+pub(crate) use reproduction::fetch_campaign_reproduction;
 #[cfg(test)]
 pub(crate) use service::capture_campaign_triage_finding;
 pub(crate) use service::{
@@ -209,16 +212,13 @@ fn triage_role_evidence(
     }
 }
 
+/// Replays a reproduction's decoded Crucible artifact into a finding framed
+/// by `template`, checking it against the campaign record's identities.
 fn campaign_model_finding_reproduction(
     template: &crucible::FindingReproductionArtifact,
     reproduction: &crucible_campaign::ReproductionArtifact,
+    artifact: crucible::ReproductionArtifact,
 ) -> Result<crucible::FindingReproductionArtifact, CliError> {
-    let artifact = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
-        .map_err(|error| {
-            artifact_error(format!(
-                "campaign minimized reproduction payload is invalid: {error}"
-            ))
-        })?;
     let replay = artifact.replay().map_err(|error| {
         artifact_error(format!(
             "campaign minimized reproduction does not replay: {error}"

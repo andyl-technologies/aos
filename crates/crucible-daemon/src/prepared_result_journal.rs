@@ -1653,10 +1653,12 @@ mod tests {
             blake3::hash(&payload).to_hex().as_str(),
             "13002d852b42a775d0ed3634370fe6c8fb4e66ebed5d908c41e2d7f3b5a258fc"
         );
+        // The state commits the segment-set identity, whose version 3 domain
+        // also covers reproduction schedule segments.
         let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v4 state");
         assert_eq!(
             blake3::hash(&state).to_hex().as_str(),
-            "1e48e3d9bf69702d1af790744b761d3a317e5fb242f63a92d1144c85686f0259"
+            "01f06d4c31b23dbd90055852fa18f6e62bd3b34bd40d714995e386ba5f346a5e"
         );
         journal.remove().expect("remove v4 journal");
     }

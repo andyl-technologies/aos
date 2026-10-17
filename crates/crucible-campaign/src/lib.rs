@@ -42,6 +42,7 @@ mod observation;
 mod planner_service;
 mod policy;
 mod repository;
+mod reproduction;
 pub mod spill;
 mod statistics;
 
@@ -162,7 +163,6 @@ pub use finding::{
     MAX_FINDING_CAUSAL_EVIDENCE, MAX_FINDING_EXACT_PINS, MAX_FINDING_MINIMIZATION_ATTEMPTS,
     MAX_FINDING_MINIMIZATION_POLICY_BYTES, MAX_FINDING_OCCURRENCES,
     MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES, MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
-    ReproductionArtifact, ReproductionArtifactBasis,
 };
 pub use finding_candidate::{
     FindingAssertionFailureBoundary, FindingCandidateBundle, FindingCandidateCore,
@@ -289,6 +289,10 @@ pub use repository::{
     ResolvedSelection, SavepointCaptureCursor, SavepointCaptureResolutionResult,
     SavepointCaptureResult, SavepointContinuationResult, SavepointContinuationSource,
     SelectionResolver, WorkerSlotId,
+};
+pub use reproduction::{
+    MAX_REPRODUCTION_PAYLOAD_SEGMENTS, ReproductionArtifact, ReproductionArtifactBasis,
+    ReproductionPayload, ReproductionPayloadSegment,
 };
 pub use statistics::{
     MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_CHUNKS,

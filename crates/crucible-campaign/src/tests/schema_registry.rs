@@ -69,9 +69,8 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             CampaignRecordKind::ObjectiveEvaluation
             | CampaignRecordKind::RankingExplanation
             | CampaignRecordKind::SurvivorSelection => "crucible-campaign::objective",
-            CampaignRecordKind::ReproductionArtifact | CampaignRecordKind::Finding => {
-                "crucible-campaign::finding"
-            }
+            CampaignRecordKind::ReproductionArtifact => "crucible-campaign::reproduction",
+            CampaignRecordKind::Finding => "crucible-campaign::finding",
             CampaignRecordKind::FindingCandidateBundle => "crucible-campaign::finding_candidate",
             CampaignRecordKind::FindingTriageReplayEvidence
             | CampaignRecordKind::FindingTriageReplayEvidenceChunk => {
@@ -523,13 +522,13 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.crucible-reproduction-payload",
-            "4",
+            "5",
             "crucible-daemon::crucible_artifact",
         ),
         ("crucible.execution.scenario-form", "9", "crucible::model"),
         (
             "crucible.executor.crucible-configuration-payload",
-            "4",
+            "5",
             "crucible-daemon::crucible_artifact",
         ),
         (
@@ -544,7 +543,12 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.execution.reproduction-artifact",
-            "9",
+            "10",
+            "crucible::model",
+        ),
+        (
+            "crucible.execution.reproduction-artifact-manifest",
+            "1",
             "crucible::model",
         ),
     ] {

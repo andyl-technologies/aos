@@ -242,7 +242,7 @@ fn finding_for_test(occurrence_root: ContentId) -> Finding {
             observation,
             ReproductionArtifactId::parse(&format!(
                 "crucible.campaign.reproduction-artifact@{}",
-                ContentId::for_bytes(ObjectKind::Finding, 2, b"finding-export-reproduction")
+                ContentId::for_bytes(ObjectKind::Finding, 3, b"finding-export-reproduction")
                     .encode()
             ))
             .expect("reproduction ID"),

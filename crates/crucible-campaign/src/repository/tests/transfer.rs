@@ -192,8 +192,8 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"representative reproduction".to_vec(),
+            crate::ReproductionPayload::new(1, b"representative reproduction".to_vec(), Vec::new())
+                .expect("reproduction payload"),
         )
         .expect("publish representative reproduction");
     let reproduction_content = reproduction.content_id();

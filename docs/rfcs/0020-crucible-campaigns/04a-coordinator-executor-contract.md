@@ -292,8 +292,9 @@ GetCampaignFindingObjectResponseV1 = version | request_digest |
                                      FindingObjectV1 | MerkleLookupProofV1
 FindingObjectV1 = 0 ObservationV16 |
                   1 latest ObservationV16 |
-                  2 ReproductionArtifactV2 |
-                  3 minimized ReproductionArtifactV2
+                  2 ReproductionArtifactV3 |
+                  3 minimized ReproductionArtifactV3 |
+                  4 ReproductionPayloadSegment(bool minimized, u32 index)
 
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
@@ -707,7 +708,10 @@ component-message limit.
 `GetCampaignFindingObject` is the separately authorized dependency-body
 capability used by finding explanations. The request names one exact finding
 ID and one closed object kind: representative observation, latest occurrence,
-original reproduction, or minimized reproduction. The response carries the
+original reproduction, minimized reproduction, or the payload segment at one
+index of either reproduction. A segment response carries the segment's bytes,
+which a reader authenticates against the record's content ID and length
+before use. The response carries the
 complete anchoring snapshot and finding, an exact minimal lookup proof from
 `roots.findings`, and only the requested typed child. A checked reader MUST
 reconstruct the snapshot and finding IDs, derive the signature-index key using

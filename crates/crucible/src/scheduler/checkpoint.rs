@@ -783,7 +783,7 @@ fn restore_search_frontiers(
                 .iter()
                 .map(|bytes| {
                     Schedule::from_compact_binary(bytes)
-                        .map(|schedule| schedule.decisions().to_vec())
+                        .map(|schedule| schedule.decision_history().to_vec())
                         .map_err(|_| SingleSchedulerCheckpointError::State)
                 })
                 .collect::<Result<Vec<_>, _>>()?;

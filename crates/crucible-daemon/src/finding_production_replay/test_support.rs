@@ -73,8 +73,8 @@ pub(crate) fn campaign_binding(
             configuration.id().expect("configuration id"),
             CampaignHash::from_bytes(finding.finding_fingerprint.bytes),
         ),
-        crate::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-        finding.artifact.to_compact_binary(),
+        crate::crucible_artifact::crucible_reproduction_payload(&finding.artifact)
+            .expect("campaign reproduction payload"),
     )
     .expect("campaign reproduction")
     .id()

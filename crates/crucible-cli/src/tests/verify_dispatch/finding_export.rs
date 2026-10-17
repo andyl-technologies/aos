@@ -290,7 +290,8 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     )?;
     let observed = repository.publish_observation(CAMPAIGN, observation_snapshot, &observation)?;
     let campaign_fingerprint = CampaignHash::from_bytes(fingerprint.bytes);
-    let reproduction_payload = model_finding.artifact.to_compact_binary();
+    let reproduction_payload =
+        crucible_daemon::crucible_reproduction_payload(&model_finding.artifact)?;
     assert_eq!(
         model_finding.artifact.scenario_form().id().to_hex(),
         scenario.to_hex()
@@ -298,15 +299,16 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     assert_eq!(configuration.id().to_hex(), child.to_hex());
     assert_eq!(
         model_finding.artifact.id().to_hex(),
-        crucible::ContentHash::from_bytes(&reproduction_payload).to_hex()
+        crucible::ContentHash::from_bytes(&model_finding.artifact.to_compact_binary()).to_hex()
     );
+    publish_reproduction_segments(&repository, &model_finding.artifact)?;
+    publish_reproduction_segments(&repository, &minimized_model_finding.artifact)?;
     let original = repository.publish_reproduction_artifact(
         scenario,
         scenario_artifact,
         child,
         child_artifact,
         campaign_fingerprint,
-        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
         reproduction_payload.clone(),
     )?;
     let replayed_state = CampaignHash::from_bytes(minimized_model_finding.replay.state.bytes);
@@ -336,8 +338,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         minimized_child,
         minimized_child_artifact,
         campaign_fingerprint,
-        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-        minimized_model_finding.artifact.to_compact_binary(),
+        crucible_daemon::crucible_reproduction_payload(&minimized_model_finding.artifact)?,
         minimization.clone(),
     )?;
     let signature = FindingSignature::new(

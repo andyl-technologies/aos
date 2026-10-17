@@ -37,8 +37,12 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
         stored.finding_fingerprint(),
         CampaignHash::from_bytes(finding.finding_fingerprint.bytes)
     );
+    let segments = RepositoryReproductionSegments {
+        repository: &repository,
+        reproduction: id,
+    };
     assert_eq!(
-        crucible::ReproductionArtifact::from_compact_binary(stored.payload())
+        decode_crucible_reproduction(&stored, &segments, "stored reproduction")
             .expect("decode stored reproduction")
             .replay()
             .expect("replay stored reproduction"),
@@ -61,16 +65,21 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
             stored.configuration(),
             stored.configuration_artifact(),
             stored.finding_fingerprint(),
-            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4 + 1,
-            stored.payload().to_vec(),
+            crucible_campaign::ReproductionPayload::new(
+                CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V5 + 1,
+                stored.payload().to_vec(),
+                stored.payload_segments().to_vec(),
+            )
+            .expect("mislabeled payload"),
         )
         .expect("publish structurally valid mislabeled reproduction");
     assert!(matches!(
         store.import_minimized_reproduction(mislabeled, &run, |_| {
             Ok(Some(finding.finding_fingerprint))
         }),
-        Err(CrucibleArtifactError::SemanticIdentityMismatch {
-            artifact: "minimization original"
+        Err(CrucibleArtifactError::UnsupportedPayloadSchema {
+            artifact: "original finding reproduction",
+            ..
         })
     ));
     let minimized = store
@@ -79,7 +88,7 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
     let minimized = repository
         .load_reproduction_artifact(minimized)
         .expect("load minimized reproduction");
-    assert_eq!(minimized.schema_version(), 2);
+    assert_eq!(minimized.schema_version(), 3);
     let minimization = minimized
         .minimization()
         .expect("retained minimization evidence");

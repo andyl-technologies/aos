@@ -70,8 +70,14 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         .verification_original();
     let replay_record = repository.load_finding_triage_replay_evidence(replay_id)?;
     let reproduction = repository.load_reproduction_artifact(replay_record.reproduction())?;
-    let artifact =
-        crucible_core::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+    let artifact = crucible_daemon::decode_crucible_reproduction(
+        &reproduction,
+        &crucible_daemon::RepositoryReproductionSegments::new(
+            &repository,
+            replay_record.reproduction(),
+        ),
+        "retained reproduction",
+    )?;
     let configuration = crucible_core::Configuration {
         def: artifact.scenario_def(),
         schedule: artifact.schedule().clone(),

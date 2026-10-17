@@ -2234,7 +2234,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         .start()
         .configuration()
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .cloned()
         .collect();
@@ -2338,7 +2338,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                 let decisions = replay_candidate
                     .artifact
                     .schedule()
-                    .decisions()
+                    .decision_history()
                     .iter()
                     .cloned()
                     .collect::<VecDeque<_>>();
@@ -2662,8 +2662,7 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         .load_finding_triage_replay_evidence(triage.minimization_original())
         .expect("load supplemental triage evidence");
     let reproduction = finding.original();
-    let artifact = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
-        .expect("decode supplemental reproduction");
+    let artifact = finding.original_artifact().clone();
     let native_finding = FindingReproductionArtifact {
         discovery_path: FindingDiscoveryPath::StateSpaceSearch,
         finding_fingerprint: crucible::ContentHash {

@@ -2942,7 +2942,7 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
     let decision = pending
         .configuration
         .schedule
-        .decisions()
+        .decision_history()
         .last()
         .expect("default selection decision");
     let Decision::Selection(decision) = decision else {

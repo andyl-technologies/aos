@@ -156,8 +156,15 @@ pub(crate) fn run_finding_bundle_branch(
     let reproduction = imported
         .load_reproduction_artifact(retained_finding.reproduction())
         .map_err(branch_error)?;
-    let model = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
-        .map_err(|error| backend_error(format!("finding reproduction is invalid: {error}")))?;
+    let model = crucible_daemon::decode_crucible_reproduction(
+        &reproduction,
+        &crucible_daemon::RepositoryReproductionSegments::new(
+            &imported,
+            retained_finding.reproduction(),
+        ),
+        "finding reproduction",
+    )
+    .map_err(|error| backend_error(format!("finding reproduction is invalid: {error}")))?;
     let original = model
         .schedule()
         .decision_history()

@@ -391,7 +391,7 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("replay-evidence"),
     )?;
-    let causal_entries = recorded_event_log(schedule.clone().decisions()[0].clone());
+    let causal_entries = recorded_event_log(schedule.clone().decision_history()[0].clone());
     let coverage_fingerprint = finding_hash("replay-evidence-coverage");
     let failure =
         FailureClusterReportFailure::property(property_violation_record(finding.artifact.id()));
@@ -504,7 +504,7 @@ fn paired_divergence_evidence_retains_both_logs_and_recomputes_mismatch()
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("paired-divergence-evidence"),
     )?;
-    let expected = recorded_event_log(schedule.decisions()[0].clone());
+    let expected = recorded_event_log(schedule.decision_history()[0].clone());
     let mut reproduced = expected.clone();
     reproduced.pop();
     let coverage_fingerprint = finding_hash("paired-divergence-coverage");
@@ -562,7 +562,7 @@ fn paired_divergence_evidence_retains_both_logs_and_recomputes_mismatch()
 fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), Box<dyn Error>> {
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
-    let coverage_entries = recorded_event_log(schedule.decisions()[0].clone());
+    let coverage_entries = recorded_event_log(schedule.decision_history()[0].clone());
     let first = finding_artifact(
         &scenario,
         schedule.clone(),
@@ -678,7 +678,7 @@ fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Er
         FindingDiscoveryPath::CampaignFork,
         finding_hash("divergence"),
     )?;
-    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let entries = recorded_event_log(schedule.decision_history()[0].clone());
     let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
     let divergence = EventLogCausalDivergencePoint {
         raw_index: 2,
@@ -871,7 +871,7 @@ fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("normalization"),
     )?;
-    let base_entries = recorded_event_log(schedule.decisions()[0].clone());
+    let base_entries = recorded_event_log(schedule.decision_history()[0].clone());
     let base_log = recorded_event_log_for_finding(&finding, &base_entries)?;
     let normalization = FailureSignatureNormalization::identity();
     let base_record = property_violation_record(finding.artifact.id());
@@ -905,7 +905,7 @@ fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
     );
 
     let shifted_entries =
-        recorded_event_log_with_assertion_time(schedule.decisions()[0].clone(), 88);
+        recorded_event_log_with_assertion_time(schedule.decision_history()[0].clone(), 88);
     let shifted_log = recorded_event_log_for_finding(&finding, &shifted_entries)?;
     let shifted_record = property_violation_record_at(finding.artifact.id(), 88);
     let shifted_log_signature =
@@ -1019,7 +1019,7 @@ fn failure_signature_policy_projects_versioned_keys_and_result_identity()
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("signature-policy"),
     )?;
-    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let entries = recorded_event_log(schedule.decision_history()[0].clone());
     let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
     let record = property_violation_record(finding.artifact.id());
     let signature =
@@ -1182,7 +1182,7 @@ fn failure_clustering_partitions_and_orders_by_signature_key() -> Result<(), Box
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("cluster-source"),
     )?;
-    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let entries = recorded_event_log(schedule.decision_history()[0].clone());
     let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
     let record = property_violation_record(finding.artifact.id());
     let base_signature =

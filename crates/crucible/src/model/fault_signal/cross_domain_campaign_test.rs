@@ -94,7 +94,7 @@ fn cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer() {
     assert_eq!(minimized.accepted_attempts(), 1);
     assert!(minimized.attempts.iter().any(|attempt| !attempt.accepted));
     assert_eq!(
-        minimized.minimized.artifact.schedule().decisions(),
+        minimized.minimized.artifact.schedule().decision_history(),
         &[Decision::Override(failing_decision)]
     );
 
@@ -211,7 +211,7 @@ fn search_overrides_from_schedule(
     expected_parent: Option<ContentHash>,
 ) -> Result<BTreeMap<SearchChoiceId, SearchOverride>, EngineError> {
     let mut overrides = BTreeMap::new();
-    for decision in schedule.decisions() {
+    for decision in schedule.decision_history() {
         let Decision::Override(decision) = decision else {
             continue;
         };

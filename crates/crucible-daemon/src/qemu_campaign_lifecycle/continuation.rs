@@ -287,7 +287,9 @@ pub(super) fn production_continuation_plan(
                 if schedule.to_compact_binary() != *bytes {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 }
-                let [Decision::Selection(decision)] = schedule.decisions() else {
+                let (1, Some(Decision::Selection(decision))) =
+                    (schedule.len(), schedule.decision(0))
+                else {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 };
                 let selection = decision

@@ -298,12 +298,13 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         // The current closure includes the v7 scheduler continuation, its
         // World-bound I/O ledger, the v3 host-assertion continuation, and the
         // genesis observation choice-source and direct-selection index anchors,
-        // the v10 closure's resolved-effect trace-segment catalog, and a
-        // version 2 replay-closure root as the checkpoint choice child, and
-        // the version 8 production fault runtime with its referenced-event
-        // window. Authenticate the pin and closure above before pinning these
+        // the v10 closure's resolved-effect trace-segment catalog, a version 2
+        // replay-closure root as the checkpoint choice child, the version 8
+        // production fault runtime with its referenced-event window, and the
+        // version 5 schedule transport inside its configuration payload.
+        // Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "ae92552f5715a7821e3cb0b16fdb9433da493783c1e26ac0252c4d7ec60b9a50"
+        "a72f80f4515228906488ed007392f9b94e0d1c8ea86e1858cb83d64036e11044"
     );
     drop(store);
 

@@ -702,7 +702,7 @@ content_object_id!(
 content_object_id!(
     ReproductionArtifactId,
     ObjectKind::Finding,
-    2,
+    3,
     "crucible.campaign.reproduction-artifact",
     "Identifies one verifier-backed self-contained finding reproduction."
 );

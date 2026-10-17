@@ -463,9 +463,9 @@ fn validate_live_qemu_terminal(
             .map(|configuration| &configuration.schedule);
         let first_different_decision = actual_schedule.and_then(|actual| {
             expected_schedule
-                .decisions()
+                .decision_history()
                 .iter()
-                .zip(actual.decisions())
+                .zip(actual.decision_history())
                 .position(|(expected, actual)| expected != actual)
                 .or_else(|| {
                     (expected_schedule.len() != actual.len())
@@ -473,7 +473,7 @@ fn validate_live_qemu_terminal(
                 })
         });
         let expected_decision = first_different_decision
-            .and_then(|index| expected_schedule.decisions().get(index))
+            .and_then(|index| expected_schedule.decision_history().get(index))
             .map_or_else(|| String::from("none"), |decision| format!("{decision:?}"));
         let actual_decision = first_different_decision
             .and_then(|index| {

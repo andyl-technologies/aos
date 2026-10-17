@@ -418,7 +418,7 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
         Some(scheduler_node("alpha"))
     );
     assert_eq!(
-        scheduler.configuration().schedule.decisions(),
+        scheduler.configuration().schedule.decision_history(),
         &[
             Decision::Preemption(beta.clone()),
             Decision::Preemption(alpha.clone()),

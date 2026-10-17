@@ -190,14 +190,17 @@ crucible.campaign-s3-credentials	1	crucible-cli::campaign_store	deployment-secre
 crucible.cli.packed-repack-journal	1	crucible-cli::campaign::transform	operational-record	gate:campaign-store-composition
 crucible.cli.guest-transcript	1	crucible-cli::cli::triage_debug	operational-record	gate:campaign-component-contract
 crucible.executor.crucible-scenario-payload	5	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
-crucible.executor.crucible-configuration-payload	4	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
-crucible.executor.crucible-reproduction-payload	4	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
+crucible.executor.crucible-configuration-payload	5	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
+crucible.executor.crucible-reproduction-payload	5	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.crucible-measurement-evaluation-payload	2	crucible-daemon::crucible_measurement	execution-model-payload	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.execution.scenario-form	9	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
 crucible.execution.measurement-definitions	1	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
 crucible.execution.measurement-evaluation	1	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
-crucible.execution.reproduction-artifact	9	crucible::model	execution-model-payload	gate:campaign-replay,gate:content-address
-crucible.execution.schedule	4	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
+crucible.execution.reproduction-artifact	10	crucible::model	execution-model-payload	gate:campaign-replay,gate:content-address
+crucible.execution.reproduction-artifact-manifest	1	crucible::model	execution-model-payload	gate:campaign-replay,gate:content-address
+crucible.execution.schedule	5	crucible::model::schedule_segments	execution-model-payload	gate:typed-choice,gate:campaign-replay
+crucible.execution.schedule-manifest	1	crucible::model::schedule_segments	execution-model-payload	gate:campaign-replay,gate:content-address
+crucible.execution.schedule-segment	1	crucible::model::schedule_segments	trace	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.selection-decision	1	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
 crucible.execution.checkpoint	6	crucible::model	checkpoint	gate:typed-choice,gate:campaign-replay
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
@@ -216,7 +219,7 @@ crucible.campaign.observation	16	crucible-campaign::observation	observation	gate
 crucible.campaign.objective-evaluation	2	crucible-campaign::objective	observation	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.ranking-explanation	2	crucible-campaign::objective	projection	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fact	gate:campaign-model,gate:campaign-replay,gate:content-address
-crucible.campaign.reproduction-artifact	2	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
+crucible.campaign.reproduction-artifact	3	crucible-campaign::reproduction	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding	4	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding-candidate-bundle	7	crucible-campaign::finding_candidate	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding-triage-replay-evidence	2	crucible-campaign::finding_triage_evidence	finding	gate:campaign-replay,gate:content-address
@@ -323,8 +326,9 @@ crucible.search-schedule-named-truths	1	crucible-cli::cli::planning::invocations
 crucible.search-retained-evidence	1	crucible-cli::cli::planning::invocations	deployment-config	gate:campaign-replay
 crucible.lifecycle-artifact-bundle	1	crucible-cli::cli::artifact_capture	physical-record	gate:campaign-replay
 crucible.failure-triage.findings-ledger	5	crucible-cli::cli::triage_debug	finding	gate:campaign-replay
-crucible.failure-triage.finding-evidence	1	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
-crucible.failure-triage.finding-occurrences	1	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
+crucible.failure-triage.finding-evidence	2	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
+crucible.failure-triage.finding-occurrences	2	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
+crucible.failure-triage.reproduction-segments	1	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
 
 # Current campaign content-store records
 crucible.campaign-corpus	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address

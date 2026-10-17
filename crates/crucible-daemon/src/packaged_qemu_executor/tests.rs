@@ -733,8 +733,12 @@ fn retain_packaged_pending_finding(
             lineage.genesis(),
             lineage.genesis_content(),
             fingerprint,
-            1,
-            reproduction_payload.clone(),
+            crucible_campaign::ReproductionPayload::new(
+                1,
+                reproduction_payload.clone(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish packaged original reproduction");
     let final_state =
@@ -754,8 +758,8 @@ fn retain_packaged_pending_finding(
             lineage.genesis(),
             lineage.genesis_content(),
             fingerprint,
-            1,
-            reproduction_payload,
+            crucible_campaign::ReproductionPayload::new(1, reproduction_payload, Vec::new())
+                .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("publish packaged minimized reproduction");

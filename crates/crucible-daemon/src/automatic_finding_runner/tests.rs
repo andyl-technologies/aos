@@ -294,7 +294,12 @@ impl CrucibleExecutionRunner for ReplayRunner {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.observed.lock().expect("replay observations").push((
             input.path().clone(),
-            input.start().configuration().schedule.decisions().len(),
+            input
+                .start()
+                .configuration()
+                .schedule
+                .decision_history()
+                .len(),
         ));
         let result = failed_result(input, &self.property);
         Ok(CrucibleExecutionOutcome::new(

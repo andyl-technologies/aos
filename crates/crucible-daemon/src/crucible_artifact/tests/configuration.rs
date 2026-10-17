@@ -20,7 +20,7 @@ fn crucible_payloads_round_trip_and_rederive_semantic_ids() {
             .expect("configuration artifact");
     assert_eq!(
         configuration_artifact.payload_schema(),
-        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4
+        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V5
     );
 
     assert_eq!(

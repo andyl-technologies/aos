@@ -805,8 +805,8 @@ fn selected_schedule_replays_through_a_fresh_authenticated_repository() {
     assert_eq!(first.branch_request_count(), 1);
     assert_eq!(first.terminal_configuration().schedule.len(), 1);
     assert!(matches!(
-        first.terminal_configuration().schedule.decisions(),
-        [crucible::Decision::Selection(_)]
+        first.terminal_configuration().schedule.decision(0),
+        Some(crucible::Decision::Selection(_))
     ));
     assert_eq!(first_starts.load(Ordering::Relaxed), 2);
 
@@ -1185,8 +1185,8 @@ fn explicit_terminal_discovery_precedes_supervisor_automatic_discovery() {
     assert_eq!(completed.branch_request_count(), 0);
     assert_eq!(completed.terminal_configuration().schedule.len(), 1);
     assert!(matches!(
-        completed.terminal_configuration().schedule.decisions(),
-        [crucible::Decision::Selection(_)]
+        completed.terminal_configuration().schedule.decision(0),
+        Some(crucible::Decision::Selection(_))
     ));
     assert_eq!(
         completed.terminal().observation().stop(),

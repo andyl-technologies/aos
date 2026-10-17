@@ -556,8 +556,7 @@ impl CampaignExecutorStore {
                 artifact.configuration(),
                 artifact.configuration_artifact(),
                 artifact.finding_fingerprint(),
-                artifact.payload_schema(),
-                artifact.payload().to_vec(),
+                artifact.reproduction_payload().clone(),
                 minimization.clone(),
             ),
             None => self.repository.publish_reproduction_artifact(
@@ -566,10 +565,24 @@ impl CampaignExecutorStore {
                 artifact.configuration(),
                 artifact.configuration_artifact(),
                 artifact.finding_fingerprint(),
-                artifact.payload_schema(),
-                artifact.payload().to_vec(),
+                artifact.reproduction_payload().clone(),
             ),
         }
+    }
+
+    /// Publishes one executor-verified reproduction payload segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of
+    /// [`CampaignRepository::publish_reproduction_payload_segment`].
+    pub fn publish_executor_reproduction_payload_segment(
+        &self,
+        segment: ReproductionPayloadSegment,
+        bytes: &[u8],
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.repository
+            .publish_reproduction_payload_segment(segment, bytes)
     }
 
     /// Publishes one executor-prepared finding-candidate root.

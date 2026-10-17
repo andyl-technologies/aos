@@ -448,7 +448,66 @@ is charged against the deployment's `maximum_event_log_bytes`, the
 operational bound every retained run-length stream of the attempt observes.
 Exceeding it is an operational refusal, never modeled evidence.
 
-## 15.11 Compatibility
+## 15.11 Segmented reproduction schedules
+
+A reproduction schedule holds one decision per recorded delivery order,
+application random draw, and preemption, so it grows with virtual time like
+the attempt log. The self-contained reproduction transport embedded the whole
+schedule as one blob, and the campaign reproduction record embedded that
+transport under a 32 MiB payload bound, so a long run could not be retained as
+a finding. The schedule now uses the segment scheme of
+[§15.2](#152-attempt-segments) with its own schemas:
+
+```text
+segment   ContentId(trace, schema 1), at most 16 MiB:
+  "crucible.schedule-segment.v1\0" u64 first_decision, u64 decision_count,
+  decision_count compact decisions                    // dense, nonempty
+
+manifest  at most 1 MiB:
+  "crucible.schedule-manifest.v1\0" schedule ContentHash, u64 decisions,
+  chain, u64 count, per segment: segment digest, u64 first_decision,
+                                 u64 decision_count, u64 encoded_bytes
+
+chain_0 = H("crucible.schedule.segment-chain.v1", "empty")
+chain_i = H(domain, chain_(i-1) | segment digest | first decision
+                    | decision count | encoded bytes)
+
+schedule  "crucible.schedule.v5\0" blob manifest, per segment in manifest
+          order: blob segment                          // transport form
+
+stored    "crucible.reproduction-artifact-manifest.v1\0"
+          blob scenario-def-form, blob manifest
+
+artifact  "crucible.reproduction-artifact.v10\0"
+          blob scenario-def-form, blob schedule v5     // transport form
+```
+
+The schedule's content hash is computed over its decisions, independent of
+segment boundaries. The reproduction identity is the hash of the version 10
+transport bytes; a writer streams that hash over the scenario, the manifest,
+and each segment in turn rather than assembling the transport.
+
+Campaign reproduction record version 3 keeps the stored form inline, under a
+34 MiB static bound, and names each schedule segment in manifest order as a
+trace-leaf child with its encoded length. Executor reproduction payload
+schema 5 is that stored form. A writer publishes every segment before the
+record that names it, the repository refuses a record whose segments it does
+not hold, and a prepared result's journal stages the segments of its finding's
+reproductions beside its log and trace segments. The finding-object and
+occurrence-object services serve one segment per request, authenticated
+against the record, and a failure-findings evidence record names each
+reproduction's segment exchanges through a content-addressed segment list.
+
+- **[CCOMP-32]** A reproduction artifact MUST retain its schedule as sealed
+  schedule segments named by a manifest, and a campaign reproduction record
+  MUST name exactly the manifest's segments, in order, as content children. A
+  writer MUST seal before an append would make a segment exceed 8 MiB and
+  MUST NOT seal for any other reason. Schedule identity MUST NOT depend on
+  segment boundaries. Every reader MUST authenticate each segment against the
+  record before decoding it, and no service response may carry more than one
+  segment.
+
+## 15.12 Compatibility
 
 Version 2 measurement replay evidence remains readable for retained findings
 whose logs fit its bound; new attempts publish only version 3. The attempt
@@ -459,7 +518,11 @@ Single-scheduler continuation version 8 replaces version 7 and keeps the
 imported I/O ledger in its pruned form; version 7 continuations are refused.
 The resolved-effect trace manifest replaces the version 3 whole-trace object
 without a compatibility reader; version 3 traces, fault runtime checkpoints
-before version 7, and observations before version 16 are refused.
+before version 7, and observations before version 16 are refused. Schedule
+version 5, reproduction transport version 10, campaign reproduction record
+version 3, and executor payload schema 5 replace their predecessors without
+compatibility readers, and prepared-result journals name reproduction
+segments under segment-set hash version 3.
 
 [CCOMP-21]: 04a-coordinator-executor-contract.md#04a7-capability-and-locality-reporting
 [OBS-17]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing

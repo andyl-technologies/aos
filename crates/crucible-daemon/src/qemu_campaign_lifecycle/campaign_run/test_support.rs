@@ -149,7 +149,7 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
         };
         let mut configuration = request.configuration;
         let replay_index = configuration.schedule.len();
-        let next_replay_decision = self.replay_target.decisions().get(replay_index);
+        let next_replay_decision = self.replay_target.decision_history().get(replay_index);
         if replay_index < self.replay_target.len()
             && !matches!(next_replay_decision, Some(crucible::Decision::Selection(_)))
         {

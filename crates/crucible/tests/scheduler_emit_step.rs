@@ -153,7 +153,7 @@ fn step_advances_schedule_and_event_log_prefix_across_quanta() {
         first.event_log_offset.prefix
     );
     assert_eq!(
-        scheduler.configuration().schedule.decisions().len(),
+        scheduler.configuration().schedule.decision_history().len(),
         first.decisions.len() + second.decisions.len()
     );
 }

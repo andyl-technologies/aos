@@ -550,7 +550,7 @@ mod tests {
             let expected_schedule = Schedule::from_decisions(
                 kept_indices
                     .iter()
-                    .map(|index| original.decisions()[*index].clone()),
+                    .map(|index| original.decision_history()[*index].clone()),
             );
             let expected_removed = (0..original.len())
                 .filter(|index| !kept_indices.contains(index))

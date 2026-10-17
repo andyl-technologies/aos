@@ -589,7 +589,7 @@ fn decode_artifact_object_records(
 
 /// Returns the typed schedule indices that must be forced during live replay.
 pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> Vec<u64> {
-    let decisions = schedule.decisions();
+    let decisions = schedule.decision_history();
     let mut network = Vec::new();
     for (index, decision) in decisions.iter().enumerate() {
         if matches!(decision, crucible::Decision::Selection(selection)

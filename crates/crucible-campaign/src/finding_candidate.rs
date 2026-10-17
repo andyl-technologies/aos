@@ -463,8 +463,10 @@ impl FindingCandidateBundle {
             signature_minimization,
             exact_pins,
         } = core;
-        if reproduction.content_id().schema_version() != 2
-            || minimized.content_id().schema_version() != 2
+        if reproduction.content_id().schema_version()
+            != crate::reproduction::REPRODUCTION_SCHEMA_VERSION
+            || minimized.content_id().schema_version()
+                != crate::reproduction::REPRODUCTION_SCHEMA_VERSION
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "finding candidate reproduction versions are invalid",
@@ -811,12 +813,12 @@ mod tests {
         ))?;
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"finding-candidate-original",
         ))?;
         let minimized = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"finding-candidate-minimized",
         ))?;
         let signature = FindingSignature::new(
@@ -991,7 +993,7 @@ mod tests {
     -> Result<(), CampaignCodecError> {
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"signature-evidence-original",
         ))?;
         let fingerprint = CampaignHash::derive("test", b"shared-fingerprint");
@@ -1064,7 +1066,7 @@ mod tests {
     {
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"verification-mismatch-original",
         ))?;
         let signature = FindingSignature::new(
@@ -1100,7 +1102,7 @@ mod tests {
     -> Result<(), CampaignCodecError> {
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"shrinking-winner-original",
         ))?;
         let original_configuration = crate::ConfigurationArtifactId::from_content_id(

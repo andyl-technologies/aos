@@ -2578,15 +2578,15 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
         CrucibleResolvedAttemptStart::Discover {
             configuration: target,
         } => {
-            let target_decisions = target.schedule.decisions();
-            let reached_decisions = pending.configuration.schedule.decisions();
+            let target_decisions = target.schedule.decision_history();
+            let reached_decisions = pending.configuration.schedule.decision_history();
             let target_id = ConfigurationId::from_hash(CampaignHash::from_bytes(target.id().bytes));
 
             candidate.configuration() == target_id
                 && reached_decisions.len() > target_decisions.len()
                 && reached_decisions.starts_with(target_decisions)
-                && reached_decisions[target_decisions.len()..]
-                    .iter()
+                && reached_decisions
+                    .iter_from(target_decisions.len())
                     .all(|decision| {
                         let Decision::Selection(decision) = decision else {
                             return false;

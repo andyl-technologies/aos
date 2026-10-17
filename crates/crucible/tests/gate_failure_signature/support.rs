@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn schedule_contains_override(schedule: &Schedule, point: &str, choice: &str) -> bool {
-    schedule.decisions().iter().any(|decision| {
+    schedule.decision_history().iter().any(|decision| {
         matches!(
             decision,
             Decision::Override(override_decision)

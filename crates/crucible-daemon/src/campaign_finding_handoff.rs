@@ -4,7 +4,7 @@
 //! and replay capture closure. This module reuses the live capture decoder and
 //! keeps the imported store read-only while preparing a fresh private replay.
 
-use crucible::{Checkpoint, Configuration, ReproductionArtifact, ScenarioDefForm};
+use crucible::{Checkpoint, Configuration, ScenarioDefForm};
 use crucible_api::{
     DestroySessionRequest, InProcessLifecycleClient, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, ProductionVmLifecycleConfig, ProductionVmLifecycleLoop,
@@ -535,7 +535,14 @@ pub fn load_archived_finding_production_capture(
     };
 
     let reproduction = repository.load_reproduction_artifact(reproduction_id)?;
-    let model = ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+    let model = crate::crucible_artifact::decode_crucible_reproduction(
+        &reproduction,
+        &crate::crucible_artifact::RepositoryReproductionSegments {
+            repository,
+            reproduction: reproduction_id,
+        },
+        "retained finding reproduction",
+    )?;
     let limits = FindingProductionReplayCaptureLimits::for_reproduction(&model);
     // Side logs keep reading their segments through the repository handles,
     // one segment at a time, after this returns.
@@ -546,7 +553,9 @@ pub fn load_archived_finding_production_capture(
         limits,
     )?;
     capture.validate_binding(reproduction_id, finding.signature())?;
-    if capture.model_reproduction() != reproduction.payload() {
+    // The capture embeds the self-contained transport, whose hash is the
+    // model artifact's identity.
+    if ContentHash::from_bytes(capture.model_reproduction()) != model.id() {
         return Err(CampaignFindingHandoffError::ModelReproductionMismatch);
     }
     Ok(capture)

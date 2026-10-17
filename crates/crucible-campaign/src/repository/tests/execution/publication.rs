@@ -448,8 +448,12 @@ fn campaign_report_counts_distinct_findings_from_one_observation() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"verified two-property reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"verified two-property reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish reproduction");
     let mut snapshot = observed.new_snapshot;
@@ -544,8 +548,12 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"verified self-contained reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"verified self-contained reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish reproduction");
     let signature = FindingSignature::new(
@@ -666,6 +674,9 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
             | CampaignFindingObject::MinimizedReproduction(value) => {
                 value.id().expect("reproduction ID").content_id()
             }
+            CampaignFindingObject::ReproductionPayloadSegment { .. } => {
+                panic!("no payload segment was requested")
+            }
         };
         assert_eq!(actual, expected);
     }
@@ -764,4 +775,5 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
 }
 
 mod candidate;
+mod reproduction_segments;
 mod retention;

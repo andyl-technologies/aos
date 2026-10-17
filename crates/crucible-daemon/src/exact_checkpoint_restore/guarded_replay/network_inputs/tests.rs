@@ -139,7 +139,7 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
     assert!(matches!(steps[3], ReplayStep::Input { delivery, .. } if delivery.ticks == 2));
     assert!(matches!(steps[4], ReplayStep::Decision { index: 2 }));
     assert!(matches!(
-        configuration.schedule.decisions()[1],
+        configuration.schedule.decision_history()[1],
         Decision::Preemption(_)
     ));
     let sender_steps =

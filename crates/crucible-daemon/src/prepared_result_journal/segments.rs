@@ -1,12 +1,13 @@
-//! Attempt-log and resolved-effect trace segments owned by one
-//! prepared-result journal.
+//! Attempt-log, resolved-effect trace, and finding reproduction segments
+//! owned by one prepared-result journal.
 //!
-//! A prepared result names its attempt-log segments and its resolved-effect
-//! trace segments by identity. Staging copies each referenced segment into
-//! the journal's [`objects`](super::objects) family before the result and
-//! state files are written. Both kinds share one directory because their
-//! content identities are domain-separated by object kind, so digests never
-//! collide:
+//! A prepared result names its attempt-log segments, its resolved-effect
+//! trace segments, and its finding's reproduction schedule segments by
+//! identity. Staging copies each referenced segment into the journal's
+//! [`objects`](super::objects) family before the result and state files are
+//! written. All kinds share one directory because their content identities
+//! are domain-separated by object kind and schema, and a reproduction segment
+//! records its own position, so digests never collide:
 //!
 //! ```text
 //! <journal>/segments/<64 hex>.segment              one complete segment
@@ -14,7 +15,8 @@
 //! ```
 //!
 //! State binds the number of referenced segments and a hash over their ordered
-//! references, attempt-log segments first, then trace segments.
+//! references: attempt-log segments, then trace segments, then reproduction
+//! segments.
 
 use std::io;
 use std::sync::Arc;
@@ -37,16 +39,17 @@ pub(super) static SEGMENTS: ObjectFamily = ObjectFamily {
 };
 
 /// Domain separating the journal's segment-set hash from other content.
-const SEGMENT_SET_HASH_DOMAIN: &str = "crucible.executor.prepared-result-journal-segments.v2";
+const SEGMENT_SET_HASH_DOMAIN: &str = "crucible.executor.prepared-result-journal-segments.v3";
 
 /// Returns the count and ordered hash of the segments a result references.
 ///
-/// Attempt-log references come first, then the trace segment identities; the
-/// count of each is hashed before its list, so neither list can absorb the
-/// other.
+/// Attempt-log references come first, then the trace and reproduction
+/// segment identities; the count of each is hashed before its list, so no
+/// list can absorb another.
 pub(super) fn segment_set_identity(result: &PreparedSemanticAttemptResult) -> (u64, [u8; 32]) {
     let log_segments = result.referenced_log_segments();
     let trace_segments = result.referenced_trace_segments();
+    let reproduction_segments = result.referenced_reproduction_segments();
     let mut hasher = blake3::Hasher::new_derive_key(SEGMENT_SET_HASH_DOMAIN);
 
     hasher.update(&(log_segments.len() as u64).to_be_bytes());
@@ -60,8 +63,12 @@ pub(super) fn segment_set_identity(result: &PreparedSemanticAttemptResult) -> (u
     for segment in trace_segments {
         hash_identity(&mut hasher, *segment);
     }
+    hasher.update(&(reproduction_segments.len() as u64).to_be_bytes());
+    for segment in &reproduction_segments {
+        hash_identity(&mut hasher, *segment);
+    }
 
-    let count = (log_segments.len() + trace_segments.len()) as u64;
+    let count = (log_segments.len() + trace_segments.len() + reproduction_segments.len()) as u64;
     (count, *hasher.finalize().as_bytes())
 }
 
@@ -100,6 +107,11 @@ pub(super) fn stage_segments(
             objects::write_object(&directory, &SEGMENTS, segment, &bytes)?;
         }
     }
+    // Reproduction segments are encoded from the finding's schedules, which
+    // the result holds in memory until the journal's copies replace them.
+    result.try_for_each_reproduction_segment(|segment, bytes| {
+        objects::write_object(&directory, &SEGMENTS, segment, bytes)
+    })?;
 
     let segments = objects::seal_directory(&directory, &SEGMENTS)?;
     Ok(result.with_log_segments(into_sources(segments)))

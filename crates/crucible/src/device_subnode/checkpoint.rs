@@ -271,7 +271,7 @@ impl DeviceSchedulingSubNodeCheckpoint {
                     src_node: completion.src_node,
                     seq: completion.seq,
                     payload: completion.payload,
-                    decisions: decisions.decisions().to_vec(),
+                    decisions: decisions.decision_history().to_vec(),
                 })
             })
             .collect::<Result<Vec<_>, DeviceSchedulingSubNodeCheckpointError>>()?;

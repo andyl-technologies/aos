@@ -22,6 +22,10 @@
 //!  four role-specific finding-triage replay records, finding bundle]
 //! ```
 //!
+//! A reproduction names its schedule segments by identity, like the leaves'
+//! log segments; the caller's segment stores yield them when the finding is
+//! decoded.
+//!
 //! Every record is a u32-length-prefixed canonical body. Counts and indexes are
 //! u32 values. A replay record identity is a u8-length-prefixed canonical
 //! content-identity string; the record bytes live in the result's record
@@ -126,8 +130,9 @@ impl PreparedSemanticAttemptResult {
     /// The leaves are retained in content-identity order, and duplicates are
     /// rejected. The supplied set must exactly cover every Crucible measurement
     /// payload v2 referenced by the observation and both finding replay passes,
-    /// and `log_segments` must yield every segment those leaves reference.
-    /// This authenticates closure ownership and any observation-stop proof;
+    /// and `log_segments` must yield every segment those leaves reference. The
+    /// finding's reproduction schedule segments are served from its resident
+    /// schedules. This authenticates closure ownership and any observation-stop proof;
     /// callers must separately run [`crate::verify_crucible_measurement_publication`]
     /// with the authenticated scenario definitions before publication.
     ///
@@ -143,7 +148,14 @@ impl PreparedSemanticAttemptResult {
         log_segments: impl Into<AttemptLogSegmentSources>,
         finding: Option<PreparedCrucibleFindingCandidate>,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
-        let log_segments = log_segments.into();
+        let mut log_segments = log_segments.into();
+        // A journal stages the finding's schedule segments only when it is
+        // created, so until then the resident schedules serve them.
+        if let Some(finding) = &finding {
+            log_segments.push(std::sync::Arc::new(
+                finding.resident_reproduction_segments()?,
+            ));
+        }
         validate_measurement_evidence_order(&measurement_replay_evidence)?;
         validate_log_segments(&measurement_replay_evidence, &log_segments)?;
         validate_pair(&observation, finding.as_ref())?;
@@ -268,6 +280,60 @@ impl PreparedSemanticAttemptResult {
             finding.replay_records.sources = replay_records;
         }
         self
+    }
+
+    /// Returns each finding reproduction segment once, original first.
+    ///
+    /// The original and minimized schedules often share a prefix, and with it
+    /// their leading segments, so a shared segment is listed once.
+    pub fn referenced_reproduction_segments(&self) -> Vec<crucible::segment_store::ContentId> {
+        let Some(finding) = &self.finding else {
+            return Vec::new();
+        };
+        let mut seen = BTreeSet::new();
+        finding
+            .original
+            .payload_segments()
+            .iter()
+            .chain(finding.minimized.payload_segments())
+            .map(|segment| segment.content())
+            .filter(|segment| seen.insert(*segment))
+            .collect()
+    }
+
+    /// Visits the bytes of each [`Self::referenced_reproduction_segments`]
+    /// entry, in that order, encoding each from the finding's schedules.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error `visit` returns, or a codec error when a
+    /// schedule cannot be segmented.
+    pub(crate) fn try_for_each_reproduction_segment<E>(
+        &self,
+        mut visit: impl FnMut(crucible::segment_store::ContentId, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<PreparedSemanticResultCodecError>,
+    {
+        let Some(finding) = &self.finding else {
+            return Ok(());
+        };
+        let mut seen = BTreeSet::new();
+        for artifact in [&finding.original_artifact, &finding.minimized_artifact] {
+            super::try_for_each_payload_segment(artifact.schedule(), |segment, bytes| {
+                if !seen.insert(segment.content()) {
+                    return Ok(());
+                }
+                visit(segment.content(), bytes).map_err(SegmentVisitError::Visit)
+            })
+            .map_err(|error| match error {
+                SegmentVisitError::Visit(error) => error,
+                SegmentVisitError::Payload(error) => {
+                    E::from(PreparedSemanticResultCodecError::from(error))
+                }
+            })?;
+        }
+        Ok(())
     }
 
     /// Returns each resolved-effect trace segment the observation names, in
@@ -658,6 +724,7 @@ impl PreparedSemanticAttemptResult {
         replay_records: impl Into<ReplayRecordSources>,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
         let replay_records = replay_records.into();
+        let log_segments = log_segments.into();
         let maximum_bytes = maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES);
         if bytes.len() > maximum_bytes {
             return Err(PreparedSemanticResultCodecError::LimitExceeded);
@@ -677,14 +744,13 @@ impl PreparedSemanticAttemptResult {
         };
         let finding = match decoder.byte()? {
             0 => None,
-            1 => Some(decode_finding(&mut decoder, replay_records)?),
+            1 => Some(decode_finding(&mut decoder, replay_records, &log_segments)?),
             _ => return Err(PreparedSemanticResultCodecError::InvalidTag),
         };
         decoder.finish()?;
 
-        // The payload names trace segments only by identity, like log
-        // segments; both are read from the caller's stores.
-        let log_segments = log_segments.into();
+        // The payload names trace and reproduction segments only by identity,
+        // like log segments; all are read from the caller's stores.
         let observation = observation.with_resolved_effect_trace_segments(log_segments.clone());
         let value = Self::new(
             observation,
@@ -1399,9 +1465,22 @@ fn encode_finding(
     Ok(())
 }
 
+/// A caller's visit error, or a schedule that could not be segmented.
+enum SegmentVisitError<E> {
+    Visit(E),
+    Payload(CrucibleArtifactError),
+}
+
+impl<E> From<CrucibleArtifactError> for SegmentVisitError<E> {
+    fn from(error: CrucibleArtifactError) -> Self {
+        Self::Payload(error)
+    }
+}
+
 fn decode_finding(
     decoder: &mut Decoder<'_>,
     replay_record_sources: ReplayRecordSources,
+    segments: &AttemptLogSegmentSources,
 ) -> Result<PreparedCrucibleFindingCandidate, PreparedSemanticResultCodecError> {
     let discovery_path = discovery_path_from_tag(decoder.byte()?)?;
     let minimization_seed = crucible::Seed::from_bytes(
@@ -1414,9 +1493,19 @@ fn decode_finding(
     let original_configuration =
         decoder.decode_record(ConfigurationArtifact::from_canonical_bytes)?;
     let original = decoder.decode_record(ReproductionArtifact::from_canonical_bytes)?;
+    let original_artifact = super::decode_crucible_reproduction(
+        &original,
+        segments,
+        "journal original finding reproduction",
+    )?;
     let minimized_configuration =
         decoder.decode_record(ConfigurationArtifact::from_canonical_bytes)?;
     let minimized = decoder.decode_record(ReproductionArtifact::from_canonical_bytes)?;
+    let minimized_artifact = super::decode_crucible_reproduction(
+        &minimized,
+        segments,
+        "journal minimized finding reproduction",
+    )?;
     let (replay_record_ids, record_count, record_bytes) =
         decode_record_ids(decoder, &replay_record_sources)?;
     let mut replay_validation_references = 0usize;
@@ -1487,8 +1576,10 @@ fn decode_finding(
         scenario,
         original_configuration,
         original,
+        original_artifact,
         minimized_configuration,
         minimized,
+        minimized_artifact,
         replay_records,
         minimization_replays,
         verification_replays,
@@ -1523,6 +1614,7 @@ fn validate_finding(
     validate_recorded_replays(value)?;
     let original_finding = decode_journal_finding_reproduction(
         &value.original,
+        &value.original_artifact,
         value.discovery_path,
         "journal original finding reproduction",
     )?;
@@ -1570,6 +1662,7 @@ fn validate_finding(
     }
     let minimized_finding = decode_journal_finding_reproduction(
         &value.minimized,
+        &value.minimized_artifact,
         value.discovery_path,
         "journal minimized finding reproduction",
     )?;
@@ -1577,16 +1670,17 @@ fn validate_finding(
     Ok(())
 }
 
+/// Replays a journal reproduction's Crucible artifact into a finding.
+///
+/// The artifact's correspondence to `reproduction` is checked by the caller,
+/// which re-derives the record from the returned finding.
 fn decode_journal_finding_reproduction(
     reproduction: &ReproductionArtifact,
+    artifact: &crucible::ReproductionArtifact,
     discovery_path: crucible::FindingDiscoveryPath,
     artifact_name: &'static str,
 ) -> Result<FindingReproductionArtifact, PreparedSemanticResultCodecError> {
-    let artifact = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
-        .map_err(|source| CrucibleArtifactError::InvalidPayload {
-            artifact: artifact_name,
-            source: Box::new(source),
-        })?;
+    let artifact = artifact.clone();
     let replay = artifact
         .replay()
         .map_err(|source| CrucibleArtifactError::InvalidPayload {
@@ -1616,6 +1710,7 @@ impl PreparedCrucibleFindingCandidate {
     ) -> Result<crate::FindingProductionReplayCaptureLimits, PreparedSemanticResultCodecError> {
         let finding = decode_journal_finding_reproduction(
             &self.original,
+            &self.original_artifact,
             self.discovery_path,
             "journal production replay capture basis",
         )?;

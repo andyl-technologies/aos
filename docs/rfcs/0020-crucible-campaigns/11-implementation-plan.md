@@ -364,7 +364,7 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   tie-breaking. Crucible minimization is bounded by 4,096 compact candidate
   descriptors, each materialized only for its replay; its seed/bound, dense
   candidate history, observed fingerprints, accepted result, and final replay
-  state are retained in verifier-backed reproduction schema v2. The repository preflights
+  state are retained in verifier-backed reproduction schema v3. The repository preflights
   original/artifact bases before writes, atomically clusters occurrences and
   role sets, and revalidates the complete contract on import/restart. Paged
   proof-authenticated finding and finding-object queries are implemented. The
@@ -1714,6 +1714,11 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   select, and checkpoints that window in production fault-runtime version 8
   (CMEAS-26). The issued QEMU action ledger still grows with the run until
   the plugin reports rule retirement.
+- [ ] **T-CAM-4.14** Retain reproduction schedules as sealed schedule
+  segments under a manifest, reference them from campaign reproduction
+  records, prepared-result journals, and the finding and occurrence object
+  services, and authenticate each segment before decoding (CCOMP-32).
+  Executor-side schedule residency backed by stored segments remains open.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,
