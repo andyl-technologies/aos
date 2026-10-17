@@ -119,11 +119,7 @@ impl PackagedQemuExecutor {
             .guarded_state
             .lifecycle_cleanup
             .as_ref()
-            .and_then(|queue| {
-                let work = queue.retry_pending();
-                let empty = queue.verify_empty();
-                work.and(empty).err()
-            });
+            .and_then(|queue| queue.verify_empty().err());
         let source_owner = !self.source_physically_retired;
         let prerequisites_closed = !source_owner
             && self.service.physically_retired()

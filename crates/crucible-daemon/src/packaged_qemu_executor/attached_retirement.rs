@@ -112,11 +112,10 @@ impl RetainedAttachedRetirement {
         if let Some(after) = after {
             controls.get_or_insert(after);
         }
-        let lifecycle = self.queue.as_ref().and_then(|queue| {
-            let work = queue.retry_pending();
-            let empty = queue.verify_empty();
-            work.and(empty).err()
-        });
+        let lifecycle = self
+            .queue
+            .as_ref()
+            .and_then(|queue| queue.verify_empty().err());
         if let Err(post) = original.wait_slice() {
             self.post.get_or_insert(post);
         }
