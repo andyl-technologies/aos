@@ -1481,16 +1481,26 @@
       registry="$HOME/.local/share/apm/registries/containers"
       release_started=$(${pkgs.coreutils}/bin/date +%s)
       while true; do
-        {APR} --json release 1.0.0 --registry containers --from-stage hybrid-container \\
-          --stage-revision 1 --upload-url https://aos.fleet.test/fleet/containers \\
-          --token {shlex.quote(publisher_token)} > /var/lib/hybrid-container-released.json
+        if {APR} --json release 1.0.0 --registry containers --from-stage hybrid-container \\
+            --stage-revision 1 --upload-url https://aos.fleet.test/fleet/containers \\
+            --token {shlex.quote(publisher_token)} > /var/lib/hybrid-container-release-next.json; then
+          ${pkgs.coreutils}/bin/mv /var/lib/hybrid-container-release-next.json /var/lib/hybrid-container-released.json
+        else
+          release_status=$?
+          # Keep JSON errors in the private command capture before VM teardown.
+          ${pkgs.coreutils}/bin/cat /var/lib/hybrid-container-release-next.json
+          exit "$release_status"
+        fi
         release_state=$(${pkgs.jq}/bin/jq -er '.state' /var/lib/hybrid-container-released.json)
         case "$release_state" in
           released) break ;;
           releasing) ;;
           *) exit 1 ;;
         esac
-        test "$(${pkgs.coreutils}/bin/date +%s)" -lt "$((release_started + 420))"
+        if ! test "$(${pkgs.coreutils}/bin/date +%s)" -lt "$((release_started + 420))"; then
+          echo "Staged container release remained pending after 420 seconds" >&2
+          exit 1
+        fi
         ${pkgs.coreutils}/bin/sleep 2
       done
       # Staged publication imports the immutable release tag while preserving
