@@ -5,10 +5,13 @@ finite projects and runs the privileged helper; separate empty-capability Unix
 identities execute the actual publisher CLI and confined cache example.
 """
 
+import ast
 import hashlib
 import json
 import os
 import pathlib
+import re
+import shutil
 import select
 import signal
 import subprocess
@@ -317,24 +320,27 @@ def verify_image():
     require(pathlib.Path(__file__).read_bytes() == supervisor_source.read_bytes(),
             "executed VM supervisor differs from source")
     expected = {"host_cache_fixture": ("terrane-fs", "example", ["native-test-fixtures", "tokio"]),
-                "terrane": ("terrane-cli", "bin", []), "aos-terrane-host": ("aos-terrane", "bin", [])}
+                "terrane": ("terrane-cli", "bin", []), "aos-terrane-host": ("aos-terrane", "bin", []),
+                "terrane-fs-unit": ("terrane-fs", "lib", ["native-test-fixtures", "tokio"])}
     require(set(identity["artifacts"]) == set(expected), "incomplete native image executable set")
     packages = json.loads((IMAGE / "share/host-cache-packages.json").read_text())["packages"]
     profile = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
                "overflow_checks": True, "test": False}
+    source_contract = unit_source_contract()
     for name, (package, kind, features) in expected.items():
         record = identity["artifacts"][name]
         artifact = record["cargo_artifact"]
         original = [json.loads(line) for line in (IMAGE / f"share/host-cache-{name}.jsonl").read_text().splitlines()]
         selected = [item for item in original if item.get("reason") == "compiler-artifact"
-                    and item.get("executable") and item.get("target", {}).get("name") == name]
+                    and item.get("executable") and item.get("target", {}).get("name") == ("terrane_fs" if kind == "lib" else name)]
         metadata_packages = [item for item in packages if item["name"] == package]
         require(len(metadata_packages) == len(selected) == 1 and selected[0] == artifact,
                 "retained original Cargo event mismatch: " + name)
-        targets = [item for item in metadata_packages[0]["targets"] if item["name"] == name and item["kind"] == [kind]]
+        targets = [item for item in metadata_packages[0]["targets"] if item["name"] == ("terrane_fs" if kind == "lib" else name) and item["kind"] == [kind]]
         require(len(targets) == 1 and artifact["target"] == targets[0]
                 and artifact["package_id"] == metadata_packages[0]["id"]
-                and artifact["profile"] == profile and sorted(artifact["features"]) == features
+                and artifact["profile"] == (source_contract["UNIT_PROFILE"] if kind == "lib" else profile)
+                and sorted(artifact["features"]) == features
                 and record["installed_path"] == "bin/" + name, "Cargo target/profile/features changed: " + name)
         executable = IMAGE / record["installed_path"]
         digest = hashlib.sha256(executable.read_bytes()).hexdigest()
@@ -352,10 +358,135 @@ def verify_image():
     require(os.environ.get("LD_LIBRARY_PATH") == library_path, "actual runtime library path differs from image")
 
 
+def parse_unit_inventory(output):
+    """Accepts one complete libtest list rather than a filtered zero-test run."""
+    lines = [line for line in output.splitlines() if line]
+    require(lines and re.fullmatch(r"\d+ tests?, 0 benchmarks?", lines[-1]),
+            "missing actual FS unit inventory summary")
+    names = [line.removesuffix(": test") for line in lines[:-1]]
+    require(all(line.endswith(": test") for line in lines[:-1])
+            and 0 < len(names) <= 4096 and len(names) == len(set(names))
+            and int(lines[-1].split()[0]) == len(names), "invalid actual FS unit inventory")
+    return sorted(names)
+
+
+def unit_source_contract():
+    """Reads literal reviewed selectors from the immutable source-bound installer."""
+    tree = ast.parse((SOURCE / "tests/terrane/host_cache_image.py").read_text())
+    values = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)):
+            if node.targets[0].id in {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE"}:
+                values[node.targets[0].id] = ast.literal_eval(node.value)
+    require(set(values) == {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE"}
+            and len(values["UNIT_TESTS"]) == len(set(values["UNIT_TESTS"])) == 41,
+            "missing immutable FS unit contract")
+    return values
+
+
+# This fresh interpreter runs only after setpriv has dropped every capability
+# and group. Its status witness is emitted before exec of the exact bound ELF;
+# no native service handle or host-tier write authority enters this process.
+UNIT_LAUNCHER = """
+import json, os, pathlib, sys
+status = dict(line.split(":", 1) for line in pathlib.Path("/proc/self/status").read_text().splitlines())
+assert status["Uid"].split() == ["842"] * 4 and status["Gid"].split() == ["842"] * 4
+assert not os.getgroups() and status["NoNewPrivs"].strip() == "1"
+for key in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]:
+    assert int(status[key].strip(), 16) == 0, key
+print("UNIT_IDENTITY " + json.dumps({key: status[key].strip() for key in
+      ["Uid", "Gid", "Groups", "NoNewPrivs", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]}, sort_keys=True), flush=True)
+os.execv(sys.argv[1], sys.argv[1:])
+"""
+
+
+def isolated_unit_command(arguments):
+    """Selects the non-role identity with no cache groups or capabilities."""
+    return ["setpriv", "--reuid", "842", "--regid", "842", "--clear-groups",
+            "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
+            sys.executable, "-c", UNIT_LAUNCHER, str(IMAGE / "bin/terrane-fs-unit"), *arguments]
+
+
+def unit_output(result):
+    """Requires the actual identity witness and successful subprocess completion."""
+    print(result.stdout, end="", flush=True)
+    print(result.stderr, end="", flush=True)
+    lines = result.stdout.splitlines()
+    require(result.returncode == 0 and lines and lines[0].startswith("UNIT_IDENTITY "),
+            "isolated FS unit process failed or lacked its identity witness")
+    witness = json.loads(lines[0].removeprefix("UNIT_IDENTITY "))
+    require(witness["Uid"].split() == ["842"] * 4 and witness["Gid"].split() == ["842"] * 4
+            and witness["Groups"] == "" and witness["NoNewPrivs"] == "1"
+            and all(int(witness[key], 16) == 0 for key in
+                    ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]), "invalid unit identity")
+    return "\n".join(lines[1:]), witness
+
+
+def filesystem_unit_cases():
+    """Runs every selected unchanged test on actual ext4, independently by name."""
+    identity = json.loads((IMAGE / "share/identity.json").read_text())
+    contract = unit_source_contract()
+    unit = identity["unit_tests"]
+    require(unit["selected_inventory"] == sorted(contract["UNIT_TESTS"])
+            and unit["prefixes"] == list(contract["UNIT_PREFIXES"])
+            and unit["profile"] == contract["UNIT_PROFILE"]
+            and unit["guest_uid"] == unit["guest_gid"] == 842
+            and unit["working_directory"] == "crates/terrane-fs", "FS unit source contract changed")
+    require(subprocess.check_output(["findmnt", "--noheadings", "--output", "FSTYPE", "--target", str(MOUNT)],
+                                    text=True, timeout=5).strip() == "ext4", "unit TMPDIR is not actual ext4")
+    temporary_root = MOUNT / "unit-tests"
+    temporary_root.mkdir(mode=0o700)
+    metadata(temporary_root, 842, 842, 0o700)
+    cwd = SOURCE / unit["working_directory"]
+    records = []
+    unit_elf = IMAGE / "bin/terrane-fs-unit"
+    unit_hash = hashlib.sha256(unit_elf.read_bytes()).hexdigest()
+    try:
+        discovery = temporary_root / "discovery"
+        discovery.mkdir(mode=0o700)
+        metadata(discovery, 842, 842, 0o700)
+        environment = dict(os.environ, TMPDIR=str(discovery), RUST_TEST_THREADS="1")
+        result = subprocess.run(isolated_unit_command(["--list"]), env=environment, cwd=cwd,
+                                text=True, capture_output=True, timeout=30, close_fds=True)
+        output, _ = unit_output(result)
+        inventory = parse_unit_inventory(output)
+        selected = [name for name in inventory if name.startswith(tuple(contract["UNIT_PREFIXES"]))]
+        require(inventory == unit["full_inventory"] and selected == unit["selected_inventory"],
+                "actual guest FS unit inventory differs from bound artifact")
+        shutil.rmtree(discovery)
+        for index, name in enumerate(selected):
+            temporary = temporary_root / f"case-{index:02d}"
+            temporary.mkdir(mode=0o700)
+            metadata(temporary, 842, 842, 0o700)
+            require(temporary.stat().st_dev == MOUNT.stat().st_dev, "unit scratch left ext4 device")
+            environment = dict(os.environ, TMPDIR=str(temporary), RUST_TEST_THREADS="1")
+            result = subprocess.run(isolated_unit_command(["--exact", name, "--nocapture", "--test-threads=1"]),
+                                    env=environment, cwd=cwd, text=True, capture_output=True,
+                                    timeout=30, close_fds=True)
+            output, witness = unit_output(result)
+            summary_pattern = (r"(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored; "
+                               r"0 measured; (\d+) filtered out; finished in .+$")
+            summaries = re.findall(summary_pattern, output)
+            require(summaries == [str(len(inventory) - 1)]
+                    and f"test {name} ... ok" in output, "FS unit did not execute exactly the selected test: " + name)
+            records.append({"name": name, "passed": 1, "failed": 0, "ignored": 0,
+                            "filtered": len(inventory) - 1, "identity": witness,
+                            "scratch_device": temporary.stat().st_dev, "elf_sha256": unit_hash})
+            print("FS_UNIT_RESULT " + json.dumps(records[-1], sort_keys=True), flush=True)
+            shutil.rmtree(temporary)
+        require(len(records) == 41 and hashlib.sha256(unit_elf.read_bytes()).hexdigest() == unit_hash,
+                "incomplete FS ext4 unit execution or changed executable")
+        print("PASS all41 unchanged focused FS unit cases on ext4; no native Ready claim", flush=True)
+    finally:
+        shutil.rmtree(temporary_root)
+
+
 def main():
     """Runs actual helper, actual CLI publisher and isolated native controls."""
     require(os.geteuid() == 0, "VM supervisor requires explicit root administration")
     verify_image()
+    filesystem_unit_cases()
     administrative_preflight("before")
     scaffold()
     administrative_preflight("after")

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -21,6 +22,110 @@ TARGETS = {
 }
 PROFILE = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
            "overflow_checks": True, "test": False}
+
+UNIT_NAME = "terrane-fs-unit"
+UNIT_PREFIXES = ("host_cache::owner::", "host_cache::recovery_inspection::",
+                 "publisher_local::client::recovery_manifest::")
+UNIT_PROFILE = {"opt_level": "s", "debuginfo": 0, "debug_assertions": True,
+                "overflow_checks": True, "test": True}
+UNIT_TESTS = (
+    'host_cache::owner::config::tests::native_host_cache_config_refuses_ambiguous_custody_and_unfunded_capacity',
+    'host_cache::owner::config::tests::native_host_cache_config_validation_needs_no_existing_paths',
+    'host_cache::owner::config::tests::native_index_repair_policy_defaults_closed_and_funds_payload_overlap',
+    'host_cache::owner::index_io::tests::classified_index_open_reads_regular_inode_and_refuses_fifo_and_symlink',
+    'host_cache::owner::index_io::tests::classified_index_open_refuses_character_device_before_read_open',
+    'host_cache::owner::index_io::tests::invalid_index_error_preserves_typed_source',
+    'host_cache::owner::recovery_inline::tests::inline_reconstruction_keeps_each_exact_whole_chunk_range',
+    'host_cache::owner::recovery_manifest_state::tests::changed_residence_cannot_pass_a_policy_snapshot_comparison',
+    'host_cache::owner::recovery_manifest_state::tests::extra_cold_rows_are_refused_and_preserved',
+    'host_cache::owner::recovery_namespace::tests::actual_directory_reopen_retains_classified_inode_across_name_replacement',
+    'host_cache::owner::recovery_namespace::tests::actual_name_scan_counts_coordination_unknown_and_non_utf8_entries',
+    'host_cache::owner::recovery_residences::tests::conflicts_and_capacity_are_refused_without_clearing_prior_candidates',
+    'host_cache::owner::recovery_residences::tests::repeated_occurrences_select_one_stable_range_independent_of_scan_order',
+    'host_cache::owner::recovery_state::tests::cold_policy_categories_never_disappear_during_empty_recovery_preflight',
+    'host_cache::owner::recovery_state_parent::tests::actual_state_parent_scan_refuses_unknown_file_and_directory_siblings',
+    'host_cache::owner::retention::recovery_manifest::tests::abandoned_rpc_effect_faults_without_a_state_or_client_lock',
+    'host_cache::owner::retention::recovery_manifest::tests::cancelled_in_flight_retention_never_reactivates_the_live_phase',
+    'host_cache::owner::retention::recovery_manifest::tests::only_reconciled_retention_returns_to_active',
+    'host_cache::owner::retention::recovery_manifest::tests::reconciled_rpc_effect_releases_the_exclusive_phase',
+    'host_cache::owner::retention::snapshot_provenance_tests::previous_write_cannot_certify_new_generation_or_another_inode',
+    'host_cache::recovery_inspection::collection::tests::duplicate_candidates_consume_the_occurrence_budget',
+    'host_cache::recovery_inspection::collection::tests::native_names_reject_aliases_and_wrong_widths',
+    'host_cache::recovery_inspection::tests::actual_metadata_pack_requires_the_exact_original_manifest_record_range',
+    'host_cache::recovery_inspection::tests::actual_pack_bytes_derive_exact_index_but_corrupt_body_never_does',
+    'host_cache::recovery_inspection::tests::compressed_pack_dictionary_respects_remaining_plaintext_budget',
+    'host_cache::recovery_inspection::tests::compressed_standalone_plaintext_is_bounded_before_decode',
+    'host_cache::recovery_inspection::tests::configured_custody_rejects_rebased_owner_and_group',
+    'host_cache::recovery_inspection::tests::configured_directory_mode_is_not_rebased_to_current_metadata',
+    'host_cache::recovery_inspection::tests::equal_sized_in_place_change_fails_actual_encoded_hash_recheck',
+    'host_cache::recovery_inspection::tests::equal_sized_path_replacement_does_not_match_retained_inode',
+    'host_cache::recovery_inspection::tests::oversized_actual_inode_is_rejected_before_encoded_allocation',
+    'host_cache::recovery_inspection::tests::positioned_recovery_read_preserves_the_actual_open_description_cursor',
+    'host_cache::recovery_inspection::tests::retained_manifest_inspection_requires_the_complete_manifest_key',
+    'host_cache::recovery_inspection::tests::retained_manifest_plaintext_limit_is_checked_before_any_body_read',
+    'host_cache::recovery_inspection::tests::retained_manifest_plaintext_uses_positioned_reads_without_changing_shared_cursor',
+    'host_cache::recovery_inspection::tests::retained_manifest_residences_preserve_order_offsets_and_manifest_identity',
+    'host_cache::recovery_inspection::tests::retained_manifest_verifies_full_plaintext_and_preserves_its_metadata_identity',
+    'host_cache::recovery_inspection::tests::structural_pack_allocation_is_bounded_before_decoded_records',
+    'host_cache::recovery_inspection::tests::unresolved_verification_failure_preserves_its_typed_source',
+    'publisher_local::client::recovery_manifest::tests::candidate_comparison_requires_the_complete_registered_key',
+    'publisher_local::client::recovery_manifest::tests::retained_claim_comparison_rejects_other_domains_and_content',
+)
+
+
+def unit_inventory(output):
+    """Parses the complete real libtest inventory, rejecting unknown line types."""
+    lines = [line for line in output.splitlines() if line]
+    shared.require(lines and re.fullmatch(r"\d+ tests?, 0 benchmarks?", lines[-1]),
+                   "missing complete FS unit inventory summary")
+    names = [line.removesuffix(": test") for line in lines[:-1]]
+    shared.require(all(line.endswith(": test") for line in lines[:-1])
+                   and len(names) == len(set(names)) and 0 < len(names) <= 4096
+                   and int(lines[-1].split()[0]) == len(names), "invalid FS unit inventory")
+    selected = sorted(name for name in names if name.startswith(UNIT_PREFIXES))
+    shared.require(selected == sorted(UNIT_TESTS) and len(selected) == 41,
+                   "FS unit module-prefix inventory changed")
+    return sorted(names)
+
+
+def source_unit_inventory(workspace):
+    """Checks the retained selection against all test declarations in its scope."""
+    source_roots = [workspace / "terrane-fs/src/host_cache/owner",
+                    workspace / "terrane-fs/src/host_cache/recovery_inspection",
+                    workspace / "terrane-fs/src/publisher_local/client/recovery_manifest.rs"]
+    declared = []
+    for root in source_roots:
+        for path in sorted(root.rglob("*.rs")) if root.is_dir() else [root]:
+            declared.extend(re.findall(r"#\[test\]\s*fn\s+(\w+)\s*\(", path.read_text()))
+    shared.require(len(declared) == len(UNIT_TESTS)
+                   and sorted(declared) == sorted(name.rsplit("::", 1)[1] for name in UNIT_TESTS),
+                   "source FS unit declarations differ from retained selection")
+
+
+def unit_artifact(workspace, temporary, target, packages):
+    """Selects the actual FS libtest ELF from its explicit test-profile build."""
+    profile = tomllib.loads((workspace / "Cargo.toml").read_text()).get("profile", {}).get("test")
+    shared.require(profile == {"debug": 0, "opt-level": "s"}, "unreviewed FS test profile")
+    records = [json.loads(line) for line in (temporary / f"host-cache-{UNIT_NAME}.jsonl").read_text().splitlines()]
+    package = [item for item in packages if pathlib.Path(item["manifest_path"]) == workspace / "terrane-fs/Cargo.toml"]
+    candidates = [item for item in records if item.get("reason") == "compiler-artifact"
+                  and item.get("target", {}).get("name") == "terrane_fs" and item.get("executable")]
+    shared.require(len(package) == len(candidates) == 1, "ambiguous FS libtest artifact")
+    artifact = candidates[0]
+    targets = [item for item in package[0]["targets"] if item["name"] == "terrane_fs" and item["kind"] == ["lib"]]
+    executable = pathlib.Path(artifact["executable"])
+    shared.require(len(targets) == 1 and artifact["target"] == targets[0]
+                   and artifact["package_id"] == package[0]["id"] and package[0]["name"] == "terrane-fs"
+                   and artifact["target"]["crate_types"] == ["lib"]
+                   and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane-fs/src/lib.rs"
+                   and artifact["profile"] == UNIT_PROFILE
+                   and sorted(artifact["features"]) == ["native-test-fixtures", "tokio"]
+                   and str(executable) in artifact["filenames"]
+                   and executable.is_file() and os.access(executable, os.X_OK)
+                   and executable.resolve().is_relative_to(target.resolve())
+                   and executable.read_bytes().startswith(b"\x7fELF"), "FS libtest source/profile/ELF mismatch")
+    source_unit_inventory(workspace)
+    return artifact, executable, digest(executable)
 
 
 def digest(path):
@@ -63,6 +168,7 @@ def selected_artifacts(workspace, temporary, target):
                        f"cache proof source/target/profile/features mismatch: {name}")
         shared.require(executable.read_bytes().startswith(b"\x7fELF"), f"non-ELF artifact: {name}")
         result[name] = (artifact, executable, digest(executable))
+    result[UNIT_NAME] = unit_artifact(workspace, temporary, target, packages)
     return result
 
 
@@ -73,9 +179,11 @@ def cargo_directories(name, executable, temporary, target, workspace):
     capture = temporary / f"host-cache-{name}-library-path"
     working = temporary / f"host-cache-{name}-working-directory"
     runner = temporary / f"host-cache-{name}-runner"
+    is_unit = name == UNIT_NAME
+    expected_argument = "--list" if is_unit else "--discover"
     runner.write_text("\n".join([
         f'#!{os.environ["CONFIG_SHELL"]}', "set -euC",
-        '[ "$#" -eq 2 ] && [ "$1" = ' + shlex.quote(str(executable)) + ' ] && [ "$2" = --discover ]',
+        '[ "$#" -eq 2 ] && [ "$1" = ' + shlex.quote(str(executable)) + ' ] && [ "$2" = ' + expected_argument + ' ]',
         "printf '%s\\n' \"${LD_LIBRARY_PATH-}\" > " + shlex.quote(str(capture)),
         "pwd -P > " + shlex.quote(str(working)), "exit 0", "",
     ]))
@@ -84,11 +192,15 @@ def cargo_directories(name, executable, temporary, target, workspace):
     triple = target_lib.parent.name.upper().replace("-", "_")
     environment[f"CARGO_TARGET_{triple}_RUNNER"] = str(runner)
     with (temporary / f"host-cache-{name}-discovery.log").open("w") as log:
-        subprocess.run(["cargo", "run", *flags(name), "--", "--discover"], env=environment,
+        command = (["cargo", "test", "--frozen", "--offline", "-p", "terrane-fs",
+                    "--features", "native-test-fixtures", "--lib", "--", "--list"] if is_unit
+                   else ["cargo", "run", *flags(name), "--", "--discover"])
+        subprocess.run(command, env=environment,
                        stdout=log, stderr=subprocess.STDOUT, check=True)
     text = capture.read_text()
     shared.require(text.endswith("\n") and text.count("\n") == 1 and text.strip(), "missing Cargo launch environment")
-    shared.require(working.read_text() == str(workspace) + "\n", "Cargo launch working-directory mismatch")
+    expected_cwd = workspace / "terrane-fs" if is_unit else workspace
+    shared.require(working.read_text() == str(expected_cwd) + "\n", "Cargo launch working-directory mismatch")
     directories = [shared.allowed_directory(value, target) for value in text[:-1].split(":")]
     shared.require(all(path.is_dir() for path in directories), "missing Cargo runtime library directory")
     return directories
@@ -163,9 +275,19 @@ def main():
                             text=True, capture_output=True).stdout.splitlines()
     expected = ["host-cache:" + name for name in ["prepare", "empty", "refuse", "cancel", "edquot", "hold", "start-refuse"]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
+    unit_elf = output / "bin" / UNIT_NAME
+    unit_hash = digest(unit_elf)
+    full_units = unit_inventory(subprocess.run([str(unit_elf), "--list"],
+                               env=dict(os.environ, LD_LIBRARY_PATH=library_path),
+                               cwd=workspace / "terrane-fs", check=True, text=True,
+                               capture_output=True).stdout)
+    shared.require(digest(unit_elf) == unit_hash, "unit discovery changed installed FS ELF")
+    unit_identity = {"full_inventory": full_units, "selected_inventory": sorted(UNIT_TESTS),
+                     "prefixes": list(UNIT_PREFIXES), "working_directory": "crates/terrane-fs",
+                     "profile": UNIT_PROFILE, "guest_uid": 842, "guest_gid": 842}
     identity = {"schema_version": 1, "source": str(source), "artifacts": identities,
                 "input_sha256": source_hashes, "selectors": listed, "supervisor": supervisor_identity,
-                "runtime_library_path": library_path, "native_cases_executed": []}
+                "runtime_library_path": library_path, "native_cases_executed": [], "unit_tests": unit_identity}
     (output / "share/identity.json").write_text(json.dumps(identity, indent=2) + "\n")
     (output / "share/runtime-library-path").write_text(library_path + "\n")
     (output / "share/elf-sha256sum").write_text("".join(checksums))

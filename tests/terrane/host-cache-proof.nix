@@ -23,6 +23,8 @@
         --message-format=json-render-diagnostics > "$TMPDIR/host-cache-terrane.jsonl"
       cargo build --frozen --offline -p aos-terrane --bin aos-terrane-host \
         --message-format=json-render-diagnostics > "$TMPDIR/host-cache-aos-terrane-host.jsonl"
+      cargo test --frozen --offline -p terrane-fs --features native-test-fixtures \
+        --lib --no-run --message-format=json-render-diagnostics > "$TMPDIR/host-cache-terrane-fs-unit.jsonl"
       cargo metadata --frozen --offline --no-deps --format-version=1 > "$TMPDIR/host-cache-packages.json"
       rustc --print target-libdir > "$TMPDIR/host-cache-target-libdir"
       python3 ${./host_cache_image.py} ${./.}
