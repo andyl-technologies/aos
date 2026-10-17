@@ -448,3 +448,93 @@ pub(crate) fn native_closed_producer_action_counter_scratch_data() -> usize {
         + projection::counter_scratch_data()
         + crate::reference_packet::service::complete_restore::producer_progress::original_restored_producer_report_counter_scratch_data()
 }
+
+/// Borrows the complete fixed lifecycle quote without reconstructing authority.
+pub struct PacketRestoredProducerLifecycleHistoricalData<'a> {
+    original: &'a PacketRestoredProducerLifecycleStorageData,
+}
+
+impl PacketRestoredProducerLifecycleStorageData {
+    /// Borrows every quoted axis, population field and exact quote identity.
+    pub fn historical_data(&self) -> PacketRestoredProducerLifecycleHistoricalData<'_> {
+        PacketRestoredProducerLifecycleHistoricalData { original: self }
+    }
+
+    /// Names both complete borrowed fixed quote projections and scalar loans.
+    pub fn historical_counter_scratch_data() -> usize {
+        PacketNativeRestoredSuffixStartupStorageData::historical_counter_scratch_data()
+            + size_of::<PacketRestoredProducerLifecycleHistoricalData<'static>>()
+            + size_of::<&PacketRestoredProducerLifecycleStorageData>()
+            + size_of::<HistoricalPopulation<'static>>()
+            + size_of::<&PacketRestoredProducerPopulationData>()
+            + size_of::<&[u8; 32]>()
+            + 2 * size_of::<&PacketNativeStartupAllocationRow>()
+            + 15 * size_of::<&usize>()
+    }
+}
+
+struct HistoricalPopulation<'a>(&'a PacketRestoredProducerPopulationData);
+
+impl Serialize for HistoricalPopulation<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let PacketRestoredProducerPopulationData {
+            pending_before,
+            pending_after,
+            completed,
+            newborn,
+            payload_bytes,
+            event_id_bytes,
+            operation_id_bytes,
+        } = self.0;
+        let mut state = serializer.serialize_struct("HistoricalProducerPopulation", 7)?;
+        state.serialize_field("pending_before", pending_before)?;
+        state.serialize_field("pending_after", pending_after)?;
+        state.serialize_field("completed", completed)?;
+        state.serialize_field("newborn", newborn)?;
+        state.serialize_field("payload_bytes", payload_bytes)?;
+        state.serialize_field("event_id_bytes", event_id_bytes)?;
+        state.serialize_field("operation_id_bytes", operation_id_bytes)?;
+        state.end()
+    }
+}
+
+impl Serialize for PacketRestoredProducerLifecycleHistoricalData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let PacketRestoredProducerLifecycleStorageData {
+            startup,
+            identity,
+            population,
+            ingress,
+            action,
+            host_retained,
+            host_transient,
+            source_retained,
+            source_transient,
+            maximum_report,
+            originals,
+            scratch,
+            requested,
+        } = self.original;
+        let mut state = serializer.serialize_struct("HistoricalProducerLifecycleStorage", 14)?;
+        state.serialize_field(
+            "schema",
+            "source-private.restored-producer-lifecycle-storage/1",
+        )?;
+        state.serialize_field("startup", &startup.historical_data())?;
+        state.serialize_field("population", &HistoricalPopulation(population))?;
+        state.serialize_field("identity", identity)?;
+        state.serialize_field("ingress", ingress)?;
+        state.serialize_field("action", action)?;
+        state.serialize_field("host_retained", host_retained)?;
+        state.serialize_field("host_transient", host_transient)?;
+        state.serialize_field("source_retained", source_retained)?;
+        state.serialize_field("source_transient", source_transient)?;
+        state.serialize_field("maximum_report", maximum_report)?;
+        state.serialize_field("originals", originals)?;
+        state.serialize_field("scratch", scratch)?;
+        state.serialize_field("requested", requested)?;
+        state.end()
+    }
+}

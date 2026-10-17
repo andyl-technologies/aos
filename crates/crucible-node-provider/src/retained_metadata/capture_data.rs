@@ -42,7 +42,7 @@ impl RetainedCaptureProtocolData<'_> {
     }
 }
 
-fn observe_response(
+pub(super) fn observe_response(
     response: &ResponseBody,
     observer: &mut MetadataObserver,
 ) -> Result<(), ProviderError> {

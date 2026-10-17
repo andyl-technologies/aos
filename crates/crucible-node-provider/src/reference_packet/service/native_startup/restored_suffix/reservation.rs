@@ -479,3 +479,88 @@ mod tests;
 
 #[path = "reservation/settled.rs"]
 mod settled;
+
+/// Borrows every fixed startup quote field as inert historical data.
+///
+/// The representation preserves immutable identity and all independently quoted
+/// axes. It has no decoder or conversion into a live reservation or member.
+pub struct PacketNativeRestoredSuffixStartupHistoricalData<'a> {
+    original: &'a PacketNativeRestoredSuffixStartupStorageData,
+}
+
+impl PacketNativeRestoredSuffixStartupStorageData {
+    /// Borrows the complete fixed quote, including raw-launch identity.
+    pub fn historical_data(&self) -> PacketNativeRestoredSuffixStartupHistoricalData<'_> {
+        PacketNativeRestoredSuffixStartupHistoricalData { original: self }
+    }
+
+    /// Names the complete borrowed startup and eight-field model projections.
+    pub fn historical_counter_scratch_data() -> usize {
+        size_of::<PacketNativeRestoredSuffixStartupHistoricalData<'static>>()
+            + size_of::<&PacketNativeRestoredSuffixStartupStorageData>()
+            + size_of::<HistoricalModel<'static>>()
+            + size_of::<&PacketCompleteRestoreOwnerValidationStorage>()
+            + size_of::<&[u8; 32]>()
+            + size_of::<&PacketRestoredSuffixReservationData>()
+            + 15 * size_of::<&usize>()
+    }
+}
+
+struct HistoricalModel<'a>(&'a PacketCompleteRestoreOwnerValidationStorage);
+
+impl Serialize for HistoricalModel<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let PacketCompleteRestoreOwnerValidationStorage {
+            snapshot_bytes,
+            journal_bytes,
+            control_bytes,
+            model_vector_backing_bytes,
+            anchor_bytes,
+            capture_comparison_bytes,
+            declared_scanner_bytes,
+            total_bytes,
+        } = self.0;
+        let mut state = serializer.serialize_struct("HistoricalOwnerValidationStorage", 8)?;
+        state.serialize_field("snapshot_bytes", snapshot_bytes)?;
+        state.serialize_field("journal_bytes", journal_bytes)?;
+        state.serialize_field("control_bytes", control_bytes)?;
+        state.serialize_field("model_vector_backing_bytes", model_vector_backing_bytes)?;
+        state.serialize_field("anchor_bytes", anchor_bytes)?;
+        state.serialize_field("capture_comparison_bytes", capture_comparison_bytes)?;
+        state.serialize_field("declared_scanner_bytes", declared_scanner_bytes)?;
+        state.serialize_field("total_bytes", total_bytes)?;
+        state.end()
+    }
+}
+
+impl Serialize for PacketNativeRestoredSuffixStartupHistoricalData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let PacketNativeRestoredSuffixStartupStorageData {
+            model,
+            launch_digest,
+            launch_bytes,
+            frame_bytes,
+            originals,
+            reservation,
+            retained,
+            transient,
+            scratch,
+            requested,
+        } = self.original;
+        let mut state = serializer.serialize_struct("HistoricalSuffixStartupStorage", 11)?;
+        state.serialize_field("schema", "source-private.restored-suffix-startup-storage/1")?;
+        state.serialize_field("model", &HistoricalModel(model))?;
+        state.serialize_field("launch_digest", launch_digest)?;
+        state.serialize_field("launch_bytes", launch_bytes)?;
+        state.serialize_field("frame_bytes", frame_bytes)?;
+        state.serialize_field("originals", originals)?;
+        state.serialize_field("reservation", reservation)?;
+        state.serialize_field("retained", retained)?;
+        state.serialize_field("transient", transient)?;
+        state.serialize_field("scratch", scratch)?;
+        state.serialize_field("requested", requested)?;
+        state.end()
+    }
+}

@@ -53,60 +53,8 @@ pub fn original_complete_restore_transfer_response_counter_scratch_data() -> usi
 pub fn original_complete_restore_transfer_response_metadata_data(
     response: &ResponseBody,
 ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
-    let ResponseBody { shape, result } = response;
     let mut observer = MetadataObserver::new();
-    super::capture_data::observe_response_shape(shape, &mut observer)?;
-    match result {
-        None => {}
-        Some(MethodResult::PrepareRestore(value)) => {
-            let PrepareRestoreResult {
-                transaction_id,
-                prepared_token,
-                world_binding_hash,
-                owner_binding_hash,
-                staged_owner_ids,
-                closed_gate_receipt,
-                validated_manifest,
-            } = value;
-            observer.observe(transaction_id)?;
-            observer.observe(prepared_token)?;
-            observer.observe(world_binding_hash)?;
-            observer.observe(owner_binding_hash)?;
-            observer.observe(staged_owner_ids)?;
-            observer.observe(closed_gate_receipt)?;
-            observer.observe(validated_manifest)?;
-        }
-        Some(
-            MethodResult::Hello(_)
-            | MethodResult::Discover(_)
-            | MethodResult::Realize(_)
-            | MethodResult::Admit(_)
-            | MethodResult::Activate(_)
-            | MethodResult::Input(_)
-            | MethodResult::Observe(_)
-            | MethodResult::Cancel(_)
-            | MethodResult::QuantumClose(_)
-            | MethodResult::WorldActivate(_)
-            | MethodResult::Abort(_)
-            | MethodResult::Retire(_)
-            | MethodResult::BlobBegin(_)
-            | MethodResult::BlobChunk(_)
-            | MethodResult::BlobFinish(_)
-            | MethodResult::Release(_)
-            | MethodResult::ExactRun(_)
-            | MethodResult::BoundarySettle(_)
-            | MethodResult::QuantumBegin(_)
-            | MethodResult::Pause(_)
-            | MethodResult::Shutdown(_)
-            | MethodResult::Capture(_)
-            | MethodResult::Poll(_)
-            | MethodResult::BeginAccepted(_),
-        ) => {
-            return Err(ProviderError::Correlation(
-                "retained transfer response method differs",
-            ));
-        }
-    }
+    observe_response_metadata_data(response, &mut observer)?;
     Ok(observer.finish())
 }
 
@@ -182,4 +130,64 @@ mod tests {
 
         assert!(original_complete_restore_transfer_response_metadata_data(&response).is_err());
     }
+}
+
+pub(super) fn observe_response_metadata_data(
+    response: &ResponseBody,
+    observer: &mut MetadataObserver<'_>,
+) -> Result<(), ProviderError> {
+    let ResponseBody { shape, result } = response;
+    super::capture_data::observe_response_shape(shape, observer)?;
+    match result {
+        None => {}
+        Some(MethodResult::PrepareRestore(value)) => {
+            let PrepareRestoreResult {
+                transaction_id,
+                prepared_token,
+                world_binding_hash,
+                owner_binding_hash,
+                staged_owner_ids,
+                closed_gate_receipt,
+                validated_manifest,
+            } = value;
+            observer.observe(transaction_id)?;
+            observer.observe(prepared_token)?;
+            observer.observe(world_binding_hash)?;
+            observer.observe(owner_binding_hash)?;
+            observer.observe(staged_owner_ids)?;
+            observer.observe(closed_gate_receipt)?;
+            observer.observe(validated_manifest)?;
+        }
+        Some(
+            MethodResult::Hello(_)
+            | MethodResult::Discover(_)
+            | MethodResult::Realize(_)
+            | MethodResult::Admit(_)
+            | MethodResult::Activate(_)
+            | MethodResult::Input(_)
+            | MethodResult::Observe(_)
+            | MethodResult::Cancel(_)
+            | MethodResult::QuantumClose(_)
+            | MethodResult::WorldActivate(_)
+            | MethodResult::Abort(_)
+            | MethodResult::Retire(_)
+            | MethodResult::BlobBegin(_)
+            | MethodResult::BlobChunk(_)
+            | MethodResult::BlobFinish(_)
+            | MethodResult::Release(_)
+            | MethodResult::ExactRun(_)
+            | MethodResult::BoundarySettle(_)
+            | MethodResult::QuantumBegin(_)
+            | MethodResult::Pause(_)
+            | MethodResult::Shutdown(_)
+            | MethodResult::Capture(_)
+            | MethodResult::Poll(_)
+            | MethodResult::BeginAccepted(_),
+        ) => {
+            return Err(ProviderError::Correlation(
+                "retained transfer response method differs",
+            ));
+        }
+    }
+    Ok(())
 }

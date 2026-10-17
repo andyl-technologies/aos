@@ -347,31 +347,8 @@ impl OriginalRestoredSuffixHostAttempt {
     pub fn retained_metadata_data(
         &self,
     ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
-        let Self {
-            request_id,
-            operation_id,
-            method: _,
-            controller: _,
-            process: _,
-            thread: _,
-            cut: _,
-            completed_frontier: _,
-            original,
-            response,
-            decoded,
-            roots,
-            stage: _,
-        } = self;
         let mut observer = crate::retained_metadata::MetadataObserver::new();
-        observer.observe(request_id)?;
-        observer.observe(operation_id)?;
-        observer.observe(original)?;
-        observer.observe(response)?;
-        observer.observe(roots)?;
-        if let Some(decoded) = decoded {
-            observer.boxed_value(decoded.as_ref())?;
-            crate::retained_metadata::restored_suffix::response(decoded, &mut observer)?;
-        }
+        self.observe_historical_metadata_data(&mut observer)?;
         Ok(observer.finish())
     }
 
@@ -559,3 +536,40 @@ mod tests {
         assert!(attempt.retained_metadata_data().is_ok());
     }
 }
+
+impl OriginalRestoredSuffixHostAttempt {
+    fn observe_historical_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            request_id,
+            operation_id,
+            method: _,
+            controller: _,
+            process: _,
+            thread: _,
+            cut: _,
+            completed_frontier: _,
+            original,
+            response,
+            decoded,
+            roots,
+            stage: _,
+        } = self;
+        observer.observe(request_id)?;
+        observer.observe(operation_id)?;
+        observer.observe(original)?;
+        observer.observe(response)?;
+        observer.observe(roots)?;
+        if let Some(decoded) = decoded {
+            observer.boxed_value(decoded.as_ref())?;
+            crate::retained_metadata::restored_suffix::response(decoded, observer)?;
+        }
+        Ok(())
+    }
+}
+
+#[path = "restored_suffix_host/history.rs"]
+mod history;
+pub use history::OriginalRestoredSuffixHostHistoricalData;

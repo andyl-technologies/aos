@@ -16,6 +16,8 @@ use crate::reference_packet::input::PacketInputCut;
 use crate::reference_packet::{PacketGrant, PacketInventory, PacketPublication};
 
 /// Borrows a closed actual native journal record or independently owned effect.
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum RetainedPacketNativeRecord<'a> {
     /// Borrows one original producer record.
     Producer(&'a PacketNativeRecord),
@@ -45,15 +47,7 @@ impl RetainedPacketNativeRecord<'_> {
         &self,
     ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
         let mut observer = MetadataObserver::new();
-        match self {
-            Self::Producer(value) => observer.observe(*value)?,
-            Self::Reactive(value) => observer.observe(*value)?,
-            Self::Stage(value) => observer.observe(*value)?,
-            Self::Commit(value) => observer.observe(*value)?,
-            Self::DeliveredInput(value) => observer.observe(*value)?,
-            Self::Reaction(value) => observer.observe(*value)?,
-            Self::Publication(value) => observer.observe(*value)?,
-        }
+        self.observe_historical_metadata_data(&mut observer)?;
         Ok(observer.finish())
     }
 }
@@ -282,5 +276,69 @@ mod tests {
         assert_eq!(copied.vector_banks, 1);
         assert_eq!(original.boxed_value_bytes, 0);
         assert_eq!(original.shared_value_bytes, 0);
+    }
+}
+
+impl RetainedPacketNativeRecord<'_> {
+    fn observe_historical_metadata_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        match self {
+            Self::Producer(value) => observer.observe(*value)?,
+            Self::Reactive(value) => observer.observe(*value)?,
+            Self::Stage(value) => observer.observe(*value)?,
+            Self::Commit(value) => observer.observe(*value)?,
+            Self::DeliveredInput(value) => observer.observe(*value)?,
+            Self::Reaction(value) => observer.observe(*value)?,
+            Self::Publication(value) => observer.observe(*value)?,
+        }
+        Ok(())
+    }
+
+    /// Records every actual nested capacity in independently precharged banks.
+    ///
+    /// Clears only the supplied banks. Partial rows remain after exhaustion;
+    /// neither the walk nor serialization invokes a live backend or grants rights.
+    ///
+    /// # Errors
+    /// Refuses arithmetic/depth overflow or either finite bank's original extent.
+    pub fn record_historical_metadata_data(
+        &self,
+        records: &mut crate::retained_metadata::records::MetadataRecordBank,
+        aliases: &mut crate::retained_metadata::aliases::MetadataAliasBank,
+    ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = MetadataObserver::recording_with_aliases(records, aliases);
+        self.observe_historical_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Names fixed inert historical writer and record-bank loan layouts.
+    pub fn historical_counter_scratch_data() -> usize {
+        crate::retained_metadata::historical_serialization_counter_scratch_data()
+            + std::mem::size_of::<Self>()
+            + std::mem::size_of::<&Self>()
+            + std::mem::size_of::<MetadataObserver<'static>>()
+            + std::mem::size_of::<RetainedProtocolMetadataFacts>()
+            + std::mem::size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
+            + std::mem::size_of::<Result<(), ProviderError>>()
+            + std::mem::size_of::<&mut crate::retained_metadata::records::MetadataRecordBank>()
+            + std::mem::size_of::<&mut crate::retained_metadata::aliases::MetadataAliasBank>()
+    }
+}
+
+impl RetainedPacketNativeRecord<'_> {
+    /// Bounds actual Bytes base64 encoding work separately from output storage.
+    ///
+    /// Each encoding temporary is dropped after its serialize_str call. This
+    /// bound covers the largest one using the exhaustive actual capacity walk;
+    /// callers independently admit serializer output, DOM and canonical banks.
+    ///
+    /// # Errors
+    /// Refuses the metadata walk's finite bound or base64 extent overflow.
+    pub fn historical_serialization_transient_bytes_data(&self) -> Result<usize, ProviderError> {
+        crate::retained_metadata::historical_serialization_transient_data(
+            self.observe_retained_metadata()?,
+        )
     }
 }

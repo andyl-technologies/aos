@@ -816,3 +816,63 @@ pub use native_capture_data::RetainedNativeCaptureAllocationData;
 
 #[path = "retained_metadata/restored_suffix.rs"]
 pub(crate) mod restored_suffix;
+
+/// Bounds the largest temporary base64 String created by historical Bytes fields.
+///
+/// The owning walk's vector backing sum bounds each actual Bytes length.
+/// Bytes::serialize drops its encoding after serialize_str returns, so the
+/// maximum, rather than a sum of rounded per-field encodings, is sufficient.
+/// The padded four-character bound conservatively covers unpadded URL-safe
+/// encoding. Output String/DOM/canonical storage is separately caller-owned.
+/// This DATA helper neither reserves memory nor authenticates a historical row.
+///
+/// # Errors
+/// Refuses checked base64 extent overflow.
+pub(crate) fn historical_serialization_transient_data(
+    facts: RetainedProtocolMetadataFacts,
+) -> Result<usize, ProviderError> {
+    facts
+        .vector_capacity_bytes
+        .div_ceil(3)
+        .checked_mul(4)
+        .ok_or_else(overflow)
+}
+
+/// Names the scalar calculation and actual Bytes encoding owner headers.
+pub(crate) fn historical_serialization_counter_scratch_data() -> usize {
+    size_of::<RetainedProtocolMetadataFacts>()
+        + size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
+        + size_of::<usize>()
+        + size_of::<Result<usize, ProviderError>>()
+        + size_of::<String>()
+}
+
+#[cfg(test)]
+mod historical_serialization_tests {
+    use super::*;
+
+    #[test]
+    fn historical_bytes_temporary_bound_covers_actual_unpadded_encoder() {
+        for length in [0, 1, 2, 3, 4, 3071, 3072, 3073] {
+            let bytes = Bytes::new(vec![255; length]);
+            let mut observer = MetadataObserver::new();
+            observer.observe(&bytes).unwrap();
+            let bound = historical_serialization_transient_data(observer.finish()).unwrap();
+            let actual = serde_json::to_string(&bytes).unwrap();
+            assert!(actual.len() - 2 <= bound);
+        }
+
+        let overflow = RetainedProtocolMetadataFacts {
+            vector_capacity_bytes: usize::MAX,
+            ..RetainedProtocolMetadataFacts::default()
+        };
+        assert!(historical_serialization_transient_data(overflow).is_err());
+    }
+}
+
+#[path = "retained_metadata/historical_response.rs"]
+mod historical_response;
+pub use historical_response::{
+    HistoricalResponseBodyData, historical_response_body_counter_scratch_data,
+    historical_response_body_data,
+};

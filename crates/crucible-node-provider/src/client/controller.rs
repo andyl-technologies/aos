@@ -45,7 +45,7 @@ pub use installed_observation::{
 };
 pub use restored_suffix_host::{
     OriginalRestoredSuffixBody, OriginalRestoredSuffixHostAttempt,
-    PreparedOriginalRestoredSuffixHostAttempt,
+    OriginalRestoredSuffixHostHistoricalData, PreparedOriginalRestoredSuffixHostAttempt,
 };
 mod assigned_transfer;
 mod fresh_restore_query;

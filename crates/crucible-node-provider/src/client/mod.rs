@@ -91,5 +91,5 @@ pub use controller::{
 /// Exposes retained ordinary suffix originals without issuing execution claims.
 pub use controller::{
     OriginalRestoredSuffixBody, OriginalRestoredSuffixHostAttempt,
-    PreparedOriginalRestoredSuffixHostAttempt,
+    OriginalRestoredSuffixHostHistoricalData, PreparedOriginalRestoredSuffixHostAttempt,
 };

@@ -192,7 +192,7 @@ pub fn original_native_suffix_counter_scratch_data() -> usize {
 #[path = "restored_suffix/reservation.rs"]
 mod reservation;
 pub use reservation::{
-    PacketNativeRestoredSuffixStartupStorageData,
+    PacketNativeRestoredSuffixStartupHistoricalData, PacketNativeRestoredSuffixStartupStorageData,
     original_native_restored_suffix_startup_counter_scratch_data,
     original_native_restored_suffix_startup_storage_data,
 };
@@ -218,8 +218,9 @@ pub(crate) use observation::original_native_restored_suffix_observation_required
 #[path = "restored_suffix/producer_lifecycle.rs"]
 mod producer_lifecycle;
 pub use producer_lifecycle::{
-    PacketRestoredProducerArgumentsData, PacketRestoredProducerLifecycleInputs,
-    PacketRestoredProducerLifecycleStorageData, PacketRestoredProducerPopulationData,
+    PacketRestoredProducerArgumentsData, PacketRestoredProducerLifecycleHistoricalData,
+    PacketRestoredProducerLifecycleInputs, PacketRestoredProducerLifecycleStorageData,
+    PacketRestoredProducerPopulationData,
     original_restored_producer_lifecycle_counter_scratch_data,
     original_restored_producer_lifecycle_storage_data,
 };

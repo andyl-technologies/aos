@@ -104,7 +104,10 @@ pub use correspondence::authenticate_restoration_activation_held_correspondence_
 pub use prospective::original_installed_restoration_activation_construction_counter_scratch_data;
 pub(crate) use prospective::original_native_restoration_activation_required_storage_data;
 pub use retained::{
-    RetainedRestorationActivationData, restoration_activation_retained_counter_scratch_data,
+    RetainedRestorationActivationData,
+    restoration_activation_historical_native_evidence_transient_bytes_data,
+    restoration_activation_record_native_evidence_metadata_data,
+    restoration_activation_retained_counter_scratch_data,
     restoration_activation_retained_native_evidence_counter_scratch_data,
     restoration_activation_retained_native_evidence_data,
 };
@@ -441,3 +444,5 @@ pub(super) fn validate_scope_data(
     }
     Ok(())
 }
+
+pub(crate) use retained::observe_response as observe_retained_response_metadata_data;

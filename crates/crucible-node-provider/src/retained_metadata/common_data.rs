@@ -128,7 +128,7 @@ impl ObserveMetadata for BeginKind {
     }
 }
 
-fn observe_admit_response(
+pub(super) fn observe_admit_response(
     response: &ResponseBody,
     observer: &mut MetadataObserver,
 ) -> Result<(), ProviderError> {

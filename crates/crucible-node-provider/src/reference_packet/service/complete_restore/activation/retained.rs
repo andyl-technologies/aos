@@ -259,44 +259,17 @@ pub fn restoration_activation_retained_native_evidence_data(
     record: &PacketNativeRestoredRecord,
     underlying: Option<&PacketNative5UnderlyingRecord>,
 ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
-    let PacketNativeRestoredRecord {
-        schema,
-        native_receipt,
-        captured_owner_state,
-        captured_journal,
-        mapping,
-        restore_commit,
-        restore_response,
-        context_digest,
-        physical_gate_held,
-    } = record;
     let mut observer = MetadataObserver::new();
-    observer.observe(schema)?;
-    observer.observe(native_receipt)?;
-    observer.observe(captured_owner_state)?;
-    observer.observe(captured_journal)?;
-    observer.observe(mapping)?;
-    observer.observe(restore_commit)?;
-    observer.observe(restore_response)?;
-    observer.observe(context_digest)?;
-    observer.observe(physical_gate_held)?;
-    match underlying {
-        None => {}
-        Some(PacketNative5UnderlyingRecord::Producer(record)) => {
-            observer.boxed_value(record.as_ref())?;
-            observer.observe(record.as_ref())?;
-        }
-        Some(PacketNative5UnderlyingRecord::Reactive(record)) => {
-            observer.boxed_value(record.as_ref())?;
-            observer.observe(record.as_ref())?;
-        }
-    }
+    observe_native_evidence_metadata_data(record, underlying, &mut observer)?;
     Ok(observer.finish())
 }
 
 /// Names fixed owning-walk and result views before observing retained evidence.
 pub fn restoration_activation_retained_native_evidence_counter_scratch_data() -> usize {
-    size_of::<MetadataObserver<'static>>()
+    crate::retained_metadata::historical_serialization_counter_scratch_data()
+        + size_of::<&mut crate::retained_metadata::records::MetadataRecordBank>()
+        + size_of::<&mut crate::retained_metadata::aliases::MetadataAliasBank>()
+        + size_of::<MetadataObserver<'static>>()
         + size_of::<RetainedProtocolMetadataFacts>()
         + size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
         + size_of::<&PacketNativeRestoredRecord>()
@@ -340,7 +313,7 @@ impl crate::retained_metadata::ObserveMetadata for upload::PacketRestorationActi
     }
 }
 
-fn observe_response(
+pub(crate) fn observe_response(
     body: &crate::bodies::ResponseBody,
     observer: &mut MetadataObserver<'_>,
 ) -> Result<(), ProviderError> {
@@ -475,4 +448,76 @@ mod manifest_owner_tests {
         assert_eq!(after.string_capacity_bytes, before.string_capacity_bytes);
         assert_eq!(after.tree_entries, before.tree_entries);
     }
+}
+
+fn observe_native_evidence_metadata_data(
+    record: &PacketNativeRestoredRecord,
+    underlying: Option<&PacketNative5UnderlyingRecord>,
+    observer: &mut MetadataObserver<'_>,
+) -> Result<(), ProviderError> {
+    let PacketNativeRestoredRecord {
+        schema,
+        native_receipt,
+        captured_owner_state,
+        captured_journal,
+        mapping,
+        restore_commit,
+        restore_response,
+        context_digest,
+        physical_gate_held,
+    } = record;
+    observer.observe(schema)?;
+    observer.observe(native_receipt)?;
+    observer.observe(captured_owner_state)?;
+    observer.observe(captured_journal)?;
+    observer.observe(mapping)?;
+    observer.observe(restore_commit)?;
+    observer.observe(restore_response)?;
+    observer.observe(context_digest)?;
+    observer.observe(physical_gate_held)?;
+    match underlying {
+        None => {}
+        Some(PacketNative5UnderlyingRecord::Producer(record)) => {
+            observer.boxed_value(record.as_ref())?;
+            observer.observe(record.as_ref())?;
+        }
+        Some(PacketNative5UnderlyingRecord::Reactive(record)) => {
+            observer.boxed_value(record.as_ref())?;
+            observer.observe(record.as_ref())?;
+        }
+    }
+    Ok(())
+}
+
+/// Records the actual restored receipt and optional underlying proof capacities.
+///
+/// Clears only these independent precharged banks. It performs no allocation or
+/// live predicate; recorded rows cannot reconstruct an authenticated evidence owner.
+///
+/// # Errors
+/// Refuses finite traversal/overflow or original record/alias bank exhaustion.
+pub fn restoration_activation_record_native_evidence_metadata_data(
+    record: &PacketNativeRestoredRecord,
+    underlying: Option<&PacketNative5UnderlyingRecord>,
+    records: &mut crate::retained_metadata::records::MetadataRecordBank,
+    aliases: &mut crate::retained_metadata::aliases::MetadataAliasBank,
+) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+    let mut observer = MetadataObserver::recording_with_aliases(records, aliases);
+    observe_native_evidence_metadata_data(record, underlying, &mut observer)?;
+    Ok(observer.finish())
+}
+
+/// Bounds Bytes encoding temporaries from the complete actual evidence walk.
+///
+/// Encoded output, Value and canonical owners remain independent caller rows.
+///
+/// # Errors
+/// Refuses finite traversal or checked base64 extent overflow.
+pub fn restoration_activation_historical_native_evidence_transient_bytes_data(
+    record: &PacketNativeRestoredRecord,
+    underlying: Option<&PacketNative5UnderlyingRecord>,
+) -> Result<usize, ProviderError> {
+    crate::retained_metadata::historical_serialization_transient_data(
+        restoration_activation_retained_native_evidence_data(record, underlying)?,
+    )
 }
