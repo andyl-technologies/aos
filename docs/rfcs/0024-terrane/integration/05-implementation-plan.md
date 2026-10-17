@@ -8862,21 +8862,29 @@ written bytes. Independent review verifies every compiler-input hash, executable
 runtime identity, case result and unchanged source guard. Resume, admission,
 BKT-15 and full host-task qualification remain outside that component result.
 
-The encoded-admission producer now has a separate source checkpoint. Review
-requires corrections for unused registry slots after effect-free rejection,
-phase-specific canonical file custody and checked active-memory overlaps before
-compilation. The separate bounded existing-Original inspection producer passes
-source review; its eleven new tests remain unrun. It retains genuine native
-exclusion without granting fresh-creator or host-readiness authority.
+The encoded-admission producer's corrected checkpoint `52b111c72c` passes
+source review for registry-slot reclamation after effect-free rejection,
+phase-specific canonical file custody and checked active-memory overlaps.
+Compilation and its five selected tests remain pending. The separate bounded
+existing-Original inspection producer at `7129f2f203` builds and passes all
+eleven selected tests, with unchanged source guards. Strict library Clippy
+stops on two inherited collapsible-condition diagnostics; their mechanical
+correction passes source review and awaits qualification. These current-UID
+tests retain genuine native exclusion without establishing privileged host
+enrollment, fresh-creator authority or host readiness.
 The module privacy correction passes source review and all eighty-eight
 declarative module checks at `655b57b853`, including both privacy regressions.
 Independent review verifies all 6,324 tracked inputs and the evaluated report.
 Tmpfiles retain non-public roots at mode `0750`, including override paths,
-without a
-second declaration widening them to `0755`. Actual four-role composition and
+without a second declaration widening them to `0755`. Actual four-role composition and
 full module-task acceptance remain pending. The combined surface and configured
-SDK candidate is assembled without changing their reviewed implementations;
-fresh task gates, aggregate checks and application qualification remain pending.
+SDK candidate passes all four surface gates at `1d9b52a51e`. Its subsequent SDK
+image compilation exposes a missing shared namespace helper. The correction
+uses the exact helper already qualified by the first-enrollment native fixture.
+The corrected candidate `7f645904e6` compiles all three configured SDK image
+targets; independent review verifies compiler inputs, executables and runtime
+hashes. SDK runtime checks, fresh surface gates on the corrected candidate,
+aggregate checks and application qualification remain pending.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
