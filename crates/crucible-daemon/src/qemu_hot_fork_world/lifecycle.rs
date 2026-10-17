@@ -55,6 +55,8 @@ pub(crate) struct QemuHotForkProductionLifecycleContext<'a> {
     run_state_root: PathBuf,
     terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     cancellation: Option<ExecutionCancellation>,
+    #[cfg(test)]
+    component_construction: Option<Box<crate::ProductionVmConstructionCustody>>,
 }
 
 impl<'a> QemuHotForkProductionLifecycleContext<'a> {
@@ -72,7 +74,19 @@ impl<'a> QemuHotForkProductionLifecycleContext<'a> {
             run_state_root,
             terminal_checkpoints: None,
             cancellation: None,
+            #[cfg(test)]
+            component_construction: None,
         }
+    }
+
+    /// Moves fixture-funded storage into the shared constructor.
+    #[cfg(test)]
+    pub(crate) fn with_component_construction(
+        mut self,
+        custody: Option<Box<crate::ProductionVmConstructionCustody>>,
+    ) -> Self {
+        self.component_construction = custody;
+        self
     }
 
     pub(crate) fn with_terminal_checkpoints(
@@ -653,6 +667,8 @@ where
             run_state_root,
             terminal_checkpoints,
             cancellation,
+            #[cfg(test)]
+            component_construction,
         } = context;
         let boundaries = self
             .continuation
@@ -730,6 +746,10 @@ where
         let generation_owner =
             QemuAttemptGenerationResourceOwner::new(lifecycle_guard, generation_storage);
         let mut launcher = QemuAttemptProductionVmNodeLauncher::new(generation_owner);
+        #[cfg(test)]
+        if let Some(custody) = component_construction {
+            launcher = launcher.with_construction_custody(custody);
+        }
         if let (Some(checkpoints), Some(cancellation)) = (terminal_checkpoints, cancellation) {
             launcher =
                 launcher.with_terminal_checkpoint_import(checkpoints, source.clone(), cancellation);

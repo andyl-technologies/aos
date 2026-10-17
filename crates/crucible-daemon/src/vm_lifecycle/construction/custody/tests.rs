@@ -162,6 +162,7 @@ fn returned_lifecycle_moves_into_the_same_empty_carrier() {
         physically_closed: AtomicBool::new(false),
         #[cfg(target_os = "linux")]
         reservation: None,
+        component_funding: None,
     });
     let address = std::ptr::from_ref(&*carrier);
     lifecycle.construction_custody = Some(carrier);
@@ -367,6 +368,7 @@ fn empty_retirement_carrier() -> Box<ProductionVmConstructionCustody> {
         physically_closed: AtomicBool::new(false),
         #[cfg(target_os = "linux")]
         reservation: None,
+        component_funding: None,
     })
 }
 
@@ -463,4 +465,66 @@ fn boxed_retirement_moves_loop_and_owners_into_the_original_carrier() {
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     assert_eq!(launcher_drops.load(Ordering::SeqCst), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn component_carrier_requires_existing_metadata_admission() {
+    assert!(crucible::owned_decode::current_custody().is_none());
+    assert!(ProductionVmConstructionCustody::prepare_component().is_err());
+
+    let _scope = crucible::test_support::fixture_decode_scope(1024 * 1024).unwrap();
+    let carrier = ProductionVmConstructionCustody::prepare_component().unwrap();
+    assert!(carrier.component_funding.is_some());
+    #[cfg(target_os = "linux")]
+    assert!(carrier.reservation.is_none());
+}
+
+#[test]
+fn component_error_extraction_preserves_the_same_body_without_publication() {
+    let _scope = crucible::test_support::fixture_decode_scope(1024 * 1024).unwrap();
+    let carrier = ProductionVmConstructionCustody::prepare_component().unwrap();
+    let address = std::ptr::from_ref(&*carrier);
+    let (launcher, calls, drops) = launcher(Some(carrier));
+    let custody = with_inputs(launcher, None, None, None, Vec::new()).unwrap();
+    let mut failure = custody.into_failure(LifecycleApiError::LoopFactory {
+        message: String::from("actual component admission refusal"),
+    });
+
+    let first = failure.take_component_first_error().unwrap();
+    assert!(matches!(first, LifecycleApiError::LoopFactory { message }
+        if message == "actual component admission refusal"));
+    assert!(failure.take_component_first_error().is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    let custody = failure.into_custody().unwrap();
+    assert_eq!(std::ptr::from_ref(&*custody), address);
+    assert!(custody.first.is_none());
+    #[cfg(target_os = "linux")]
+    assert!(custody.reservation.is_none());
+
+    assert!(custody.retry_cleanup().is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    custody.retry_cleanup().unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    drop(custody);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn component_error_extraction_refuses_an_ordinary_carrier() {
+    let (launcher, calls, drops) = launcher(Some(Box::new(ProductionVmConstructionCustody::new())));
+    let custody = with_inputs(launcher, None, None, None, Vec::new()).unwrap();
+    let mut failure = custody.into_failure(LifecycleApiError::ConstructionCustodyUnavailable);
+
+    assert!(failure.take_component_first_error().is_none());
+    assert_eq!(
+        failure.first_error(),
+        Some(&LifecycleApiError::ConstructionCustodyUnavailable)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    drop(failure);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
 }

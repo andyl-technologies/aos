@@ -151,18 +151,22 @@ and exact empty epoch before future Service startup; it grants no Service cap.
 All twelve reservation controls pass, including the unavailable-selection check.
 The complete Linux resource library has 243 passes and one ignored probe.
 
-The whole-world transaction now separates native resource effects from a private
+The whole-world transaction separates native resource effects from a private
 component backend while preserving checkout, adoption, rollback and publication.
-The default backend still refuses a missing genuine Source issuer before child
-effects. The full private daemon run has 1,718 passes, eleven failures and 43
-ignored probes in 317.29 seconds. The remaining hot-fork failures include a
-missing Target construction carrier and a cleanup assertion that predates the
-typed-error migration. Target's genuine before-effects ownership, role handoff
-and containing-resource geometry still need to be joined. Both default and private
-workspace/all-target checks pass for the joined source. Engineering hygiene has
-five passes; testing standards has 34 passes and the existing operational-source
-classifier failure. These results qualify neither Target activation nor physical
-resource floors or VM performance parity.
+The component's carrier is charged to its existing fixture account before birth
+and enters the shared constructor. A failed installation retains the same actual
+body in its fixed slot while reporting its original typed cause; this performs
+no canonical publication. Native operations provide no fixture carrier, and the
+default backend still refuses a missing genuine Source issuer before child
+effects. The cleanup-rejection control now requires both the initiating error
+and the actual independent typed guard failure. The complete private daemon
+library passes all 1,733 tests, with 43 ignored probes, in 318.12 seconds. Both
+default and private workspace/all-target checks pass for this source. Engineering
+hygiene has five passes; testing standards retains its existing operational-source
+classifier failure. Genuine Target before-effects ownership, role handoff,
+selected-member resource geometry and healthy retirement remain required. These
+component results qualify neither native Target activation nor physical resource
+floors or VM performance parity.
 
 If exact cell attachment refuses, the same inline factory slot retains the
 pending body, its canonical never-born journal and its body lease. Physical destruction precedes the paired descriptor-table/window return

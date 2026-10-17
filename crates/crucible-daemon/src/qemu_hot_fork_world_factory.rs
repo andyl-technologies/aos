@@ -1113,6 +1113,17 @@ where
                 )));
             }
         };
+        #[cfg(test)]
+        let component_construction = match self.target_operations.prepare_component_construction() {
+            Ok(custody) => custody,
+            Err(first) => {
+                drop(source_world);
+                self.sources.restore(source_lease);
+                return Err(AttemptWorkerFailure::Terminal(Self::Error::Lifecycle(
+                    first,
+                )));
+            }
+        };
         let mut guard = match self.target_operations.begin_target(
             &mut self.resources,
             &source_world,
@@ -1178,6 +1189,8 @@ where
             resources,
             runtime_basis,
             ram_factory,
+            #[cfg(test)]
+            component_construction,
         );
         if outcome.source == CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine
             && outcome.result.is_err()
@@ -1259,6 +1272,7 @@ where
         mut resources: QemuHotForkWorldResourceOwner<R::Guard>,
         runtime_basis: crate::AttemptExecutionRuntimeBasis,
         ram_factory: Arc<dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory>,
+        #[cfg(test)] component_construction: Option<Box<crate::ProductionVmConstructionCustody>>,
     ) -> ProductionLifecycleStartOutcome<R::Guard, S::Error> {
         let mut source_lease = Some(source_lease);
         let boundaries = continuation
@@ -1580,6 +1594,8 @@ where
             self.terminal_checkpoints.clone(),
             context.cancellation().clone(),
         );
+        #[cfg(test)]
+        let install_context = install_context.with_component_construction(component_construction);
         let lifecycle = match complete.install_production_lifecycle(
             install_context,
             source_lease,
@@ -1598,6 +1614,19 @@ where
                         // exclusive &mut factory cannot start another attempt
                         // or replace this slot during this installation.
                         let retained = self.retained_installation.insert(retained);
+                        #[cfg(test)]
+                        if let Some(first) = retained.take_component_construction_cause() {
+                            // The fixture's actual body stays in this same slot.
+                            // Reporting its cause is not canonical publication.
+                            return ProductionLifecycleStartOutcome::failed(
+                                AttemptWorkerFailure::Terminal(
+                                    QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(
+                                        first,
+                                    ),
+                                ),
+                                CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
+                            );
+                        }
                         match retained.publish_construction() {
                             Ok(Some(first)) => {
                                 QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(first)

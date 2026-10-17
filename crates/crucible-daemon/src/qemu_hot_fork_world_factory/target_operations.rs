@@ -26,6 +26,12 @@ pub(crate) trait WorldTargetOperations<R: QemuAttemptResourceGuardFactory>
 where
     R::Guard: QemuAttemptProcessResourceGuard,
 {
+    /// Prepares fixture storage without supplying Main or native authority.
+    #[cfg(test)]
+    fn prepare_component_construction(
+        &self,
+    ) -> Result<Option<Box<crate::ProductionVmConstructionCustody>>, crucible_api::LifecycleApiError>;
+
     /// Acquires this backend's target resources without settling the checkout.
     ///
     /// # Errors
@@ -83,6 +89,14 @@ where
     R: QemuAttemptResourceGuardFactory,
     R::Guard: QemuAttemptProcessResourceGuard,
 {
+    #[cfg(test)]
+    fn prepare_component_construction(
+        &self,
+    ) -> Result<Option<Box<crate::ProductionVmConstructionCustody>>, crucible_api::LifecycleApiError>
+    {
+        Ok(None)
+    }
+
     fn begin_target(
         &self,
         resources: &mut R,
