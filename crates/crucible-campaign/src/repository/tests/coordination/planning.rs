@@ -3374,7 +3374,7 @@ fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
         .expect("validation checkpoints")
         .get_mut(&first.new_snapshot.content_id())
         .expect("first issue checkpoint")
-        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS;
+        .closure_objects = usize::MAX / 2;
     let second = repository
         .accept_planner_step(
             "planner-issue",
@@ -3388,12 +3388,9 @@ fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
         .lock()
         .expect("validation checkpoints")
         .get(&second.new_snapshot.content_id())
-        .expect("rebased checkpoint")
+        .expect("incremental checkpoint")
         .closure_objects;
-    let cold = repository
-        .verify_campaign_closure_anchored(second.new_snapshot.content_id(), &BTreeSet::new())
-        .expect("cold child closure");
-    assert_eq!(rebased, cold);
+    assert!(rebased > usize::MAX / 2);
     let accepted_second = repository
         .load_planner_step_at(second.new_snapshot, second.step)
         .expect("load second issue");

@@ -44,7 +44,7 @@ use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crucible_campaign::{CampaignHash, MAX_CAMPAIGN_CLOSURE_OBJECTS};
+use crucible_campaign::CampaignHash;
 use crucible_cas::content_store::ContentId;
 use thiserror::Error;
 
@@ -68,10 +68,11 @@ const IO_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Maximum number of roots or physical placements in one local manifest.
 ///
-/// This matches the repository's complete-closure work bound. It is a format
-/// bound: writers reject an additional entry once it is reached, but entries
-/// are streamed to disk and never held in memory together.
-pub const MAX_CAMPAIGN_GC_MANIFEST_ENTRIES: usize = MAX_CAMPAIGN_CLOSURE_OBJECTS;
+/// This is a format bound: writers reject an additional entry once it is
+/// reached, but entries are streamed to disk and never held in memory
+/// together. Repository closure walks have no matching whole-closure bound;
+/// they authenticate one transition delta at a time.
+pub const MAX_CAMPAIGN_GC_MANIFEST_ENTRIES: usize = 64_000_000;
 
 /// Canonical manifest file and the scratch directory that owns it, if any.
 ///

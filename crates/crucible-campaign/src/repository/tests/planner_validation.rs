@@ -475,7 +475,7 @@ fn fresh_closure_refuses_missing_or_corrupt_cached_requests_after_ancestry() {
         .validate_snapshot_ancestry_with_planner_context(
             corpus.head,
             &mut ChoiceValidationCache::default(),
-            MAX_SNAPSHOT_ANCESTRY,
+            MAX_CAMPAIGN_SNAPSHOT_ANCESTRY,
             Some(&mut context),
         )
         .expect("ancestry");

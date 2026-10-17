@@ -41,6 +41,9 @@ mod tests {
     use super::*;
     use crate::CampaignCommandId;
 
+    /// A checkpoint count far above any object limit the walks enforce.
+    const LARGE_CONSERVATIVE_CLOSURE: usize = usize::MAX / 2;
+
     #[test]
     fn local_budget_witness_uses_one_ledger_derivation_per_successor() {
         for count in [16_usize, 32] {
@@ -159,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn near_limit_budget_witness_still_uses_complete_validation() {
+    fn large_conservative_checkpoint_never_rebases_a_budget_witness() {
         let (repository, lineage, policy) = super::super::tests::fixture();
         let created = repository
             .create("budget-witness-limit", &lineage, &policy, &BTreeMap::new())
@@ -171,7 +174,7 @@ mod tests {
             .expect("checkpoint cache")
             .get_mut(&parent.content_id())
             .expect("genesis checkpoint")
-            .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - 1;
+            .closure_objects = LARGE_CONSERVATIVE_CLOSURE;
         let request = ControlRequest {
             command: CampaignCommandId::from_hash(CampaignHash::derive(
                 "test.budget-witness",
@@ -185,7 +188,7 @@ mod tests {
 
         let advanced = repository
             .apply_control("budget-witness-limit", &request)
-            .expect("complete fallback validation");
+            .expect("incremental validation from a large checkpoint");
         let checkpoint = repository
             .validated_heads
             .lock()
@@ -193,7 +196,8 @@ mod tests {
             .get(&advanced.new_snapshot.content_id())
             .copied()
             .expect("promoted child checkpoint");
-        assert!(checkpoint.closure_objects < MAX_CAMPAIGN_CLOSURE_OBJECTS - 1);
+        // The count is a diagnostic sum of deltas, never a rebase trigger.
+        assert!(checkpoint.closure_objects > LARGE_CONSERVATIVE_CLOSURE);
         assert_eq!(checkpoint.ancestry_depth, 2);
     }
 }

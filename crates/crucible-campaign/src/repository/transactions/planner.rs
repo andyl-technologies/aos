@@ -68,17 +68,7 @@ impl CampaignRepository {
         // only the new invocation/basis closure needs fresh authentication.
         let loaded = self.read_snapshot(head.snapshot_id().content_id())?;
         let anchors = self.authenticated_head_closure_anchors(&loaded)?;
-        let added = self.verify_campaign_closure_anchored(invocation_content, &anchors)?;
-        let prior = self.load_validation_checkpoint(head.snapshot_id().content_id())?;
-        if prior
-            .closure_objects
-            .checked_add(added)
-            .is_none_or(|upper| upper > MAX_CAMPAIGN_CLOSURE_OBJECTS)
-        {
-            // A conservative head bound can overcount this invocation's union.
-            // Near the limit, retain the original exact closure admission rule.
-            self.verify_campaign_closure(invocation_content)?;
-        }
+        self.verify_campaign_closure_anchored(invocation_content, &anchors)?;
         Ok(invocation)
     }
 

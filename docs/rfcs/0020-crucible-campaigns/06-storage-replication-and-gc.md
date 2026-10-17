@@ -67,6 +67,27 @@ stream to EOF but are not parsed as envelopes. A missing child, wrong record
 subtype, malformed ancestry transition, cycle, or traversal-limit breach
 rejects publication/import rather than yielding a partially readable head.
 
+A snapshot closure is authenticated inductively rather than by one depth-first
+walk through every parent edge. Walking from the head toward genesis, each
+transition step authenticates the child envelope, then authenticates each
+changed trie root as a diff against the parent's root at the same role: only
+node positions whose identity or count changed are read, and each changed leaf
+value is walked with the prior value at its key as a covered predecessor. The
+transition fact and every newly linked graph are walked relative to exact
+anchors proven to be owned by the parent: its direct children, index-bound
+records such as the planner head, earlier savepoint facts, and admitted origin
+attempts. An older snapshot named by a newly reachable record is an obligation
+that the walk discharges when it reaches that ancestor; one that is not an
+ancestor receives its own complete validation. Every object reachable from the
+head first becomes reachable at genesis or at exactly one transition, so the
+union of these deltas is the complete closure, while each step's visited set
+and trie cursor are dropped before the next step. A cycle would need a hash
+fixpoint because each child embeds its parent's identity. Mutation-command
+uniqueness follows from the grow-only `accounting.command` index: every
+command-bearing successor proves its command absent from the parent's index.
+Complete trie roots that are not diffed are authenticated by a cursor that
+retains only the unvisited siblings on its current path.
+
 Compression, encryption, sparse representation, pack membership, pack byte
 range, local path, bucket, multipart layout, tier, cache state, and copy count
 are physical placement. They may change without changing the logical ID.

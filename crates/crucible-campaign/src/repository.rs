@@ -56,12 +56,19 @@ const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 ///
 /// The million-admission corpus uses a genesis, two controls, two request
 /// transitions per 16 choices, and one ordered finite Issue per 16 choices.
-/// This ceiling covers its 187,503 snapshots with bounded headroom. Closure
-/// object limits independently bound the authenticated objects in that chain.
+/// This ceiling covers its 187,503 snapshots with bounded headroom.
+///
+/// Cold validation retains one transition's state at a time, so this is an
+/// operational bound on validation time rather than on memory.
 pub const MAX_CAMPAIGN_SNAPSHOT_ANCESTRY: usize = 1_250_001;
-const MAX_SNAPSHOT_ANCESTRY: usize = MAX_CAMPAIGN_SNAPSHOT_ANCESTRY;
-/// Maximum unique object-position work charged to one authenticated closure.
-pub const MAX_CAMPAIGN_CLOSURE_OBJECTS: usize = 64_000_000;
+/// Bounds the exact-checkpoint objects one finding's pin retention walk visits.
+const MAX_EXACT_PIN_CLOSURE_OBJECTS: usize = 64_000_000;
+/// Bounds the dense global admission ordinals one request-spending index covers.
+const MAX_REQUEST_SPENDING_ADMISSIONS: u64 = 64_000_000;
+/// Bounds the generator-graph work spent validating one branch-request source.
+const MAX_BRANCH_GENERATOR_VALIDATION_OBJECTS: usize = 64_000_000;
+/// Bounds the dependency objects authenticated for one execution candidate.
+const MAX_CANDIDATE_DEPENDENCY_OBJECTS: usize = 64_000_000;
 const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 /// Maximum source positions served by one coordinator planner page.
 pub const MAX_PLANNER_SCAN_PAGE_ITEMS: u32 = 10_000;
@@ -630,7 +637,7 @@ mod mode_derivation;
 mod objective;
 mod observation;
 mod planner_driver;
-use crate::merkle::{MerkleReadSession, MerkleValidationReads, VerifiedMerklePositions};
+use crate::merkle::{MerkleReadSession, MerkleValidationReads};
 
 mod planner_issue;
 mod planner_validation;

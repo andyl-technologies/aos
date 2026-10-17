@@ -52,7 +52,7 @@ const ARCHIVE_SCHEMA_VERSION: u32 = 1;
 /// Maximum direct object entries carried by one archive inventory page.
 pub const MAX_ARCHIVE_INVENTORY_PAGE_ENTRIES: usize = 4_096;
 /// Maximum selected plus omitted objects represented by one archive.
-pub const MAX_ARCHIVE_INVENTORY_ENTRIES: usize = crate::MAX_CAMPAIGN_CLOSURE_OBJECTS;
+pub const MAX_ARCHIVE_INVENTORY_ENTRIES: usize = 64_000_000;
 
 /// Closed archive selection policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

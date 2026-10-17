@@ -25,21 +25,20 @@ fn observation_growth_bound_rebases_and_remains_restart_readable() {
         .expect("validation checkpoints")
         .get_mut(&admitted.new_snapshot.content_id())
         .expect("admitted checkpoint")
-        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - growth;
+        .closure_objects = usize::MAX / 2;
 
     let accepted = repository
         .publish_observation("observation-growth", admitted.new_snapshot, &observation)
-        .expect("full-validation observation rebase");
+        .expect("incremental observation from a large checkpoint");
     let checkpoint_objects = repository
         .validated_heads
         .lock()
         .expect("validation checkpoints")
         .get(&accepted.new_snapshot.content_id())
-        .expect("rebased observation checkpoint")
+        .expect("incremental observation checkpoint")
         .closure_objects;
-    // A rebased checkpoint holds a fresh full-validation count, below the
-    // cumulative count the parent checkpoint carried.
-    assert!(checkpoint_objects < MAX_CAMPAIGN_CLOSURE_OBJECTS - growth);
+    // The owner growth bound is charged on top of the parent count.
+    assert!(checkpoint_objects - usize::MAX / 2 >= growth);
 
     repository
         .validated_heads

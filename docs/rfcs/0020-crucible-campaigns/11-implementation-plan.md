@@ -1679,6 +1679,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   authenticated membership and result-locator indexes; promote only after ref
   CAS, retain full fail-closed validation for imported or restarted heads, and
   exercise 10,000 mixed request/control mutations plus deep exact replay.
+  Complete validation is one inductive walk that authenticates each
+  transition's closure delta, so its resident state does not grow with
+  ancestry length.
 - [ ] **T-CAM-4.11** Retain attempt logs as sealed, chained segments in
   quota-accounted attempt storage with an open tail, remove the whole-log entry
   and byte bounds, enforce the operational `maximum_event_log_bytes` limit,

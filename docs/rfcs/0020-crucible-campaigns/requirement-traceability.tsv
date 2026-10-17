@@ -288,3 +288,4 @@ CPERF-7	T-CAM-7.6	gate:hot-fork-equivalence
 CPERF-8	T-CAM-4.2	gate:branch-point-model,gate:attempt-idempotence
 CPERF-9	T-CAM-4.10	gate:campaign-mutation-scaling
 CPERF-10	T-CAM-4.13	gate:campaign-performance
+CPERF-11	T-CAM-4.10	gate:campaign-mutation-scaling

@@ -464,7 +464,7 @@ impl CampaignRepository {
         mut current: ContentId,
         requested: CampaignSnapshotId,
     ) -> Result<LoadedSnapshot, CampaignRepositoryError> {
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+        for _ in 0..MAX_CAMPAIGN_SNAPSHOT_ANCESTRY {
             let loaded = self.read_snapshot(current)?;
             if current == requested.content_id() {
                 return Ok(loaded);

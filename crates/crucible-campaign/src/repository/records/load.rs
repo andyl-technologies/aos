@@ -257,7 +257,7 @@ impl CampaignRepository {
         first: &PlannerStep,
     ) -> Result<(), CampaignRepositoryError> {
         let mut step = first.clone();
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+        for _ in 0..MAX_CAMPAIGN_SNAPSHOT_ANCESTRY {
             if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
                 return Err(integrity("planner-issue-requires-snapshot-owner"));
             }
