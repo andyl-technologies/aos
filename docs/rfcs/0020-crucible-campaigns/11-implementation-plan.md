@@ -1785,6 +1785,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   the body, and bound every other unary control body per route (CMEAS-36).
   The decoded closure and observation evidence keep their resume limits
   until staged transport and cursor-driven consumers replace them.
+- [x] **T-CAM-4.30** Stream each node's QEMU snapshot envelope one nested
+  owner at a time into a staged, hashed object in the checkpoint object
+  directory. Stage failed-node host-I/O continuations the same way. Publish
+  each staged file by authenticated link, and check snapshot canonicality
+  against a streamed re-encoding instead of a second envelope copy
+  (CMEAS-37). Envelope bytes and identities are unchanged. Block page sets
+  and the 9p tree stay inline until they become content-addressed page
+  objects.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,

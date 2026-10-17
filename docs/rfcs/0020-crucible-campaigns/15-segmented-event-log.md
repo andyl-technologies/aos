@@ -587,6 +587,15 @@ prefix still retains its complete history until the bounded fold of
   They MUST check presence, or copy, authenticate, and decode one segment at a
   time, and an exact closure MUST charge each segment against its byte bounds
   by its referenced length rather than by reading it.
+- **[CMEAS-37]** Exact-checkpoint publication MUST write each node's QEMU
+  snapshot envelope, and each failed node's host-I/O continuation, to a
+  staged content-addressed object as it is encoded, hashing it in the same
+  pass. No two such envelopes may be resident together, and at most one
+  nested owner's encoding may be resident while one envelope is written.
+  `fat_checkpoint_bytes` MUST bound each envelope as it is written, and MUST
+  bound the closure by staged length. Decoding an envelope MUST check that
+  it is canonical by streaming its re-encoding against the input, never by
+  building a second copy.
 
 The scheduler also records a runtime search frontier for every finite
 signal-fault binding choice and every live network frame that offers branch

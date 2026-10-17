@@ -44,6 +44,7 @@ pub(in crate::vm_lifecycle) use storage::{
     validate_retained_chunked_artifact_with_boundary,
 };
 mod sparse;
+mod staged_object;
 #[cfg(test)]
 use sparse::sparse_artifact_identity;
 pub(super) use sparse::{ArtifactExtent, stage_sparse_checkpoint_artifact_chunks_with_boundary};
@@ -51,6 +52,10 @@ use sparse::{
     stream_sparse_artifact_bytes, validate_sparse_artifact_manifest,
     validate_sparse_artifact_manifest_with_lifecycle_boundary,
     validate_sparse_artifact_manifest_with_scheduler_boundary, validate_sparse_artifact_shape,
+};
+use staged_object::{
+    StagedObject, persist_staged_object_with_boundary, stage_bytes_with_boundary,
+    stage_snapshot_with_boundary,
 };
 #[cfg(feature = "test-support")]
 mod test_support;
@@ -457,6 +462,10 @@ const fn is_false(value: &bool) -> bool {
 
 /// Encoded closure objects, apart from the sealed event-log segments that the
 /// scheduler continuation names and publication copies one at a time.
+///
+/// Per-node snapshot envelopes and failed-node host-I/O continuations can
+/// each approach `fat_checkpoint_bytes`, so they are staged on disk as they
+/// are encoded rather than held together in memory.
 struct ClosureObjects {
     schedule: Vec<u8>,
     scheduler: Vec<u8>,
@@ -466,8 +475,8 @@ struct ClosureObjects {
     assertion_state: Vec<u8>,
     lifecycle_state: Vec<u8>,
     fault_checkpoint: Vec<u8>,
-    snapshots: BTreeMap<NodeId, Vec<u8>>,
-    failed_host_io: BTreeMap<NodeId, Vec<u8>>,
+    snapshots: BTreeMap<NodeId, StagedObject>,
+    failed_host_io: BTreeMap<NodeId, StagedObject>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -558,22 +567,6 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
     boundary()?;
     validate_checkpoint_set(scenario, checkpoint)?;
     boundary()?;
-    let (mut manifest, objects) =
-        manifest_and_objects_with_boundary(scenario, resource_limits, checkpoint, boundary)?;
-    boundary()?;
-    manifest.identity = closure_identity(&manifest)?;
-    checkpoint.identity = manifest.identity;
-    let manifest_bytes = encode_manifest(&manifest)?;
-    enforce_persist_limits(
-        run_state_root,
-        scenario,
-        resource_limits,
-        &manifest,
-        &objects,
-        checkpoint,
-        manifest_bytes.len(),
-    )?;
-    boundary()?;
 
     let scenario_directory = run_state_root.join(scenario.to_hex());
     fs::create_dir_all(&scenario_directory).map_err(|error| {
@@ -598,6 +591,30 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
         ))
     })?;
     sync_directory(&scenario_directory)?;
+    boundary()?;
+
+    let (mut manifest, objects) = manifest_and_objects_with_boundary(
+        scenario,
+        resource_limits,
+        checkpoint,
+        &object_directory,
+        boundary,
+    )?;
+    boundary()?;
+    manifest.identity = closure_identity(&manifest)?;
+    checkpoint.identity = manifest.identity;
+    let manifest_bytes = encode_manifest(&manifest)?;
+    enforce_persist_limits(
+        run_state_root,
+        scenario,
+        resource_limits,
+        &manifest,
+        &objects,
+        checkpoint,
+        manifest_bytes.len(),
+    )?;
+    boundary()?;
+
     let destination = closure_parent.join(manifest.identity.to_hex());
     if destination.exists() {
         boundary()?;
@@ -703,7 +720,12 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
             .failed_host_io
             .get(&node)
             .ok_or_else(|| store_error("failed-node host-I/O object disappeared"))?;
-        persist_object_with_boundary(&object_directory, failed.checkpoint, checkpoint, boundary)?;
+        if checkpoint.identity() != failed.checkpoint {
+            return Err(PersistExactCheckpointError::Unpublished(store_error(
+                "failed-node host-I/O object identity changed before persistence",
+            )));
+        }
+        persist_staged_object_with_boundary(&object_directory, checkpoint, boundary)?;
     }
     for target in &manifest.targets {
         boundary()?;
@@ -714,7 +736,12 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
             .snapshots
             .get(&node)
             .ok_or_else(|| store_error("closure snapshot object disappeared"))?;
-        persist_object_with_boundary(&object_directory, target.snapshot, snapshot, boundary)?;
+        if snapshot.identity() != target.snapshot {
+            return Err(PersistExactCheckpointError::Unpublished(store_error(
+                "closure snapshot object identity changed before persistence",
+            )));
+        }
+        persist_staged_object_with_boundary(&object_directory, snapshot, boundary)?;
         let source = checkpoint
             .targets
             .get(&node)
@@ -1809,11 +1836,7 @@ fn enforce_persist_limits(
             .get(&node)
             .ok_or_else(|| store_error("failed-node host-I/O object disappeared"))?;
         if identities.insert(failed.checkpoint) {
-            bytes = add_checkpoint_bytes(
-                bytes,
-                u64::try_from(object.len())
-                    .map_err(|_| store_error("failed-node host-I/O size is not representable"))?,
-            )?;
+            bytes = add_checkpoint_bytes(bytes, object.length())?;
         }
     }
     for target in &manifest.targets {
@@ -1825,11 +1848,7 @@ fn enforce_persist_limits(
             .get(&node)
             .ok_or_else(|| store_error("closure snapshot object disappeared"))?;
         if identities.insert(target.snapshot) {
-            bytes = add_checkpoint_bytes(
-                bytes,
-                u64::try_from(snapshot.len())
-                    .map_err(|_| store_error("checkpoint snapshot size is not representable"))?,
-            )?;
+            bytes = add_checkpoint_bytes(bytes, snapshot.length())?;
         }
         let source = checkpoint
             .targets
@@ -1988,11 +2007,12 @@ fn authenticate_existing_publication_with_boundary(
             .failed_host_io
             .get(&node)
             .ok_or_else(|| store_error("failed-node host-I/O object disappeared"))?;
-        if hash_bytes_with_boundary(checkpoint, boundary)? != failed.checkpoint {
+        if checkpoint.identity() != failed.checkpoint {
             return Err(store_error(
                 "failed-node host-I/O checkpoint changed before retry",
             ));
         }
+        validate_file_hash_with_boundary(checkpoint.path(), failed.checkpoint, boundary)?;
         validate_file_hash_with_boundary(
             &object_path(object_directory, failed.checkpoint),
             failed.checkpoint,
@@ -2008,9 +2028,10 @@ fn authenticate_existing_publication_with_boundary(
             .snapshots
             .get(&node)
             .ok_or_else(|| store_error("closure snapshot object disappeared"))?;
-        if hash_bytes_with_boundary(snapshot, boundary)? != target.snapshot {
+        if snapshot.identity() != target.snapshot {
             return Err(store_error("checkpoint snapshot changed before retry"));
         }
+        validate_file_hash_with_boundary(snapshot.path(), target.snapshot, boundary)?;
         validate_file_hash_with_boundary(
             &object_path(object_directory, target.snapshot),
             target.snapshot,
@@ -2380,10 +2401,15 @@ fn terminal_cause_matches_verdict(
     }
 }
 
+/// Encodes the closure's objects and the manifest that names them.
+///
+/// Snapshot envelopes and failed-node host-I/O continuations are staged in
+/// `staging_directory`, one at a time, as they are encoded.
 fn manifest_and_objects_with_boundary(
     scenario: ContentHash,
     resource_limits: FaultResourceLimits,
     checkpoint: &ProductionVmExactCheckpointSet,
+    staging_directory: &Path,
     boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
 ) -> Result<(ClosureManifest, ClosureObjects), SchedulerError> {
     boundary()?;
@@ -2424,8 +2450,10 @@ fn manifest_and_objects_with_boundary(
                     node.name
                 ))
             })?;
-        let identity = hash_bytes_with_boundary(&bytes, boundary)?;
-        failed_host_io_objects.insert(node.clone(), bytes);
+        let staged = stage_bytes_with_boundary(staging_directory, &bytes, boundary)?;
+        drop(bytes);
+        let identity = staged.identity();
+        failed_host_io_objects.insert(node.clone(), staged);
         failed_host_io.push(FailedHostIoManifest {
             node: decode::FallibleString::new(node.name.clone()),
             execution_binding: failed.host_io.execution_binding(),
@@ -2444,15 +2472,15 @@ fn manifest_and_objects_with_boundary(
                 store_error("repository-backed restore target cannot be republished as native")
             })?;
         boundary()?;
-        let bytes = target
-            .snapshot
-            .to_canonical_bytes_with_limit(resource_limits.fat_checkpoint_bytes)
-            .map_err(|error| {
-                store_error(format!("encode QEMU snapshot for `{}`: {error}", node.name))
-            })?;
-        boundary()?;
-        let snapshot = hash_bytes_with_boundary(&bytes, boundary)?;
-        snapshots.insert(node.clone(), bytes);
+        let staged = stage_snapshot_with_boundary(
+            staging_directory,
+            node,
+            &target.snapshot,
+            resource_limits.fat_checkpoint_bytes,
+            boundary,
+        )?;
+        let snapshot = staged.identity();
+        snapshots.insert(node.clone(), staged);
         targets.push(TargetManifest {
             node: decode::FallibleString::new(node.name.clone()),
             immutable_backing: target.immutable_backing,

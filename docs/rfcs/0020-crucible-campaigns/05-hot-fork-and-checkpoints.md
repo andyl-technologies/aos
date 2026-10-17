@@ -482,6 +482,19 @@ rather than falling back to work proportional to the virtual disk. The closure
 is durably published before transient QMP snapshots are deleted and only nodes
 that were running are resumed. No second full-file staging tree is created.
 
+Publication writes each node's QEMU snapshot envelope and each failed node's
+host-I/O continuation to a staged object in the object directory as it is
+encoded, one nested owner at a time, and hashes it in the same pass. The
+manifest names the staged identity, and publication links the
+re-authenticated file into place. `fat_checkpoint_bytes` therefore bounds each
+envelope as it is written and the closure by its staged length. It is a
+stored-size contract, never the size of one in-memory buffer (RFC section
+15.12, CMEAS-37). Restore reads one envelope at a time and checks it is
+canonical by comparing a streamed re-encoding with the stored bytes. Block
+page sets and the 9p tree still travel inside the host-I/O envelope until
+they are externalized as content-addressed page objects, as overlay and RAM
+layers already are.
+
 Version-nine sparse overlay artifacts carry a logical `length`, no dense
 `chunks`, and strictly ordered, nonoverlapping, nonadjacent extents. Each
 extent contains a `start_chunk` and one or more consecutive BLAKE3 chunk
