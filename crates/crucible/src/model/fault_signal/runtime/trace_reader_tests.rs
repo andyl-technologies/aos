@@ -92,6 +92,28 @@ fn bundles_round_trip_and_authenticate_every_segment() {
 }
 
 #[test]
+fn small_segment_target_seals_many_authenticated_segments() {
+    const TARGET: usize = 1024;
+
+    let trace = ResolvedEffectTrace::from_items_with_segment_target(
+        FaultReplayMode::LockedEffect,
+        (0..64).map(pass_item),
+        TARGET,
+    )
+    .unwrap_or_else(|error| panic!("fixture trace: {error}"));
+
+    let segments = trace.manifest().segments();
+    assert!(segments.len() > 4, "a small target seals many segments");
+    let items: Vec<_> =
+        ResolvedEffectTrace::referencing(trace.manifest().clone(), trace.segments().clone())
+            .unwrap_or_else(|error| panic!("authenticate every segment: {error}"))
+            .items()
+            .collect::<Result<_, _>>()
+            .unwrap_or_else(|error| panic!("items: {error}"));
+    assert_eq!(items, (0..64).map(pass_item).collect::<Vec<_>>());
+}
+
+#[test]
 fn a_manifest_without_its_segments_is_refused() {
     let trace = recorded(2);
     let (manifest, _segments) = trace.into_parts();
