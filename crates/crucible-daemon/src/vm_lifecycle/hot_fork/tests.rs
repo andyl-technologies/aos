@@ -1138,3 +1138,84 @@ fn a_process_neutral_source_world_cannot_lend_a_physical_target_permit() {
     assert!(!source.fork_target_is_owned());
     assert!(source.recover().is_ok());
 }
+
+#[test]
+fn borrowed_source_preparation_keeps_same_box_and_typed_failure_before_assembly() {
+    let (_source, mut lifecycle) = permanently_failed_loop();
+    lifecycle.node_lease_cleanup_failed = true;
+    let lifecycle = Box::new(lifecycle);
+    let address = std::ptr::from_ref(lifecycle.as_ref());
+    let preparation =
+        super::preparation::SourceWorldPreparation::new(lifecycle, BTreeMap::new(), false);
+
+    let mut preparation = preparation
+        .into_world()
+        .err()
+        .unwrap_or_else(|| panic!("an unattempted owner cannot become a Source"));
+    assert!(std::ptr::eq(
+        preparation.world.lifecycle.as_deref().unwrap(),
+        address
+    ));
+    assert!(preparation.run().is_err());
+    let original = preparation.first.as_ref().unwrap();
+    let original = std::error::Error::source(original)
+        .unwrap()
+        .downcast_ref::<SchedulerError>()
+        .unwrap();
+    let SchedulerError::BoundaryViolation { message } = original else {
+        panic!("missing source authority must retain its original boundary error");
+    };
+    let message_allocation = message.as_ptr();
+    // The changed component input would now permit preparation. Failure must
+    // remain a one-shot phase rather than trying the next input on this owner.
+    preparation
+        .world
+        .lifecycle
+        .as_mut()
+        .unwrap()
+        .node_lease_cleanup_failed = false;
+    assert!(preparation.run().is_err());
+    assert!(std::ptr::eq(
+        preparation.world.lifecycle.as_deref().unwrap(),
+        address
+    ));
+
+    let failure = preparation.into_failure();
+    assert!(std::ptr::eq(failure.lifecycle.as_deref().unwrap(), address));
+    let original = failure
+        .first_error()
+        .unwrap()
+        .downcast_ref::<SchedulerError>()
+        .unwrap();
+    let SchedulerError::BoundaryViolation { message } = original else {
+        panic!("failure assembly replaced the typed boundary error");
+    };
+    assert_eq!(message.as_ptr(), message_allocation);
+    assert!(failure.unreconciled_nodes().is_empty());
+    let recovered = failure
+        .into_recovered_lifecycle()
+        .unwrap_or_else(|error| panic!("a refusal before mutation preserves recovery: {error}"));
+    assert_eq!(recovered.inner.backend().len(), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parent_park_refusal_retains_and_returns_the_same_complete_source_owner() {
+    // This private refusal constructor models custody only. The actual held
+    // resource is the fixture's target loan; it issues no ParentPark authority.
+    let (source, loan, retained) = source_world_with_target_loan();
+    let failure = ProductionVmHotForkSourceWorldPreparationFailure::retained_parent_park(source);
+    assert!(retained.upgrade().is_some());
+
+    let source = failure
+        .into_retained_source()
+        .unwrap_or_else(|error| panic!("refusal must retain the actual Source: {error}"));
+    assert!(source.fork_target_is_owned());
+    loan.store(false, std::sync::atomic::Ordering::Release);
+    let lifecycle = source.recover().unwrap_or_else(|error| {
+        panic!("recover the same body after the actual loan returns: {error}")
+    });
+    assert!(retained.upgrade().is_some());
+    drop(lifecycle);
+    assert!(retained.upgrade().is_none());
+}
