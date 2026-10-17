@@ -433,6 +433,26 @@ impl Database {
         let next_size = checked_u64(next_size, "upload size")?;
         let ordinal = i64::from(input.chunk.ordinal);
         let statements = vec![
+            // IAM and publication accounting own quota totals before OCI
+            // state. Managed chunk receipts must take the same lock order.
+            Statement::new(
+                "UPDATE org_usage SET updated_at = updated_at
+                 WHERE org_id = (SELECT reservation.org_id
+                   FROM oci_upload_sessions upload JOIN oci_quota_reservations reservation
+                     ON reservation.id = upload.quota_reservation_id
+                   WHERE upload.id = ?1 AND upload.writer_id = ?2
+                     AND upload.token_id = ?3 AND upload.state = 'active'
+                     AND upload.resource_version = ?4 AND upload.expires_at > ?5
+                     AND reservation.state = 'reserved')",
+                vals![
+                    input.upload_id,
+                    input.writer_id,
+                    input.token_id,
+                    input.expected_resource_version,
+                    input.now
+                ],
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE oci_registry_state
                  SET updated_at = updated_at

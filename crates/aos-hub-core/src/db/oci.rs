@@ -2882,6 +2882,10 @@ fn parse_annotations(value: &str) -> Result<Annotations> {
     Ok(annotations)
 }
 
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "postgres"))]
+#[path = "oci/parallel_upload_tests.rs"]
+mod parallel_upload_tests;
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3060,6 +3064,10 @@ mod tests {
 
     async fn catalog_database() -> (Database, i64, i64) {
         let db = Database::open_in_memory().await.unwrap();
+        catalog_database_with_backend(db).await
+    }
+
+    pub(super) async fn catalog_database_with_backend(db: Database) -> (Database, i64, i64) {
         let org_id = db.create_org("oci-catalog", "OCI Catalog").await.unwrap();
         let registry_id = db
             .create_managed_registry(org_id, "", "containers", "public", &[], false)
