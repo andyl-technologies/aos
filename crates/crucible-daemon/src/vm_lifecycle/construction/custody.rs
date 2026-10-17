@@ -11,6 +11,9 @@ use std::sync::{Mutex, TryLockError};
 
 use super::*;
 
+mod inputs;
+pub(in crate::vm_lifecycle) use inputs::with_inputs;
+
 #[cfg(test)]
 mod tests;
 
@@ -134,55 +137,6 @@ impl Partial {
     }
 }
 
-/// Retains every incoming owner before inspecting the launcher's storage slot.
-pub(in crate::vm_lifecycle) fn with_inputs(
-    launcher: Box<dyn ProductionVmNodeLauncher>,
-    checkpoint: Option<ProductionVmExactCheckpointSet>,
-    restore: Option<ProductionVmHotForkRestore>,
-    continuation: Option<ProductionVmHotForkWorldContinuation>,
-    adoptions: Vec<ProductionVmHotForkNodeAdoption>,
-) -> Result<Box<ProductionVmConstructionCustody>, ProductionVmConstructionFailure> {
-    let mut incoming = Partial::new();
-    incoming.node_launcher = Some(launcher);
-    incoming.restore_checkpoint = checkpoint;
-    incoming.hot_fork_restore = restore;
-    incoming.hot_fork_continuation = continuation;
-    incoming.hot_fork_adoptions = adoptions;
-    let existing = incoming
-        .node_launcher
-        .as_mut()
-        .and_then(|launcher| launcher.take_construction_custody());
-    if let Some(mut custody) = existing {
-        let pristine = custody.first.is_none();
-        #[cfg(target_os = "linux")]
-        let pristine = pristine && custody.reservation.is_none();
-        if pristine {
-            if let Ok(partial) = custody.partial_mut() {
-                if partial.is_empty() {
-                    *partial = incoming;
-                    return Ok(custody);
-                }
-            }
-        }
-        return Err(ProductionVmConstructionFailure {
-            storage: FailureStorage::Missing(MissingStorage {
-                first: LifecycleApiError::ConstructionCustodyUnavailable,
-                partial: Mutex::new(incoming),
-                existing: Some(custody),
-            }),
-            additional: None,
-        });
-    }
-    Err(ProductionVmConstructionFailure {
-        storage: FailureStorage::Missing(MissingStorage {
-            first: LifecycleApiError::ConstructionCustodyUnavailable,
-            partial: Mutex::new(incoming),
-            existing: None,
-        }),
-        additional: None,
-    })
-}
-
 impl ProductionVmConstructionCustody {
     /// Creates empty storage without issuing a resource or starting a clock.
     pub fn new() -> Self {
@@ -274,7 +228,8 @@ impl ProductionVmConstructionCustody {
         }
     }
 
-    pub(in crate::vm_lifecycle) fn into_failure(
+    /// Retains the initiating cause beside this same partial or complete owner.
+    pub(crate) fn into_failure(
         mut self: Box<Self>,
         first: LifecycleApiError,
     ) -> ProductionVmConstructionFailure {
@@ -306,7 +261,12 @@ impl ProductionVmConstructionCustody {
         }
     }
 
-    pub(super) fn into_loop(mut self: Box<Self>) -> Result<ProductionVmLifecycleLoop, Box<Self>> {
+    /// Moves the complete lifecycle with its original carrier attached.
+    ///
+    /// # Errors
+    /// Returns this same Box if custody is failed, closed, reserved, poisoned
+    /// or does not contain a complete lifecycle.
+    pub(crate) fn into_loop(mut self: Box<Self>) -> Result<ProductionVmLifecycleLoop, Box<Self>> {
         if self.first.is_some() || self.physically_closed.load(Ordering::Acquire) {
             return Err(self);
         }

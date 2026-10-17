@@ -127,8 +127,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
 
 /// Physical preparation does not change the checkpoint's logical node states.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum ExactRestoreExposure {
+pub(crate) enum ExactRestoreExposure {
+    /// Applies each restored node's logical running or paused disposition.
     Released,
+    /// Keeps every reconstructed live node stopped until ownership commits.
     AwaitingOwnershipCommit,
 }
 
@@ -167,34 +169,45 @@ pub(super) fn build_from_custody(
     mut custody: Box<ProductionVmConstructionCustody>,
     exposure: ExactRestoreExposure,
 ) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
-    let phase = match custody.partial_mut() {
-        Ok(phase) => phase,
-        Err(first) => return Err(custody.into_failure(first)),
-    };
-    let prepared = prepare_construction(scenario, source, config, phase, exposure);
-    let assemble = match prepared {
-        Ok(assemble) => assemble,
-        Err(first) => return Err(custody.into_failure(first)),
-    };
-    if let Err(first) = custody.complete_with(assemble) {
+    if let Err(first) = prepare_from_custody(scenario, source, config, &mut custody, exposure) {
         return Err(custody.into_failure(first));
-    }
-    let lifecycle = match custody.complete_mut() {
-        Ok(lifecycle) => lifecycle,
-        Err(first) => return Err(custody.into_failure(first)),
-    };
-    // Restore validation runs on the complete retained lifecycle. An error
-    // returns the same carrier, rather than dropping a refused cleanup.
-    if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
-        return Err(custody.into_failure(loop_factory_error(format!(
-            "capture initial debugger runtime evidence: {error}"
-        ))));
     }
     custody.into_loop().map_err(|custody| {
         custody.into_failure(loop_factory_error(
             "construction lost its complete lifecycle",
         ))
     })
+}
+
+/// Prepares a World while its containing owner retains the original carrier.
+///
+/// The caller installs all inputs before entry and keeps this carrier in its
+/// admitted slot through every callback. Only successful validation permits
+/// the separate, move-only transfer of its completed lifecycle.
+///
+/// # Errors
+/// Retains the actual partial or complete phase when preparation, assembly or
+/// initial debugger evidence fails. The caller retains the original cause.
+pub(crate) fn prepare_from_custody(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    custody: &mut ProductionVmConstructionCustody,
+    exposure: ExactRestoreExposure,
+) -> Result<(), LifecycleApiError> {
+    let phase = custody.preparation_phase()?;
+    let assemble = prepare_construction(scenario, source, config, phase, exposure)?;
+    custody.complete_with(assemble)?;
+
+    // Restore validation runs on the same complete retained lifecycle.
+    custody
+        .complete_mut()?
+        .capture_debug_runtime_evidence()
+        .map_err(|error| {
+            loop_factory_error(format!(
+                "capture initial debugger runtime evidence: {error}"
+            ))
+        })
 }
 
 fn prepare_construction(

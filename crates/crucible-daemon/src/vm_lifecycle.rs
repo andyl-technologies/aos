@@ -758,8 +758,9 @@ struct RetainedCheckpointObject {
     changed_nanoseconds: i64,
 }
 
+/// Retains decoded semantic state and the authenticated one-shot restore claims.
 #[derive(Debug)]
-struct ProductionVmExactCheckpointSet {
+pub(crate) struct ProductionVmExactCheckpointSet {
     identity: ContentHash,
     configuration: Configuration,
     scheduler: Arc<SingleSchedulerCheckpoint>,
@@ -2393,6 +2394,10 @@ pub use crucible_api::{
 };
 mod construction;
 use construction::build_production_vm_lifecycle_loop_with_restore;
+pub(crate) use construction::{
+    ExactRestoreExposure as RetainedConstructionExposure,
+    prepare_from_custody as prepare_retained_construction,
+};
 pub use construction::{
     ProductionVmCleanupEarlierFailure, ProductionVmConstructionCleanupError,
     ProductionVmConstructionCustody, ProductionVmConstructionFailure,
@@ -2693,6 +2698,13 @@ pub struct ProductionVmStoppedLifecycle {
 }
 
 impl ProductionVmStoppedLifecycle {
+    /// Retains a fully validated lifecycle before ownership-commit exposure.
+    pub(crate) fn from_retained_loop(lifecycle: ProductionVmLifecycleLoop) -> Self {
+        Self {
+            lifecycle: Some(lifecycle),
+        }
+    }
+
     /// Reaps the complete stopped World and joins its retained source workers.
     ///
     /// # Errors
@@ -2749,9 +2761,7 @@ pub fn build_production_vm_exact_stopped_lifecycle(
         custody,
         construction::ExactRestoreExposure::AwaitingOwnershipCommit,
     )
-    .map(|lifecycle| ProductionVmStoppedLifecycle {
-        lifecycle: Some(lifecycle),
-    })
+    .map(ProductionVmStoppedLifecycle::from_retained_loop)
 }
 
 /// Authenticates the exact scheduler and device boundary used by hot-fork capture.

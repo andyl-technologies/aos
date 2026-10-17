@@ -528,3 +528,140 @@ fn component_error_extraction_refuses_an_ordinary_carrier() {
     drop(failure);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn borrowed_input_installation_refuses_before_moving_or_dropping_the_launcher() {
+    enum CarrierState {
+        Failed,
+        Closed,
+        Occupied,
+        Empty,
+        Poisoned,
+    }
+
+    for state in [
+        CarrierState::Failed,
+        CarrierState::Closed,
+        CarrierState::Occupied,
+        CarrierState::Empty,
+        CarrierState::Poisoned,
+    ] {
+        let mut custody = Box::new(ProductionVmConstructionCustody::new());
+        match state {
+            CarrierState::Failed => {
+                custody.first = Some(LifecycleApiError::ConstructionCustodyUnavailable);
+            }
+            CarrierState::Closed => custody.physically_closed.store(true, Ordering::Release),
+            CarrierState::Occupied => {
+                custody.partial_mut().unwrap().cleanup_complete = true;
+            }
+            CarrierState::Empty => *custody.phase.get_mut().unwrap() = Phase::Empty,
+            CarrierState::Poisoned => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _phase = custody.phase.lock().unwrap();
+                    panic!("poison the original input destination");
+                }));
+                assert!(result.is_err());
+            }
+        }
+        let (input, calls, drops) = launcher(None);
+        let address = std::ptr::from_ref(&*input);
+        let mut input = Some(input);
+        let mut checkpoint = None;
+
+        assert!(custody.install_inputs(&mut input, &mut checkpoint).is_err());
+
+        assert!(std::ptr::addr_eq(
+            std::ptr::from_ref(&**input.as_ref().unwrap()),
+            address,
+        ));
+        assert!(checkpoint.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(input);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn borrowed_preparation_keeps_the_same_carrier_and_owner_after_validation_refuses() {
+    let source = crucible::crash_restart_scenario().unwrap().scenario;
+    let other = ScenarioDef::from_canonical_material(
+        "crucible.test.borrowed-construction",
+        "different-scenario",
+    );
+    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "state");
+
+    for exposure in [
+        construction::ExactRestoreExposure::Released,
+        construction::ExactRestoreExposure::AwaitingOwnershipCommit,
+    ] {
+        let mut custody = Box::new(ProductionVmConstructionCustody::new());
+        let carrier_address = std::ptr::from_ref(&*custody);
+        let (input, calls, drops) = launcher(None);
+        let launcher_address = std::ptr::from_ref(&*input);
+        let mut input = Some(input);
+        custody.install_inputs(&mut input, &mut None).unwrap();
+        assert!(input.is_none());
+
+        let first =
+            construction::prepare_from_custody(&other, &source, &config, &mut custody, exposure)
+                .unwrap_err();
+
+        assert_eq!(std::ptr::from_ref(&*custody), carrier_address);
+        let retained = custody
+            .partial_mut()
+            .unwrap()
+            .node_launcher
+            .as_ref()
+            .unwrap();
+        assert!(std::ptr::addr_eq(
+            std::ptr::from_ref(&**retained),
+            launcher_address,
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert!(first.to_string().contains("requested scenario"));
+
+        let failure = custody.into_failure(first.clone());
+        assert!(failure.retry_cleanup().is_err());
+        failure.retry_cleanup().unwrap();
+        assert_eq!(failure.first_error(), Some(&first));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(failure);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn borrowed_preparation_refuses_physically_closed_custody_before_any_new_effect() {
+    let source = crucible::crash_restart_scenario().unwrap().scenario;
+    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "state");
+    let mut custody = Box::new(ProductionVmConstructionCustody::new());
+    let (input, calls, drops) = launcher(None);
+    let mut input = Some(input);
+    custody.install_inputs(&mut input, &mut None).unwrap();
+    assert!(custody.retry_cleanup().is_err());
+    custody.retry_cleanup().unwrap();
+    assert!(custody.physically_closed.load(Ordering::Acquire));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    let result = construction::prepare_from_custody(
+        &source.scenario_def(),
+        &source,
+        &config,
+        &mut custody,
+        construction::ExactRestoreExposure::Released,
+    );
+
+    assert_eq!(
+        result,
+        Err(LifecycleApiError::ConstructionCustodyUnavailable)
+    );
+    assert!(custody.partial_mut().unwrap().retained_config.is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    drop(custody);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
