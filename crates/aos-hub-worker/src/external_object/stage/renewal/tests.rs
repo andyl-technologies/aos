@@ -30,6 +30,83 @@ fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
 }
 
 #[test]
+fn issuer_request_accepts_qualified_clock_offsets_with_a_shorter_expiry() {
+    use aos_hub_core::storage_authority::lease::control::{
+        IssuerInstallation, IssuerOperation, IssuerRequest,
+    };
+    use aos_hub_core::storage_authority::lease::LeaseInteger;
+
+    let installation: IssuerInstallation = serde_json::from_value(serde_json::json!({
+        "format_version": 1,
+        "authority": {
+            "authority_id": "00000000-0000-0000-0000-000000000001",
+            "guard_namespace_id": "guard",
+            "physical_resource_evidence_digest": "a".repeat(64),
+            "qualification_digest": "b".repeat(64),
+            "qualified_managed_prefix": "managed"
+        },
+        "issuer_resource_id": "issuer",
+        "runtime_identity": "native",
+        "executor_identity": "worker"
+    }))
+    .unwrap();
+    let original = Window {
+        issued_at: 100,
+        expires_at: 130,
+    };
+    let request = |window: Window| IssuerRequest {
+        protocol_version: 1,
+        installation: installation.clone(),
+        nonce: "c".repeat(64),
+        issued_at: LeaseInteger::new(window.issued_at).unwrap(),
+        expires_at: LeaseInteger::new(window.expires_at).unwrap(),
+        operation: IssuerOperation::Current,
+    };
+
+    // Both clocks are qualified, but their point observations can differ by
+    // the sum of their uncertainty bounds at a seconds boundary.
+    assert!(request(original).validate(&installation, 96).is_err());
+
+    let authentication = original.for_issuer(1, 3).unwrap();
+    let bounded = request(authentication);
+
+    for issuer_now in 96..=104 {
+        bounded.validate(&installation, issuer_now).unwrap();
+    }
+    assert!(bounded.validate(&installation, 95).is_err());
+    assert!(bounded
+        .validate(&installation, authentication.expires_at)
+        .is_err());
+    assert!(authentication.expires_at <= original.expires_at);
+    assert!(authentication.expires_at - authentication.issued_at <= REQUEST_SECONDS);
+    assert!(authentication
+        .check(LeaseClock {
+            observed_at: 124,
+            uncertainty: 2,
+        })
+        .is_err());
+}
+
+#[test]
+fn issuer_request_refuses_unqualified_or_exhausted_clock_windows() {
+    let window = Window {
+        issued_at: 100,
+        expires_at: 130,
+    };
+
+    assert!(window.for_issuer(-1, 3).is_err());
+    assert!(window.for_issuer(4, 3).is_err());
+    assert!(window.for_issuer(15, 15).is_err());
+    assert!(window.for_issuer(i64::MAX, i64::MAX).is_err());
+    assert!(Window {
+        issued_at: 3,
+        expires_at: 33,
+    }
+    .for_issuer(1, 3)
+    .is_err());
+}
+
+#[test]
 fn renewal_custody_refuses_every_effect_role_before_retained_reuse() {
     assert!(validate_roles("renewal", "control", "guard", Some("stage")).is_ok());
     assert!(validate_roles("renewal", "control", "guard", None).is_ok());

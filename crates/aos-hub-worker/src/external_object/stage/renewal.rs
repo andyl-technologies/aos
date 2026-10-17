@@ -75,6 +75,47 @@ pub(super) struct Window {
 }
 
 impl Window {
+    /// Bounds issuer authentication across both qualified clock intervals.
+    ///
+    /// Backdating the start also shortens the expiry, preserving the signed
+    /// request's maximum lifetime and the original renewal flight's cutoff.
+    ///
+    /// # Errors
+    /// Returns an error for unqualified uncertainty, arithmetic overflow, or
+    /// clock bounds that leave no live request interval.
+    pub(super) fn for_issuer(
+        self,
+        sender_uncertainty: i64,
+        maximum_uncertainty: i64,
+    ) -> Result<Self> {
+        ensure!(
+            sender_uncertainty >= 0 && sender_uncertainty <= maximum_uncertainty,
+            "issuer request clock uncertainty is unqualified"
+        );
+        let margin = sender_uncertainty
+            .checked_add(maximum_uncertainty)
+            .ok_or_else(|| anyhow::anyhow!("issuer request clock margin overflow"))?;
+        let issued_at = self
+            .issued_at
+            .checked_sub(margin)
+            .filter(|value| *value >= 0)
+            .ok_or_else(|| anyhow::anyhow!("issuer request clock margin underflow"))?;
+        let expires_at = self.expires_at.min(
+            issued_at
+                .checked_add(REQUEST_SECONDS)
+                .ok_or_else(|| anyhow::anyhow!("issuer request expiry overflow"))?,
+        );
+        ensure!(
+            self.issued_at < expires_at,
+            "qualified clocks leave no live issuer request interval"
+        );
+
+        Ok(Self {
+            issued_at,
+            expires_at,
+        })
+    }
+
     pub(super) fn check(self, clock: LeaseClock) -> Result<()> {
         ensure!(
             clock.observed_at >= self.issued_at

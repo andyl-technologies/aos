@@ -553,12 +553,16 @@ async fn issue_lease(
         .try_fill_bytes(&mut nonce)
         .map_err(|_| anyhow::anyhow!("lease correlation randomness unavailable"))?;
     let now = window.issued_at;
+    let authentication = window.for_issuer(
+        object.clock_uncertainty,
+        object.timing_profile.maximum_clock_uncertainty.get(),
+    )?;
     let request = IssuerRequest {
         protocol_version: 1,
         installation: installation.clone(),
         nonce: hex::encode(nonce),
-        issued_at: LeaseInteger::new(now)?,
-        expires_at: LeaseInteger::new(window.expires_at)?,
+        issued_at: LeaseInteger::new(authentication.issued_at)?,
+        expires_at: LeaseInteger::new(authentication.expires_at)?,
         operation: IssuerOperation::Issue {
             cohort: cohort.clone(),
             requested_not_after: LeaseInteger::new(
@@ -586,7 +590,9 @@ async fn issue_lease(
     #[cfg(feature = "do-e2e")]
     let observation =
         super::lease_scale::prepare_dispatch_observation(env, object, &request, &body);
-    window.check(object.clock())?;
+    let dispatch_clock = object.clock();
+    window.check(dispatch_clock)?;
+    authentication.check(dispatch_clock)?;
     #[cfg(feature = "do-e2e")]
     super::lease_scale::emit_dispatch_observation(observation);
     let response = issuer.fetch_request(provider).await?;
