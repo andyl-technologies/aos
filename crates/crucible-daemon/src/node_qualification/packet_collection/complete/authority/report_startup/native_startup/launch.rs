@@ -754,6 +754,10 @@ impl PacketCompleteReportStartupHolder {
             if let Some(guard) = &mut peer.guard {
                 guard.retire_original();
             }
+            // Failed launch reservations still own any partial Child; their
+            // guard Drop transfers it to the same supervisor. Unstarted peers
+            // release their unused expected slot even with a retained Command.
+            drop(peer.reservation.take());
             if !peer.attempted
                 && peer.reservation.is_none()
                 && peer.guard.is_none()
@@ -840,4 +844,76 @@ pub(super) fn restored_suffix_wire_counter_scratch_data() -> usize {
         + size_of::<&PacketCompleteAckPeerBootMaterial<'static>>()
         + size_of::<Result<&PacketCompleteAckPeerBootMaterial<'static>, RuntimeError>>()
         + size_of::<bool>()
+}
+
+#[cfg(test)]
+mod reservation_retirement_tests {
+    // Invalid static fixture DATA must fail before the retirement assertions.
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crucible::node_adapters::cnp::CnpSemanticProcessCustody;
+    use crucible_node_contract::{U64, canonical};
+
+    struct Slot {
+        dropped: Rc<Cell<usize>>,
+        retained: Rc<Cell<usize>>,
+    }
+
+    impl CnpSemanticProcessSlot for Slot {
+        fn identity(&self) -> U64 {
+            U64::new(1)
+        }
+
+        fn retain(&mut self, _original: CnpSemanticProcessCustody) {
+            self.retained.set(self.retained.get() + 1);
+        }
+    }
+
+    impl Drop for Slot {
+        fn drop(&mut self) {
+            self.dropped.set(self.dropped.get() + 1);
+        }
+    }
+
+    #[test]
+    fn retiring_prepared_commands_releases_unstarted_reservations_once() {
+        let (_scene, original) =
+            crate::node_qualification::packet_collection::complete::tests::report_startup_fixture();
+        let dropped = Rc::new(Cell::new(0));
+        let retained = Rc::new(Cell::new(0));
+        let executable =
+            canonical::content_ref(b"never launched", "application/octet-stream").unwrap();
+        let held = original.borrow();
+        {
+            let mut owners = held.native_launches.borrow_mut();
+            for peer in &mut owners.peers {
+                peer.reservation = Some(CnpSemanticLaunchReservation::reserve(
+                    PathBuf::from("unstarted-retirement-control"),
+                    executable.clone(),
+                    Box::new(Slot {
+                        dropped: Rc::clone(&dropped),
+                        retained: Rc::clone(&retained),
+                    }),
+                ));
+                peer.command = Some(Command::new("unstarted-retirement-must-not-execute"));
+                assert!(!peer.attempted);
+                assert!(peer.guard.is_none());
+            }
+        }
+        assert_eq!(dropped.get(), 0);
+
+        held.retire_original_scene_native_guards().unwrap();
+        assert_eq!(dropped.get(), 3);
+        assert_eq!(retained.get(), 0);
+        {
+            let owners = held.native_launches.borrow();
+            assert!(owners.peers.iter().all(|peer| {
+                peer.reservation.is_none() && peer.command.is_some() && !peer.attempted
+            }));
+        }
+        held.retire_original_scene_native_guards().unwrap();
+        assert_eq!(dropped.get(), 3);
+        assert_eq!(retained.get(), 0);
+    }
 }
