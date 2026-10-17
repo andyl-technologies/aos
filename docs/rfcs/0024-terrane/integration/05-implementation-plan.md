@@ -8865,7 +8865,12 @@ BKT-15 and full host-task qualification remain outside that component result.
 The encoded-admission producer's corrected checkpoint `52b111c72c` passes
 source review for registry-slot reclamation after effect-free rejection,
 phase-specific canonical file custody and checked active-memory overlaps.
-Compilation and its five selected tests remain pending. The separate bounded
+Its all-target build and five selected tests pass, with all 6,477 source inputs
+unchanged. Strict library Clippy first stops in the shared dependency; after
+the two reviewed condition collapses, it reaches filesystem diagnostics that
+include mutex guards across actual awaits. An owned snapshot-write transition
+is required before retrying; resource custody must survive that transition.
+The separate bounded
 existing-Original inspection producer at `7129f2f203` builds and passes all
 eleven selected tests, with unchanged source guards. Strict library Clippy
 stops on two inherited collapsible-condition diagnostics; their mechanical
@@ -8883,8 +8888,15 @@ image compilation exposes a missing shared namespace helper. The correction
 uses the exact helper already qualified by the first-enrollment native fixture.
 The corrected candidate `7f645904e6` compiles all three configured SDK image
 targets; independent review verifies compiler inputs, executables and runtime
-hashes. SDK runtime checks, fresh surface gates on the corrected candidate,
+hashes. All eleven configured SDK unit cases and the ext4 example/CLI success
+and late-denial controls pass on that corrected candidate. Fresh surface gates,
 aggregate checks and application qualification remain pending.
+
+The shared Linux glue dependency explicitly enables the filesystem crate's
+existing Tokio feature for the receipt-consuming enrollment API. Locked offline
+Cargo metadata and the crate-graph gate pass. Cargo.lock and the 632 external
+dependencies are unchanged, so the lockfile-driven vendor staging hashes remain
+unchanged. Full application compilation remains part of qualification.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
