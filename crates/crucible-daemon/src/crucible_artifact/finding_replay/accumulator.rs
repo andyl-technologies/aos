@@ -450,29 +450,8 @@ pub(super) fn validate_owned_replay_selections(
         def: candidate.artifact.scenario_def().clone(),
         schedule: candidate.artifact.schedule().clone(),
     };
-    let selection_count = configuration
-        .schedule
-        .decision_history()
-        .iter()
-        .filter(|decision| matches!(decision, Decision::Selection(_)))
-        .count();
-    if selection_count > MAX_CONFIGURATION_SELECTION_DECISIONS {
-        return Err(CrucibleArtifactError::SelectionResolutionLimit);
-    }
-    let campaign_branch_count = replay
-        .selections
-        .iter()
-        .filter(|selection| matches!(selection.origin(), SelectionOrigin::CampaignBranch { .. }))
-        .count();
-    if replay
-        .configuration
-        .payload()
-        .len()
-        .checked_mul(campaign_branch_count)
-        .is_none_or(|bytes| bytes > MAX_CONFIGURATION_BRANCH_PREFIX_BYTES)
-    {
-        return Err(CrucibleArtifactError::SelectionResolutionLimit);
-    }
+    // Campaign-branch parents are identified prefixes of this one
+    // configuration, so authenticating them copies no schedule.
     for (index, decision) in configuration.schedule.decision_history().iter().enumerate() {
         let Decision::Selection(decision) = decision else {
             continue;
@@ -500,10 +479,7 @@ pub(super) fn validate_owned_replay_selections(
                 selection.validate_replay(opportunity, domain)?;
             }
             SelectionOrigin::CampaignBranch { .. } => {
-                let parent = Configuration {
-                    def: configuration.def.clone(),
-                    schedule: configuration.schedule.prefix(index)?,
-                };
+                let parent = ConfigurationPrefix::new(&configuration, index)?;
                 selection.validate_branch_replay(
                     opportunity,
                     domain,
@@ -521,12 +497,11 @@ pub(super) fn validate_owned_replay_selections(
                         domain,
                     )?;
                     let branch = selectable.resolve_branch(selection)?;
-                    let end = index
-                        .checked_add(branch.decisions().len())
-                        .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
-                    if end > configuration.schedule.len()
-                        || configuration.schedule.decisions()[index..end] != *branch.decisions()
-                    {
+                    if !super::super::configuration_codec::schedule_records_at(
+                        &configuration,
+                        index,
+                        branch.decisions(),
+                    ) {
                         return Err(CrucibleArtifactError::SignalFaultScheduleMismatch);
                     }
                     if branch.decisions().len() == 2 {

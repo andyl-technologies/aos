@@ -7,6 +7,11 @@ const SCENARIO_DECODE_EXPANSION: u64 = 256;
 const CONFIGURATION_DECODE_PREFLIGHT_EXPANSION: u64 = 256;
 const SELECTION_RESOLUTION_EXPANSION: u64 = 256;
 const RETAINED_ALLOCATION_OVERHEAD: u64 = 64;
+// Worst-case resident copies of the decoded configuration: the replay plan
+// target and the final pending observation, each possibly cloned.
+const CONFIGURATION_INSTANCES: u64 = 6;
+// Worst-case resident copies of one campaign branch across those holders.
+const BRANCH_INSTANCES: u64 = 4;
 
 pub(super) struct SelectedOriginDecodeBudget {
     maximum: u64,
@@ -86,21 +91,20 @@ impl SelectedOriginDecodeBudget {
             .ok_or_else(selected_origin_memory_error)?;
         let branches =
             u64::try_from(campaign_branch_count).map_err(|_| selected_origin_memory_error())?;
-        // Each retained branch owns parent, selected, and decision-prefix
-        // schedules. The terminal replay plan and final pending observation can
-        // each clone that graph, so charge their exact worst-case multiplicity.
-        let configuration_instances = branches
-            .checked_mul(12)
-            .and_then(|instances| instances.checked_add(6))
-            .ok_or_else(selected_origin_memory_error)?;
+        // The terminal replay plan and final pending observation can each
+        // clone the decoded configuration, so charge its exact worst-case
+        // multiplicity. Branches name prefixes of that one configuration and
+        // own only their struct and their one or two branch decisions, so the
+        // branch charge is linear in the schedule, not schedule times branches.
         let configuration_bytes = schedule_bytes
-            .checked_mul(configuration_instances)
+            .checked_mul(CONFIGURATION_INSTANCES)
+            .ok_or_else(selected_origin_memory_error)?;
+        let branch_decision_bytes = campaign_branch_decision_bytes(configuration)
             .ok_or_else(selected_origin_memory_error)?;
         let branch_bytes = branches
-            .checked_mul(4)
-            .and_then(|count| {
-                count.checked_mul(std::mem::size_of::<crucible::SignalFaultCampaignBranch>() as u64)
-            })
+            .checked_mul(std::mem::size_of::<crucible::SignalFaultCampaignBranch>() as u64)
+            .and_then(|bytes| bytes.checked_add(branch_decision_bytes))
+            .and_then(|bytes| bytes.checked_mul(BRANCH_INSTANCES))
             .ok_or_else(selected_origin_memory_error)?;
         self.charge(
             configuration_bytes
@@ -189,40 +193,69 @@ fn decoded_configuration_logical_bytes(configuration: &Configuration) -> Option<
     bytes = bytes.checked_add(RETAINED_ALLOCATION_OVERHEAD)?;
 
     for decision in configuration.schedule.decision_history() {
-        let variable = match decision {
-            Decision::DeliveryOrder(decision) => {
-                let mut retained = u64::try_from(decision.order.len())
-                    .ok()?
-                    .checked_mul(std::mem::size_of::<crucible::EventKey>() as u64)?;
-                retained = retained.checked_add(RETAINED_ALLOCATION_OVERHEAD)?;
-                for event in &decision.order {
-                    retained = retained
-                        .checked_add(u64::try_from(event.consumer.node.name.len()).ok()?)?
-                        .checked_add(u64::try_from(event.producer.node.name.len()).ok()?)?
-                        .checked_add(RETAINED_ALLOCATION_OVERHEAD.checked_mul(2)?)?;
-                }
-                retained
-            }
-            Decision::RngDraw(decision) => {
-                u64::try_from(decision.stream.domain.len() + decision.stream.name.len())
-                    .ok()?
-                    .checked_add(RETAINED_ALLOCATION_OVERHEAD.checked_mul(2)?)?
-            }
-            Decision::Override(decision) => {
-                u64::try_from(decision.point.key.len() + decision.choice.name.len())
-                    .ok()?
-                    .checked_add(RETAINED_ALLOCATION_OVERHEAD.checked_mul(2)?)?
-            }
-            Decision::Preemption(decision) => u64::try_from(decision.node.name.len())
-                .ok()?
-                .checked_add(RETAINED_ALLOCATION_OVERHEAD)?,
-            Decision::Selection(decision) => u64::try_from(decision.canonical_bytes().len())
-                .ok()?
-                .checked_add(RETAINED_ALLOCATION_OVERHEAD)?,
-        };
-        bytes = bytes.checked_add(variable)?;
+        bytes = bytes.checked_add(decision_heap_bytes(decision)?)?;
     }
     Some(bytes)
+}
+
+/// Returns the bytes owned by every campaign branch's copied decisions.
+///
+/// A branch copies its selection decision and, for a signal-fault candidate,
+/// the override that follows it. Each campaign-branch selection is charged
+/// both, whichever adapter it names.
+fn campaign_branch_decision_bytes(configuration: &Configuration) -> Option<u64> {
+    let history = configuration.schedule.decision_history();
+    let mut bytes = 0_u64;
+    for (index, decision) in history.iter().enumerate() {
+        let Decision::Selection(selection) = decision else {
+            continue;
+        };
+        if !selection.is_campaign_branch() {
+            continue;
+        }
+        for copied in history.iter_from(index).take(2) {
+            bytes = bytes
+                .checked_add(std::mem::size_of::<Decision>() as u64)?
+                .checked_add(decision_heap_bytes(copied)?)?;
+        }
+    }
+    Some(bytes)
+}
+
+/// Returns the heap bytes one decoded decision retains beyond its inline size.
+fn decision_heap_bytes(decision: &Decision) -> Option<u64> {
+    let variable = match decision {
+        Decision::DeliveryOrder(decision) => {
+            let mut retained = u64::try_from(decision.order.len())
+                .ok()?
+                .checked_mul(std::mem::size_of::<crucible::EventKey>() as u64)?;
+            retained = retained.checked_add(RETAINED_ALLOCATION_OVERHEAD)?;
+            for event in &decision.order {
+                retained = retained
+                    .checked_add(u64::try_from(event.consumer.node.name.len()).ok()?)?
+                    .checked_add(u64::try_from(event.producer.node.name.len()).ok()?)?
+                    .checked_add(RETAINED_ALLOCATION_OVERHEAD.checked_mul(2)?)?;
+            }
+            retained
+        }
+        Decision::RngDraw(decision) => {
+            u64::try_from(decision.stream.domain.len() + decision.stream.name.len())
+                .ok()?
+                .checked_add(RETAINED_ALLOCATION_OVERHEAD.checked_mul(2)?)?
+        }
+        Decision::Override(decision) => {
+            u64::try_from(decision.point.key.len() + decision.choice.name.len())
+                .ok()?
+                .checked_add(RETAINED_ALLOCATION_OVERHEAD.checked_mul(2)?)?
+        }
+        Decision::Preemption(decision) => u64::try_from(decision.node.name.len())
+            .ok()?
+            .checked_add(RETAINED_ALLOCATION_OVERHEAD)?,
+        Decision::Selection(decision) => u64::try_from(decision.canonical_bytes().len())
+            .ok()?
+            .checked_add(RETAINED_ALLOCATION_OVERHEAD)?,
+    };
+    Some(variable)
 }
 
 #[cfg(test)]
@@ -232,7 +265,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn many_branch_prefixes_exhaust_the_aggregate_decode_budget() -> Result<(), String> {
+    fn branch_charge_grows_with_branch_count_not_schedule_times_branches() -> Result<(), String> {
         let fixture = crucible::happy_path_scenario().map_err(|error| error.to_string())?;
         let decisions = (0..256).map(|tick| {
             Decision::DeliveryOrder(DeliveryOrderDecision {
@@ -244,23 +277,24 @@ mod tests {
             def: fixture.scenario.scenario_def(),
             schedule: Schedule::from_decisions(decisions),
         };
-        let mut budget = SelectedOriginDecodeBudget {
-            maximum: 256 * 1024,
-            retained: 0,
+        let charge = |branches| {
+            let mut budget = SelectedOriginDecodeBudget {
+                maximum: u64::MAX,
+                retained: 0,
+            };
+            budget
+                .charge_decoded_configuration(&configuration, branches)
+                .map(|()| budget.retained)
+                .map_err(|error| error.to_string())
         };
 
-        let error = match budget.charge_decoded_configuration(&configuration, 256) {
-            Err(error) => error,
-            Ok(()) => return Err(String::from("retained branch prefixes fit the budget")),
-        };
+        let unbranched = charge(0)?;
+        let branched = charge(256)?;
+        let per_branch =
+            BRANCH_INSTANCES * std::mem::size_of::<crucible::SignalFaultCampaignBranch>() as u64;
 
-        assert!(matches!(
-            error,
-            CrucibleArtifactError::ResourceLimit {
-                resource: "selected-origin-decoded-resident-bytes"
-            }
-        ));
-        assert_eq!(budget.retained, 0);
+        assert_eq!(branched - unbranched, 256 * per_branch);
+        assert!(branched < unbranched * 256);
         Ok(())
     }
 

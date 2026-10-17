@@ -161,6 +161,51 @@ impl<T> History<T> {
         prefix.len() <= self.len() && self.iter().zip(prefix.iter()).all(|(a, b)| a == b)
     }
 
+    /// Returns `true` when both histories hold at least `len` elements and
+    /// their first `len` elements are equal.
+    ///
+    /// Sealed chunks that both histories share are skipped without comparing
+    /// their elements, so comparing a history with a clone that has grown
+    /// since costs time proportional to the unshared part only.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use crucible::History;
+    ///
+    /// let mut base = History::new();
+    /// base.extend([1, 2, 3]);
+    /// let mut grown = base.clone();
+    /// grown.push(4);
+    ///
+    /// assert!(grown.prefix_eq(&base, 3));
+    /// assert!(!grown.prefix_eq(&base, 4));
+    /// ```
+    #[must_use]
+    pub fn prefix_eq(&self, other: &Self, len: usize) -> bool
+    where
+        T: PartialEq,
+    {
+        if len > self.len() || len > other.len() {
+            return false;
+        }
+
+        let mut start = 0;
+        while start < len {
+            let chunk = start / CHUNK_LEN;
+            let end = len.min((chunk + 1) * CHUNK_LEN);
+            let shared = match (self.sealed.get(chunk), other.sealed.get(chunk)) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            };
+            if !shared && (start..end).any(|index| self.get(index) != other.get(index)) {
+                return false;
+            }
+            start = end;
+        }
+        true
+    }
+
     /// Returns `true` when the history holds an element equal to `value`.
     #[must_use]
     pub fn contains(&self, value: &T) -> bool
@@ -551,6 +596,26 @@ mod tests {
         assert_ne!(left, shorter);
         assert_ne!(left, changed);
         assert_eq!(reference(CHUNK_LEN * 2), left);
+    }
+
+    #[test]
+    fn prefix_equality_compares_shared_and_copied_storage_alike() {
+        let base = History::from(reference(2 * CHUNK_LEN + 3));
+        let mut grown = base.clone();
+        grown.extend([7, 8, 9]);
+        let copied = History::from(reference(2 * CHUNK_LEN + 3));
+        let mut changed = base.clone();
+        if let Some(element) = changed.get_mut(CHUNK_LEN + 1) {
+            *element = usize::MAX;
+        }
+
+        for len in [0, 1, CHUNK_LEN, CHUNK_LEN + 2, 2 * CHUNK_LEN + 3] {
+            assert!(grown.prefix_eq(&base, len), "shared prefix {len}");
+            assert!(copied.prefix_eq(&base, len), "copied prefix {len}");
+        }
+        assert!(!grown.prefix_eq(&base, 2 * CHUNK_LEN + 4));
+        assert!(changed.prefix_eq(&base, CHUNK_LEN + 1));
+        assert!(!changed.prefix_eq(&base, CHUNK_LEN + 2));
     }
 
     #[test]

@@ -250,7 +250,7 @@ impl SingleScheduler {
         &mut self,
         branch: &SignalFaultCampaignBranch,
     ) -> Result<(Configuration, SchedulerEventLogAppend), SchedulerError> {
-        if self.configuration != *branch.parent() || self.frontier != branch.frontier() {
+        if !branch.parent().matches(&self.configuration) || self.frontier != branch.frontier() {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
                     "signal-fault campaign branch does not match the current scheduler boundary",
@@ -258,7 +258,7 @@ impl SingleScheduler {
             });
         }
         let configuration = self.step_quantum(branch.decisions())?;
-        if configuration != *branch.selected() {
+        if !branch.selected().matches(&configuration) {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
                     "signal-fault campaign branch selected configuration is inconsistent",

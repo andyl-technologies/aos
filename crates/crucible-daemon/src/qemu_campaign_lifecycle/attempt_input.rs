@@ -86,7 +86,7 @@ pub(super) fn unsupported_fresh_replay_decision(
         .branches()
         .iter()
         .filter(|branch| branch.decisions().len() == 2)
-        .map(|branch| branch.parent().schedule.len() + 1)
+        .map(|branch| branch.parent().len() + 1)
         .collect::<BTreeSet<_>>();
     target
         .schedule

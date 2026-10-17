@@ -357,6 +357,11 @@ where
         &mut SelectionVisitor<'_>,
     ) -> Result<(), CrucibleArtifactError>,
 {
+    // Selections are decoded once in schedule order. No count or prefix-byte
+    // bound applies here: campaign-branch parents are identified prefixes of
+    // the one decoded configuration, so retained branch state is linear in
+    // the schedule, and the configuration artifact's payload ceiling bounds
+    // the selection count.
     let mut selections = Vec::new();
     let mut campaign_branch_count = 0usize;
     for (index, decision) in configuration.schedule.decision_history().iter().enumerate() {
@@ -364,26 +369,12 @@ where
             continue;
         };
         let selection = decision.selection()?;
-        selections.push((index, selection));
-        if selections.len() > MAX_CONFIGURATION_SELECTION_DECISIONS {
-            return Err(CrucibleArtifactError::SelectionResolutionLimit);
-        }
-        if matches!(
-            selections.last().map(|(_, selection)| selection.origin()),
-            Some(SelectionOrigin::CampaignBranch { .. })
-        ) {
+        if matches!(selection.origin(), SelectionOrigin::CampaignBranch { .. }) {
             campaign_branch_count = campaign_branch_count
                 .checked_add(1)
                 .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
         }
-    }
-    let branch_prefix_bytes = artifact
-        .payload()
-        .len()
-        .checked_mul(campaign_branch_count)
-        .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
-    if branch_prefix_bytes > MAX_CONFIGURATION_BRANCH_PREFIX_BYTES {
-        return Err(CrucibleArtifactError::SelectionResolutionLimit);
+        selections.push((index, selection));
     }
     let selection_resolution_limit = retained_memory_guard
         .map(|guard| guard(configuration, campaign_branch_count))
@@ -429,10 +420,7 @@ where
                     selection.validate_replay(resolved.opportunity(), resolved.domain())?;
                 }
                 SelectionOrigin::CampaignBranch { .. } => {
-                    let parent = Configuration {
-                        def: configuration.def.clone(),
-                        schedule: configuration.schedule.prefix(index)?,
-                    };
+                    let parent = ConfigurationPrefix::new(configuration, index)?;
                     selection.validate_branch_replay(
                         resolved.opportunity(),
                         resolved.domain(),
@@ -452,12 +440,7 @@ where
                             resolved.domain(),
                         )?;
                         let branch = selectable.resolve_branch(&selection)?;
-                        let end = index
-                            .checked_add(branch.decisions().len())
-                            .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
-                        if end > configuration.schedule.len()
-                            || configuration.schedule.decisions()[index..end] != *branch.decisions()
-                        {
+                        if !schedule_records_at(configuration, index, branch.decisions()) {
                             return Err(CrucibleArtifactError::SignalFaultScheduleMismatch);
                         }
                         if branch.decisions().len() == 2 {
@@ -470,9 +453,18 @@ where
                         crucible_campaign::ChoiceSource::Environment { adapter, .. }
                             if adapter == crucible::NETWORK_FAULT_CAMPAIGN_ADAPTER
                     ) {
+                        // A network fault replay holds at most one branch per
+                        // phase. Reject before materializing another owned parent.
+                        if network_fault_branches.len()
+                            >= crucible::MAX_NETWORK_FAULT_CAMPAIGN_BRANCHES
+                        {
+                            return Err(
+                                crucible::NetworkFaultSelectableError::ReplayPlanMismatch.into()
+                            );
+                        }
                         let selectable = NetworkFaultSelectable::from_records(
                             scenario,
-                            &parent,
+                            &parent.to_configuration(),
                             resolved.declaration(),
                             resolved.opportunity(),
                             resolved.domain(),
@@ -513,6 +505,19 @@ where
     SignalFaultCampaignReplayPlan::new(configuration.clone(), signal_fault_branches)?
         .with_network_branches(network_fault_branches)
         .map_err(Into::into)
+}
+
+/// Returns whether `configuration` records exactly `decisions` from `index` on.
+pub(super) fn schedule_records_at(
+    configuration: &Configuration,
+    index: usize,
+    decisions: &[Decision],
+) -> bool {
+    let history = configuration.schedule.decision_history();
+    index
+        .checked_add(decisions.len())
+        .is_some_and(|end| end <= history.len())
+        && history.iter_from(index).take(decisions.len()).eq(decisions)
 }
 
 fn require_schema(

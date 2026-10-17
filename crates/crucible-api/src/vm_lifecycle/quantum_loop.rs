@@ -267,7 +267,9 @@ impl ProductionVmLifecycleLoop {
                 )?;
             let replaying_current_signal_fault_branch =
                 self.signal_fault_branches.front().is_some_and(|branch| {
-                    branch.parent() == self.inner.loop_impl().configuration()
+                    branch
+                        .parent()
+                        .matches(self.inner.loop_impl().configuration())
                         && branch.frontier() == self.inner.loop_impl().frontier()
                 });
             if !live_signal_fault_discoveries.is_empty() && !replaying_current_signal_fault_branch {
@@ -324,7 +326,7 @@ impl ProductionVmLifecycleLoop {
                 });
             }
             if self.signal_fault_branches.front().is_some_and(|branch| {
-                branch.parent() == &request.configuration && !request.control.is_empty()
+                branch.parent().matches(&request.configuration) && !request.control.is_empty()
             }) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: String::from(
@@ -358,7 +360,8 @@ impl ProductionVmLifecycleLoop {
                         ),
                     });
                 }
-                if frontier == branch.frontier() && request.configuration != *branch.parent() {
+                if frontier == branch.frontier() && !branch.parent().matches(&request.configuration)
+                {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(
                             "signal-fault branch reached frontier {} with configuration {}, expected {}",
@@ -368,7 +371,8 @@ impl ProductionVmLifecycleLoop {
                         ),
                     });
                 }
-                if frontier == branch.frontier() && request.configuration == *branch.parent() {
+                if frontier == branch.frontier() && branch.parent().matches(&request.configuration)
+                {
                     if !request.control.is_empty() {
                         return Err(SchedulerError::BoundaryViolation {
                             message: String::from(
@@ -426,9 +430,9 @@ impl ProductionVmLifecycleLoop {
                     self.capture_debug_runtime_evidence()?;
                     return Ok(outcome);
                 }
-                if request.configuration.schedule.len() > branch.parent().schedule.len()
-                    || (request.configuration.schedule.len() == branch.parent().schedule.len()
-                        && request.configuration != *branch.parent())
+                if request.configuration.schedule.len() > branch.parent().len()
+                    || (request.configuration.schedule.len() == branch.parent().len()
+                        && !branch.parent().matches(&request.configuration))
                 {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(

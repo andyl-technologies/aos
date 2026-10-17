@@ -1691,7 +1691,7 @@ fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
         panic!("the exact live producer frontier must yield one campaign discovery")
     };
     let normalized = crucible::SignalFaultSelectable::from_records(
-        &outcome.configuration,
+        &crucible::ConfigurationPrefix::whole(&outcome.configuration),
         discovery.declaration(),
         discovery.opportunity(),
         discovery.domain(),
@@ -1769,7 +1769,7 @@ fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing()
             control: Vec::new(),
         })
         .unwrap_or_else(|error| panic!("observed sentinel branch should inject: {error}"));
-    assert_eq!(outcome.configuration, *branch.selected());
+    assert!(branch.selected().matches(&outcome.configuration));
     assert_eq!(outcome.decisions, branch.decisions());
     assert!(outcome.discovered_choices.is_empty());
     assert!(lifecycle.signal_fault_branches.is_empty());

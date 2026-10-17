@@ -206,20 +206,15 @@ fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
         .resolve_branch(&selection)
         .expect("candidate should reconstruct");
 
-    let empty = crucible::SignalFaultCampaignReplayPlan::empty(branch.selected().clone());
+    let selected = branch.selected().to_configuration();
+    let empty = crucible::SignalFaultCampaignReplayPlan::empty(selected.clone());
     assert_eq!(
-        unsupported_fresh_replay_decision(branch.selected(), &empty),
+        unsupported_fresh_replay_decision(&selected, &empty),
         Some(1)
     );
-    let plan = crucible::SignalFaultCampaignReplayPlan::new(
-        branch.selected().clone(),
-        vec![branch.clone()],
-    )
-    .expect("typed replay plan");
-    assert_eq!(
-        unsupported_fresh_replay_decision(branch.selected(), &plan),
-        None
-    );
+    let plan = crucible::SignalFaultCampaignReplayPlan::new(selected.clone(), vec![branch.clone()])
+        .expect("typed replay plan");
+    assert_eq!(unsupported_fresh_replay_decision(&selected, &plan), None);
 }
 
 #[test]
@@ -2926,7 +2921,7 @@ fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() 
         .resolve_branch(&selection)
         .expect("signal-fault branch")
         .selected()
-        .clone();
+        .to_configuration();
     let input = finding_candidate_input_with_configuration(&base, configuration);
 
     assert_composed_candidate_replay_retains_choice_and_measurement(

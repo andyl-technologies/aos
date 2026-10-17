@@ -302,7 +302,7 @@ fn production_fault_search_overrides(
     LifecycleApiError,
 > {
     let mut overrides = BTreeMap::new();
-    let mut insert_decisions = |parent: &Configuration,
+    let mut insert_decisions = |parent: &crucible::ConfigurationPrefix,
                                 decisions: &[Decision]|
      -> Result<(), LifecycleApiError> {
         for decision in decisions {

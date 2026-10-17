@@ -7,8 +7,8 @@
 //! policy and cannot alter the canonical attempt.
 
 use crucible::{
-    Configuration, Decision, NetworkFaultSelectable, ScenarioDefForm, SelectionDecision,
-    SignalFaultCampaignReplayPlan, SignalFaultSelectable, try_step,
+    Configuration, ConfigurationPrefix, Decision, NetworkFaultSelectable, ScenarioDefForm,
+    SelectionDecision, SignalFaultCampaignReplayPlan, SignalFaultSelectable, try_step,
 };
 use crucible_campaign::{
     Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, BranchPath,
@@ -711,7 +711,7 @@ fn decode_base_crucible_start(
                     if adapter == crucible::SIGNAL_FAULT_CAMPAIGN_ADAPTER =>
                 {
                     let selectable = SignalFaultSelectable::from_records(
-                        &parent,
+                        &ConfigurationPrefix::whole(&parent),
                         selection.declaration(),
                         selection.opportunity(),
                         selection.domain(),
@@ -736,7 +736,7 @@ fn decode_base_crucible_start(
                 _ => None,
             };
             let selected = if let Some(branch) = signal_fault.as_ref() {
-                branch.selected().clone()
+                branch.selected().to_configuration()
             } else if let Some(branch) = network_fault.as_ref() {
                 branch.selected().clone()
             } else {

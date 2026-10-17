@@ -31,7 +31,7 @@ fn fresh_runner_replays_authenticated_signal_fault_plan_before_driver() {
         .resolve_branch(&selection)
         .expect("fresh runner signal branch");
     let replay = crucible::SignalFaultCampaignReplayPlan::new(
-        branch.selected().clone(),
+        branch.selected().to_configuration(),
         vec![branch.clone()],
     )
     .expect("fresh runner signal replay plan");

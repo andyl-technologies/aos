@@ -57,10 +57,10 @@ pub use prepared_result::{
 };
 
 use crucible::{
-    Configuration, ContentHash, Decision, EngineError, FindingReproductionArtifact,
-    MAX_MINIMIZATION_CANDIDATES, MinimizationConfig, MinimizationRun, NetworkFaultSelectable,
-    ScenarioDefForm, Schedule, SignalFaultCampaignReplayPlan, SignalFaultSelectable,
-    validate_preemption_branch_schedule,
+    Configuration, ConfigurationPrefix, ContentHash, Decision, EngineError,
+    FindingReproductionArtifact, MAX_MINIMIZATION_CANDIDATES, MinimizationConfig, MinimizationRun,
+    NetworkFaultSelectable, ScenarioDefForm, Schedule, SignalFaultCampaignReplayPlan,
+    SignalFaultSelectable, validate_preemption_branch_schedule,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
@@ -90,8 +90,6 @@ pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4: u32 = 4;
 /// enforce it while reading, before retaining or decoding the complete body.
 pub const MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES: usize = 32 * 1024 * 1024;
 const CRUCIBLE_SCHEDULE_V4_MAGIC: &[u8] = b"crucible.schedule.v4\0";
-const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
-const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
 type RetainedConfigurationMemoryGuard<'a> =
     dyn FnMut(&Configuration, usize) -> Result<usize, CrucibleArtifactError> + 'a;
 // Policy v4 retains the seed, the candidate-count bound, and the automatic

@@ -8,15 +8,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::{
-    CrucibleArtifactError, FindingReplayPass, MAX_CONFIGURATION_BRANCH_PREFIX_BYTES,
-    MAX_CONFIGURATION_SELECTION_DECISIONS, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
+    CrucibleArtifactError, FindingReplayPass, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
     MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
     campaign_configuration_id, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact,
 };
 use crucible::{
-    Configuration, Decision, FailureTriageReplayEvidence, FindingReproductionArtifact,
-    SignalFaultSelectable,
+    Configuration, ConfigurationPrefix, Decision, FailureTriageReplayEvidence,
+    FindingReproductionArtifact, SignalFaultSelectable,
 };
 use crucible_campaign::{
     CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity,
@@ -1302,7 +1301,7 @@ mod tests {
         let branch = selectable
             .resolve_branch(&selection)
             .expect("signal-fault branch");
-        let configuration = branch.selected().clone();
+        let configuration = branch.selected().to_configuration();
         let finding = reproduction(&scenario, &configuration, b"signal-fault-replay-closure");
         let resolved = resolved_selection("signal-fault-replay-closure", &discovery, &selection);
 

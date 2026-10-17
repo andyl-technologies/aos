@@ -2209,18 +2209,18 @@ replay also re-derives the edge from the exact current parent before publishing
 the reply. No request sequence, reply address, repository callback, or native
 QEMU value enters the semantic identity or selection engine.
 
-Before selection resolution, the adapter linearly preflights a maximum of
-4,096 selection decisions and 256 MiB of conservative aggregate prefix-byte
-work for campaign-branch provenance. Prefix-byte work is encoded schedule bytes
-multiplied by campaign-branch selection count, bounding repeated cloning and
-hashing of variable-sized decisions. The adapter returns immediately after that
-scan when no selections exist. Repository resolution and prefix authentication
-begin only after both bounds pass, preventing canonical maximum-sized schedules
-from turning persistent schedule-prefix construction into quadratic work. The
-repository then streams the accepted IDs through one selection resolver in
-schedule order (RFC 02); shared declaration and domain dependencies are
-decoded once while they fit its bounded cache. A selected-origin restore
-bounds the resolver's resident decoded records by its memory reservation.
+Before selection resolution, the adapter decodes the selection decisions in
+one linear scan and returns immediately when none exist. It applies no
+selection-count or prefix-byte bound: campaign-branch provenance authenticates
+each parent as an identified prefix of the decoded configuration (RFC 02), so
+no prefix is copied, and the replay plan's branches share the target
+configuration's storage. A selected-origin restore charges that configuration
+once per resident holder and each branch only for its own struct and copied
+branch decisions. The repository then streams the accepted IDs through one
+selection resolver in schedule order (RFC 02); shared declaration and domain
+dependencies are decoded once while they fit its bounded cache. A
+selected-origin restore bounds the resolver's resident decoded records by its
+memory reservation.
 
 A mutable compare-and-swap error may be commit-indeterminate because rename
 precedes directory fsync. The supervisor reloads the exact state, and a

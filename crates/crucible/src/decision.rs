@@ -26,8 +26,9 @@ pub(crate) use app_random_selectable::{
     is_app_random_decision_after, is_app_random_model_selection,
 };
 pub use network_fault_selectable::{
-    NETWORK_FAULT_CAMPAIGN_ADAPTER, NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan,
-    NetworkFaultPhase, NetworkFaultSelectable, NetworkFaultSelectableError,
+    MAX_NETWORK_FAULT_CAMPAIGN_BRANCHES, NETWORK_FAULT_CAMPAIGN_ADAPTER,
+    NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan, NetworkFaultPhase,
+    NetworkFaultSelectable, NetworkFaultSelectableError,
 };
 pub use signal_fault_selectable::{
     MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES, MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES,

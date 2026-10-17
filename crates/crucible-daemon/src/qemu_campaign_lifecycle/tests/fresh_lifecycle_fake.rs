@@ -62,11 +62,11 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             .expect("fresh lifecycle order")
             .push("replay");
         if let Some(branch) = self.signal_fault_branches.front().cloned()
-            && branch.parent() == &request.configuration
+            && branch.parent().matches(&request.configuration)
         {
             self.signal_fault_branches.pop_front();
             return self.complete_quantum(crucible::QuantumOutcome {
-                configuration: branch.selected().clone(),
+                configuration: branch.selected().to_configuration(),
                 frontier: branch.frontier(),
                 advanced_node: None,
                 resolved_events: Vec::new(),
