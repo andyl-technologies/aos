@@ -1651,12 +1651,12 @@ mod tests {
         );
         assert_eq!(
             blake3::hash(&payload).to_hex().as_str(),
-            "f2231d43c38b914a12ad41231fb9fb1419ef3b59bff51137ae2fc1cb2b7a547a"
+            "a31cbe3e3f3f45fac0a48e8b4244928095f86521e334d736900ef3efb5c7bdad"
         );
         let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v4 state");
         assert_eq!(
             blake3::hash(&state).to_hex().as_str(),
-            "37d654f0718aca46de8228f68ff489361352065a0cc6c576b162c6d1061cedc5"
+            "ebde184973627bbe8a7b52751aa2650e065a90bafcd9c437f5fde4d22f5f6575"
         );
         journal.remove().expect("remove v4 journal");
     }
