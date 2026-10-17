@@ -1777,6 +1777,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   debugger commands that need it (CCOMP-42). The condition prefix still
   retains its history until T-CAM-3.7, and the debugger's time-travel engine
   API still takes a complete log and per-event coordinate map.
+- [x] **T-CAM-4.29** Parse the `ResumeSession` body as it streams in. Check
+  each closure frame and observation payload against its declared size
+  before decoding its hex, and charge the model fields to one shared
+  allowance. Decode each payload straight into its field and hash the
+  observation identity incrementally. Reject read-only mode before reading
+  the body, and bound every other unary control body per route (CMEAS-36).
+  The decoded closure and observation evidence keep their resume limits
+  until staged transport and cursor-driven consumers replace them.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,

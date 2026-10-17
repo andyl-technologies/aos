@@ -298,7 +298,10 @@ guarded run's result after its private repository is released. They carry an
 evidence bundle, the leaf followed by its segments in manifest order, bounded
 by the carrier's own message limit. A bundle is a transport form; it never
 enters production identity, and decoding it requires exactly the referenced
-segments.
+segments. The resume request is read as it arrives rather than collected:
+each field is checked against its own bound before its bytes are accepted
+and is decoded straight into place, so the request's message limit bounds
+its decoded fields and never a buffered copy of the request.
 
 A campaign replay closure, the choice records that authenticate a schedule's
 selections, grows with the run in the same way and follows the same rule. Its
@@ -341,6 +344,16 @@ allowance is recorded as incomplete, never truncated.
   bundle in one buffer. A loader MUST NOT read closure frames before
   validation needs them, and decoding MUST reject a frame whose length or
   digest differs from the root or a closure that is not canonically encoded.
+- **[CMEAS-36]** The resume request carrier MUST parse the request as the
+  transport delivers it and MUST NOT collect the request body whole. Before
+  it accepts a field's bytes, it MUST check them against that field's bound.
+  Each closure frame and observation payload is checked against its declared
+  size, and that size is checked against the closure or observation limit
+  before any of its hex is decoded. The scenario, schedule, and checkpoint
+  share one model allowance. Each payload MUST be decoded directly into its
+  field, and the payload identities MUST be hashed without concatenating the
+  payloads. Every other unary control request MUST be collected under a fixed
+  per-route bound.
 - **[CMEAS-24]** Finding evidence ledgers MUST reference every captured
   service exchange by content address and MUST be authenticated as a fold over
   findings and, within a finding, over occurrences. No writer, loader, or

@@ -12,9 +12,14 @@ use axum::http::Version;
 use bytes::Bytes;
 use futures_util::stream;
 
-use crate::lifecycle::QuiescentLifecycleLoop;
+use crate::lifecycle::{
+    QuiescentLifecycleLoop, RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES,
+    RESUME_REPLAY_CLOSURE_MAX_FRAMES, ResumeObservationSource, ResumeReplayClosure,
+    ResumeSessionRequest,
+};
 use crucible::{
-    CheckpointKind, Configuration, Decision, DeliveryOrderDecision, Schedule, VirtualTime,
+    Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, Schedule,
+    VirtualTime,
 };
 use std::collections::BTreeMap;
 
@@ -23,7 +28,7 @@ use super::*;
 const TEST_SEED: &str = "000000000000000000000000000000000000000000000000000000000000004d";
 const TEST_HOLDER: &str = "00000000-0000-0000-0000-000000000009";
 
-type TestState = Http2LifecycleState<
+pub(super) type TestState = Http2LifecycleState<
     QuiescentLifecycleLoop,
     crate::lifecycle::LifecycleLoopFactory<QuiescentLifecycleLoop>,
 >;
@@ -37,7 +42,7 @@ fn open_shutdown_receiver() -> watch::Receiver<bool> {
     receiver
 }
 
-fn test_state(mode: LifecycleServerMode) -> TestState {
+pub(super) fn test_state(mode: LifecycleServerMode) -> TestState {
     Http2LifecycleState {
         control_plane: Arc::new(Mutex::new(LifecycleControlPlane::new(
             "server-test",
@@ -78,31 +83,28 @@ fn rpc_request(body: impl Into<String>) -> Request<Body> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn resume_body_rejects_declared_oversize_before_collection() {
+async fn unary_body_rejects_declared_oversize_before_collection() {
     let request = Request::builder()
         .version(Version::HTTP_2)
-        .header(
-            CONTENT_LENGTH,
-            RESUME_SESSION_RPC_BODY_MAX_BYTES.saturating_add(1),
-        )
+        .header(CONTENT_LENGTH, CONTROL_RPC_BODY_MAX_BYTES.saturating_add(1))
         .body(Body::empty())
         .expect("oversize request fixture must be well-formed");
 
-    let response = read_resume_session_rpc_body(request)
+    let response = read_rpc_body(request)
         .await
-        .expect_err("oversize resume body must reject before collection");
+        .expect_err("oversize control body must reject before collection");
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert!(
         response_text(*response)
             .await
             .expect("oversize response should be text")
-            .contains("resume-session-request-too-large")
+            .contains("rpc-request-too-large")
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn resume_body_rejects_oversize_chunked_stream_during_collection() {
+async fn unary_body_rejects_oversize_chunked_stream_during_collection() {
     let body = Body::from_stream(stream::iter([
         Ok::<_, std::convert::Infallible>(Bytes::from_static(b"1234")),
         Ok(Bytes::from_static(b"56789")),
@@ -112,16 +114,16 @@ async fn resume_body_rejects_oversize_chunked_stream_during_collection() {
         .body(body)
         .expect("chunked oversize request fixture must be well-formed");
 
-    let response = read_bounded_resume_session_rpc_body(request, 8)
+    let response = read_bounded_rpc_body(request, 8)
         .await
-        .expect_err("chunked resume body must stop at the collection bound");
+        .expect_err("chunked body must stop at the collection bound");
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert!(
         response_text(*response)
             .await
             .expect("oversize response should be text")
-            .contains("resume-session-request-too-large")
+            .contains("rpc-request-too-large")
     );
 }
 
@@ -155,7 +157,8 @@ fn destroy_session_request() -> String {
     )
 }
 
-fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
+/// Builds a resume request with a two-frame closure and its canonical wire text.
+pub(super) fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
     let scenario = crucible::happy_path_scenario()
         .expect("resume parser scenario should build")
         .scenario;
@@ -361,6 +364,7 @@ fn production_resume_parser_authenticates_complete_closure_envelope() {
     assert!(
         parse_resume_session_request(oversize.as_bytes())
             .expect_err("declared oversize closure frame must reject")
+            .to_string()
             .contains("maximum")
     );
 }

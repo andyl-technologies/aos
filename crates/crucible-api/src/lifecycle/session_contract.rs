@@ -382,22 +382,22 @@ pub(super) fn resume_observation_source_identity(
     let checkpoint_material = ContentHash::from_bytes(&checkpoint.to_compact_binary());
     let proof_len = u64::try_from(proof.len()).unwrap_or(u64::MAX);
     let evidence_len = u64::try_from(evidence.len()).unwrap_or(u64::MAX);
-    let mut material = Vec::with_capacity(
-        DOMAIN
-            .len()
-            .saturating_add(32 * 3)
-            .saturating_add(4 + 8 + proof.len() + 8 + evidence.len()),
-    );
-    material.extend_from_slice(DOMAIN);
-    material.extend_from_slice(&scenario.id().bytes);
-    material.extend_from_slice(&configuration.id().bytes);
-    material.extend_from_slice(&checkpoint_material.bytes);
-    material.extend_from_slice(&schema_version.to_be_bytes());
-    material.extend_from_slice(&proof_len.to_be_bytes());
-    material.extend_from_slice(proof);
-    material.extend_from_slice(&evidence_len.to_be_bytes());
-    material.extend_from_slice(evidence);
-    ContentHash::from_bytes(&material)
+
+    // Hash the length-prefixed material incrementally; the digest equals the
+    // concatenated form's, without copying either payload.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN);
+    hasher.update(&scenario.id().bytes);
+    hasher.update(&configuration.id().bytes);
+    hasher.update(&checkpoint_material.bytes);
+    hasher.update(&schema_version.to_be_bytes());
+    hasher.update(&proof_len.to_be_bytes());
+    hasher.update(proof);
+    hasher.update(&evidence_len.to_be_bytes());
+    hasher.update(evidence);
+    ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    }
 }
 
 /// Versioned, content-bound campaign choice evidence supplied to `ResumeSession`.
