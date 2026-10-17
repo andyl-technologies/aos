@@ -43,6 +43,7 @@ mod imported_replay;
 mod supervised_replay;
 pub use imported_replay::{ImportedProductionCheckpointReplay, ImportedProductionReplayError};
 use supervised_replay::ProductionCheckpointReplayGuard;
+pub(crate) use supervised_replay::replay_world_control_bytes;
 
 /// One completely authenticated baked-genesis snapshot set.
 ///
@@ -584,7 +585,7 @@ where
             configuration.def.id(),
         )?;
         let mut selected = ProductionBakedGenesisReplayFactory::new(baked.clone());
-        selected.registration_preparation = Some(guard.registration_preparation()?);
+        selected.registration_preparation = Some(guard.registration_preparation(target.node())?);
         selected.begin_target(world, configuration, target, guard)
     }
 
@@ -765,10 +766,12 @@ where
     } = preparation;
     guard.check_operational_boundary()?;
     let requirements = profile.resource_requirements();
-    let exact_directory = guard.prepare_generation_run_directory(requirements)?;
+    let exact_directory =
+        guard.prepare_generation_run_directory_for_node(exact.node(), requirements)?;
 
     guard.check_operational_boundary()?;
-    let mut thin_directory = guard.prepare_generation_run_directory(requirements)?;
+    let mut thin_directory =
+        guard.prepare_generation_run_directory_for_node(exact.node(), requirements)?;
     guard.check_operational_boundary()?;
 
     let (mut exact_config, mut thin_config) = replay_oracle_launch_configs(
@@ -786,12 +789,12 @@ where
     let preparation = thin_directory.prepare_fresh_artifacts_guarded(
         thin_config.qemu_executable(),
         thin_config.root_image(),
-        guard.child_process_contract()?,
+        guard.child_process_contract_for_node(exact.node())?,
     );
     if let Err(mut error) = preparation {
         let message = error.to_string();
         if let Some(child) = error.take_unreaped_child() {
-            guard.retain_failed_launch_child(child);
+            guard.retain_failed_launch_child_for_node(exact.node(), child);
             guard.quarantine();
             return Err(QemuVmRealizationError::ReapQuarantined {
                 operation: "prepare fresh thin replay artifacts",
@@ -810,7 +813,7 @@ where
         .into_replay_admission(
             exact_config,
             exact_directory,
-            guard.child_process_contract()?,
+            guard.child_process_contract_for_node(&exact_node)?,
             "crucible-replay-oracle-exact",
         )
         .map_err(map_replay_admission_error)?;
