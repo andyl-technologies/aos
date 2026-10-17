@@ -76,7 +76,9 @@ impl CampaignRepository {
             [transition],
             &anchors,
             &mut ChoiceValidationCache::default(),
-            Some(&mut linked_ids),
+            Some(&mut |id| {
+                linked_ids.insert(id);
+            }),
             None,
         )?;
         anchors.extend(linked_ids);

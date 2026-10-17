@@ -162,6 +162,9 @@ guarded campaign run's `finding_export` appends its final-snapshot proof
 exchanges to the registered `crucible.daemon.finding-export-transcript`, a
 private frame file under the run-state root that is removed with the run
 result and rejected on read unless its header, frames, and trailer match.
+`campaign_gc::spill` writes fixed-width sorted-run records for GC planning
+and apply into an owner-only scratch directory that is removed with the
+operation; they never leave the process and are not a published schema.
 
 The Nix-generated Crucible guest-input review covered
 `modules/services/crucible-campaign.nix`, the packaged-executor TOML emitted

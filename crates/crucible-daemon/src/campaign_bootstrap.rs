@@ -652,17 +652,22 @@ impl CampaignLocalStoreGcAuthority<'_> {
     /// The caller supplies the stopped executor's exact assignment ledger and,
     /// when semantic exact pins exist, its exact-pin materialization store.
     /// Every authority is fenced and reduced to a generation-bound canonical
-    /// plan; this method does not delete storage.
+    /// plan; this method does not delete storage. Planning sorts its sets in a
+    /// private scratch directory inside `spill_parent`, an existing directory
+    /// on persistent storage; the returned plan's manifests live there until
+    /// the plan is dropped.
     ///
     /// # Errors
     ///
     /// Returns [`crate::CampaignGcPlanningError`] when any root, ledger,
     /// write-back transfer, ref, exact pin, or physical inventory cannot be
-    /// authenticated completely and within its fixed bound.
+    /// authenticated completely and within its fixed bound, or when scratch
+    /// storage fails.
     pub fn plan<L>(
         &self,
         ledger: &mut L,
         exact_pins: Option<&mut dyn crate::ExactPinRetentionAdmin>,
+        spill_parent: &Path,
     ) -> Result<crate::CampaignGcPreparedPlan, crate::CampaignGcPlanningError<L::Error>>
     where
         L: crate::AssignmentRetentionAdmin,
@@ -686,6 +691,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
             Some(self.maintenance.store.as_ref()),
             roots,
             &self.maintenance.graph,
+            spill_parent,
         )
     }
 

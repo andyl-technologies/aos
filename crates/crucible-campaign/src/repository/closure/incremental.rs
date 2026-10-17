@@ -163,14 +163,40 @@ impl CampaignRepository {
         roots: impl IntoIterator<Item = ContentId>,
     ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
         let mut objects = BTreeSet::new();
+        self.visit_authenticated_closure_ids(roots, &mut |id| {
+            objects.insert(id);
+        })?;
+        Ok(objects)
+    }
+
+    /// Authenticates the supplied closures and passes every object to `visit`.
+    ///
+    /// This is [`Self::authenticated_closure_ids`] without the collected set,
+    /// for callers that stream the closure into bounded or external storage.
+    /// An object may be passed more than once and in no particular order. The
+    /// visited identities are trustworthy only when the call returns `Ok`;
+    /// after an error the caller must discard everything it was passed. The
+    /// traversal's own visited set is still bounded by
+    /// [`MAX_CAMPAIGN_CLOSURE_OBJECTS`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when any root or descendant is
+    /// missing, corrupt, semantically invalid, or the complete union exceeds
+    /// the campaign closure bound.
+    pub fn visit_authenticated_closure_ids(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        visit: &mut dyn FnMut(ContentId),
+    ) -> Result<(), CampaignRepositoryError> {
         self.verify_campaign_closures_anchored_cached_collect(
             roots,
             &BTreeSet::new(),
             &mut ChoiceValidationCache::default(),
-            Some(&mut objects),
+            Some(visit),
             None,
         )?;
-        Ok(objects)
+        Ok(())
     }
 
     // Only archive checkpoint selections may opt into raw production leaves.
@@ -185,7 +211,9 @@ impl CampaignRepository {
             roots,
             &BTreeSet::new(),
             &mut ChoiceValidationCache::default(),
-            Some(&mut objects),
+            Some(&mut |id| {
+                objects.insert(id);
+            }),
             Some(&mut exact_leaves),
         )?;
         Ok((objects, exact_leaves))
@@ -211,7 +239,7 @@ impl CampaignRepository {
         roots: impl IntoIterator<Item = ContentId>,
         anchors: &BTreeSet<ContentId>,
         choice_cache: &mut ChoiceValidationCache,
-        collected: Option<&mut BTreeSet<ContentId>>,
+        collected: Option<&mut dyn FnMut(ContentId)>,
         collected_exact_leaves: Option<&mut BTreeSet<ContentId>>,
     ) -> Result<usize, CampaignRepositoryError> {
         self.verify_campaign_closures_with_planner_context(
@@ -235,7 +263,7 @@ impl CampaignRepository {
         roots: impl IntoIterator<Item = ContentId>,
         anchors: &BTreeSet<ContentId>,
         choice_cache: &mut ChoiceValidationCache,
-        mut collected: Option<&mut BTreeSet<ContentId>>,
+        mut collected: Option<&mut dyn FnMut(ContentId)>,
         mut collected_exact_leaves: Option<&mut BTreeSet<ContentId>>,
         mut planner_context: Option<&mut PlannerValidationContext>,
     ) -> Result<usize, CampaignRepositoryError> {
@@ -254,8 +282,8 @@ impl CampaignRepository {
             if !visited.insert((id, exact_leaf)) {
                 continue;
             }
-            if let Some(objects) = collected.as_deref_mut() {
-                objects.insert(id);
+            if let Some(collect) = collected.as_deref_mut() {
+                collect(id);
             }
             if visited
                 .len()
@@ -276,9 +304,6 @@ impl CampaignRepository {
                     self.merkle
                         .verify_closure_objects_cached(id, &mut verified_merkle_positions)?
                 };
-                if let Some(objects) = collected.as_deref_mut() {
-                    objects.extend(verified_merkle_positions.ids());
-                }
                 if visited
                     .len()
                     .checked_add(verified_merkle_positions.len())
@@ -451,6 +476,13 @@ impl CampaignRepository {
                 _ => {}
             }
             stack.extend(envelope.children().iter().map(|child| (child.id(), false)));
+        }
+        // Merkle positions accumulate across the walk, so they are reported
+        // once after it rather than again after every verified trie.
+        if let Some(collect) = collected {
+            for id in verified_merkle_positions.ids() {
+                collect(id);
+            }
         }
         visited
             .len()

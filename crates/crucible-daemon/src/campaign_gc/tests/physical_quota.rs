@@ -58,6 +58,7 @@ impl StorePhysicalQuotaBinder for ToggleQuotaBinder {
 
 #[test]
 fn physical_quota_drift_stops_global_gc_before_deletion() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary physical-quota GC root");
     let physical = StoreNodeId::new("quota-primary").expect("physical-quota node");
     let directory = StoreNodeId::new("directory-child").expect("directory child");
@@ -119,11 +120,18 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         None,
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan physical-quota GC");
     assert_eq!(prepared.candidates().len(), 1);
     assert_eq!(
-        prepared.candidates().iter().next().expect("orphan").id(),
+        prepared
+            .candidates()
+            .entries_for_test()
+            .into_iter()
+            .next()
+            .expect("orphan")
+            .id(),
         orphan
     );
     let (mut journal, _) =

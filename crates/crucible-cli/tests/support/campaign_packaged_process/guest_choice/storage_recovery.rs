@@ -121,7 +121,9 @@ fn public_exact_paused_guest_recovers_from_s3_outage_and_expired_credentials()
         assert!(
             journal
                 .candidates()
-                .iter()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .any(|candidate| candidate.id() == orphan),
             "GC omitted the authenticated unreachable S3 object"
         );

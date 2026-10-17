@@ -1955,6 +1955,27 @@ allocation proportional to a claimed count, bound every individual string,
 require strict order and exact EOF, and recompute terminal candidate count and
 logical-byte totals.
 
+The entry limit is a format bound, not a memory budget. Planning and apply
+never hold a complete root set, reachable closure, physical inventory, or
+candidate list in memory. Roots, closure identities, and each fenced physical
+inventory are spilled as fixed-width, order-preserving records into bounded
+in-memory runs, sorted, and merged at a bounded fan-in into one private
+owner-only scratch directory. Planning writes both manifests by streaming
+merge-joins of those runs; apply re-sorts the journaled candidates by identity
+and merge-joins them against the reproduced pending write-back, reachable, and
+per-leaf inventory streams before it advances the journal. The scratch records
+are process-private and are not a published format. Planning scratch lives in
+a caller-supplied persistent directory; the CLI uses the journal's parent.
+Apply scratch lives inside the journal directory. Both are removed on success
+and on every error; a crash can leave only scratch data, which never affects a
+later plan. Scratch exhaustion fails closed before any deletion. A planning
+inventory that lists one logical object twice on one leaf is rejected, and
+apply counts every duplicate placement against its planned candidate set.
+Journal manifest handles read the journal's own durable copies, and a full
+manifest read re-derives the manifest hash, so a journal file replaced after
+open fails before apply deletes anything. The repository's closure traversal
+still keeps its own visited set, bounded by the campaign-closure work bound.
+
 The registered `crucible.campaign.gc-plan` schema v1 is the bounded immutable
 header that composes these independently fenced inputs. It does not embed the
 potentially large root set or candidate list. Instead it binds their separately
@@ -2195,6 +2216,12 @@ policy-aware plan, including non-write tiers and completed write-back staging.
 - **[CSTORE-20]** Physical eviction, pack compaction, and pin removal MUST be
   plan/apply operations that preserve every still-required logical object and
   leave interruption-safe recovery evidence.
+- **[CSTORE-29]** GC planning and apply memory MUST be independent of root,
+  closure, inventory, and candidate set sizes outside the repository's own
+  traversal state: those sets MUST be externally sorted in private persistent
+  scratch storage that is removed on success and failure, scratch failure MUST
+  fail closed before deletion, and the resulting manifests MUST be the same
+  canonical byte streams an in-memory construction would produce.
 
 ## 06.11 Confidentiality and authorization
 

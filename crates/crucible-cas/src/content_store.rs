@@ -228,6 +228,20 @@ impl ContentId {
         })
     }
 
+    /// Rebuilds an identity from its kind, schema version, and digest.
+    ///
+    /// No bytes are hashed, so the result is only as trustworthy as the parts:
+    /// callers use it to restore an identity they already authenticated, such
+    /// as a fixed-width sort key spilled to private scratch storage.
+    #[must_use]
+    pub const fn from_parts(kind: ObjectKind, schema_version: u32, digest: [u8; 32]) -> Self {
+        Self {
+            kind,
+            schema_version,
+            digest,
+        }
+    }
+
     /// Returns the semantic object kind.
     #[must_use]
     pub const fn kind(self) -> ObjectKind {

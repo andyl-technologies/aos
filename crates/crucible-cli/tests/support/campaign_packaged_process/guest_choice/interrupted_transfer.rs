@@ -374,15 +374,26 @@ fn reclaim_orphan_under_transfer_roots(
     assert!(
         journal
             .candidates()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|candidate| candidate.id() == orphan)
     );
     for id in objects.keys() {
-        assert!(journal.roots().iter().any(|root| root == *id));
+        assert!(
+            journal
+                .roots()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|root| root == *id)
+        );
         assert!(
             !journal
                 .candidates()
-                .iter()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .any(|candidate| candidate.id() == *id)
         );
     }

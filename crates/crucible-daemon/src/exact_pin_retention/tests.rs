@@ -3,6 +3,7 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
+use crate::campaign_gc::ManifestEntriesForTest;
 use crucible_campaign::{
     CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed, ExactRational,
     ExplorerPolicy, FairnessPolicy, PinChange, PinRequest, ProgressiveWideningPolicy, PuctPolicy,
@@ -110,6 +111,7 @@ struct Fixture {
 
 #[test]
 fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::tempdir().expect("exact-pin GC root");
     let node = StoreNodeId::new("durable").expect("store node");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
@@ -153,6 +155,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             None,
             None,
             &admin,
+            spill_parent.path(),
         ),
         Err(crate::CampaignGcPlanningError::MissingExactPinMaterialization { .. })
     ));
@@ -164,6 +167,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         None,
         Some(&mut selections),
         &admin,
+        spill_parent.path(),
     )
     .expect("plan with exact materialization");
     let exact_closure = fixture
@@ -171,15 +175,18 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         .authenticated_production_closure_ids(fixture.checkpoint)
         .expect("complete exact checkpoint closure");
     assert!(exact_closure.len() > 1);
-    assert!(
-        exact_closure
-            .iter()
-            .all(|id| planned.roots().iter().any(|root| root == *id))
-    );
+    assert!(exact_closure.iter().all(|id| {
+        planned
+            .roots()
+            .entries_for_test()
+            .into_iter()
+            .any(|root| root == *id)
+    }));
     assert!(
         planned
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .all(|candidate| !exact_closure.contains(&candidate.id()))
     );
     let (mut journal, _) =
@@ -229,18 +236,21 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         None,
         Some(&mut selections),
         &admin,
+        spill_parent.path(),
     )
     .expect("plan after unpin with stale selection record");
     assert!(
         !after_unpin
             .roots()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|root| root == fixture.checkpoint.content_id())
     );
     assert!(
         after_unpin
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|candidate| candidate.id() == fixture.checkpoint.content_id())
     );
     drop(admin);

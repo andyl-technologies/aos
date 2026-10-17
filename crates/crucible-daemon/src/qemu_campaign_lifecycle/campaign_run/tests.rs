@@ -3,6 +3,7 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
+use crate::campaign_gc::ManifestEntriesForTest;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::io;
@@ -1912,6 +1913,7 @@ fn explicit_combined_discovery_stops_at_the_first_reached_bound() {
 
 #[test]
 fn terminal_discovery_selection_survives_gc_restart_and_replay() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary campaign store");
     let blob_root = temp.path().join("blobs");
     let ref_root = temp.path().join("refs");
@@ -1968,23 +1970,31 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
     let (repository, _) = default_run_repository::<io::Error>(graph.clone(), refs.clone())
         .expect("reopen campaign repository for GC planning");
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open assignment ledger");
-    let prepared =
-        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, None, None, &admin)
-            .expect("plan campaign GC");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+        spill_parent.path(),
+    )
+    .expect("plan campaign GC");
     assert!(
         prepared
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|candidate| candidate.id() == orphan)
     );
     assert!(
         prepared
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .all(|candidate| candidate.id() != selection_id.content_id())
     );
-    let planned_candidates =
-        u64::try_from(prepared.candidates().len()).expect("planned candidate count");
+    let planned_candidates = prepared.candidates().len();
     let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
         .expect("persist campaign GC plan");
     drop(journal);

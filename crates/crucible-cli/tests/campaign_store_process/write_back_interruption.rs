@@ -359,19 +359,33 @@ fn reclaim_orphan_without_pending_deletion(
     assert!(json_u64(&planned, "unreachable_candidates")? > 0);
     {
         let journal = DirectoryCampaignGcJournal::open(&fixture.base.journal)?;
-        let roots = journal.roots().iter().collect::<BTreeSet<_>>();
+        let roots = journal
+            .roots()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         for id in pending.bytes.keys() {
             assert!(roots.contains(id));
             assert!(
                 journal
                     .candidates()
-                    .iter()
+                    .iter()?
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
                     .all(|candidate| candidate.id() != *id)
             );
         }
-        assert!(journal.candidates().iter().any(|candidate| {
-            candidate.backend() == "write-staging" && candidate.id() == orphan
-        }));
+        assert!(
+            journal
+                .candidates()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|candidate| {
+                    candidate.backend() == "write-staging" && candidate.id() == orphan
+                })
+        );
     }
     let applied = run_json(
         unarmed(&mut fixture.base.gc_command("apply")),
@@ -426,7 +440,12 @@ fn complete_pending_and_reclaim_staging(
     {
         let journal = DirectoryCampaignGcJournal::open(&fixture.after_maintenance_gc_journal)?;
         let mut eligible = BTreeSet::new();
-        for candidate in journal.candidates().iter() {
+        for candidate in journal
+            .candidates()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+        {
             if candidate.backend() != "write-staging" {
                 continue;
             }

@@ -260,7 +260,9 @@ fn reclaim_orphan(
     assert!(
         journal
             .candidates()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|candidate| candidate.id() == orphan)
     );
     drop(journal);

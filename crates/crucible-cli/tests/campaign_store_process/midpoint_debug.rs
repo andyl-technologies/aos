@@ -745,14 +745,18 @@ fn exercise_public_exact_pin_gc_flow(
         assert!(
             journal
                 .roots()
-                .iter()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .any(|root| root == checkpoint.content_id()),
             "public exact pin did not root its materialized checkpoint"
         );
         assert!(
             !journal
                 .candidates()
-                .iter()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .any(|candidate| candidate.id() == checkpoint.content_id()),
             "public exact pin checkpoint entered the deletion manifest"
         );
@@ -799,14 +803,18 @@ fn exercise_public_exact_pin_gc_flow(
     assert!(
         !journal
             .roots()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|root| root == checkpoint.content_id()),
         "stale exact-pin selection remained a GC root after public unpin"
     );
     assert!(
         journal
             .candidates()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|candidate| candidate.id() == checkpoint.content_id()),
         "unpin did not return the exact checkpoint to the deletion candidates"
     );
