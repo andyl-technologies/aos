@@ -141,6 +141,15 @@ pub(super) fn qualify_kind_with_compute(
                 }
                 _ => false,
             },
+            InstalledNodeKind::HostRateAlarmClock { .. } => {
+                // The native7 clock and its one enrolled finite request source
+                // already use this exact operation facade. Preservation and
+                // producer-history editions retain their separate admission.
+                matches!(
+                    operation.operation.as_str(),
+                    "exact_run" | "boundary_settle"
+                ) && operation.facet.id.as_str() == "host/exact-v1"
+            }
             InstalledNodeKind::HostIo { .. }
             | InstalledNodeKind::HostScripted { .. }
             | InstalledNodeKind::HostNetLink { .. }

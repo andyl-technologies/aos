@@ -510,3 +510,280 @@ fn authored_semantic_clock_demand_executes_the_original_installed_evaluator() {
     let value: serde_json::Value = serde_json::from_slice(&assertion.payload_bytes).unwrap();
     assert_eq!(value["kind"], "Satisfied");
 }
+
+fn rate_alarm_source(
+    catalog: &mut InstalledNodeCatalog,
+    directory: &std::path::Path,
+) -> (
+    Vec<InstalledNodeSelection>,
+    crucible::node_adapters::RateAlarmClockDefinition,
+) {
+    use crucible::node_adapters::{RateAlarmClockDefinition, RateAlarmClockRequest};
+
+    let definition = RateAlarmClockDefinition {
+        numerator: 3.into(),
+        denominator: 2.into(),
+        epoch_ps: 0.into(),
+        epoch_counter: 7.into(),
+        drift_ppb: 0,
+    };
+    let requests = [
+        (
+            10,
+            RateAlarmClockRequest::Read {
+                correlation: id("initial-read"),
+            },
+        ),
+        (
+            10,
+            RateAlarmClockRequest::Arm {
+                correlation: id("alarm-a"),
+                target: definition.reading(1000.into()).unwrap(),
+            },
+        ),
+        (
+            10,
+            RateAlarmClockRequest::Arm {
+                correlation: id("alarm-b"),
+                target: definition.reading(1100.into()).unwrap(),
+            },
+        ),
+        (
+            10,
+            RateAlarmClockRequest::Cancel {
+                correlation: id("cancel-b"),
+                alarm: id("alarm-b"),
+            },
+        ),
+        (
+            1200,
+            RateAlarmClockRequest::Read {
+                correlation: id("future-read"),
+            },
+        ),
+    ];
+    let script = ScriptedSource::new(
+        ScriptedRequestKind::RateAlarmClock,
+        requests
+            .into_iter()
+            .map(|(time_ps, request)| ScriptedRequest {
+                time_ps,
+                payload: canonical::canonical_json(&serde_json::to_value(request).unwrap())
+                    .unwrap(),
+            })
+            .collect(),
+    )
+    .unwrap()
+    .script_bytes()
+    .unwrap();
+    let script = enroll(
+        directory,
+        "clock-script",
+        &script,
+        "application/octet-stream",
+    );
+    catalog.install_artifacts(vec![script.clone()]).unwrap();
+
+    let selections = vec![
+        InstalledNodeSelection {
+            node: id("clock"),
+            owner: id("clock-owner"),
+            kind: InstalledNodeKind::HostRateAlarmClock {
+                definition: definition.clone(),
+            },
+        },
+        InstalledNodeSelection {
+            node: id("source"),
+            owner: id("source-owner"),
+            kind: InstalledNodeKind::HostScripted {
+                profile: InstalledScriptedSourceProfile {
+                    script: script.expected,
+                    consumer: id("clock"),
+                },
+            },
+        },
+    ];
+    (selections, definition)
+}
+
+#[test]
+#[ignore = "requires source-built companion identity and installed rational-clock execution"]
+fn authored_rate_alarm_demands_execute_repeatable_original_reads_and_alarms() {
+    use crucible::node_adapters::RateAlarmClockEvent;
+
+    let mut observed = Vec::new();
+    for _ in 0..2 {
+        let directory = tempfile::tempdir().unwrap();
+        let mut catalog = catalog(directory.path());
+        let (selections, definition) = rate_alarm_source(&mut catalog, directory.path());
+        let baseline = catalog.scenario(&selections).unwrap();
+        let original = baseline.canonical_bytes().unwrap();
+        let raw = serde_json::to_vec_pretty(&demands(&baseline)).unwrap();
+
+        let resolved = catalog
+            .resolve_capabilities_raw(
+                &[InstalledCapabilityCandidate {
+                    id: id("installed/rate-alarm-exact"),
+                    selections,
+                }],
+                &raw,
+            )
+            .unwrap();
+        assert_eq!(resolved.requirements_bytes, raw);
+        assert_eq!(baseline.canonical_bytes().unwrap(), original);
+
+        let outcomes = execute(&mut catalog, &resolved, directory.path(), 1500);
+        let publications = outcomes
+            .iter()
+            .flat_map(|outcome| outcome.scheduling.as_ref().unwrap().publications.iter())
+            .filter(|publication| publication.endpoint.node_id == id("clock"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let events = publications
+            .iter()
+            .map(|publication| {
+                let event: RateAlarmClockEvent =
+                    serde_json::from_slice(&publication.payload_bytes).unwrap();
+                assert_eq!(Some(event.reaction), publication.evaluation);
+                assert!(publication.publication > event.reaction);
+                assert!(!publication.causal_parents.is_empty());
+                event
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(events.len(), 6);
+        let initial = events
+            .iter()
+            .find(|event| event.kind == "reading" && event.correlation == id("initial-read"))
+            .unwrap();
+        assert_eq!(initial.reaction.time_ps.get(), 10);
+        assert_eq!(initial.counter, definition.reading(10.into()).unwrap());
+        assert_eq!(
+            events.iter().filter(|event| event.kind == "armed").count(),
+            2
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == "canceled" && event.correlation == id("cancel-b"))
+        );
+        let alarms = events
+            .iter()
+            .filter(|event| event.kind == "alarm")
+            .collect::<Vec<_>>();
+        assert_eq!(alarms.len(), 1);
+        assert_eq!(alarms[0].correlation, id("alarm-a"));
+        assert_eq!(alarms[0].reaction.time_ps.get(), 1000);
+        assert_eq!(alarms[0].counter, definition.reading(1000.into()).unwrap());
+        let future = events
+            .iter()
+            .find(|event| event.kind == "reading" && event.correlation == id("future-read"))
+            .unwrap();
+        assert_eq!(future.reaction.time_ps.get(), 1200);
+        assert_eq!(future.counter, definition.reading(1200.into()).unwrap());
+        observed.push(publications);
+    }
+
+    // Fresh owning catalogs retain the same full semantic publications, including
+    // their original payload refs, FIFO identities, positions and causal parents.
+    assert_eq!(observed[0], observed[1]);
+}
+
+#[test]
+#[ignore = "requires source-built companion identity and installed rational-clock resolution"]
+fn authored_rate_alarm_demands_refuse_other_facets_producer_editions_and_source_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut catalog = catalog(directory.path());
+    let (selections, definition) = rate_alarm_source(&mut catalog, directory.path());
+    let baseline = catalog.scenario(&selections).unwrap();
+    let required = demands(&baseline);
+    let candidates = [InstalledCapabilityCandidate {
+        id: id("installed/rate-alarm-exact"),
+        selections,
+    }];
+    let clock = required
+        .nodes
+        .iter()
+        .position(|node| node.node == id("clock"))
+        .unwrap();
+    let capabilities: CapabilityProfile =
+        policy::object(&baseline, &baseline.compatibility[clock].capabilities_ref).unwrap();
+    let exact = required.nodes[clock].operations[0].facet.clone();
+
+    for operation in [
+        "capture",
+        "durable_restart",
+        "debug",
+        "fault_injection",
+        "conditional_replay",
+        "isolated_fork",
+        "physical_pause",
+    ] {
+        let mut changed = required.clone();
+        let facet_id = match operation {
+            "capture" | "durable_restart" => "host/preservation-v1",
+            "physical_pause" => "host/physical-pause-v1",
+            _ => "host/exact-v1",
+        };
+        let facet = capabilities
+            .facets
+            .iter()
+            .find(|facet| facet.id.as_str() == facet_id)
+            .unwrap()
+            .clone();
+        changed.nodes[clock].operations = vec![crucible::node_admission::OperationRequirement {
+            operation: id(operation),
+            facet,
+        }];
+        // This closed structural match passes; installed operation policy must
+        // independently refuse the unsupported operation on the actual model.
+        changed.nodes[clock]
+            .match_contract(
+                &baseline.descriptors[clock],
+                &baseline.compatibility[clock],
+                &capabilities,
+                &policy::object(&baseline, &baseline.compatibility[clock].guarantees_ref).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            catalog.resolve_capabilities(&candidates, changed).is_err(),
+            "unexpected rational-clock operation: {operation}"
+        );
+    }
+    let mut changed = required.clone();
+    changed.nodes[clock].guarantees.durable_restart = true;
+    assert!(catalog.resolve_capabilities(&candidates, changed).is_err());
+    let mut changed = required.clone();
+    changed.nodes[clock].operations[0].facet = exact;
+    changed.nodes[clock].operations[0].facet.version = 2;
+    assert!(catalog.resolve_capabilities(&candidates, changed).is_err());
+
+    let mut producer = candidates.to_vec();
+    producer[0].selections[clock].kind = InstalledNodeKind::HostRateAlarmClockProducer {
+        definition: definition.clone(),
+    };
+    let producer_scenario = catalog.scenario(&producer[0].selections).unwrap();
+    assert!(
+        catalog
+            .resolve_capabilities(&producer, demands(&producer_scenario))
+            .is_err()
+    );
+
+    let mut changed = candidates.to_vec();
+    let mut changed_definition = definition;
+    changed_definition.denominator = 3.into();
+    changed[0].selections[clock].kind = InstalledNodeKind::HostRateAlarmClock {
+        definition: changed_definition,
+    };
+    assert!(
+        catalog
+            .resolve_capabilities(&changed, required.clone())
+            .is_err()
+    );
+    std::fs::write(
+        directory.path().join("clock-script"),
+        b"changed enrolled source",
+    )
+    .unwrap();
+    assert!(catalog.resolve_capabilities(&candidates, required).is_err());
+}
