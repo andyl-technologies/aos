@@ -205,7 +205,8 @@ pub use linux_attempt_host::{
     AdmittedHostConfigurationError, InstalledNodeLaunchIssuer, LinuxQemuAttemptHostConfig,
     LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner, LinuxQemuForkTargetPermit,
     LinuxQemuNativeNodeHost, LinuxQemuNativeResourceController, LinuxQemuNativeResourceError,
-    OriginalActorAccountError, OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
+    LinuxQemuNativeWorldConstructor, OriginalActorAccountError,
+    OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
     OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
     QemuForkTargetLogicalReservation, QemuForkTargetRamAdmission,
 };

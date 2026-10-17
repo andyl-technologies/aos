@@ -167,7 +167,6 @@ where
             Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>,
         >()?;
         let helpers = launcher_arc_bytes::<Mutex<ImageHelperCleanupDebt>>()?;
-        let pending = pending_construction::PendingSourceConstruction::<F>::control_bytes()?;
         let source_loop = u64::try_from(std::mem::size_of::<crate::ProductionVmLifecycleLoop>())
             .map_err(|_| launcher_message("prepared Source lifecycle extent overflows"))?;
         let retained_source = Self::retained_control_bytes()?
@@ -175,15 +174,11 @@ where
             .and_then(|bytes| bytes.checked_add(helpers))
             .and_then(|bytes| bytes.checked_add(source_loop))
             .ok_or_else(|| launcher_message("retained Source launcher extent overflow"))?;
-        // Pending ends before launcher birth. The prepared Source's Loop Box
-        // overlaps that launcher, its shared controls and the original carrier;
-        // generation rows and carrier remain live across both phases.
-        pending
-            .max(retained_source)
+        // Main already pays the preborn Pending and construction carrier.
+        // This World pays its actual launcher, shared controls, generation rows
+        // and the separately allocated Source Loop Box overlapping them.
+        retained_source
             .checked_add(generations)
-            .and_then(|bytes| {
-                bytes.checked_add(crate::ProductionVmConstructionCustody::allocation_bytes())
-            })
             .ok_or_else(|| launcher_message("selected Source control extent overflow"))
     }
 

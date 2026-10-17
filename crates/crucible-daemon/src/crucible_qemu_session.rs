@@ -604,12 +604,10 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
 /// Transfers actual logical World custody before its first physical effect.
 ///
 /// The production caller installs its prepaid pending construction owner here.
-/// An error must retain both exact holders or return them before any body birth.
-pub(crate) type NativeWorldBeforeEffects<'a> = dyn FnMut(
-        crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
-        crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-    ) -> Result<(), QemuVmRealizationError>
-    + 'a;
+/// Custody refusal retains both exact holders; checked preparation is a separate
+/// positive-admission phase.
+pub(crate) type NativeWorldBeforeEffects<'a> =
+    dyn crucible_qemu::LinuxQemuNativeWorldConstructor + 'a;
 
 /// Factory for one pre-launch attempt resource guard.
 pub(crate) trait QemuAttemptResourceGuardFactory {
@@ -664,27 +662,17 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
         })
     }
 
-    /// Moves the exact World's containing charge into its prepaid cleanup cell.
+    /// Reserves the genuine Main-paid Source cell before World admission.
     ///
     /// # Errors
-    /// Returns the same lease if no actual Main cleanup owner can accept it.
-    fn reserve_world_lifecycle_cleanup(
+    /// Refuses absent, expired, occupied or uncertain actual Main ownership.
+    fn reserve_source_lifecycle_cleanup(
         &self,
-        controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-    ) -> Result<
-        crate::WorldLifecycleCleanupReservation,
-        (
-            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-            QemuVmRealizationError,
-        ),
-    >{
-        Err((
-            controls,
-            QemuVmRealizationError::ExecutorUnavailable {
-                operation: "reserve actual World cleanup cell",
-                message: String::from("factory has no genuine Main cleanup owner"),
-            },
-        ))
+    ) -> Result<crate::WorldLifecycleCleanupReservation, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "reserve actual Source cleanup cell",
+            message: String::from("factory has no genuine Main cleanup owner"),
+        })
     }
 
     /// Installs the selected World's genuine disjoint node owners together.

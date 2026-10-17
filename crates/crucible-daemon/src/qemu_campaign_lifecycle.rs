@@ -83,13 +83,11 @@ pub use source_construction::{SourceGenerationStorageRefusal, SourcePostInstalla
 mod resume_admission;
 use resume_admission::validate_exact_resume_request;
 
-/// Labels the operation that refused; it does not attest physical absence.
-#[derive(Debug, Error)]
-enum NativeWorldBeginFailure {
-    #[error("configure native World: {0}")]
-    Configuration(#[from] QemuAttemptProductionVmLifecycleError),
-    #[error("begin native World: {0}")]
-    Native(#[from] crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport),
+/// Keeps checked configuration separate from later native custody delivery.
+struct PreparedNativeWorld<'a> {
+    registration: &'a Arc<dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory>,
+    process_resources: crucible_campaign::AttemptResourceLimits,
+    consumer_control_bytes: u64,
 }
 
 /// Keeps actual first causes after the same Source has physically returned.
@@ -2499,22 +2497,19 @@ where
         )
     }
 
-    /// Retains the production native world guard under the current admitted owner.
+    /// Prepares the configured native World request before admission.
     ///
-    /// This shares complete topology, native partition, controller and optional
-    /// qualification admission with the ordinary lifecycle launcher. Callers
-    /// must retain the guard until every launched generation has been reaped.
+    /// This validates the topology and resource projection shared by ordinary
+    /// and diagnostic launchers. It returns no World guard or native authority.
     ///
     /// # Errors
     /// Refuses missing operational authority, inconsistent resource partitions,
     /// native controller failure, or failed qualification before process launch.
-    fn begin_native_world_guard(
-        &mut self,
+    fn prepare_native_world_guard<'a>(
         context: &AttemptExecutionContext,
         source: &ScenarioDefForm,
-        config: &ProductionVmLifecycleConfig,
-        before_effects: &mut crate::crucible_qemu_session::NativeWorldBeforeEffects<'_>,
-    ) -> Result<(R::Guard, crucible_campaign::AttemptResourceLimits), NativeWorldBeginFailure> {
+        config: &'a ProductionVmLifecycleConfig,
+    ) -> Result<PreparedNativeWorld<'a>, QemuAttemptProductionVmLifecycleError> {
         let original_remaining = context
             .process_resources()
             .map_err(QemuAttemptProductionVmLifecycleError::ResourceRefusal)?;
@@ -2562,6 +2557,27 @@ where
                 source.world().vm_nodes().iter().map(|node| &node.id),
             )
             .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
+        Ok(PreparedNativeWorld {
+            registration,
+            process_resources,
+            consumer_control_bytes,
+        })
+    }
+
+    fn begin_prepared_native_world_guard(
+        &mut self,
+        context: &AttemptExecutionContext,
+        prepared: PreparedNativeWorld<'_>,
+        before_effects: &mut crate::crucible_qemu_session::NativeWorldBeforeEffects<'_>,
+    ) -> Result<
+        (R::Guard, crucible_campaign::AttemptResourceLimits),
+        crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
+    > {
+        let PreparedNativeWorld {
+            registration,
+            process_resources,
+            consumer_control_bytes,
+        } = prepared;
         let selected_checkpoint = context.take_selected_checkpoint();
         let guard = self.resources.begin_world(
             process_resources,
@@ -2578,7 +2594,7 @@ where
                 if let Some(selected_checkpoint) = selected_checkpoint {
                     context.restore_selected_checkpoint(selected_checkpoint);
                 }
-                return Err(NativeWorldBeginFailure::Native(error));
+                return Err(error);
             }
         };
         Ok((guard, process_resources))

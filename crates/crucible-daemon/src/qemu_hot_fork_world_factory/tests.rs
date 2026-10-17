@@ -87,6 +87,9 @@ use crate::{
     reconcile_published_attempt_result, stage_prepared_attempt_result,
 };
 
+#[path = "tests/target_operations.rs"]
+mod target_operations;
+
 #[path = "tests/native_acceptance.rs"]
 mod native_acceptance;
 

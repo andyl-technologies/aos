@@ -10,6 +10,7 @@ pub(super) fn factory(
 ) -> QemuProductionHotForkWorldLifecycleFactory<
     QemuSingleHotForkSourceWorldProvider,
     ScriptedWorldGuardFactory,
+    super::target_operations::ComponentTargetOperations,
 > {
     let key = QemuHotForkSourceWorldKey::new(
         lineage.id().expect("lineage id"),
@@ -34,6 +35,7 @@ pub(super) fn factory(
         shutdown_policy,
         QemuAsyncDriverPolicy::fast_test(),
     )
+    .with_target_operations(super::target_operations::ComponentTargetOperations)
 }
 
 pub(super) fn repository_execution_fixture() -> (

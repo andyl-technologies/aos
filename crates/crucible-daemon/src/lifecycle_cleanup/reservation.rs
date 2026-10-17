@@ -31,6 +31,29 @@ struct ReservedWorldCell {
 }
 
 impl WorldLifecycleCleanupReservation {
+    /// Copies only the original nonissuing Main-cell selection.
+    ///
+    /// The startup consumer verifies this selection before its first effect.
+    /// Copying it neither admits Service work nor occupies another role.
+    pub(crate) fn service_preclaim(&self) -> ServiceMainPreclaim {
+        ServiceMainPreclaim {
+            queue: Weak::clone(&self.cell.queue),
+            index: self.cell.index,
+            epoch: self.cell.epoch,
+        }
+    }
+
+    /// Checks the original empty preclaim before allocating its paid bodies.
+    pub(crate) fn is_preclaimed(&self) -> bool {
+        let Some(queue) = self.cell.queue.upgrade() else {
+            return false;
+        };
+        let Some(slot) = queue.slots.get(self.cell.index) else {
+            return false;
+        };
+        borrow_reserved_cell(slot, self.cell.epoch).is_some_and(|cell| cell.controls.is_none())
+    }
+
     /// Checks retained cell custody without publishing, returning or renewing it.
     pub(crate) fn is_reserved(&self) -> bool {
         let Some(queue) = self.cell.queue.upgrade() else {
@@ -43,6 +66,30 @@ impl WorldLifecycleCleanupReservation {
             return false;
         };
         cell.controls.is_some()
+    }
+
+    /// Attaches the same delivered body lease to the original preclaimed cell.
+    ///
+    /// No allocation, Original entry or physical preparation occurs here.
+    /// Refusal returns the SAME lease to the already prepaid receiver.
+    pub(crate) fn attach_controls(
+        &self,
+        controls: AuthenticatedNativeWorldControlLease,
+    ) -> Result<(), AuthenticatedNativeWorldControlLease> {
+        let Some(queue) = self.cell.queue.upgrade() else {
+            return Err(controls);
+        };
+        let Some(slot) = queue.slots.get(self.cell.index) else {
+            return Err(controls);
+        };
+        let Some(mut cell) = borrow_reserved_cell(slot, self.cell.epoch) else {
+            return Err(controls);
+        };
+        if cell.controls.is_some() {
+            return Err(controls);
+        }
+        cell.controls = Some(controls);
+        Ok(())
     }
 
     /// Moves the original neutral reservation Box without a replacement wrapper.
@@ -80,24 +127,31 @@ impl LifecycleCleanupHandle {
             .ok_or_else(|| refusal("containing Main cleanup owner is absent"))
     }
 
-    /// Moves the body charge and exact cell selection into one retained bundle.
-    pub(crate) fn reserve_for_world(
+    /// Reserves the same Main-paid constructor cell before World admission.
+    pub(crate) fn reserve_for_source(
         &self,
-        controls: AuthenticatedNativeWorldControlLease,
-    ) -> Result<
-        WorldLifecycleCleanupReservation,
-        (AuthenticatedNativeWorldControlLease, LifecycleApiError),
-    > {
-        let queue = match self.queue.upgrade() {
-            Some(queue) => queue,
-            None => return Err((controls, refusal("containing Main cleanup owner is absent"))),
-        };
+    ) -> Result<WorldLifecycleCleanupReservation, crucible_qemu::QemuVmRealizationError> {
+        let queue =
+            self.queue
+                .upgrade()
+                .ok_or(crucible_qemu::QemuVmRealizationError::CleanupRetained {
+                    operation: "retain actual Main Source cleanup queue",
+                })?;
+        queue._pool.verify_retained_main().map_err(|first| {
+            crucible_qemu::QemuVmRealizationError::ModelCopy {
+                source: Box::new(crucible_qemu::OriginalActorAccountError::NativePurpose(
+                    first,
+                )),
+            }
+        })?;
         for (index, slot) in queue.slots.iter().enumerate() {
             if !slot.claim(CleanupPhase::Free, CleanupPhase::Reserving) {
                 continue;
             }
-            let epoch = initialize_reserved_slot(slot, controls, |cell, controls| {
-                cell.controls = Some(controls);
+            let epoch = initialize_reserved_slot(slot, (), |_, ()| {}).map_err(|(_, first)| {
+                crucible_qemu::QemuVmRealizationError::ModelCopy {
+                    source: Box::new(first),
+                }
             })?;
             return Ok(WorldLifecycleCleanupReservation {
                 reservation: Box::new(CleanupReservation {
@@ -114,7 +168,9 @@ impl LifecycleCleanupHandle {
                 },
             });
         }
-        Err((controls, refusal("prepaid cleanup ownership is occupied")))
+        Err(crucible_qemu::QemuVmRealizationError::CleanupRetained {
+            operation: "reserve occupied Main Source cleanup cell",
+        })
     }
 }
 
@@ -401,5 +457,92 @@ impl LifecycleCleanupHandle {
             observed: ProductionVmCleanupStage::BodyRetained,
             first_failure: None,
         })
+    }
+}
+
+/// Selects the original Main role without issuing Service or World authority.
+///
+/// The actual reservation remains its sole token. This inline, move-only key
+/// supplies no budget, operation, cleanup clock, cell reservation or body lease.
+pub(crate) struct ServiceMainPreclaim {
+    queue: Weak<LifecycleCleanupQueue>,
+    index: usize,
+    epoch: u64,
+}
+
+/// Preserves an exact pre-Service selection or retained-Main refusal inline.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ServiceMainPreclaimError {
+    /// The original preclaimed role cannot be authenticated before Service.
+    #[error("{0}")]
+    Role(&'static str),
+    /// The actual containing Main refused retained-custody verification.
+    #[error(transparent)]
+    Main(#[from] crucible_linux_resource::host_services::process_birth::ServiceBirthError),
+}
+
+impl ServiceMainPreclaim {
+    /// Compares original queue allocation, index and epoch without a new grant.
+    pub(crate) fn same_role(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.queue, &other.queue)
+            && self.index == other.index
+            && self.epoch == other.epoch
+    }
+
+    /// Checks retained Main and its same empty preclaim before startup effects.
+    ///
+    /// This check supplies no live Service operation. The startup driver must
+    /// separately enter and check its genuine admission Original before work.
+    pub(crate) fn verify_before_service(&self) -> Result<(), ServiceMainPreclaimError> {
+        let queue = self.queue.upgrade().ok_or(ServiceMainPreclaimError::Role(
+            "pre-Service containing Main is unavailable",
+        ))?;
+        queue._pool.verify_retained_main()?;
+        let slot = queue
+            .slots
+            .get(self.index)
+            .ok_or(ServiceMainPreclaimError::Role(
+                "pre-Service Main role is absent",
+            ))?;
+        let cell = borrow_reserved_cell(slot, self.epoch).ok_or(ServiceMainPreclaimError::Role(
+            "pre-Service Main role is stale, borrowed or uncertain",
+        ))?;
+        if cell.controls.is_some() {
+            return Err(ServiceMainPreclaimError::Role(
+                "pre-Service Main role already entered World construction",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod service_main_preclaim_tests {
+    use super::*;
+
+    fn unavailable(index: usize, epoch: u64) -> ServiceMainPreclaim {
+        ServiceMainPreclaim {
+            queue: Weak::new(),
+            index,
+            epoch,
+        }
+    }
+
+    #[test]
+    fn unavailable_preclaim_remains_a_refusal_after_identity_comparison() {
+        let first = unavailable(3, 7);
+        let same = unavailable(3, 7);
+        assert!(first.same_role(&same));
+        assert!(!first.same_role(&unavailable(4, 7)));
+        assert!(!first.same_role(&unavailable(3, 8)));
+
+        for key in [first, same] {
+            assert!(matches!(
+                key.verify_before_service(),
+                Err(ServiceMainPreclaimError::Role(
+                    "pre-Service containing Main is unavailable"
+                ))
+            ));
+        }
     }
 }

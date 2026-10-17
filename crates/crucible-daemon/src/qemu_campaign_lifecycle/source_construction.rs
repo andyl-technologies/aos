@@ -77,113 +77,85 @@ where
         ),
         QemuAttemptProductionVmLifecycleError,
     > {
-        let mut factory = Some(self.resources.retain_fork_target_factory().ok_or_else(|| {
+        let prepared = Self::prepare_native_world_guard(context, source, config)?;
+        let factory = self.resources.retain_fork_target_factory().ok_or_else(|| {
             QemuAttemptProductionVmLifecycleError::ResourceInstallation(
-                QemuVmRealizationError::ExecutorUnavailable {
-                    operation: "retain partial native Source construction",
-                    message: String::from("actual same-factory owner is unavailable"),
+                QemuVmRealizationError::CleanupRetained {
+                    operation: "retain actual Source factory before World admission",
                 },
             )
-        })?);
-        let mut pending = None;
+        })?;
+        let reservation = factory
+            .reserve_source_lifecycle_cleanup()
+            .map_err(QemuAttemptProductionVmLifecycleError::ResourceInstallation)?;
+        // The genuine Main reservation pays both existing Boxes before birth.
+        // Even an uncertain empty-cell observation retains those paid bodies;
+        // the check gates World admission, rather than their owning allocation.
+        let preclaimed = reservation.is_preclaimed();
+        let mut owner = PendingSourceConstruction::new_prepaid(factory, reservation);
         let mut metadata_failure = None;
-        let mut before_effects = |loan, controls| {
-            let Some(factory) = factory.take() else {
-                return Err(QemuVmRealizationError::ExecutorUnavailable {
-                    operation: "retain partial native Source construction",
-                    message: String::from("before-effects callback was repeated"),
-                });
-            };
-            let mut owner = PendingSourceConstruction::new_prepaid(factory, loan, controls);
-            let result = owner.reserve_cleanup().and_then(|()| {
-                match owner
-                    .prepare_generation_storage(source.world().vm_nodes().iter().map(|vm| &vm.id))
-                {
-                    Ok(()) => Ok(()),
-                    Err(first) => {
-                        metadata_failure = Some(first);
-                        Err(QemuVmRealizationError::ExecutorUnavailable {
-                            operation: "prepare selected generation storage",
-                            message: String::from("selected metadata admission refused"),
-                        })
-                    }
-                }
-            });
-            pending = Some(owner);
-            result
+        let mut before_effects = owner.before_effects(source, &mut metadata_failure);
+        let result = if preclaimed {
+            self.begin_prepared_native_world_guard(context, prepared, &mut before_effects)
+        } else {
+            // Preserve the same preborn owner/key on uncertain cell observation.
+            let (first, _) = crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                QemuVmRealizationError::CleanupRetained {
+                    operation: "authenticate exact Main Source preclaim",
+                },
+                None,
+            ).into_parts();
+            Err(first)
         };
-        let result = self.begin_native_world_guard(context, source, config, &mut before_effects);
         drop(before_effects);
         match result {
-            Err(NativeWorldBeginFailure::Configuration(first)) => Err(first),
-            Err(NativeWorldBeginFailure::Native(boundary)) => {
+            Err(boundary) => {
                 if let Some(first) = metadata_failure {
                     let first = SourceGenerationStorageRefusal {
                         source: first,
                         boundary,
                     };
-                    let first = match pending {
-                        Some(mut owner) => {
-                            let reservation = owner.take_cleanup_reservation();
-                            match retain_source_owner(reservation, owner, first) {
-                                Ok((first, handoff)) => {
-                                    self.retain_cleanup_handoff(handoff);
-                                    first
-                                }
-                                Err(owner) => {
-                                    return Err(self.park_install_from_checked_vacancy(
-                                        RetainedSourceInstall::Storage {
-                                            owner,
-                                            handoff: None,
-                                        },
-                                    ));
-                                }
-                            }
-                        }
-                        None => first,
-                    };
-                    return Err(first.into());
-                }
-                let first = match pending {
-                    Some(owner) if owner.has_unreserved_controls() => {
-                        return Err(self.park_install_from_checked_vacancy(
-                            RetainedSourceInstall::Unborn(UnbornSourceConstruction::new(
-                                owner, boundary,
-                            )),
-                        ));
-                    }
-                    Some(owner) => match owner.retain_after_begin_error(boundary) {
+                    let reservation = owner.take_cleanup_reservation();
+                    let first = match retain_source_owner(reservation, owner, first) {
                         Ok((first, handoff)) => {
                             self.retain_cleanup_handoff(handoff);
                             first
                         }
                         Err(owner) => {
                             return Err(self.park_install_from_checked_vacancy(
-                                RetainedSourceInstall::ResourceBegin {
+                                RetainedSourceInstall::Storage {
                                     owner,
                                     handoff: None,
                                 },
                             ));
                         }
-                    },
-                    None => boundary,
+                    };
+                    return Err(first.into());
+                }
+                if owner.has_unreserved_controls() {
+                    return Err(self.park_install_from_checked_vacancy(
+                        RetainedSourceInstall::Unborn(UnbornSourceConstruction::new(
+                            owner, boundary,
+                        )),
+                    ));
+                }
+                let first = match owner.retain_after_begin_error(boundary) {
+                    Ok((first, handoff)) => {
+                        self.retain_cleanup_handoff(handoff);
+                        first
+                    }
+                    Err(owner) => {
+                        return Err(self.park_install_from_checked_vacancy(
+                            RetainedSourceInstall::ResourceBegin {
+                                owner,
+                                handoff: None,
+                            },
+                        ));
+                    }
                 };
                 Err(QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(first))
             }
-            Ok((guard, expected)) => {
-                let Some(owner) = pending else {
-                    // Unsupported defaults refuse before begin. A concrete
-                    // implementation must never return G without calling its
-                    // authenticated before-effects consumer.
-                    return Err(self.park_install_from_checked_vacancy(
-                        RetainedSourceInstall::MissingCallback {
-                            guard,
-                            first_cleanup: None,
-                        },
-                    ));
-                };
-                Ok((guard, expected, owner))
-            }
+            Ok((guard, expected)) => Ok((guard, expected, owner)),
         }
     }
 

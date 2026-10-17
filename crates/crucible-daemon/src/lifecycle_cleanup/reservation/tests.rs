@@ -151,6 +151,7 @@ fn unavailable_world_bundle_returns_the_same_reservation_box() {
         },
     };
 
+    assert!(!bundle.is_preclaimed());
     assert!(!bundle.is_reserved());
     let reservation = bundle.into_reservation();
 

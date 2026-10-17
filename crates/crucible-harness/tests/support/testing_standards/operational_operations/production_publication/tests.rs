@@ -238,13 +238,13 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
         (3, "self.retry_retained_source_installation()", "Ok(())"),
         (
             4,
-            "factory.reserve_world_lifecycle_cleanup(controls)",
-            "factory.reserve_world_lifecycle_cleanup(foreign_controls)",
+            "reservation.attach_controls(controls)",
+            "reservation.attach_controls(foreign_controls)",
         ),
         (
-            4,
-            "let reserved = reservation.is_reserved();",
-            "let reserved = true;",
+            5,
+            "let preclaimed = reservation.is_preclaimed();",
+            "let preclaimed = true;",
         ),
         (
             4,
@@ -253,8 +253,8 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
         ),
         (
             4,
-            "self.controls = Some(controls); Err(source)",
-            "drop(controls); Err(source)",
+            "self.controls = Some(controls); self.record_first(",
+            "drop(controls); self.record_first(",
         ),
         (5, "self.require_install_vacancy()?;", ""),
         (
@@ -270,11 +270,35 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
             ".with_world_cleanup_loan(world)",
             ".with_world_cleanup_loan(foreign_world)",
         ),
+        (
+            5,
+            "PendingSourceConstruction::new_prepaid(factory, reservation)",
+            "PendingSourceConstruction::new_prepaid(foreign_factory, reservation)",
+        ),
+        (8, "self.worlds[index] = Some(world);", "drop(world);"),
+        (8, "admission_failure.take(), retained,", "None, retained,"),
+        (
+            8,
+            "return Err(report(first, retained.err()));",
+            "return prepare();",
+        ),
+        (
+            8,
+            "original.wait_slice().map_err(|first| original_roster::original_error(first.into()))?; before_effects.prepare_world()",
+            "other_guard.wait_slice().map_err(|first| original_roster::original_error(first.into()))?; before_effects.prepare_world()",
+        ),
+        (9, "self._retained.as_mut()?._world.take()", "None"),
+        (9, "retained.delivery.get_or_insert(error);", "drop(error);"),
+        (
+            9,
+            "retained.receiver.get_or_insert(operation);",
+            "drop(operation);",
+        ),
         (6, "self._world_cleanup_loan = Some(world)", "drop(world)"),
         (
             7,
-            "cleanup.reserve_for_world(controls)",
-            "cleanup.reserve_for_world(foreign_controls)",
+            "cleanup.reserve_for_source()",
+            "foreign_cleanup.reserve_for_source()",
         ),
     ] {
         let mut changed = companions.clone();

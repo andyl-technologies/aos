@@ -138,9 +138,34 @@ certify aggregate resource return. Hot-fork retirement returns the original
 Source separately from its retained typed failure history. These operations use
 the existing supervision origin and preserve failed ownership for bounded retry.
 
-If construction fails before a cleanup cell is reserved, the same inline factory
-slot retains the pending body, its canonical never-born journal and its body
-lease. Physical destruction precedes the paired descriptor-table/window return
+Source construction now preclaims its genuine Main role before logical World
+admission. That role pays the existing Pending and construction-carrier Boxes;
+World admission separately pays its launcher, generation storage and Source Loop.
+The native boundary delivers a committed failed World and its exact controls to
+the same preborn receiver before propagating the initiating or independent post
+failure. Delivery and preparation are separate operations: refusal retains the
+actual holders and both typed reports without entering preparation. No missing
+callback or empty node ledger establishes that a World was never born. The
+original role also supplies a nonissuing selection that verifies the actual Main
+and exact empty epoch before future Service startup; it grants no Service cap.
+All twelve reservation controls pass, including the unavailable-selection check.
+The complete Linux resource library has 243 passes and one ignored probe.
+
+The whole-world transaction now separates native resource effects from a private
+component backend while preserving checkout, adoption, rollback and publication.
+The default backend still refuses a missing genuine Source issuer before child
+effects. The full private daemon run has 1,718 passes, eleven failures and 43
+ignored probes in 317.29 seconds. The remaining hot-fork failures include a
+missing Target construction carrier and a cleanup assertion that predates the
+typed-error migration. Target's genuine before-effects ownership, role handoff
+and containing-resource geometry still need to be joined. Both default and private
+workspace/all-target checks pass for the joined source. Engineering hygiene has
+five passes; testing standards has 34 passes and the existing operational-source
+classifier failure. These results qualify neither Target activation nor physical
+resource floors or VM performance parity.
+
+If exact cell attachment refuses, the same inline factory slot retains the
+pending body, its canonical never-born journal and its body lease. Physical destruction precedes the paired descriptor-table/window return
 and ledger credit. Retry borrows the same cached World Cleanup; it does not
 renew its origin or replace its deadline. Constructor, cleanup and independent
 post-check errors remain separate typed history after physical closure. The

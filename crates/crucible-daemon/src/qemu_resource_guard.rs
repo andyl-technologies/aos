@@ -449,27 +449,17 @@ pub trait QemuAttemptHostResourceFactory {
         })
     }
 
-    /// Moves the exact World's containing charge into its prepaid cleanup cell.
+    /// Reserves the genuine Main-paid Source cell before World admission.
     ///
     /// # Errors
-    /// Returns the same lease if no actual Main cleanup owner can accept it.
-    fn reserve_world_lifecycle_cleanup(
+    /// Refuses absent, expired, occupied or uncertain actual Main ownership.
+    fn reserve_source_lifecycle_cleanup(
         &self,
-        controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-    ) -> Result<
-        crate::WorldLifecycleCleanupReservation,
-        (
-            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-            QemuVmRealizationError,
-        ),
-    >{
-        Err((
-            controls,
-            QemuVmRealizationError::ExecutorUnavailable {
-                operation: "reserve actual World cleanup cell",
-                message: String::from("factory has no genuine Main cleanup owner"),
-            },
-        ))
+    ) -> Result<crate::WorldLifecycleCleanupReservation, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "reserve actual Source cleanup cell",
+            message: String::from("factory has no genuine Main cleanup owner"),
+        })
     }
 
     /// Consumes a genuine source permit without allocating another project quota.
@@ -746,36 +736,16 @@ where
             .retry_native_world_construction(loan)
     }
 
-    fn reserve_world_lifecycle_cleanup(
+    fn reserve_source_lifecycle_cleanup(
         &self,
-        controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-    ) -> Result<
-        crate::WorldLifecycleCleanupReservation,
-        (
-            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-            QemuVmRealizationError,
-        ),
-    >{
+    ) -> Result<crate::WorldLifecycleCleanupReservation, QemuVmRealizationError> {
         let Some(cleanup) = self.cleanup.as_ref() else {
-            return Err((
-                controls,
-                QemuVmRealizationError::ExecutorUnavailable {
-                    operation: "reserve actual World cleanup cell",
-                    message: String::from("genuine Main cleanup handle is absent"),
-                },
-            ));
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "reserve actual Source cleanup cell",
+                message: String::from("genuine Main cleanup handle is absent"),
+            });
         };
-        cleanup
-            .reserve_for_world(controls)
-            .map_err(|(controls, error)| {
-                (
-                    controls,
-                    QemuVmRealizationError::ExecutorUnavailable {
-                        operation: "reserve actual World cleanup cell",
-                        message: error.to_string(),
-                    },
-                )
-            })
+        cleanup.reserve_for_source()
     }
 
     type Owner = H::Owner;
@@ -1762,17 +1732,10 @@ where
         self.host.retry_native_world_construction(loan)
     }
 
-    fn reserve_world_lifecycle_cleanup(
+    fn reserve_source_lifecycle_cleanup(
         &self,
-        controls: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-    ) -> Result<
-        crate::WorldLifecycleCleanupReservation,
-        (
-            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldControlLease,
-            QemuVmRealizationError,
-        ),
-    >{
-        self.host.reserve_world_lifecycle_cleanup(controls)
+    ) -> Result<crate::WorldLifecycleCleanupReservation, QemuVmRealizationError> {
+        self.host.reserve_source_lifecycle_cleanup()
     }
 
     fn begin_world(

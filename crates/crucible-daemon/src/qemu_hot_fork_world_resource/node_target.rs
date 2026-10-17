@@ -101,6 +101,37 @@ where
         Ok(())
     }
 
+    /// Prepares files in the explicit component backend's temporary filesystem.
+    ///
+    /// The complete Source remains retained by the aggregate owner. This test
+    /// operation delegates only the scripted guard's filesystem effects; it
+    /// cannot lend the Source quota or construct native target authority.
+    ///
+    /// # Errors
+    /// Refuses a released or foreign member, poisoned state or filesystem error.
+    #[cfg(test)]
+    pub(crate) fn prepare_component_generation_run_directory(
+        &mut self,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError>
+    where
+        G: QemuAttemptProcessResourceGuard,
+    {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.issued.contains(&self.identity)
+        {
+            return Err(world_resource_error(
+                "component hot-fork node launch target is not operational",
+            ));
+        }
+        state.guard.prepare_generation_run_directory(requirements)
+    }
+
     pub(crate) fn host_ram_registration(
         &self,
     ) -> Option<&crucible_qemu::ram_control::RamControlRegistration> {
