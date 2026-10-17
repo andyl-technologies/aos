@@ -290,7 +290,7 @@ fn pending_origin_ledger_survives_repeated_restore_and_rejects_prior_schema() {
     let (mut scheduler, queue, pipeline) = fixture();
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));
     let bytes = ok(ok(scheduler.checkpoint()).canonical_bytes());
-    assert!(bytes.starts_with(b"crucible.single-scheduler-continuation.v7\0"));
+    assert!(bytes.starts_with(b"crucible.single-scheduler-continuation.v8\0"));
 
     for _ in 0..2 {
         let (mut restored, _, _) = fixture();
@@ -299,7 +299,7 @@ fn pending_origin_ledger_survives_repeated_restore_and_rejects_prior_schema() {
         ok(restored.import_initial_io_inventory(observation(&restored, &queue, &pipeline)));
         assert_eq!(restored.pending_events, scheduler.pending_events);
     }
-    for &version in b"456" {
+    for &version in b"4567" {
         let mut retired = bytes.clone();
         retired[b"crucible.single-scheduler-continuation.v".len()] = version;
         assert!(matches!(
@@ -813,6 +813,9 @@ fn native_caps_bound_idle_wake_without_fabricating_quiescent_completion() {
 
 #[path = "fixed_consumers.rs"]
 mod fixed_consumers;
+
+#[path = "ledger_window.rs"]
+mod ledger_window;
 
 #[test]
 fn live_world_attachment_retains_the_exact_physical_queue_owner() {

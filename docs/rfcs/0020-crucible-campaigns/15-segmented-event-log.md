@@ -313,6 +313,17 @@ event.
   after a deep selected branch point, and fails when either trend exceeds its
   noise allowance.
 
+The imported I/O delivery ledger meets CPERF-10 by pruning. A new physical
+completion never precedes its node's authenticated stopped tick, so a
+published delivery below that tick can never be named again, and the next
+import drops it. The stopped tick is therefore a per-node retired-delivery
+floor. It never regresses: the scheduler refuses an inventory observed below
+it, so a pruned key cannot return as a fresh delivery. The retained window
+holds unpublished deliveries, which are bounded by queue depth, and
+deliveries published since the last import. Staging copies share the
+published part through a reference count, so copying a scheduler does not
+copy run history.
+
 ## 15.10 Compatibility
 
 Version 2 measurement replay evidence remains readable for retained findings
@@ -320,6 +331,8 @@ whose logs fit its bound; new attempts publish only version 3. The attempt
 evidence chain and the console automaton checkpoint encoding are new schemas.
 Named host predicates change from history-reading functions to accumulators;
 this is a source-level breaking change for host predicate implementations.
+Single-scheduler continuation version 8 replaces version 7 and keeps the
+imported I/O ledger in its pruned form; version 7 continuations are refused.
 
 [OBS-17]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing
 [OBS-18]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing
