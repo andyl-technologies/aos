@@ -31,6 +31,7 @@ pub struct PacketNativeHostInitialLifecycleStorageData {
     transient: usize,
     scratch: usize,
     journal_growth: usize,
+    source_assigned_admit: usize,
 }
 
 impl PacketNativeHostInitialLifecycleStorageData {
@@ -53,6 +54,15 @@ impl PacketNativeHostInitialLifecycleStorageData {
     pub fn requested_peak_data(&self) -> Result<usize, ProviderError> {
         sum(&[self.retained, self.transient, self.scratch])
     }
+
+    /// Counts independent Source normalization of the exact assigned Admit.
+    ///
+    /// The Source adds this prospective owner to its own retained row. It is
+    /// separate from SDK allocation axes and supplies no assignment permission.
+    pub fn source_assigned_admit_requested_bytes_data(&self) -> usize {
+        self.source_assigned_admit
+    }
+
     pub(super) fn journal_growth_data(&self) -> usize {
         self.journal_growth
     }
@@ -61,6 +71,7 @@ impl PacketNativeHostInitialLifecycleStorageData {
             && self.transient <= prior.transient
             && self.scratch <= prior.scratch
             && self.journal_growth <= prior.journal_growth
+            && self.source_assigned_admit <= prior.source_assigned_admit
     }
 }
 
@@ -380,6 +391,10 @@ pub(super) fn quote(
         transient,
         scratch: original_packet_host_initial_lifecycle_counter_scratch_data(),
         journal_growth,
+        // The Source's own Value/canonical copy is independent of the SDK's
+        // assigned original. Reuse the actual full request shape, including
+        // its later MAC extension conservatively, never the generic raw cap.
+        source_assigned_admit: shapes.requests[2].requested_total()?,
     };
     data.requested_peak_data()?;
     Ok(data)
@@ -611,6 +626,77 @@ mod tests {
     }
 
     #[test]
+    fn source_assigned_admit_shape_covers_actual_envelope_and_independent_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::envelope::{Envelope, Nullable};
+        use crucible_node_contract::{Extensions, U64, canonical};
+        use serde_json::Value;
+
+        let (inputs, root) = crate::client::host_startup::tests::prepared_initial_lifecycle_model();
+        let launch = inputs.borrowed().launch;
+        let quote = root.quote_original_initial_lifecycle_storage_data(launch)?;
+        let [binding] = launch.selection.realization.bindings.as_slice() else {
+            return Err("fixture must retain its exact single binding".into());
+        };
+        let body = serde_json::to_value(AdmitRequest {
+            bindings: launch.selection.realization.bindings.clone(),
+            world_binding_hash: launch.selection.world.clone(),
+            admission_receipt: launch.selection.admission_receipt.clone(),
+            extensions: Extensions::new(),
+        })?;
+        let Value::Object(body) = body else {
+            return Err("actual typed Admit must serialize as an object".into());
+        };
+        let envelope = Envelope {
+            protocol: "CNP/1".into(),
+            message: MessageKind::Request,
+            session_id: Nullable(Some(binding.authority.session_id.clone())),
+            incarnation_id: Nullable(Some(binding.authority.incarnation_id.clone())),
+            node_id: Nullable(Some(binding.compatibility.node_id.clone())),
+            execution_owner_id: Nullable(Some(binding.compatibility.execution_owner.id.clone())),
+            capture_owner_id: Nullable(None),
+            request_id: Nullable(Some(Id::new("r".repeat(128))?)),
+            operation_id: Nullable(None),
+            sequence: U64::new(u64::MAX),
+            method: Method::Admit,
+            body,
+            extensions: Extensions::new(),
+        };
+        envelope.validate()?;
+        assert!(matches!(
+            decode_request(Method::Admit, &envelope.body)?,
+            RequestBody::Admit(_)
+        ));
+        let normalized = serde_json::to_value(&envelope)?;
+        let canonical = canonical::canonical_json(&normalized)?;
+        let mut owners = MetadataObserver::new();
+        owners.observe(&normalized)?;
+        let actual = backing(&owners.finish())? + size_of::<Value>() + canonical.capacity();
+        let assigned = quote.source_assigned_admit_requested_bytes_data();
+
+        assert!(assigned >= actual);
+        let mut one_short = quote;
+        one_short.source_assigned_admit = assigned - 1;
+        assert!(!quote.within(&one_short));
+        assert!(quote.within(&quote));
+
+        let mut foreign_body = envelope.body.clone();
+        foreign_body.insert("unknown_original".into(), Value::Bool(true));
+        assert!(decode_request(Method::Admit, &foreign_body).is_err());
+        let mut foreign: PacketNative5SourceLaunch =
+            serde_json::from_value(serde_json::to_value(launch)?)?;
+        foreign.selection.admission_receipt =
+            canonical::content_ref(b"foreign admission", "application/json")?;
+        assert!(
+            root.quote_original_initial_lifecycle_storage_data(&foreign)
+                .is_err()
+        );
+        assert!(!root.initial_attachment_attempted);
+        assert!(root.controller.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn hello_only_bank_refuses_initial_lifecycle_without_changing_prepared_owners() {
         let (inputs, root) = crate::client::host_startup::tests::prepared_initial_model();
         let before = root.retained_requested_storage_data(None).unwrap();
@@ -663,6 +749,7 @@ mod tests {
             transient: 1,
             scratch: 1,
             journal_growth: 1,
+            source_assigned_admit: 1,
         };
         assert!(overflow.requested_peak_data().is_err());
     }

@@ -1116,6 +1116,33 @@ one failure in 34.67 seconds, and failing startup passes reclamation. These are
 requested-storage projections, not RSS or execution speed. Temporary tracing is
 removed. Native Capture and restoration remain unqualified.
 
+### Source-owned assigned Admit projection
+
+The initial Source now independently charges its normalized Admit from the
+SDK's existing exact assigned-envelope shape, after authenticating the same
+SDK, Source and complete launch. The opaque data includes the actual binding,
+world and admission receipt, maximum request identifier and sequence, and a
+conservative later MAC extension. All SDK ownership remains charged separately.
+The general collecting caller has no such loan and keeps its previous arbitrary
+frame bound. Actual message, body, route and extension checks are unchanged.
+
+The normal suites pass 1,753 Core tests, seven contract tests and 1,054 provider
+tests with zero failures; 32 Core and thirteen provider tests remain ignored.
+New controls observe the real typed Envelope converted to Value, canonical
+backing, independent one-short correspondence and foreign body/launch refusal;
+the collecting fallback is unchanged. Formatting passes for the three code files.
+Six-crate, all-feature/all-target checking passes in 43.95 seconds, and the
+source-built provider rebuild passes in 19.99 seconds. The final-source
+application-target gate remains outstanding for this stage.
+
+Actual full-roster admission passes, all three launches and bootstrap writes
+complete, and member zero baseline reservation now passes the unchanged 4 GiB
+policy. Startup next refuses control-socket acquisition with OwnerUnavailable.
+The combined run has one pass and one failure in 34.15 seconds; its reclamation
+assertions pass. The provider executable in this run is built from the preceding
+constructor correction. Temporary tracing is removed. Capture, fresh-world
+restoration and continuation remain unqualified.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),

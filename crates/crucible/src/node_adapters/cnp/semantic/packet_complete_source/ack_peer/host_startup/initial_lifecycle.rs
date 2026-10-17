@@ -261,6 +261,7 @@ impl PacketCompleteOriginalHostSdk {
             source: source.original_initial_source_storage_data(
                 usize::try_from(launch.limits.frame_bytes.get())
                     .map_err(|_| RuntimeError::ResourceLimit)?,
+                Some(&sdk),
                 maximum,
             )?,
             guard_window: self.member.original_initial_guard_window_data(),

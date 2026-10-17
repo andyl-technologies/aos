@@ -10,6 +10,7 @@ use crate::node_contract::{NodeRuntime, RuntimeError};
 use crucible_node_contract::{ContentRef, HashRef, Id};
 use crucible_node_provider::{
     client::{
+        PacketNativeHostInitialLifecycleStorageData,
         original_host_source_json_counter_scratch_data,
         original_host_source_json_extent_storage_data,
         original_host_source_json_occurrence_storage_data,
@@ -115,6 +116,7 @@ impl PacketCompleteSemanticSource {
     pub(in crate::node_adapters::cnp::semantic) fn original_initial_source_storage_data(
         &self,
         frame_bytes: usize,
+        initial_sdk_quote: Option<&PacketNativeHostInitialLifecycleStorageData>,
         maximum: usize,
     ) -> Result<OriginalInitialSourceStorage, RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
@@ -183,8 +185,7 @@ impl PacketCompleteSemanticSource {
             },
             maximum,
         )?;
-        let assigned = original_host_source_json_extent_storage_data(frame_bytes)
-            .map_err(|_| RuntimeError::ResourceLimit)?;
+        let assigned = assigned_admit_storage_data(frame_bytes, initial_sdk_quote)?;
         let context = NodeRuntime::capture_serialization_storage(
             &ContextFields {
                 schema: "source-owned.packet-canonical-ack-admission-context/5",
@@ -304,7 +305,24 @@ impl PacketCompleteSemanticSource {
             + size_of::<KernelFields<'static>>() + size_of::<ContextFields>() + size_of::<ProofFields>()
             + crate::node_adapters::cnp::semantic::initial_lifecycle_diagnostics::OriginalInitialLifecycleDiagnostics::counter_scratch_bytes()
             + size_of::<OriginalInitialSourceStorage>() + size_of::<[usize; 16]>()
-            + size_of::<std::cell::Ref<'static, Option<OriginalAckPeerBirth>>>() + 20
+            + size_of::<std::cell::Ref<'static, Option<OriginalAckPeerBirth>>>()
+            + size_of::<Option<&'static PacketNativeHostInitialLifecycleStorageData>>() + 20
+    }
+}
+
+fn assigned_admit_storage_data(
+    frame_bytes: usize,
+    initial_sdk_quote: Option<&PacketNativeHostInitialLifecycleStorageData>,
+) -> Result<usize, RuntimeError> {
+    match initial_sdk_quote {
+        // Only the initial SDK caller supplies its same-launch opaque quote,
+        // after authenticating complete Source/launch correspondence. The
+        // actual Source separately retains this additional normalized Value.
+        Some(quote) => Ok(quote.source_assigned_admit_requested_bytes_data()),
+        // General collecting validation has no such SDK loan. Keep its full
+        // prior raw-frame bound rather than inferring tighter correspondence.
+        None => original_host_source_json_extent_storage_data(frame_bytes)
+            .map_err(|_| RuntimeError::ResourceLimit),
     }
 }
 
@@ -350,6 +368,18 @@ mod tests {
     use crucible_node_provider::reference_packet::service::ack_emitter::{
         PACKET_CANONICAL_ACK_ADMISSION_FEATURE, canonical_ack_admission_proof_data,
     };
+
+    #[test]
+    fn collecting_without_same_sdk_quote_keeps_generic_assigned_frame_bound() {
+        for frame_bytes in [1, 4096, 65_536] {
+            let actual = assigned_admit_storage_data(frame_bytes, None).unwrap();
+            assert_eq!(
+                actual,
+                original_host_source_json_extent_storage_data(frame_bytes).unwrap()
+            );
+        }
+        assert!(assigned_admit_storage_data(0, None).is_err());
+    }
 
     #[test]
     fn original_initial_signing_projection_matches_actual_context_and_proof_grammar() {
@@ -466,7 +496,7 @@ impl PacketCompleteSemanticSource {
             .frame_bytes;
         let frame_bytes =
             usize::try_from(frame_bytes.get()).map_err(|_| RuntimeError::ResourceLimit)?;
-        self.original_initial_source_storage_data(frame_bytes, maximum)?
+        self.original_initial_source_storage_data(frame_bytes, None, maximum)?
             .requested_peak_data()
     }
 
