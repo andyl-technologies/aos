@@ -8834,18 +8834,27 @@ BKT-15 or either complete host task.
 
 The first-enrollment fixture uses the existing vendored Tokio runtime as a
 development dependency. Its source-bound build and nine selected unit tests
-pass; four native tests remain unexecuted by that unit run. The diagnostic
-image and completed artifact verifier also pass. Its first actual guest case
-successfully creates both genuine buckets, then fails during AOS provisioning
-with a missing-file error. Review found the fixture omitted the required empty
-protected project-claim directory. The fixture-only correction passes source
-review and awaits fresh native execution; it creates no claim or anchor.
-Separate image and guest component checks remain distinct from task acceptance.
+pass; four native tests remain unexecuted by that unit run. The corrected
+checkpoint `c033a09a8d` passes its fresh image, completed artifact verifier and
+all twelve finite native cases. These include genuine same-process public and
+private enrollment, first-enrollment refusals, actual partial kernel `EDQUOT`
+with permanent claims and an incomplete ledger, authenticated quota reads,
+and foreign-UID denials. Source and artifact guards remain unchanged.
+An earlier guest failed after both genuine creators succeeded because the
+fixture omitted the required empty protected project-claim directory. The
+correction supplies only that directory; production creates every claim and
+anchor. Capability CAS remains explicitly unsupported. This component pass
+does not establish NativeReady, BKT-15 or complete task acceptance.
 
-The manifest recovery candidate builds and passes forty of forty-one focused
-tests locally. The remaining test fails while creating a non-UTF-8 filename
-on the host filesystem, before exercising the scanner. An unchanged-test
-ext4 guest harness passes source review; its full execution remains pending.
+The manifest recovery candidate builds and passes all forty-one unchanged
+focused tests in an actual ext4 guest, with none ignored and independently
+verified per-test identities and executable hashes. This resolves the earlier
+host-filesystem failure while creating a non-UTF-8 filename. Its later native
+stage fails an old unchanged-snapshot assertion: the reviewed recovery path
+persists a funded hold before refusing unknown content. A distinct late-refusal
+fixture verifies that hold, faulted custody and preservation of the unknown
+inode while retaining the original cold-record controls. Its source passes
+review; the corrected complete native sequence remains pending.
 The module privacy correction likewise passes source review: tmpfiles must
 retain non-public roots at mode `0750`, including override paths, without a
 second declaration widening them to `0755`. Module evaluation and actual
