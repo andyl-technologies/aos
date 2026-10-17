@@ -1072,6 +1072,23 @@ baseline admission. Its byte terms are 3,265,796,731 plus 3,947,862,714 against
 4,294,967,296; descriptor usage stays within its separate limit. All temporary
 tracing is removed. The selected lifecycle quote is under investigation.
 
+### Preservation profiles and state-schema correspondence
+
+Complete capture previously compared a preservation-facet version directly with
+its native state-schema version. Genuine packet profile5 supports state codecs
+11, 13 and 14; these numbers name different contracts. The correction recognizes
+only those explicit packet families and Host profile2/state2, retains the existing
+implementation/full-schema/facet checks, and leaves strict compiled-definition
+validation in the defining decoder. Unknown and future settled17 formats remain
+outside this legacy path. Facet-local configuration semantics are unchanged.
+
+The full Core suite passes 1,752 tests with zero failures and 32 ignored; all
+seven contract tests pass. Four new controls use actual compiled schema producers,
+exercise substituted identities and prove that changing both the advertised and
+claimed definition still fails the compiled-schema validator. Six-crate,
+all-feature/all-target checking passes in 49.39 seconds. These component results
+do not establish complete native Capture or restoration.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),

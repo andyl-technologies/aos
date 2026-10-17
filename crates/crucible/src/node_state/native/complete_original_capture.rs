@@ -21,6 +21,9 @@ use crucible_node_contract::{
     CaptureManifest, CaptureRepresentation, CapturedOwner, Id, canonical,
 };
 
+#[path = "complete_original_capture/profile.rs"]
+mod profile;
+
 impl NativeArchive {
     /// Captures and signs exact Runtime7 conditional model journals at an unchanged cut.
     ///
@@ -1167,23 +1170,10 @@ impl NativeArchiveRecord {
                 let binding = graph
                     .binding(participant)
                     .ok_or_else(|| refused("lineage binding absent"))?;
-                if native.key.implementation
-                    != binding.compatibility.implementation.implementation_id
-                    || !binding
-                        .compatibility
-                        .implementation
-                        .formats
-                        .contains(&native.key.schema)
-                    || !binding
-                        .compatibility
-                        .operating_contract
-                        .facets
-                        .iter()
-                        .any(|facet| {
-                            facet.id == native.key.profile
-                                && facet.version == native.key.schema.version
-                        })
-                {
+                if !profile::matches_selected_complete_state_profile(
+                    &native.key,
+                    &binding.compatibility,
+                ) {
                     return Err(refused(
                         "lineage owner crossed selected implementation/profile",
                     ));
