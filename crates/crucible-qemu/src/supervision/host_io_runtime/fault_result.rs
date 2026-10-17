@@ -1,5 +1,6 @@
 //! Bounded polling for the dedicated QEMU fault-result transport.
 
+use super::action_scope::{ControlActionScope, SourceControlAction};
 use super::control::PendingControlBoundary;
 use super::{QemuLiveHostIoRuntime, control_boundary_request_is_acknowledged, region_missing};
 use crate::QemuAsyncDriverRuntimeError;
@@ -163,11 +164,12 @@ impl QemuLiveHostIoRuntime {
         timeout: Duration,
         deadline: &super::OperationPollBudget<'_>,
         maximum_event_records: usize,
-        loan: Option<crucible_protocol::boundary_action::ActionBinding>,
+        loan: bool,
+        actions: &mut impl ControlActionScope,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let last_ack = loop {
-            if loan.is_some() {
-                self.refresh_control_action()?;
+            if loan {
+                actions.refresh(self)?;
             }
             self.drain_fault_events_for_operation(
                 maximum_event_records,
@@ -184,7 +186,7 @@ impl QemuLiveHostIoRuntime {
                 .map_err(super::map_slot_error)?
                 .snapshot();
             if control_boundary_request_is_acknowledged(request, &snapshot)
-                && (loan.is_none() || self.finish_control_action()?)
+                && (!loan || actions.finish(self)?)
             {
                 deadline.complete("await fault result publication fence")?;
                 return Ok(());
@@ -211,7 +213,7 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn poll_fault_result(
         &mut self,
         timeout: Duration,
-        mut payload_buffer: Vec<u8>,
+        payload_buffer: Vec<u8>,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
         self.settle_previous_action()?;
@@ -221,7 +223,24 @@ impl QemuLiveHostIoRuntime {
             timeout,
             "await fault result",
         )?;
-        let loan = self.lend_control_action(&deadline, None)?;
+        self.poll_fault_result_with_actions(
+            timeout,
+            payload_buffer,
+            maximum_event_records,
+            &deadline,
+            &mut SourceControlAction::default(),
+        )
+    }
+
+    pub(super) fn poll_fault_result_with_actions(
+        &mut self,
+        timeout: Duration,
+        mut payload_buffer: Vec<u8>,
+        maximum_event_records: usize,
+        deadline: &super::OperationPollBudget<'_>,
+        actions: &mut impl ControlActionScope,
+    ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
+        let loan = actions.lend(self, deadline, None)?;
         if deadline.remaining("publish fault action")?.is_none() {
             return Err(QemuAsyncDriverRuntimeError::new(
                 "publish fault action",
@@ -229,11 +248,11 @@ impl QemuLiveHostIoRuntime {
             ));
         }
         let request = self.signal_wake(None)?;
-        super::action::validate_control_action_request(request, loan)?;
+        actions.validate(request)?;
         let mut repeat_wake = false;
         loop {
-            if loan.is_some() {
-                self.refresh_control_action()?;
+            if loan {
+                actions.refresh(self)?;
             }
             // Reuse the immutable request. Republishing after its ACK would
             // mint another token while the same action still owns the frontier.
@@ -246,7 +265,7 @@ impl QemuLiveHostIoRuntime {
             repeat_wake = true;
             self.drain_fault_events_for_operation(
                 maximum_event_records,
-                &deadline,
+                deadline,
                 timeout,
                 "await fault result",
             )?;
@@ -278,9 +297,10 @@ impl QemuLiveHostIoRuntime {
                     self.await_fault_pump_completion(
                         request,
                         timeout,
-                        &deadline,
+                        deadline,
                         maximum_event_records,
                         loan,
+                        actions,
                     )?;
                     return Ok(result);
                 }
@@ -310,8 +330,25 @@ impl QemuLiveHostIoRuntime {
             timeout,
             "await fault preparation result",
         )?;
+        self.poll_fault_preparation_result_with_actions(
+            timeout,
+            maximum_payload_bytes,
+            maximum_event_records,
+            &deadline,
+            &mut SourceControlAction::default(),
+        )
+    }
+
+    pub(super) fn poll_fault_preparation_result_with_actions(
+        &mut self,
+        timeout: Duration,
+        maximum_payload_bytes: usize,
+        maximum_event_records: usize,
+        deadline: &super::OperationPollBudget<'_>,
+        actions: &mut impl ControlActionScope,
+    ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
         let mut payload_buffer = Vec::new();
-        let loan = self.lend_control_action(&deadline, None)?;
+        let loan = actions.lend(self, deadline, None)?;
         if deadline.remaining("publish fault action")?.is_none() {
             return Err(QemuAsyncDriverRuntimeError::new(
                 "publish fault action",
@@ -319,11 +356,11 @@ impl QemuLiveHostIoRuntime {
             ));
         }
         let request = self.signal_wake(None)?;
-        super::action::validate_control_action_request(request, loan)?;
+        actions.validate(request)?;
         let mut repeat_wake = false;
         loop {
-            if loan.is_some() {
-                self.refresh_control_action()?;
+            if loan {
+                actions.refresh(self)?;
             }
             // Reuse the immutable request. Republishing after its ACK would
             // mint another token while the same action still owns the frontier.
@@ -336,7 +373,7 @@ impl QemuLiveHostIoRuntime {
             repeat_wake = true;
             self.drain_fault_events_for_operation(
                 maximum_event_records,
-                &deadline,
+                deadline,
                 timeout,
                 "await fault preparation result",
             )?;
@@ -388,9 +425,10 @@ impl QemuLiveHostIoRuntime {
                     self.await_fault_pump_completion(
                         request,
                         timeout,
-                        &deadline,
+                        deadline,
                         maximum_event_records,
                         loan,
+                        actions,
                     )?;
                     return Ok(result);
                 }

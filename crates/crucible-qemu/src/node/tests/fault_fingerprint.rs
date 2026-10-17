@@ -2,6 +2,8 @@
 //!
 //! The receiver models fault application; it is not a native VM or a deployed
 //! fault witness. Node and host-I/O transport/publication code remain actual.
+//! Positive component cases model action return separately; refusal cases keep
+//! the production runtime and its genuine Source admission requirements.
 
 use super::*;
 use crucible::{SchedulerError, SchedulerSendAuthorization, SchedulerSendAuthorizer};
@@ -33,10 +35,20 @@ struct Fixture {
     receiver: MappedSetupRegion,
     notifications: UnixStream,
     supervisor: HostOperationSupervisor,
+    physical_return:
+        Option<crate::supervision::host_io_runtime::component::ComponentPhysicalReturn>,
 }
 
 impl Fixture {
     fn new() -> Result<Self, Box<dyn Error>> {
+        Self::with_component(false)
+    }
+
+    fn component() -> Result<Self, Box<dyn Error>> {
+        Self::with_component(true)
+    }
+
+    fn with_component(component: bool) -> Result<Self, Box<dyn Error>> {
         let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
         let layout = allocation.layout();
         let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
@@ -54,7 +66,18 @@ impl Fixture {
             0,
         )?
         .with_host_operation_supervisor(supervisor.clone());
-        let mut node = host_io_runtime::scripted_node_with_live_host_runtime(runtime)?;
+        let (mut node, physical_return) = if component {
+            let (runtime, physical_return) = runtime.into_control_component()?;
+            (
+                host_io_runtime::scripted_node_with_live_host_runtime(runtime)?,
+                Some(physical_return),
+            )
+        } else {
+            (
+                host_io_runtime::scripted_node_with_live_host_runtime(runtime)?,
+                None,
+            )
+        };
         node.channels.shmem_hot_path = Box::new(crate::QemuMappedQuantumShmemHotPath::new(
             crate::QemuQuantumShmemConfig::new(node_id("vm-a"), 0),
             mmap_setup_region(shmem.as_fd(), layout.region_size)?,
@@ -83,6 +106,7 @@ impl Fixture {
             receiver,
             notifications,
             supervisor,
+            physical_return,
         })
     }
 }
@@ -126,7 +150,16 @@ fn command() -> FaultCommandHeaderV1 {
     }
 }
 
-fn publish_applied(receiver: &mut MappedSetupRegion) -> Result<(), Box<dyn Error>> {
+fn publish_applied(
+    receiver: &mut MappedSetupRegion,
+    physical_return: &crate::supervision::host_io_runtime::component::ComponentPhysicalReturn,
+) -> Result<(), Box<dyn Error>> {
+    publish_applied_without_return(receiver)?;
+    physical_return.return_when_awaited(Duration::from_secs(1))?;
+    Ok(())
+}
+
+fn publish_applied_without_return(receiver: &mut MappedSetupRegion) -> Result<(), Box<dyn Error>> {
     let transport = receiver.fault_command_transport_mut(0)?;
     let decoded = dequeue_fault_command(
         transport.ring,
@@ -178,7 +211,11 @@ fn publish_applied(receiver: &mut MappedSetupRegion) -> Result<(), Box<dyn Error
 fn fault_fingerprint_applied_controller_and_ram_changes_refresh_same_icount()
 -> Result<(), Box<dyn Error>> {
     for (controller_only, raw_sample_first) in [(true, false), (false, true)] {
-        let mut fixture = Fixture::new()?;
+        let mut fixture = Fixture::component()?;
+        let physical_return = fixture
+            .physical_return
+            .as_ref()
+            .ok_or("missing component peer")?;
         let before = fixture.node.execution_fingerprint()?;
         let mut fresh = baseline_sample();
         let digest = *blake3::hash(b"receiver mutation").as_bytes();
@@ -211,7 +248,7 @@ fn fault_fingerprint_applied_controller_and_ram_changes_refresh_same_icount()
         let observation = (|| -> Result<(), Box<dyn Error>> {
             let mut bytes = [0; 8];
             fixture.notifications.read_exact(&mut bytes)?;
-            publish_applied(&mut fixture.receiver)?;
+            publish_applied(&mut fixture.receiver, physical_return)?;
             let request = loop {
                 fixture.notifications.read_exact(&mut bytes)?;
                 // The result poller may publish another token before observing
@@ -249,6 +286,7 @@ fn fault_fingerprint_applied_controller_and_ram_changes_refresh_same_icount()
                 .receiver
                 .node_slot(0)?
                 .acknowledge_control_boundary();
+            physical_return.return_when_awaited(Duration::from_secs(1))?;
             Ok(())
         })();
         let outcome = host.join().map_err(|_| "host fixture panicked")?;
@@ -358,7 +396,8 @@ fn fault_fingerprint_cancelled_owner_refuses_before_capture() -> Result<(), Box<
 fn fault_fingerprint_invalid_fresh_sample_stays_invalid_without_second_capture()
 -> Result<(), Box<dyn Error>> {
     for bad_coordinate in [false, true] {
-        let fixture = Fixture::new()?;
+        let fixture = Fixture::component()?;
+        let physical_return = fixture.physical_return.ok_or("missing component peer")?;
         let mut node = fixture.node;
         node.enqueue_fault_command(command(), b"receiver mutation")?;
         let host = std::thread::spawn(move || -> Result<(), QemuNodeError> {
@@ -384,7 +423,7 @@ fn fault_fingerprint_invalid_fresh_sample_stays_invalid_without_second_capture()
                 .fingerprint_sample(0)?
                 .pending_capture_request_v1()
                 .ok_or("fresh capture was not requested")?;
-            publish_applied(&mut receiver)?;
+            publish_applied_without_return(&mut receiver)?;
             let mut invalid = baseline_sample();
             if bad_coordinate {
                 invalid.sample_icount = 12;
@@ -399,6 +438,7 @@ fn fault_fingerprint_invalid_fresh_sample_stays_invalid_without_second_capture()
             );
             receiver.node_slot(0)?.publish_control_boundary(11, 0)?;
             receiver.node_slot(0)?.acknowledge_control_boundary();
+            physical_return.return_when_awaited(Duration::from_secs(1))?;
             Ok(())
         })();
         let outcome = host.join().map_err(|_| "host fixture panicked")?;

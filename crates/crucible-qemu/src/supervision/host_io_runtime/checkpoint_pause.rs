@@ -4,6 +4,7 @@
 //! the existing plugin-to-native stop path. Original callers lend one operation
 //! through the device probe and pause; they never create or complete another.
 
+use super::action_scope::{ControlActionScope, SourceControlAction};
 use super::*;
 
 impl QemuLiveHostIoRuntime {
@@ -26,11 +27,24 @@ impl QemuLiveHostIoRuntime {
         deadline: &OperationPollBudget<'_>,
         timeout: Duration,
     ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        self.probe_checkpoint_device_boundary_with_actions(
+            deadline,
+            timeout,
+            &mut SourceControlAction::default(),
+        )
+    }
+
+    fn probe_checkpoint_device_boundary_with_actions(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+        timeout: Duration,
+        actions: &mut impl ControlActionScope,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
         check_borrowed_quiescence(deadline)?;
-        let action = self.lend_paired_pause_action(deadline)?;
+        let action = actions.lend_pause(self, deadline)?;
         check_borrowed_quiescence(deadline)?;
         let request = self.signal_wake(None)?;
-        super::action::validate_control_action_request(request, action)?;
+        actions.validate(request)?;
         let mut last_observed = None;
         loop {
             if deadline
@@ -47,8 +61,8 @@ impl QemuLiveHostIoRuntime {
                 "probe checkpoint device boundary",
             )?;
             check_borrowed_quiescence(deadline)?;
-            if action.is_some() {
-                self.refresh_control_action()?;
+            if action {
+                actions.refresh(self)?;
             }
             self.service_console_output()?;
             let snapshot = self
@@ -74,7 +88,7 @@ impl QemuLiveHostIoRuntime {
                 device_progress,
             ));
             if control_boundary_request_is_acknowledged(request, &snapshot)
-                && (action.is_none() || self.finish_control_action()?)
+                && (!action || actions.finish(self)?)
             {
                 deadline.complete("probe checkpoint device boundary")?;
                 return Ok(!device_progress && snapshot.device_io_active == 0);
@@ -105,6 +119,21 @@ impl QemuLiveHostIoRuntime {
         timeout: Duration,
         original: Option<&crucible_linux_resource::host_supervision::HostOperationGuard>,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.pause_checkpoint_boundary_with_actions(
+            deadline,
+            timeout,
+            original,
+            &mut SourceControlAction::default(),
+        )
+    }
+
+    pub(super) fn pause_checkpoint_boundary_with_actions(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+        timeout: Duration,
+        original: Option<&crucible_linux_resource::host_supervision::HostOperationGuard>,
+        actions: &mut impl ControlActionScope,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
         check_borrowed_quiescence(deadline)?;
         let mut initial_snapshot = self
             .region
@@ -123,7 +152,7 @@ impl QemuLiveHostIoRuntime {
             // before pause is visible, clear the token, and strand the reached-
             // ceiling vCPU on its condition variable indefinitely.
             if original.is_some() {
-                self.probe_checkpoint_device_boundary(deadline, timeout)?;
+                self.probe_checkpoint_device_boundary_with_actions(deadline, timeout, actions)?;
             } else {
                 self.probe_checkpoint_device_io(timeout)?;
             }
@@ -147,7 +176,7 @@ impl QemuLiveHostIoRuntime {
         check_borrowed_quiescence(deadline)?;
         // Enroll before borrowing the mapped slot and before any Pause effect.
         // Any preceding probe has already returned its distinct physical loan.
-        let action = self.lend_paired_pause_action(deadline)?;
+        let action = actions.lend_pause(self, deadline)?;
         // Enrollment can publish terminal observations without granting more
         // execution. Recheck both originals before exposing the Pause request.
         check_borrowed_quiescence(deadline)?;
@@ -206,7 +235,7 @@ impl QemuLiveHostIoRuntime {
         let tokenized_checkpoint_control_wake =
             reached_boundary_control_wake || zero_length_idle_control_wake;
         let mut paired_request = None;
-        if action.is_some()
+        if action
             || tokenized_checkpoint_control_wake
             || checkpoint_pause_requires_control_doorbell(
                 &initial_snapshot,
@@ -228,12 +257,12 @@ impl QemuLiveHostIoRuntime {
             if let Err(source) = check_borrowed_quiescence(deadline) {
                 return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
-            let wake = if action.is_some() || tokenized_checkpoint_control_wake {
+            let wake = if action || tokenized_checkpoint_control_wake {
                 // The paired token makes a vCPU resume callback yield without
                 // interpreting this control edge as guest authorization.
                 self.signal_wake(None).and_then(|request| {
-                    super::action::validate_control_action_request(request, action)?;
-                    if action.is_some() {
+                    actions.validate(request)?;
+                    if action {
                         paired_request = Some(request);
                     }
                     Ok(())
@@ -253,9 +282,7 @@ impl QemuLiveHostIoRuntime {
                 Ok(None) => break,
                 Err(source) => return self.fail_checkpoint_pause_under_budget(deadline, source),
             }
-            if action.is_some()
-                && let Err(source) = self.refresh_control_action()
-            {
+            if action && let Err(source) = actions.refresh(self) {
                 return self.fail_checkpoint_pause_under_budget(deadline, source);
             }
 
@@ -348,7 +375,7 @@ impl QemuLiveHostIoRuntime {
                 // The stop handoff above can be required for the Native
                 // callback to return. Observe physical return afterward,
                 // without publishing another token or completing either guard.
-                if action.is_some() && !self.finish_control_action()? {
+                if action && !actions.finish(self)? {
                     deadline.wait(self.poll_interval, "return paired Pause action")?;
                     continue;
                 }
@@ -368,7 +395,7 @@ impl QemuLiveHostIoRuntime {
                 // request. Re-publish its acknowledged token periodically so
                 // coalescing cannot lose the required handoff.
                 if attempt % 16 == 15 {
-                    let wake = if action.is_some() {
+                    let wake = if action {
                         // Re-ring this owned immutable request only. Its ACK
                         // cannot authorize publication of a successor token.
                         self.write_wake_doorbell()

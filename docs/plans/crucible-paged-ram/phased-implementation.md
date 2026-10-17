@@ -61,14 +61,16 @@ enable native receiver activation or qualify physical resource return. The
 package exit criteria and coordinated release gates below remain required.
 
 The private-feature QEMU test targets also compile independently of the
-test-support feature. A complete private-feature QEMU library run has 1,134
-passing tests, six failures and four ignored probes. Its failed-name set matches
-the preceding full private-feature run. The six capture/fault
-fixtures lack the genuine Source-backed control lifecycle, including paired
-capture; their intended positive assertions remain required. All 32 confinement
-lint tests pass, including controls that reject changed export visibility,
-source placement and operation-clock formulas. These component results do not
-qualify a live VM or replace the missing lifecycle evidence.
+test-support feature. The complete private-feature QEMU library run now passes
+all 1,143 tests, with four ignored probes, in 32.62 seconds. Capture, Pause,
+PREPARE and fault-result component fixtures use a distinct host-control owner
+through the same control loops. Their peer acknowledges mapped control and
+sample publication independently of returning that owner's exact serial ticket;
+the loops cannot finish before both facts hold. Production continues to use its
+original Source action binding, and missing, revoked and foreign Source controls
+still refuse. The component owner cannot wrap a live Source or construct native
+authority. All 32 confinement lint controls also pass. These component results
+do not qualify a live VM or replace native lifecycle evidence.
 
 Memory-service occurrence admission now compares the reported byte rate,
 operation rate and exact presence bits with the same issued action, alongside
@@ -76,10 +78,8 @@ its existing materialized-latency check. Matching payload hashes alone cannot
 establish that configuration. The new control covers all four enabled/disabled
 rate combinations and rejects twenty individual contradictions while preserving
 the same action and APPLY identities and recomputing valid evidence and transport
-hashes. The complete private QEMU library run has 1,135 passes, the same six
-capture/fault failures and four ignored probes in 20.33 seconds. This validates
-host event admission; native service timing and cold-page fault qualification
-remain required.
+hashes. This validates host event admission; native service timing and cold-page
+fault qualification remain required.
 
 Packed inventory, publication readback and canonical archive reads now borrow
 one metadata cache from the existing physical-quota service. Its rows and index
