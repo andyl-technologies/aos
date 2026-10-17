@@ -244,16 +244,16 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding, L: HostRea
         if !before.is_file() || before.file_type().is_symlink() {
             return Err(invalid());
         }
-        if let Some((identity, bound)) = chunk {
-            if before.len() > bound as u64 {
-                return Err(corrupt(
-                    identity,
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "chunk exceeds existing encoded-size bound",
-                    ),
-                ));
-            }
+        if let Some((identity, bound)) = chunk
+            && before.len() > bound as u64
+        {
+            return Err(corrupt(
+                identity,
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "chunk exceeds existing encoded-size bound",
+                ),
+            ));
         }
         let bytes = self
             .read_range_checked(

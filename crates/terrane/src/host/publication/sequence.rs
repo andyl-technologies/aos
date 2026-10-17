@@ -447,13 +447,13 @@ impl<K: PublicationKernel, S: PublicationState> Publisher<K, S> {
                 },
             ));
         }
-        if matches!(&cause, AdoptionFailure::RecordedBindingMismatch) {
-            if let Err(error) = self.state.forget_quarantined(claim) {
-                return Err(io::Error::new(
-                    error.kind(),
-                    AdoptionFailure::BindingRepair(error),
-                ));
-            }
+        if matches!(&cause, AdoptionFailure::RecordedBindingMismatch)
+            && let Err(error) = self.state.forget_quarantined(claim)
+        {
+            return Err(io::Error::new(
+                error.kind(),
+                AdoptionFailure::BindingRepair(error),
+            ));
         }
         let kind = match &cause {
             AdoptionFailure::KernelSeal(error) | AdoptionFailure::Plaintext(error) => error.kind(),
