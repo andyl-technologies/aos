@@ -17,6 +17,7 @@ use crucible_node_provider::reference_packet::service::{
 
 use super::{InstalledConformancePlan, WeakInstalledConformancePlan};
 use crate::{node_adapters::cnp::PacketCompleteSemanticSource, node_contract::RuntimeError};
+use crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow;
 
 mod host_finalization;
 pub(crate) use host_finalization::{
@@ -135,7 +136,15 @@ pub(crate) struct NativeStartupRows {
 }
 
 impl NativeStartupRows {
-    fn peak(self, maximum: usize) -> Result<usize, RuntimeError> {
+    // Bootstrap returns before Endpoint dispatch. Admit, Prepare and report
+    // publication are separate synchronous calls on that same Endpoint; their
+    // temporary banks end before the next phase. Every lasting or failed owner
+    // remains in retained. Independent Sources still have separately summed peaks.
+    fn peak_with_publication(
+        self,
+        publication: super::report_startup::StartupRows,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
         let mut retained = 0;
         let mut phase = 0;
         let native_retained = match self.retained_overlap {
@@ -168,6 +177,22 @@ impl NativeStartupRows {
                 maximum,
             )?);
         }
+        for row in [
+            publication.original_observe12,
+            publication.fresh_completed_admit13,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            row.requested_peak_data()
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+            retained = add(retained, extent(row.retained_growth_bytes.get())?, maximum)?;
+            phase = phase.max(add(
+                extent(row.maximum_simultaneous_transient_bytes.get())?,
+                extent(row.declared_counter_scratch_bytes.get())?,
+                maximum,
+            )?);
+        }
         add(retained, phase, maximum)
     }
 }
@@ -182,8 +207,40 @@ pub(crate) struct OriginalNativeStartupQuote {
     pub(crate) source_capture_execution_scratch: usize,
     pub(crate) wire_requested_bytes: usize,
     pub(crate) publication_bytes: usize,
+    // Keep actual separately authenticated axes; an equal total cannot justify
+    // moving transient credit into retained owners at the later recheck.
+    pub(crate) publication_rows: super::report_startup::StartupRows,
     pub(crate) launch_digest: [u8; 32],
     pub(crate) maximum_boot_bytes: usize,
+}
+
+impl OriginalNativeStartupQuote {
+    fn native_and_publication_peak(&self, maximum: usize) -> Result<usize, RuntimeError> {
+        self.rows
+            .peak_with_publication(self.publication_rows, maximum)
+    }
+
+    fn authenticate_publication_data(&self, actual: &Self) -> Result<(), RuntimeError> {
+        for (allowed, observed) in [
+            (
+                self.publication_rows.original_observe12,
+                actual.publication_rows.original_observe12,
+            ),
+            (
+                self.publication_rows.fresh_completed_admit13,
+                actual.publication_rows.fresh_completed_admit13,
+            ),
+        ] {
+            match (allowed, observed) {
+                (Some(allowed), Some(observed)) => allowed
+                    .authenticate_actual_data(&observed)
+                    .map_err(|_| RuntimeError::ResourceLimit)?,
+                (None, None) => {}
+                _ => return Err(RuntimeError::ForeignAuthority),
+            }
+        }
+        Ok(())
+    }
 }
 
 // This is host-only actual-call provenance, never serialized or inferred from
@@ -236,7 +293,7 @@ impl InstalledConformancePlan {
     /// # Errors
     /// Refuses checked layout arithmetic overflow.
     pub fn original_native_startup_counter_scratch_data() -> Result<usize, RuntimeError> {
-        let terms: [usize; 20] = [
+        let terms: [usize; 29] = [
             size_of::<[usize; 20]>(),
             size_of::<&[usize]>(),
             size_of::<std::slice::Iter<'static, usize>>(),
@@ -257,6 +314,15 @@ impl InstalledConformancePlan {
             PacketCompleteSemanticSource::original_native_startup_counter_scratch_data()?,
             OriginalHostFinalizationBarrier::counter_scratch_data(),
             PacketCompleteSemanticSource::original_native_host_barrier_slot_scratch_data(),
+            size_of::<[usize; 29]>(),
+            size_of::<[Option<PacketNativeReportStartupAllocationRow>; 2]>(),
+            size_of::<std::array::IntoIter<Option<PacketNativeReportStartupAllocationRow>, 2>>(),
+            size_of::<[(Option<PacketNativeReportStartupAllocationRow>, Option<PacketNativeReportStartupAllocationRow>); 2]>(),
+            size_of::<std::array::IntoIter<(Option<PacketNativeReportStartupAllocationRow>, Option<PacketNativeReportStartupAllocationRow>), 2>>(),
+            2 * size_of::<&OriginalNativeStartupQuote>(),
+            2 * size_of::<&PacketNativeReportStartupAllocationRow>(),
+            size_of::<super::report_startup::StartupRows>(),
+            size_of::<Result<OriginalNativeStartupQuote, RuntimeError>>(),
         ];
         sum(&terms, usize::MAX)
     }
@@ -377,17 +443,12 @@ impl InstalledConformancePlan {
             )?;
             observed = add(
                 observed,
-                quote.rows.peak(policy.maximum_requested_bytes)?,
+                quote.native_and_publication_peak(policy.maximum_requested_bytes)?,
                 policy.maximum_requested_bytes,
             )?;
             observed = add(
                 observed,
                 quote.finalization_bytes,
-                policy.maximum_requested_bytes,
-            )?;
-            observed = add(
-                observed,
-                quote.publication_bytes,
                 policy.maximum_requested_bytes,
             )?;
             pending[index] = Some(quote);
@@ -486,6 +547,7 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
             (None, None) => {}
             _ => return Err(RuntimeError::ForeignAuthority),
         }
+        quote.authenticate_publication_data(&actual)?;
         if actual.launch_digest != quote.launch_digest
             || actual.maximum_boot_bytes > quote.maximum_boot_bytes
             || actual.finalization_bytes > quote.finalization_bytes
@@ -758,8 +820,12 @@ mod retained_overlap_tests {
             retained_overlap: None,
             initial_report_rows: None,
         };
-        assert_eq!(rows.peak(43).unwrap(), 43);
-        assert!(rows.peak(42).is_err());
+        let publication = super::super::report_startup::StartupRows {
+            original_observe12: None,
+            fresh_completed_admit13: None,
+        };
+        assert_eq!(rows.peak_with_publication(publication, 43).unwrap(), 43);
+        assert!(rows.peak_with_publication(publication, 42).is_err());
         assert_eq!(rows.private_bootstrap.retained_requested_bytes.get(), 10);
         assert_eq!(rows.native_birth.retained_requested_bytes.get(), 20);
     }

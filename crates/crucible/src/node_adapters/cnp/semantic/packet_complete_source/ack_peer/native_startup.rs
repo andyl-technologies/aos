@@ -522,6 +522,7 @@ impl PacketCompleteSemanticSource {
             source_capture_execution_scratch,
             wire_requested_bytes: wire_bytes,
             publication_bytes,
+            publication_rows: publication,
             launch_digest: *blake3::hash(encoded_launch).as_bytes(),
             maximum_boot_bytes: native.maximum_private_boot_body_bytes(),
         })

@@ -124,8 +124,7 @@ impl InstalledConformancePlan {
                 Ok(())
             };
             let before = baseline.quotes[index]
-                .rows
-                .peak(baseline.policy.maximum_requested_bytes)?;
+                .native_and_publication_peak(baseline.policy.maximum_requested_bytes)?;
             add_row(
                 &mut baseline.quotes[index].rows.private_bootstrap,
                 data.private_retained_requested_bytes(),
@@ -155,8 +154,7 @@ impl InstalledConformancePlan {
                 );
             }
             let after = baseline.quotes[index]
-                .rows
-                .peak(baseline.policy.maximum_requested_bytes)?;
+                .native_and_publication_peak(baseline.policy.maximum_requested_bytes)?;
             requested_peak = add(
                 requested_peak,
                 after
@@ -287,6 +285,7 @@ impl CompleteOriginalNativeInvocationAdmission<'_> {
                 _ => return Err(RuntimeError::ForeignAuthority),
             }
         }
+        quote.authenticate_publication_data(&actual)?;
         if actual.launch_digest != quote.launch_digest
             || actual.maximum_boot_bytes > quote.maximum_boot_bytes
             || actual.finalization_bytes > quote.finalization_bytes
