@@ -55,18 +55,18 @@ fn dirty_set_tracks_written_pages_and_clears_at_boundary() {
     let mut overlay = CowOverlay::new();
     ok(overlay.write(&base, 0, &[1; 10]));
     ok(overlay.write(&base, (PAGE_SIZE * 2) as u64, &[2; 10]));
-    let dirty: Vec<u64> = overlay.dirty_pages().iter().copied().collect();
+    let dirty: Vec<u64> = overlay.dirty_pages().collect();
     assert_eq!(dirty, vec![0, (PAGE_SIZE * 2) as u64]);
-    assert_eq!(overlay.dirty_delta().pages.len(), 2);
+    assert_eq!(overlay.dirty_page_count(), 2);
 
     overlay.clear_dirty();
-    assert!(overlay.dirty_pages().is_empty());
+    assert_eq!(overlay.dirty_pages().next(), None);
     // Pages still present; only dirty bookkeeping reset.
     assert_eq!(overlay.page_count(), 2);
 
     // Subsequent write produces a disjoint delta.
     ok(overlay.write(&base, (PAGE_SIZE * 3) as u64, &[3; 10]));
-    let delta: Vec<u64> = overlay.dirty_delta().pages.keys().copied().collect();
+    let delta: Vec<u64> = overlay.dirty_pages().collect();
     assert_eq!(delta, vec![(PAGE_SIZE * 3) as u64]);
 }
 
@@ -78,7 +78,7 @@ fn materialize_applies_overlay_over_base_without_mutating_base() {
     let original = base.bytes().to_vec();
     let mut overlay = CowOverlay::new();
     ok(overlay.write(&base, 5, &[0x55; 20]));
-    let image = overlay.materialize(&base);
+    let image = overlay_image(&overlay, &base);
     assert_eq!(image.len(), base.len() as usize);
     let mut want = original.clone();
     want[5..25].fill(0x55);

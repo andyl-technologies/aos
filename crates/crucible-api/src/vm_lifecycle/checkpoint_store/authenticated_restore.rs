@@ -1,6 +1,6 @@
 //! Pure reconstruction of repository-authenticated lifecycle state.
 //!
-//! The lower exact-checkpoint verifier owns the v10 manifest and object
+//! The lower exact-checkpoint verifier owns the v11 manifest and object
 //! relation. This module decodes each authenticated semantic object once into
 //! the API-owned lifecycle types without installing a native closure or
 //! exposing artifact identities and readers.
@@ -243,6 +243,9 @@ pub fn decode_authenticated_production_exact_checkpoint(
     // Event-log segments are not visited; the decoded checkpoint reads them
     // through `open`, one at a time, when a consumer streams its log.
     let event_log_segments = closure.event_log_segments().to_vec();
+    // Block overlay chunks are not visited either; every decoded block
+    // snapshot reads them through `open` when it is restored (CMEAS-33).
+    let block_overlay_chunks = closure.block_overlay_chunks().to_vec();
     let semantic_open = Arc::clone(&open);
     let targets = closure
         .visit_semantic_objects(
@@ -257,6 +260,32 @@ pub fn decode_authenticated_production_exact_checkpoint(
             ))
         })?;
 
+    let chunk_source = RepositoryChunkSource::shared(Arc::clone(&open));
+    for target in objects.targets.values_mut() {
+        target
+            .snapshot
+            .bind_block_overlay_source(Arc::clone(&chunk_source));
+    }
+    for failed in objects.failed_host_io.values_mut() {
+        failed
+            .host_io
+            .bind_block_overlay_source(Arc::clone(&chunk_source));
+    }
+    require_named_block_overlay_chunks(
+        &block_overlay_chunks,
+        objects
+            .targets
+            .values()
+            .map(|target| target.snapshot.host_io())
+            .chain(
+                objects
+                    .failed_host_io
+                    .values()
+                    .map(|failed| &failed.host_io),
+            )
+            .filter_map(|host_io| host_io.block())
+            .map(|block| block.device_snapshot()),
+    )?;
     let expected_snapshots = objects
         .targets
         .iter()

@@ -35,7 +35,7 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
             ..
         })
     ));
-    for version in *b"45" {
+    for version in *b"456" {
         let mut unsupported_version = bytes.clone();
         unsupported_version[b"crucible.qemu-host-io-checkpoint.v".len()] = version;
         assert_eq!(

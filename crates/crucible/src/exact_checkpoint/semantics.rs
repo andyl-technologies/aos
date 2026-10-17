@@ -242,10 +242,12 @@ fn read_unique_semantic_objects(
     identities.sort_unstable();
     identities.dedup();
 
-    // Event-log segments are named by reference (RFC-0020 CMEAS-28): their
-    // lengths count against the closure quota, but they are read one at a
-    // time, and authenticated, only by a consumer of the log.
+    // Event-log segments (RFC-0020 CMEAS-28) and block overlay chunks
+    // (CMEAS-33) are named by reference: their lengths count against the
+    // closure quota, but they are read one at a time, and authenticated, only
+    // by a consumer of the log or a block-device restore.
     let mut segments = closure.event_log_segments.clone();
+    segments.extend(closure.block_overlay_chunks.iter().copied());
     segments.sort_unstable();
     segments.dedup();
     segments.retain(|segment| identities.binary_search(segment).is_err());

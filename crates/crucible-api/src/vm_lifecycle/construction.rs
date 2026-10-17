@@ -344,7 +344,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             })
             .map_err(|error| {
                 loop_factory_error(format!(
-                    "derive v10 exact restore identity for `{}`: {error}",
+                    "derive v11 exact restore identity for `{}`: {error}",
                     vm.id.name
                 ))
             })?;
@@ -352,7 +352,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 && QmpCheckpointIdentity::from(exact_ram.identity) != expected
             {
                 return Err(loop_factory_error(format!(
-                    "v10 exact checkpoint identity for `{}` differs from its authenticated restore basis",
+                    "v11 exact checkpoint identity for `{}` differs from its authenticated restore basis",
                     vm.id.name
                 )));
             }

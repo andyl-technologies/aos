@@ -5,9 +5,11 @@
 
 use super::{ExactSnapshotHandle as Snapshot, *};
 
+#[path = "tests/block_overlay_closure.rs"]
+mod block_overlay_closure;
 #[cfg(feature = "test-support")]
-#[path = "tests/v10_artifact_refusal.rs"]
-mod v10_artifact_refusal;
+#[path = "tests/v11_artifact_refusal.rs"]
+mod v11_artifact_refusal;
 
 fn wire_string(value: &str) -> decode::FallibleString {
     decode::FallibleString::new(String::from(value))
@@ -33,6 +35,7 @@ fn manifest() -> ClosureManifest {
         event_log_segments: Vec::new(),
         signal_artifacts: Vec::new(),
         fault_trace_segments: Vec::new(),
+        block_overlay_chunks: Vec::new(),
         trigger_state: ContentHash::default(),
         assertion_state: ContentHash::default(),
         lifecycle_state: ContentHash::default(),
@@ -126,10 +129,26 @@ fn build_one_node_raw_checkpoint(
     NodeId,
     ContentHash,
 ) {
+    build_one_node_raw_checkpoint_with_io(run_state_root, selectable_continuation, Vec::new())
+}
+
+/// Builds the one-node fixture, optionally declaring I/O nodes owned by `vm-a`.
+fn build_one_node_raw_checkpoint_with_io(
+    run_state_root: &Path,
+    selectable_continuation: Option<
+        crucible_protocol::selectable_catalog_plan::SelectablePlanContinuation,
+    >,
+    io_nodes: Vec<crucible::WorldIoNode>,
+) -> (
+    ScenarioDefForm,
+    ProductionVmExactCheckpointSet,
+    NodeId,
+    ContentHash,
+) {
     let node = NodeId {
         name: String::from("vm-a"),
     };
-    let world = World::from_nodes(vec![crucible::WorldNode {
+    let vm = crucible::WorldNode {
         id: node.clone(),
         arch: VmArchitecture::X86_64,
         memory_mib: 128,
@@ -146,7 +165,17 @@ fn build_one_node_raw_checkpoint(
         kernel: None,
         root_image: None,
         initrd: None,
-    }])
+    };
+    let world = if io_nodes.is_empty() {
+        World::from_nodes(vec![vm])
+    } else {
+        World::from_node_defs_and_links(
+            std::iter::once(crucible::WorldNodeDef::Vm(vm))
+                .chain(io_nodes.into_iter().map(crucible::WorldNodeDef::Io))
+                .collect(),
+            Vec::new(),
+        )
+    }
     .expect("build one-node checkpoint world");
     let mut source = ScenarioDefForm::from_components_with_app_random_draw_cap(
         &world,

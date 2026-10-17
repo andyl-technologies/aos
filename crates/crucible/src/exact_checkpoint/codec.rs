@@ -1,4 +1,4 @@
-//! Canonical v10 checkpoint envelope, manifest, and shape verification.
+//! Canonical v11 checkpoint envelope, manifest, and shape verification.
 
 use super::*;
 
@@ -496,6 +496,7 @@ pub(super) fn validate_closure_structure(
 ) -> Result<(), ExactCheckpointRelationError> {
     if !strictly_sorted(&closure.signal_artifacts)
         || !strictly_sorted(&closure.fault_trace_segments)
+        || !strictly_sorted(&closure.block_overlay_chunks)
         || closure
             .event_log_segments
             .iter()
@@ -545,6 +546,18 @@ pub(super) fn validate_closure_structure(
     {
         return Err(ExactCheckpointRelationError::InvalidStructure);
     }
+    // A block overlay chunk covers at most one 4 MiB chunk of its device.
+    for chunk in &closure.block_overlay_chunks {
+        let object = closure
+            .objects
+            .binary_search_by_key(chunk, |object| object.identity)
+            .ok()
+            .and_then(|index| closure.objects.get(index))
+            .ok_or(ExactCheckpointRelationError::InvalidStructure)?;
+        if object.length > ARTIFACT_CHUNK_BYTES {
+            return Err(ExactCheckpointRelationError::InvalidStructure);
+        }
+    }
     for target in &closure.targets {
         if target.overlay.length == 0 {
             return Err(ExactCheckpointRelationError::InvalidStructure);
@@ -574,6 +587,7 @@ pub(super) fn manifest_object_identities(
     identities.extend(closure.event_log_segments.iter().copied());
     identities.extend(closure.signal_artifacts.iter().copied());
     identities.extend(closure.fault_trace_segments.iter().copied());
+    identities.extend(closure.block_overlay_chunks.iter().copied());
     identities.extend(
         closure
             .failed_host_io

@@ -1331,6 +1331,18 @@ fn build_live_node_with_authority(
             }
             .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
         );
+        // Copied-up guest pages live in an unnamed file in the quota-accounted
+        // run directory rather than on the supervisor heap.
+        let page_store = launch_try!(
+            run_directory
+                .create_block_page_store()
+                .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })
+        );
+        launch_try!(
+            servicer
+                .use_page_store(page_store)
+                .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
+        );
         launch_try!(
             servicer
                 .configure_storage_faults(block.durability.clone(), block.require_fault_directives)

@@ -517,10 +517,15 @@ impl ProductionVmLifecycleLoop {
                 });
             }
 
+            // The evidence reads at most the first 4 KiB, so restore only the
+            // overlay chunks covering it; the rest of a large overlay is never
+            // loaded onto the heap.
+            let mut inspected = block.device_snapshot().clone();
+            inspected.overlay = inspected.overlay.window(0, 4_096);
             let mut restored = crucible_device::block::BlockDevice::restore(
-                block.device_snapshot(),
+                &inspected,
                 binding.base.clone(),
-                None,
+                &crucible_device::BlockPageStore::memory(),
             )
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("restore failed-node block continuation for diagnostics: {error}"),

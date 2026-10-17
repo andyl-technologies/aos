@@ -155,7 +155,9 @@ fn persistence_opportunity_applies_checkpointed_partial_flash_program() {
     assert!(outcomes[0].media_failed);
     assert_eq!(outcomes[0].applied_spans.len(), 1);
     let programmed = outcomes[0].applied_spans[0].length as usize;
-    let materialized = durable.materialize(&base);
+    let materialized = durable
+        .read(&base, 0, base.len())
+        .unwrap_or_else(|error| panic!("overlay should read: {error}"));
     assert_eq!(&materialized[..programmed], &vec![0xaa; programmed]);
     assert_eq!(&materialized[programmed..4], &vec![0; 4 - programmed]);
 }
@@ -242,7 +244,9 @@ fn flash_discard_applies_one_request_wide_partial_erase() {
         .map(|span| span.length)
         .sum::<u64>();
     assert!((1..=8).contains(&erased));
-    let materialized = durable.materialize(&base);
+    let materialized = durable
+        .read(&base, 0, base.len())
+        .unwrap_or_else(|error| panic!("overlay should read: {error}"));
     assert_eq!(
         &materialized[..usize::try_from(erased).unwrap_or(0)],
         &vec![0xff; usize::try_from(erased).unwrap_or(0)]

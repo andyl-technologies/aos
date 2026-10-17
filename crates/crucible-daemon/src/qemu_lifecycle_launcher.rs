@@ -459,7 +459,7 @@ where
             let _ = (admission, run_directories);
             Err(abort_unspawned_generation(
                 lease,
-                launcher_message("exact restore requires descriptor-backed v10 state on Linux"),
+                launcher_message("exact restore requires descriptor-backed v11 state on Linux"),
             ))
         }
     }

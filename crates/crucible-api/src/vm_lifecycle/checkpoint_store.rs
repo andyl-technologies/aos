@@ -10,6 +10,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 mod authenticated_restore;
+mod block_overlay;
+use block_overlay::*;
 mod decode;
 pub use authenticated_restore::{
     DecodedProductionExactCheckpoint, ProductionVmExactNodeRestoreAdmissions,
@@ -60,7 +62,7 @@ pub use test_support::{
     build_streaming_production_checkpoint_codec_fixture,
 };
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v10\0";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v11\0";
 const MANIFEST_VERSION: u8 = PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION;
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
@@ -321,6 +323,10 @@ struct ClosureManifest {
     signal_artifacts: Vec<ContentHash>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     fault_trace_segments: Vec<ContentHash>,
+    /// Block overlay chunk objects named by the target and failed-node
+    /// block continuations, sorted and distinct (RFC-0020 CMEAS-33).
+    #[serde(deserialize_with = "decode::deserialize_vec")]
+    block_overlay_chunks: Vec<ContentHash>,
     trigger_state: ContentHash,
     assertion_state: ContentHash,
     lifecycle_state: ContentHash,
@@ -663,6 +669,7 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
         boundary()?;
         persist_object_with_boundary(&object_directory, *identity, bytes, boundary)?;
     }
+    persist_block_overlay_chunks_with_boundary(&object_directory, checkpoint, boundary)?;
     persist_object_with_boundary(
         &object_directory,
         manifest.trigger_state,
@@ -1068,6 +1075,8 @@ fn load_exact_checkpoint_set_with_boundary(
             ));
         }
     }
+    admit_block_overlay_chunks_with_boundary(&object_directory, &manifest, &mut budget, boundary)?;
+    let block_overlay_source = DirectoryChunkSource::shared(object_directory.clone());
     let checkpoint_dag = checkpoint_dag_store(run_state_root, scenario.id());
     for (identity, bytes) in &signal_artifact_objects {
         boundary()?;
@@ -1138,7 +1147,7 @@ fn load_exact_checkpoint_set_with_boundary(
         let node = NodeId {
             name: target.node.into_string(),
         };
-        let snapshot = ExactSnapshotHandle::from_canonical_bytes_with_limit(
+        let mut snapshot = ExactSnapshotHandle::from_canonical_bytes_with_limit(
             &read_object(
                 &object_directory,
                 target.snapshot,
@@ -1151,6 +1160,7 @@ fn load_exact_checkpoint_set_with_boundary(
         .map_err(|error| {
             loop_factory_error(format!("decode QEMU snapshot for `{}`: {error}", node.name))
         })?;
+        snapshot.bind_block_overlay_source(Arc::clone(&block_overlay_source));
         let mut overlay_artifact =
             production_artifact_from_manifest(target.overlay, object_directory.clone());
         let mut exact_ram =
@@ -1202,7 +1212,7 @@ fn load_exact_checkpoint_set_with_boundary(
             limits.fat_checkpoint_bytes,
             boundary,
         )?;
-        let host_io = QemuHostIoCheckpoint::from_canonical_bytes_with_limit(
+        let mut host_io = QemuHostIoCheckpoint::from_canonical_bytes_with_limit(
             &bytes,
             failed.execution_binding,
             limits.fat_checkpoint_bytes,
@@ -1213,6 +1223,7 @@ fn load_exact_checkpoint_set_with_boundary(
                 node.name
             ))
         })?;
+        host_io.bind_block_overlay_source(Arc::clone(&block_overlay_source));
         let fingerprint = FingerprintSample {
             node: node.clone(),
             at: VirtualTime {
@@ -1230,6 +1241,15 @@ fn load_exact_checkpoint_set_with_boundary(
             ));
         }
     }
+    require_named_block_overlay_chunks(
+        &manifest.block_overlay_chunks,
+        targets
+            .values()
+            .map(|target: &ProductionVmExactCheckpointTarget| target.snapshot.host_io())
+            .chain(failed_host_io.values().map(|failed| &failed.host_io))
+            .filter_map(|host_io| host_io.block())
+            .map(|block| block.device_snapshot()),
+    )?;
     let node_generations = decode_generations(manifest.node_generations)?;
     boundary()?;
     let node_service_states = decode_service_states(manifest.node_service_states)?;
@@ -1432,6 +1452,7 @@ fn manifest_object_identities(manifest: &ClosureManifest) -> BTreeSet<ContentHas
     identities.extend(manifest.event_log_segments.iter().copied());
     identities.extend(manifest.signal_artifacts.iter().copied());
     identities.extend(manifest.fault_trace_segments.iter().copied());
+    identities.extend(manifest.block_overlay_chunks.iter().copied());
     identities.extend(
         manifest
             .failed_host_io
@@ -1778,6 +1799,7 @@ fn enforce_persist_limits(
             )?;
         }
     }
+    bytes = add_checkpoint_bytes(bytes, block_overlay_chunk_bytes(checkpoint)?)?;
     for failed in &manifest.failed_host_io {
         let node = NodeId {
             name: failed.node.to_string(),
@@ -1952,6 +1974,11 @@ fn authenticate_existing_publication_with_boundary(
             boundary,
         )?;
     }
+    authenticate_published_block_overlay_chunks_with_boundary(
+        object_directory,
+        expected,
+        boundary,
+    )?;
     for failed in &expected.failed_host_io {
         boundary()?;
         let node = NodeId {
@@ -2447,6 +2474,8 @@ fn manifest_and_objects_with_boundary(
         event_log_segments: checkpoint.scheduler.event_log_segment_dependencies(),
         signal_artifacts: checkpoint.signal_artifact_objects.keys().copied().collect(),
         fault_trace_segments: checkpoint.fault_trace_objects.keys().copied().collect(),
+        block_overlay_chunks: named_block_overlay_chunks(checkpoint_block_snapshots(checkpoint))
+            .map_err(|error| store_error(format!("identify block overlay chunks: {error}")))?,
         trigger_state: hash_bytes_with_boundary(&trigger_state, boundary)?,
         assertion_state: hash_bytes_with_boundary(&assertion_state, boundary)?,
         lifecycle_state: hash_bytes_with_boundary(&lifecycle_state, boundary)?,
@@ -2528,6 +2557,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
         event_log_segments: manifest.event_log_segments.clone(),
         signal_artifacts: manifest.signal_artifacts.clone(),
         fault_trace_segments: manifest.fault_trace_segments.clone(),
+        block_overlay_chunks: manifest.block_overlay_chunks.clone(),
         trigger_state: manifest.trigger_state,
         assertion_state: manifest.assertion_state,
         lifecycle_state: manifest.lifecycle_state,
@@ -2555,7 +2585,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
     if manifest.format_version != MANIFEST_VERSION {
         return Err(store_error("unsupported exact checkpoint manifest version"));
     }
-    let domain = "crucible.production-exact-closure.v10";
+    let domain = "crucible.production-exact-closure.v11";
     Ok(ContentHash::from_canonical_material(
         domain,
         &hex_bytes(&bytes),
@@ -2617,6 +2647,10 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
             .fault_trace_segments
             .windows(2)
             .all(|pair| pair[0] < pair[1])
+        || !manifest
+            .block_overlay_chunks
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
         || manifest
             .event_log_segments
             .iter()
@@ -2665,7 +2699,7 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
     for target in &manifest.targets {
         if !target.overlay.sparse {
             return Err(String::from(
-                "v10 closure manifest has an invalid overlay layout",
+                "v11 closure manifest has an invalid overlay layout",
             ));
         }
         validate_sparse_artifact_shape(&target.overlay)?;
@@ -2691,7 +2725,7 @@ fn validate_exact_ram_manifest(checkpoint: &ExactRamManifest) -> Result<(), Stri
         || (checkpoint.layers.len() > 1) != checkpoint.parent_closure.is_some()
     {
         return Err(String::from(
-            "v10 exact RAM chain has an invalid base or depth",
+            "v11 exact RAM chain has an invalid base or depth",
         ));
     }
     validate_dense_artifact_shape(&checkpoint.device)?;
@@ -2700,14 +2734,14 @@ fn validate_exact_ram_manifest(checkpoint: &ExactRamManifest) -> Result<(), Stri
         validate_dense_artifact_shape(&layer.artifact)?;
         if layer.ram_regions == 0 || layer.artifact.length == 0 || layer.topology != topology {
             return Err(String::from(
-                "v10 exact RAM layer has invalid QEMU metadata",
+                "v11 exact RAM layer has invalid QEMU metadata",
             ));
         }
         if index > 0 {
             let parent = &checkpoint.layers[index - 1];
             if layer.kind != ProductionExactRamKind::Delta || layer.parent != Some(parent.identity)
             {
-                return Err(String::from("v10 exact RAM delta chain is not contiguous"));
+                return Err(String::from("v11 exact RAM delta chain is not contiguous"));
             }
         }
     }

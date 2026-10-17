@@ -586,12 +586,12 @@ fn world_bound_queue_retains_original_key_through_codec_restore_and_private_clon
     let encoded = host
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("encode bound host state: {error}"));
-    assert!(encoded.starts_with(b"crucible.qemu-host-io-checkpoint.v6\0"));
+    assert!(encoded.starts_with(b"crucible.qemu-host-io-checkpoint.v7\0"));
     let decoded = crate::QemuHostIoCheckpoint::from_canonical_bytes(&encoded, execution)
         .unwrap_or_else(|error| panic!("decode bound host state: {error}"));
     assert_eq!(decoded, host);
 
-    let prefix = b"crucible.qemu-host-io-checkpoint.v6\0";
+    let prefix = b"crucible.qemu-host-io-checkpoint.v7\0";
     let mut bare: ciborium::Value = ciborium::de::from_reader(&encoded[prefix.len()..])
         .unwrap_or_else(|error| panic!("inspect current wire: {error}"));
     let ciborium::Value::Map(fields) = &mut bare else {

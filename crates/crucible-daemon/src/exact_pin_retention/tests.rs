@@ -300,13 +300,14 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         // names retained search-frontier parents by prefix, its
         // World-bound I/O ledger, the v3 host-assertion continuation, and the
         // genesis observation choice-source and direct-selection index anchors,
-        // the v10 closure's resolved-effect trace-segment catalog, a version 2
+        // the v11 closure's resolved-effect trace-segment catalog and its
+        // (here empty) block overlay chunk list, a version 2
         // replay-closure root as the checkpoint choice child, the version 8
         // production fault runtime with its referenced-event window, and the
         // version 5 schedule transport inside its configuration payload.
         // Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "7b6d121156c876f535c049ab7f9a5237e13ce542ab150ecee133060ebe03709d"
+        "ad10a38f4998cd58fa68ae6ec15788d7086bb68fa4e910a395702284d08945bc"
     );
     drop(store);
 
