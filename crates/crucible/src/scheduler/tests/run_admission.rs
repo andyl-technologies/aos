@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "run_admission/native_console.rs"]
+mod native_console;
+
 #[path = "run_admission/semantic_horizon.rs"]
 mod semantic_horizon;
 

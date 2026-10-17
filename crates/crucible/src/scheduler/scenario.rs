@@ -71,6 +71,8 @@ pub struct SchedulerLivenessScenario {
     pub event_sequences: EventSequenceState,
     /// Static world products used to validate trigger node scheduling actions.
     pub trigger_static_topology: Option<WorldStaticTopology>,
+    /// Console matchers the trigger graph evaluates, declared at admission.
+    pub(super) trigger_console_patterns: BTreeSet<(NodeId, String)>,
     /// Submitted scenario identity retained at a production lifecycle boundary.
     bound_scenario_def: Option<ScenarioDef>,
 }
@@ -105,6 +107,7 @@ impl SchedulerLivenessScenario {
             pending_events,
             event_sequences: EventSequenceState::empty(),
             trigger_static_topology: None,
+            trigger_console_patterns: BTreeSet::new(),
             ready_point_counters: BTreeMap::new(),
             bound_scenario_def: None,
         };
@@ -136,6 +139,21 @@ impl SchedulerLivenessScenario {
     pub fn with_trigger_world(mut self, world: &World) -> Self {
         self.trigger_static_topology = Some(world.static_topology());
         self.refresh_configuration();
+        self
+    }
+
+    /// Declares every console matcher `triggers` evaluates.
+    ///
+    /// The scheduler declares these matchers on its genesis condition prefix,
+    /// before the run produces a console byte, so trigger `console_match`
+    /// leaves fold bytes as they arrive and never rescan console history
+    /// (RFC-0020 CMEAS-18). Evaluating a graph with an undeclared matcher
+    /// fails with [`SchedulerError::UndeclaredConsoleMatcher`]. Matchers do not
+    /// enter the scheduler configuration identity.
+    #[must_use]
+    pub fn with_trigger_console_matchers(mut self, triggers: &EventGraph) -> Self {
+        self.trigger_console_patterns
+            .extend(crate::event_graph_console_patterns(triggers));
         self
     }
 

@@ -42,6 +42,17 @@ pub(in super::super) fn event_log_coverage_entry(
     })
 }
 
+impl EventLogCoverageObservation {
+    /// Returns the coverage observation `entry` carries, if any.
+    ///
+    /// This is the per-entry step of [`event_log_coverage_projection`], for
+    /// callers that fold coverage over a log they do not hold in memory.
+    #[must_use]
+    pub fn from_entry(entry: &SchedulerEventLogEntry) -> Option<Self> {
+        event_log_coverage_entry(0, entry).map(|entry| entry.observation)
+    }
+}
+
 pub(in super::super) fn event_log_assertion_proximity_entry(
     raw_index: usize,
     entry: &SchedulerEventLogEntry,

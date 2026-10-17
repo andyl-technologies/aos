@@ -31,11 +31,13 @@ use crate::{
 /// Stable environment adapter for the worked network fault contract.
 pub const NETWORK_FAULT_CAMPAIGN_ADAPTER: &str = "crucible.worked-network-fault.v1";
 
+/// Maximum network fault branches in one replay plan: one per phase.
+pub const MAX_NETWORK_FAULT_CAMPAIGN_BRANCHES: usize = 2;
+
 mod group_schema;
 
 use group_schema::{fault_context, fault_group, fault_source};
 
-const MAX_NETWORK_FAULT_BRANCHES: usize = 2;
 const FAULT_NETWORK: &str = "fault.network";
 const FAULT_KIND: &str = "fault.kind";
 const AFFECTED_PATH: &str = "fault.affected_path";
@@ -466,7 +468,7 @@ impl NetworkFaultCampaignReplayPlan {
         target: Configuration,
         branches: Vec<NetworkFaultCampaignBranch>,
     ) -> Result<Self, NetworkFaultSelectableError> {
-        if branches.len() > MAX_NETWORK_FAULT_BRANCHES {
+        if branches.len() > MAX_NETWORK_FAULT_CAMPAIGN_BRANCHES {
             return Err(NetworkFaultSelectableError::ReplayPlanMismatch);
         }
         let mut phases = BTreeSet::new();
@@ -479,9 +481,9 @@ impl NetworkFaultCampaignReplayPlan {
                 || start < previous_end
                 || end != start + 1
                 || end > target.schedule.len()
-                || branch.parent.schedule.decisions() != &target.schedule.decisions()[..start]
-                || branch.decision != target.schedule.decisions()[start]
-                || branch.selected.schedule.decisions() != &target.schedule.decisions()[..end]
+                || !target.schedule.starts_with(&branch.parent.schedule)
+                || branch.decision != target.schedule.decision_history()[start]
+                || !target.schedule.starts_with(&branch.selected.schedule)
                 || !phases.insert(branch.phase)
                 || (branch.phase == NetworkFaultPhase::Followup
                     && !first_at.is_some_and(|at| at < branch.at))

@@ -308,33 +308,42 @@ impl FingerprintSampleSlot {
         Ok(())
     }
 
-    /// Returns a tear-free snapshot, or `None` if nothing was ever published.
+    /// Attempts one tear-free read, returning `None` before any publication.
     ///
-    /// The read retries until it observes a stable even generation, so it never
-    /// returns a torn mix of two publications.
-    #[must_use]
-    pub fn snapshot(&self) -> Option<FingerprintSample> {
-        loop {
-            let before = self.sample_gen.load(Ordering::Acquire);
-            if before == 0 {
-                return None;
-            }
-            if before & 1 == 1 {
-                core::hint::spin_loop();
-                continue;
-            }
-            let mut words = [0_u64; FINGERPRINT_SAMPLE_WORDS];
-            for (value, slot) in words.iter_mut().zip(self.words.iter()) {
-                *value = slot.load(Ordering::Acquire);
-            }
-            let after = self.sample_gen.load(Ordering::Acquire);
-            if before == after {
-                return Some(unpack_sample(&words));
-            }
-            core::hint::spin_loop();
+    /// Unavailable publication is distinct from an unpublished slot. Callers
+    /// that wait must retry under their own original supervision deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FingerprintSamplePublicationUnavailable`] when a writer is
+    /// active or the generation changes while the payload is read.
+    pub fn snapshot(
+        &self,
+    ) -> Result<Option<FingerprintSample>, FingerprintSamplePublicationUnavailable> {
+        let before = self.sample_gen.load(Ordering::Acquire);
+        if before == 0 {
+            return Ok(None);
         }
+        if before & 1 == 1 {
+            return Err(FingerprintSamplePublicationUnavailable);
+        }
+
+        let mut words = [0_u64; FINGERPRINT_SAMPLE_WORDS];
+        for (value, slot) in words.iter_mut().zip(self.words.iter()) {
+            *value = slot.load(Ordering::Acquire);
+        }
+        let after = self.sample_gen.load(Ordering::Acquire);
+        if before != after {
+            return Err(FingerprintSamplePublicationUnavailable);
+        }
+        Ok(Some(unpack_sample(&words)))
     }
 }
+
+/// Reports that no coherent fingerprint sample could be acquired in one read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("fingerprint publication is temporarily unavailable")]
+pub struct FingerprintSamplePublicationUnavailable;
 
 fn digest_to_words(digest: &[u8; FINGERPRINT_DIGEST_BYTES], out: &mut [u64]) {
     for (word, chunk) in out.iter_mut().zip(digest.as_chunks::<8>().0) {
@@ -462,7 +471,37 @@ mod tests {
         let slot = FingerprintSampleSlot::new();
         assert_eq!(slot.published_generation(), 0);
         assert_eq!(slot.capture_request_generation(), 0);
-        assert_eq!(slot.snapshot(), None);
+        assert_eq!(slot.snapshot(), Ok(None));
+    }
+
+    #[test]
+    fn active_publication_is_not_an_absent_sample() {
+        let slot = FingerprintSampleSlot::new();
+        slot.sample_gen.store(1, Ordering::Release);
+
+        assert_eq!(
+            slot.snapshot(),
+            Err(FingerprintSamplePublicationUnavailable)
+        );
+        assert_eq!(slot.capture_request_generation(), 0);
+        slot.sample_gen.store(0, Ordering::Release);
+        assert_eq!(slot.snapshot(), Ok(None));
+    }
+
+    #[test]
+    fn interrupted_republication_cannot_return_the_previous_payload() {
+        let slot = FingerprintSampleSlot::new();
+        let original = sample();
+        assert_eq!(slot.publish(&original), Ok(()));
+        slot.sample_gen.fetch_add(1, Ordering::AcqRel);
+
+        assert_eq!(
+            slot.snapshot(),
+            Err(FingerprintSamplePublicationUnavailable)
+        );
+        assert_eq!(slot.capture_request_generation(), 0);
+        slot.sample_gen.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(slot.snapshot(), Ok(Some(original)));
     }
 
     #[test]
@@ -497,7 +536,7 @@ mod tests {
             panic!("sample within capacity: {error}");
         }
         assert_eq!(slot.published_generation(), 2);
-        assert_eq!(slot.snapshot(), Some(published));
+        assert_eq!(slot.snapshot(), Ok(Some(published)));
     }
 
     #[test]
@@ -512,7 +551,7 @@ mod tests {
             panic!("second publish: {error}");
         }
         assert_eq!(slot.published_generation(), 4);
-        assert_eq!(slot.snapshot(), Some(second));
+        assert_eq!(slot.snapshot(), Ok(Some(second)));
     }
 
     #[test]

@@ -54,13 +54,13 @@ pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
 };
 pub use graph::{
-    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
-    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPackedRepackAdmin,
-    StoreGraphPhysicalAdmin, StoreGraphPhysicalRepairDisposition, StoreGraphPhysicalRetention,
+    DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES, StoreGraph, StoreGraphAdmin, StoreGraphConfig,
+    StoreGraphConfigurationId, StoreGraphPackedRepackAdmin, StoreGraphPhysicalAdmin,
+    StoreGraphPhysicalRepairDisposition, StoreGraphPhysicalRetention,
     StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError,
-    StoreGraphVerificationLimit, StoreGraphVerificationLimits, StoreGraphVerificationLimitsError,
-    StoreGraphVerificationReport, StoreNodeDescription, StoreNodeId, StoreNodeKind,
-    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StorePhysicalRepairDisposition,
+    StoreGraphVerificationLimit, StoreGraphVerificationLimits, StoreGraphVerificationReport,
+    StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeMetrics,
+    StoreNodeMetricsDescription, StoreNodeSpec, StorePhysicalRepairDisposition,
     StorePhysicalRepairReceipt, StoreTierPolicy, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
@@ -226,6 +226,20 @@ impl ContentId {
             schema_version,
             digest,
         })
+    }
+
+    /// Rebuilds an identity from its kind, schema version, and digest.
+    ///
+    /// No bytes are hashed, so the result is only as trustworthy as the parts:
+    /// callers use it to restore an identity they already authenticated, such
+    /// as a fixed-width sort key spilled to private scratch storage.
+    #[must_use]
+    pub const fn from_parts(kind: ObjectKind, schema_version: u32, digest: [u8; 32]) -> Self {
+        Self {
+            kind,
+            schema_version,
+            digest,
+        }
     }
 
     /// Returns the semantic object kind.

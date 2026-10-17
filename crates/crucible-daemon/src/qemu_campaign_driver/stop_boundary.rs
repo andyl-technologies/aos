@@ -120,7 +120,7 @@ pub(super) fn reached_requested_stop(
                 evidence.outcome,
                 evidence.quantum_start_completed_quanta,
                 evidence.completed_quanta,
-                evidence.prior_entries,
+                evidence.prior,
             )
             .map(|reached| {
                 reached.map(|(proof, evidence)| ModeledStop::ObservationReached {

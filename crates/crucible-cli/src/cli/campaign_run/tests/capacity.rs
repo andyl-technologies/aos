@@ -1,4 +1,4 @@
-//! Tests deployment resource-capacity enforcement.
+//! Tests deployment resource-capacity enforcement and run horizons.
 
 use super::*;
 
@@ -35,4 +35,19 @@ fn guarded_campaign_route_uses_the_deployment_quanta_ceiling() {
         PRODUCTION_CLI_QUANTUM_BUDGET + 10
     );
     assert!(guarded_run_resources(larger, Some(PRODUCTION_CLI_QUANTUM_BUDGET + 11)).is_err());
+}
+
+#[test]
+fn interactive_run_ceiling_follows_an_authored_deadline_beyond_the_default() {
+    let one_minute = 60_000_000_000_000;
+
+    assert_eq!(
+        interactive_run_ceiling_ticks(None),
+        PRODUCTION_CLI_RUN_CEILING_TICKS
+    );
+    assert_eq!(
+        interactive_run_ceiling_ticks(Some(1_000_000_000_000)),
+        PRODUCTION_CLI_RUN_CEILING_TICKS
+    );
+    assert_eq!(interactive_run_ceiling_ticks(Some(one_minute)), one_minute);
 }

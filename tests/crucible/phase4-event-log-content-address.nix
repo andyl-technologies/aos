@@ -268,10 +268,13 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase4-event-log-content-address";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.pkg-config
         pkgs.rust
         pkgs.sed
       ];

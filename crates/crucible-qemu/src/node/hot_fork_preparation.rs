@@ -1,7 +1,8 @@
 //! Composite branch-private resource preparation for one retained template.
 //!
 //! A hot-fork child needs a private plugin ring, diagnostic stream, QMP
-//! channel, console stream, and plugin control/wake pair. Their individual
+//! channel and plugin control/wake pair. Native console reconstruction belongs
+//! to the sealed plugin private-mapping contribution. Their individual
 //! operations remain useful protocol primitives, but production preparation
 //! must perform them in one reviewed order and authenticate the resulting QEMU
 //! resource stage before a target process contract can be installed.
@@ -9,10 +10,9 @@
 use thiserror::Error;
 
 use super::{
-    QemuHotForkChildConsoleStageError, QemuHotForkChildConsoleStageProof,
-    QemuHotForkChildConsoleStageState, QemuHotForkChildDiagnosticStageError,
-    QemuHotForkChildDiagnosticStageProof, QemuHotForkChildDiagnosticStageState,
-    QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
+    QemuHotForkChildDiagnosticStageError, QemuHotForkChildDiagnosticStageProof,
+    QemuHotForkChildDiagnosticStageState, QemuHotForkChildQmpStageError,
+    QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
     QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
     QemuHotForkPluginEndpointStageState, QemuHotForkPrivateRingStageError,
     QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState, QemuNode,
@@ -37,7 +37,6 @@ pub struct QemuHotForkPreparedChildResources {
     private_ring: QemuHotForkPrivateRingStageProof,
     diagnostics: QemuHotForkChildDiagnosticStageProof,
     child_qmp: QemuHotForkChildQmpStageProof,
-    child_console: QemuHotForkChildConsoleStageProof,
     plugin_endpoints: QemuHotForkPluginEndpointStageProof,
 }
 
@@ -66,12 +65,6 @@ impl QemuHotForkPreparedChildResources {
         &self.child_qmp
     }
 
-    /// Returns the node-retained child-console stage proof.
-    #[must_use]
-    pub const fn child_console(&self) -> &QemuHotForkChildConsoleStageProof {
-        &self.child_console
-    }
-
     /// Returns the sealed plugin endpoint and worker-plan proof.
     #[must_use]
     pub const fn plugin_endpoints(&self) -> &QemuHotForkPluginEndpointStageProof {
@@ -89,6 +82,12 @@ pub enum QemuHotForkChildResourcePreparationError {
     /// The source was not an empty active template awaiting only plugin resources.
     #[error("retained hot-fork template is not ready for child resource preparation")]
     InvalidTemplateState,
+    /// QEMU rejected the template query before child resources were staged.
+    #[error("query hot-fork template before child resource staging: {0}")]
+    TemplateQueryBeforeStaging(#[source] QemuNodeChannelError),
+    /// QEMU rejected the template query after all child resources were staged.
+    #[error("query hot-fork template after child resource staging: {0}")]
+    TemplateQueryAfterStaging(#[source] QemuNodeChannelError),
     /// Capturing or materializing the private ring failed before transfer.
     #[error(transparent)]
     Ring(#[from] QemuNodeChannelError),
@@ -101,9 +100,6 @@ pub enum QemuHotForkChildResourcePreparationError {
     /// Child-QMP staging failed.
     #[error(transparent)]
     ChildQmp(#[from] QemuHotForkChildQmpStageError),
-    /// Child-console staging failed.
-    #[error(transparent)]
-    ChildConsole(#[from] QemuHotForkChildConsoleStageError),
     /// Plugin endpoint and worker-plan sealing failed.
     #[error(transparent)]
     PluginEndpoints(#[from] QemuHotForkPluginEndpointStageError),
@@ -118,7 +114,7 @@ impl QemuNode {
     /// The source must retain an otherwise empty template transaction whose six
     /// non-plugin-ring proofs are already acknowledged. The operation captures
     /// and materializes one private ring, then stages diagnostics, child QMP,
-    /// child console, and plugin endpoints in dependency order. It finally
+    /// and plugin endpoints in dependency order. It finally
     /// authenticates one complete QEMU resource report. No process is forked
     /// and no target cgroup capability is installed by this method.
     ///
@@ -132,13 +128,14 @@ impl QemuNode {
         &mut self,
         maximum_ring_image_bytes: usize,
     ) -> Result<QemuHotForkPreparedChildResources, QemuHotForkChildResourcePreparationError> {
-        let initial = self.query_hot_fork_template()?;
+        let initial = self
+            .query_hot_fork_template()
+            .map_err(QemuHotForkChildResourcePreparationError::TemplateQueryBeforeStaging)?;
         if self.lifecycle_state != QemuNodeLifecycleState::Running
             || !initial_template_state_is_exact(&initial)
             || self.hot_fork_private_ring_stage.is_some()
             || self.hot_fork_child_diagnostic_stage.is_some()
             || self.hot_fork_child_qmp_stage.is_some()
-            || self.hot_fork_child_console_stage.is_some()
             || self.hot_fork_plugin_endpoint_stage.is_some()
             || self.hot_fork_child_process_contract_stage.is_some()
         {
@@ -150,10 +147,11 @@ impl QemuNode {
         self.stage_hot_fork_private_ring_mapping(private)?;
         self.stage_hot_fork_child_diagnostics()?;
         self.stage_hot_fork_child_qmp()?;
-        self.stage_hot_fork_child_console()?;
         self.stage_hot_fork_plugin_endpoints()?;
 
-        let prepared = self.query_hot_fork_template()?;
+        let prepared = self
+            .query_hot_fork_template()
+            .map_err(QemuHotForkChildResourcePreparationError::TemplateQueryAfterStaging)?;
         let private_ring = self
             .hot_fork_private_ring_stage()
             .ok_or(QemuHotForkChildResourcePreparationError::ResourceBasisMismatch)?;
@@ -162,9 +160,6 @@ impl QemuNode {
             .ok_or(QemuHotForkChildResourcePreparationError::ResourceBasisMismatch)?;
         let child_qmp = self
             .hot_fork_child_qmp_stage()
-            .ok_or(QemuHotForkChildResourcePreparationError::ResourceBasisMismatch)?;
-        let child_console = self
-            .hot_fork_child_console_stage()
             .ok_or(QemuHotForkChildResourcePreparationError::ResourceBasisMismatch)?;
         let plugin_endpoints = self
             .hot_fork_plugin_endpoint_stage()
@@ -175,7 +170,6 @@ impl QemuNode {
             &private_ring,
             &diagnostics,
             &child_qmp,
-            &child_console,
             &plugin_endpoints,
         ) {
             return Err(QemuHotForkChildResourcePreparationError::ResourceBasisMismatch);
@@ -186,7 +180,6 @@ impl QemuNode {
             private_ring,
             diagnostics,
             child_qmp,
-            child_console,
             plugin_endpoints,
         })
     }
@@ -372,8 +365,6 @@ fn resource_stage_is_empty(state: QmpHotForkTemplateResourceStageState) -> bool 
         && !state.diagnostics_resource_plan_bound()
         && !state.qmp_staged()
         && !state.qmp_resource_plan_bound()
-        && !state.console_staged()
-        && !state.console_resource_plan_bound()
         && !state.plugin_endpoints_staged()
         && state.plugin_private_ring_generation() == 0
         && state.plugin_barrier_generation() == 0
@@ -397,7 +388,6 @@ fn prepared_resources_match(
     private_ring: &QemuHotForkPrivateRingStageProof,
     diagnostics: &QemuHotForkChildDiagnosticStageProof,
     child_qmp: &QemuHotForkChildQmpStageProof,
-    child_console: &QemuHotForkChildConsoleStageProof,
     endpoints: &QemuHotForkPluginEndpointStageProof,
 ) -> bool {
     let resource = state.resource_stage();
@@ -414,9 +404,6 @@ fn prepared_resources_match(
         && child_qmp.state() == QemuHotForkChildQmpStageState::Installed
         && child_qmp.template_generation() == generation
         && child_qmp.resource_plan_bound()
-        && child_console.state() == QemuHotForkChildConsoleStageState::Installed
-        && child_console.template_generation() == generation
-        && child_console.resource_plan_bound()
         && endpoints.state() == QemuHotForkPluginEndpointStageState::Installed
         && endpoints.template_generation() == generation
         && resource.template_generation() == generation
@@ -424,13 +411,11 @@ fn prepared_resources_match(
         && resource.private_ring_generation() == endpoints.private_ring_generation()
         && resource.diagnostics_staged()
         && resource.diagnostic_generation() != 0
+        && resource.diagnostic_generation() == diagnostics.generation()
         && resource.diagnostics_resource_plan_bound()
         && resource.qmp_staged()
         && resource.qmp_generation() == child_qmp.qmp_generation()
         && resource.qmp_resource_plan_bound()
-        && resource.console_staged()
-        && resource.console_generation() == child_console.console_generation()
-        && resource.console_resource_plan_bound()
         && resource.plugin_endpoints_staged()
         && resource.plugin_endpoint_generation() == endpoints.generation()
         && resource.plugin_private_ring_generation() == endpoints.private_ring_generation()
@@ -443,4 +428,54 @@ fn prepared_resources_match(
         && resource.plugin_child_plan_bound()
         && resource.plugin_child_resource_plan_bound()
         && resource.readiness_proof_acknowledged()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::super::test_support::hot_fork::{
+        QemuTestHotForkOutcome, scripted_hot_fork_source_for_test,
+    };
+    use super::*;
+
+    #[test]
+    fn prepared_resources_reject_a_stale_diagnostic_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut node = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked)?;
+        let prepared = node.prepare_hot_fork_child_resources(64 * 1024 * 1024)?;
+        let request =
+            crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0);
+        assert_eq!(
+            prepared.template(),
+            &QmpHotForkTemplateState::one_prepared(request)
+        );
+        assert!(prepared_resources_match(
+            prepared.template(),
+            prepared.template().generation(),
+            prepared.private_ring(),
+            prepared.diagnostics(),
+            prepared.child_qmp(),
+            prepared.plugin_endpoints(),
+        ));
+
+        // The existing report producer changes only the diagnostic generation;
+        // the actual installed descriptor, cookie and all stage proofs stay put.
+        let stale_request =
+            crate::QmpHotForkRequest::for_test(1, 1, 2, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0);
+        let stale = QmpHotForkTemplateState::one_prepared(stale_request);
+        assert!(!prepared_resources_match(
+            &stale,
+            prepared.template().generation(),
+            prepared.private_ring(),
+            prepared.diagnostics(),
+            prepared.child_qmp(),
+            prepared.plugin_endpoints(),
+        ));
+        assert_eq!(
+            node.hot_fork_child_diagnostic_stage().as_ref(),
+            Some(prepared.diagnostics())
+        );
+        assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+        node.shutdown_child()?;
+        Ok(())
+    }
 }

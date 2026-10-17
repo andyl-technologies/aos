@@ -492,7 +492,7 @@ fn failure_fingerprint_for_schedule(
 
 fn retained_event_log(schedule: &crucible::Schedule) -> Result<RecordedAssertionLog, EngineError> {
     let mut entries = schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .map(|(sequence, decision)| {
@@ -532,7 +532,7 @@ fn retained_event_log(schedule: &crucible::Schedule) -> Result<RecordedAssertion
 }
 
 fn schedule_emits_forbidden_marker(schedule: &crucible::Schedule) -> bool {
-    schedule.decisions().iter().any(|decision| {
+    schedule.decision_history().iter().any(|decision| {
         matches!(
             decision,
             Decision::Override(override_decision)

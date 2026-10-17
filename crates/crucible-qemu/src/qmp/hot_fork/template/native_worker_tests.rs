@@ -39,10 +39,34 @@ fn aio_proof_still_requires_closed_quiescent_admission() {
     assert!(parse_hot_fork_template_state(&report).is_err());
 }
 
+#[test]
+fn retired_console_resource_shapes_and_versions_are_rejected() {
+    let current = prepared_report();
+    assert!(parse_hot_fork_template_state(&current).is_ok());
+
+    let mut old_template = current.clone();
+    old_template["schema-version"] = json!(29);
+    assert!(parse_hot_fork_template_state(&old_template).is_err());
+
+    let mut old_resources = current.clone();
+    old_resources["resource-stage"]["schema-version"] = json!(13);
+    assert!(parse_hot_fork_template_state(&old_resources).is_err());
+
+    for (field, value) in [
+        ("console-staged", json!(true)),
+        ("console-generation", json!(1)),
+        ("console-resource-plan-bound", json!(true)),
+    ] {
+        let mut obsolete = current.clone();
+        obsolete["resource-stage"][field] = value;
+        assert!(parse_hot_fork_template_state(&obsolete).is_err());
+    }
+}
+
 /// Reproduces the complete prepared response used by the typed QMP fixture.
 pub(super) fn prepared_report() -> Value {
     let mut report = json!({
-        "schema-version": 29,
+        "schema-version": 30,
         "generation": 4,
         "outcome": "prepared",
         "transaction-active": true,
@@ -155,7 +179,7 @@ pub(super) fn prepared_report() -> Value {
             "quiescent": true
         },
         "resource-stage": {
-            "schema-version": 13,
+            "schema-version": 14,
             "template-generation": 4,
             "private-ring-staged": true,
             "private-ring-generation": 11,
@@ -165,9 +189,6 @@ pub(super) fn prepared_report() -> Value {
             "qmp-staged": true,
             "qmp-generation": 14,
             "qmp-resource-plan-bound": true,
-            "console-staged": true,
-            "console-generation": 15,
-            "console-resource-plan-bound": true,
             "plugin-endpoints-staged": true,
             "plugin-endpoint-generation": 12,
             "plugin-private-ring-generation": 11,

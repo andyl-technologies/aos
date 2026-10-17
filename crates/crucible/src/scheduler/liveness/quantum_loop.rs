@@ -273,7 +273,7 @@ impl QuantumLoop for SingleScheduler {
         ),
         SchedulerError,
     > {
-        let original_len = self.configuration.schedule.decisions().len();
+        let original_len = self.configuration.schedule.decision_history().len();
         let mut recorder = DecisionRecorder::from_seed_and_positions(
             self.configuration.clone(),
             self.decision_seed,
@@ -315,7 +315,12 @@ impl QuantumLoop for SingleScheduler {
             discovered_choices.push(discovery);
         }
         let configuration = recorder.into_configuration();
-        let recorded = configuration.schedule.decisions()[original_len..].to_vec();
+        let recorded = configuration
+            .schedule
+            .decision_history()
+            .iter_from(original_len)
+            .cloned()
+            .collect::<Vec<_>>();
         let advanced_streams = recorded
             .iter()
             .filter_map(|decision| match decision {
@@ -574,7 +579,7 @@ impl SingleScheduler {
                     projected.remove(0);
                 }
                 if selected_here.is_none() && !branch_choices.is_empty() {
-                    self.search_frontiers.push(SearchRuntimeFrontier {
+                    self.record_search_frontier(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: admission_boundary,
                         choices: SearchFrontierChoices::from_decision_sequences(branch_choices),

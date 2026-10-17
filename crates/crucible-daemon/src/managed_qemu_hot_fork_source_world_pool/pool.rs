@@ -30,6 +30,8 @@ where
             retention,
             records,
             active: BTreeMap::new(),
+            admissions: BTreeMap::new(),
+            next_admission: 0,
             checked_out: BTreeMap::new(),
             leased_out: BTreeMap::new(),
             lease_usage: HotCheckpointUsage::default(),
@@ -341,6 +343,7 @@ where
                 ));
             }
             self.active.remove(&victim_key);
+            self.admissions.remove(&victim_key);
             completed.push(victim);
         }
 
@@ -351,6 +354,8 @@ where
             Ok(commit) => {
                 self.worlds.insert(manager_key, world);
                 self.active.insert(manager_key, catalog_slot);
+                self.admissions.insert(manager_key, self.next_admission);
+                self.next_admission = self.next_admission.saturating_add(1);
                 Ok(commit)
             }
             Err(source) => {
@@ -435,6 +440,7 @@ where
             .commit_orderly_demotion(plan)
             .map_err(ManagedQemuHotForkSourceWorldDemotionError::Manager)?;
         self.active.remove(&manager_key);
+        self.admissions.remove(&manager_key);
         Ok(demotion)
     }
 
@@ -460,8 +466,11 @@ where
 
     /// Demotes and reaps every retained source while preserving cold fallbacks.
     ///
-    /// Shutdown attempts every source in canonical key order. Failed sources
-    /// remain owned by the pool and are all reported with their exact keys.
+    /// Shutdown attempts every source, newest admission first. A hot-fork
+    /// source is a process fork of the source it was captured from and can hold
+    /// descriptors into that origin's storage, so retiring descendants first
+    /// lets each origin reap its storage completely. Failed sources remain owned by the pool
+    /// and are all reported with their exact keys.
     ///
     /// # Errors
     ///
@@ -472,7 +481,8 @@ where
         &mut self,
     ) -> Result<Vec<HotCheckpointDemotion>, ManagedQemuHotForkSourceWorldShutdownError<D::Error>>
     {
-        let keys = self.worlds.keys().copied().collect::<Vec<_>>();
+        let mut keys = self.worlds.keys().copied().collect::<Vec<_>>();
+        keys.sort_by_key(|key| std::cmp::Reverse(self.admissions.get(key).copied()));
         let mut demotions = Vec::with_capacity(keys.len());
         let mut failures = Vec::new();
 

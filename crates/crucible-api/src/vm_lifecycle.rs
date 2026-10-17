@@ -21,9 +21,9 @@ use crucible::{
     QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
     ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerQuiescence, SchedulerState,
-    SearchFrontierChoices, Seed, SelectionDecision, SignalFaultCampaignReplayPlan, SimDuration,
-    SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint, VirtualTime,
-    VmArchitecture, World, WorldIoNodeKind,
+    SearchFrontierChoices, Seed, SegmentSink, SelectionDecision, SignalFaultCampaignReplayPlan,
+    SimDuration, SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint,
+    VirtualTime, VmArchitecture, World, WorldIoNodeKind,
 };
 pub use crucible_qemu::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
@@ -49,6 +49,7 @@ use crucible_qemu::{
 use quantum_loop::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
+    truncate_lifecycle_exit_log_tail,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -82,6 +83,8 @@ pub use checkpoint_store::{
     ProductionVmExactNodeRestoreAdmissions, decode_authenticated_production_exact_checkpoint,
     open_exact_checkpoint_closure, retire_production_exact_checkpoint_catalog,
 };
+mod checkpoint_event_log;
+pub use checkpoint_event_log::ProductionEventLogSegments;
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::{
     collect_signal_artifact_objects, collect_signal_artifact_objects_bounded,
@@ -104,6 +107,7 @@ pub use hot_fork::{
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use hot_fork::{
     hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
+    prepared_multi_node_hot_fork_source_world_after_selection_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_for_test,
     prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,
@@ -178,6 +182,7 @@ pub struct ProductionVmLifecycleConfig {
         BTreeMap<NodeId, crucible_protocol::app_random_branch_plan::AppRandomBranchPlan>,
     signal_artifacts: Option<Arc<dyn DagStore>>,
     fault_replay: Option<ResolvedEffectTrace>,
+    fault_trace_segments: Option<Arc<dyn SegmentSink>>,
     world_artifacts: Option<Arc<dyn DagStore>>,
     bounded_scheduler_preemption: Option<BoundedSchedulerPreemptionFlights>,
 }
@@ -261,6 +266,10 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             )
             .field("fault_replay_configured", &self.fault_replay.is_some())
             .field(
+                "fault_trace_segments_configured",
+                &self.fault_trace_segments.is_some(),
+            )
+            .field(
                 "world_artifacts_configured",
                 &self.world_artifacts.is_some(),
             )
@@ -273,7 +282,7 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
 }
 
 /// Debugger channel requested for one production QEMU lifecycle node.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ProductionVmDebugConfig {
     node: Option<String>,
     operator_listen: String,
@@ -295,7 +304,7 @@ fn production_fault_search_overrides(
     LifecycleApiError,
 > {
     let mut overrides = BTreeMap::new();
-    let mut insert_decisions = |parent: &Configuration,
+    let mut insert_decisions = |parent: &crucible::ConfigurationPrefix,
                                 decisions: &[Decision]|
      -> Result<(), LifecycleApiError> {
         for decision in decisions {
@@ -672,8 +681,12 @@ struct ProductionVmExactCheckpointSet {
     identity: ContentHash,
     configuration: Configuration,
     scheduler: Arc<SingleSchedulerCheckpoint>,
-    event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    /// Source of the sealed event-log segments `scheduler` names.
+    event_log_segments: ProductionEventLogSegments,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    /// Sealed resolved-effect trace segments the fault continuation names,
+    /// keyed by plain content hash like every other closure object.
+    fault_trace_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     trigger_state: EventGraphState,
     assertion_state: HostAssertionEvaluatorCheckpoint,
     terminal_verdict: Option<QuantumTerminalVerdict>,
@@ -999,8 +1012,9 @@ pub struct ProductionFaultEvidenceSnapshot {
     pub resolved_effect_trace: Option<ResolvedEffectTrace>,
     /// Committed locked-effect replay trace, including pass work items.
     pub locked_effect_trace: Option<ResolvedEffectTrace>,
-    /// Signal events emitted in authoritative evaluation order.
-    pub emitted_events: Vec<crucible::model::ReferencedSignalEvent>,
+    /// Referenced signal-event history: the emitted count, the chain digest
+    /// over every emission, and the events still retained for consumers.
+    pub referenced_events: crucible_qemu::ReferencedEventEvidence,
     /// Network outages active at `frontier`.
     pub network_outages: Vec<ProductionNetworkOutageEvidence>,
     /// Live network queues with at least one reservation.
@@ -1105,6 +1119,9 @@ pub struct ProductionVmLifecycleLoop {
     repository_exact_ram_rebase: Option<ProductionRepositoryExactRamRebase>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    /// Sink holding every sealed resolved-effect trace segment of this
+    /// execution; exact checkpoint capture copies the referenced ones.
+    fault_trace_segments: Arc<dyn SegmentSink>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
     debug_gateway: Option<DebugGatewayProcess>,
     debug_attach: Option<GdbAttachInfo>,
@@ -1977,6 +1994,22 @@ pub trait ProductionVmNodeLauncher: Send {
         ))
     }
 
+    /// Detaches per-attempt bindings before the world becomes a retained source.
+    ///
+    /// A retained source outlives the attempt that launched it, so attempt
+    /// cancellation must no longer reach its processes. Implementations keep
+    /// process containment and reap authority; only the attempt's
+    /// cancellation and quantum-admission bindings are released. Launchers
+    /// without such bindings use the default no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the bindings cannot be released. The
+    /// lifecycle then remains attempt-owned and must be shut down normally.
+    fn release_execution_bindings(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
     /// Creates an independent authority for whole-world debugger replay.
     ///
     /// An attempt-scoped implementation may reject this operation when its
@@ -2135,10 +2168,11 @@ mod helpers;
 mod network_faults;
 mod process_owners;
 use process_owners::{
-    ProductionLifecycleCompletedExit, ProductionLifecycleJournal, ProductionLifecycleJournalNode,
-    ProductionLifecycleJournalPhase, ProductionRunManifest,
+    ProductionLifecycleCompletedExit, ProductionLifecycleExitLog, ProductionLifecycleJournal,
+    ProductionLifecycleJournalNode, ProductionLifecycleJournalPhase, ProductionRunManifest,
 };
 mod quantum_loop;
+mod retention_drain;
 mod runtime;
 mod search;
 mod storage_faults;
@@ -2300,6 +2334,11 @@ fn production_run_directory(
                     },
                 )?;
             }
+            // The dead owner may have crashed between appending exits and
+            // renaming the run state that counts them; discard that tail
+            // before this process republishes the run.
+            truncate_lifecycle_exit_log_tail(directory, &journal.exit_log)
+                .map_err(durable_run_state_api_error)?;
             journal.phase = ProductionLifecycleJournalPhase::Quarantined;
             manifest.clean_shutdown = true;
             manifest.recovered_after_host_exit = true;
@@ -2346,7 +2385,8 @@ fn production_run_directory(
         transaction: 0,
         phase: ProductionLifecycleJournalPhase::Idle,
         nodes: Vec::new().into(),
-        completed_exits: Vec::new().into(),
+        exit_log: ProductionLifecycleExitLog::empty(),
+        pending_exits: Vec::new(),
     };
     persist_run_state_atomic(
         &path.join(PRODUCTION_RUN_STATE_FILE),

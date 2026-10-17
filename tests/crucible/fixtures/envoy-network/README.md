@@ -44,6 +44,17 @@ hops, and concurrent response-completion inversions. Completion inversions are
 application observations; packet-order claims need the modeled fabric's own
 evidence.
 
+Every semantic marker carries instance `instance-1`, and the generated
+scenario declares each one as an exact measurement boundary for a cohort that
+contains its emitter, because the campaign driver rejects undeclared markers.
+The recovery, packet-loss, and router A work windows run from A's
+`fault.transport.signaled` to west's `recovery.measured`. West's
+`traffic-window` guest measurement spans `network.converged` to
+`recovery.measured`. Additional windows bound the hold-down
+(`fault.transport.primary-probed` to `fault.transport.signaled`), the observed
+failover (`fault.transport.signaled` to `network.failover.observed`), and the
+follow-up (`fault.followup.primary-probed` to `campaign.complete`).
+
 The campaign materializer must bind its typed environment fault choices to
 Crucible's modeled network adapters and deliver the RFC-0014 fault signal at
 the transport boundary. The guest image does not inject host-side faults.
@@ -63,13 +74,19 @@ real packet on which to apply; `fault.transport.primary-probed` marks the
 completed attempt. The same sequence uses `fault.followup.primary-probed` for
 the second response.
 West announces convergence before emitting its marker; B, C, and east
-acknowledge the boundary to A before their markers, and A emits last. This
-ordering lets each VM park at its marker without interrupting the convergence
-check. West keeps sending requests while
+acknowledge the boundary to A before their markers, and A emits last. C first
+waits until A has recorded east's acknowledgement, because a parked C would
+stop the only relay for it, and only then acknowledges, so A cannot park while
+C still depends on it. This ordering lets each VM park at its marker
+without interrupting the convergence check. A parked VM consumes no frames,
+and the host refuses a phase boundary while a frame is still in flight, so
+each VM also waits before its marker until no TCP socket is connecting,
+half-closed, or awaiting a peer's final FIN or ACK. Idle keep-alive and
+listening sockets stay open. West keeps sending requests while
 A receives and applies the first recovery group, then begins the 120-request
 measurement window. West commits the measurement and sends `followup-ready`
-before its marker; B, C, and east acknowledge A before their markers, and A
-emits last. All five VMs emit `fault.followup.ready` before A requests
+before its marker; B, C, and east acknowledge A before their markers, C again
+waits for east's relayed acknowledgement before its own, and A emits last. All five VMs emit `fault.followup.ready` before A requests
 the second group. The guest monitor continues traffic after
 `campaign.complete` so a retained child still has an active workload.
 

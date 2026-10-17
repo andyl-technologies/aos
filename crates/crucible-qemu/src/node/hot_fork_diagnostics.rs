@@ -16,18 +16,17 @@ mod summary;
 #[path = "hot_fork_diagnostics/live_drain.rs"]
 mod live_drain;
 
-/// Maximum branch-private child diagnostic bytes retained for one template.
-///
-/// The host drains the nonblocking stream while the child is live, but retains
-/// no more than this complete prefix. Reaching the limit while another byte is
-/// available fails the node closed instead of silently truncating diagnostics.
-pub const MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES: usize = 16 * 1024 * 1024;
+#[path = "hot_fork_diagnostics/retention.rs"]
+mod retention;
+
+use retention::DiagnosticRetention;
+pub use retention::MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES;
 
 /// Result of one nonblocking child-diagnostics drain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QemuHotForkChildDiagnosticDrain {
     bytes_read: usize,
-    total_retained: usize,
+    stream_bytes: u64,
     eof: bool,
 }
 
@@ -38,10 +37,13 @@ impl QemuHotForkChildDiagnosticDrain {
         self.bytes_read
     }
 
-    /// Returns the cumulative bytes retained for this diagnostics generation.
+    /// Returns the cumulative bytes drained for this diagnostics generation.
+    ///
+    /// Only the final [`MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES`] of them
+    /// remain retained.
     #[must_use]
-    pub const fn total_retained(self) -> usize {
-        self.total_retained
+    pub const fn stream_bytes(self) -> u64 {
+        self.stream_bytes
     }
 
     /// Returns whether every writer for this diagnostics generation has closed.
@@ -51,13 +53,18 @@ impl QemuHotForkChildDiagnosticDrain {
     }
 }
 
-/// Complete bounded diagnostics captured when an installed stage is released.
+/// Complete diagnostics stream accounting captured when an installed stage is released.
+///
+/// The capture proves the stream was drained through EOF. It retains the
+/// stream's total length, its final
+/// [`MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES`], and the control-row fold
+/// computed over every byte; earlier bytes are not retained.
 #[derive(Debug, PartialEq, Eq)]
 pub struct QemuHotForkChildDiagnosticCapture {
     descriptor_name: crate::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
-    bytes: Vec<u8>,
+    retention: DiagnosticRetention,
 }
 
 impl QemuHotForkChildDiagnosticCapture {
@@ -79,26 +86,40 @@ impl QemuHotForkChildDiagnosticCapture {
         self.template_generation
     }
 
-    /// Returns the complete bounded byte stream drained before release.
+    /// Returns every byte drained from the stream before release.
     #[must_use]
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    pub const fn stream_bytes(&self) -> u64 {
+        self.retention.stream_bytes()
+    }
+
+    /// Returns the final retained bytes of the stream in arrival order.
+    #[must_use]
+    pub fn tail(&self) -> &[u8] {
+        self.retention.tail()
+    }
+
+    /// Returns how many leading stream bytes [`Self::tail`] omits.
+    #[must_use]
+    pub fn omitted_bytes(&self) -> u64 {
+        self.retention.omitted_bytes()
     }
 
     /// Summarizes advisory control records from the released private stderr stream.
     ///
-    /// The summary retains at most 32 schema-checked rows of at most 512 bytes
-    /// each. Malformed, foreign-PID callback, and incomplete rows are counted
-    /// rather than forwarded. These records never authenticate execution.
+    /// The summary was folded over every drained byte for the child process
+    /// bound at fork and retains at most 32 schema-checked rows of at most 512
+    /// bytes each. Malformed, foreign-PID callback, and incomplete rows are
+    /// counted rather than forwarded. These records never authenticate
+    /// execution.
     #[must_use]
-    pub fn control_diagnostics_summary(&self, child_process_id: u32) -> String {
-        summary::control_diagnostics_summary(&self.bytes, child_process_id)
+    pub fn control_diagnostics_summary(&self) -> String {
+        self.retention.control_diagnostics_summary()
     }
 
-    /// Consumes the capture and returns its complete bounded byte stream.
+    /// Consumes the capture and returns its final retained bytes.
     #[must_use]
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.bytes
+    pub fn into_tail(self) -> Vec<u8> {
+        self.retention.into_tail()
     }
 }
 
@@ -108,13 +129,16 @@ impl QemuHotForkChildDiagnosticCapture {
 /// and the node-owned child writer until ordered release. The successful child
 /// owner alone receives this nonblocking reader, so it can continuously drain
 /// diagnostics without borrowing or mutating the reusable source template.
+/// Draining has no length limit: every byte is counted and folded into the
+/// control summary, and only the final
+/// [`MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES`] stay retained.
 #[must_use = "the child diagnostics consumer must be drained through ordered release"]
 pub struct QemuHotForkChildDiagnosticConsumer {
     host: UnixStream,
     descriptor_name: crate::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
-    retained: Vec<u8>,
+    retention: DiagnosticRetention,
     eof: bool,
     writer_detached: bool,
     captured: bool,
@@ -128,7 +152,7 @@ impl std::fmt::Debug for QemuHotForkChildDiagnosticConsumer {
             .field("descriptor_name", &self.descriptor_name)
             .field("socket_cookie", &self.socket_cookie)
             .field("template_generation", &self.template_generation)
-            .field("total_retained", &self.retained.len())
+            .field("stream_bytes", &self.retention.stream_bytes())
             .field("eof", &self.eof)
             .field("writer_detached", &self.writer_detached)
             .field("captured", &self.captured)
@@ -137,6 +161,40 @@ impl std::fmt::Debug for QemuHotForkChildDiagnosticConsumer {
 }
 
 impl QemuHotForkChildDiagnosticConsumer {
+    /// Builds an explicitly modeled private diagnostics consumer for tests.
+    ///
+    /// This creates no native writer, sealed resource plan, or release receipt.
+    /// The supplied socket still uses the production nonblocking drain and
+    /// bounded retention. No child process is bound, so the control summary
+    /// accepts only PID-free rows until
+    /// [`Self::bind_child_process_id_for_test`] binds one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a channel error when the socket cannot enter nonblocking mode.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_unvalidated_test_stream(
+        host: UnixStream,
+        descriptor_name: crate::QmpDescriptorName,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<Self, QemuNodeChannelError> {
+        host.set_nonblocking(true).map_err(|source| {
+            QemuNodeChannelError::new("configure modeled child diagnostics", source.to_string())
+        })?;
+        Ok(Self {
+            host,
+            descriptor_name,
+            socket_cookie,
+            template_generation,
+            retention: DiagnosticRetention::default(),
+            eof: false,
+            writer_detached: false,
+            captured: false,
+            live_drain_error: None,
+        })
+    }
+
     /// Returns the standard-QMP descriptor name binding this consumer.
     #[must_use]
     pub const fn descriptor_name(&self) -> &crate::QmpDescriptorName {
@@ -155,34 +213,59 @@ impl QemuHotForkChildDiagnosticConsumer {
         self.template_generation
     }
 
-    /// Returns every diagnostic byte retained so far, in arrival order.
+    /// Returns the final diagnostic bytes drained so far, in arrival order.
     ///
-    /// The bytes stay owned by the consumer until ordered release captures
-    /// them; this view lets a failure report quote what the child wrote.
+    /// At most [`MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES`] are retained;
+    /// this view lets a failure report quote what the child wrote last.
     #[must_use]
-    pub fn retained(&self) -> &[u8] {
-        &self.retained
+    pub fn retained_tail(&self) -> &[u8] {
+        self.retention.tail()
     }
 
-    /// Summarizes already-retained control diagnostics without reading the stream.
+    /// Returns every byte drained so far, including those no longer retained.
+    #[must_use]
+    pub const fn stream_bytes(&self) -> u64 {
+        self.retention.stream_bytes()
+    }
+
+    /// Returns how many leading drained bytes [`Self::retained_tail`] omits.
+    #[must_use]
+    pub fn omitted_bytes(&self) -> u64 {
+        self.retention.omitted_bytes()
+    }
+
+    /// Summarizes the control diagnostics drained so far without reading the stream.
     ///
     /// The same row and schema limits as the completed capture apply. This
     /// observation never drains, releases, or changes the consumer's state.
     #[must_use]
-    pub fn control_diagnostics_summary(&self, child_process_id: u32) -> String {
-        summary::control_diagnostics_summary(&self.retained, child_process_id)
+    pub fn control_diagnostics_summary(&self) -> String {
+        self.retention.control_diagnostics_summary()
+    }
+
+    /// Binds the child process whose PID-bearing control rows the summary accepts.
+    ///
+    /// The successful fork binds the child before transferring this consumer,
+    /// ahead of every child-owned drain.
+    pub(crate) fn bind_child_process_id(&mut self, child_process_id: u32) {
+        self.retention.bind_child_process_id(child_process_id);
+    }
+
+    /// Binds a modeled child process before a test drains the stream.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bind_child_process_id_for_test(&mut self, child_process_id: u32) {
+        self.bind_child_process_id(child_process_id);
     }
 
     /// Drains every diagnostic byte currently available without blocking.
     ///
-    /// The consumer retains one complete prefix bounded by
-    /// [`MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES`]. It fails closed rather
-    /// than silently truncating bytes beyond that limit.
+    /// Every drained byte is counted and folded; only the final
+    /// [`MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES`] stay retained.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when stream I/O fails, the cumulative
-    /// capture exceeds its bound, or ordered release already consumed it.
+    /// Returns [`QemuNodeChannelError`] when stream I/O fails, a bounded live
+    /// drain already failed, or ordered release already consumed the stream.
     pub fn drain_available(
         &mut self,
     ) -> Result<QemuHotForkChildDiagnosticDrain, QemuNodeChannelError> {
@@ -208,25 +291,14 @@ impl QemuHotForkChildDiagnosticConsumer {
     fn drain_available_inner(
         &mut self,
     ) -> Result<QemuHotForkChildDiagnosticDrain, QemuHotForkChildDiagnosticConsumeError> {
-        let before = self.retained.len();
+        let mut bytes_read = 0_usize;
         let mut buffer = [0_u8; 8192];
         while !self.eof {
             match self.host.read(&mut buffer) {
                 Ok(0) => self.eof = true,
                 Ok(count) => {
-                    let attempted = self.retained.len().checked_add(count).ok_or(
-                        QemuHotForkChildDiagnosticConsumeError::Capacity {
-                            attempted: usize::MAX,
-                            limit: MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES,
-                        },
-                    )?;
-                    if attempted > MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES {
-                        return Err(QemuHotForkChildDiagnosticConsumeError::Capacity {
-                            attempted,
-                            limit: MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES,
-                        });
-                    }
-                    self.retained.extend_from_slice(&buffer[..count]);
+                    self.retention.ingest(&buffer[..count]);
+                    bytes_read = bytes_read.saturating_add(count);
                 }
                 Err(source) if source.kind() == io::ErrorKind::WouldBlock => break,
                 Err(source) => {
@@ -234,11 +306,15 @@ impl QemuHotForkChildDiagnosticConsumer {
                 }
             }
         }
-        Ok(QemuHotForkChildDiagnosticDrain {
-            bytes_read: self.retained.len() - before,
-            total_retained: self.retained.len(),
+        Ok(self.drain_result(bytes_read))
+    }
+
+    fn drain_result(&self, bytes_read: usize) -> QemuHotForkChildDiagnosticDrain {
+        QemuHotForkChildDiagnosticDrain {
+            bytes_read,
+            stream_bytes: self.retention.stream_bytes(),
             eof: self.eof,
-        })
+        }
     }
 
     fn matches_pair(&self, pair: &QemuHotForkChildDiagnosticPair) -> bool {
@@ -254,7 +330,7 @@ impl QemuHotForkChildDiagnosticConsumer {
             descriptor_name: self.descriptor_name.clone(),
             socket_cookie: self.socket_cookie,
             template_generation: self.template_generation,
-            bytes: std::mem::take(&mut self.retained),
+            retention: std::mem::take(&mut self.retention),
         }
     }
 
@@ -315,6 +391,7 @@ pub struct QemuHotForkChildDiagnosticStageProof {
     descriptor_name: crate::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
+    diagnostic_generation: u64,
     replacement_plan_bound: bool,
 }
 
@@ -343,6 +420,12 @@ impl QemuHotForkChildDiagnosticStageProof {
         self.template_generation
     }
 
+    /// Returns the exact QEMU mutation generation acknowledged at installation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.diagnostic_generation
+    }
+
     /// Returns whether the stream is present in the sealed child resource plan.
     #[must_use]
     pub const fn replacement_plan_bound(&self) -> bool {
@@ -358,6 +441,7 @@ pub(super) struct QemuHotForkChildDiagnosticPair {
     descriptor_name: crate::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
+    diagnostic_generation: u64,
     replacement_plan_bound: bool,
     consumer: Option<QemuHotForkChildDiagnosticConsumer>,
 }
@@ -384,6 +468,7 @@ impl QemuHotForkChildDiagnosticPair {
             descriptor_name: self.descriptor_name.clone(),
             socket_cookie: self.socket_cookie,
             template_generation: self.template_generation,
+            diagnostic_generation: self.diagnostic_generation,
             replacement_plan_bound: self.replacement_plan_bound,
         }
     }
@@ -402,8 +487,6 @@ impl QemuHotForkChildDiagnosticPair {
 
 #[derive(Debug, Error)]
 enum QemuHotForkChildDiagnosticConsumeError {
-    #[error("branch-private child diagnostics reached {attempted} bytes; limit is {limit} bytes")]
-    Capacity { attempted: usize, limit: usize },
     #[error("read branch-private child diagnostics failed: {source}")]
     Read { source: io::Error },
 }
@@ -422,6 +505,14 @@ impl QemuHotForkChildDiagnosticStage {
             }
             Self::TransferUncertain(endpoint) => {
                 endpoint.proof(QemuHotForkChildDiagnosticStageState::TransferUncertain)
+            }
+        }
+    }
+
+    pub(super) const fn generation(&self) -> u64 {
+        match self {
+            Self::Installed(endpoint) | Self::TransferUncertain(endpoint) => {
+                endpoint.diagnostic_generation
             }
         }
     }
@@ -552,13 +643,14 @@ fn create_diagnostic_pair(
         descriptor_name: descriptor_name.clone(),
         socket_cookie,
         template_generation,
+        diagnostic_generation: 0,
         replacement_plan_bound: false,
         consumer: Some(QemuHotForkChildDiagnosticConsumer {
             host,
             descriptor_name,
             socket_cookie,
             template_generation,
-            retained: Vec::new(),
+            retention: DiagnosticRetention::default(),
             eof: false,
             writer_detached: false,
             captured: false,
@@ -582,22 +674,24 @@ mod tests {
         ] {
             let mut pair = create_diagnostic_pair(47)?;
             let mut consumer = pair.take_consumer()?;
+            consumer.bind_child_process_id(153);
             pair.child.write_all(row.as_bytes())?;
             consumer.drain_available()?;
-            let retained = consumer.retained().to_vec();
-            let partial = consumer.control_diagnostics_summary(153);
+            let retained = consumer.retained_tail().to_vec();
+            let partial = consumer.control_diagnostics_summary();
             assert!(partial.contains("accepted_rows=0"));
             assert!(partial.contains("incomplete_last_row=true"));
-            assert_eq!(consumer.retained(), retained);
+            assert_eq!(consumer.retained_tail(), retained);
 
             pair.child.write_all(b"\n")?;
             pair.child.shutdown(Shutdown::Write)?;
             consumer.mark_writer_detached(&pair.descriptor_name, pair.socket_cookie, 47)?;
             let capture = consumer.finish_detached_capture()?;
-            let summary = capture.control_diagnostics_summary(153);
+            let summary = capture.control_diagnostics_summary();
             assert!(summary.contains("accepted_rows=1"));
             assert!(summary.ends_with(row));
-            assert_eq!(capture.bytes(), format!("{row}\n").as_bytes());
+            assert_eq!(capture.tail(), format!("{row}\n").as_bytes());
+            assert_eq!(capture.omitted_bytes(), 0);
             assert_eq!(capture.socket_cookie(), pair.socket_cookie);
             assert_eq!(capture.template_generation(), 47);
             assert!(consumer.drain_available().is_err());
@@ -614,42 +708,69 @@ mod tests {
 
         let first = consumer.drain_available()?;
         assert_eq!(first.bytes_read(), 13);
-        assert_eq!(first.total_retained(), 13);
+        assert_eq!(first.stream_bytes(), 13);
         assert!(!first.eof());
 
         pair.child.shutdown(Shutdown::Write)?;
         let final_drain = consumer.drain_available()?;
         assert_eq!(final_drain.bytes_read(), 0);
-        assert_eq!(final_drain.total_retained(), 13);
+        assert_eq!(final_drain.stream_bytes(), 13);
         assert!(final_drain.eof());
 
         let cookie = pair.socket_cookie;
         let capture = consumer.take_capture();
         assert_eq!(capture.socket_cookie(), cookie);
         assert_eq!(capture.template_generation(), 17);
-        assert_eq!(capture.bytes(), b"branch stderr");
+        assert_eq!(capture.stream_bytes(), 13);
+        assert_eq!(capture.into_tail(), b"branch stderr");
         Ok(())
     }
 
     #[test]
-    fn consumer_fails_closed_before_growing_past_its_cumulative_limit()
+    fn consumer_drains_a_stream_past_the_former_16_mib_limit_with_bounded_retention()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut pair = create_diagnostic_pair(23)?;
+        let row = "CRUCIBLE-CONTROL-CALLBACK-V1 phase=exit reason=pending pid=153 raw_icount=7 token_kind=observed token_before=2 token_after=2\n";
+        let filler = vec![b'f'; 1024 * 1024];
+        let filler_chunks = 17_u64;
+        let mut pair = create_diagnostic_pair(31)?;
         let mut consumer = pair.take_consumer()?;
-        consumer.retained = vec![0x5a; MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES];
-        pair.child.write_all(&[0xa5])?;
+        consumer.bind_child_process_id(153);
 
-        assert!(matches!(
-            consumer.drain_available_inner(),
-            Err(QemuHotForkChildDiagnosticConsumeError::Capacity {
-                attempted,
-                limit: MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES,
-            }) if attempted == MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES + 1
-        ));
+        let mut writer = pair.child.try_clone()?;
+        writer.set_nonblocking(false)?;
+        let producer = std::thread::spawn(move || -> io::Result<()> {
+            writer.write_all(row.as_bytes())?;
+            for _ in 0..filler_chunks {
+                writer.write_all(&filler)?;
+            }
+            writer.write_all(b"\n")?;
+            writer.write_all(row.as_bytes())?;
+            writer.shutdown(Shutdown::Write)
+        });
+        drop(pair.child);
+
+        // The producer blocks on a full socket, so drain until its writer closes.
+        while !consumer.drain_available()?.eof() {}
+        producer
+            .join()
+            .map_err(|_panic| "diagnostic producer panicked")??;
+
+        let stream_bytes = 2 * row.len() as u64 + filler_chunks * 1024 * 1024 + 1;
+        assert_eq!(consumer.stream_bytes(), stream_bytes);
         assert_eq!(
-            consumer.retained.len(),
-            MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES
+            consumer.retained_tail().len(),
+            MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES
         );
+        assert!(consumer.retained_tail().ends_with(row.as_bytes()));
+        assert_eq!(
+            consumer.omitted_bytes(),
+            stream_bytes - MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES as u64
+        );
+        let summary = consumer.control_diagnostics_summary();
+        assert!(summary.starts_with(&format!(
+            "stream_bytes={stream_bytes} accepted_rows=2 rejected_rows=0 tail_rows=2"
+        )));
+        assert!(summary.contains("incomplete_last_row=false"));
         Ok(())
     }
 

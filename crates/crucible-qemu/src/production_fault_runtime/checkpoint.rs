@@ -17,8 +17,7 @@ impl ProductionFaultRuntime {
         &self,
     ) -> Result<(u64, u64), ProductionFaultRuntimeError> {
         let (event_records, event_log_bytes) = production_event_state_usage(
-            &self.emitted_events,
-            &[],
+            self.referenced_events.usage(),
             &self.pending_qemu_observations,
             &[],
             &self.pending_qemu_events,
@@ -77,14 +76,14 @@ impl ProductionFaultRuntime {
             return Err(ProductionFaultRuntimeError::PendingSearchChoices);
         }
         validate_production_event_state(
-            &self.emitted_events,
-            &[],
+            self.referenced_events.usage(),
             &self.pending_qemu_observations,
             &[],
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
-        let remaining_event_records = self.event_staging_capacity(&[], None)?;
+        let remaining_event_records =
+            self.event_staging_capacity(self.referenced_events.usage(), None)?;
         nodes.set_fault_event_staging_limit(
             remaining_event_records,
             usize::try_from(self.resource_limits.event_records).map_err(|_| {
@@ -97,7 +96,8 @@ impl ProductionFaultRuntime {
         let runtime = self
             .runtime
             .as_ref()
-            .map(|runtime| runtime.checkpoint().clone());
+            .map(OwnedFaultExecutionRuntime::checkpoint)
+            .transpose()?;
         let host = self.host.state().clone();
         let qemu_fingerprints =
             qemu_fingerprint_map(nodes, self.resource_limits, remaining_event_records)?;
@@ -134,7 +134,7 @@ impl ProductionFaultRuntime {
             &self.qemu_action_commits,
             &self.qemu_active_rule_ids,
             self.restored_network_state.as_ref(),
-            &self.emitted_events,
+            &self.referenced_events,
             &self.pending_qemu_observations,
             &self.pending_qemu_events,
         )?;
@@ -185,7 +185,7 @@ impl ProductionFaultRuntime {
                 },
             )?,
             network_state: self.restored_network_state.clone(),
-            emitted_events: self.emitted_events.clone(),
+            referenced_events: self.referenced_events.clone(),
             pending_qemu_observations: self.pending_qemu_observations.clone(),
             pending_qemu_events: self.pending_qemu_events.try_clone_with(
                 |node| {
@@ -254,7 +254,7 @@ impl ProductionFaultRuntime {
             &checkpoint.qemu_action_commits,
             &checkpoint.qemu_active_rule_ids,
             checkpoint.network_state.as_ref(),
-            &checkpoint.emitted_events,
+            &checkpoint.referenced_events,
             &checkpoint.pending_qemu_observations,
             &checkpoint.pending_qemu_events,
         )?;
@@ -267,10 +267,76 @@ impl ProductionFaultRuntime {
         self.host.state()
     }
 
-    /// Returns referenced signal events in exact evaluation order.
+    /// Returns the referenced-event history and its live consumer window.
     #[must_use]
-    pub fn emitted_events(&self) -> &[ReferencedSignalEvent] {
-        &self.emitted_events
+    pub const fn referenced_events(&self) -> &ReferencedEventWindow {
+        &self.referenced_events
+    }
+
+    /// Binds exactly `consumers` as the devices that read referenced events.
+    ///
+    /// Construction binds every World block and 9p consumer before the first
+    /// evaluation; a restored continuation keeps the subscriptions its
+    /// checkpoint recorded for consumers that remain bound. Events no bound
+    /// consumer can use retire immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] when retirement cannot reserve
+    /// its bounded scratch storage.
+    pub fn bind_referenced_event_consumers(
+        &mut self,
+        consumers: &[ReferencedEventConsumer],
+    ) -> Result<(), ProductionFaultRuntimeError> {
+        self.require_usable()?;
+        self.referenced_events
+            .bind_consumers(consumers, self.host.state(), self.resource_limits)
+    }
+
+    /// Verifies that retirement has kept every event `live` subscriptions need.
+    ///
+    /// A consumer calls this before reading the window. Each live
+    /// subscription must have been reported, or no retired event of its key
+    /// may lie after it, or an active persistent action must still cover it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError::ReferencedEventWindow`] when
+    /// `consumer` is unbound or a live subscription may have lost the event
+    /// that releases it.
+    pub fn verify_referenced_event_subscriptions(
+        &self,
+        consumer: ReferencedEventConsumer,
+        live: &[ReferencedEventSubscription],
+    ) -> Result<(), ProductionFaultRuntimeError> {
+        self.referenced_events
+            .verify_subscriptions(consumer, live, self.host.state())
+    }
+
+    /// Records `consumer`'s live subscriptions and retires unneeded events.
+    ///
+    /// A consumer reports after every successful service step, so a
+    /// subscription created during the step is protected before a later
+    /// evaluation can emit or retire the event that releases it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError::ReferencedEventWindow`] when
+    /// `consumer` is unbound or reports a new subscription whose releasing
+    /// event may already have retired, and a resource error when retirement
+    /// cannot reserve its bounded scratch storage.
+    pub fn report_referenced_event_subscriptions(
+        &mut self,
+        consumer: ReferencedEventConsumer,
+        live: Vec<ReferencedEventSubscription>,
+    ) -> Result<(), ProductionFaultRuntimeError> {
+        self.require_usable()?;
+        self.referenced_events.report_subscriptions(
+            consumer,
+            live,
+            self.host.state(),
+            self.resource_limits,
+        )
     }
 
     /// Transfers the complete authenticated lifecycle batch to its sole host consumer.

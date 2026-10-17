@@ -377,7 +377,7 @@ fn production_factory_forks_complete_live_world_atomically() {
         materialization.restored_configuration(),
         Some(&configuration)
     );
-    let (start_events, _, start_quanta, start_frontier, _, _) = materialization.into_parts();
+    let (start_events, start_quanta, start_frontier, _, _) = materialization.into_parts();
     eprintln!(
         "atomic-world phase=all-world-adopted quanta={start_quanta} frontier={} events={}",
         start_frontier.ticks,

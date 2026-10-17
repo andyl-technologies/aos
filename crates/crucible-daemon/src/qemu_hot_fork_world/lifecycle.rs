@@ -220,7 +220,8 @@ where
     /// # Errors
     ///
     /// Returns a scheduler error when the adopted lifecycle cannot expose its
-    /// exact boundary, retained only a suffix, or its event bytes overflow.
+    /// exact boundary, retained only a suffix, or its event log cannot be
+    /// retained within the attempt-log bounds.
     pub fn start_materialization(&self) -> Result<QemuFreshStartMaterialization, SchedulerError> {
         let (
             configuration,
@@ -238,17 +239,16 @@ where
                 ),
             });
         }
-        let event_log_bytes = event_log.iter().try_fold(0usize, |total, entry| {
-            total
-                .checked_add(entry.canonical_material_len())
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from("hot-fork start event-log byte count overflowed"),
-                })
+        let event_log = crate::qemu_campaign_driver::RetainedAttemptLog::from_entries(
+            crate::qemu_campaign_driver::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+            event_log,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("hot-fork start event log cannot be retained: {error}"),
         })?;
         Ok(QemuFreshStartMaterialization::from_resume_parts(
             configuration,
             event_log,
-            event_log_bytes,
             completed_quanta,
             frontier,
             quiescence,
@@ -501,6 +501,25 @@ where
             .release_parked_campaign_marker(node, marker, selected)
     }
 
+    fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        self.lifecycle.park_held_campaign_markers(markers, outcome)
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.lifecycle.join_campaign_parks_to_frontier()
+    }
+
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &crucible::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        self.lifecycle.append_network_fault_campaign_branch(branch)
+    }
+
     fn campaign_marker_release_committed(
         &self,
         node: &NodeId,
@@ -529,6 +548,14 @@ where
         self.lifecycle.pending_selectable_request_time(pending)
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        self.lifecycle
+            .pending_selectable_request_is_committed_source(pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,
@@ -539,6 +566,13 @@ where
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.lifecycle
             .apply_selectable_reply(parent, decision, selected, pending, reply)
+    }
+
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        self.lifecycle.publish_released_host_outcomes(configuration)
     }
 
     fn capture_attempt_checkpoint(
@@ -585,7 +619,9 @@ where
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- this copies the scheduler-retained RecomputedCause trace; the observation never feeds back into modeled execution.
         QuantumLoop::resolved_effect_trace(&self.lifecycle)
     }

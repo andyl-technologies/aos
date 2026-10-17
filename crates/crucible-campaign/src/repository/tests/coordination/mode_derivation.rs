@@ -97,7 +97,7 @@ fn admit_later_observation(
             evidence.properties(),
             evidence.coverage(),
         ),
-        BTreeSet::from([request.opportunity()]),
+        stored_choice_set(repository, BTreeSet::from([request.opportunity()])),
     )
     .expect("later observation")
 }

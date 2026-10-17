@@ -182,7 +182,10 @@ fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
         &schedule,
         &checkpoint,
         7,
-        b"production-parser-replay-closure".to_vec(),
+        vec![
+            b"production-parser-replay-closure-root".to_vec(),
+            b"production-parser-replay-closure-frame".to_vec(),
+        ],
     )
     .expect("bounded replay closure should build");
     let observation_source = ResumeObservationSource::new(
@@ -238,14 +241,21 @@ fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
     );
     push_wire_line(
         &mut wire,
-        "campaign-replay-closure-size",
-        &replay_closure.payload_len().to_string(),
+        "campaign-replay-closure-frames",
+        &replay_closure.frames().len().to_string(),
     );
-    push_wire_line(
-        &mut wire,
-        "campaign-replay-closure-payload",
-        &hex_encode(replay_closure.payload()),
-    );
+    for frame in replay_closure.frames() {
+        push_wire_line(
+            &mut wire,
+            "campaign-replay-closure-frame-size",
+            &frame.len().to_string(),
+        );
+        push_wire_line(
+            &mut wire,
+            "campaign-replay-closure-frame",
+            &hex_encode(frame),
+        );
+    }
     push_wire_line(
         &mut wire,
         "campaign-observation-source-version",
@@ -291,14 +301,31 @@ fn production_resume_parser_authenticates_complete_closure_envelope() {
         .replay_closure
         .as_ref()
         .expect("fixture should carry replay closure");
-    let wrong_size = wire.replace(
-        &format!("campaign-replay-closure-size={}\n", closure.payload_len()),
+    let first_frame = &closure.frames()[0];
+    let wrong_size = wire.replacen(
+        &format!("campaign-replay-closure-frame-size={}\n", first_frame.len()),
         &format!(
-            "campaign-replay-closure-size={}\n",
-            closure.payload_len().saturating_add(1)
+            "campaign-replay-closure-frame-size={}\n",
+            first_frame.len().saturating_add(1)
         ),
+        1,
     );
     assert!(parse_resume_session_request(wrong_size.as_bytes()).is_err());
+
+    let missing_frame = wire.replace(
+        "campaign-replay-closure-frames=2\n",
+        "campaign-replay-closure-frames=3\n",
+    );
+    assert!(parse_resume_session_request(missing_frame.as_bytes()).is_err());
+
+    let too_many_frames = wire.replace(
+        "campaign-replay-closure-frames=2\n",
+        &format!(
+            "campaign-replay-closure-frames={}\n",
+            RESUME_REPLAY_CLOSURE_MAX_FRAMES.saturating_add(1)
+        ),
+    );
+    assert!(parse_resume_session_request(too_many_frames.as_bytes()).is_err());
 
     let wrong_identity = wire.replace(
         &closure.identity().to_hex(),
@@ -312,24 +339,28 @@ fn production_resume_parser_authenticates_complete_closure_envelope() {
     let partial = wire.lines().take(9).collect::<Vec<_>>().join("\n") + "\n";
     assert!(parse_resume_session_request(partial.as_bytes()).is_err());
 
+    // A frame over the component-message bound is refused from its
+    // declared size, before any hex is decoded.
     let oversize = wire
-        .replace(
-            &format!("campaign-replay-closure-size={}\n", closure.payload_len()),
+        .replacen(
+            &format!("campaign-replay-closure-frame-size={}\n", first_frame.len()),
             &format!(
-                "campaign-replay-closure-size={}\n",
-                RESUME_REPLAY_CLOSURE_MAX_BYTES.saturating_add(1)
+                "campaign-replay-closure-frame-size={}\n",
+                RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES.saturating_add(1)
             ),
+            1,
         )
-        .replace(
+        .replacen(
             &format!(
-                "campaign-replay-closure-payload={}\n",
-                hex_encode(closure.payload())
+                "campaign-replay-closure-frame={}\n",
+                hex_encode(first_frame)
             ),
-            "campaign-replay-closure-payload=\n",
+            "campaign-replay-closure-frame=\n",
+            1,
         );
     assert!(
         parse_resume_session_request(oversize.as_bytes())
-            .expect_err("declared oversize closure must reject")
+            .expect_err("declared oversize closure frame must reject")
             .contains("maximum")
     );
 }

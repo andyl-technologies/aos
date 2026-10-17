@@ -11,10 +11,16 @@ use crucible_core::NetworkFaultSelectable;
 mod resource_audit;
 
 const ATTEMPT_WAIT: Duration = Duration::from_secs(600);
-const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 6 * 1024 * 1024 * 1024;
+// Admission reserves the measured five-guest profile for each retained world:
+// a thin root at the follow-up boundary and the hot child forked from it.
+const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 9 * 1024 * 1024 * 1024;
 // This is a cap on completed scheduler quanta across the packaged campaign,
 // independent of the exact logical ticks or retired instructions in each RUN.
 const ENVOY_QUANTUM_BUDGET: &str = "250000";
+// The campaign policy owns the modeled horizon: an absolute deadline from
+// scenario genesis that covers recovery measurement and the follow-up window
+// with room to spare. Every expected boundary must be reached before it.
+const ENVOY_POLICY_VIRTUAL_TIME_PS: u64 = 30_000_000_000_000;
 const WITHDRAW_THEN_RELEARN: [u8; 32] = [0x22; 32];
 const RETAIN_AND_PROBE: [u8; 32] = [0x11; 32];
 
@@ -217,7 +223,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     let (discovery, resource_audit) =
         complete_envoy_discovery(discovery_result, resource_audit_result)?;
     assert_eq!(discovery["attempt"]["configuration"], genesis);
-    assert_eq!(discovery["observation"]["stop"], "reached:next-choice");
+    require_bounded_primary_reached(&discovery, "next-choice")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
     guest_choice::assert_materialization_tier(&materialization, discovery_attempt_id, "HotFork")?;
     resource_audit.verify_source_dirty_growth()?;
@@ -285,6 +291,13 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     require_measured_backup_route(&response)?;
     println!("envoy_five_node_failover_response={response}");
 
+    // The fallback proof is complete. Restore hot-fork retention so the
+    // follow-up recovery forks from the follow-up disruption's parked world
+    // instead of replaying the whole flight from genesis.
+    service.stop()?;
+    let hot_fork_deployment = product_hot_fork_deployment(&fixture)?;
+    service = start_packaged_network_service(&fixture, &authority, Some(&hot_fork_deployment))?;
+
     let followup_disruption = choose(
         &fixture,
         &mut service,
@@ -293,6 +306,15 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &followup_fault,
         "next-choice",
         0x75,
+    )?;
+    // The follow-up disruption is a fresh thin attempt. Its stopped world at
+    // the published next-choice boundary is retained as the root the
+    // completion attempt forks from.
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    guest_choice::assert_materialization_tier(
+        &materialization,
+        json_string(&followup_disruption["attempt"], "id")?,
+        "ThinReplay",
     )?;
     let completion = choose(
         &fixture,
@@ -311,6 +333,12 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     require_semantic_marker(&completion, "fault.followup.primary-probed", "router-a")?;
     require_semantic_marker(&completion, "campaign.complete", "traffic-west")?;
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    guest_choice::assert_materialization_tier(
+        &materialization,
+        json_string(&completion["attempt"], "id")?,
+        "HotFork",
+    )?;
     println!("envoy_five_node_completion={completion}");
 
     prove_pending_recovery_exact_replay(&fixture, &mut service, &disruption, &requeried_recovery)?;
@@ -456,10 +484,7 @@ pub(super) fn choose_known(
     let submission = guest_choice::submit_choice(fixture, choice, value, stop, command_byte)?;
     let request = guest_choice::accepted_branch_request(&submission)?;
     let explanation = wait_for_request_attempt(fixture, service, &request, value, ATTEMPT_WAIT)?;
-    assert_eq!(
-        explanation["observation"]["stop"],
-        format!("reached:{stop}")
-    );
+    require_bounded_primary_reached(&explanation, stop)?;
     println!("envoy_five_node_choice={explanation}");
 
     if stop == "next-choice" {
@@ -467,6 +492,25 @@ pub(super) fn choose_known(
         progress.configuration = json_string(&explanation["observation"], "child")?;
     }
     Ok(explanation)
+}
+
+/// Requires an attempt to reach `primary` before the policy deadline.
+///
+/// The policy bounds every attempt, so a reached boundary carries proof of
+/// its virtual-time coordinate rather than the unbounded `reached:` form.
+fn require_bounded_primary_reached(attempt: &Value, primary: &str) -> Result<(), Box<dyn Error>> {
+    let stop = json_string(&attempt["observation"], "stop")?;
+    let frontier = stop
+        .strip_prefix(&format!("bounded-primary-reached:{primary}:frontier-ps="))
+        .and_then(|rest| rest.split_once(":quanta="))
+        .and_then(|(frontier, _quanta)| frontier.parse::<u64>().ok())
+        .ok_or_else(|| {
+            format!("attempt did not reach {primary} before the policy bound: {stop}")
+        })?;
+    if frontier >= ENVOY_POLICY_VIRTUAL_TIME_PS {
+        return Err(format!("{primary} frontier {frontier} reached the policy deadline").into());
+    }
+    Ok(())
 }
 
 fn prove_pending_recovery_exact_replay(
@@ -536,10 +580,7 @@ fn prove_pending_recovery_exact_replay(
     assert_eq!(restored["attempt"]["start"], "after-attempt");
     assert_eq!(restored["attempt"]["origin"], attempt);
     assert_eq!(restored["attempt"]["reached"], source_parent);
-    assert_eq!(
-        restored["observation"]["stop"],
-        "reached:boundary:campaign.complete"
-    );
+    require_bounded_primary_reached(&restored, "boundary:campaign.complete")?;
     assert_eq!(restored["runtime"]["phase"], "completed");
     assert_eq!(restored["runtime"]["origin"], "selected-savepoint");
     assert_eq!(restored["runtime"]["origin_checkpoint"], checkpoint);
@@ -766,6 +807,27 @@ pub(super) fn wait_for_public_attempt(
     })
 }
 
+/// Prints the run's parallel-boot arming and sampled RUN-window records.
+///
+/// The service stderr tail keeps only the last minutes of a long discovery;
+/// these bounded records cover the whole run so a timeout can be split into
+/// guest execution, host-parallel overlap, and scheduler work.
+fn emit_host_throughput_records(service: &CampaignServiceChild) {
+    for (prefix, maximum_lines) in [
+        ("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 armed=", 16),
+        ("CRUCIBLE-HOST-RUN-WINDOW-V1 ", 1_100),
+    ] {
+        match service.stderr_lines_with_prefix(prefix, maximum_lines, 512) {
+            Ok(lines) => {
+                for line in lines {
+                    eprintln!("{line}");
+                }
+            }
+            Err(error) => eprintln!("host throughput records `{prefix}` unavailable: {error}"),
+        }
+    }
+}
+
 fn initial_discovery_diagnostics(
     fixture: &FlightFixture,
     service: &CampaignServiceChild,
@@ -773,6 +835,7 @@ fn initial_discovery_diagnostics(
     status: Option<&Value>,
     explanation: Option<&Value>,
 ) -> String {
+    emit_host_throughput_records(service);
     let public_status = status.map(|head| {
         serde_json::json!({
             "snapshot": head["snapshot"],
@@ -1080,6 +1143,9 @@ retain_all_findings = true
 survivor_limit = 8
 exact_findings = true
 exact_user_pins = true
+
+[attempt_timeout]
+virtual_time_picoseconds = "{ENVOY_POLICY_VIRTUAL_TIME_PS}"
 "#,
             lineage.scenario().to_string(),
         ),
@@ -1135,14 +1201,15 @@ fn product_hot_fork_deployment_with_template_limit(
     let deployment = fixture._temporary.path().join(name);
     let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
 
-    // Admission reserves the measured source profile once for the retained
-    // five-guest world and again for its child. The 5 GiB guest-RAM baseline
-    // needs headroom for QEMU resident memory and measured private dirties.
-    // The deployment's independent 7 GiB resident ceiling remains enforced.
+    // Admission reserves the measured source profile once for each retained
+    // five-guest world and again for each child. The 5 GiB guest-RAM baseline
+    // per world needs headroom for QEMU resident memory and measured private
+    // dirties. The deployment's independent per-attempt 7 GiB resident
+    // ceiling remains enforced.
     fs::write(
         &deployment,
         format!(
-            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = {maximum_template_bytes}\nmaximum_expected_private_dirty_bytes = {ENVOY_HOT_FORK_BYTE_CEILING}\nmaximum_processes = 16\nmaximum_virtual_cpus = 10\nmaximum_descriptors = 16384\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
+            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = {maximum_template_bytes}\nmaximum_expected_private_dirty_bytes = {ENVOY_HOT_FORK_BYTE_CEILING}\nmaximum_processes = 16\nmaximum_virtual_cpus = 16\nmaximum_descriptors = 24576\nmaximum_overlays = 24\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
         ),
     )?;
     fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))?;

@@ -554,7 +554,11 @@ impl QemuNode {
                 execution_binding: checkpoint.id,
                 last_observed_time: self.last_observed_time,
                 logical_time_calibration,
-                console_observation_boundary: self.console_observation_boundary,
+                native_console_continuation: self
+                    .native_console
+                    .as_ref()
+                    .map(super::super::native_console::QemuNativeConsoleObservation::checkpoint)
+                    .transpose()?,
                 pending_preemption: self.pending_preemption.clone(),
                 pending_network_outputs: self.pending_network_outputs.clone(),
                 network_transport,

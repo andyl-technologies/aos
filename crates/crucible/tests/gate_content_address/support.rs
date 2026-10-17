@@ -286,7 +286,7 @@ pub(super) fn recorded_fat_checkpoint(configuration: &Configuration) -> Checkpoi
 
 pub(super) fn append_schedule(prefix: &Schedule, delta: &Schedule) -> Schedule {
     let mut schedule = prefix.clone();
-    for decision in delta.decisions() {
+    for decision in delta.decision_history() {
         schedule = schedule.appended(decision.clone());
     }
     schedule

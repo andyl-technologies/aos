@@ -308,8 +308,7 @@ impl FaultClockEvidenceV2 {
                     || new_drift_ratio[1] == 0
                     || match *transform_kind {
                         1 | 3 => {
-                            old_additive_ps.checked_add(*signed_value)
-                                != Some(*new_additive_ps)
+                            old_additive_ps.checked_add(*signed_value) != Some(*new_additive_ps)
                         }
                         2 => old_additive_ps != new_additive_ps,
                         _ => true,

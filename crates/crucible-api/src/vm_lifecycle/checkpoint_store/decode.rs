@@ -508,6 +508,7 @@ mod tests {
             scheduler: ContentHash::default(),
             event_log_segments: Vec::new(),
             signal_artifacts: Vec::new(),
+            fault_trace_segments: Vec::new(),
             trigger_state: ContentHash::default(),
             assertion_state: ContentHash::default(),
             lifecycle_state: ContentHash::default(),

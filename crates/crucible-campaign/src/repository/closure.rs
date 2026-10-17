@@ -17,7 +17,15 @@ pub struct CampaignValidationCheckpointMetrics {
     pub checkpoint_bytes: usize,
 }
 
+mod delta;
 mod successors;
+mod walk;
+
+pub(in crate::repository) use delta::HistoryClosure;
+use delta::TransitionStep;
+pub(in crate::repository) use walk::{
+    ClosureSink, MAX_CLOSURE_WALK_OBJECTS, WalkContext, WalkEntry, WalkStart,
+};
 
 impl CampaignRepository {
     pub(super) fn simple_planner_issue_growth_upper(
@@ -42,7 +50,7 @@ impl CampaignRepository {
         let next_ledger = self.read_budget_ledger(child.budget_ledger())?;
         let mut positions = BTreeSet::new();
         let mut roots = BTreeSet::new();
-        let mut values = BTreeSet::new();
+        let mut values = BTreeMap::new();
         for (old, new) in [
             (prior.exploration, next.exploration),
             (prior.accounting, next.accounting),
@@ -62,7 +70,7 @@ impl CampaignRepository {
                 &mut positions,
                 &mut roots,
                 &mut values,
-                MAX_CAMPAIGN_CLOSURE_OBJECTS,
+                MAX_CLOSURE_WALK_OBJECTS,
             )?;
         }
 
@@ -72,16 +80,19 @@ impl CampaignRepository {
             .content_id();
         let mut anchors = self.incremental_closure_anchors(parent, transition)?;
         let mut linked_ids = BTreeSet::new();
-        self.verify_campaign_closures_anchored_cached_collect(
+        self.walk_campaign_closures(
             [transition],
             &anchors,
+            false,
             &mut ChoiceValidationCache::default(),
-            Some(&mut linked_ids),
-            None,
+            Some(&mut |id, _exact_leaf| {
+                linked_ids.insert(id);
+                Ok(())
+            }),
         )?;
         anchors.extend(linked_ids);
         let leaf_growth = self.verify_campaign_closures_anchored_cached(
-            values,
+            values.into_keys(),
             &anchors,
             &mut ChoiceValidationCache::default(),
         )?;
@@ -145,27 +156,105 @@ impl CampaignRepository {
         &self,
         head: ContentId,
     ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
-        if let Some(checkpoint) = self.validation_checkpoints().get(&head).copied() {
-            return Ok(checkpoint);
-        }
+        let mut planner_context = PlannerValidationContext::default();
+        self.load_validation_checkpoint_with_planner_context(head, &mut planner_context)
+    }
 
+    /// Validates a complete head inductively with bounded attempt-local reuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns any original ancestry or fresh closure failure without promoting
+    /// a checkpoint, and clears retained tuples on every result.
+    pub(super) fn load_validation_checkpoint_with_planner_context(
+        &self,
+        head: ContentId,
+        planner_context: &mut PlannerValidationContext,
+    ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
+        let mut merkle_reads = MerkleValidationReads::default();
+        self.load_validation_checkpoint_with_contexts(head, planner_context, &mut merkle_reads)
+    }
+
+    /// Ends both attempt-local contexts before returning or promoting a head.
+    ///
+    /// Complete validation is one backward walk from the head to genesis. Each
+    /// step validates the owner transition and then authenticates only the
+    /// objects newly reachable from the child relative to its parent; genesis
+    /// authenticates its own small closure. Every object reachable from the
+    /// head first becomes reachable at genesis or at exactly one transition,
+    /// so the union of these deltas is the complete head closure while the
+    /// walk retains one transition's state at a time.
+    ///
+    /// # Errors
+    ///
+    /// Returns every original ancestry or fresh closure validation error.
+    pub(super) fn load_validation_checkpoint_with_contexts(
+        &self,
+        head: ContentId,
+        planner_context: &mut PlannerValidationContext,
+        merkle_reads: &mut MerkleValidationReads,
+    ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
+        planner_context.clear();
+        merkle_reads.clear();
+        let result = (|| {
+            if let Some(checkpoint) = self.validation_checkpoints().get(&head).copied() {
+                return Ok(checkpoint);
+            }
+
+            let checkpoint = self.validate_history_with_closure(
+                head,
+                Some(planner_context),
+                Some(merkle_reads),
+                None,
+            )?;
+            self.remember_validation_checkpoint(head, checkpoint);
+            Ok(checkpoint)
+        })();
+        // A failed attempt must not lend authenticated tuples to a later read.
+        // Successful reuse also ends here; only the original head checkpoint
+        // is promoted after every transition and its closure delta succeed.
+        planner_context.clear();
+        merkle_reads.clear();
+        result
+    }
+
+    /// Runs the inductive history walk and returns its checkpoint.
+    ///
+    /// `sink` receives every object of the genesis closure and of every
+    /// transition delta. The checkpoint is not promoted here.
+    ///
+    /// # Errors
+    ///
+    /// Returns every original ancestry, transition, or closure error, or the
+    /// first error returned by `sink`.
+    fn validate_history_with_closure(
+        &self,
+        head: ContentId,
+        planner_context: Option<&mut PlannerValidationContext>,
+        merkle_reads: Option<&mut MerkleValidationReads>,
+        sink: Option<&mut ClosureSink<'_>>,
+    ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
         let mut choice_cache = ChoiceValidationCache::default();
-        let (ancestry_depth, lifecycle, genesis, derived_branch) =
-            self.validate_snapshot_ancestry(head, &mut choice_cache, MAX_SNAPSHOT_ANCESTRY)?;
-        let closure_objects = self.verify_campaign_closures_anchored_cached(
-            [head],
-            &BTreeSet::new(),
+        let mut closure = HistoryClosure {
+            objects: 0,
+            sink,
+            peak_resident: 0,
+        };
+        let (ancestry_depth, lifecycle, genesis, derived_branch) = self.validate_snapshot_history(
+            head,
             &mut choice_cache,
+            MAX_CAMPAIGN_SNAPSHOT_ANCESTRY,
+            planner_context,
+            merkle_reads,
+            Some(&mut closure),
         )?;
-        let checkpoint = ValidationCheckpoint {
+        Ok(ValidationCheckpoint {
             ancestry_depth,
-            closure_objects,
+            closure_objects: closure.objects,
             lifecycle,
             genesis,
             derived_branch,
-        };
-        self.remember_validation_checkpoint(head, checkpoint);
-        Ok(checkpoint)
+        })
     }
 
     pub(super) fn prepare_local_successor_checkpoint(
@@ -205,7 +294,7 @@ impl CampaignRepository {
             .ancestry_depth
             .checked_add(1)
             .ok_or_else(|| integrity("snapshot-ancestry-limit"))?;
-        if ancestry_depth > MAX_SNAPSHOT_ANCESTRY {
+        if ancestry_depth > MAX_CAMPAIGN_SNAPSHOT_ANCESTRY {
             return Err(integrity("snapshot-ancestry-limit"));
         }
         let mut lifecycle = parent_checkpoint.lifecycle;
@@ -218,7 +307,11 @@ impl CampaignRepository {
         // bound for constructed snapshot and Merkle nodes, so a local
         // checkpoint never understates restart validation.
         let anchors = self.incremental_closure_anchors(&parent_snapshot, transition_content)?;
-        let linked_objects = self.verify_campaign_closure_anchored(transition_content, &anchors)?;
+        let linked_objects = self.verify_transition_closure_anchored(
+            transition_content,
+            &anchors,
+            &parent_snapshot,
+        )?;
         // The transaction's indexed admission delta bounds its new trie paths.
         // Cold ancestry validation independently reconstructs both index roots.
         let scan_growth = self.planner_scan_closure_growth(&loaded, fact)?;
@@ -231,29 +324,11 @@ impl CampaignRepository {
             .closure_objects
             .checked_add(closure_growth_upper)
             .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
-        if closure_objects <= MAX_CAMPAIGN_CLOSURE_OBJECTS {
-            return Ok(ValidationCheckpoint {
-                ancestry_depth,
-                closure_objects,
-                lifecycle,
-                genesis: parent_checkpoint.genesis,
-                derived_branch,
-            });
-        }
-
-        let mut choice_cache = ChoiceValidationCache::default();
-        let (ancestry_depth, lifecycle, genesis, derived_branch) =
-            self.validate_snapshot_ancestry(child, &mut choice_cache, MAX_SNAPSHOT_ANCESTRY)?;
-        let closure_objects = self.verify_campaign_closures_anchored_cached(
-            [child],
-            &BTreeSet::new(),
-            &mut choice_cache,
-        )?;
         Ok(ValidationCheckpoint {
             ancestry_depth,
             closure_objects,
             lifecycle,
-            genesis,
+            genesis: parent_checkpoint.genesis,
             derived_branch,
         })
     }
@@ -304,9 +379,10 @@ impl CampaignRepository {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn validate_snapshot_ancestry(
         &self,
-        mut content_id: ContentId,
+        content_id: ContentId,
         choice_cache: &mut ChoiceValidationCache,
         maximum_depth: usize,
     ) -> Result<
@@ -318,25 +394,127 @@ impl CampaignRepository {
         ),
         CampaignRepositoryError,
     > {
-        enum LifecycleValidationAction {
-            Control(CampaignControlAction),
-            RequireRunning(&'static str),
-        }
+        self.validate_snapshot_ancestry_with_planner_context(
+            content_id,
+            choice_cache,
+            maximum_depth,
+            None,
+        )
+    }
 
-        let mut snapshots = BTreeSet::new();
+    /// Validates original ancestry and owner transitions using checked tuples.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original missing-object, corruption, depth, lifecycle, lineage,
+    /// transition, root, budget, cursor, or exact Issue validation errors.
+    #[cfg(test)]
+    pub(super) fn validate_snapshot_ancestry_with_planner_context(
+        &self,
+        content_id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
+        maximum_depth: usize,
+        planner_context: Option<&mut PlannerValidationContext>,
+    ) -> Result<
+        (
+            usize,
+            ProjectedState,
+            ContentId,
+            Option<DerivedBranchCheckpoint>,
+        ),
+        CampaignRepositoryError,
+    > {
+        self.validate_snapshot_ancestry_with_validation_reads(
+            content_id,
+            choice_cache,
+            maximum_depth,
+            planner_context,
+            None,
+        )
+    }
+
+    /// Preserves ancestry checks while sharing only strict Issue node reads.
+    ///
+    /// This validates transitions only; it does not authenticate closures.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original ancestry bound, object, successor, or owner error.
+    #[cfg(test)]
+    pub(super) fn validate_snapshot_ancestry_with_validation_reads(
+        &self,
+        content_id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
+        maximum_depth: usize,
+        planner_context: Option<&mut PlannerValidationContext>,
+        merkle_reads: Option<&mut MerkleValidationReads>,
+    ) -> Result<
+        (
+            usize,
+            ProjectedState,
+            ContentId,
+            Option<DerivedBranchCheckpoint>,
+        ),
+        CampaignRepositoryError,
+    > {
+        self.validate_snapshot_history(
+            content_id,
+            choice_cache,
+            maximum_depth,
+            planner_context,
+            merkle_reads,
+            None,
+        )
+    }
+
+    /// Validates every transition from `content_id` back to genesis.
+    ///
+    /// With `closure`, each step also authenticates the objects that the child
+    /// makes newly reachable relative to its parent, and genesis authenticates
+    /// its own closure. Resident state is one step's: the previous step's
+    /// roots, one delta walk, and operator-bounded lifecycle actions.
+    ///
+    /// A cycle is impossible because a child's canonical bytes embed its
+    /// parent's content ID. Mutation-command uniqueness needs no history set:
+    /// every command-bearing successor proves its command absent from the
+    /// parent's grow-only `accounting.command` index and inserts it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original ancestry bound, object, successor, owner, or
+    /// closure error, or the first error returned by the closure sink.
+    pub(super) fn validate_snapshot_history(
+        &self,
+        mut content_id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
+        maximum_depth: usize,
+        mut planner_context: Option<&mut PlannerValidationContext>,
+        mut merkle_reads: Option<&mut MerkleValidationReads>,
+        mut closure: Option<&mut HistoryClosure<'_, '_>>,
+    ) -> Result<
+        (
+            usize,
+            ProjectedState,
+            ContentId,
+            Option<DerivedBranchCheckpoint>,
+        ),
+        CampaignRepositoryError,
+    > {
         let mut verified_roots = BTreeSet::new();
-        let mut seen_commands = BTreeSet::new();
         let mut expected_lineage = None;
         let mut actions = Vec::new();
         let mut derived_branch = None;
-        let mut validated_generator_policies = BTreeSet::new();
+        // Older snapshots named by delta objects; each ancestor discharges its
+        // own entry when the walk reaches it.
+        let mut deferred_snapshots = BTreeSet::new();
 
-        for depth in 1..=maximum_depth.min(MAX_SNAPSHOT_ANCESTRY) {
-            if !snapshots.insert(content_id) {
-                return Err(integrity("snapshot-ancestry-cycle"));
-            }
+        for depth in 1..=maximum_depth.min(MAX_CAMPAIGN_SNAPSHOT_ANCESTRY) {
+            deferred_snapshots.remove(&content_id);
             let loaded = self.read_snapshot(content_id)?;
             self.validate_snapshot_references_once(&loaded, &mut verified_roots)?;
+            // Only the previous step's roots can repeat in its parent.
+            let current_roots = snapshot_roots(&loaded.snapshot);
+            verified_roots.retain(|root| current_roots.contains(root));
 
             match expected_lineage {
                 None => expected_lineage = Some(loaded.snapshot.lineage()),
@@ -349,6 +527,21 @@ impl CampaignRepository {
             match (loaded.snapshot.parent(), loaded.snapshot.transition()) {
                 (None, None) => {
                     self.validate_genesis_snapshot(&loaded)?;
+                    if let Some(closure) = closure.as_deref_mut() {
+                        let (objects, peak) = self.authenticate_genesis_closure(
+                            &loaded,
+                            choice_cache,
+                            planner_context.as_deref_mut(),
+                            closure.sink.as_deref_mut(),
+                            &mut deferred_snapshots,
+                        )?;
+                        closure.add(objects, peak)?;
+                        // A named snapshot that is not an ancestor still needs
+                        // its own complete history and closure validation.
+                        for snapshot in std::mem::take(&mut deferred_snapshots) {
+                            self.delegated_snapshot_closure(snapshot, closure.sink.as_deref_mut())?;
+                        }
+                    }
                     actions.reverse();
                     let mut projected = ProjectedState::new();
                     for action in &actions {
@@ -366,8 +559,11 @@ impl CampaignRepository {
                     return Ok((depth, projected, content_id, derived_branch));
                 }
                 (Some(parent), Some(transition)) => {
-                    let (transition_fact, validated_planner_step) =
-                        self.read_fact_with_planner_step(transition.content_id())?;
+                    let (transition_fact, validated_planner_step) = self
+                        .read_fact_with_planner_context(
+                            transition.content_id(),
+                            planner_context.as_deref_mut(),
+                        )?;
                     let parent_snapshot = self.read_snapshot(parent.content_id())?;
                     let budget_fact = transition_fact.clone();
                     match transition_fact {
@@ -376,7 +572,7 @@ impl CampaignRepository {
                                 &parent_snapshot,
                                 &loaded,
                                 derivation,
-                                &mut validated_generator_policies,
+                                &mut BTreeSet::new(),
                             )?;
                             if derived_branch.is_none() {
                                 derived_branch = Some(DerivedBranchCheckpoint {
@@ -399,9 +595,6 @@ impl CampaignRepository {
                             )?;
                         }
                         CampaignFact::ControlRequested(request) => {
-                            if !seen_commands.insert(request.command) {
-                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
-                            }
                             if request.expected_snapshot != parent {
                                 return Err(integrity("transition-precondition-parent-mismatch"));
                             }
@@ -414,9 +607,6 @@ impl CampaignRepository {
                             actions.push(LifecycleValidationAction::Control(request.action));
                         }
                         CampaignFact::PinCommandAccepted(request) => {
-                            if !seen_commands.insert(request.command) {
-                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
-                            }
                             if request.expected_snapshot != parent {
                                 return Err(integrity("transition-precondition-parent-mismatch"));
                             }
@@ -428,9 +618,6 @@ impl CampaignRepository {
                             )?;
                         }
                         CampaignFact::DiscoveryRequested(request) => {
-                            if !seen_commands.insert(request.command) {
-                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
-                            }
                             if request.expected_snapshot != parent {
                                 return Err(integrity("transition-precondition-parent-mismatch"));
                             }
@@ -442,9 +629,6 @@ impl CampaignRepository {
                             )?;
                         }
                         CampaignFact::SavepointCaptureRequested(request) => {
-                            if !seen_commands.insert(request.command) {
-                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
-                            }
                             if request.expected_snapshot != parent {
                                 return Err(integrity("transition-precondition-parent-mismatch"));
                             }
@@ -455,14 +639,12 @@ impl CampaignRepository {
                                 &request,
                                 choice_cache,
                             )?;
-                            actions.push(LifecycleValidationAction::RequireRunning(
+                            push_require_running(
+                                &mut actions,
                                 "savepoint-capture-parent-is-not-running",
-                            ));
+                            );
                         }
                         CampaignFact::SavepointCaptureResolved(resolution) => {
-                            if !seen_commands.insert(resolution.command) {
-                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
-                            }
                             if resolution.expected_snapshot != parent {
                                 return Err(integrity("transition-precondition-parent-mismatch"));
                             }
@@ -475,9 +657,6 @@ impl CampaignRepository {
                             )?;
                         }
                         CampaignFact::SavepointContinuationSelected(selection) => {
-                            if !seen_commands.insert(selection.command) {
-                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
-                            }
                             if selection.expected_snapshot != parent {
                                 return Err(integrity("transition-precondition-parent-mismatch"));
                             }
@@ -488,17 +667,13 @@ impl CampaignRepository {
                                 &selection,
                                 choice_cache,
                             )?;
-                            actions.push(LifecycleValidationAction::RequireRunning(
+                            push_require_running(
+                                &mut actions,
                                 "savepoint-continuation-parent-is-not-running",
-                            ));
+                            );
                         }
                         CampaignFact::BranchRequestAccepted { request, summary } => {
                             let request_record = self.read_branch_request(request.content_id())?;
-                            if let BranchRequestCause::Operator(command) = request_record.cause()
-                                && !seen_commands.insert(command)
-                            {
-                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
-                            }
                             let expected_summary = self.branch_acceptance_summary(
                                 parent_snapshot.snapshot.roots().graph,
                                 &request_record,
@@ -530,12 +705,22 @@ impl CampaignRepository {
                                 validated_planner_step.as_ref().ok_or_else(|| {
                                     integrity("planner-step-transition-fact-was-not-validated")
                                 })?;
-                            self.validate_planner_step_successor(
-                                &parent_snapshot,
-                                &loaded,
-                                step,
-                                validated_step,
-                            )?;
+                            match merkle_reads.as_deref_mut() {
+                                Some(reads) => self
+                                    .validate_planner_step_successor_with_validation_reads(
+                                        &parent_snapshot,
+                                        &loaded,
+                                        step,
+                                        validated_step,
+                                        Some(reads),
+                                    )?,
+                                None => self.validate_planner_step_successor(
+                                    &parent_snapshot,
+                                    &loaded,
+                                    step,
+                                    validated_step,
+                                )?,
+                            }
                         }
                         CampaignFact::ObservationCredited(observation) => {
                             self.validate_credited_observation_successor(
@@ -580,6 +765,20 @@ impl CampaignRepository {
                         }
                     }
                     self.validate_budget_successor(&parent_snapshot, &loaded, &budget_fact)?;
+                    if let Some(closure) = closure.as_deref_mut() {
+                        let (objects, peak) = self.authenticate_transition_delta(
+                            TransitionStep {
+                                parent: &parent_snapshot,
+                                child: &loaded,
+                                transition: &budget_fact,
+                            },
+                            choice_cache,
+                            planner_context.as_deref_mut(),
+                            closure.sink.as_deref_mut(),
+                            &mut deferred_snapshots,
+                        )?;
+                        closure.add(objects, peak)?;
+                    }
                     content_id = parent.content_id();
                 }
                 _ => return Err(integrity("snapshot-parent-transition-shape")),
@@ -649,8 +848,32 @@ impl CampaignRepository {
             }
         }
 
+        let observations = self.merkle.inspect_shallow(roots.observations)?;
+        // Genesis observations hold exactly the two empty index anchors.
+        if observations.entry_count() != 2 {
+            return Err(integrity("genesis-observation-index-root-mismatch"));
+        }
+        let choice_sources = self
+            .merkle
+            .get(roots.observations, choice_source_index_anchor_key())?
+            .ok_or_else(|| integrity("genesis-choice-source-index-root-mismatch"))?;
+        if self.merkle.inspect_shallow(choice_sources)?.entry_count() != 0 {
+            return Err(integrity("genesis-choice-source-index-root-mismatch"));
+        }
+        let direct_selection_index = self
+            .merkle
+            .get(roots.observations, direct_selection_index_anchor_key())?
+            .ok_or_else(|| integrity("genesis-direct-selection-index-root-mismatch"))?;
+        if self
+            .merkle
+            .inspect_shallow(direct_selection_index)?
+            .entry_count()
+            != 0
+        {
+            return Err(integrity("genesis-direct-selection-index-root-mismatch"));
+        }
+
         let empty_roots = [
-            roots.observations,
             roots.coverage,
             roots.findings,
             roots.pins,
@@ -696,6 +919,11 @@ impl CampaignRepository {
                 "current-campaign-choice-index-is-missing",
             ),
             (
+                roots.observations,
+                choice_source_index_anchor_key(),
+                "current-campaign-choice-source-index-is-missing",
+            ),
+            (
                 roots.exploration,
                 frontier_index_anchor_key(),
                 "current-campaign-frontier-index-is-missing",
@@ -709,6 +937,11 @@ impl CampaignRepository {
                 roots.exploration,
                 planner_scan_index_anchor_key(),
                 "current-campaign-planner-scan-index-is-missing",
+            ),
+            (
+                roots.observations,
+                direct_selection_index_anchor_key(),
+                "current-campaign-direct-selection-index-is-missing",
             ),
         ] {
             self.merkle
@@ -724,44 +957,26 @@ impl CampaignRepository {
     ) -> Result<usize, CampaignRepositoryError> {
         self.verify_campaign_closure_anchored(root, &BTreeSet::new())
     }
+}
 
-    /// Reuses exact immutable roots only after complete head authentication.
-    pub(super) fn authenticated_head_closure_anchors(
-        &self,
-        parent: &LoadedSnapshot,
-    ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
-        let mut anchors = BTreeSet::from([
-            parent.envelope.content_id(),
-            parent.snapshot.lineage().content_id(),
-            parent.snapshot.active_policy().content_id(),
-        ]);
-        anchors.extend(snapshot_roots(&parent.snapshot));
+/// Lifecycle obligation collected while walking backward and replayed forward.
+enum LifecycleValidationAction {
+    Control(CampaignControlAction),
+    RequireRunning(&'static str),
+}
 
-        // These immutable basis records were authenticated with the parent.
-        // Anchor their direct reusable roots as well because a new transition
-        // can reference them without passing through the basis record itself.
-        for basis in [
-            parent.snapshot.lineage().content_id(),
-            parent.snapshot.active_policy().content_id(),
-        ] {
-            let handle = self.blobs.read(basis, None)?;
-            let envelope =
-                ObjectEnvelope::from_canonical_bytes(&handle.read_all(MAX_ENVELOPE_BYTES)?)?;
-            if envelope.content_id() != basis {
-                return Err(integrity("incremental-closure-anchor-envelope-id"));
-            }
-            anchors.extend(envelope.children().iter().map(crate::ChildReference::id));
-        }
-
-        let roots = parent.snapshot.roots();
-        if let Some(step) = self.merkle.get(roots.coordination, planner_head_key())? {
-            anchors.insert(step);
-            let envelope =
-                self.require_record_kind(step, crate::CampaignRecordKind::PlannerStep)?;
-            anchors.extend(envelope.children().iter().map(crate::ChildReference::id));
-        }
-        Ok(anchors)
+/// Records that the parent of a savepoint transition must be running.
+///
+/// Consecutive running requirements between the same two controls observe the
+/// same projected state, so only the oldest one, which forward replay checks
+/// first, is retained. The list therefore grows with operator controls rather
+/// than with savepoint traffic.
+fn push_require_running(actions: &mut Vec<LifecycleValidationAction>, reason: &'static str) {
+    if let Some(LifecycleValidationAction::RequireRunning(prior)) = actions.last_mut() {
+        *prior = reason;
+        return;
     }
+    actions.push(LifecycleValidationAction::RequireRunning(reason));
 }
 
 mod incremental;

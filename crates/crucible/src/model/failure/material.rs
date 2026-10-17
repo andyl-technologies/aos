@@ -2,8 +2,10 @@
 
 use super::*;
 
+mod recorded_folds;
 mod reporting;
 
+pub(in crate::model) use recorded_folds::*;
 pub(in crate::model) use reporting::*;
 
 pub(in crate::model) fn validate_finding_static_identity(
@@ -74,289 +76,6 @@ pub(in crate::model) fn validate_violation_for_finding(
         });
     }
     Ok(())
-}
-
-pub(in crate::model) fn validate_divergence_point(
-    event_log: &FailureRecordedEventLog,
-    divergence: &EventLogCausalDivergencePoint,
-) -> Result<usize, EngineError> {
-    if let Some((index, _)) =
-        event_log
-            .projection
-            .entries()
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| {
-                entry.raw_index == divergence.raw_index
-                    && entry.entry.time().stamp == divergence.at
-                    && entry.entry.source() == &divergence.source
-                    && entry.entry.event_payload().kind() == divergence.kind
-            })
-    {
-        return Ok(index);
-    }
-
-    Err(EngineError::UnifiedOperationEvidenceMismatch {
-        operation: "failure-signature.divergence",
-        reason: "divergence bisection point is absent from recorded causal projection",
-    })
-}
-
-fn host_assertion_transition_index(
-    event_log: &FailureRecordedEventLog,
-    violation: &FailurePropertyViolationRecord,
-) -> Result<Option<usize>, EngineError> {
-    let mismatch = || EngineError::UnifiedOperationEvidenceMismatch {
-        operation: "failure-signature.violation",
-        reason: "host assertion transition is ambiguous or inconsistent",
-    };
-    let mut matches = event_log
-        .projection
-        .entries()
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| {
-            entry.entry.event_payload().kind() == violation.violation.event_kind
-                && entry.entry.at() == violation.violation.at_virtual_time
-                && violation_event_assertion_matches(
-                    entry.entry.event_payload(),
-                    &violation.violation,
-                )
-        });
-    let Some((index, transition)) = matches.next() else {
-        return Ok(None);
-    };
-    if matches.next().is_some() {
-        return Err(mismatch());
-    }
-
-    let entry = &transition.entry;
-    let boundary_stamp = entry.time().stamp.node.is_none()
-        && entry.time().stamp.tick.ticks == entry.at().ticks
-        && entry.time().stamp.retired.is_none();
-    if entry.source() != &EventSource::Engine
-        || !boundary_stamp
-        || !matches!(
-            entry.payload(),
-            SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionStateChanged {
-                state: AssertionPhase::Violated,
-                ..
-            })
-        )
-    {
-        return Err(mismatch());
-    }
-    Ok(Some(index))
-}
-
-pub(in crate::model) struct ValidatedPropertyViolation {
-    pub(in crate::model) causal_cone: FailureCausalCone,
-    pub(in crate::model) anchor: Option<usize>,
-}
-
-pub(in crate::model) fn validated_property_violation(
-    finding: &FindingReproductionArtifact,
-    event_log: &FailureRecordedEventLog,
-    violation: &FailurePropertyViolationRecord,
-    canonicalizer: &FailureSymmetryCanonicalizer,
-) -> Result<ValidatedPropertyViolation, EngineError> {
-    let mismatch = || EngineError::UnifiedOperationEvidenceMismatch {
-        operation: "failure-signature.violation",
-        reason: "violation record is absent from recorded causal projection and host assertion replay",
-    };
-
-    let scenario = finding.artifact.scenario_form();
-    let report = OfflineAssertionChecker::new()
-        .with_world_white_box_policies(&scenario.world)
-        .check_run(&scenario.properties, &event_log.raw_entries)
-        .map_err(|_| mismatch())?;
-    let matches_expected = |replayed: &HostAssertionViolation| {
-        let mut replayed = replayed.clone();
-        replayed.reproduction_artifact = finding.artifact.id();
-        replayed == violation.violation
-    };
-    if !report.violations().iter().any(&matches_expected) {
-        return Err(mismatch());
-    }
-
-    let transition =
-        host_assertion_transition_index(event_log, violation).map_err(|_| mismatch())?;
-    let outcome_is_violated = report.outcomes().iter().any(|outcome| {
-        outcome.assertion == violation.violation.assertion
-            && outcome.at == violation.violation.at_virtual_time
-            && outcome.quantifier == violation.violation.quantifier
-            && matches!(
-                outcome.kind,
-                HostAssertionOutcomeKind::Violated | HostAssertionOutcomeKind::NeverReachedFail
-            )
-    });
-    // A host-only recorded log can omit the runtime's derived transition.
-    // When one is retained, it must agree with the rechecked verdict.
-    if transition.is_some() && !outcome_is_violated {
-        return Err(mismatch());
-    }
-    let anchor = transition.or_else(|| {
-        event_log
-            .projection
-            .entries()
-            .iter()
-            .enumerate()
-            .rfind(|(_, entry)| entry.entry.at() <= violation.violation.at_virtual_time)
-            .map(|(index, _)| index)
-    });
-    let mut material = anchor.map_or_else(
-        || String::from("causal_cone_events=0"),
-        |index| {
-            failure_causal_cone_through_index(event_log, index, canonicalizer)
-                .canonical_material()
-                .to_owned()
-        },
-    );
-
-    // The checker establishes the failed predicate from the exact raw log.
-    // Retain the physical marker coordinate independently of the scheduler
-    // boundary so replay cannot substitute a different guest observation.
-    let claims_guest_marker = violation.violation.node.is_some()
-        && violation.violation.detail.contains("guest marker marker=");
-    let marker_witnesses = event_log
-        .raw_entries
-        .iter()
-        .enumerate()
-        .filter_map(|(raw_index, entry)| match entry.payload() {
-            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
-                retired_icount,
-                node,
-                marker,
-            }) if claims_guest_marker
-                && violation.violation.at_icount == Some(*retired_icount)
-                && violation.violation.node.as_ref() == Some(node)
-                && entry.at() <= violation.violation.at_virtual_time
-                && violation
-                    .violation
-                    .detail
-                    .contains(&format!("guest marker marker={} matched", marker.name)) =>
-            {
-                Some((raw_index, entry.at(), node, marker, retired_icount))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    // The detail was regenerated and compared above, so its witness label is
-    // checker-owned rather than an unchecked claim from the replay payload.
-    if marker_witnesses.len() > 1 || (claims_guest_marker && marker_witnesses.len() != 1) {
-        return Err(mismatch());
-    }
-    if let (Some(index), Some((raw_index, ..))) = (transition, marker_witnesses.first())
-        && *raw_index >= event_log.projection.entries()[index].raw_index
-    {
-        return Err(mismatch());
-    }
-    if let Some((_, at, node, marker, icount)) = marker_witnesses.first() {
-        let node = canonicalizer.canonical_node(node);
-        material.push_str(&format!(
-            "\nguest_marker_witness=marker:{:?};node:{:?};icount:{};at:{}",
-            marker.name, node.name, icount.retired, at.ticks
-        ));
-    }
-    material.push_str(&format!(
-        "\nhost_assertion_violation=assertion:{:?};quantifier:{:?};at:{};detail:{:?}",
-        violation.violation.assertion.name,
-        violation.violation.quantifier,
-        violation.violation.at_virtual_time.ticks,
-        violation.violation.detail
-    ));
-    Ok(ValidatedPropertyViolation {
-        causal_cone: FailureCausalCone::from_canonical_material(material),
-        anchor,
-    })
-}
-
-pub(in crate::model) fn validate_timeout_point(
-    event_log: &FailureRecordedEventLog,
-    timeout: &FailureTimeoutRecord,
-) -> Result<usize, EngineError> {
-    if timeout.reproduction_artifact != event_log.artifact() {
-        return Err(EngineError::ReplayTargetMismatch {
-            expected: event_log.artifact(),
-            actual: timeout.reproduction_artifact,
-        });
-    }
-    event_log
-        .projection
-        .entries()
-        .iter()
-        .enumerate()
-        .find(|(_, entry)| {
-            entry.entry.event_payload().kind() == timeout.event_kind
-                && entry.entry.at() == timeout.at_virtual_time
-                && entry.entry.event_payload().string("budget_kind")
-                    == Some(failure_timeout_budget_kind_label(timeout.budget_kind))
-                && entry.entry.time().stamp.node == timeout.node
-                && timeout
-                    .at_icount
-                    .map(|icount| entry.entry.time().stamp.retired == Some(icount))
-                    .unwrap_or(true)
-        })
-        .map(|(index, _)| index)
-        .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
-            operation: "failure-signature.timeout",
-            reason: "timeout boundary is absent from recorded causal projection",
-        })
-}
-
-pub(in crate::model) fn violation_event_assertion_matches(
-    payload: &crate::scheduler::EventPayload,
-    violation: &HostAssertionViolation,
-) -> bool {
-    matches!(
-        payload.attribute("id"),
-        Some(EventAttributeValue::String(value)) if value == &violation.assertion.name
-    )
-}
-
-pub(in crate::model) fn divergence_faulting_node(
-    divergence: &EventLogCausalDivergencePoint,
-) -> Option<NodeId> {
-    match &divergence.source {
-        EventSource::Node { node } | EventSource::Guest { node } => Some(node.clone()),
-        EventSource::Scenario { .. } | EventSource::Engine | EventSource::Command { .. } => {
-            divergence.at.node.clone()
-        }
-    }
-}
-
-pub(in crate::model) fn failure_causal_cone_through_index(
-    event_log: &FailureRecordedEventLog,
-    causal_index: usize,
-    canonicalizer: &FailureSymmetryCanonicalizer,
-) -> FailureCausalCone {
-    let cone = failure_causal_cone_entries(event_log, causal_index, canonicalizer);
-    let mut lines = vec![format!("causal_cone_events={}", cone.len())];
-    for (cone_index, entry) in cone.into_iter().enumerate() {
-        push_failure_causal_slice_entry_lines(cone_index, entry, canonicalizer, &mut lines);
-    }
-    FailureCausalCone::from_canonical_material(lines.join("\n"))
-}
-
-pub(in crate::model) fn failure_causal_cone_entries<'a>(
-    event_log: &'a FailureRecordedEventLog,
-    causal_index: usize,
-    canonicalizer: &FailureSymmetryCanonicalizer,
-) -> Vec<&'a crate::scheduler::EventLogCausalProjectionEntry> {
-    let anchor = &event_log.projection.entries()[causal_index];
-    let anchor_keys = failure_causal_dependency_keys(anchor, canonicalizer);
-    event_log
-        .projection
-        .entries()
-        .iter()
-        .take(causal_index + 1)
-        .filter(|entry| {
-            entry.raw_index == anchor.raw_index
-                || failure_causal_dependency_keys(entry, canonicalizer)
-                    .iter()
-                    .any(|key| anchor_keys.contains(key))
-        })
-        .collect()
 }
 
 pub(in crate::model) fn failure_causal_dependency_keys(
@@ -589,9 +308,8 @@ pub(in crate::model) fn failure_signature_report_material(signature: &FailureSig
     match &signature.causal_cone {
         Some(cone) => {
             lines.push(String::from("causal_cone=some"));
-            lines.push(String::from("causal_cone_material_BEGIN"));
-            lines.push(cone.canonical_material().to_owned());
-            lines.push(String::from("causal_cone_material_END"));
+            lines.push(format!("causal_cone_hash={}", cone.content_hash().to_hex()));
+            lines.push(format!("causal_cone_events={}", cone.events()));
         }
         None => lines.push(String::from("causal_cone=none")),
     }
@@ -661,9 +379,11 @@ pub(in crate::model) fn failure_signature_key_material(
         match &signature.causal_cone {
             Some(cone) => {
                 lines.push(String::from("exact_causal_cone=some"));
-                lines.push(String::from("exact_causal_cone_material_BEGIN"));
-                lines.push(cone.canonical_material().to_owned());
-                lines.push(String::from("exact_causal_cone_material_END"));
+                lines.push(format!(
+                    "exact_causal_cone_hash={}",
+                    cone.content_hash().to_hex()
+                ));
+                lines.push(format!("exact_causal_cone_events={}", cone.events()));
             }
             None => lines.push(String::from("exact_causal_cone=none")),
         }

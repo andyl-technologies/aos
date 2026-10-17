@@ -102,7 +102,7 @@
     ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifacts [
       {
         label = "signed findings schema";
-        needle = "crucible.failure-triage.findings-ledger.v4";
+        needle = "crucible.failure-triage.findings-ledger.v5";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

@@ -2,12 +2,17 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase9.gates.campaignMetadataMillion",
-}: let
+  diagnosticRequests ? null,
+}:
+assert diagnosticRequests == null || (builtins.isInt diagnosticRequests && diagnosticRequests > 0 && diagnosticRequests <= 256); let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 in
   pkgs.mkDerivation {
-    pname = "crucible-phase9-campaign-metadata-million";
+    pname =
+      if diagnosticRequests == null
+      then "crucible-phase9-campaign-metadata-million"
+      else "crucible-phase9-campaign-admission-diagnostic";
     version = "0";
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = source;
@@ -84,6 +89,47 @@ in
           chmod 0500 "$TMPDIR/campaign-million-planner"
           export CRUCIBLE_CAMPAIGN_MILLION_STORAGE_ROOT="$TMPDIR/campaign-million-store"
           export CRUCIBLE_CAMPAIGN_MILLION_PLANNER_EXECUTABLE="$TMPDIR/campaign-million-planner"
+          ${
+            if diagnosticRequests == null
+            then ""
+            else ''
+                export CRUCIBLE_CAMPAIGN_MILLION_DIAGNOSTIC_REQUESTS=${toString diagnosticRequests}
+                export CRUCIBLE_CAMPAIGN_STORE_PROFILE=1
+                if ! timeout -k 15 600 ${pkgs.rust}/bin/cargo test --frozen --offline --release \
+                  --manifest-path crates/Cargo.toml --target-dir "$target" \
+                  -p crucible-daemon --test gate_campaign_metadata_million \
+                  small_real_admission_corpus_exercises_the_same_path -- \
+                  --ignored --exact --nocapture --test-threads=1 \
+                  > "$out/evidence/admission-diagnostic.log" 2>&1; then
+                  cat "$out/evidence/admission-diagnostic.log" >&2
+                  exit 1
+                fi
+                grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' \
+                  "$out/evidence/admission-diagnostic.log"
+                profile=$(grep '^campaign_million_profile admissions=${toString (diagnosticRequests * 16)} requests=${toString diagnosticRequests} request_size=16 ' \
+                  "$out/evidence/admission-diagnostic.log")
+                test "$(printf '%s\n' "$profile" | grep -c '^campaign_million_profile ')" -eq 1
+                printf '%s\n' "$profile" > "$out/evidence/profile.env"
+                queue_profile=$(grep '^campaign_admission_queue_profile ' "$out/evidence/admission-diagnostic.log")
+                test "$(printf '%s\n' "$queue_profile" | grep -c '^campaign_admission_queue_profile ')" -eq 1
+                printf '%s\n' "$queue_profile" > "$out/evidence/queue-profile.env"
+                raw_sha=$(sha256sum "$out/evidence/admission-diagnostic.log" | cut -d ' ' -f 1)
+                cat > "$out/result" <<RESULT
+              PASS
+              check=${attrPath}
+              diagnostic=real-admission-planner-queue
+              admissions=${toString (diagnosticRequests * 16)}
+              requests=${toString diagnosticRequests}
+              storage_backend=sqlite
+              planner_supervisor=packaged-process
+              ordered_hot_cold_queue_equal=true
+              million_admissions_qualified=false
+              guest_host_time_ratio_qualified=false
+              raw_sha256=$raw_sha
+              RESULT
+                exit 0
+            ''
+          }
           if ! timeout -k 60 604800 ${pkgs.rust}/bin/cargo test --frozen --offline --release \
             --manifest-path crates/Cargo.toml --target-dir "$target" \
             -p crucible-daemon --test gate_campaign_metadata_million \

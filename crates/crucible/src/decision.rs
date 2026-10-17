@@ -23,11 +23,12 @@ pub use app_random_selectable::{
     validate_app_random_model_selection,
 };
 pub(crate) use app_random_selectable::{
-    is_app_random_model_selection, is_app_random_schedule_decision,
+    is_app_random_decision_after, is_app_random_model_selection,
 };
 pub use network_fault_selectable::{
-    NETWORK_FAULT_CAMPAIGN_ADAPTER, NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan,
-    NetworkFaultPhase, NetworkFaultSelectable, NetworkFaultSelectableError,
+    MAX_NETWORK_FAULT_CAMPAIGN_BRANCHES, NETWORK_FAULT_CAMPAIGN_ADAPTER,
+    NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan, NetworkFaultPhase,
+    NetworkFaultSelectable, NetworkFaultSelectableError,
 };
 pub use signal_fault_selectable::{
     MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES, MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES,
@@ -65,8 +66,8 @@ impl DecisionRecorder {
     #[must_use]
     pub fn new(configuration: Configuration) -> Self {
         let rng = configuration.def.seed().decision_rng();
-        let streams = hydrate_streams(&rng, configuration.schedule.decisions());
-        let app_random_draws = reseed::count_app_random_draws(configuration.schedule.decisions());
+        let streams = hydrate_streams(&rng, configuration.schedule.decision_history());
+        let app_random_draws = configuration.schedule.app_random_decisions();
         Self {
             configuration,
             rng,
@@ -426,7 +427,7 @@ fn mask_to_width(value: u64, width: u8) -> u64 {
 
 fn hydrate_streams(
     rng: &DecisionRng,
-    decisions: &[Decision],
+    decisions: &crate::History<Decision>,
 ) -> BTreeMap<RngStreamId, DecisionStream> {
     let mut streams = BTreeMap::new();
 
@@ -475,7 +476,7 @@ mod tests {
         let mut recorder = DecisionRecorder::new(config);
         let raw = recorder.draw_u64_accepted(stream.clone());
         assert!(matches!(
-            recorder.schedule().decisions(),
+            recorder.schedule().decision_history().to_vec().as_slice(),
             [Decision::RngDraw(RngDecision { stream: recorded, value })]
                 if recorded == &stream && *value == raw
         ));
@@ -508,16 +509,16 @@ mod tests {
 
         assert_eq!(baseline_draw, edited_draw);
         assert!(matches!(
-            baseline.schedule().decisions().first(),
+            baseline.schedule().decision_history().first(),
             Some(Decision::RngDraw(RngDecision { stream, value }))
                 if stream == &stable_stream && *value == baseline_draw
         ));
         assert!(matches!(
-            edited.schedule().decisions().first(),
+            edited.schedule().decision_history().first(),
             Some(Decision::RngDraw(RngDecision { stream, .. })) if stream == &unrelated_stream
         ));
         assert!(matches!(
-            edited.schedule().decisions().get(1),
+            edited.schedule().decision_history().get(1),
             Some(Decision::RngDraw(RngDecision { stream, value }))
                 if stream == &stable_stream && *value == edited_draw
         ));
@@ -539,12 +540,12 @@ mod tests {
         assert_ne!(node_draw, link_draw);
         assert_eq!(recorder.schedule().len(), 2);
         assert!(matches!(
-            &recorder.schedule().decisions()[0],
+            &recorder.schedule().decision_history()[0],
             Decision::RngDraw(RngDecision { stream, value })
                 if stream == &node_stream && *value == node_draw
         ));
         assert!(matches!(
-            &recorder.schedule().decisions()[1],
+            &recorder.schedule().decision_history()[1],
             Decision::RngDraw(RngDecision { stream, value })
                 if stream == &link_stream && *value == link_draw
         ));
@@ -587,11 +588,11 @@ mod tests {
             .expect("seeded live request should normalize");
         assert_eq!(recorder.schedule().len(), 2);
         assert!(matches!(
-            &recorder.schedule().decisions()[0],
+            &recorder.schedule().decision_history()[0],
             Decision::RngDraw(RngDecision { stream: recorded, value })
                 if recorded == &stream && *value == raw_draw
         ));
-        let Decision::Selection(decision) = &recorder.schedule().decisions()[1] else {
+        let Decision::Selection(decision) = &recorder.schedule().decision_history()[1] else {
             panic!("live app randomness should record a typed selection")
         };
         assert!(decision.is_app_random_model_sample());
@@ -614,7 +615,7 @@ mod tests {
         let round_tripped = Schedule::from_compact_binary(&recorder.schedule().to_compact_binary())
             .expect("typed app-random schedule should round trip");
         assert!(matches!(
-            &round_tripped.decisions()[1],
+            &round_tripped.decision_history()[1],
             Decision::Selection(selection) if selection.is_app_random_model_sample()
         ));
     }
@@ -706,7 +707,7 @@ mod tests {
             .admit_backend_rng_evidence(observed.clone())
             .expect("first typed app-random selection should fit the cap");
         let recorded = recorder.into_configuration();
-        let typed_selection = recorded.schedule.decisions()[1].clone();
+        let typed_selection = recorded.schedule.decision_history()[1].clone();
 
         assert!(reduce(&recorded.def, &recorded.schedule).is_ok());
         assert_eq!(
@@ -821,7 +822,7 @@ mod tests {
         assert_eq!(resumed_draw, expected_resumed);
         assert_eq!(resumed.schedule().len(), 3);
         assert!(matches!(
-            resumed.schedule().decisions().last(),
+            resumed.schedule().decision_history().last(),
             Some(Decision::RngDraw(RngDecision { stream: recorded, value }))
                 if recorded == &stream && *value == expected_resumed
         ));

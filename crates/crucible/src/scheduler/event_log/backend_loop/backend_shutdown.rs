@@ -2,8 +2,31 @@
 //!
 //! Failed or unresolved owners remain cleanup-only until actual backend
 //! teardown succeeds; ordinary shutdown publishes only committed evidence.
+//!
+//! Settlement and teardown are separable: [`BackendQuantumLoop::drain_final_boundary`]
+//! settles the committed boundary's evidence and leaves the world running, so
+//! an owner can retain the world as a hot-fork template after proving that
+//! nothing remained to settle. Shutdown performs the same settlement and then
+//! tears the world down, so both paths publish identical entries.
 
 use super::*;
+
+/// Settlement of the final committed boundary, before teardown.
+struct FinalBoundarySettlement {
+    network: Result<Vec<SchedulerEventLogEntry>, BackendError>,
+    decisions: Result<(), SchedulerError>,
+    observations: Result<Vec<SchedulerEventLogEntry>, BackendError>,
+}
+
+impl FinalBoundarySettlement {
+    /// Returns the settled entries in publication order, or the first error.
+    fn into_entries(self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        let mut entries = self.network.map_err(SchedulerError::from)?;
+        self.decisions?;
+        entries.extend(self.observations.map_err(SchedulerError::from)?);
+        Ok(entries)
+    }
+}
 
 impl<L, B, I> BackendQuantumLoop<L, B, I>
 where
@@ -11,14 +34,42 @@ where
     B: SimulationBackend,
     I: BackendNetworkOutputInterceptor<L, B>,
 {
-    pub(crate) fn shutdown_backend_owner(
+    /// Settles the final committed boundary without tearing the world down.
+    ///
+    /// Returns `Ok(None)`, without touching any state, when the owner holds
+    /// work that only teardown may discard: a held host continuation, a
+    /// pending fixed input, a retained device-group selection, a preselection
+    /// reservation, or a poisoned continuation. Otherwise returns the entries
+    /// that [`QuantumLoop::shutdown`] would publish for this boundary, already
+    /// appended to the log; a later shutdown publishes only what arrives after
+    /// this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when uncommitted network output or
+    /// observations remain beyond the committed frontier, causal decisions
+    /// remain without a discovery handoff, or settlement cannot be appended.
+    /// The world must then be shut down.
+    pub fn drain_final_boundary(
         &mut self,
-    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        if self.held_host_continuation.is_some()
+    ) -> Result<Option<Vec<SchedulerEventLogEntry>>, SchedulerError> {
+        if self.requires_cleanup_only_shutdown() || self.preselection.is_some() {
+            return Ok(None);
+        }
+        self.settle_final_boundary().into_entries().map(Some)
+    }
+
+    fn requires_cleanup_only_shutdown(&self) -> bool {
+        self.held_host_continuation.is_some()
             || self.pending_fixed_input.is_some()
             || self.device_group_selection.is_retained()
             || self.continuation_poisoned
-        {
+    }
+
+    pub(crate) fn shutdown_backend_owner(
+        &mut self,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        if self.requires_cleanup_only_shutdown() {
             // Explicit whole-world teardown discards private physical evidence;
             // it never settles the source or admits a held peer receipt. Retain
             // ownership on failure so shutdown can be retried without any RUN.
@@ -39,6 +90,20 @@ where
         if self.preselection.is_some() {
             return self.shutdown_preselection();
         }
+        let settlement = self.settle_final_boundary();
+        let loop_result = self.loop_impl.shutdown();
+        let backend_result = self.backend.shutdown().map_err(SchedulerError::from);
+        let mut entries = settlement.into_entries()?;
+        entries.extend(loop_result?);
+        backend_result?;
+        Ok(entries)
+    }
+
+    /// Drains the backend and appends everything committed at the frontier.
+    ///
+    /// Every drain runs even when an earlier one fails, so shutdown always
+    /// reaches teardown with the backend emptied.
+    fn settle_final_boundary(&mut self) -> FinalBoundarySettlement {
         let final_network_append = self.backend.drain_network_outputs().and_then(|outputs| {
             self.pending_network_outputs.extend(outputs);
             let first_uncommitted = self
@@ -139,13 +204,10 @@ where
                     })
             }
         });
-        let loop_result = self.loop_impl.shutdown();
-        let backend_result = self.backend.shutdown().map_err(SchedulerError::from);
-        let mut entries = final_network_append?;
-        final_decisions?;
-        entries.extend(final_append.map_err(SchedulerError::from)?);
-        entries.extend(loop_result?);
-        backend_result?;
-        Ok(entries)
+        FinalBoundarySettlement {
+            network: final_network_append,
+            decisions: final_decisions,
+            observations: final_append,
+        }
     }
 }

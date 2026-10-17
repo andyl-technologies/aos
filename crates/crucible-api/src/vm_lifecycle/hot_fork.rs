@@ -12,6 +12,7 @@ use super::*;
 pub(super) mod disk_basis;
 mod native_disk_seal;
 mod resource_usage;
+mod resume_boundary_source;
 use disk_basis::ProductionVmHotForkDiskBasis;
 use native_disk_seal::ProductionVmHotForkDiskCustody;
 pub use resource_usage::ProductionVmHotForkSourceWorldResourceUsage;
@@ -585,8 +586,11 @@ pub struct ProductionVmHotForkWorldContinuation {
     configuration: Configuration,
     // Child admission restores independent runtime state from these immutable captures.
     scheduler: Arc<SingleSchedulerCheckpoint>,
-    event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    // The source run's store keeps the sealed segments `scheduler` names; a
+    // child copies them into its own run one segment at a time.
+    event_log_segments: ProductionEventLogSegments,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    fault_trace_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     trigger_state: EventGraphState,
     assertion_state: HostAssertionEvaluatorCheckpoint,
     terminal_verdict: Option<QuantumTerminalVerdict>,
@@ -619,8 +623,9 @@ impl ProductionVmHotForkWorldContinuation {
             config: self.config.clone(),
             configuration: self.configuration.clone(),
             scheduler: Arc::clone(&self.scheduler),
-            event_log_objects: self.event_log_objects.clone(),
+            event_log_segments: self.event_log_segments.clone(),
             signal_artifact_objects: self.signal_artifact_objects.clone(),
+            fault_trace_objects: Arc::clone(&self.fault_trace_objects),
             trigger_state: self.trigger_state.clone(),
             assertion_state: self.assertion_state.clone(),
             terminal_verdict: self.terminal_verdict.clone(),
@@ -679,10 +684,19 @@ impl ProductionVmHotForkWorldContinuation {
         self.fault_checkpoint.id()
     }
 
-    /// Returns the number of authenticated event-log dependency objects.
+    /// Returns the number of sealed event-log segments the continuation names.
     #[must_use]
     pub fn event_log_object_count(&self) -> usize {
-        self.event_log_objects.len()
+        self.scheduler.event_log_segments().len()
+    }
+
+    /// Returns read access to the sealed event-log segments the continuation names.
+    ///
+    /// Pass it to [`SingleSchedulerCheckpoint::event_log_entries`] to stream
+    /// the continuation's log one segment at a time.
+    #[must_use]
+    pub const fn event_log_segments(&self) -> &ProductionEventLogSegments {
+        &self.event_log_segments
     }
 
     /// Returns the number of retained signal-artifact dependency objects.
@@ -830,16 +844,11 @@ impl ProductionVmHotForkWorldContinuation {
                 });
             }
         }
-        if self
-            .scheduler
-            .event_log_segment_dependencies()
-            .iter()
-            .any(|identity| !self.event_log_objects.contains_key(identity))
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("hot-fork event-log dependency closure is incomplete"),
-            });
-        }
+        self.event_log_segments
+            .verify_present(&self.scheduler)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("hot-fork event-log dependency closure is incomplete: {error}"),
+            })?;
         let _retained_semantic_state = (
             &self.trigger_state,
             &self.assertion_state,
@@ -875,8 +884,9 @@ impl ProductionVmHotForkWorldContinuation {
             identity: self.configuration.id(),
             configuration: self.configuration,
             scheduler: self.scheduler,
-            event_log_objects: self.event_log_objects,
+            event_log_segments: self.event_log_segments,
             signal_artifact_objects: self.signal_artifact_objects,
+            fault_trace_objects: self.fault_trace_objects,
             trigger_state: self.trigger_state,
             assertion_state: self.assertion_state,
             terminal_verdict: self.terminal_verdict,
@@ -1515,15 +1525,16 @@ impl ProductionVmLifecycleLoop {
             &active_host_io,
             &self.failed_host_io,
         )?;
-        let event_log_objects = self
-            .inner
+        self.inner
             .loop_impl()
-            .event_log_dependency_objects()
+            .verify_event_log_segments()
             .map_err(|error| {
                 hot_fork_boundary_error(format!("capture event-log closure: {error}"))
-            })?
-            .into_iter()
-            .collect();
+            })?;
+        let event_log_segments =
+            ProductionEventLogSegments::store(self.inner.loop_impl().event_log_segment_store());
+        let fault_trace_objects =
+            capture_fault_trace_objects(&fault_checkpoint, self.fault_trace_segments.as_ref())?;
         let selectable_catalog_plans = self.inner.backend().selectable_catalog_plans();
         let after = self.hot_fork_node_boundaries()?;
         if before != after || scheduler.frontier() != checkpoint_virtual_time {
@@ -1536,8 +1547,9 @@ impl ProductionVmLifecycleLoop {
             config: self.config.clone(),
             configuration,
             scheduler: Arc::new(scheduler),
-            event_log_objects: Arc::new(event_log_objects),
+            event_log_segments,
             signal_artifact_objects: Arc::clone(&self.signal_artifact_objects),
+            fault_trace_objects: Arc::new(fault_trace_objects),
             trigger_state: self.trigger_state.clone(),
             assertion_state: self.assertion_evaluator.checkpoint(),
             terminal_verdict: self.terminal_verdict.clone(),
@@ -1728,6 +1740,7 @@ pub(super) use test_support::record_hot_fork_adoption_for_test;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_support::{
     hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
+    prepared_multi_node_hot_fork_source_world_after_selection_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_for_test,
     prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,

@@ -60,10 +60,26 @@ fn compound_combinators_nest_arbitrarily() {
         ]),
     ]);
 
-    assert!(evaluator(1, &["ready"]).evaluate_assertion_condition(&condition));
-    assert!(evaluator(1, &["warm"]).evaluate_assertion_condition(&condition));
-    assert!(!evaluator(1, &["ready", "blocked"]).evaluate_assertion_condition(&condition));
-    assert!(!evaluator(1, &["warm", "cold"]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(1, &["ready"])
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        evaluator(1, &["warm"])
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        !evaluator(1, &["ready", "blocked"])
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        !evaluator(1, &["warm", "cold"])
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]

@@ -5,7 +5,7 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
     use crucible_qemu::{
         QMP_HOT_FORK_ASYNC_WORKER_BARRIER_SCHEMA_VERSION,
         QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION,
-        QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
+        QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
         QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION,
         QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION,
         QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
@@ -59,7 +59,6 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
         ),
         ("child-files", QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION),
         ("child-qmp", QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION),
-        ("child-console", QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION),
         (
             "child-diagnostics",
             QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
@@ -231,10 +230,6 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
         (
             "crucible-hot-fork-child-qmp",
             "crucible.qemu.hot-fork.child-qmp",
-        ),
-        (
-            "crucible-hot-fork-child-console",
-            "crucible.qemu.hot-fork.child-console",
         ),
         (
             "crucible-checkpoint-capture",

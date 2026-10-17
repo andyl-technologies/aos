@@ -12,7 +12,9 @@
 //! campaign vocabulary; `campaign_service`, `execution`, and `planner_service`
 //! own component contracts; `repository` owns authenticated persistence and
 //! transitions; `codec`, `identity`, `object`, and `merkle` own canonical
-//! encoding, typed identities, envelopes, and authenticated maps.
+//! encoding, typed identities, envelopes, and authenticated maps. `spill`
+//! provides the bounded external sorting that archive planning, archive
+//! inspection, and campaign GC use for closure-sized identity sets.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -40,6 +42,8 @@ mod observation;
 mod planner_service;
 mod policy;
 mod repository;
+mod reproduction;
+pub mod spill;
 mod statistics;
 
 pub use model::{CampaignBudgetError, CampaignBudgetLedger};
@@ -70,11 +74,11 @@ pub use campaign_service::{
     CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignReportEndpoint, CampaignReportSummary,
     CampaignRequestAdmissionEntry, CampaignSavepointAction, CampaignSavepointRequest,
     CampaignSavepointResponse, CampaignSavepointResult, CampaignSemanticStatus, CampaignService,
-    CampaignServiceErrorResponse, CampaignServiceFailure, CampaignServiceFailureSource,
-    CampaignServiceOperation, CampaignServiceRetryDisposition, CampaignStatusSummary,
-    CampaignTraceKind, CampaignWorldStatus, CreateCampaignRequest, CreateCampaignResponse,
-    DeriveCampaignRequest, DeriveCampaignResponse, ExplainCampaignAttemptRequest,
-    ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
+    CampaignServiceErrorResponse, CampaignServiceFailure, CampaignServiceFailureCategory,
+    CampaignServiceFailureSource, CampaignServiceOperation, CampaignServiceRetryDisposition,
+    CampaignStatusSummary, CampaignTraceKind, CampaignWorldStatus, CreateCampaignRequest,
+    CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
+    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
     GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
     GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
     GetCampaignFindingOccurrenceObjectResponse, GetCampaignFindingTriageReplaySegmentRequest,
@@ -132,18 +136,14 @@ pub use executor_capability::{
 };
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptContinuationInput, AttemptStart,
-    BranchAcceptanceCount, BranchAcceptanceRange, BranchAcceptanceSummary, BranchBudget,
-    BranchEdgeVisitStatistics, BranchPath, BranchPathSegment, BranchPuctProjection, BranchRequest,
-    BranchRequestCause, BranchRequestIdentity, CandidateSource, ContinuationProjection,
-    ContinuationState, ExpansionCredit, ExpansionState, ExpansionStatistics, FeedbackWait,
-    FiniteCandidateSource, GUIDANCE_MICROS_PER_UNIT, GuidanceEvidence,
-    MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES, MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS,
-    MAX_BRANCH_FINDING_OCCURRENCE_VISITS, MAX_BRANCH_FINDING_PROJECTION_BYTES,
-    MAX_BRANCH_FINDING_ROOT_ENTRIES, MAX_BRANCH_NOVELTY_IDENTITIES,
-    MAX_BRANCH_NOVELTY_IDENTITY_VISITS, MAX_BRANCH_NOVELTY_OBSERVATIONS,
-    MAX_BRANCH_NOVELTY_PROJECTION_BYTES, MAX_BRANCH_NOVELTY_ROOT_ENTRIES,
-    MAX_BRANCH_OBJECTIVE_EVALUATIONS, MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES,
-    MAX_BRANCH_PRIOR_NORMALIZATION_VISITS, MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, ObservationCondition,
+    BRANCH_RARITY_SCALE, BranchAcceptanceCount, BranchAcceptanceRange, BranchAcceptanceSummary,
+    BranchBudget, BranchEdgeVisitStatistics, BranchPath, BranchPathSegment, BranchPuctProjection,
+    BranchRequest, BranchRequestCause, BranchRequestIdentity, CandidateSource,
+    ContinuationProjection, ContinuationState, ExpansionCredit, ExpansionState,
+    ExpansionStatistics, FeedbackWait, FiniteCandidateSource, GUIDANCE_MICROS_PER_UNIT,
+    GuidanceEvidence, MAX_BRANCH_FINDING_OCCURRENCE_VISITS, MAX_BRANCH_FINDING_PROJECTION_BYTES,
+    MAX_BRANCH_FINDING_ROOT_ENTRIES, MAX_BRANCH_PRIOR_NORMALIZATION_VISITS,
+    MAX_BRANCH_PROJECTION_EDGES, MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, ObservationCondition,
     PlannerBeamBarrier, PlannerBeamCandidate, PlannerBeamClosureSummary, PlannerBeamCohortState,
     PlannerCandidateBudget, PlannerCandidateGuidance, PlannerDisposition,
     PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
@@ -158,7 +158,7 @@ pub use finding::{
     GUIDANCE_SIGNAL_FINDING_PROPERTY_VIOLATION, GUIDANCE_SIGNAL_FINDING_TIMEOUT,
     MAX_FINDING_CAUSAL_EVIDENCE, MAX_FINDING_EXACT_PINS, MAX_FINDING_MINIMIZATION_ATTEMPTS,
     MAX_FINDING_MINIMIZATION_POLICY_BYTES, MAX_FINDING_OCCURRENCES,
-    MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES, ReproductionArtifact, ReproductionArtifactBasis,
+    MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES, MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
 };
 pub use finding_candidate::{
     FindingAssertionFailureBoundary, FindingCandidateBundle, FindingCandidateCore,
@@ -169,8 +169,9 @@ pub use finding_candidate::{
     MAX_FINDING_EXACT_RETENTION_CANDIDATES,
 };
 pub use finding_triage_evidence::{
-    FindingTriageReplayEvidence, FindingTriageReplayStorageDescription,
-    FindingTriageReplayStorageObject, FindingTriageReplayStorageObjectRole,
+    FindingTriageReplayEvidence, FindingTriageReplayLogSegment,
+    FindingTriageReplayStorageDescription, FindingTriageReplayStorageObject,
+    FindingTriageReplayStorageObjectRole, MAX_FINDING_TRIAGE_REPLAY_LOG_SEGMENTS,
     MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
 };
 pub use identity::{
@@ -213,10 +214,11 @@ pub use objective::{
     SurvivorSelectionBundle, evaluate_objectives, rank_survivors,
 };
 pub use observation::{
-    AssertionViolationWitness, BoundedStopProof, CoverageProjection, MeasurementEvaluationPayload,
-    MeasurementSet, Observation, ObservationEventLogProof, ObservationOutcome,
-    ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
-    PolicyTimeoutKind, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,
+    AssertionViolationWitness, BoundedStopProof, COVERAGE_IDENTITY_FREQUENCY_SATURATION,
+    CoverageIdentityFrequency, CoverageProjection, MeasurementEvaluationPayload, MeasurementSet,
+    Observation, ObservationEventLogProof, ObservationOutcome, ObservationQuantumBoundary,
+    ObservationStopProof, ObservationStopSatisfaction, PolicyTimeoutKind, PropertyEvidence,
+    PropertyVerdict, PropertyVerdictSet, ResolvedEffectTraceRef, StopOutcome, choice_set_key,
 };
 pub use planner_service::{
     AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_BEAM_SURVIVORS_CAPABILITY,
@@ -234,9 +236,8 @@ pub use planner_service::{
 };
 pub use policy::{
     BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS,
-    CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION, CORPUS_MUTATION_GENERATOR_MAX_CREDITS,
-    CORPUS_MUTATION_GENERATOR_MAX_DISTANCE, CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES,
-    CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS, CORPUS_MUTATION_GENERATOR_MAX_WORK_ITEMS,
+    CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION, CORPUS_MUTATION_GENERATOR_MAX_DISTANCE,
+    CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES, CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS,
     CampaignAttemptTimeoutPolicy, CampaignMode, CampaignPolicy, CampaignPolicyIdentity,
     CampaignPolicyRules, CampaignSeed, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
     ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
@@ -266,34 +267,41 @@ pub use repository::{
     CampaignDiscoveryResult, CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome,
     CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
     CampaignExecutorPublicationGuard, CampaignExecutorStepOutcome, CampaignExecutorStore,
-    CampaignHead, CampaignHeadPage, CampaignLifecycle, CampaignPinRetentionRecord,
-    CampaignPinRetentionSummary, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
-    CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
-    CampaignRepositoryError, CampaignRepositoryGcExclusionGuard, CampaignSupervisor,
-    CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
-    ChoiceDiscovery, ChoiceDiscoveryResult, ClaimableAttemptPage,
-    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
-    FindingPublicationResult, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
-    MAX_CAMPAIGN_SNAPSHOT_ANCESTRY, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
-    MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS, MAX_OBSERVATION_CHOICE_DISCOVERIES,
-    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, MAX_PLANNER_SCAN_PAGE_ITEMS,
+    CampaignHead, CampaignHeadPage, CampaignLifecycle, CampaignPinRetentionCursor,
+    CampaignPinRetentionPage, CampaignPinRetentionRecord, CampaignPinRetentionSummary,
+    CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
+    CampaignPlannerStepOutcome, CampaignRepository, CampaignRepositoryError,
+    CampaignRepositoryGcExclusionGuard, CampaignSupervisor, CampaignSupervisorConfigError,
+    CampaignSupervisorError, CampaignSupervisorStepOutcome, ChoiceDiscovery, ChoiceDiscoveryResult,
+    ClaimableAttemptPage, DiscoveredChoices, FindingExactCheckpointAuthenticationError,
+    FindingExactCheckpointAuthenticator, FindingPublicationResult,
+    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SNAPSHOT_ANCESTRY,
+    MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS, MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS,
+    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, MAX_PIN_RETENTION_PAGE_ENTRIES,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES,
     MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObjectiveEvaluationCursor,
     ObjectiveEvaluationInput, ObjectiveEvaluationPublicationResult, ObjectiveEvaluationScanPage,
     ObservationCandidate, ObservationDisposition, ObservationResult, PendingSavepointCapture,
-    PendingSavepointCapturePage, PlannerStepResult, ProposalResult, ResolvedSelection,
-    SavepointCaptureCursor, SavepointCaptureResolutionResult, SavepointCaptureResult,
-    SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
+    PendingSavepointCapturePage, PlannerStepResult, ProducedSelections, ProposalResult,
+    ResolvedSelection, SavepointCaptureCursor, SavepointCaptureResolutionResult,
+    SavepointCaptureResult, SavepointContinuationResult, SavepointContinuationSource,
+    SelectionResolver, WorkerSlotId,
+};
+pub use reproduction::{
+    MAX_REPRODUCTION_PAYLOAD_SEGMENTS, ReproductionArtifact, ReproductionArtifactBasis,
+    ReproductionPayload, ReproductionPayloadSegment,
 };
 pub use statistics::{
-    FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
-    SequentialMonteCarloEstimateReport, SequentialMonteCarloEvidence, SmcEstimateLabel,
+    MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_CHUNKS,
+    MAX_STATISTICAL_EVIDENCE_ITEMS, SequentialMonteCarloEstimateReport, SmcEstimateLabel,
     SmcSupportValidation, SmcTransitionEvidence, SmcUncertaintyStatement,
     StatisticalChoiceEvidence, StatisticalDrawEvidence, StatisticalEndpointEstimate,
-    StatisticalEstimateReport, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
-    StatisticalGeneration, StatisticalOpportunityEvidence, StatisticalParticleOutcome,
-    StatisticalParticleSlot, StatisticalRational, StatisticalRoot, StatisticalRootLookup,
-    StatisticalWeightDiagnostics, verify_finite_statistical_evidence,
-    verify_sequential_monte_carlo_evidence,
+    StatisticalEstimateReport, StatisticalEvidenceChunk, StatisticalEvidenceChunkDescriptor,
+    StatisticalEvidenceItem, StatisticalEvidenceManifest, StatisticalEvidenceReport,
+    StatisticalEvidenceVerifier, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
+    StatisticalGeneration, StatisticalGenerationSummary, StatisticalOpportunityEvidence,
+    StatisticalParticleOutcome, StatisticalParticleSlot, StatisticalRational, StatisticalRoot,
+    StatisticalRootLookup, StatisticalWeightDiagnostics,
 };
 
 #[cfg(test)]

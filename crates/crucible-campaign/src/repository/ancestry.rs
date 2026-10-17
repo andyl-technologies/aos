@@ -511,10 +511,10 @@ impl CampaignRepository {
             self.read_fact_with_planner_step(transition_content)?;
         // The fact read already authenticated the exact planner step and its
         // request. The result key needs only that validated step's invocation.
-        let key = if let Some((step, _)) = validated_planner_step {
+        let key = if let Some(validated) = validated_planner_step {
             Some(mutation_result_content_key(
                 "planner",
-                step.invocation().content_id(),
+                validated.step.invocation().content_id(),
             ))
         } else {
             self.mutation_result_key(&fact)?

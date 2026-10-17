@@ -25,7 +25,7 @@ pub(crate) const FAST_ALTERNATIVE: &str =
     "0101010101010101010101010101010101010101010101010101010101010101";
 const SAFE_ALTERNATIVE: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 const GUEST_CHOICE_RENDEZVOUS_TICKS: &str = "250000000";
-const GUEST_CHOICE_ATTEMPT_WAIT: Duration = Duration::from_secs(600);
+pub(crate) const GUEST_CHOICE_ATTEMPT_WAIT: Duration = Duration::from_secs(600);
 const GUEST_CHOICE_PROGRESS_CAPTURE_WAIT: Duration = Duration::from_secs(2600);
 const MAX_GUEST_CHOICE_ATTEMPT_RECORDS: usize = 65_536;
 const MAX_DIAGNOSTIC_ATTEMPTS: usize = 16;
@@ -41,12 +41,20 @@ const EXACT_RESUME_PROGRESS_PREFIX: &str = "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ";
 
 #[path = "guest_choice/diagnostics.rs"]
 mod diagnostics;
+#[path = "guest_choice/interrupted_transfer.rs"]
+mod interrupted_transfer;
 #[path = "guest_choice/lifecycle.rs"]
 mod lifecycle;
+#[path = "guest_choice/maintenance_setup.rs"]
+mod maintenance_setup;
 #[path = "guest_choice/maintenance_transfer.rs"]
 mod maintenance_transfer;
+#[path = "guest_choice/packed_maintenance.rs"]
+mod packed_maintenance;
 #[path = "guest_choice/storage_recovery.rs"]
 mod storage_recovery;
+#[path = "guest_choice/tier_maintenance.rs"]
+mod tier_maintenance;
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
@@ -78,7 +86,12 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
         .then(|| materialization_flight_deployment(&fixture))
         .transpose()?;
     let mut service = if hot_fork_flight {
-        start_materialization_flight_service(&fixture, &authority, hot_fork_deployment.as_deref())?
+        start_materialization_flight_service(
+            &fixture,
+            &authority,
+            hot_fork_deployment.as_deref(),
+            None,
+        )?
     } else {
         start_packaged_service(&fixture, &authority)?
     };
@@ -226,7 +239,7 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
     // Without a retained fork source, the selected public branch runs through
     // the production fresh-QEMU replay runner.
     let mut selected_service = if hot_fork_flight {
-        start_materialization_flight_service(&fixture, &authority, None)?
+        start_materialization_flight_service(&fixture, &authority, None, None)?
     } else {
         start_packaged_service(&fixture, &authority)?
     };
@@ -287,7 +300,7 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
     selected_service.stop()?;
 
     let mut restarted = if hot_fork_flight {
-        start_materialization_flight_service(&fixture, &authority, None)?
+        start_materialization_flight_service(&fixture, &authority, None, None)?
     } else {
         start_packaged_service(&fixture, &authority)?
     };
@@ -508,7 +521,13 @@ fn create_guest_choice_campaign(
     compiled: &Value,
     qemu_build: &str,
 ) -> Result<(), Box<dyn Error>> {
-    create_guest_choice_campaign_with_timeout(fixture, compiled, qemu_build, None)
+    create_guest_choice_campaign_with_timeout(
+        fixture,
+        compiled,
+        qemu_build,
+        None,
+        &["scenario-complete"],
+    )
 }
 
 pub(super) fn create_guest_choice_campaign_with_timeout(
@@ -516,6 +535,28 @@ pub(super) fn create_guest_choice_campaign_with_timeout(
     compiled: &Value,
     qemu_build: &str,
     virtual_timeout_picoseconds: Option<u64>,
+    required_stop_conditions: &[&str],
+) -> Result<(), Box<dyn Error>> {
+    let manifest = json_path(compiled, "manifest")?;
+    create_guest_choice_campaign_with_policy_choices(
+        fixture,
+        compiled,
+        qemu_build,
+        virtual_timeout_picoseconds,
+        &manifest,
+        "",
+        required_stop_conditions,
+    )
+}
+
+fn create_guest_choice_campaign_with_policy_choices(
+    fixture: &FlightFixture,
+    compiled: &Value,
+    qemu_build: &str,
+    virtual_timeout_picoseconds: Option<u64>,
+    manifest: &Path,
+    policy_choices: &str,
+    required_stop_conditions: &[&str],
 ) -> Result<(), Box<dyn Error>> {
     let root = fixture._temporary.path();
     let lineage_input = root.join("guest-choice-lineage.toml");
@@ -550,7 +591,7 @@ pub(super) fn create_guest_choice_campaign_with_timeout(
 scenario = {:?}
 campaign_seed = "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
 mode = "strict"
-stop_conditions = ["scenario-complete"]
+stop_conditions = {}
 admit_scenario_defaults = false
 [explorer]
 kind = "exhaustive"
@@ -562,12 +603,14 @@ novelty_reserve = 0
 retain_all_findings = true
 survivor_limit = 8
 exact_findings = true
-exact_user_pins = true{}
+exact_user_pins = true{}{}
 "#,
             json_string(compiled, "scenario")?,
+            serde_json::to_string(required_stop_conditions)?,
             virtual_timeout_picoseconds
                 .map(|ticks| format!("\n[attempt_timeout]\nvirtual_time_picoseconds = {ticks}"))
                 .unwrap_or_default(),
+            policy_choices,
         ),
     )?;
     run_json(
@@ -578,8 +621,7 @@ exact_user_pins = true{}
         "compile guest-choice policy",
     )?;
 
-    let manifest = json_path(compiled, "manifest")?;
-    let mut service = fixture.start_service(Some(&manifest))?;
+    let mut service = fixture.start_service(Some(manifest))?;
     run_json(
         connected_campaign(fixture)
             .args(["create", CAMPAIGN, "--lineage"])
@@ -702,6 +744,7 @@ pub(super) fn start_materialization_flight_service(
     fixture: &FlightFixture,
     authority: &Path,
     hot_fork_deployment: Option<&Path>,
+    pending_min_token: Option<u32>,
 ) -> Result<CampaignServiceChild, Box<dyn Error>> {
     let default_deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
     let deployment = hot_fork_deployment.unwrap_or(&default_deployment);
@@ -713,7 +756,7 @@ pub(super) fn start_materialization_flight_service(
         deployment,
         &qemu,
         &plugin,
-        FlightDiagnostics::Materialization,
+        FlightDiagnostics::Materialization { pending_min_token },
     )
 }
 
@@ -739,7 +782,7 @@ pub(super) fn start_callback_witness_flight_service(
 
 enum FlightDiagnostics {
     Disabled,
-    Materialization,
+    Materialization { pending_min_token: Option<u32> },
     ControlCallback { stage_min_token: u32 },
 }
 
@@ -1312,21 +1355,6 @@ pub(crate) fn attempt_states(
     Ok(states)
 }
 
-pub(crate) fn wait_for_new_completed_attempt(
-    fixture: &FlightFixture,
-    service: &mut CampaignServiceChild,
-    known: &BTreeSet<AttemptExecutionKey>,
-    request: &str,
-) -> Result<AttemptExecutionKey, Box<dyn Error>> {
-    wait_for_new_completed_attempt_with_timeout(
-        fixture,
-        service,
-        known,
-        request,
-        Duration::from_secs(120),
-    )
-}
-
 pub(crate) fn wait_for_new_completed_attempt_with_timeout(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
@@ -1355,16 +1383,36 @@ pub(crate) fn wait_for_initial_discovery(
     let deadline = Instant::now() + Duration::from_secs(900);
     let discovery = wait_for_process_observation(deadline, || {
         for (key, state) in attempt_states(fixture)? {
-            if !matches!(state, AttemptRuntimeState::Completed { .. })
-                || state.origin() != AttemptExecutionOrigin::Initial
+            if state.origin() != AttemptExecutionOrigin::Initial
+                || !matches!(
+                    state,
+                    AttemptRuntimeState::Completed { .. }
+                        | AttemptRuntimeState::TerminalFailure { .. }
+                )
             {
                 continue;
             }
 
-            let explanation = wait_for_attempt_observation(fixture, key)?;
+            // A terminal execution cannot be resubmitted, and the unique initial
+            // admission is already spent. Its failure has no modeled observation.
+            let failed = matches!(state, AttemptRuntimeState::TerminalFailure { .. });
+            let explanation = if failed {
+                wait_for_attempt_explanation(fixture, key)?
+            } else {
+                wait_for_attempt_observation(fixture, key)?
+            };
             if explanation["attempt"]["start"] == "discover"
                 && explanation["attempt"]["configuration"] == genesis_artifact
             {
+                if failed {
+                    let diagnostics =
+                        campaign_execution_diagnostics(fixture, service, &BTreeSet::new());
+                    return Err(format!(
+                        "initial guest-choice discovery from genesis artifact {genesis_artifact} failed terminally; attempt={} ledger={state:?}; explanation={explanation}; {diagnostics}",
+                        key.attempt()
+                    )
+                    .into());
+                }
                 return Ok(Some((key, explanation)));
             }
         }
@@ -1386,6 +1434,13 @@ fn campaign_execution_diagnostics(
     service: &mut CampaignServiceChild,
     known_attempts: &BTreeSet<AttemptExecutionKey>,
 ) -> String {
+    // Capture the original pending wait before service Drop initiates
+    // cancellation: shutdown SIGKILL must not stand in for the first failure.
+    diagnostics::report_recent_host_wait_observations(service);
+    if std::env::var("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE").as_deref() == Ok("1") {
+        diagnostics::report_recent_idle_plan_observations(service);
+        diagnostics::report_recent_callback_context(service);
+    }
     let boundary_log = fixture._temporary.path().join(format!(
         "guest-selectable-boundary-{}.log",
         service.child.id()

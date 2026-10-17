@@ -257,8 +257,8 @@ impl<B, I> BackendQuantumLoop<SingleScheduler, B, I> {
         if current.def != witness.offer_configuration.def
             || !current
                 .schedule
-                .decisions()
-                .starts_with(witness.offer_configuration.schedule.decisions())
+                .decision_history()
+                .starts_with(witness.offer_configuration.schedule.decision_history())
             || offset.events < witness.offer_log_offset.events
             || offset.bytes < witness.offer_log_offset.bytes
         {

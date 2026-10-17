@@ -158,6 +158,10 @@ pub struct RegionLayout {
     pub selectable_reply_ring_data_off: u64,
     /// Byte stride between selectable-reply entries.
     pub selectable_reply_entry_stride: u64,
+    /// First ABI-31 per-VM native-console segment after selectable replies.
+    pub native_console_off: u64,
+    /// Fixed byte stride of the disjoint per-VM native-console segments.
+    pub native_console_stride: u64,
     /// Total mapped region size in bytes.
     pub region_size: u64,
     /// Fixed simulation ticks per virtual nanosecond.
@@ -494,10 +498,21 @@ impl RegionLayout {
         let selectable_reply_entry_count = u64::from(selectable_reply_ring_count)
             .checked_mul(u64::from(selectable_reply_queue_capacity))
             .ok_or(RegionLayoutError::GeometryOverflow)?;
-        let region_size = selectable_reply_ring_data_off
+        let selectable_reply_data_end = selectable_reply_ring_data_off
             .checked_add(
                 selectable_reply_entry_count
                     .checked_mul(selectable_reply_entry_stride)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+
+        let native_console_off = checked_align_up(selectable_reply_data_end, 128)?;
+        let native_console_stride =
+            usize_to_u64(crate::native_console::NATIVE_CONSOLE_SEGMENT_BYTES)?;
+        let region_size = native_console_off
+            .checked_add(
+                u64::from(config.vm_node_count)
+                    .checked_mul(native_console_stride)
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
@@ -563,6 +578,8 @@ impl RegionLayout {
             selectable_reply_ring_hdr_off,
             selectable_reply_ring_data_off,
             selectable_reply_entry_stride,
+            native_console_off,
+            native_console_stride,
             region_size,
             ticks_per_ns: config.ticks_per_ns,
             fault_payload_arena_bytes: config.fault_payload_arena_bytes,

@@ -243,6 +243,20 @@ fn observable_event_material(event: &ObservableEvent) -> String {
             node.name,
             bytes_hex(bytes)
         ),
+        ObservableEventPayload::NativeConsoleByte { node, origin } => format!(
+            "observable:native-console-byte:at={}:node={}:device={}:stream={}:generation={}:node_seq={}:stream_seq={}:emitted_ps={}:raw={}:vcpu={}:byte={}",
+            event.at().ticks,
+            node.name,
+            bytes_hex(&origin.device.bytes),
+            origin.stream,
+            origin.logical_generation,
+            origin.node_sequence,
+            origin.stream_sequence,
+            origin.emitted_ps,
+            origin.raw_prefix,
+            origin.vcpu,
+            origin.byte,
+        ),
         ObservableEventPayload::CoverageBlock {
             execution_icount,
             node,
@@ -610,9 +624,11 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
     );
 
     let graph = scenario_form.plan().event_graph().clone();
-    let mut scheduler =
-        SingleScheduler::new(scenario("event-graph-replay-oracle", scenario_form.world()))
-            .expect("scheduler builds");
+    let mut scheduler = SingleScheduler::new(
+        scenario("event-graph-replay-oracle", scenario_form.world())
+            .with_trigger_console_matchers(&graph),
+    )
+    .expect("scheduler builds");
     assert_eq!(&scheduler.configuration().schedule, &Schedule::empty());
     let mut graph_state = EventGraphState::new();
     let mut segment_bytes = Vec::new();
@@ -631,7 +647,9 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
             }
         }
 
-        let firings = scheduler.evaluate_event_graph(&graph, &mut graph_state, NoGuestLeaves);
+        let firings = scheduler
+            .evaluate_event_graph(&graph, &mut graph_state, NoGuestLeaves)
+            .expect("console matchers are declared");
         if !firings.is_empty() {
             let append = scheduler
                 .apply_trigger_firings(&firings)

@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:d433608288a3c1fc`
+Checklist sync digest: `rfc0010-checklist-v1:221a417690f9c0c6`
 
 ### Current completion audit
 
@@ -188,7 +188,7 @@ interleaving exactly reproducible.
 **Tasks.**
 - Scheduler (incl. RR sub-division, applying `Decision::Preemption`, and the
   all-vCPUs-idle handling `T-SCHED-28 … T-SCHED-30`): `T-SCHED-1 … T-SCHED-30` ([`08`](08-scheduling.md)).
-- I/O sub-nodes (disk/9p/net as scheduled completion events): `T-IO-1 … T-IO-16` ([`15`](15-io-subnodes.md)).
+- I/O sub-nodes (disk/9p/net as scheduled completion events): `T-IO-1 … T-IO-17` ([`15`](15-io-subnodes.md)).
 - Patterns realized here: `T-PAT-2` ([`29`](29-patterns-and-sketches.md)).
 
 **Exit gates.** `gate:layer1-injection` (Contract B), `gate:scheduler-liveness`,

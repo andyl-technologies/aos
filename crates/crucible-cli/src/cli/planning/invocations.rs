@@ -456,7 +456,7 @@ pub(crate) enum SavepointBoundaryProof {
     },
     CampaignObservation {
         proof: Box<crucible_campaign::ObservationStopProof>,
-        evidence: Box<crucible_daemon::CrucibleMeasurementReplayEvidence>,
+        evidence: Box<crucible_daemon::CrucibleMeasurementEvidenceBundle>,
     },
 }
 

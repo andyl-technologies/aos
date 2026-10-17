@@ -126,22 +126,37 @@ rather than silently undercounting. Guest and model samples are merged only
 after independent source validation and before the common window and
 aggregation evaluator.
 
-Projection admits at most 4,000,000 model-metric-by-event visits, 1,000,000
-emitted samples, and 64 MiB of aggregate canonical sample JSON. These checks
-use checked arithmetic and run before proportional allocation. The same log
-and definitions therefore produce byte-identical samples regardless of host
-timing or adapter call order.
+Both producers emit an entry's samples while that entry is replayed, and the
+evaluator folds each sample into its metric's aggregate at once; no sample
+outlives its entry. Projection work per entry is bounded by the declared model
+metrics, so neither the sample count nor the log length bounds memory. The same
+log and definitions therefore produce byte-identical results regardless of
+host timing or adapter call order.
+
+`virtual_time` and `node_icount` are level sources: they report a coordinate
+at every entry that carries one, so the number of samples they produce depends
+on how finely the scheduler divided the run. Only aggregations that depend on
+a window's endpoints or extremes, `first`, `last`, `event_delta`, `min`, and
+`max`, are defined over them. Event sources (`modeled_event_count`,
+`network_modeled_drop_count`, `storage_completion_count`, and
+`scheduler_event_count`) and guest samples admit every aggregation.
+
+- **[CMEAS-23]** Measurement evaluation MUST fold each admitted sample into its
+  metric's aggregate when the sample's entry is replayed and MUST NOT retain
+  samples or per-sample evidence. Its state MUST be bounded by the declared
+  measurements, metrics, and histogram bins, independent of log length.
+  Scenario validation MUST reject `count`, `sum`, `exact_mean`, and
+  `histogram` over the level sources `virtual_time` and `node_icount`.
 
 The pure replay result is
-`crucible.model.measurement-evaluation.v1`. Evaluation first authenticates a
-dense scheduler-log range, then admits at most 1,000,000 normalized samples and
-1,000,000 scheduler entries. Normalized samples have a separate aggregate
-64-MiB canonical-body limit, and terminal input contains at most 65,536 node
-counters. The checked product of all begin/end selector-tree nodes and scheduler
-entries plus the terminal visit is at most 4,000,000 visits. A fixed-memory
-preflight also caps the final canonical evaluation body at 32 MiB. These are
-deliberate aggregate work bounds: individual schema maxima are not promised to
-compose without limit.
+`crucible.model.measurement-evaluation.v3`. Evaluation authenticates each
+scheduler entry as it streams, in dense order, and terminal input contains at
+most 65,536 node counters. A window decides whether an entry lies inside it
+when that entry is replayed, except that a begin boundary resolved only at the
+terminal coordinate admits the samples at that coordinate; the evaluator keeps
+one pending fold per unopened window for the samples at the latest virtual
+time and discards it when time advances. A fixed-memory preflight caps the
+final canonical evaluation body at 32 MiB.
 
 The canonical v1 evaluation body is whitespace-free UTF-8 JSON with this
 language-neutral shape (brackets denote ordered collections, not literal JSON
@@ -153,9 +168,8 @@ Evaluation = {
   measurement: { MeasurementId: { window: Window, metrics: { MetricId: Metric } } }
 }
 Metric = {
-  samples: [{ sequence, measurement, metric, value }],
-  aggregate: Aggregate,
-  evidence: [ContentHash]
+  samples: u64,
+  aggregate: Aggregate | null
 }
 Boundary = { sequence: u64|null, at: VirtualTime, events: [Event], cohort: [NodeId] }
 Event = { sequence: u64, content_hash: ContentHash }
@@ -171,8 +185,12 @@ lowercase `snake_case` `kind` plus `value`; their common tags are `signed`,
 `unsigned`, `rational`, `boolean`, `enumerated`, `signed_vector`, and
 `unsigned_vector`, and aggregates additionally admit `histogram`. A rational
 value is `{negative,numerator,denominator}` in that order. `ContentHash` remains
-`{bytes:[32 u8]}`. The identity is
-`H("crucible.model.measurement-evaluation.v1", lowercase_hex(body))`.
+`{bytes:[32 u8]}`. A metric's `samples` is the number of samples its window
+admitted. The identity is
+`H("crucible.model.measurement-evaluation.v3", lowercase_hex(body))`. Version 3
+drops version 2's per-sample list and per-sample entry hashes: both are a pure
+function of the replayed log, which the measurement set already references
+segment by segment ([CMEAS-20]), so [CMEAS-8] is met by derivation.
 
 Each satisfying boundary retains its completing sequence and virtual-time
 coordinate plus the exact scheduler-entry hashes in scheduler order and the
@@ -193,7 +211,12 @@ scenario genesis. Exact integer arithmetic rejects overflow; rationals use a
 reduced signed-magnitude numerator and positive denominator; integer histograms
 use inclusive declared upper bounds plus one overflow bin. `count`, numeric
 `sum`, and histogram may aggregate an empty window, while `first`, `last`,
-`min`, `max`, exact mean, and event delta require samples. Retained evaluation
+`min`, `max`, exact mean, and event delta require samples. Only a completed
+window commits a measurement: a completed window without the samples its
+aggregation requires fails evaluation, while a `not_started`, `open`, or
+`timed_out` window with no admitted sample reports that aggregate as `null`.
+Objective projection skips a `null` aggregate, so the campaign records a
+missing measurement instead of a numeric score. Retained evaluation
 bytes are accepted only by recomputing the complete result and comparing the
 canonical body exactly.
 
@@ -290,9 +313,9 @@ constructing a scheduler event. RFC-0010 §16.5 owns the byte-exact layout and
 golden vectors.
 
 The scenario predeclares accepted measurement and metric IDs, metric types and
-units, exact marker/instance boundary pairs, and node/cohort policies. One run
-retains at most 1,000,000 scheduler entries and at most 65,536 simultaneously
-open `(node,measurement,instance)` tuples. `MeasurementBegin` opens exactly one
+units, exact marker/instance boundary pairs, and node/cohort policies. A run
+holds at most 65,536 simultaneously open `(node,measurement,instance)` tuples.
+`MeasurementBegin` opens exactly one
 tuple; duplicate begin, sample/end without an open tuple, and an unclosed tuple
 at sealing are terminal guest-protocol violations. A sample must name a guest-
 sourced declared metric and match its declared type, enumerated vocabulary, and
@@ -368,17 +391,21 @@ plus canonical framing fits one generic envelope. `definitions` and
 `evaluation` are the exact raw execution-model identities; the payload schema
 selects the model-specific verifier. The campaign layer retains those bytes and
 generic evidence children but never treats a caller-asserted hash as semantic
-proof. Current Crucible payload schema 2 retains the canonical
-`crucible.model.measurement-evaluation.v1` body and adds an exact raw-input
-contract. Its `evidence` set contains exactly one `Trace` content ID using
-`crucible.executor.measurement-replay-evidence.v2`. The strict canonical CBOR
-leaf binds the scenario-definition ID, configuration ID, measurement-definition
-hash, complete authenticated scheduler-event sequence, and terminal ready,
-frontier, per-node icount, and quiescence state. The leaf is bounded at 64 MiB;
-its event and node collections use the model's deterministic count limits and
-reject oversized declared lengths before reserving their contents. Verification
-requires the supplied leaf's ID to equal that singleton edge, rederives all
-guest and model samples solely from the leaf, evaluates the windows again, and
+proof. Current Crucible payload schema 3 retains the canonical
+`crucible.model.measurement-evaluation.v3` body and adds an exact raw-input
+contract. Its `evidence` set contains one `Trace` content ID using
+`crucible.executor.measurement-replay-evidence.v3` plus the attempt-log segment
+leaves it references. The strict canonical CBOR manifest binds the
+scenario-definition ID, configuration ID, measurement-definition hash, entry
+count, final attempt-log chain hash, ordered segment references, and terminal
+ready, frontier, per-node icount, and quiescence state; the segments carry the
+complete authenticated scheduler-event sequence
+([`15-segmented-event-log.md`](15-segmented-event-log.md)). The manifest is
+bounded at 64 MiB; its node collections use the model's deterministic count
+limits and reject oversized declared lengths before reserving their contents.
+Verification requires the supplied manifest's ID to equal its evidence edge,
+authenticates every segment in order, rederives all guest and model samples
+solely from the manifest and its segments, evaluates the windows again, and
 exact-compares the definition hash, evaluation hash, and payload bytes. A
 missing or additional evidence edge, stale binding, forged or non-dense log,
 invalid guest message, noncanonical leaf, or replay disagreement fails closed.
@@ -398,12 +425,27 @@ The daemon's local prepared-publication formats use this closed registry:
 
 | Schema name | Current version | Contract |
 |---|---:|---|
-| `crucible.executor.prepared-semantic-attempt-result` | 7 | Contains the observation, optional canonical resolved-effect trace, content-ordered raw measurement replay leaves, and optional finding closure. |
-| `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, and hash. |
+| `crucible.executor.prepared-semantic-attempt-result` | 11 | Contains the observation, optional resolved-effect trace manifest, content-ordered raw measurement replay leaves, and optional finding closure. Leaves name their attempt-log segments, the observation its trace segments, and the finding its retained replay records in eight first-seen tables, by identity; the payload carries no segment or replay-record bytes. |
+| `crucible.executor.prepared-result-journal-state` | 4 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, referenced-segment count and ordered-reference hash (attempt-log segments, then resolved-effect trace segments, under hash domain v2), retained-record count and ordered-ID hash, payload limit, length, and hash. |
+| `crucible.attempt.event-log-segment` | 1 | One sealed, content-addressed run of attempt-log entries. The journal owns a copy of every segment its result references, attempt-log and resolved-effect trace alike. |
 
-Readers accept only prepared-result version 7 and journal-state version 2. A
+Readers accept only prepared-result version 11 and journal-state version 4. A
 state file and its result payload must use those exact current versions;
-mismatches fail closed.
+mismatches fail closed. Decoding a prepared result reads and authenticates
+every referenced segment and retained replay record from the stores it is
+given, one at a time; a missing, substituted, or corrupt segment or record
+fails closed.
+
+Finding minimization replays a candidate up to twice per reduction step, and
+the choice opportunities and selections each replay yields grow with the
+replayed run. The replay transcript therefore writes each distinct record to a
+record directory under the executor's attempt namespace as it arrives and
+keeps only identities in memory. Staging a journal copies every retained
+record into the journal's own `records/` directory beside `segments/`, and
+reopening reads records only from there. The distinct records of both passes
+are charged against a per-finding allowance equal to the run-length
+publication allowance for replay-capture segments, and their count against the
+prepared-result reader's replay-validation reference allowance.
 
 The prepared-result codec validates raw-leaf closure ownership without claiming
 measurement semantics. It checks each singleton edge and its trace ID, scenario,
@@ -468,7 +510,7 @@ floating point.
 
 The execution-model adapter owns the semantic projection from a verified model
 measurement payload to objective values. For current Crucible measurement
-payload schema 2, objective names are `measurement-id.metric-id`; the adapter
+payload schema 3, objective names are `measurement-id.metric-id`; the adapter
 verifies the definition hash, evaluation hash, payload bytes, and observation's
 exact measurement-set identity, accepts only scalar numeric aggregates, and
 rejects ambiguous qualified names or nonnumeric aggregates. A caller must first
@@ -589,10 +631,12 @@ is the authenticated parent snapshot at which the first observation was already
 visible; using the successor that publishes the finding would create a
 content-address cycle.
 
-The sole current `ReproductionArtifact` schema v2 binds the semantic scenario and configuration,
+The sole current `ReproductionArtifact` schema v3 binds the semantic scenario and configuration,
 their exact `ScenarioArtifactId` and `ConfigurationArtifactId`, the stable
-failure fingerprint, and at most 32 MiB of self-contained execution-model
-bytes. The campaign layer does not trust those opaque bytes by inspection. A
+failure fingerprint, at most 34 MiB of static execution-model bytes, and the
+ordered run-length segments those bytes reference, each a trace-leaf child
+with its encoded length ([§15.11](15-segmented-event-log.md#1511-segmented-reproduction-schedules)).
+The campaign layer does not trust those opaque bytes by inspection. A
 typed execution-model adapter replays them, re-derives all identities and the
 failure fingerprint, and only then publishes the immutable record.
 
@@ -604,11 +648,11 @@ its sequence, self-contained artifact identity, schedule identity, replayed
 state, optional observed failure fingerprint, and accepted bit. At most one
 candidate is accepted; it is last and its observed fingerprint equals the
 finding fingerprint, and its replayed state equals the retained final replayed
-state. Crucible policy v1 contains the deterministic seed, the
-4,096-candidate hard bound, and the 128 MiB conservative candidate-copy work
-bound. The adapter reruns the bounded minimization before publication and the
-repository requires the trace's original to be the finding's original
-reproduction. Every noncurrent reproduction body is rejected by ordinary runtime.
+state. Crucible policy v4 contains the deterministic seed, the
+4,096-candidate hard bound, and the automatic interesting window when one is
+selected; earlier policy versions are rejected. The adapter reruns the bounded
+minimization before publication and the repository requires the trace's
+original to be the finding's original reproduction. Every noncurrent reproduction body is rejected by ordinary runtime.
 
 The signature includes property/assertion identity, stable guest or QEMU failure
 class, relevant target/opportunity, and canonical causal evidence. It excludes
@@ -638,7 +682,8 @@ checkpoint bodies they name.
 
 The separate checked `GetCampaignFindingObject` capability authenticates one
 exact finding membership and returns only its requested representative/latest
-observation or original/minimized reproduction artifact. The
+observation, original/minimized reproduction artifact, or one schedule
+segment of either reproduction. The
 `explain-finding` porcelain composes the representative-observation and
 original-reproduction reads, then requires both responses to carry the same
 finding and the reproduction's exact configuration artifact to equal the
@@ -649,11 +694,16 @@ body reads.
 A rich candidate may additionally name four closed triage replay roles:
 minimization-original, minimization-selected, verification-original, and
 verification-selected. The current `FindingTriageReplayEvidence` storage
-contract uses a small schema-v2 manifest root that commits the reproduction,
-observed campaign signature, payload schema, total payload length, and one to
-three ordered schema-v1 chunk children of at most 32 MiB each. The opaque
-execution-model payload is bounded at 80 MiB, and the evidence ID is always
-the stored manifest root ID.
+contract uses a small schema-v3 manifest root that commits the reproduction,
+observed campaign signature, payload schema, total payload length, one
+ordered schema-v1 chunk child of at most 32 MiB, and the attempt-log segments
+the payload references, each named in payload order as an owned trace leaf
+by content ID and length. The opaque execution-model payload is bounded at
+32 MiB: it references each replayed attempt log by its manifest and embeds no
+log entries or recording frames ([CMEAS-27]). The evidence ID is always the
+stored manifest root ID. A record's log segments are published before the
+record, and the finding occurrence-object service serves them by role and
+position, one segment per response.
 
 `GetCampaignFindingTriageReplaySegment` is the only checked service operation
 that transfers these stored envelopes. Its request binds the principal,
@@ -669,17 +719,27 @@ before decoding or exposing the replay. Missing, reordered, substituted,
 mixed-snapshot, wrong-role, stale-description, or corrupt segments fail closed.
 A partial manifest or chunk sequence reveals no replay bytes.
 
-Failure-findings ledger v4 retains the exact ordered request/response transcript
-for every replay role. Offline import revalidates each request binding, proof,
-description, canonical range, envelope content ID, manifest, chunk, and final
-logical identity before model-specific replay decoding. The complete ledger is
-bounded at 1 GiB. The encoder charges every fixed field, request, response,
-canonical object, projected report field, line terminator, and hexadecimal byte
-to that one bound. The four-role maximum segmented transcript is larger than
-512 MiB after hexadecimal expansion but remains below 1 GiB; fixed and
-non-exchange fields consume the remaining allowance. Construction stops before
-crossing the complete-artifact bound, and parsing rejects an oversized input
-before decoding its fields.
+Failure-findings ledger v5 retains the exact ordered request/response transcript
+for every replay role by content address. Capture stores each canonical request
+and response as its own blob in an evidence store as it arrives. A per-finding
+evidence record names the finding-level exchanges, the report projection, and
+occurrence chunks of at most 1,024 occurrences; each chunk entry names its page
+exchange, its three object exchanges, and the ordered segment exchanges of all
+four replay roles, each followed by a content-addressed list of the exchanges
+that served that role's log segments in record order. The record and each chunk
+entry also name, for the original and any minimized reproduction, a
+content-addressed list of the reproduction's schedule-segment exchanges in
+manifest order. The ledger itself is a manifest of `(finding, record)` pairs
+in canonical finding-ID order, bounded at 16 MiB, whose content address is the
+triage result's stored-ledger key. Offline import authenticates one finding and
+one occurrence at a time: a store-backed service answers only requests whose
+canonical bytes hash to an exchange the current record names, and it
+revalidates each request binding, proof, description, canonical range,
+envelope content ID, manifest, chunk, and final logical identity before
+model-specific replay decoding. Every blob read is bounded and verifies its
+content address; a record, chunk, or manifest is accepted only in its exact
+canonical encoding. A portable finding bundle carries the one-finding manifest,
+its evidence store, and the executable archive ([CMEAS-24]).
 
 The checked `ExplainCampaignAttempt` capability authenticates one attempt and
 its unique execution-basis admission in `roots.accounting`, its branch proposal
@@ -694,7 +754,9 @@ typed route details from the failover marker, and unsigned guest metric samples;
 raw packet payloads and unrelated guest marker details are not rendered.
 
 - **[CMEAS-11]** Every finding MUST carry a self-contained `(scenario, seed,
-  schedule)` reproduction artifact and verify it before publication.
+  schedule)` reproduction artifact and verify it before publication. The
+  artifact's schedule segments are part of it; they are retained as its
+  content children ([CCOMP-32]).
 - **[CMEAS-12]** Retaining an exact closure improves debug startup but MUST NOT be
   required to reproduce the finding.
 

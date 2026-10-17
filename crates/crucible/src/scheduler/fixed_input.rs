@@ -172,7 +172,7 @@ impl SingleScheduler {
             .collect::<Vec<_>>();
         let material = serde_json::to_vec(&(
             "crucible.scheduler.fixed-input.v1",
-            self.configuration.id(),
+            self.configuration.admission_digest(),
             self.configuration.def.id(),
             edges,
             self.topology_epoch,

@@ -17,8 +17,10 @@ authenticate_campaign_matrix_raw_result() {
   expected_toplevel="$5"
   expected_executor="$6"
 
+  test -f "$raw_result" || return 1
   test "$(grep -Fxc PASS "$raw_result")" -eq 1 || return 1
   test "$(grep -Fxc "gate=$expected_gate" "$raw_result")" -eq 1 || return 1
+  test "$(grep -c '^gate=' "$raw_result")" -eq 1 || return 1
 
   raw_mode=$(campaign_matrix_exact_field campaign_mode "$raw_result") || return 1
   raw_configuration_identity=$(

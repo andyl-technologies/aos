@@ -89,6 +89,7 @@ pub(super) fn validate_host_run_outcome(
             ),
         });
     }
+    validate_console_output(completed)?;
     for output in &completed.network_outputs {
         if output.source != *node || output.emit_icount.retired != reached.ticks {
             return Err(SchedulerError::BoundaryViolation {
@@ -98,6 +99,30 @@ pub(super) fn validate_host_run_outcome(
                 ),
             });
         }
+    }
+    Ok(())
+}
+
+/// Requires the consumed operation endpoint in the actual canonical byte batch.
+pub(super) fn validate_console_output(
+    completed: &ConcurrentBackendRunOutcome,
+) -> Result<(), SchedulerError> {
+    let node = &completed.node;
+    if let BackendPhysicalStop::ConsoleOutput { sequence } = completed.step.physical_stop
+        && !completed.observations.iter().any(|event| {
+            matches!(
+                event.payload(),
+                crate::ObservableEventPayload::NativeConsoleByte { node: source, origin }
+                    if source == node && origin.node_sequence == sequence
+            )
+        })
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "host worker for `{}` reported console output without owned native byte origins",
+                node.name,
+            ),
+        });
     }
     Ok(())
 }

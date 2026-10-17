@@ -40,7 +40,7 @@ use crate::{
 };
 
 const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
-const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 5;
+const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 6;
 const EVENT_LOG_SEGMENT_NODE_ABSENT: u8 = 0;
 const EVENT_LOG_SEGMENT_NODE_PRESENT: u8 = 1;
 const EVENT_LOG_LEVEL_TRACE: u8 = 0;
@@ -93,6 +93,7 @@ mod checkpoint;
 mod concurrent_prepare;
 mod fixed_input;
 pub use fixed_input::{BackendFixedInputResult, BackendFixedInputState, PreparedHostFixedInput};
+mod campaign_park;
 mod control_state;
 mod device_group_selection;
 mod event_codec;

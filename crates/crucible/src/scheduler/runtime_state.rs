@@ -202,6 +202,15 @@ pub enum SchedulerQuiescenceBlocker {
         /// The VM node that still owes the completion.
         target: NodeId,
     },
+    /// A World network link still carries a frame toward a VM.
+    ///
+    /// The frame is checkpointed link state rather than device work. A
+    /// network fault boundary may admit it while every VM is parked; any
+    /// other quiescence decision treats it as a future happening.
+    NetworkFrameInFlight {
+        /// The VM that will receive the frame.
+        target: NodeId,
+    },
 }
 
 /// Error returned while instantiating a production scheduler from a [`World`].
@@ -427,11 +436,11 @@ pub struct SingleScheduler {
     pub(super) nodes: Vec<RuntimeSchedulerNode>,
     pub(super) topology_changes: Vec<SchedulerTopologyChange>,
     pub(super) run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
-    pub(super) run_subdivision_records: Vec<SchedulerRunSubdivisionRecord>,
+    pub(super) run_subdivision_records: crate::History<SchedulerRunSubdivisionRecord>,
     pub(super) preemption_requests: Vec<PreemptionDecision>,
-    pub(super) preemption_applications: Vec<SchedulerPreemptionApplication>,
+    pub(super) preemption_applications: crate::History<SchedulerPreemptionApplication>,
     pub(super) control_admissions: Vec<SchedulerControlAdmission>,
-    pub(super) control_applications: Vec<SchedulerControlApplication>,
+    pub(super) control_applications: crate::History<SchedulerControlApplication>,
     pub(super) pending_events: Vec<ScheduledEvent>,
     /// Physical queue origins and canonical publication history retained for replay.
     pub(super) imported_io: BTreeMap<NodeId, super::io_inventory::ImportedIoNode>,
@@ -513,8 +522,18 @@ pub struct SingleScheduler {
     /// The parent includes the seeded raw RNG draw. A selection is removed only
     /// after the live guest request and selected value validate successfully.
     pub(super) app_random_branch_selections: BTreeMap<ContentHash, SelectionDecision>,
-    /// Live World-network frontiers captured in execution order.
+    /// Search frontiers retained at the current admission boundary, in
+    /// execution order.
+    ///
+    /// A frontier whose virtual time precedes the scheduler frontier can never
+    /// again authenticate a campaign branch or become a discovery, so it is
+    /// retired from the front when the next frontier is recorded.
     pub(super) search_frontiers: Vec<SearchRuntimeFrontier>,
+    /// Number of frontiers retired from the front of `search_frontiers`.
+    ///
+    /// Together with the retained length it numbers every frontier ever
+    /// recorded, so callers can name the frontiers first seen by one quantum.
+    pub(super) retired_search_frontiers: u64,
     pub(super) event_log: EventLog,
     pub(super) trigger_actions: TriggerActionState,
     pub(super) trigger_static_topology: Option<WorldStaticTopology>,
@@ -524,10 +543,10 @@ pub struct SingleScheduler {
     pub(super) frontier: VirtualTime,
     pub(super) quanta: u64,
     pub(super) topology_epoch: u64,
-    pub(super) topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
-    pub(super) rendezvous_records: Vec<SchedulerRendezvousRecord>,
+    pub(super) topology_change_applications: crate::History<SchedulerTopologyChangeApplication>,
+    pub(super) rendezvous_records: crate::History<SchedulerRendezvousRecord>,
     pub(super) boundary_yields: u64,
-    pub(super) ceiling_publications: Vec<SchedulerRunCeilingPublication>,
+    pub(super) ceiling_publications: crate::History<SchedulerRunCeilingPublication>,
     pub(super) lock_held: bool,
     pub(super) last_advance: Option<NodeAdvance>,
     pub(super) last_topology_recompute: bool,

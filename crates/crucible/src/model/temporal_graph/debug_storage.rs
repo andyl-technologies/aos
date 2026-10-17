@@ -40,12 +40,12 @@ impl TemporalGraph {
             DebugCoordinate::VirtualTime(time) => self
                 .debug_latest_checkpoint_at_or_before_time(current, *time)
                 .ok_or_else(|| EngineError::DebugTimeTravelCoordinateNotFound {
-                    coordinate: coordinate.clone(),
+                    coordinate: Box::new(coordinate.clone()),
                 }),
             DebugCoordinate::NodeIcount { node, icount } => self
                 .debug_latest_checkpoint_at_or_before_icount(current, node, *icount)
                 .ok_or_else(|| EngineError::DebugTimeTravelCoordinateNotFound {
-                    coordinate: coordinate.clone(),
+                    coordinate: Box::new(coordinate.clone()),
                 }),
         }
     }
@@ -130,7 +130,7 @@ impl TemporalGraph {
         };
         if node_icount != requested_icount {
             return Err(EngineError::DebugTimeTravelCoordinateNotFound {
-                coordinate: DebugCoordinate::node_icount(node, requested_icount),
+                coordinate: Box::new(DebugCoordinate::node_icount(node, requested_icount)),
             });
         }
         let mut materialized_nodes = BTreeSet::new();

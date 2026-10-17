@@ -231,7 +231,6 @@ define_fault_resource_limits! {
     search_choices_per_state: 65_536 => 262_144,
     trace_mutation_windows: 65_536 => 262_144,
     mapping_mutation_points: 65_536 => 262_144,
-    minimization_attempts: 1_048_576 => 16_777_216,
 }
 
 impl FaultResourceLimits {
@@ -393,7 +392,7 @@ mod tests {
 
     #[test]
     fn registry_is_exhaustive_unique_and_matches_defaults() {
-        assert_eq!(FAULT_RESOURCE_LIMIT_DESCRIPTORS.len(), 90);
+        assert_eq!(FAULT_RESOURCE_LIMIT_DESCRIPTORS.len(), 89);
         let names = FAULT_RESOURCE_LIMIT_DESCRIPTORS
             .iter()
             .map(|descriptor| descriptor.field)
@@ -477,5 +476,18 @@ mod tests {
             FaultResourceLimits::default().signal_nodes
         );
         assert!(toml::from_str::<FaultResourceLimits>("unregistered_limit = 1\n").is_err());
+    }
+
+    #[test]
+    fn retired_minimization_attempts_limit_is_rejected_as_unknown() {
+        // Finding minimization is bounded by its own compiled policy, so the
+        // plan no longer carries a limit that no runtime enforced.
+        assert_eq!(
+            FaultResourceLimits::default().configured("minimization_attempts"),
+            None
+        );
+        assert!(
+            toml::from_str::<FaultResourceLimits>("minimization_attempts = 1048576\n").is_err()
+        );
     }
 }

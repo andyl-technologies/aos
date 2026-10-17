@@ -82,11 +82,11 @@ pub mod subnode;
 
 pub use backpressure::{BackpressureState, BoundedQueue, PushError};
 pub use block::{
-    BLOCK_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice, BlockErrorCode, BlockLatency,
-    BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockSnapshot,
-    BlockSnapshotCodecError, BlockStatus, BlockTransportPending, BlockTransportRequestIds,
-    BlockTransportReset, BlockTransportResolved, BlockTransportUnadmitted,
-    BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
+    BLOCK_REQUEST_ABI_VERSION, BLOCK_RESPONSE_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice,
+    BlockErrorCode, BlockLatency, BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse,
+    BlockSnapshot, BlockSnapshotCodecError, BlockStatus, BlockTransportPending,
+    BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
+    BlockTransportUnadmitted, BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
     install_cross_device_misdirected_persistence,
 };
 pub use clock::{VirtualClock, ns_to_tick};
@@ -109,11 +109,12 @@ pub use netlink::{
     ResolvedNetworkFrameEffectsError, fragment_ethernet_ipv4, generate_network_response,
 };
 pub use ninep::{
-    FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepObjectVersion, NinepOperation,
-    NinepRequestIdentity, NinepRequestOpportunity, NinepResultDirective, NinepServer,
-    NinepServerSnapshot, NinepSnapshot, NinepSnapshotCodecError, NinepVirtualFid,
-    NinepVisibilityLookup, NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityScope,
-    NinepVisibilityState, NinepVisibilityUpdate, Node, Qid, QidType, ResolvedNinepRequestDirective,
+    FsTree, FsTreeDecodeError, NinepDevice, NinepEventCoordinate, NinepEventEmission, NinepLatency,
+    NinepObjectVersion, NinepOperation, NinepRequestIdentity, NinepRequestOpportunity,
+    NinepResultDirective, NinepServer, NinepServerSnapshot, NinepSnapshot, NinepSnapshotCodecError,
+    NinepVirtualFid, NinepVisibilityLookup, NinepVisibilityPolicy, NinepVisibilityRelease,
+    NinepVisibilityScope, NinepVisibilityState, NinepVisibilityUpdate, NinepVisibilityUpdateKey,
+    Node, Qid, QidType, ResolvedNinepRequestDirective,
 };
 pub use request::{
     AdditionalCompletion, AffineLatency, ComputedResponse, LatencyModel, Request, RequestId,

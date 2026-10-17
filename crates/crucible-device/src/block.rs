@@ -29,8 +29,8 @@ pub mod persistence;
 pub mod service;
 
 pub use codec::{
-    BLOCK_ABI_VERSION, BlockCodecError, BlockErrorCode, BlockOp, BlockRequest,
-    BlockRequestIdentity, BlockResponse, BlockStatus, BlockTransportPending,
+    BLOCK_REQUEST_ABI_VERSION, BLOCK_RESPONSE_ABI_VERSION, BlockCodecError, BlockErrorCode,
+    BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockStatus, BlockTransportPending,
     BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
     BlockTransportUnadmitted, BlockTransportUndelivered, REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
 };

@@ -11,9 +11,10 @@ use crucible_shmem::{
     AdvanceCeiling, FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, FrameEntry, NodeSlot, STATUS_IDLE,
     STATUS_RUNNING,
 };
-use source_assertions::{assert_source_order, function_source};
+use source_assertions::{assert_source_order, function_source, function_source_from};
 
 const QUANTUM_SOURCE: &str = include_str!("../quantum.rs");
+const CONSOLE_OWNER_SOURCE: &str = include_str!("../native_console_owner.rs");
 static ALLOW_ALL_SENDS: AllowAllSchedulerSendAuthorizer = AllowAllSchedulerSendAuthorizer;
 
 struct AllowAllSchedulerSendAuthorizer;
@@ -102,13 +103,12 @@ fn qemu_quantum_start_uses_ordered_scheduler_wake_handoff() {
         &[
             "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
             "self.record(QemuQuantumOperation::FutexWake);",
-            ".publish_scheduler_inbox_and_advance(",
-            "self.config.vm_slot,",
+            "self.publish_scheduler_inputs(",
             "self.config.router_slot,",
-            "self.view.inbound_ring,",
-            "self.view.inbound_entries,",
             "&[],",
             "ceiling,",
+            "stop_condition,",
+            "\"publish scheduler inbox and ceiling\",",
         ],
         "QEMU start_quantum must publish RUN through the ordered inbox/ceiling/wake helper",
     );
@@ -123,15 +123,71 @@ fn qemu_quantum_inbound_uses_ordered_scheduler_wake_handoff() {
             "self.record(QemuQuantumOperation::EnqueueInboundFrame);",
             "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
             "self.record(QemuQuantumOperation::FutexWake);",
-            ".publish_scheduler_inbox_and_advance(",
-            "self.config.vm_slot,",
+            "self.publish_scheduler_inputs(",
             "entry.src_node,",
-            "self.view.inbound_ring,",
-            "self.view.inbound_entries,",
             "std::slice::from_ref(entry),",
             "ceiling,",
+            "stop_condition,",
+            "\"publish inbound frame and scheduler ceiling\",",
         ],
         "QEMU inbound publication must publish the nonempty inbox frame through the ordered helper",
+    );
+}
+
+#[test]
+fn qemu_quantum_optional_console_retains_original_publisher_and_full_auth_order() {
+    let source = function_source("fn publish_scheduler_inputs(");
+    assert_source_order(
+        source,
+        &[
+            "if let Some(custody) = &self.console_custody",
+            ".publish_inputs(",
+            "ConsoleInputPublication",
+            "slot: self.view.node_slot,",
+            "dst_slot: self.config.vm_slot,",
+            "src_slot: source,",
+            "inbox: self.view.inbound_ring,",
+            "entries: self.view.inbound_entries,",
+            "inputs,",
+            "ceiling,",
+            "stop,",
+            "return Ok(());",
+            ".publish_scheduler_inbox_and_advance(",
+            "self.config.vm_slot,",
+            "source,",
+            "self.view.inbound_ring,",
+            "self.view.inbound_entries,",
+            "inputs,",
+            "ceiling,",
+            "stop,",
+        ],
+        "both console and None paths must retain the original inbox/ceiling/wake owner",
+    );
+
+    let issued = function_source_from(CONSOLE_OWNER_SOURCE, "fn publish_inputs(");
+    assert_source_order(
+        issued,
+        &[
+            "if publication.dst_slot != self.owner.slot",
+            "let body = self.reserve(body)?;",
+            "let prepared = table.prepare_for_advance(body)?;",
+            ".publish_scheduler_inbox_and_advance_with_effect(",
+            "publication.dst_slot,",
+            "publication.src_slot,",
+            "publication.inbox,",
+            "publication.entries,",
+            "publication.inputs,",
+            "publication.ceiling,",
+            "publication.stop,",
+            "|advance| {",
+            "let body = prepared.commit_for_advance(advance);",
+            "self.issued.push(IssuedConsoleAuthorization {",
+            "ordinal,",
+            "body,",
+            "projection,",
+            "result.map_err(ConsoleOwnerError::from)",
+        ],
+        "console AUTH must be prepared before effects and committed by the original advance owner",
     );
 }
 

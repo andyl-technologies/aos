@@ -177,7 +177,7 @@ fn repeated_cold_restore_preserves_revision_and_rejects_old_envelope() {
         );
     }
     let mut old = bytes;
-    old[b"crucible.block-fault-state.v".len()] = b'3';
+    old[b"crucible.block-fault-state.v".len()] = b'5';
     assert_eq!(
         BlockFaultState::from_canonical_bytes(&old, 32),
         Err(BlockFaultStateCodecError::Version)
@@ -190,7 +190,7 @@ fn mandatory_revision_cannot_be_omitted_or_zero_in_a_current_snapshot() {
     let bytes = state
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("encode owner: {error}"));
-    let prefix = b"crucible.block-fault-state.v4\0";
+    let prefix = b"crucible.block-fault-state.v6\0";
     let value: ciborium::Value = ciborium::de::from_reader(&bytes[prefix.len()..])
         .unwrap_or_else(|error| panic!("decode fixture fields: {error}"));
     let ciborium::Value::Map(fields) = value else {

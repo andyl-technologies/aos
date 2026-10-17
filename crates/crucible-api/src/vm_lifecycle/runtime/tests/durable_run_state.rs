@@ -52,7 +52,8 @@ fn recovery_journal(
             expected_exit_code: Some(70),
         }]
         .into(),
-        completed_exits: Vec::new().into(),
+        exit_log: ProductionLifecycleExitLog::empty(),
+        pending_exits: Vec::new(),
     }
 }
 
@@ -147,7 +148,8 @@ fn durable_run_state_rejects_an_unowned_journal_process_identity() {
             expected_exit_code: Some(70),
         }]
         .into(),
-        completed_exits: Vec::new().into(),
+        exit_log: ProductionLifecycleExitLog::empty(),
+        pending_exits: Vec::new(),
     };
     let manifest = ProductionRunManifest {
         version: 2,
@@ -205,7 +207,8 @@ fn durable_run_state_rejects_an_arbitrary_current_with_an_owned_replacement() {
             expected_exit_code: Some(70),
         }]
         .into(),
-        completed_exits: Vec::new().into(),
+        exit_log: ProductionLifecycleExitLog::empty(),
+        pending_exits: Vec::new(),
     };
     let manifest = ProductionRunManifest {
         version: 2,
@@ -274,7 +277,8 @@ fn durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit() {
             expected_exit_code: Some(70),
         }]
         .into(),
-        completed_exits: Vec::new().into(),
+        exit_log: ProductionLifecycleExitLog::empty(),
+        pending_exits: Vec::new(),
     };
     persist_run_state_atomic(
         &root.path().join(PRODUCTION_RUN_STATE_FILE),
@@ -540,7 +544,8 @@ fn durable_run_state_rejects_unjournaled_staged_process_owner() {
         transaction: 0,
         phase: ProductionLifecycleJournalPhase::Idle,
         nodes: Vec::new().into(),
-        completed_exits: Vec::new().into(),
+        exit_log: ProductionLifecycleExitLog::empty(),
+        pending_exits: Vec::new(),
     };
     let error = quantum_loop::validate_recovered_lifecycle_journal(
         &journal,

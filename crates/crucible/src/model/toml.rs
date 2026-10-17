@@ -44,8 +44,12 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
 }
 
 pub(super) const SCENARIO_FORM_BINARY_MAGIC_V9: &[u8] = b"crucible.scenario-def-form.v9\0";
-pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V9: &[u8] =
-    b"crucible.reproduction-artifact.v9\0";
+pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V10: &[u8] =
+    b"crucible.reproduction-artifact.v10\0";
+pub(super) const REPRODUCTION_ARTIFACT_STORED_MAGIC_V1: &[u8] =
+    b"crucible.reproduction-artifact-manifest.v1\0";
+/// Magic of the logical version 4 schedule bytes behind preemption
+/// alternative identities.
 pub(super) const SCHEDULE_BINARY_MAGIC_V4: &[u8] = b"crucible.schedule.v4\0";
 pub(super) const WORLD_BINARY_MAGIC_V6: &[u8] = b"crucible.world.v6\0";
 pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v6\0";

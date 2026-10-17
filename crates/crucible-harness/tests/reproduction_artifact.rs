@@ -662,7 +662,10 @@ fn campaign_corpus_reuse_refuses_abi_drift() -> Result<(), Box<dyn Error>> {
         prior_identity.clone(),
     )?;
     let mut run_identity = prior_identity;
-    run_identity.guest_host_protocol_version = String::from("4");
+    // Drift relative to the canonical version, so a protocol bump cannot
+    // turn this into an unchanged identity.
+    run_identity.guest_host_protocol_version =
+        (crucible_harness::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION + 1).to_string();
 
     let decision = evaluate_campaign_corpus_reuse(&prior, &run_identity)?;
 

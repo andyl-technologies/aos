@@ -32,6 +32,8 @@ use crate::{
 };
 
 mod channel;
+mod completed_boundary;
+pub use completed_boundary::QemuCompletedQuantumBoundary;
 mod support;
 
 pub use support::QemuQuantumError;
@@ -295,6 +297,7 @@ pub struct QemuPendingQuantum {
     /// Fresh plugin publication required by delivery or next-idle semantics.
     pub completion_fence: Option<QemuAdvanceCompletionFence>,
     stop_condition: QemuQuantumStopCondition,
+    advance_publication_sequence: u64,
     operation_start: usize,
     inbound_consumption: QemuInboundConsumptionBaseline,
 }
@@ -353,6 +356,8 @@ pub struct QemuQuantumReport {
 pub struct QemuQuantumShmemHotPath<'a> {
     config: QemuQuantumShmemConfig,
     view: QemuQuantumShmemView<'a>,
+    #[cfg(target_os = "linux")]
+    pub(crate) console_custody: Option<crate::native_console_owner::ConsoleLaunchCustody>,
     operation_log: Vec<QemuQuantumOperation>,
     next_router_inbound_sequence: u64,
     inbound_delivery_ledger: QemuInboundDeliveryLedger<'a>,
@@ -375,6 +380,8 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         Ok(Self {
             config,
             view,
+            #[cfg(target_os = "linux")]
+            console_custody: None,
             operation_log: Vec::new(),
             next_router_inbound_sequence: 0,
             inbound_delivery_ledger: QemuInboundDeliveryLedger::Owned(inbound_delivery_ledger),
@@ -391,6 +398,8 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         Ok(Self {
             config,
             view,
+            #[cfg(target_os = "linux")]
+            console_custody: None,
             operation_log: Vec::new(),
             next_router_inbound_sequence: 0,
             inbound_delivery_ledger: QemuInboundDeliveryLedger::Borrowed(inbound_delivery_ledger),
@@ -398,10 +407,17 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         })
     }
 
-    /// Returns a stable snapshot of the bound node slot.
-    #[must_use]
-    pub fn node_snapshot(&self) -> NodeSlotSnapshot {
-        self.view.node_slot.snapshot()
+    /// Attempts one stable snapshot of the bound node slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuQuantumError::PublicationUnavailable`] while either
+    /// publication is busy. The caller owns retries and its liveness budget.
+    pub fn node_snapshot(&self) -> Result<NodeSlotSnapshot, QemuQuantumError> {
+        self.view
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuQuantumError::PublicationUnavailable)
     }
 
     /// Arms the shared slot for a quiesced VMState restore without waking QEMU.
@@ -492,7 +508,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<QemuPendingQuantum, QemuQuantumError> {
         let operation_start = self.operation_log.len();
         self.record(QemuQuantumOperation::ReadNodeReport);
-        let initial_snapshot = self.view.node_slot.snapshot();
+        let initial_snapshot = self.node_snapshot()?;
         let initial_state = idle_state_from_snapshot(initial_snapshot);
         let initial_device_io_freeze = device_io_freeze_from_snapshot(initial_snapshot);
         let inbound_consumption = self.snapshot_inbound_consumption()?;
@@ -514,21 +530,20 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
 
         self.record(QemuQuantumOperation::StoreSchedulerCeiling);
         self.record(QemuQuantumOperation::FutexWake);
-        self.view
-            .node_slot
-            .publish_scheduler_inbox_and_advance(
-                self.config.vm_slot,
-                self.config.router_slot,
-                self.view.inbound_ring,
-                self.view.inbound_entries,
-                &[],
-                ceiling,
-                stop_condition,
-            )
-            .map_err(|source| QemuQuantumError::SchedulerWakePublication {
-                operation: "publish scheduler inbox and ceiling",
-                source,
-            })?;
+        self.publish_scheduler_inputs(
+            self.config.router_slot,
+            &[],
+            ceiling,
+            stop_condition,
+            "publish scheduler inbox and ceiling",
+        )?;
+
+        // A console RUN must distinguish its first native report from the
+        // preceding stopped report, including ordinary ceiling quanta.
+        #[cfg(target_os = "linux")]
+        let console_report_required = self.console_custody.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let console_report_required = false;
 
         Ok(QemuPendingQuantum {
             initial_state,
@@ -539,7 +554,8 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             initial_device_io_freeze,
             report_generation: initial_snapshot.publish_gen,
             initial_control_boundary_ack: initial_snapshot.control_boundary_ack,
-            completion_fence: (stop_condition == QemuQuantumStopCondition::NextAuthenticatedIdle
+            completion_fence: (console_report_required
+                || stop_condition == QemuQuantumStopCondition::NextAuthenticatedIdle
                 || earliest_delivery
                     .is_some_and(|delivery_icount| delivery_icount <= horizon.icount.retired))
             .then_some(QemuAdvanceCompletionFence {
@@ -547,6 +563,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 stop_condition,
             }),
             stop_condition,
+            advance_publication_sequence: initial_snapshot.advance_publication_sequence,
             operation_start,
             inbound_consumption,
         })
@@ -577,7 +594,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         pending: &QemuPendingQuantum,
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
         self.record(QemuQuantumOperation::ObservePluginReport);
-        let final_snapshot = self.view.node_slot.snapshot();
+        let final_snapshot = self.node_snapshot()?;
         let completed_clamp = completed_quantum_clamp_is_attested(pending, &final_snapshot);
         let mut final_state = idle_state_from_snapshot(final_snapshot);
         if completed_clamp
@@ -665,10 +682,10 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         self.finish_quantum(pending)
     }
 
-    fn current_icount_from_slot(&self) -> Icount {
-        Icount {
-            retired: self.view.node_slot.snapshot().current_icount,
-        }
+    fn current_icount_from_slot(&self) -> Result<Icount, QemuQuantumError> {
+        Ok(Icount {
+            retired: self.node_snapshot()?.current_icount,
+        })
     }
 
     fn drain_emitted_outbound(&mut self) -> Result<Vec<QemuNodeEmittedFrame>, QemuQuantumError> {
@@ -740,7 +757,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             &frame.payload,
         )
         .map_err(|source| QemuQuantumError::FrameEntry { source })?;
-        let current_icount = self.view.node_slot.snapshot().current_icount;
+        let current_icount = self.node_snapshot()?.current_icount;
         validate_frame_delivery_is_future(&entry, current_icount)
             .map_err(|source| QemuQuantumError::Lookahead { source })?;
         Ok(entry)
@@ -753,32 +770,65 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         self.record(QemuQuantumOperation::EnqueueInboundFrame);
         self.record(QemuQuantumOperation::StoreSchedulerCeiling);
         self.record(QemuQuantumOperation::FutexWake);
-        let current_icount = self.view.node_slot.snapshot().current_icount;
-        let (max_advance_icount, stop_condition) = self
-            .view
-            .node_slot
-            .load_scheduler_advance()
-            .map_err(|source| QemuQuantumError::NodeSlot {
-                operation: "load scheduler advance for inbound wake",
-                source,
-            })?;
+        let snapshot = self.node_snapshot()?;
+        let current_icount = snapshot.current_icount;
+        let max_advance_icount = snapshot.max_advance_icount;
+        let stop_condition = crucible_shmem::AdvanceStopCondition::decode(
+            snapshot.advance_stop_condition,
+        )
+        .map_err(|source| QemuQuantumError::NodeSlot {
+            operation: "load scheduler advance for inbound wake",
+            source,
+        })?;
         let ceiling = authorize_advance_ceiling(current_icount, max_advance_icount, None)
             .map_err(|source| QemuQuantumError::Lookahead { source })?;
+        self.publish_scheduler_inputs(
+            entry.src_node,
+            std::slice::from_ref(entry),
+            ceiling,
+            stop_condition,
+            "publish inbound frame and scheduler ceiling",
+        )?;
+        Ok(())
+    }
+
+    /// Keeps start and inbound regrant on the same original publisher.
+    fn publish_scheduler_inputs(
+        &mut self,
+        source: u32,
+        inputs: &[FrameEntry],
+        ceiling: AdvanceCeiling,
+        stop: QemuQuantumStopCondition,
+        operation: &'static str,
+    ) -> Result<(), QemuQuantumError> {
+        #[cfg(target_os = "linux")]
+        if let Some(custody) = &self.console_custody {
+            custody
+                .publish_inputs(crate::native_console_owner::ConsoleInputPublication {
+                    slot: self.view.node_slot,
+                    dst_slot: self.config.vm_slot,
+                    src_slot: source,
+                    inbox: self.view.inbound_ring,
+                    entries: self.view.inbound_entries,
+                    inputs,
+                    ceiling,
+                    stop,
+                })
+                .map_err(|_| QemuQuantumError::ConsoleCustodyUnavailable)?;
+            return Ok(());
+        }
         self.view
             .node_slot
             .publish_scheduler_inbox_and_advance(
                 self.config.vm_slot,
-                entry.src_node,
+                source,
                 self.view.inbound_ring,
                 self.view.inbound_entries,
-                std::slice::from_ref(entry),
+                inputs,
                 ceiling,
-                stop_condition,
+                stop,
             )
-            .map_err(|source| QemuQuantumError::SchedulerWakePublication {
-                operation: "publish inbound frame and scheduler ceiling",
-                source,
-            })?;
+            .map_err(|source| QemuQuantumError::SchedulerWakePublication { operation, source })?;
         Ok(())
     }
 

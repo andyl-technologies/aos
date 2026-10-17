@@ -12,12 +12,155 @@
   findingSignalBundle ? false,
   findingForkWrite ? false,
   maintenanceTransfer ? false,
+  interruptedTransfer ? false,
   storageRecovery ? false,
+  packedMaintenance ? false,
+  tierMaintenance ? false,
+  idlePlanDiagnosticMinimumPs ? null,
+  nativeControlSummary ? false,
   policyTimeout ? false,
   singleGuest ? null,
   twoNodeHttp ? false,
-}: let
+  twoNodeHttpServer ? "nginx",
+  quietKernelBoot ? false,
+  liveProgressDiagnostics ? false,
+  nativeCoreDiagnostics ? false,
+  hostStackSamples ? false,
+}:
+assert builtins.isBool nativeCoreDiagnostics;
+assert builtins.isBool hostStackSamples;
+# Stack samples explain normal five-node Envoy throughput only.
+assert !hostStackSamples || (envoyNetwork && singleGuest == null && !envoyKnownFinding);
+assert !nativeCoreDiagnostics
+|| singleGuest == "materialization"
+|| (
+  envoyNetwork
+  && singleGuest == null
+  && !twoNodeHttp
+  && !tierMaintenance
+  && !packedMaintenance
+  && !storageRecovery
+  && !policyTimeout
+  && !interruptedTransfer
+  && !maintenanceTransfer
+  && !hotForkFlight
+  && !envoyKnownFinding
+);
+assert builtins.isBool quietKernelBoot;
+assert !quietKernelBoot || (twoNodeHttp && twoNodeHttpServer == "envoy-direct");
+assert builtins.isBool liveProgressDiagnostics;
+assert !liveProgressDiagnostics || twoNodeHttp;
+assert builtins.isBool nativeControlSummary;
+assert !nativeControlSummary
+|| (
+  singleGuest
+  == "materialization"
+  && !guestChoice
+  && !campaignLifecycle
+  && !envoyNetwork
+  && !envoyKnownFinding
+  && !hotForkFlight
+  && !campaignMidpoint
+  && !findingExactBundle
+  && !findingSignalBundle
+  && !findingForkWrite
+  && !maintenanceTransfer
+  && !interruptedTransfer
+  && !storageRecovery
+  && !packedMaintenance
+  && !tierMaintenance
+  && idlePlanDiagnosticMinimumPs == null
+  && !policyTimeout
+  && !twoNodeHttp
+  && twoNodeHttpServer == "nginx"
+);
+assert idlePlanDiagnosticMinimumPs
+== null
+|| (
+  tierMaintenance
+  && builtins.isInt idlePlanDiagnosticMinimumPs
+  && idlePlanDiagnosticMinimumPs >= 0
+  && idlePlanDiagnosticMinimumPs <= 9223372036854775807
+);
+assert !packedMaintenance
+|| (
+  guestChoice
+  && !tierMaintenance
+  && !storageRecovery
+  && !maintenanceTransfer
+  && !interruptedTransfer
+  && !policyTimeout
+  && !twoNodeHttp
+  && singleGuest == null
+  && !findingExactBundle
+  && !findingSignalBundle
+  && !findingForkWrite
+  && !hotForkFlight
+  && !envoyNetwork
+  && !envoyKnownFinding
+  && !campaignLifecycle
+  && !campaignMidpoint
+  && twoNodeHttpServer == "nginx"
+);
+assert !tierMaintenance
+|| (
+  guestChoice
+  && !packedMaintenance
+  && !storageRecovery
+  && !maintenanceTransfer
+  && !interruptedTransfer
+  && !policyTimeout
+  && !twoNodeHttp
+  && singleGuest == null
+  && !findingExactBundle
+  && !findingSignalBundle
+  && !findingForkWrite
+  && !hotForkFlight
+  && !envoyNetwork
+  && !envoyKnownFinding
+  && !campaignLifecycle
+  && !campaignMidpoint
+  && twoNodeHttpServer == "nginx"
+);
+assert !interruptedTransfer
+|| (
+  guestChoice
+  && !packedMaintenance
+  && !tierMaintenance
+  && !storageRecovery
+  && !maintenanceTransfer
+  && !policyTimeout
+  && !twoNodeHttp
+  && singleGuest == null
+  && !findingExactBundle
+  && !findingSignalBundle
+  && !findingForkWrite
+  && !hotForkFlight
+  && !envoyNetwork
+  && !envoyKnownFinding
+  && !campaignLifecycle
+  && !campaignMidpoint
+  && twoNodeHttpServer == "nginx"
+); let
   singleGuestMaterialization = singleGuest == "materialization";
+  nativeCore = import ./_native-core-diagnostics.nix {inherit pkgs;};
+  hostStacks = import ./_host-stack-samples.nix {inherit pkgs;};
+  envoyDirect = assert builtins.elem twoNodeHttpServer ["nginx" "envoy-direct" "envoy-proxy"];
+  assert twoNodeHttpServer == "nginx" || twoNodeHttp;
+    twoNodeHttpServer == "envoy-direct";
+  envoyProxy = twoNodeHttpServer == "envoy-proxy";
+  httpEvidencePrefix =
+    if envoyProxy
+    then "three_node_envoy_proxy"
+    else if envoyDirect
+    then "two_node_envoy_direct"
+    else "two_node_http";
+  httpFlightName =
+    if envoyProxy
+    then "three-node-envoy-proxy"
+    else if envoyDirect
+    then "two-node-envoy-direct${lib.optionalString quietKernelBoot "-quiet-kernel"}"
+    else "two-node-http";
   envoyProduct = envoyNetwork || envoyKnownFinding;
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
@@ -64,6 +207,8 @@
     cargoBuildCommands = campaignFlightBuildCommands;
     installBins = false;
     doCheck = false;
+    # Stack samples need the service's symbol table to name host functions.
+    dontStrip = lib.optionalString hostStackSamples "1";
 
     buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
     runtimeDeps = [pkgs.openssl pkgs.sqlite];
@@ -99,8 +244,13 @@
     run_root = "/tmp/attempts/run"
     attempt_namespace = "packaged-flight"
     first_project_id = 30000
+    # Each running attempt and each retained hot-fork world holds one host
+    # project ID. The Envoy flight retains a thin root and its hot child
+    # beside its one running attempt.
     project_id_count = ${
-      if findingForkWrite || hotForkFlight || envoyProduct || singleGuestMaterialization
+      if envoyProduct
+      then "3"
+      else if findingForkWrite || hotForkFlight || singleGuestMaterialization
       then "2"
       else "1"
     }
@@ -129,11 +279,16 @@
     maximum_vcpus = ${
       if envoyProduct
       then "10"
+      else if envoyProxy
+      then "3"
       else "2"
     }
     maximum_resident_bytes = ${toString (
       if envoyProduct
       then 7516192768
+      # The proxy adds a third 256 MiB guest and its TCG/plugin mappings.
+      else if envoyProxy
+      then 2147483648
       # Two 256 MiB guests also retain separate TCG code buffers and plugin
       # mappings. Their combined resident use exhausted the 1 GiB attempt cap.
       else if twoNodeHttp
@@ -150,7 +305,11 @@
       else "2147483648"
     }
     maximum_execution_quanta = ${
-      if envoyProduct || twoNodeHttp
+      # Five guests at the 250us rendezvous complete about 24,000 quanta per
+      # virtual second. The Envoy policy horizon is 30 virtual seconds.
+      if envoyProduct
+      then "1000000"
+      else if twoNodeHttp
       then "250000"
       # Promotion charges each 10us runnable replay step. Choice sources need
       # about 58,200 steps; the one-guest comparison exhausted 10,000 quanta
@@ -193,27 +352,49 @@
     selectable = true;
     campaignFlight = true;
   };
+  # Early maintenance branches consume the initial runtime selection. Keep
+  # that immutable guest asset identical to the one copied into the VM.
+  selectedChoiceInitramfs =
+    if guestChoice || hotForkFlight
+    then networkChoiceInitramfs
+    else choiceInitramfs;
   envoyNetworkRootImage = import ./_envoy-network-guest.nix {inherit pkgs;};
   httpRootImage = import ./_nginx-curl-http-200-guest.nix {
     inherit pkgs;
     strictHttpResponse = true;
+    httpServer = twoNodeHttpServer;
   };
   storageRecoveryRunner = pkgs.writeTextFile {
     name = "campaign-storage-recovery-garage";
     text = builtins.readFile ./_campaign-storage-recovery-garage.sh;
     destination = "/share/crucible/campaign-storage-recovery-garage.sh";
   };
+  maintenanceStageRunner = pkgs.writeTextFile {
+    name = "packaged-maintenance-stage-runner";
+    text =
+      builtins.replaceStrings
+      ["@bash@" "@coreutils@" "@gawk@"]
+      [(toString pkgs.bash) (toString pkgs.coreutils) (toString pkgs.gawk)]
+      (builtins.readFile ./_packaged-maintenance-stage-runner.sh);
+    destination = "/share/crucible/packaged-maintenance-stage-runner.sh";
+  };
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
     name =
       if singleGuest != null
-      then "crucible-single-guest-${singleGuest}"
+      then "crucible-single-guest-${singleGuest}${lib.optionalString nativeControlSummary "-delivery-diagnostics"}"
       else if twoNodeHttp
-      then "crucible-two-node-http"
+      then "crucible-${httpFlightName}"
       else if policyTimeout
       then "crucible-packaged-campaign-policy-timeout"
+      else if tierMaintenance
+      then "crucible-campaign-tier-maintenance${lib.optionalString (idlePlanDiagnosticMinimumPs != null) "-idle-diagnostics"}"
+      else if packedMaintenance
+      then "crucible-campaign-packed-maintenance"
       else if storageRecovery
       then "crucible-campaign-storage-recovery"
+      else if interruptedTransfer
+      then "crucible-campaign-interrupted-transfer"
       else if maintenanceTransfer
       then "crucible-campaign-exact-maintenance-transfer"
       else if hotForkFlight
@@ -235,10 +416,12 @@
       else if campaignMidpoint
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
+    # The Envoy flight can hold two retained five-guest worlds beside one
+    # running five-guest attempt.
     memory =
       if envoyProduct
-      then 8192
-      else if findingForkWrite || hotForkFlight || storageRecovery || singleGuestMaterialization || twoNodeHttp
+      then 12288
+      else if findingForkWrite || hotForkFlight || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || singleGuestMaterialization || twoNodeHttp
       then 3072
       else 2048;
     headlessVcpuCount =
@@ -249,27 +432,24 @@
     # baked genesis alone. The storage-recovery flight also retains S3 objects
     # beside staged checkpoints. Leave writable space on the ext4 rootfs.
     extraWritableMiB =
-      if envoyProduct || storageRecovery
+      if envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer
       then 16384
       else if twoNodeHttp
       then 8192
       else 0;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
+      ++ (lib.optionals nativeCoreDiagnostics nativeCore.rootfsDeps)
+      ++ (lib.optionals hostStackSamples hostStacks.rootfsDeps)
       ++ (lib.optional envoyProduct envoyNetworkRootImage)
       ++ (lib.optional twoNodeHttp httpRootImage)
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
+      ++ (lib.optionals (tierMaintenance || packedMaintenance || maintenanceTransfer || interruptedTransfer) [maintenanceStageRunner pkgs.bash pkgs.gawk])
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) pkgs.crucible)
-      ++ (
-        if guestChoice || hotForkFlight
-        then [networkChoiceInitramfs]
-        else if campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuest != null
-        then [choiceInitramfs]
-        else []
-      );
+      ++ (lib.optional (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuest != null) selectedChoiceInitramfs);
     testScript = ''
       set -eu
-      ${lib.optionalString (envoyProduct || storageRecovery || twoNodeHttp) ''
+      ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || twoNodeHttp) ''
         # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
         # checkpoint and store workspace on the already-sized ext4 rootfs.
         ${pkgs.util-linux}/bin/mount -o remount,rw /
@@ -323,6 +503,7 @@
       setup_step run-directories mkdir -m 700 /tmp/attempts/run /tmp/run-state
       setup_step deployment install -m 600 ${deployment} /tmp/executor.toml
       echo 'campaign-host-setup-complete=true'
+      ${lib.optionalString nativeCoreDiagnostics nativeCore.setup}
       ${pkgs.coreutils}/bin/head -n 200 "$setup_log"
       export CRUCIBLE_PROCESS_FLIGHT_BINARY=${flight}/bin/crucible
       ${lib.optionalString (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
@@ -339,9 +520,36 @@
         then "${httpRootImage}/root.ext4"
         else "${flight}/root.raw"
       }
-      ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
+      ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "export CRUCIBLE_INITRD=${selectedChoiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
-      export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
+      export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64${lib.optionalString nativeControlSummary (
+        "\n# Advisory pre-cancel cache only; routine native trace streams stay off.\n"
+        + "export CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY=1"
+      )}${lib.optionalString (maintenanceTransfer || interruptedTransfer || packedMaintenance || tierMaintenance) ("\n"
+        + ''
+          # Pending host observations are bounded diagnostics, never guest evidence.
+          export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=64
+          unset CRUCIBLE_CONTROL_CALLBACK_WITNESS CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN \
+            CRUCIBLE_RR_CLAMP_TAIL CRUCIBLE_PHASE7_IDLE_TRACE CRUCIBLE_TIME_OWNERSHIP_WITNESS
+        '')}${lib.optionalString (idlePlanDiagnosticMinimumPs != null) ("\n"
+        + ''
+          # This window admits copied plans only; it grants no guest-time authority.
+          export CRUCIBLE_OUT_RESUME_RUNTIME_TRACE=1
+          export CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS=${toString idlePlanDiagnosticMinimumPs}
+        '')}
+      # A missing closure member must name its configured asset, rather than
+      # failing later with a bare ENOENT from guest campaign compilation.
+      for flight_asset in CRUCIBLE_PROCESS_FLIGHT_BINARY CRUCIBLE_FLIGHT_QEMU \
+        CRUCIBLE_FLIGHT_PLUGIN CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE \
+        ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "CRUCIBLE_INITRD"}
+      do
+        flight_asset_path="''${!flight_asset:-}"
+        if [ ! -f "$flight_asset_path" ] || [ ! -r "$flight_asset_path" ]; then
+          printf 'missing or unreadable packaged flight asset: %s=%s\n' \
+            "$flight_asset" "$flight_asset_path" >&2
+          exit 1
+        fi
+      done
       ${
         if singleGuest != null
         then ''
@@ -371,6 +579,7 @@
           if ! wait "$single_test"; then
             wait "$single_tail" || true
             cat "$single_log"
+            ${lib.optionalString nativeCoreDiagnostics "inspect_native_cores"}
             exit 1
           fi
           wait "$single_tail" || true
@@ -396,23 +605,40 @@
         ''
         else if twoNodeHttp
         then ''
-          http_selector=packaged::two_node_http::public_two_node_http_request_and_response_are_authenticated
-          http_log=/tmp/two-node-http.log
+          http_selector=packaged::two_node_http::${
+            if envoyProxy
+            then "public_three_node_envoy_proxy_response_is_authenticated"
+            else if envoyDirect
+            then
+              if quietKernelBoot
+              then "public_two_node_envoy_direct_quiet_kernel_response_is_authenticated"
+              else "public_two_node_envoy_direct_response_is_authenticated"
+            else "public_two_node_http_request_and_response_are_authenticated"
+          }
+          http_log=/tmp/${httpFlightName}.log
           ${flight}/bin/campaign-store-process-flight --ignored --list \
-            > /tmp/two-node-http-list.log 2>&1
+            > /tmp/${httpFlightName}-list.log 2>&1
           ${pkgs.grep}/bin/grep -Fqx "$http_selector: test" \
-            /tmp/two-node-http-list.log
+            /tmp/${httpFlightName}-list.log
 
           # The scenario requires the routed exchange within its virtual budget.
           # Leave time for the finite 1800s startup and 180s application panic
           # fallbacks, plus owned-process cleanup and the retained diagnostics.
           : > "$http_log"
+          http_live_log="$http_log"
+          ${lib.optionalString liveProgressDiagnostics ''
+            export CRUCIBLE_TEST_LIVE_PROGRESS=1
+            export CRUCIBLE_TEST_LIVE_PROGRESS_FILE=/tmp/${httpFlightName}-live-progress.jsonl
+            http_live_log="$CRUCIBLE_TEST_LIVE_PROGRESS_FILE"
+          ''}
           ${pkgs.coreutils}/bin/timeout -k 5 2100 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$http_selector" --nocapture > "$http_log" 2>&1 &
           http_test=$!
           (
-            ${pkgs.coreutils}/bin/tail --pid="$http_test" -n +1 -F "$http_log" \
+            # Passive diagnostic frames replace only the live tail. The raw
+            # test log and every original result assertion remain retained.
+            ${pkgs.coreutils}/bin/tail --pid="$http_test" -n +1 -F "$http_live_log" \
               | ${pkgs.coreutils}/bin/head -c 2097152
           ) &
           http_tail=$!
@@ -423,16 +649,98 @@
           fi
           wait "$http_tail" || true
           for evidence in \
-            two_node_http_request_response_authenticated=true \
-            two_node_http_exact_body_authenticated=true \
-            two_node_http_cold_execution=true \
-            two_node_http_cleanup_authenticated=true
+            ${httpEvidencePrefix}_request_response_authenticated=true \
+            ${httpEvidencePrefix}_exact_body_authenticated=true \
+            ${httpEvidencePrefix}_cold_execution=true \
+            ${httpEvidencePrefix}_cleanup_authenticated=true
           do
             ${pkgs.grep}/bin/grep -Fxq "$evidence" "$http_log"
           done
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$http_log"
-          printf '%s\n' 'gate=gate:two-node-http'
+          printf '%s\n' 'gate=gate:${httpFlightName}'
+        ''
+        else if tierMaintenance
+        then ''
+          tier_selector=packaged::guest_choice::tier_maintenance::public_exact_paused_guest_survives_tier_cache_eviction_and_promotion
+          tier_log=/tmp/campaign-tier-maintenance.log
+          if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-tier-maintenance-list.log 2>&1; then
+            cat /tmp/campaign-tier-maintenance-list.log
+            exit 1
+          fi
+          ${pkgs.grep}/bin/grep -Fqx \
+            "$tier_selector: test" /tmp/campaign-tier-maintenance-list.log
+
+          if ! ${pkgs.bash}/bin/bash \
+            ${maintenanceStageRunner}/share/crucible/packaged-maintenance-stage-runner.sh \
+            "$tier_log" ${pkgs.coreutils}/bin/timeout -k 5 7200 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$tier_selector" --nocapture; then
+            cat "$tier_log"
+            exit 1
+          fi
+          cat "$tier_log"
+          for evidence in \
+            tier_maintenance_real_exact_pause=true \
+            tier_maintenance_stale_gc_refused_before_deletion=true \
+            tier_maintenance_reachable_cache_evicted=true \
+            tier_maintenance_required_restore_preserved=true \
+            tier_maintenance_authenticated_cache_repromoted=true \
+            tier_maintenance_exact_origin_preserved=true \
+            tier_maintenance_scheduler_observed_guest_progress=true \
+            tier_maintenance_distinct_authenticated_checkpoint=true \
+            tier_maintenance_selected_outcome_preserved=true \
+            tier_maintenance_derived_refs_preserved=2 \
+            tier_maintenance_final_guest_cleanup=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$tier_log"
+          done
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$tier_log"
+          printf '%s\n' 'gate=gate:campaign-tier-maintenance' \
+            'tasks=T-CAM-5.8' 'tier=real-packaged-qemu'
+        ''
+        else if packedMaintenance
+        then ''
+          packed_selector=packaged::guest_choice::packed_maintenance::public_exact_paused_guest_survives_packed_repack_corruption_and_gc
+          packed_log=/tmp/campaign-packed-maintenance.log
+          if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-packed-maintenance-list.log 2>&1; then
+            cat /tmp/campaign-packed-maintenance-list.log
+            exit 1
+          fi
+          ${pkgs.grep}/bin/grep -Fqx \
+            "$packed_selector: test" /tmp/campaign-packed-maintenance-list.log
+
+          if ! ${pkgs.bash}/bin/bash \
+            ${maintenanceStageRunner}/share/crucible/packaged-maintenance-stage-runner.sh \
+            "$packed_log" ${pkgs.coreutils}/bin/timeout -k 5 7200 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$packed_selector" --nocapture; then
+            cat "$packed_log"
+            exit 1
+          fi
+          cat "$packed_log"
+          for evidence in \
+            packed_maintenance_real_exact_pause=true \
+            packed_maintenance_public_repack_authenticated=true \
+            packed_maintenance_corrupt_index_refused_before_guest=true \
+            packed_maintenance_original_index_restored=true \
+            packed_maintenance_nonempty_gc_preserves_checkpoint=true \
+            packed_maintenance_exact_origin_preserved=true \
+            packed_maintenance_scheduler_observed_guest_progress=true \
+            packed_maintenance_distinct_authenticated_checkpoint=true \
+            packed_maintenance_selected_outcome_preserved=true \
+            packed_maintenance_derived_refs_preserved=2 \
+            packed_maintenance_final_guest_cleanup=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$packed_log"
+          done
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$packed_log"
+          printf '%s\n' 'gate=gate:campaign-packed-maintenance' \
+            'tasks=T-CAM-5.8' 'tier=real-packaged-qemu'
         ''
         else if storageRecovery
         then ''
@@ -454,6 +762,9 @@
             storage_recovery_scheduler_observed_guest_progress=true \
             storage_recovery_selected_outcome_preserved=true \
             storage_recovery_derived_refs_preserved=2 \
+            storage_recovery_live_owner_gc_refused=true \
+            storage_recovery_stopped_owner_gc_reclaimed_orphan=true \
+            storage_recovery_gc_exact_checkpoint_preserved=true \
             storage_recovery_final_guest_cleanup=true
           do
             ${pkgs.grep}/bin/grep -Fxq "$evidence" "$CRUCIBLE_STORAGE_FLIGHT_LOG"
@@ -491,6 +802,50 @@
             'gate=gate:campaign-policy-timeout-real-qemu' \
             'proven=typed-policy-timeout,retained-causal-marker'
         ''
+        else if interruptedTransfer
+        then ''
+          interrupted_selector=packaged::guest_choice::interrupted_transfer::public_exact_recipient_survives_interrupted_archive_and_journal_root_gc
+          interrupted_log=/tmp/campaign-interrupted-transfer.log
+          ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-interrupted-transfer-list.log 2>&1
+          ${pkgs.grep}/bin/grep -Fqx "$interrupted_selector: test" \
+            /tmp/campaign-interrupted-transfer-list.log
+
+          if ! ${pkgs.bash}/bin/bash \
+            ${maintenanceStageRunner}/share/crucible/packaged-maintenance-stage-runner.sh \
+            "$interrupted_log" ${pkgs.coreutils}/bin/timeout -k 5 900 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$interrupted_selector" --nocapture; then
+            cat "$interrupted_log"
+            exit 1
+          fi
+          cat "$interrupted_log"
+          for evidence in \
+            interrupted_transfer_original_corruption_refused=true \
+            interrupted_transfer_both_original_journals_retained=true \
+            interrupted_transfer_partial_exact_copy_authenticated=true \
+            interrupted_transfer_refs_absent_before_completion=true \
+            interrupted_transfer_public_gc_preserved_pending_roots=true \
+            interrupted_transfer_public_gc_reclaimed_orphans=2 \
+            interrupted_transfer_exact_byte_repair=true \
+            interrupted_transfer_identical_retry_authenticated=true \
+            interrupted_transfer_completed_retry_idempotent=true \
+            interrupted_transfer_derived_refs_preserved=2 \
+            interrupted_transfer_exact_origin_preserved=true \
+            interrupted_transfer_execution_bound_guest_progress=true \
+            interrupted_transfer_distinct_authenticated_checkpoint=true \
+            interrupted_transfer_selected_outcome_preserved=true \
+            interrupted_transfer_owned_guest_cleanup=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$interrupted_log"
+          done
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$interrupted_log"
+          printf '%s\n' \
+            'gate=gate:campaign-interrupted-transfer' \
+            'tasks=T-CAM-5.8' \
+            'tier=real-packaged-qemu'
+        ''
         else if maintenanceTransfer
         then ''
           maintenance_selector=packaged::guest_choice::maintenance_transfer::public_active_pause_restart_and_executable_transfer_rejects_incompatible_provenance
@@ -503,10 +858,11 @@
             "$maintenance_selector: test" \
             /tmp/campaign-maintenance-transfer-list.log
 
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+          if ! ${pkgs.bash}/bin/bash \
+            ${maintenanceStageRunner}/share/crucible/packaged-maintenance-stage-runner.sh \
+            /tmp/campaign-maintenance-transfer.log ${pkgs.coreutils}/bin/timeout -k 5 900 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
-            "$maintenance_selector" --nocapture \
-            > /tmp/campaign-maintenance-transfer.log 2>&1; then
+            "$maintenance_selector" --nocapture; then
             cat /tmp/campaign-maintenance-transfer.log
             exit 1
           fi
@@ -519,6 +875,9 @@
             recipient_exact_pin_import_authenticated=true \
             recipient_campaign_resume=true \
             recipient_imported_attempt_running=true \
+            recipient_imported_exact_origin_preserved=true \
+            recipient_scheduler_observed_guest_progress=true \
+            recipient_new_authenticated_checkpoint=true \
             recipient_nested_qemu_stopped=true \
             incompatible_provenance_rejected_before_guest=true \
             source_checkpoint_preserved=true
@@ -595,16 +954,53 @@
           ${pkgs.grep}/bin/grep -Fqx "$envoy_selector: test" \
             /tmp/campaign-envoy-network-list.log
           : > "$envoy_log"
+          ${lib.optionalString hostStackSamples ''
+            # Keep every service's complete stderr beside the bounded test log.
+            export CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR=/tmp/campaign-service-stderr
+          ''}
           ${pkgs.coreutils}/bin/timeout -k 5 3600 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$envoy_selector" --nocapture > "$envoy_log" 2>&1 &
           envoy_test=$!
+          ${lib.optionalString hostStackSamples (hostStacks.start "${flight}/bin/crucible")}
+          ${lib.optionalString hostStackSamples (hostStacks.startQemuStall "$envoy_log")}
           ${pkgs.coreutils}/bin/timeout -k 5 3610 \
             ${pkgs.coreutils}/bin/tail --pid="$envoy_test" -n +1 -F "$envoy_log" \
             | ${pkgs.grep}/bin/grep --line-buffered '^CRUCIBLE-ENVOY-WAIT-V1 ' \
             || true
           if ! wait "$envoy_test"; then
             cat "$envoy_log"
+            # A closed private child channel does not identify its exit cause.
+            # Retain bounded kernel and owned-cgroup evidence before shutdown.
+            printf '%s\n' 'campaign-envoy-kernel-diagnostics-begin max_lines=160 max_bytes=16384'
+            if ! (
+              set -o pipefail
+              ${pkgs.util-linux}/bin/dmesg 2>&1 \
+                | ${pkgs.coreutils}/bin/tail -n 160 \
+                | ${pkgs.coreutils}/bin/tail -c 16384
+            ); then
+              printf '\n%s\n' 'campaign-envoy-kernel-diagnostics-read=failed'
+            else
+              printf '\n%s\n' 'campaign-envoy-kernel-diagnostics-read=ok'
+            fi
+            printf '%s\n' 'campaign-envoy-kernel-diagnostics-end'
+
+            memory_events=/sys/fs/cgroup/crucible/memory.events
+            printf '%s\n' "campaign-envoy-memory-events-begin path=$memory_events max_bytes=4096"
+            if test -e "$memory_events"; then
+              printf '%s\n' 'campaign-envoy-memory-events-present=true'
+              if ${pkgs.coreutils}/bin/head -c 4096 "$memory_events" 2>&1; then
+                printf '\n%s\n' 'campaign-envoy-memory-events-read=ok'
+              else
+                printf '\n%s\n' 'campaign-envoy-memory-events-read=failed'
+              fi
+            else
+              printf '%s\n' 'campaign-envoy-memory-events-present=false'
+              printf '%s\n' 'campaign-envoy-memory-events-read=unavailable'
+            fi
+            printf '%s\n' 'campaign-envoy-memory-events-end'
+            ${lib.optionalString nativeCoreDiagnostics "inspect_native_cores"}
+            ${lib.optionalString hostStackSamples hostStacks.report}
             exit 1
           fi
           cat "$envoy_log"

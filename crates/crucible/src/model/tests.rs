@@ -4,22 +4,13 @@ use super::*;
 
 #[test]
 fn compact_schedule_rejects_collection_reservations_larger_than_remaining_input() {
+    // An empty schedule ends with its manifest's segment count. Decision
+    // counts inside a segment are covered by the segment codec tests.
     let mut outer = Schedule::empty().to_compact_binary();
     let outer_count = outer.len() - std::mem::size_of::<u64>();
     outer[outer_count..].copy_from_slice(&1_000_000_u64.to_le_bytes());
     let error = Schedule::from_compact_binary(&outer)
-        .expect_err("a schedule count cannot reserve beyond its encoded input");
-    assert!(error.to_string().contains("remaining binary input"));
-
-    let schedule = Schedule::from_decisions([Decision::DeliveryOrder(DeliveryOrderDecision {
-        at: VirtualTime { ticks: 0 },
-        order: Vec::new(),
-    })]);
-    let mut nested = schedule.to_compact_binary();
-    let delivery_count = nested.len() - std::mem::size_of::<u64>();
-    nested[delivery_count..].copy_from_slice(&1_000_000_u64.to_le_bytes());
-    let error = Schedule::from_compact_binary(&nested)
-        .expect_err("a delivery-order count cannot reserve beyond its encoded input");
+        .expect_err("a segment count cannot reserve beyond its encoded input");
     assert!(error.to_string().contains("remaining binary input"));
 }
 
@@ -167,7 +158,7 @@ fn failure_signature_for_test(property: &str) -> FailureSignature {
         coverage_class: FailureCoverageClass::from_coverage_fingerprint(coverage),
         evidence_binding: coverage,
         causal_slice_hash: Some(coverage),
-        causal_cone: Some(FailureCausalCone::from_canonical_material(property)),
+        causal_cone: Some(FailureCausalCone::from_canonical_material(property, 0)),
         at_icount_report_only: None,
     }
 }
@@ -195,4 +186,150 @@ fn baked_genesis_with_search_frontier(
         state.event_log_segments.clone(),
     ));
     Ok(baked)
+}
+
+fn delivery_at(ticks: u64) -> Decision {
+    Decision::DeliveryOrder(DeliveryOrderDecision {
+        at: VirtualTime { ticks },
+        order: Vec::new(),
+    })
+}
+
+#[test]
+fn schedule_prefixes_share_storage_and_match_rebuilt_schedules() {
+    let def = ScenarioDef::from_canonical_material("schedule-prefix-sharing", "fixture");
+    let schedule = Schedule::from_decisions((0..200).map(delivery_at));
+
+    for len in [0, 1, 63, 64, 65, 130, 199, 200] {
+        let prefix = schedule.prefix(len).expect("prefix within the schedule");
+        let rebuilt =
+            Schedule::from_decisions(schedule.decision_history().iter().take(len).cloned());
+
+        assert_eq!(prefix, rebuilt);
+        assert_eq!(prefix.decision_chain(), rebuilt.decision_chain());
+        assert_eq!(
+            prefix.app_random_decisions(),
+            rebuilt.app_random_decisions()
+        );
+        assert_eq!(
+            Configuration {
+                def: def.clone(),
+                schedule: prefix,
+            }
+            .id(),
+            Configuration {
+                def: def.clone(),
+                schedule: rebuilt,
+            }
+            .id()
+        );
+    }
+}
+
+#[test]
+fn admission_digest_binds_the_exact_schedule_without_rehashing_it() {
+    let def = ScenarioDef::from_canonical_material("admission-digest", "fixture");
+    let first = Schedule::from_decisions([delivery_at(1), delivery_at(2)]);
+    let appended = Schedule::from_decisions([delivery_at(1)]).appended(delivery_at(2));
+    let reordered = Schedule::from_decisions([delivery_at(2), delivery_at(1)]);
+    let configuration = |schedule: &Schedule| Configuration {
+        def: def.clone(),
+        schedule: schedule.clone(),
+    };
+
+    assert_eq!(first.decision_chain(), appended.decision_chain());
+    assert_eq!(
+        configuration(&first).admission_digest(),
+        configuration(&appended).admission_digest()
+    );
+    assert_ne!(first.decision_chain(), reordered.decision_chain());
+    assert_ne!(
+        configuration(&first).admission_digest(),
+        configuration(&reordered).admission_digest()
+    );
+    assert_ne!(
+        configuration(&first).admission_digest(),
+        configuration(&first.prefix(1).expect("prefix")).admission_digest()
+    );
+    assert_ne!(
+        Configuration::genesis(def.clone()).admission_digest(),
+        Configuration::genesis(ScenarioDef::from_canonical_material(
+            "admission-digest",
+            "other"
+        ))
+        .admission_digest()
+    );
+}
+
+#[test]
+fn memoized_configuration_id_matches_a_fresh_hash_across_appends_and_clones() {
+    let def = ScenarioDef::from_canonical_material("configuration-id-memo", "fixture");
+    let mut configuration = Configuration::genesis(def.clone());
+    let fresh = |configuration: &Configuration| canonical::configuration_hash(configuration);
+
+    // Each append must discard the id memoized for the shorter schedule.
+    for ticks in 0..8 {
+        assert_eq!(configuration.id(), fresh(&configuration));
+        configuration.schedule = configuration.schedule.appended(delivery_at(ticks));
+        assert_eq!(configuration.id(), fresh(&configuration));
+    }
+
+    // A clone shares the memo while it matches and drops it once it appends;
+    // the original keeps answering for its own decisions.
+    let original_id = configuration.id();
+    let mut extended = configuration.clone();
+    assert_eq!(extended.id(), original_id);
+    extended.schedule = extended.schedule.appended(delivery_at(99));
+    assert_ne!(extended.id(), original_id);
+    assert_eq!(extended.id(), fresh(&extended));
+    assert_eq!(configuration.id(), original_id);
+    assert_eq!(configuration.id(), fresh(&configuration));
+
+    // A memo computed for one definition never answers for another.
+    let other_def = ScenarioDef::from_canonical_material("configuration-id-memo", "other");
+    let paired_elsewhere = Configuration {
+        def: other_def,
+        schedule: configuration.schedule.clone(),
+    };
+    assert_ne!(paired_elsewhere.id(), original_id);
+    assert_eq!(paired_elsewhere.id(), fresh(&paired_elsewhere));
+    assert_eq!(configuration.id(), original_id);
+
+    // Rebuilt and prefix schedules agree with a fresh hash.
+    let rebuilt = Configuration {
+        def: def.clone(),
+        schedule: Schedule::from_decisions(
+            configuration.schedule.decision_history().iter().cloned(),
+        ),
+    };
+    assert_eq!(rebuilt.id(), original_id);
+    let prefix = Configuration {
+        def,
+        schedule: configuration.schedule.prefix(3).expect("prefix"),
+    };
+    assert_eq!(prefix.id(), fresh(&prefix));
+}
+
+#[test]
+fn memoized_configuration_id_leaves_schedule_bytes_and_equality_unchanged() {
+    let def = ScenarioDef::from_canonical_material("configuration-id-memo", "codec");
+    let schedule = Schedule::from_decisions([delivery_at(1), delivery_at(2), delivery_at(3)]);
+    let unmemoized_bytes = schedule.to_compact_binary();
+    let configuration = Configuration {
+        def: def.clone(),
+        schedule: schedule.clone(),
+    };
+
+    let id = configuration.id();
+    assert_eq!(configuration.schedule.to_compact_binary(), unmemoized_bytes);
+    assert_eq!(configuration.schedule, schedule);
+
+    let decoded = Schedule::from_compact_binary(&unmemoized_bytes).expect("decode schedule");
+    assert_eq!(decoded, schedule);
+    let decoded_configuration = Configuration {
+        def,
+        schedule: decoded,
+    };
+    assert_eq!(decoded_configuration.id(), id);
+    assert_eq!(decoded_configuration, configuration);
 }

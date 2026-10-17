@@ -1090,7 +1090,7 @@ fn actor_debug_history_indexes_each_emitted_decision_prefix() {
     let (_sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
     actor.debug_index_configuration = root.clone();
-    let decisions = second.schedule.decisions();
+    let decisions = second.schedule.decision_history();
     let entries = vec![
         crucible::test_support::condition_payload_entry_for_test(
             0,

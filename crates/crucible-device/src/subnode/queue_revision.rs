@@ -197,6 +197,49 @@ mod tests {
     }
 
     #[test]
+    fn retiring_delivered_keys_keeps_the_clock_and_revises_only_on_change() {
+        let mut core = pending();
+        ok(core.enqueue_request(Request::new(20, 4, b"later".to_vec())));
+        ok(core.process_inbox(&mut Echo::default()));
+        let before = core.snapshot();
+        let first = before.inflight[0].key;
+        let second = before.inflight[1].key;
+
+        let absent = std::collections::BTreeSet::from([FrameDeliveryKey {
+            seq: u32::MAX,
+            ..first
+        }]);
+        assert_eq!(ok(core.retire_delivered(&absent)), 0);
+        assert_eq!(core.snapshot(), before);
+
+        assert_eq!(
+            ok(core.retire_delivered(&std::collections::BTreeSet::from([first]))),
+            1
+        );
+        let after = core.snapshot();
+        assert_eq!(after.current_icount, before.current_icount);
+        assert!(after.outbox.is_empty());
+        assert_eq!(
+            after
+                .inflight
+                .iter()
+                .map(|pending| pending.key)
+                .collect::<Vec<_>>(),
+            vec![second]
+        );
+        assert!(after.queue_revision > before.queue_revision);
+
+        let mut exhausted = after.clone();
+        exhausted.queue_revision = NonZeroU64::MAX;
+        let mut exhausted = ok(IoCore::restore(&exhausted));
+        assert_eq!(
+            exhausted.retire_delivered(&std::collections::BTreeSet::from([second])),
+            Err(DeviceError::IoQueueRevisionExhausted)
+        );
+        assert_eq!(exhausted.inflight_len(), 1);
+    }
+
+    #[test]
     fn version_five_requires_nonzero_revision_and_rejects_previous_queue_format() {
         let mut bytes = ok(pending().snapshot().canonical_bytes());
         let offset = b"crucible.io-core-snapshot.v5\0".len() + 20;

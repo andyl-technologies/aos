@@ -913,7 +913,8 @@ measurement/property/coverage objects. For every distinct scoped branch point
 in the path it also updates one nested credit set with the immutable
 `ExpansionCredit(observation, branch_point)`. The coverage root adds the immutable
 `CoverageProjectionId`; the grow-only identity union is the deterministic union
-of those records. Accounting binds the attempt and global admission ordinal to
+of those records. It also advances each of the projection's identities in the
+saturating RFC 03 coverage-identity frequency index. Accounting binds the attempt and global admission ordinal to
 the observation. The exploration root updates every indexed implementation-16
 progressive request at a credited branch point to its owner-recomputed next
 continuation state; static requests are unchanged. In strict mode

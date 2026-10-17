@@ -93,11 +93,31 @@ impl PluginBootBarrier {
         slot: &NodeSlot,
         request: BootBarrierWait,
     ) -> Result<BootBarrierRelease, BootBarrierError> {
+        Self::wait_for_initial_ceiling_with_reader(slot, request, &mut || {
+            PluginShmemOrdering::load_scheduler_advance(slot)
+                .map(|(ceiling, _)| Some(ceiling))
+                .map_err(|source| BootBarrierError::AdvanceStopCondition { source })
+        })
+    }
+
+    /// Uses the original loop with an installed console's same-read release.
+    ///
+    /// Unavailable observations perform no release. The original futex and
+    /// publication semantics remain unchanged; no later AUTH read is permitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original wait error or the installed owner's refusal.
+    pub(crate) fn wait_for_initial_ceiling_with_reader(
+        slot: &NodeSlot,
+        request: BootBarrierWait,
+        reader: &mut dyn FnMut() -> Result<Option<u64>, BootBarrierError>,
+    ) -> Result<BootBarrierRelease, BootBarrierError> {
         let mut wait = request.futex_wait;
         loop {
-            let (ceiling, _) = PluginShmemOrdering::load_scheduler_advance(slot)
-                .map_err(|source| BootBarrierError::AdvanceStopCondition { source })?;
-            if ceiling >= request.first_guest_icount {
+            if let Some(ceiling) = reader()?
+                && ceiling >= request.first_guest_icount
+            {
                 PluginShmemOrdering::mark_running_after_wake(slot);
                 return Ok(BootBarrierRelease {
                     first_guest_icount: request.first_guest_icount,
@@ -109,8 +129,7 @@ impl PluginBootBarrier {
                 .map_err(|source| BootBarrierError::FutexWait { source })?
             {
                 FutexWaitOutcome::Noop => {
-                    let (ceiling_icount, _) = PluginShmemOrdering::load_scheduler_advance(slot)
-                        .map_err(|source| BootBarrierError::AdvanceStopCondition { source })?;
+                    let ceiling_icount = reader()?.unwrap_or(0);
                     return Err(BootBarrierError::InitialCeilingStillBlocked {
                         first_guest_icount: request.first_guest_icount,
                         ceiling_icount,
@@ -144,6 +163,9 @@ impl PluginBootBarrier {
 /// An error produced while waiting for the initial scheduler ceiling.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum BootBarrierError {
+    /// The observed release had no authentic setup-owned native console body.
+    #[error("boot console release lacks an owned coherent Cold authorization")]
+    NativeConsoleRelease,
     /// The scheduler's current advance-stop condition was not valid.
     #[error("reading scheduler advance-stop condition failed: {source}")]
     AdvanceStopCondition {

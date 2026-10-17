@@ -1,235 +1,143 @@
 //! Pure semantic replay for authenticated statistical evidence.
+//!
+//! Replay is incremental. [`FiniteEvidenceReplay`] consumes stage-zero draws
+//! in coordinate order and keeps one compact [`VerifiedDraw`] per planned
+//! coordinate, which the policy bounds independently of campaign length.
+//! [`SmcEvidenceReplay`] consumes those draws and then every transition in
+//! stage and slot order. A particle can reference only an outcome of the stage
+//! immediately before it, so the SMC replay keeps compact [`SmcSource`]
+//! summaries for one previous stage, the current generation, and the current
+//! stage's outcomes. Live memory is therefore `O(particle_count)`, not
+//! proportional to the number of completed transitions.
+//!
+//! The chunked portable verifier feeds chunk items through these replays, and
+//! the repository's internal estimates feed records read one execution at a
+//! time from snapshot roots, so both paths apply identical checks. Proposal
+//! membership and its content envelope authenticate the historical guidance and
+//! planner-invocation identities; replay does not reconstruct historical
+//! planner ranking decisions.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map};
 
 use super::{
-    FiniteStatisticalEvidence, SequentialMonteCarloEvidence, StatisticalExecutionEvidence,
+    SmcTransitionEvidence, StatisticalDrawEvidence, StatisticalExecutionEvidence,
     StatisticalOpportunityEvidence,
 };
 use crate::{
-    AttemptAdmissionRole, AttemptStart, BranchBudget, BranchPath, BranchPathSegment, BranchRequest,
-    BranchRequestCause, CampaignCodecError, CampaignMode, CandidateSource, ObservationId,
-    SelectionOrigin, SequentialMonteCarloEstimateReport, StatisticalEndpointEstimate,
-    StatisticalEstimateReport, StatisticalGeneration, StatisticalParticleOutcome,
-    StatisticalProposalEvidence, StatisticalRational, StatisticalWeightDiagnostics,
+    AttemptAdmissionRole, AttemptId, AttemptStart, BranchBudget, BranchPath, BranchPathId,
+    BranchPathSegment, BranchPointId, BranchRequest, BranchRequestCause, CampaignCodecError,
+    CampaignLineage, CampaignMode, CampaignPlanningView, CampaignPolicy, CampaignPolicyId,
+    CampaignSnapshot, CandidateSource, ChoiceDomainId, ChoiceOpportunityId,
+    ConfigurationArtifactId, ConfigurationId, ObservationId, ProposalId, SelectionOrigin,
+    SequentialMonteCarloDesign, SequentialMonteCarloEstimateReport, SmcOpportunitySelector,
+    StatisticalDistribution, StatisticalDrawPlan, StatisticalEndpointEstimate,
+    StatisticalEstimateReport, StatisticalGeneration, StatisticalGenerationSummary,
+    StatisticalParticleOutcome, StatisticalProposalEvidence, StatisticalRational,
+    StatisticalSamplingDesign, StatisticalWeightDiagnostics,
 };
 
-/// Replays the semantics of a complete finite statistical evidence bundle.
-///
-/// The caller must first authenticate the snapshot and every membership from
-/// [`FiniteStatisticalEvidence::required_root_lookups`].
-/// Proposal membership and its content envelope authenticate the historical
-/// guidance and planner-invocation identities; this estimator replay does not
-/// reconstruct historical planner ranking decisions.
-///
-/// # Errors
-///
-/// Returns [`CampaignCodecError`] when any identity, cross-record binding,
-/// coordinate, ancestry edge, probability, or report invariant is invalid.
-pub fn verify_finite_statistical_evidence(
-    evidence: &FiniteStatisticalEvidence,
-) -> Result<StatisticalEstimateReport, CampaignCodecError> {
-    verify_finite(evidence, false)
+mod smc_replay;
+
+pub(crate) use smc_replay::SmcEvidenceReplay;
+use smc_replay::{SmcSource, SmcSourceKey};
+
+/// Snapshot-bound records shared by every item of one evidence stream.
+#[derive(Clone, Copy)]
+pub(crate) struct EvidenceBasis<'a> {
+    snapshot: &'a CampaignSnapshot,
+    planning_view: &'a CampaignPlanningView,
+    policy: &'a CampaignPolicy,
+    lineage: &'a CampaignLineage,
 }
 
-pub(crate) fn verify_initial_smc_statistical_evidence(
-    evidence: &FiniteStatisticalEvidence,
-) -> Result<StatisticalEstimateReport, CampaignCodecError> {
-    verify_finite(evidence, true)
+impl<'a> EvidenceBasis<'a> {
+    pub(crate) const fn new(
+        snapshot: &'a CampaignSnapshot,
+        planning_view: &'a CampaignPlanningView,
+        policy: &'a CampaignPolicy,
+        lineage: &'a CampaignLineage,
+    ) -> Self {
+        Self {
+            snapshot,
+            planning_view,
+            policy,
+            lineage,
+        }
+    }
 }
 
-/// Replays the semantics of a complete sequential Monte Carlo evidence bundle.
-///
-/// The caller must first authenticate the snapshot and every membership from
-/// [`SequentialMonteCarloEvidence::required_root_lookups`].
-/// Proposal membership and its content envelope authenticate the historical
-/// guidance and planner-invocation identities; this estimator replay does not
-/// reconstruct historical planner ranking decisions.
-///
-/// # Errors
-///
-/// Returns [`CampaignCodecError`] when any initial draw, transition, selector,
-/// support, genealogy, probability, or report invariant is invalid.
-pub fn verify_sequential_monte_carlo_evidence(
-    evidence: &SequentialMonteCarloEvidence,
-) -> Result<SequentialMonteCarloEstimateReport, CampaignCodecError> {
-    let initial = verify_finite(evidence.initial(), true)?;
-    let policy = evidence.initial().policy();
-    let policy_id = policy.id()?;
-    let design = policy
-        .sequential_monte_carlo_design()
-        .ok_or_else(|| invalid("SMC evidence requires an SMC policy"))?;
+/// Compact replay facts retained for one verified stage-zero draw.
+struct VerifiedDraw {
+    terminal: BranchPathSegment,
+    child_content: ConfigurationArtifactId,
+    child: ConfigurationId,
+    probability: StatisticalProposalEvidence,
+    proposal: ProposalId,
+    attempt: AttemptId,
+    observation: ObservationId,
+    path: BranchPathId,
+}
 
-    let mut source_executions = BTreeMap::new();
-    for draw in evidence.initial().draws() {
-        let execution = draw.execution();
-        if !execution
-            .observation()
-            .stop()
-            .reaches(execution.request().stop())
+/// Incremental replay of one finite stage-zero flight in coordinate order.
+pub(crate) struct FiniteEvidenceReplay<'a> {
+    basis: EvidenceBasis<'a>,
+    policy_id: CampaignPolicyId,
+    design: &'a StatisticalSamplingDesign,
+    planned: btree_map::Iter<'a, u64, StatisticalDrawPlan>,
+    draws: BTreeMap<u64, VerifiedDraw>,
+}
+
+impl<'a> FiniteEvidenceReplay<'a> {
+    /// Starts a replay after checking the snapshot, policy, and lineage basis.
+    pub(crate) fn new(
+        basis: EvidenceBasis<'a>,
+        allow_smc: bool,
+    ) -> Result<Self, CampaignCodecError> {
+        let policy = basis.policy;
+        let policy_id = policy.id()?;
+        if basis.snapshot.active_policy() != policy_id
+            || basis.snapshot.lineage() != basis.lineage.id()?
+            || basis.snapshot.planning_view() != *basis.planning_view
+            || policy.mode() != CampaignMode::Statistical
+            || policy.sequential_monte_carlo_design().is_some() != allow_smc
         {
-            return Err(invalid("SMC initial draw did not reach its declared stop"));
+            return Err(invalid(
+                "statistical evidence snapshot basis is inconsistent",
+            ));
         }
-        insert_source_execution(&mut source_executions, execution)?;
-    }
-
-    let mut transition_index = 0_usize;
-    let mut generation = StatisticalGeneration::from_initial_report(
-        policy_id,
-        policy.campaign_seed(),
-        design,
-        &initial,
-    )?;
-    let mut generations = Vec::with_capacity(design.stages().len());
-    let mut normalization_product = StatisticalRational::one();
-
-    for stage in design.stages().keys().copied() {
-        if generation.next_stage() != stage {
-            return Err(invalid("SMC evidence generation stage is not canonical"));
-        }
-        normalization_product =
-            normalization_product.checked_multiply(generation.normalization_factor())?;
-        generations.push(generation.clone());
-
-        let mut outcomes = Vec::with_capacity(generation.slots().len());
-        for particle in generation.slots() {
-            let transition = evidence
-                .transitions()
-                .get(transition_index)
-                .ok_or_else(|| invalid("SMC evidence transition is missing"))?;
-            transition_index = transition_index
-                .checked_add(1)
-                .ok_or_else(|| invalid("SMC evidence transition count overflows"))?;
-            if transition.stage() != stage || transition.slot() != particle.slot() {
-                return Err(invalid(
-                    "SMC evidence transition coordinate is not canonical",
-                ));
-            }
-
-            let execution = transition.execution();
-            verify_execution_common(evidence.initial(), execution)?;
-            validate_smc_request(
-                evidence.initial(),
-                &generation,
-                particle,
-                execution,
-                &source_executions,
-            )?;
-
-            if design.stage(stage.saturating_add(1)).is_some()
-                && !execution
-                    .observation()
-                    .stop()
-                    .reaches(execution.request().stop())
-            {
-                return Err(invalid(
-                    "nonfinal SMC transition did not reach its declared stop",
-                ));
-            }
-
-            let source = source_executions
-                .get(&(particle.observation(), particle.proposal()))
-                .ok_or_else(|| invalid("SMC source observation evidence is missing"))?;
-            validate_extended_path(source.path(), execution.path())?;
-
-            let proposal_id = execution.proposal().id()?;
-            let attempt_id = execution.attempt().id()?;
-            let observation_id = execution.observation().id()?;
-            let proposal_evidence = execution
-                .proposal()
-                .statistical_evidence()
-                .ok_or_else(|| invalid("SMC transition probability evidence is missing"))?;
-            let cumulative_target_probability = particle
-                .cumulative_target_probability()
-                .checked_multiply(target_probability(proposal_evidence)?)?;
-            let cumulative_proposal_probability = particle
-                .cumulative_proposal_probability()
-                .checked_multiply(proposal_probability(proposal_evidence)?)?;
-            let branch_weight = target_probability(proposal_evidence)?
-                .checked_divide(proposal_probability(proposal_evidence)?)?;
-            let estimator_weight = particle
-                .estimator_weight()
-                .checked_multiply(branch_weight)?;
-
-            outcomes.push(StatisticalParticleOutcome::new(
-                stage,
-                particle.slot(),
-                particle.id(),
-                particle.source_coordinate(),
-                proposal_id,
-                attempt_id,
-                observation_id,
-                execution.path().id()?,
-                cumulative_target_probability,
-                cumulative_proposal_probability,
-                estimator_weight,
-            )?);
-            insert_source_execution(&mut source_executions, execution)?;
-        }
-
-        if design.stage(stage.saturating_add(1)).is_none() {
-            if transition_index != evidence.transitions().len() {
-                return Err(invalid(
-                    "SMC evidence contains transitions after the final stage",
-                ));
-            }
-            let diagnostics = particle_weight_diagnostics(&outcomes)?;
-            return SequentialMonteCarloEstimateReport::new(
-                evidence.initial().snapshot().id()?,
-                policy_id,
-                design.resampling().algorithm(),
-                generations,
-                normalization_product,
-                outcomes,
-                diagnostics,
-            );
-        }
-        generation = StatisticalGeneration::from_completed_stage(
+        let design = policy
+            .statistical_sampling_design()
+            .ok_or_else(|| invalid("statistical evidence policy lacks a sampling design"))?;
+        Ok(Self {
+            basis,
             policy_id,
-            policy.campaign_seed(),
             design,
-            stage,
-            &outcomes,
-        )?;
-    }
-    Err(invalid("SMC evidence policy has no transition stage"))
-}
-
-fn verify_finite(
-    evidence: &FiniteStatisticalEvidence,
-    allow_smc: bool,
-) -> Result<StatisticalEstimateReport, CampaignCodecError> {
-    let snapshot = evidence.snapshot();
-    let policy = evidence.policy();
-    let lineage = evidence.lineage();
-    let policy_id = policy.id()?;
-    if snapshot.active_policy() != policy_id
-        || snapshot.lineage() != lineage.id()?
-        || snapshot.planning_view() != *evidence.planning_view()
-        || policy.mode() != CampaignMode::Statistical
-        || policy.sequential_monte_carlo_design().is_some() != allow_smc
-    {
-        return Err(invalid(
-            "statistical evidence snapshot basis is inconsistent",
-        ));
-    }
-    let design = policy
-        .statistical_sampling_design()
-        .ok_or_else(|| invalid("statistical evidence policy lacks a sampling design"))?;
-    if evidence.draws().len() != design.draws().len() {
-        return Err(invalid("statistical evidence draw count is incomplete"));
+            planned: design.draws().iter(),
+            draws: BTreeMap::new(),
+        })
     }
 
-    let mut draws = BTreeMap::new();
-    for ((expected_coordinate, draw_plan), evidence_draw) in
-        design.draws().iter().zip(evidence.draws())
-    {
-        if evidence_draw.coordinate() != *expected_coordinate {
+    /// Verifies the next planned draw.
+    pub(crate) fn push(
+        &mut self,
+        draw: &StatisticalDrawEvidence,
+    ) -> Result<(), CampaignCodecError> {
+        let (expected_coordinate, draw_plan) = self
+            .planned
+            .next()
+            .ok_or_else(|| invalid("statistical evidence draw count is incomplete"))?;
+        if draw.coordinate() != *expected_coordinate {
             return Err(invalid("statistical evidence draw coordinate has a gap"));
         }
-        let execution = evidence_draw.execution();
-        verify_execution_common(evidence, execution)?;
-        validate_finite_request(evidence, *expected_coordinate, draw_plan, execution, &draws)?;
+        let execution = draw.execution();
+        verify_execution_common(self.basis, execution)?;
+        validate_finite_request(
+            self.basis,
+            *expected_coordinate,
+            draw_plan,
+            execution,
+            &self.draws,
+        )?;
 
         let segments = execution.path().segments();
         let terminal = segments
@@ -237,11 +145,11 @@ fn verify_finite(
             .copied()
             .ok_or_else(|| invalid("statistical evidence draw path is empty"))?;
         let mut expected_segments = Vec::new();
-        let mut ancestry = draw_ancestry(design, *expected_coordinate)?;
+        let mut ancestry = draw_ancestry(self.design, *expected_coordinate)?;
         ancestry.pop();
         for ancestor in ancestry {
             expected_segments.push(
-                draws
+                self.draws
                     .get(&ancestor)
                     .ok_or_else(|| invalid("statistical evidence draw ancestry has a gap"))?
                     .terminal,
@@ -254,58 +162,74 @@ fn verify_finite(
             ));
         }
 
-        draws.insert(
+        let probability = execution
+            .proposal()
+            .statistical_evidence()
+            .ok_or_else(|| invalid("statistical ancestry probability evidence is missing"))?;
+        self.draws.insert(
             *expected_coordinate,
             VerifiedDraw {
-                execution,
                 terminal,
+                child_content: execution.observation().child_content(),
+                child: execution.observation().child(),
+                probability,
+                proposal: execution.proposal().id()?,
+                attempt: execution.attempt().id()?,
+                observation: execution.observation().id()?,
+                path: execution.path().id()?,
             },
         );
+        Ok(())
     }
 
-    let mut endpoints = Vec::with_capacity(design.estimand_endpoints().len());
-    for coordinate in design.estimand_endpoints().iter().copied() {
-        let draw = draws
-            .get(&coordinate)
-            .ok_or_else(|| invalid("statistical estimand endpoint is missing"))?;
-        let mut target = StatisticalRational::one();
-        let mut proposal = StatisticalRational::one();
-        for ancestor in draw_ancestry(design, coordinate)? {
-            let proposal_evidence = draws
-                .get(&ancestor)
-                .and_then(|draw| draw.execution.proposal().statistical_evidence())
-                .ok_or_else(|| invalid("statistical ancestry probability evidence is missing"))?;
-            target = target.checked_multiply(target_probability(proposal_evidence)?)?;
-            proposal = proposal.checked_multiply(proposal_probability(proposal_evidence)?)?;
+    /// Completes the replay and derives the endpoint estimate.
+    pub(crate) fn finish(mut self) -> Result<StatisticalEstimateReport, CampaignCodecError> {
+        if self.planned.next().is_some() {
+            return Err(invalid("statistical evidence draw count is incomplete"));
         }
-        let execution = draw.execution;
-        endpoints.push(StatisticalEndpointEstimate::new(
-            coordinate,
-            execution.proposal().id()?,
-            execution.attempt().id()?,
-            execution.observation().id()?,
-            execution.path().id()?,
-            target,
-            proposal,
-            target.checked_divide(proposal)?,
-        ));
-    }
-    let diagnostics = endpoint_weight_diagnostics(&endpoints)?;
-    Ok(StatisticalEstimateReport::new(
-        snapshot.id()?,
-        policy_id,
-        endpoints,
-        diagnostics,
-    ))
-}
 
-struct VerifiedDraw<'a> {
-    execution: &'a StatisticalExecutionEvidence,
-    terminal: BranchPathSegment,
+        let mut endpoints = Vec::with_capacity(self.design.estimand_endpoints().len());
+        for coordinate in self.design.estimand_endpoints().iter().copied() {
+            let draw = self
+                .draws
+                .get(&coordinate)
+                .ok_or_else(|| invalid("statistical estimand endpoint is missing"))?;
+            let mut target = StatisticalRational::one();
+            let mut proposal = StatisticalRational::one();
+            for ancestor in draw_ancestry(self.design, coordinate)? {
+                let probability = self
+                    .draws
+                    .get(&ancestor)
+                    .map(|draw| draw.probability)
+                    .ok_or_else(|| {
+                        invalid("statistical ancestry probability evidence is missing")
+                    })?;
+                target = target.checked_multiply(target_probability(probability)?)?;
+                proposal = proposal.checked_multiply(proposal_probability(probability)?)?;
+            }
+            endpoints.push(StatisticalEndpointEstimate::new(
+                coordinate,
+                draw.proposal,
+                draw.attempt,
+                draw.observation,
+                draw.path,
+                target,
+                proposal,
+                target.checked_divide(proposal)?,
+            ));
+        }
+        let diagnostics = endpoint_weight_diagnostics(&endpoints)?;
+        Ok(StatisticalEstimateReport::new(
+            self.basis.snapshot.id()?,
+            self.policy_id,
+            endpoints,
+            diagnostics,
+        ))
+    }
 }
 
 fn verify_execution_common(
-    bundle: &FiniteStatisticalEvidence,
+    stream: EvidenceBasis<'_>,
     execution: &StatisticalExecutionEvidence,
 ) -> Result<(), CampaignCodecError> {
     validate_opportunity(execution.request_opportunity())?;
@@ -329,7 +253,7 @@ fn verify_execution_common(
         execution.request_opportunity().domain(),
     )?;
     proposal.validate_resolved(request, execution.request_opportunity().domain())?;
-    if proposal.policy() != bundle.snapshot().active_policy()
+    if proposal.policy() != stream.snapshot.active_policy()
         || proposal.request() != request_id
         || proposal.statistical_evidence().is_none()
     {
@@ -364,7 +288,7 @@ fn verify_execution_common(
     if basis.admission().attempt() != attempt_id
         || basis_proposal != basis.proposal().id()?
         || basis.proposal().request() != basis.request().id()?
-        || basis.proposal().policy() != bundle.snapshot().active_policy()
+        || basis.proposal().policy() != stream.snapshot.active_policy()
         || basis.request().cause() != basis_cause
         || !matches!(
             basis.request().source(),
@@ -446,8 +370,15 @@ fn verify_execution_common(
         .iter()
         .map(|evidence| evidence.opportunity().id())
         .collect::<Result<BTreeSet<_>, _>>()?;
+    let discovered_root =
+        crate::observation::derive_choice_set_root(discovered.iter().map(|opportunity| {
+            (
+                crate::choice_set_key(*opportunity),
+                opportunity.content_id(),
+            )
+        }))?;
     if discovered.len() != execution.discovered_opportunities().len()
-        || discovered != *observation.discovered_choices()
+        || discovered_root != observation.discovered_choices()
     {
         return Err(invalid(
             "statistical discovered opportunity closure is inexact",
@@ -465,17 +396,17 @@ fn validate_opportunity(
 }
 
 fn validate_finite_request(
-    bundle: &FiniteStatisticalEvidence,
+    basis: EvidenceBasis<'_>,
     coordinate: u64,
-    draw: &crate::StatisticalDrawPlan,
+    draw: &StatisticalDrawPlan,
     execution: &StatisticalExecutionEvidence,
-    verified: &BTreeMap<u64, VerifiedDraw<'_>>,
+    verified: &BTreeMap<u64, VerifiedDraw>,
 ) -> Result<(), CampaignCodecError> {
     let CandidateSource::StatisticalFinite(source) = execution.request().source() else {
         return Err(invalid("finite statistical request source is invalid"));
     };
-    let distribution = bundle
-        .policy()
+    let distribution = basis
+        .policy
         .statistical_sampling_design()
         .and_then(|design| design.distributions().get(&draw.model()))
         .ok_or_else(|| invalid("finite statistical request model is not planned"))?;
@@ -501,8 +432,8 @@ fn validate_finite_request(
 
     match draw.parent() {
         None => {
-            if execution.request().parent() != bundle.lineage().genesis_content()
-                || execution.parent().configuration() != bundle.lineage().genesis()
+            if execution.request().parent() != basis.lineage.genesis_content()
+                || execution.parent().configuration() != basis.lineage.genesis()
             {
                 return Err(invalid("finite root draw parent is not the genesis"));
             }
@@ -510,10 +441,9 @@ fn validate_finite_request(
         Some(parent_coordinate) => {
             let parent = verified
                 .get(&parent_coordinate)
-                .ok_or_else(|| invalid("finite parent draw evidence is missing"))?
-                .execution;
-            if execution.request().parent() != parent.observation().child_content()
-                || execution.parent().configuration() != parent.observation().child()
+                .ok_or_else(|| invalid("finite parent draw evidence is missing"))?;
+            if execution.request().parent() != parent.child_content
+                || execution.parent().configuration() != parent.child
             {
                 return Err(invalid("finite parent draw endpoint is inconsistent"));
             }
@@ -523,11 +453,11 @@ fn validate_finite_request(
 }
 
 fn validate_smc_request(
-    bundle: &FiniteStatisticalEvidence,
+    basis: EvidenceBasis<'_>,
     generation: &StatisticalGeneration,
     particle: &crate::StatisticalParticleSlot,
     execution: &StatisticalExecutionEvidence,
-    source_executions: &BTreeMap<(ObservationId, crate::ProposalId), &StatisticalExecutionEvidence>,
+    sources: &BTreeMap<SmcSourceKey, SmcSource>,
 ) -> Result<(), CampaignCodecError> {
     let CandidateSource::StatisticalSmc(source) = execution.request().source() else {
         return Err(invalid("SMC transition request source is invalid"));
@@ -539,8 +469,8 @@ fn validate_smc_request(
     {
         return Err(invalid("SMC transition generation basis is inconsistent"));
     }
-    let design = bundle
-        .policy()
+    let design = basis
+        .policy
         .sequential_monte_carlo_design()
         .ok_or_else(|| invalid("SMC transition policy lacks a design"))?;
     let stage = design
@@ -551,23 +481,21 @@ fn validate_smc_request(
         .distributions()
         .get(&selector.model())
         .ok_or_else(|| invalid("SMC selector model is not planned"))?;
-    let source_execution = source_executions
+    let source = sources
         .get(&(particle.observation(), particle.proposal()))
         .ok_or_else(|| invalid("SMC source observation evidence is missing"))?;
-    if source_execution.observation().path() != particle.path()
-        || !source_execution
-            .observation()
-            .stop()
-            .reaches(source_execution.request().stop())
-        || execution.parent().id()? != source_execution.observation().child_content()
-        || execution.parent().configuration() != source_execution.observation().child()
+    if source.observation_path != particle.path()
+        || !source.reaches_stop
+        || execution.parent().id()? != source.child_content
+        || execution.parent().configuration() != source.child
     {
         return Err(invalid("SMC source observation is inconsistent"));
     }
 
-    let selected = select_smc_opportunity(source_execution, selector, distribution)?;
-    if selected.opportunity().id()? != execution.request_opportunity().opportunity().id()?
-        || selected.domain().id()? != execution.request_opportunity().domain().id()?
+    // The source summary resolved this stage's selector when it was recorded.
+    let selected = source.selected.map_err(invalid)?;
+    if selected.opportunity != execution.request_opportunity().opportunity().id()?
+        || selected.domain != execution.request_opportunity().domain().id()?
     {
         return Err(invalid("SMC selector opportunity closure drifted"));
     }
@@ -576,12 +504,10 @@ fn validate_smc_request(
     };
     let expected = BranchRequest::new(
         BranchRequest::identity(
-            selected
-                .opportunity()
-                .branch_point_id(execution.parent().configuration()),
+            selected.branch_point,
             execution.parent().id()?,
-            selected.opportunity().id()?,
-            selected.domain().id()?,
+            selected.opportunity,
+            selected.domain,
         ),
         CandidateSource::statistical_smc(
             generation.id(),
@@ -644,27 +570,10 @@ pub(crate) fn verify_smc_source_selector(
     select_smc_opportunity(source_execution, selector, distribution).map(|_| ())
 }
 
-fn insert_source_execution<'a>(
-    sources: &mut BTreeMap<(ObservationId, crate::ProposalId), &'a StatisticalExecutionEvidence>,
-    execution: &'a StatisticalExecutionEvidence,
-) -> Result<(), CampaignCodecError> {
-    let source = (execution.observation().id()?, execution.proposal().id()?);
-    if sources
-        .insert(source, execution)
-        .is_some_and(|prior| prior != execution)
-    {
-        return Err(invalid(
-            "one observation has conflicting statistical evidence",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_extended_path(
-    source: &BranchPath,
+    source_segments: &[BranchPathSegment],
     child: &BranchPath,
 ) -> Result<(), CampaignCodecError> {
-    let source_segments = source.segments();
     let child_segments = child.segments();
     if child_segments.len() != source_segments.len().saturating_add(1)
         || !child_segments.starts_with(source_segments)
@@ -675,7 +584,7 @@ fn validate_extended_path(
 }
 
 fn draw_ancestry(
-    design: &crate::StatisticalSamplingDesign,
+    design: &StatisticalSamplingDesign,
     coordinate: u64,
 ) -> Result<Vec<u64>, CampaignCodecError> {
     let mut ancestry = Vec::new();

@@ -24,8 +24,7 @@ use crucible_api::{
 use crucible_campaign::{
     AttemptContinuationInput, AttemptStartMode, CampaignHash, ChoiceDiscovery, ChoiceOpportunityId,
     ChoiceSource, ConfigurationArtifact, ConfigurationId, ExactCheckpointId,
-    MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, SelectionOrigin,
-    StopCondition,
+    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, SelectionOrigin, StopCondition,
 };
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
@@ -43,13 +42,13 @@ use crate::guest_selectable::{
     GuestSelectableReplayOpportunityContext, GuestSelectableReplayPhase,
     record_guest_selectable_boundary_diagnostic, resolve_guest_selectable, selected_guest_reply,
 };
+use crate::qemu_campaign_driver::{DEFAULT_MAXIMUM_EVENT_LOG_BYTES, RetainedAttemptLog};
 use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionProduct,
     AttemptWorkerFailure, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
     CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
     CrucibleMaterializationTier, CrucibleResolvedAttemptStart, ExactCheckpointStore,
     ExactCheckpointStoreError, MAX_QEMU_ATTEMPT_GENERATION_NODES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
     ProductionAttemptCheckpointRestoreError, QemuAttemptGenerationResourceOwner,
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
@@ -68,15 +67,32 @@ pub use interactive_session::{
 };
 
 mod failure_classification;
+mod guest_selectable;
 pub(crate) use failure_classification::{
     classify_production_lifecycle_failure, production_lifecycle_failure_class,
 };
+use guest_selectable::{apply_replayed_guest_selectables, publish_replayed_host_outcomes};
 
 mod remote_observation_resume;
 pub use remote_observation_resume::RemoteObservationResumeFactory;
 
 mod resume_admission;
 use resume_admission::validate_exact_resume_request;
+
+mod attempt_config;
+pub(crate) use attempt_config::config_for_assignment_host_watchdog;
+use attempt_config::config_for_attempt_trace_storage;
+
+mod network_fault_replay;
+use network_fault_replay::{
+    cross_replayed_network_fault_boundary, park_replayed_network_fault_markers,
+};
+
+mod start_replay_log;
+use start_replay_log::{
+    StartReplayProgress, append_start_replay_events, observe_replayed_choice_free_boot,
+    with_replay_progress,
+};
 
 /// Failure to bind an admitted attempt to a fresh production VM lifecycle.
 #[derive(Debug, Error)]
@@ -130,6 +146,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// The modeled continuation control is malformed for the authenticated scenario.
     #[error("derive modeled continuation control")]
     InvalidContinuationInput,
+    /// The attempt's resolved-effect trace directory could not be created.
+    #[error("create production VM resolved-effect trace storage: {0}")]
+    TraceStorage(#[source] std::io::Error),
 }
 
 mod resource_admission;
@@ -311,6 +330,50 @@ pub trait QemuFreshAttemptLifecycleOwner {
         })
     }
 
+    /// Parks held campaign markers named in `markers` and publishes their peers.
+    ///
+    /// Owners without held campaign markers return zero. Published peer
+    /// outcomes merge into `outcome`, which then names the post-park boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a held marker lacks its physical park or peer
+    /// publication fails.
+    fn park_held_campaign_markers(
+        &mut self,
+        _markers: &[&str],
+        _outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        Ok(0)
+    }
+
+    /// Joins every scheduler park to one frontier at a validated all-VM boundary.
+    ///
+    /// Returns the joined frontier, or `None` when no VM was parked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the scheduler rejects the join.
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        Ok(None)
+    }
+
+    /// Commits one network fault campaign branch at the joined all-VM boundary.
+    ///
+    /// Returns the selected configuration and its recorded event-log entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner has no scheduler or refuses the boundary.
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        _branch: &crucible::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("network fault campaign branch append is unavailable"),
+        })
+    }
+
     /// Authenticates a previously released physical marker on this selected branch.
     ///
     /// # Errors
@@ -367,6 +430,37 @@ pub trait QemuFreshAttemptLifecycleOwner {
                 message: String::from("guest selectable pause boundary overflowed"),
             })?;
         Ok(VirtualTime { ticks })
+    }
+
+    /// Authenticates an already committed held source independently of peer time.
+    ///
+    /// The default grants no early visibility. Implementations must validate
+    /// original ownership and the exact retained request without effects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when original held ownership cannot be authenticated.
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        _pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        Ok(false)
+    }
+
+    /// Publishes an already committed held suffix without another guest RUN.
+    ///
+    /// Owners without retained host outcomes return `None`. Implementations
+    /// authenticate the released configuration and preserve failed publication
+    /// for ordered retirement; this hook grants no new execution authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when original ownership or publication guards refuse.
+    fn publish_released_host_outcomes(
+        &mut self,
+        _configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        Ok(None)
     }
 
     /// Applies one exact semantic reply at the authoritative scheduler frontier.
@@ -433,12 +527,35 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// be sampled at the terminal boundary.
     fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError>;
 
-    /// Copies the exact resolved-effect trace retained by the live fault runtime.
+    /// Exports the exact resolved-effect trace retained by the live fault runtime.
+    ///
+    /// The result is a segmented trace handle; its segments stay in the
+    /// lifecycle's segment store.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when retained effect evidence cannot be encoded.
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError>;
+    /// Returns [`SchedulerError`] when retained effect evidence cannot be exported.
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError>;
+
+    /// Settles the final boundary without teardown so the world may be retained.
+    ///
+    /// [`QemuFinalBoundaryDrain::Retainable`] means the boundary settled with
+    /// no new entries; a later [`Self::shutdown`] then publishes none either.
+    /// [`QemuFinalBoundaryDrain::Drained`] entries were appended and precede
+    /// whatever shutdown returns. [`QemuFinalBoundaryDrain::Ineligible`]
+    /// changes nothing. Owners that cannot retain their world use the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the boundary cannot be settled. The
+    /// caller must then shut the lifecycle down.
+    fn drain_final_events_for_retention(
+        &mut self,
+    ) -> Result<QemuFinalBoundaryDrain, SchedulerError> {
+        Ok(QemuFinalBoundaryDrain::Ineligible)
+    }
 
     /// Performs final drain, process reap, lease release, and aggregate release.
     ///
@@ -538,6 +655,25 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::release_parked_campaign_marker(self, node, marker, selected)
     }
 
+    fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        ProductionVmLifecycleLoop::park_held_campaign_markers(self, markers, outcome)
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        ProductionVmLifecycleLoop::join_campaign_parks_to_frontier(self)
+    }
+
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &crucible::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        ProductionVmLifecycleLoop::append_network_fault_campaign_branch(self, branch)
+    }
+
     fn campaign_marker_release_committed(
         &self,
         node: &NodeId,
@@ -568,6 +704,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::pending_selectable_request_time(self, pending)
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        ProductionVmLifecycleLoop::pending_selectable_request_is_committed_source(self, pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,
@@ -579,6 +722,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::apply_selectable_reply(
             self, parent, decision, selected, pending, reply,
         )
+    }
+
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        ProductionVmLifecycleLoop::publish_released_host_outcomes(self, configuration)
     }
 
     fn capture_attempt_checkpoint(
@@ -621,12 +771,26 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
     }
 
     fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
-        Ok(())
+        ProductionVmLifecycleLoop::prepare_terminal_fingerprints(self)
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- this copies scheduler-retained replay evidence without feeding it into execution.
         QuantumLoop::resolved_effect_trace(self)
+    }
+
+    fn drain_final_events_for_retention(
+        &mut self,
+    ) -> Result<QemuFinalBoundaryDrain, SchedulerError> {
+        Ok(
+            match ProductionVmLifecycleLoop::drain_final_boundary_for_retention(self)? {
+                None => QemuFinalBoundaryDrain::Ineligible,
+                Some(entries) if entries.is_empty() => QemuFinalBoundaryDrain::Retainable,
+                Some(entries) => QemuFinalBoundaryDrain::Drained(entries),
+            },
+        )
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -634,6 +798,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         QuantumLoop::shutdown(self)
     }
 }
+
+mod source_retention;
+pub use source_retention::QemuFinalBoundaryDrain;
+pub(crate) use source_retention::{
+    QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
+    QemuRetainedSourcePreparation,
+};
 
 mod evidence;
 #[cfg(test)]
@@ -648,32 +819,41 @@ pub(crate) use evidence::{
 };
 
 mod campaign_run;
-pub(crate) use campaign_run::GuardedCampaignReplaySelection;
+#[cfg(any(test, feature = "test-support"))]
+pub use campaign_run::GuardedCampaignRunRecorder;
 #[cfg(any(test, feature = "test-support"))]
 pub use campaign_run::test_support::{
     GuardedDefaultCampaignTestTrace, run_guarded_default_campaign_test_fixture,
+    run_guarded_default_campaign_test_fixture_into_sink,
     run_guarded_default_campaign_test_fixture_with_choice_offer,
     run_guarded_default_campaign_test_fixture_with_trace,
     run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer,
 };
 pub use campaign_run::{
+    DEFAULT_GUARDED_CAMPAIGN_MAX_CHOICES, DiscardGuardedCampaignProgress,
     GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
-    GuardedCampaignFindingExport, GuardedCampaignFindingObjectProof,
-    GuardedCampaignFindingOccurrenceObjectProof, GuardedCampaignFindingOccurrenceProof,
-    GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
-    GuardedCampaignFindingOracleEvaluation, GuardedCampaignFindingOracleSource,
-    GuardedCampaignFindingOracleSourceLoadError, GuardedCampaignFindingProof,
-    GuardedCampaignFindingQueryProof, GuardedCampaignFindingTriageReplayProof,
-    GuardedCampaignFindingTriageReplaySegmentProof, GuardedCampaignFindingTriageReplaySet,
-    GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
-    GuardedCampaignSupplementalFinding, GuardedCampaignTimeoutEvidence,
-    GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
-    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignProductionRunnerError,
-    GuardedDefaultCampaignResumeProof, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError,
-    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
-    GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
-    run_guarded_default_campaign, validate_remote_resume_replay_closure,
+    GuardedCampaignFindingExport, GuardedCampaignFindingExportFrame,
+    GuardedCampaignFindingExportFrames, GuardedCampaignFindingExportReadError,
+    GuardedCampaignFindingObjectProof, GuardedCampaignFindingOccurrenceObjectProof,
+    GuardedCampaignFindingOccurrenceQueryProof, GuardedCampaignFindingOracle,
+    GuardedCampaignFindingOracleError, GuardedCampaignFindingOracleEvaluation,
+    GuardedCampaignFindingOracleSource, GuardedCampaignFindingOracleSourceLoadError,
+    GuardedCampaignFindingQueryProof, GuardedCampaignFindingTriageReplaySegmentProof,
+    GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError, GuardedCampaignRunSink,
+    GuardedCampaignRunSinkError, GuardedCampaignSupplementalFinding,
+    GuardedCampaignTimeoutEvidence, GuardedDefaultCampaignInvariantError,
+    GuardedDefaultCampaignObservation, GuardedDefaultCampaignObservationSource,
+    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignResumeProof,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
+    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
+    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
+    run_guarded_default_campaign_with_sink, validate_remote_resume_replay_closure,
+};
+pub(crate) use campaign_run::{
+    GuardedCampaignReplayChoices, GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_FRAME_BYTES,
+    MAX_REPLAY_CLOSURE_FRAMES, MAX_REPLAY_CLOSURE_ROOT_BYTES, REPLAY_CLOSURE_OBJECT_KIND,
+    REPLAY_CLOSURE_OBJECT_SCHEMA_VERSION, closure_object_id,
 };
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
@@ -818,6 +998,31 @@ impl QemuFreshAttemptLifecycle<'_> {
             .release_parked_campaign_marker(node, marker, selected)
     }
 
+    /// Parks held campaign markers named in `markers` and publishes their peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a held marker lacks its physical park or peer
+    /// publication fails.
+    pub fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        self.owner.park_held_campaign_markers(markers, outcome)
+    }
+
+    /// Joins every scheduler park to one frontier at a validated all-VM boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the scheduler rejects the join.
+    pub fn join_campaign_parks_to_frontier(
+        &mut self,
+    ) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.owner.join_campaign_parks_to_frontier()
+    }
+
     /// Authenticates a prior release of one selected physical marker park.
     ///
     /// # Errors
@@ -840,49 +1045,6 @@ impl QemuFreshAttemptLifecycle<'_> {
     /// Returns an error when queue state cannot be authenticated.
     pub fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
         self.owner.campaign_network_queues_empty()
-    }
-
-    /// Drains node-qualified guest selectable requests at the paused boundary.
-    ///
-    /// The result remains untrusted guest input until the modeled driver binds
-    /// it to the scenario declaration and selects a legal value.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the live request stream is malformed.
-    pub fn drain_pending_selectable_requests(
-        &mut self,
-    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
-        self.owner.drain_pending_selectable_requests()
-    }
-
-    /// Projects a retained guest pause into the shared scheduler clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the pause overflows or its admitted mapping is absent.
-    pub fn pending_selectable_request_time(
-        &self,
-        pending: &QemuNodeSelectablePendingRequest,
-    ) -> Result<VirtualTime, SchedulerError> {
-        self.owner.pending_selectable_request_time(pending)
-    }
-
-    /// Applies one exact semantic reply at the authoritative scheduler frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the live request/reply binding fails.
-    pub fn apply_selectable_reply(
-        &mut self,
-        parent: &Configuration,
-        decision: SelectionDecision,
-        selected: &Configuration,
-        pending: &QemuNodeSelectablePendingRequest,
-        reply: &SelectionReply,
-    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        self.owner
-            .apply_selectable_reply(parent, decision, selected, pending, reply)
     }
 
     /// Captures read-only production fault evidence at the current boundary.
@@ -989,14 +1151,31 @@ pub(crate) trait QemuFreshAttemptLifecycleFactory {
         signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>>;
+
+    /// Prepares a drained lifecycle as a retained source at `boundary`.
+    ///
+    /// The lifecycle has settled its final boundary with no new entries, and
+    /// `boundary` is the configuration it stopped at. Factories rebind the
+    /// world to the configuration an exact resume at that boundary would use
+    /// before preparation. Factories that cannot retain worlds return the
+    /// lifecycle unchanged through the default.
+    fn prepare_retained_source(
+        &mut self,
+        lifecycle: Self::Lifecycle,
+        _source: &ScenarioDefForm,
+        _boundary: &Configuration,
+    ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
+        QemuRetainedSourcePreparation::Recovered(lifecycle)
+    }
 }
 
 /// Two-phase modeled driver for one guarded fresh production lifecycle.
 ///
 /// [`Self::drive`] may advance and inspect the lifecycle but cannot shut it
-/// down. [`Self::seal`] runs only after runner-owned shutdown has supplied every
-/// final event-log entry, preventing a candidate from being accepted at a
-/// pre-teardown observable boundary.
+/// down. [`Self::seal`] runs only after runner-owned shutdown, or a
+/// non-destructive final drain proven empty at a paused boundary, has supplied
+/// every final event-log entry, preventing a candidate from being accepted at
+/// a pre-teardown observable boundary.
 pub trait QemuFreshAttemptDriver {
     /// Driver state retained between modeled stop and final shutdown drain.
     type Pending;
@@ -1011,6 +1190,19 @@ pub trait QemuFreshAttemptDriver {
         &self,
         _pending: &Self::Pending,
     ) -> Option<(QemuCheckpointChoiceProvenance, u64)> {
+        None
+    }
+
+    /// Returns the configuration and replay proof of a retainable modeled stop.
+    ///
+    /// A retainable stop pauses a continuing run at a published next-choice
+    /// boundary with discovered choices, no live-network preselection, and no
+    /// terminal verdict, so the runner may keep its stopped world as a
+    /// reusable source. Drivers without that projection use the default.
+    fn retention_boundary(
+        &self,
+        _pending: &Self::Pending,
+    ) -> Option<(Configuration, QemuSavepointReplayProof)> {
         None
     }
 
@@ -1077,7 +1269,7 @@ pub trait QemuFreshAttemptDriver {
         &mut self,
         pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
-        _resolved_effect_trace: Option<Vec<u8>>,
+        _resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.seal(pending, final_events)
     }
@@ -1092,55 +1284,8 @@ pub enum QemuFreshDriveOutcome<P> {
     CheckpointRequested(QemuCheckpointChoiceProvenance),
 }
 
-/// In-attempt choices retained until the raw exact root owns their records.
-#[derive(Debug)]
-pub struct QemuCheckpointChoiceProvenance {
-    configuration: Configuration,
-    discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
-}
-
-impl QemuCheckpointChoiceProvenance {
-    pub(crate) fn new(
-        configuration: Configuration,
-        discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
-    ) -> Self {
-        Self {
-            configuration,
-            discoveries,
-        }
-    }
-
-    pub(crate) fn configuration_id(&self) -> ConfigurationId {
-        ConfigurationId::from_hash(CampaignHash::from_bytes(self.configuration.id().bytes))
-    }
-
-    pub(crate) fn bind_capture(
-        self,
-        source: &ScenarioDefForm,
-        capture: CapturedAttemptCheckpoint,
-    ) -> Result<CapturedAttemptCheckpoint, SchedulerError> {
-        if capture.scenario() != source.id()
-            || capture.configuration() != self.configuration.id()
-            || self.configuration.def != source.scenario_def()
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "checkpoint choice records differ from the captured boundary",
-                ),
-            });
-        }
-        let closure = GuardedCampaignReplayClosure::from_owned_discoveries(
-            source,
-            &self.configuration.schedule,
-            &self.discoveries,
-        )
-        .and_then(|closure| closure.to_canonical_bytes())
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("authenticate checkpoint choice records: {error}"),
-        })?;
-        Ok(capture.with_choice_closure(closure))
-    }
-}
+mod checkpoint_provenance;
+pub use checkpoint_provenance::QemuCheckpointChoiceProvenance;
 
 /// Fresh-QEMU campaign runner with exact prefix replay and runner-owned teardown.
 ///
@@ -1155,6 +1300,8 @@ pub(crate) struct QemuFreshExecutionRunner<F, D> {
         Option<crate::automatic_finding_runner::QemuFindingReplayCaptureProducer>,
     terminal_exact_retention:
         Option<Arc<dyn crate::automatic_finding_runner::FindingExactRetentionSource>>,
+    published_root_retention: Option<Arc<dyn QemuPublishedRootSink>>,
+    pending_retention: Option<source_retention::QemuPendingPublishedRoot>,
 }
 
 /// Stable reasons an exact finding candidate cannot be reconstructed.
@@ -1187,6 +1334,8 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             driver,
             finding_replay_capture: None,
             terminal_exact_retention: None,
+            published_root_retention: None,
+            pending_retention: None,
         }
     }
 
@@ -1224,9 +1373,10 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
         F: QemuFreshAttemptLifecycleFactory,
         D: crate::qemu_campaign_driver::QemuFindingReplayDriver,
     {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuations = validated_continuations.controls();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -1369,7 +1519,15 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             }
         };
         let evidence = match expected_replay {
-            Some(expected) => evidence.compare_against_expected_replay(expected),
+            Some(expected) => {
+                evidence
+                    .compare_against_expected_replay(expected)
+                    .map_err(|error| {
+                        Box::new(map_fresh_driver_failure(AttemptWorkerFailure::Terminal(
+                            error,
+                        )))
+                    })?
+            }
             None => evidence,
         };
         Ok(QemuFindingCandidateReplayOutcome::Observed(Box::new(
@@ -1463,6 +1621,12 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// The exact materialized start was not safe for checkpoint capture.
     #[error("materialized-start capture was not checkpoint ready")]
     CaptureStartNotCheckpointReady,
+    /// A retained thin-attempt world awaits its prior durable disposition.
+    #[error("fresh production QEMU runner still retains a prior attempt's world")]
+    PriorRetentionPending,
+    /// A retained thin-attempt world could not be released completely.
+    #[error("release retained published-root source: {0}")]
+    PublishedRootRetention(String),
     /// Cleanup failed after the driver had already returned a failure.
     #[error(
         "fresh production QEMU driver failed: {}; cleanup also failed: {cleanup}",
@@ -1533,8 +1697,7 @@ fn bounded_driver_failure(driver: &impl std::fmt::Display) -> String {
 #[derive(Debug)]
 pub struct QemuFreshStartMaterialization {
     restored_configuration: Option<Configuration>,
-    event_log: Vec<SchedulerEventLogEntry>,
-    event_log_bytes: usize,
+    event_log: RetainedAttemptLog,
     completed_quanta: u64,
     frontier: crucible::VirtualTime,
     terminal_quiescence: Option<SchedulerQuiescence>,
@@ -1554,8 +1717,7 @@ impl QemuFreshStartMaterialization {
     pub(crate) fn at_quanta(completed_quanta: u64) -> Self {
         Self {
             restored_configuration: None,
-            event_log: Vec::new(),
-            event_log_bytes: 0,
+            event_log: RetainedAttemptLog::new(DEFAULT_MAXIMUM_EVENT_LOG_BYTES),
             completed_quanta,
             frontier: crucible::VirtualTime::default(),
             terminal_quiescence: None,
@@ -1594,13 +1756,6 @@ impl QemuFreshStartMaterialization {
                 },
             ));
         }
-        if self.replayed_discoveries.len() == MAX_OBSERVATION_CHOICE_DISCOVERIES {
-            return Err(GuestSelectableError::Campaign(
-                crucible_campaign::CampaignCodecError::LimitExceeded {
-                    limit: "finding-replay-choice-discovery-count",
-                },
-            ));
-        }
         let bytes = discovery
             .declaration()
             .canonical_bytes()
@@ -1621,16 +1776,13 @@ impl QemuFreshStartMaterialization {
 
     /// Consumes the materialization into cumulative replay evidence and state.
     ///
-    /// The byte count is the checked aggregate canonical material length of
-    /// `event_log`. `frontier`, `terminal_quiescence`, and `terminal_verdict`
-    /// describe the exact admitted start after replay, not a later attempt
-    /// quantum.
+    /// `frontier`, `terminal_quiescence`, and `terminal_verdict` describe the
+    /// exact admitted start after replay, not a later attempt quantum.
     #[must_use]
-    pub fn into_parts(
+    pub(crate) fn into_parts(
         self,
     ) -> (
-        Vec<SchedulerEventLogEntry>,
-        usize,
+        RetainedAttemptLog,
         u64,
         crucible::VirtualTime,
         Option<SchedulerQuiescence>,
@@ -1638,7 +1790,6 @@ impl QemuFreshStartMaterialization {
     ) {
         (
             self.event_log,
-            self.event_log_bytes,
             self.completed_quanta,
             self.frontier,
             self.terminal_quiescence,
@@ -1655,8 +1806,7 @@ impl QemuFreshStartMaterialization {
 
     pub(crate) fn from_resume_parts(
         restored_configuration: Configuration,
-        event_log: Vec<SchedulerEventLogEntry>,
-        event_log_bytes: usize,
+        event_log: RetainedAttemptLog,
         completed_quanta: u64,
         frontier: crucible::VirtualTime,
         terminal_quiescence: SchedulerQuiescence,
@@ -1665,7 +1815,6 @@ impl QemuFreshStartMaterialization {
         Self {
             restored_configuration: Some(restored_configuration),
             event_log,
-            event_log_bytes,
             completed_quanta,
             frontier,
             terminal_quiescence: Some(terminal_quiescence),
@@ -1679,8 +1828,7 @@ impl QemuFreshStartMaterialization {
 
     /// Carries one verified origin stop into the next continuation segment.
     pub(crate) fn from_origin_parts(
-        event_log: Vec<SchedulerEventLogEntry>,
-        event_log_bytes: usize,
+        event_log: RetainedAttemptLog,
         completed_quanta: u64,
         frontier: crucible::VirtualTime,
         terminal_quiescence: Option<SchedulerQuiescence>,
@@ -1688,7 +1836,6 @@ impl QemuFreshStartMaterialization {
         Self {
             restored_configuration: None,
             event_log,
-            event_log_bytes,
             completed_quanta,
             frontier,
             terminal_quiescence,
@@ -1704,7 +1851,7 @@ impl QemuFreshStartMaterialization {
         &self,
         configuration: &Configuration,
     ) -> Result<QemuSavepointReplayProof, crate::QemuFreshModeledDriverError> {
-        QemuSavepointReplayProof::from_reached_boundary(
+        QemuSavepointReplayProof::from_retained_boundary(
             configuration,
             self.completed_quanta,
             self.frontier,
@@ -1717,7 +1864,7 @@ impl QemuFreshStartMaterialization {
         &self,
         configuration: &Configuration,
     ) -> Result<QemuAttemptStartReplayProof, crate::QemuFreshModeledDriverError> {
-        QemuAttemptStartReplayProof::from_reached_boundary(configuration, &self.event_log)
+        QemuAttemptStartReplayProof::from_retained_boundary(configuration, &self.event_log)
     }
 
     /// Returns the scheduler configuration after restoration and authenticated start replay.
@@ -1728,19 +1875,14 @@ impl QemuFreshStartMaterialization {
 
     #[cfg(test)]
     pub(crate) fn from_test_parts(
-        event_log: Vec<SchedulerEventLogEntry>,
+        event_log: RetainedAttemptLog,
         frontier: crucible::VirtualTime,
         terminal_quiescence: Option<SchedulerQuiescence>,
         terminal_verdict: Option<QuantumTerminalVerdict>,
     ) -> Self {
-        let event_log_bytes = event_log
-            .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
         Self {
             restored_configuration: None,
             event_log,
-            event_log_bytes,
             completed_quanta: 0,
             frontier,
             terminal_quiescence,
@@ -1803,6 +1945,9 @@ pub enum QemuFreshStartReplayError {
     /// Origin replay stopped at a configuration different from the claimed boundary.
     #[error("selected continuation origin replay reached a different configuration")]
     OriginReachedMismatch,
+    /// An earlier origin could not be rebuilt from the decoded terminal origin.
+    #[error("selected continuation origin materialization failed: {0}")]
+    OriginMaterialization(#[source] crate::crucible_execution::CrucibleOriginMaterializationError),
     /// Replay exhausted the attempt's admitted execution-quanta ceiling.
     #[error("fresh start replay exhausted the admitted execution-quanta ceiling")]
     QuantumLimit,
@@ -1827,11 +1972,36 @@ pub enum QemuFreshStartReplayError {
         /// Coordinate reported by the live scheduler lifecycle.
         authoritative: u64,
     },
+    /// The replayed start log refused an entry or could not read a segment.
+    #[error("fresh start replay event log failed: {0}")]
+    EventLog(#[source] Box<crate::QemuFreshModeledDriverError>),
     /// Replayed event history exceeded the observation projection bound.
     #[error("fresh start replay exceeded `{limit}`")]
     LimitExceeded {
         /// Stable name of the exceeded limit.
         limit: &'static str,
+    },
+    /// A replay quantum's event history exceeded the observation projection bound.
+    ///
+    /// The progress fields distinguish a prefix that genuinely outgrows the
+    /// bound from a replay that stopped advancing its schedule toward the
+    /// requested configuration while quanta kept running.
+    #[error(
+        "fresh start replay exceeded `{limit}` at quanta {completed_quanta} with {retained_entries} retained entries ({retained_bytes} bytes) and schedule {schedule_len} of {target_schedule_len}"
+    )]
+    EventLogLimitExceeded {
+        /// Stable name of the exceeded limit.
+        limit: &'static str,
+        /// Entries retained when the bound was reached.
+        retained_entries: usize,
+        /// Encoded log bytes retained when the bound was reached.
+        retained_bytes: u64,
+        /// Absolute quantum coordinate of the rejected quantum.
+        completed_quanta: u64,
+        /// Decisions replayed through the rejected quantum.
+        schedule_len: usize,
+        /// Decisions in the requested start configuration.
+        target_schedule_len: usize,
     },
 }
 
@@ -2008,25 +2178,6 @@ enum QemuFreshRunnerResult<P> {
     Checkpoint(AttemptCheckpointResult),
 }
 
-/// Applies the remaining assignment deadline to one newly constructed QEMU lifecycle.
-pub(crate) fn config_for_assignment_host_watchdog(
-    config: ProductionVmLifecycleConfig,
-    context: &AttemptExecutionContext,
-) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
-    let Some(remaining) = context.remaining_host_watchdog() else {
-        // Campaign advances use virtual bounds. The finite per-operation
-        // ceiling remains a polling slice and transport/lifecycle safety bound.
-        return Ok(config.with_unbounded_advance_completion());
-    };
-    if remaining.is_zero() {
-        return Err(QemuAttemptProductionVmLifecycleError::HostWatchdogExpired);
-    }
-    // The campaign's explicit assignment watchdog supersedes the fixed
-    // transport fallback. Its separate timer interrupts a child even when
-    // many short QEMU awaits would each finish within this initial remainder.
-    Ok(config.with_completion_timeout(remaining))
-}
-
 impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
     /// Creates a factory from trusted lifecycle configuration and host resources.
     #[must_use]
@@ -2119,6 +2270,7 @@ where
             &[],
         )?;
         let config = config_for_assignment_host_watchdog(config, context)?;
+        let config = config_for_attempt_trace_storage(config, context)?;
         let decoded = installed.into_decoded();
         self.with_attempt_launcher(context, source, maximum_nodes, |launcher| {
             build_production_vm_exact_resume_lifecycle(scenario, source, &config, decoded, launcher)
@@ -2164,15 +2316,10 @@ where
         .map_err(|error| {
             QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(error))
         })?;
-        let scheduler = boundary.scheduler();
-        if scheduler.retained_event_log_base_events() != 0 {
-            return Err(QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary);
-        }
-        let proof = QemuSavepointReplayProof::from_reached_boundary(
+        let proof = QemuSavepointReplayProof::from_checkpoint(
             boundary.configuration(),
-            scheduler.quanta(),
-            scheduler.frontier(),
-            scheduler.retained_event_log_entries(),
+            boundary.scheduler(),
+            boundary.event_log_segments(),
         )
         .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary)?;
         let selected = crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(
@@ -2205,6 +2352,7 @@ where
         }
 
         let config = config_for_assignment_host_watchdog(config, context)?;
+        let config = config_for_attempt_trace_storage(config, context)?;
         self.with_attempt_launcher(context, source, maximum_nodes, |launcher| {
             build_production_vm_lifecycle_loop_with_launcher(scenario, source, &config, launcher)
         })
@@ -2317,7 +2465,24 @@ where
         self.begin_fresh_with_config(scenario, source, context, config)
             .map_err(classify_production_lifecycle_failure)
     }
+
+    fn prepare_retained_source(
+        &mut self,
+        lifecycle: Self::Lifecycle,
+        source: &ScenarioDefForm,
+        boundary: &Configuration,
+    ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
+        source_retention::prepare_production_retained_source(
+            &self.config,
+            lifecycle,
+            source,
+            boundary,
+        )
+    }
 }
+
+mod attempt_input;
+use attempt_input::{unsupported_fresh_replay_decision, validated_attempt_continuations};
 
 #[path = "qemu_campaign_lifecycle/continuation.rs"]
 mod continuation;
@@ -2366,6 +2531,9 @@ pub(crate) fn materialize_start_from<F, D>(
         ));
     }
     if current == *target {
+        if publish_replayed_host_outcomes(lifecycle, target, &mut current, &mut replay)? {
+            replay.restored_configuration = Some(current);
+        }
         return Ok(replay);
     }
     if replay.terminal_verdict.is_some() {
@@ -2374,9 +2542,21 @@ pub(crate) fn materialize_start_from<F, D>(
         ));
     }
 
-    lifecycle.set_live_network_choice_pause(target.schedule.decisions().iter().any(|decision| {
+    lifecycle.set_live_network_choice_pause(target.schedule.decision_history().iter().any(|decision| {
         matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
     }));
+    // The parent ran the audited Envoy boot prefix with concurrent RUNs; replay
+    // must group them the same way to retain the parent's event log.
+    let mut parallel_boot = crate::qemu_campaign_driver::envoy_choice_free_boot_replay_eligible(
+        input,
+        &replay.event_log,
+    )
+    .map_err(|error| {
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+            QemuFreshStartReplayError::EventLog(Box::new(error)),
+        ))
+    })?;
+    lifecycle.set_choice_free_parallel_boot(parallel_boot);
 
     // A guest selectable can already be pending at lifecycle admission. Replay
     // it at the current boundary before charging a quantum so a saved choice at
@@ -2397,9 +2577,19 @@ pub(crate) fn materialize_start_from<F, D>(
         &mut replay,
     )?;
     append_start_replay_events(&mut replay, &initial_selection_entries)?;
+    // A restored parent can already hold every VM at a network fault park.
+    let initial_network_entries =
+        cross_replayed_network_fault_boundary(lifecycle, input, target, &mut current, &mut replay)?;
+    append_start_replay_events(&mut replay, &initial_network_entries)?;
+    publish_replayed_host_outcomes(lifecycle, target, &mut current, &mut replay)?;
     if current == *target {
         replay.restored_configuration = Some(current);
         return Ok(replay);
+    }
+    if replay.terminal_verdict.is_some() {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
+        ));
     }
 
     loop {
@@ -2409,6 +2599,7 @@ pub(crate) fn materialize_start_from<F, D>(
             ));
         }
         let prior_len = current.schedule.len();
+        let prior_progress = StartReplayProgress::observe(&replay, prior_len);
         context.charge_execution_quantum().map_err(|error| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
                 QemuFreshStartReplayError::ResourceRefusal(error),
@@ -2420,12 +2611,16 @@ pub(crate) fn materialize_start_from<F, D>(
                 control: Vec::new(),
             })
             .map_err(map_start_replay_scheduler_failure)?;
+        if parallel_boot {
+            parallel_boot = observe_replayed_choice_free_boot(lifecycle, &outcome, prior_len)?;
+        }
+        park_replayed_network_fault_markers(lifecycle, input, &mut outcome)?;
         if lifecycle.live_network_preselection().is_some_and(|choice| {
             !reserved_live_network_choice_matches(
                 &choice,
                 target
                     .schedule
-                    .decisions()
+                    .decision_history()
                     .get(outcome.configuration.schedule.len()),
             )
         }) {
@@ -2444,7 +2639,6 @@ pub(crate) fn materialize_start_from<F, D>(
                 ),
             ));
         }
-        let prior_completed_quanta = replay.completed_quanta;
         replay.completed_quanta = completed_quanta;
         replay.frontier = outcome.frontier;
         if context.cancellation().is_canceled() {
@@ -2475,9 +2669,17 @@ pub(crate) fn materialize_start_from<F, D>(
                 }),
             ));
         }
-        if let Some(offset) = next.schedule.decisions()[prior_len..]
-            .iter()
-            .zip(&target.schedule.decisions()[prior_len..next_len])
+        if let Some(offset) = next
+            .schedule
+            .decision_history()
+            .iter_from(prior_len)
+            .zip(
+                target
+                    .schedule
+                    .decision_history()
+                    .iter_from(prior_len)
+                    .take(next_len - prior_len),
+            )
             .position(|(observed, expected)| observed != expected)
         {
             let index = prior_len + offset;
@@ -2485,8 +2687,8 @@ pub(crate) fn materialize_start_from<F, D>(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
                     reason: "decision prefix",
                     index,
-                    expected: replay_decision_detail(target.schedule.decisions().get(index)),
-                    observed: replay_decision_detail(next.schedule.decisions().get(index)),
+                    expected: replay_decision_detail(target.schedule.decision_history().get(index)),
+                    observed: replay_decision_detail(next.schedule.decision_history().get(index)),
                 }),
             ));
         }
@@ -2515,37 +2717,43 @@ pub(crate) fn materialize_start_from<F, D>(
         } else {
             Vec::new()
         };
+        let network_fault_entries = if terminal.is_none() {
+            cross_replayed_network_fault_boundary(lifecycle, input, target, &mut next, &mut replay)?
+        } else {
+            Vec::new()
+        };
 
-        append_start_replay_events(&mut replay, &outcome.event_log_entries)?;
-        append_start_replay_events(&mut replay, &live_network_entries)?;
-        append_start_replay_events(&mut replay, &selection_entries)?;
+        let appended = append_start_replay_events(&mut replay, &outcome.event_log_entries)
+            .and_then(|()| append_start_replay_events(&mut replay, &live_network_entries))
+            .and_then(|()| append_start_replay_events(&mut replay, &selection_entries))
+            .and_then(|()| append_start_replay_events(&mut replay, &network_fault_entries));
+        if let Err(failure) = appended {
+            return Err(with_replay_progress(
+                failure,
+                &replay,
+                next.schedule.len(),
+                target.schedule.len(),
+            ));
+        }
         replay.terminal_quiescence = outcome.scheduler_quiescence;
+        publish_replayed_host_outcomes(lifecycle, target, &mut next, &mut replay)?;
         current = next;
         if current == *target {
             replay.restored_configuration = Some(current);
-            replay.terminal_verdict = terminal;
+            if replay.terminal_verdict.is_none() {
+                replay.terminal_verdict = terminal;
+            }
             return Ok(replay);
         }
-        if terminal.is_some() {
+        if terminal.is_some() || replay.terminal_verdict.is_some() {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
             ));
         }
-        if replay.completed_quanta == prior_completed_quanta && current.schedule.len() == prior_len
-        {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
-                    reason: "no progress",
-                    index: prior_len,
-                    expected: String::from("quantum or schedule progress"),
-                    observed: format!(
-                        "quanta={} schedule_len={}",
-                        replay.completed_quanta,
-                        current.schedule.len()
-                    ),
-                }),
-            ));
-        }
+        prior_progress.require_advance(StartReplayProgress::observe(
+            &replay,
+            current.schedule.len(),
+        ))?;
     }
 }
 
@@ -2561,7 +2769,7 @@ fn apply_replayed_live_network_selection<F, D>(
     let index = current.schedule.len();
     let Some(Decision::Selection(selection)) = target
         .schedule
-        .decisions()
+        .decision_history()
         .get(index)
         .filter(|decision| reserved_live_network_choice_matches(&choice, Some(decision)))
     else {
@@ -2570,7 +2778,7 @@ fn apply_replayed_live_network_selection<F, D>(
                 reason: "reserved live-network choice",
                 index,
                 expected: String::from("Selection"),
-                observed: replay_decision_detail(target.schedule.decisions().get(index)),
+                observed: replay_decision_detail(target.schedule.decision_history().get(index)),
             }),
         ));
     };
@@ -2627,232 +2835,11 @@ fn authenticated_live_network_start_selection(
     }
 }
 
-fn apply_replayed_guest_selectables<F, D>(
-    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
-    context: &AttemptExecutionContext,
-    replay_context: GuestSelectableReplayContext<'_>,
-    current: &mut Configuration,
-    materialization: &mut QemuFreshStartMaterialization,
-) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
-{
-    let pending = lifecycle
-        .drain_pending_selectable_requests()
-        .map_err(map_start_replay_scheduler_failure)?;
-    let mut replayed = current.clone();
-    let mut replies = Vec::with_capacity(pending.len());
-    for pending in pending {
-        let discovery = resolve_guest_selectable(
-            replay_context.scenario,
-            replay_context.source,
-            pending.node(),
-            pending.pending(),
-        )
-        .map_err(start_replay_guest_selectable_failure)?;
-        materialization
-            .retain_replayed_discovery(discovery.clone())
-            .map_err(start_replay_guest_selectable_failure)?;
-        let Some(Decision::Selection(decision)) = replay_context
-            .target
-            .schedule
-            .decisions()
-            .get(replayed.schedule.len())
-        else {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
-                    reason: "pending guest selection",
-                    index: replayed.schedule.len(),
-                    expected: String::from("Selection"),
-                    observed: replay_decision_detail(
-                        replay_context
-                            .target
-                            .schedule
-                            .decisions()
-                            .get(replayed.schedule.len()),
-                    ),
-                }),
-            ));
-        };
-        let selection = decision
-            .selection()
-            .map_err(GuestSelectableError::Campaign)
-            .map_err(start_replay_guest_selectable_failure)?;
-        let expected_selection = replay_context
-            .start
-            .replay_selection(replayed.schedule.len());
-        let fingerprint = if context.guest_selectable_boundary_diagnostic_sample_permitted() {
-            lifecycle.sample_fingerprint(pending.node().clone()).ok()
-        } else {
-            None
-        };
-        record_guest_selectable_boundary_diagnostic(
-            context,
-            replay_context.attempt,
-            GuestSelectableBoundaryDiagnosticStage::Replay,
-            replayed.schedule.len(),
-            pending.node(),
-            pending.pending(),
-            &discovery,
-            expected_selection,
-            fingerprint,
-        );
-        let validation = match selection.origin() {
-            SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
-                selection.validate_replay(discovery.opportunity(), discovery.domain())
-            }
-            SelectionOrigin::CampaignBranch { .. } => {
-                let parent =
-                    ConfigurationId::from_hash(CampaignHash::from_bytes(replayed.id().bytes));
-                selection.validate_branch_replay(
-                    discovery.opportunity(),
-                    discovery.domain(),
-                    discovery.opportunity().branch_point_id(parent),
-                )
-            }
-            SelectionOrigin::ModelSample(_) => {
-                return Err(start_replay_guest_selectable_failure(
-                    GuestSelectableError::Campaign(
-                        crucible_campaign::CampaignCodecError::InvalidValue {
-                            reason: "guest selectable replay does not admit model-sample provenance",
-                        },
-                    ),
-                ));
-            }
-        };
-        if let Err(error) = validation {
-            let attempt = replay_context.attempt.id().ok();
-            let mismatch = selection
-                .replay_mismatch(discovery.opportunity(), discovery.domain())
-                .ok()
-                .flatten();
-            let error = match (attempt, mismatch) {
-                (Some(attempt), Some(mismatch)) => {
-                    let request = pending.pending().request();
-                    let replayed_configuration =
-                        ConfigurationId::from_hash(CampaignHash::from_bytes(replayed.id().bytes));
-                    let expected_opportunity = expected_selection.map(|selection| {
-                        GuestSelectableReplayOpportunityContext::from_opportunity(
-                            selection.opportunity(),
-                        )
-                    });
-                    let correlation = GuestSelectableReplayCorrelation {
-                        phase: replay_context.phase,
-                        attempt_role: replay_context.attempt_role,
-                        attempt,
-                        replayed_configuration,
-                        decision_index: replayed.schedule.len(),
-                        node: pending.node().name.clone(),
-                        selectable: request.selectable_id().to_owned(),
-                        request_instance: request.instance_key().to_owned(),
-                        request_sequence: request.sequence(),
-                        request_icount: pending.pending().raw_icount(),
-                        request_vcpu_index: pending.pending().vcpu_index(),
-                        expected_opportunity,
-                        replayed_opportunity:
-                            GuestSelectableReplayOpportunityContext::from_opportunity(
-                                discovery.opportunity(),
-                            ),
-                    };
-                    GuestSelectableError::ReplayMismatch(Box::new(
-                        GuestSelectableReplayMismatch::new(correlation, mismatch, error),
-                    ))
-                }
-                _ => GuestSelectableError::Campaign(error),
-            };
-            return Err(start_replay_guest_selectable_failure(error));
-        }
-        let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
-            .map_err(start_replay_guest_selectable_failure)?;
-        replies.push((pending, reply, decision.clone(), replayed.clone()));
-        replayed = crucible::try_step(&replayed, Decision::Selection(decision.clone())).map_err(
-            |error| {
-                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-                    QemuFreshStartReplayError::DivergedAt {
-                        reason: "selection schedule append",
-                        index: replayed.schedule.len(),
-                        expected: replay_decision_detail(Some(&Decision::Selection(
-                            decision.clone(),
-                        ))),
-                        observed: error.to_string(),
-                    },
-                ))
-            },
-        )?;
-    }
-    let mut selection_entries = Vec::new();
-    for (pending, reply, decision, parent) in replies {
-        let selected = crucible::try_step(&parent, Decision::Selection(decision.clone())).map_err(
-            |error| {
-                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-                    QemuFreshStartReplayError::DivergedAt {
-                        reason: "selection reply schedule append",
-                        index: parent.schedule.len(),
-                        expected: replay_decision_detail(Some(&Decision::Selection(
-                            decision.clone(),
-                        ))),
-                        observed: error.to_string(),
-                    },
-                ))
-            },
-        )?;
-        let entries = lifecycle
-            .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
-            .map_err(map_start_replay_scheduler_failure)?;
-        selection_entries.extend(entries);
-    }
-    *current = replayed;
-    Ok(selection_entries)
-}
-
 fn start_replay_guest_selectable_failure<F, D>(
     error: GuestSelectableError,
 ) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
     AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
         QemuFreshStartReplayError::GuestSelectable(error),
-    ))
-}
-
-fn append_start_replay_events<F, D>(
-    replay: &mut QemuFreshStartMaterialization,
-    entries: &[SchedulerEventLogEntry],
-) -> Result<(), AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
-    let count = replay
-        .event_log
-        .len()
-        .checked_add(entries.len())
-        .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-entry-count"))?;
-    if count > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
-        return Err(AttemptWorkerFailure::Terminal(
-            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
-                limit: "fresh-campaign-event-log-entry-count",
-            }),
-        ));
-    }
-    let added = entries.iter().try_fold(0usize, |total, entry| {
-        total
-            .checked_add(entry.canonical_material_len())
-            .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))
-    })?;
-    let bytes = replay
-        .event_log_bytes
-        .checked_add(added)
-        .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))?;
-    if bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
-        return Err(AttemptWorkerFailure::Terminal(
-            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
-                limit: "fresh-campaign-event-log-bytes",
-            }),
-        ));
-    }
-    replay.event_log.extend_from_slice(entries);
-    replay.event_log_bytes = bytes;
-    Ok(())
-}
-
-fn start_replay_limit_failure<F, D>(
-    limit: &'static str,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-        QemuFreshStartReplayError::LimitExceeded { limit },
     ))
 }
 
@@ -2865,7 +2852,8 @@ fn map_start_replay_scheduler_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error =
         QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Scheduler(error));
@@ -2887,7 +2875,8 @@ fn map_checkpoint_capture_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuFreshExecutionRunnerError::CheckpointCapture(error);
     match class {
@@ -2908,7 +2897,8 @@ fn map_terminal_fingerprint_capture_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuFreshExecutionRunnerError::TerminalFingerprintCapture(error);
     match class {
@@ -2995,6 +2985,9 @@ where
         cleanup,
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests;

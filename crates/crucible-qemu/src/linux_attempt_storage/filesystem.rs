@@ -1,6 +1,81 @@
 //! Descriptor-relative filesystem operations for attempt storage.
 
+use std::ffi::CStr;
+
 use super::*;
+
+/// Most removed artifacts named in a released-usage diagnostic.
+const REPORTED_REMOVED_ARTIFACTS: usize = 16;
+
+/// Bounded record of the non-directory artifacts one cleanup unlinked.
+///
+/// When a released project still reports accounted usage, the largest
+/// removed artifacts identify which files outlived their names. The record
+/// is diagnostic only and never influences cleanup or release.
+#[derive(Debug, Default)]
+pub(super) struct RemovedArtifacts {
+    count: u64,
+    allocated_bytes: u64,
+    largest: Vec<RemovedArtifact>,
+}
+
+#[derive(Debug)]
+struct RemovedArtifact {
+    name: String,
+    inode: u64,
+    allocated_bytes: u64,
+}
+
+impl RemovedArtifacts {
+    fn record(&mut self, name: &CStr, metadata: &rustix::fs::Stat) {
+        let allocated_bytes = u64::try_from(metadata.st_blocks)
+            .unwrap_or_default()
+            .saturating_mul(512);
+        self.count = self.count.saturating_add(1);
+        self.allocated_bytes = self.allocated_bytes.saturating_add(allocated_bytes);
+
+        let artifact = RemovedArtifact {
+            name: name.to_string_lossy().into_owned(),
+            inode: metadata.st_ino,
+            allocated_bytes,
+        };
+        if self.largest.len() < REPORTED_REMOVED_ARTIFACTS {
+            self.largest.push(artifact);
+        } else if let Some(smallest) = self
+            .largest
+            .iter_mut()
+            .min_by_key(|retained| retained.allocated_bytes)
+            && smallest.allocated_bytes < artifact.allocated_bytes
+        {
+            *smallest = artifact;
+        }
+    }
+
+    /// Describes the removed artifacts, largest allocation first.
+    pub(super) fn describe(&self) -> String {
+        let mut largest = self.largest.iter().collect::<Vec<_>>();
+        largest.sort_by(|left, right| {
+            right
+                .allocated_bytes
+                .cmp(&left.allocated_bytes)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        let named = largest
+            .iter()
+            .map(|artifact| {
+                format!(
+                    "{} inode {} allocated {}",
+                    artifact.name, artifact.inode, artifact.allocated_bytes
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "{} removed, {} bytes allocated, largest [{named}]",
+            self.count, self.allocated_bytes
+        )
+    }
+}
 
 #[derive(Debug)]
 struct CleanupDirectory {
@@ -14,11 +89,12 @@ pub(super) fn cleanup_directory_contents(
     mut directory: OwnedFd,
     path: &Path,
     maximum_inodes: u64,
-) -> Result<(), LinuxQemuAttemptStorageError> {
+) -> Result<RemovedArtifacts, LinuxQemuAttemptStorageError> {
     let root_metadata =
         fstat(&directory).map_err(|source| io_error("identify QEMU cleanup root", path, source))?;
     let root_device = root_metadata.st_dev;
     let mut observed_entries = 1_u64;
+    let mut removed = RemovedArtifacts::default();
     let mut stack = vec![scan_cleanup_directory(
         &directory,
         None,
@@ -26,6 +102,7 @@ pub(super) fn cleanup_directory_contents(
         root_device,
         maximum_inodes,
         &mut observed_entries,
+        &mut removed,
     )?];
 
     loop {
@@ -50,6 +127,7 @@ pub(super) fn cleanup_directory_contents(
                 root_device,
                 maximum_inodes,
                 &mut observed_entries,
+                &mut removed,
             )?;
             directory = child;
             stack.push(child_frame);
@@ -60,7 +138,7 @@ pub(super) fn cleanup_directory_contents(
             io_error("synchronize cleaned QEMU artifact directory", path, source)
         })?;
         if stack.len() == 1 {
-            return Ok(());
+            return Ok(removed);
         }
         let child = stack
             .pop()
@@ -103,6 +181,7 @@ fn scan_cleanup_directory(
     root_device: u64,
     maximum_inodes: u64,
     observed_entries: &mut u64,
+    removed: &mut RemovedArtifacts,
 ) -> Result<CleanupDirectory, LinuxQemuAttemptStorageError> {
     let directory_metadata = fstat(directory)
         .map_err(|source| io_error("identify QEMU artifact directory", path, source))?;
@@ -158,6 +237,7 @@ fn scan_cleanup_directory(
         } else {
             unlinkat(directory, name, AtFlags::empty())
                 .map_err(|source| io_error("remove QEMU attempt artifact", path, source))?;
+            removed.record(name, &metadata);
         }
     }
     children.sort();

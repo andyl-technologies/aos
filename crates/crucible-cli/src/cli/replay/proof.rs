@@ -52,7 +52,7 @@ pub(super) fn replay_schedule_prefix_decisions(
     schedule: &Schedule,
 ) -> Vec<ReplaySchedulePrefixDecisionProof> {
     schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .map(|(index, decision)| {

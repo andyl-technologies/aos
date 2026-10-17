@@ -57,6 +57,24 @@ pub(super) struct ProductionLifecycleCompletedExit {
     pub(super) observed_exit_code: i32,
 }
 
+/// Run-state reference to the append-only completed-exit log.
+///
+/// The log holds one canonical JSON line per committed exit. Each line extends
+/// a SHA-256 chain, and run state records the committed prefix so recovery can
+/// discard a torn tail and verify the prefix without retaining it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProductionLifecycleExitLog {
+    pub(super) version: u32,
+    /// Committed exit records in the log prefix.
+    pub(super) records: u64,
+    /// Byte length of the committed log prefix.
+    pub(super) bytes: u64,
+    /// Lowercase hex SHA-256 chain value after the last committed record.
+    #[serde(deserialize_with = "deserialize_string")]
+    pub(super) chain_sha256: String,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ProductionLifecycleJournal {
@@ -65,8 +83,13 @@ pub(super) struct ProductionLifecycleJournal {
     pub(super) phase: ProductionLifecycleJournalPhase,
     #[serde(deserialize_with = "deserialize_lifecycle_nodes")]
     pub(super) nodes: FallibleLifecycleRecords<ProductionLifecycleJournalNode>,
-    #[serde(deserialize_with = "deserialize_completed_exits")]
-    pub(super) completed_exits: FallibleLifecycleRecords<ProductionLifecycleCompletedExit>,
+    pub(super) exit_log: ProductionLifecycleExitLog,
+    /// Exits of the current transaction that are not yet in the exit log.
+    ///
+    /// They exist only between reaping and the next lifecycle persist, which
+    /// appends them durably before publishing run state that counts them.
+    #[serde(skip)]
+    pub(super) pending_exits: Vec<ProductionLifecycleCompletedExit>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -91,8 +114,8 @@ pub(super) use decode_budget::{
     DurableDecodeAllocation, enter_durable_decode_shape, take_durable_decode_allocation,
 };
 use decode_budget::{
-    account_decode_usage, completed_exits_expected, current_processes_expected, decode_usage,
-    lifecycle_nodes_expected, record_decode_allocation, staged_processes_expected,
+    account_decode_usage, current_processes_expected, decode_usage, lifecycle_nodes_expected,
+    record_decode_allocation, staged_processes_expected,
 };
 
 struct FallibleOwnedString(String);
@@ -323,17 +346,6 @@ where
     T: serde::Deserialize<'de>,
 {
     let expected = lifecycle_nodes_expected();
-    deserialize_records(deserializer, expected)
-}
-
-pub(super) fn deserialize_completed_exits<'de, D, T>(
-    deserializer: D,
-) -> Result<FallibleLifecycleRecords<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    let expected = completed_exits_expected();
     deserialize_records(deserializer, expected)
 }
 

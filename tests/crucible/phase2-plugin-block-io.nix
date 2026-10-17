@@ -163,7 +163,7 @@
       }
       {
         label = "wire version";
-        needle = "BLOCK_WIRE_VERSION";
+        needle = "BLOCK_REQUEST_WIRE_VERSION";
       }
       {
         label = "little-endian request encoding";
@@ -239,7 +239,7 @@
       }
       {
         label = "freeze completion before guest completion";
-        needle = "freeze\n            .complete_request(slot, token.device_token)";
+        needle = "match freeze.complete_request(slot, token.device_token)";
       }
       {
         label = "freeze token failure helper";
@@ -294,8 +294,8 @@
         needle = "block_poll_rejects_wrong_response_source_and_releases_freeze_token";
       }
       {
-        label = "guest completion failure releases test";
-        needle = "block_poll_guest_completion_failure_still_releases_freeze_token";
+        label = "guest completion failure retains custody test";
+        needle = "block_poll_guest_completion_failure_retains_original_head_and_token";
       }
       {
         label = "response wire validation test";
@@ -344,9 +344,16 @@ in
       version = "0";
       src = crucibleSrc;
 
+      # The plugin's test-only crucible dependency links the campaign
+      # store's SQLite backend, so the lib-test link needs it.
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       buildDeps = [
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       phases = [

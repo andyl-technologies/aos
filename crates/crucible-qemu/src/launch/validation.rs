@@ -4,13 +4,12 @@ use thiserror::Error;
 
 use super::{
     DEFAULT_ACCEL, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy,
-    MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
-    QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
+    MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
     QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_IDLE_PREFIX_TRACE_SELECTION,
     QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
     QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
     QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION, QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
-    entropy::GUEST_ENTROPY_RNG_ID,
+    entropy::GUEST_ENTROPY_RNG_ID, native_console::NATIVE_CONSOLE_CHARDEV_ARGUMENT,
 };
 
 mod values;
@@ -751,10 +750,8 @@ fn internal_output_chardev_ids(args: &[String]) -> Vec<String> {
             let mut fields = value.split(',');
             let model = fields.next()?;
             let internal_ringbuf = model.eq_ignore_ascii_case("ringbuf");
-            let console_socket = value.eq_ignore_ascii_case(&format!(
-                "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
-            ));
-            if !internal_ringbuf && !console_socket {
+            let native_console = value.eq_ignore_ascii_case(NATIVE_CONSOLE_CHARDEV_ARGUMENT);
+            if !internal_ringbuf && !native_console {
                 return None;
             }
             fields.find_map(|field| {
@@ -838,10 +835,7 @@ fn validate_internal_chardev_option(
 ) -> Result<(), QemuPreSpawnLaunchValidationError> {
     match option_model(value) {
         "null" | "ringbuf" => Ok(()),
-        "socket"
-            if value.eq_ignore_ascii_case(&format!(
-                "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
-            )) =>
+        "crucible-console" if value.eq_ignore_ascii_case(NATIVE_CONSOLE_CHARDEV_ARGUMENT) =>
         {
             Ok(())
         }
@@ -966,6 +960,28 @@ fn validate_pre_spawn_rtc(rtc: &str) -> Result<(), QemuPreSpawnLaunchValidationE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_console_admits_only_closed_backend_and_refuses_old_host_socket() {
+        let accepted = ["-chardev", NATIVE_CONSOLE_CHARDEV_ARGUMENT].map(str::to_owned);
+        assert!(
+            validate_internal_chardev_option(NATIVE_CONSOLE_CHARDEV_ARGUMENT, String::new())
+                .is_ok()
+        );
+        assert_eq!(
+            internal_output_chardev_ids(&accepted),
+            [super::super::QEMU_CONSOLE_CHARDEV_ID]
+        );
+        for refused in [
+            "crucible-console,id=other",
+            "crucible-console,id=crucible-console,path=host-file",
+            "socket,id=crucible-console,path=crucible-console.sock,server=on,wait=off",
+        ] {
+            assert!(validate_internal_chardev_option(refused, refused.to_owned()).is_err());
+            let arguments = ["-chardev", refused].map(str::to_owned);
+            assert!(internal_output_chardev_ids(&arguments).is_empty());
+        }
+    }
 
     #[test]
     fn delivery_witness_admits_only_two_exact_adjacent_selections() {

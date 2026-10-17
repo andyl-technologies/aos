@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 30
+abi_version = 31
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -143,8 +143,26 @@ scoreboard_replacement = "forbidden"
 control_frame = "forbidden"
 failure = "fail-realization-before-authoritative-execution"
 
+[native_console]
+required_control_version = 4
+required_setup_schema = 3
+segments_per_vm = 1
+segment_alignment = 128
+segment_bytes = 525184
+placement = "aligned-after-selectable-reply-data"
+record_bytes = 128
+record_capacity = 4096
+capability_bytes = 128
+authorization_bytes = 128
+frontier_bytes = 128
+clamp_bytes = 256
+operation_stop_bytes = 128
+frontier_publication = "original-node-slot-seqlock-before-odd-control-ack"
+independent_frontier_reads_are_authority = false
+
 [conformance]
 c_header = "../include/crucible_shmem_abi.h"
 rust_version = "../src/abi_version.in"
 golden_fixture = "../tests/fixtures/shmem_abi_golden.fixture"
 header_generator = "../src/abi_header.rs"
+native_console_c_header = "../include/crucible_native_console_draft.h"

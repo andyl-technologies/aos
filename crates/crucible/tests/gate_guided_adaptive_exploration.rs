@@ -451,11 +451,17 @@ fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
         .checkpoint_configuration(covered.representative)
         .ok_or("covered representative must be recorded")?;
     assert_eq!(
-        covered.configuration.schedule.decisions()[1],
+        covered.configuration.schedule.decision_history()[1],
         frontier_decision
     );
-    assert_eq!(representative.schedule.decisions()[1], branch_decision);
-    assert_eq!(representative.schedule.decisions()[3], frontier_decision);
+    assert_eq!(
+        representative.schedule.decision_history()[1],
+        branch_decision
+    );
+    assert_eq!(
+        representative.schedule.decision_history()[3],
+        frontier_decision
+    );
     assert_ne!(covered.configuration.id(), representative.id());
     let materialized = run
         .materialized
@@ -768,10 +774,10 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     assert_eq!(branch_values, vec![59, 131, 209]);
     for child in &branched.report.explored {
         assert!(matches!(child.decision, Decision::Selection(_)));
-        assert_eq!(child.configuration.schedule.decisions().len(), 2);
+        assert_eq!(child.configuration.schedule.decision_history().len(), 2);
         assert!(reduce(&child.configuration.def, &child.configuration.schedule).is_ok());
     }
-    assert_eq!(observed_frontier.schedule.decisions().len(), 2);
+    assert_eq!(observed_frontier.schedule.decision_history().len(), 2);
     assert!(AppRandomSampleBudget::new(MAX_APP_RANDOM_SAMPLES_PER_DRAW + 1).is_none());
 
     let capped_scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(

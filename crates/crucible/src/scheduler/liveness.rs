@@ -140,11 +140,29 @@ pub(super) struct RuntimeSchedulerNode {
     pub(super) id: SchedulerNodeId,
     pub(super) counter: NodeCounter,
     pub(super) time_mapping: NodeTimeMapping,
+    // Original scenario visibility survives later backend-counter rebases.
+    pub(super) ready_point_mapping: NodeTimeMapping,
     pub(super) last_checkpoint: Option<SchedulerNodeCheckpoint>,
     pub(super) activity: SchedulerNodeActivity,
     pub(super) network_lookahead: NetworkLookahead,
     pub(super) exact_local_event: ExactLocalEvent,
     pub(super) vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
+    // A VM physically parked at a campaign marker awaits an atomic choice that
+    // needs every VM parked. It neither runs nor holds back the frontier until
+    // the all-parked boundary joins it to that frontier. Live state only: a
+    // checkpoint refuses while any node remains parked.
+    pub(super) campaign_parked: bool,
+}
+
+impl RuntimeSchedulerNode {
+    /// Reports whether the node is excluded from RUNs and the live frontier.
+    pub(super) const fn scheduling_inactive(&self) -> bool {
+        self.campaign_parked
+            || matches!(
+                self.activity,
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+            )
+    }
 }
 
 impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
@@ -153,11 +171,13 @@ impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
             id: node.id,
             counter: node.counter,
             time_mapping: NodeTimeMapping::default(),
+            ready_point_mapping: NodeTimeMapping::default(),
             last_checkpoint: None,
             activity: node.activity,
             network_lookahead: node.network_lookahead,
             exact_local_event: node.exact_local_event,
             vcpu_idle_states: Vec::new(),
+            campaign_parked: false,
         }
     }
 }
@@ -420,10 +440,7 @@ pub(super) fn frontier_for(
     let mut frontier = None;
     let mut initial_inactive = None;
     for node in nodes {
-        let inactive = matches!(
-            node.activity,
-            SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-        );
+        let inactive = node.scheduling_inactive();
         if inactive && previous_frontier.is_some() {
             continue;
         }
@@ -520,6 +537,12 @@ pub enum SchedulerError {
         /// The current frontier virtual time, in ticks.
         frontier: u64,
     },
+    /// A trigger `console_match` leaf has no matcher declared at admission.
+    ///
+    /// Trigger matchers are declared on the genesis condition prefix through
+    /// [`SchedulerLivenessScenario::with_trigger_console_matchers`]; console
+    /// history is never rescanned for a late declaration.
+    UndeclaredConsoleMatcher(crate::UndeclaredConsoleMatcher),
 }
 
 impl fmt::Display for SchedulerError {
@@ -527,6 +550,12 @@ impl fmt::Display for SchedulerError {
         match self {
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
+            Self::UndeclaredConsoleMatcher(undeclared) => {
+                write!(
+                    f,
+                    "scheduler trigger evaluation failed closed: {undeclared}"
+                )
+            }
             Self::OperationalBoundary { message, .. } => f.write_str(message),
             Self::ResourceLimit {
                 field,

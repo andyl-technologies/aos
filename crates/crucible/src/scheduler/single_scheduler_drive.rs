@@ -110,7 +110,10 @@ impl SingleScheduler {
         &self,
         node: &RuntimeSchedulerNode,
     ) -> SchedulerNodeActivity {
-        if node.activity == SchedulerNodeActivity::Idle
+        if node.campaign_parked {
+            // A parked VM must not run before its atomic choice is released.
+            SchedulerNodeActivity::Halted
+        } else if node.activity == SchedulerNodeActivity::Idle
             && node
                 .vcpu_idle_states
                 .iter()
@@ -377,10 +380,7 @@ impl SingleScheduler {
     ) -> Result<(), SchedulerError> {
         let mut nodes = Vec::new();
         for node in &self.nodes {
-            if matches!(
-                node.activity,
-                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-            ) {
+            if node.scheduling_inactive() {
                 continue;
             }
 
@@ -423,8 +423,8 @@ impl SingleScheduler {
             pending_event_count: self.pending_events.len(),
             pending_control_count: self.control_inbox.len(),
             decision_rng_cursor: self.decision_rng_cursor.clone(),
-            control_applications: self.control_applications.clone(),
-            preemption_applications: self.preemption_applications.clone(),
+            control_applications: self.control_applications.to_vec(),
+            preemption_applications: self.preemption_applications.to_vec(),
             boundary_yields: self.boundary_yields,
         }
     }
@@ -1303,10 +1303,7 @@ impl SingleScheduler {
             return Ok(false);
         }
         for node in &self.nodes {
-            if matches!(
-                node.activity,
-                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-            ) {
+            if node.scheduling_inactive() {
                 continue;
             }
 
@@ -1902,9 +1899,9 @@ impl SingleScheduler {
 
     pub(super) fn commit_control_applications(
         &mut self,
-        mut applications: Vec<SchedulerControlApplication>,
+        applications: Vec<SchedulerControlApplication>,
     ) {
-        self.control_applications.append(&mut applications);
+        self.control_applications.extend(applications);
     }
 
     pub(super) fn drain_control_events(&mut self) -> Result<SchedulerControlDrain, SchedulerError> {

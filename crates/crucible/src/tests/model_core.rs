@@ -69,7 +69,7 @@ fn try_step_appends_decision_without_mutating_parent() {
     let child = accepted_step!(&config, decision.clone());
 
     assert!(config.schedule.is_empty());
-    assert_eq!(child.schedule.decisions(), &[decision]);
+    assert_eq!(child.schedule.decision_history(), &[decision]);
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
 
     let schedule = Schedule::empty().appended(Decision::Selection(decision.clone()));
     let encoded = schedule.to_compact_binary();
-    assert!(encoded.starts_with(b"crucible.schedule.v4\0"));
+    assert!(encoded.starts_with(b"crucible.schedule.v5\0"));
     assert_eq!(Schedule::from_compact_binary(&encoded)?, schedule);
     assert_ne!(schedule.content_hash(), Schedule::empty().content_hash());
 
@@ -122,7 +122,7 @@ fn try_step_is_pure_temporal_graph_edge_constructor() {
             child.schedule.prefix(parent.schedule.len()),
             Ok(parent.schedule.clone())
         );
-        assert_eq!(child.schedule.decisions().last(), Some(&decision));
+        assert_eq!(child.schedule.decision_history().last(), Some(&decision));
         assert_eq!(child.id(), child.content_hash());
     }
 }

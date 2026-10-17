@@ -44,6 +44,9 @@ pub(super) struct LiveSelectableState {
     vmstop_handoff: Arc<super::super::live_callbacks::SelectableVmstopHandoff>,
     reply_input: LiveSelectableReplyShmemConsumer,
     catalog_events_enabled: bool,
+    // The service trait erases errors to text. Retain only this callback's
+    // original late-registration context until the live adapter returns it.
+    registration_failure: Option<LiveWhiteboxError>,
 }
 
 /// Pinned raw consumer view of the VM-local host-to-plugin reply ring.
@@ -139,6 +142,13 @@ impl LiveSelectableReplyShmemConsumer {
         }
     }
 
+    fn indices(&self) -> (u64, u64) {
+        // SAFETY: the original constructor pins this header for callback lifetime;
+        // these advisory acquire loads do not consume or modify the SPSC ring.
+        let header = unsafe { &*self.header };
+        (header.read_index(), header.write_index())
+    }
+
     fn has_reply(&mut self) -> Result<bool, LiveWhiteboxError> {
         let (header, entries) = self.ring_parts();
         header.has_whitebox_marker(entries).map_err(callback_error)
@@ -168,6 +178,7 @@ impl LiveSelectableState {
         reply_input: LiveSelectableReplyShmemConsumer,
     ) -> Result<Self, SelectableCatalogError> {
         let (catalog, restore_catalog) = SelectableCatalog::launch_pair_from_plan(plan)?;
+        super::selectable_resume_witness::initialize();
         Ok(Self {
             capability,
             catalog,
@@ -177,7 +188,12 @@ impl LiveSelectableState {
             reply_input,
             catalog_events_enabled: plan.continuation().phase()
                 == crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Registering,
+            registration_failure: None,
         })
+    }
+
+    pub(super) fn reply_indices(&self) -> (u64, u64) {
+        self.reply_input.indices()
     }
 
     /// Delivers one exact reply before the resumed vCPU may execute.
@@ -260,6 +276,15 @@ impl LiveSelectableState {
                 "selectable reply changed between peek and consume",
             ));
         }
+        if super::selectable_resume_witness::is_armed() {
+            super::selectable_resume_witness::observe(
+                super::selectable_resume_witness::Phase::ReplyDequeued,
+                vcpu_index,
+                None,
+                Some(current_icount),
+                Some(self.reply_indices()),
+            );
+        }
         let reply = SelectionReply::decode(entry.payload()).map_err(callback_error)?;
         if reply.sequence() != pending.request().sequence() {
             return Err(callback_error(format!(
@@ -308,7 +333,8 @@ impl LiveSelectableState {
             trap_tick_ps,
             event.vcpu_index(),
         );
-        handle_whitebox_selectable_callback(
+        self.registration_failure = None;
+        let result = handle_whitebox_selectable_callback(
             doorbell,
             &capability,
             reader,
@@ -317,7 +343,11 @@ impl LiveSelectableState {
             event,
             coordinate,
         )
-        .map_err(callback_error)
+        .map_err(callback_error);
+        match (result, self.registration_failure.take()) {
+            (Err(_), Some(failure)) => Err(failure),
+            (result, _) => result,
+        }
     }
 
     /// Freezes the exact setup catalog at the guest readiness marker.
@@ -408,9 +438,30 @@ impl SelectableRegistrationService for LiveSelectableState {
     fn register_selectable(
         &mut self,
         registration: &crucible_protocol::SelectableRegister,
-        _coordinate: SelectableCallbackCoordinate,
+        coordinate: SelectableCallbackCoordinate,
     ) -> Result<(), SelectableDoorbellServiceError> {
-        self.catalog.register(registration).map_err(service_error)
+        self.registration_failure = None;
+        match self.catalog.register(registration) {
+            Err(source @ SelectableCatalogError::RegistrationAfterFreeze) => {
+                let failure = LiveWhiteboxError::LateSelectableRegistration {
+                    source: Box::new(source),
+                    selectable_id: registration.selectable_id().to_owned(),
+                    sequence: registration.sequence(),
+                    previous_sequence: self.catalog.last_registration_sequence(),
+                    completed_sequence: self.catalog.last_completed_request_sequence(),
+                    raw_icount: coordinate.raw_icount(),
+                    logical_ps: coordinate.tick_ps(),
+                    vcpu_index: coordinate.vcpu_index(),
+                    process_id: std::process::id(),
+                    guest_pc: None,
+                    pc_bytes: None,
+                };
+                let error = SelectableDoorbellServiceError::new(failure.to_string());
+                self.registration_failure = Some(failure);
+                Err(error)
+            }
+            result => result.map_err(service_error),
+        }
     }
 }
 
@@ -434,6 +485,12 @@ impl SelectableReplyService for LiveSelectableState {
         self.catalog
             .begin_request(request, coordinate, reply_range)
             .map_err(service_error)?;
+        super::selectable_resume_witness::arm(
+            request.sequence(),
+            coordinate.vcpu_index(),
+            coordinate.raw_icount(),
+            coordinate.tick_ps(),
+        );
         match self.vmstop_handoff.defer(self.force_vcpu_tb_exit) {
             Ok(true) => {}
             Ok(false) => {

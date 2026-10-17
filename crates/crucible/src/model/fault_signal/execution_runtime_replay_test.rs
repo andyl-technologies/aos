@@ -4,7 +4,7 @@ use super::test_support::*;
 use super::*;
 
 #[test]
-fn resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored_limits() {
+fn resolved_effect_trace_bundles_round_trip_nonempty_and_apply_authored_limits() {
     let plan = test_plan();
     let seed = ContentHash::from_bytes(b"resolved-trace-public-decode");
     let mut recorder = FaultExecutionRuntime::new(
@@ -24,46 +24,47 @@ fn resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored
             0,
         )
         .unwrap_or_else(|error| panic!("recording boundary: {error}"));
-    let item = recorder
-        .recorded_work_items
-        .first()
-        .cloned()
-        .unwrap_or_else(|| panic!("recording must produce one work item"));
+    let item = first_recorded(&recorder);
     assert_eq!(item.records.len(), 1);
 
-    let trace = ResolvedEffectTrace {
-        mode: FaultReplayMode::LockedEffect,
-        work_items: vec![item.clone()],
-        cursor: 0,
-    };
+    let trace = trace_of(FaultReplayMode::LockedEffect, [item.clone()]);
     let bytes = trace
-        .canonical_bytes()
-        .unwrap_or_else(|error| panic!("nonempty trace should encode: {error}"));
-    assert_eq!(
-        ResolvedEffectTrace::from_canonical_bytes(&bytes, FaultResourceLimits::default()),
-        Ok(trace)
-    );
+        .to_bundle_bytes(usize::MAX)
+        .unwrap_or_else(|error| panic!("nonempty trace should bundle: {error}"));
+    let decoded = ResolvedEffectTrace::from_bundle_bytes(&bytes, usize::MAX)
+        .unwrap_or_else(|error| panic!("bundle should decode: {error}"));
+    assert_eq!(decoded, trace);
+    assert_eq!(trace_items(&decoded), vec![item.clone()]);
 
-    let oversized = ResolvedEffectTrace {
-        mode: FaultReplayMode::LockedEffect,
-        work_items: vec![item.clone(), item],
-        cursor: 0,
-    };
-    let oversized_bytes = oversized
-        .canonical_bytes()
-        .unwrap_or_else(|error| panic!("oversized trace fixture should encode: {error}"));
     let limits = FaultResourceLimits {
         thin_replay_events: 2,
         resolved_effect_records: 1,
         ..FaultResourceLimits::default()
     };
     assert!(matches!(
-        ResolvedEffectTrace::from_canonical_bytes(&oversized_bytes, limits),
+        ResolvedEffectTrace::from_items(
+            FaultReplayMode::LockedEffect,
+            [item.clone(), item.clone()],
+            limits,
+        ),
         Err(FaultRuntimeError::ResourceLimit(
             FaultResourceLimitError::Exceeded {
                 field: "resolved_effect_records",
                 current: 1,
                 requested: 1,
+                configured: 1,
+                ..
+            }
+        ))
+    ));
+    let oversized = trace_of(FaultReplayMode::LockedEffect, [item.clone(), item]);
+    assert!(matches!(
+        ResolvedEffectTraceReader::new(oversized, limits),
+        Err(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "resolved_effect_records",
+                current: 0,
+                requested: 2,
                 configured: 1,
                 ..
             }
@@ -145,14 +146,16 @@ fn recomputed_replay_rejects_a_derivation_continuation_mismatch() {
     recorder
         .evaluate_boundary(coordinate, 0)
         .unwrap_or_else(|error| panic!("recording boundary: {error}"));
-    let mut trace = recorder
+    let recorded = recorder
         .recorded_trace(FaultReplayMode::RecomputedCause)
         .unwrap_or_else(|error| panic!("trace: {error}"));
+    let mut items = trace_items(&recorded);
     let tampered = ContentHash::from_bytes(b"tampered");
-    trace.work_items[0].derivation_fingerprint = tampered;
-    for record in &mut trace.work_items[0].records {
+    items[0].derivation_fingerprint = tampered;
+    for record in &mut items[0].records {
         record.derivation_fingerprint = tampered;
     }
+    let trace = trace_of(FaultReplayMode::RecomputedCause, items);
     let mut replay = FaultExecutionRuntime::new(
         &plan,
         &NoArtifacts,
@@ -170,7 +173,14 @@ fn recomputed_replay_rejects_a_derivation_continuation_mismatch() {
             FaultRuntimeError::ReplayMismatch { .. }
         )))
     ));
-    assert_eq!(replay.replay.as_ref().map(|trace| trace.cursor), Some(0));
+    assert_eq!(
+        replay
+            .trace
+            .replay
+            .as_ref()
+            .map(ResolvedEffectTraceReader::cursor),
+        Some(0)
+    );
 }
 
 #[test]
@@ -193,12 +203,14 @@ fn recomputed_replay_authenticates_a_zero_action_work_item() {
         .evaluate_boundary(coordinate, 0)
         .unwrap_or_else(|error| panic!("zero-action boundary: {error}"));
     assert!(evaluation.actions.is_empty());
-    let mut trace = recorder
+    let recorded = recorder
         .recorded_trace(FaultReplayMode::RecomputedCause)
         .unwrap_or_else(|error| panic!("trace: {error}"));
-    assert_eq!(trace.work_items.len(), 1);
-    assert!(trace.work_items[0].records.is_empty());
-    trace.work_items[0].derivation_fingerprint = ContentHash::from_bytes(b"tampered");
+    let mut items = trace_items(&recorded);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].records.is_empty());
+    items[0].derivation_fingerprint = ContentHash::from_bytes(b"tampered");
+    let trace = trace_of(FaultReplayMode::RecomputedCause, items);
 
     let mut replay = FaultExecutionRuntime::new(
         &plan,
@@ -321,7 +333,7 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
         identity
     );
     let mut mutated = checkpoint.clone();
-    mutated.recorded_work_items[0].records[0].evidence_digest = ContentHash::from_bytes(b"changed");
+    mutated.recorded.tail_mut()[0].records[0].evidence_digest = ContentHash::from_bytes(b"changed");
     assert_ne!(
         mutated
             .content_id()
@@ -337,7 +349,7 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
 }
 
 #[test]
-fn fault_runtime_checkpoint_preflights_authored_record_count_before_decode() {
+fn fault_runtime_checkpoint_admits_authored_record_count_on_decode() {
     let base = test_plan();
     let limits = FaultResourceLimits {
         thin_replay_events: 2,
@@ -368,12 +380,13 @@ fn fault_runtime_checkpoint_preflights_authored_record_count_before_decode() {
         .checkpoint()
         .unwrap_or_else(|error| panic!("checkpoint: {error}"));
     let item = checkpoint
-        .recorded_work_items
+        .recorded
+        .tail()
         .first()
         .cloned()
         .unwrap_or_else(|| panic!("recording must produce one work item"));
     assert_eq!(item.records.len(), 1);
-    checkpoint.recorded_work_items.push(item);
+    checkpoint.recorded.push_tail_unchecked(item);
 
     let mut hostile = Vec::new();
     ciborium::ser::into_writer(&checkpoint, &mut hostile)
@@ -383,8 +396,8 @@ fn fault_runtime_checkpoint_preflights_authored_record_count_before_decode() {
         Err(FaultRuntimeError::ResourceLimit(
             FaultResourceLimitError::Exceeded {
                 field: "resolved_effect_records",
-                current: 1,
-                requested: 1,
+                current: 0,
+                requested: 2,
                 configured: 1,
                 ..
             }
@@ -396,22 +409,8 @@ fn fault_runtime_checkpoint_preflights_authored_record_count_before_decode() {
 fn failed_replay_installation_leaves_the_owned_continuation_unchanged() {
     let base = test_plan();
     let seed = ContentHash::from_bytes(b"atomic-replay-install");
-    let initial = OwnedFaultExecutionRuntime::new(
-        base.clone(),
-        Arc::new(NoArtifacts),
-        SignalBoundarySnapshot::default(),
-        seed,
-        manifests(),
-    )
-    .unwrap_or_else(|error| panic!("initial owner: {error}"));
-    let initial_size = initial
-        .checkpoint()
-        .canonical_bytes()
-        .unwrap_or_else(|error| panic!("initial bytes: {error}"))
-        .len();
     let limits = FaultResourceLimits {
-        fat_checkpoint_bytes: u64::try_from(initial_size + 256)
-            .unwrap_or_else(|error| panic!("test checkpoint size: {error}")),
+        thin_replay_events: 4,
         ..FaultResourceLimits::default()
     };
     let plan = FaultSignalPlan::new(base.programs().to_vec(), base.bindings().to_vec(), limits)
@@ -426,7 +425,7 @@ fn failed_replay_installation_leaves_the_owned_continuation_unchanged() {
     .unwrap_or_else(|error| panic!("limited owner: {error}"));
     let before = owner
         .checkpoint()
-        .content_id()
+        .and_then(|checkpoint| Ok(checkpoint.content_id()?))
         .unwrap_or_else(|error| panic!("before identity: {error}"));
     let mut recorder = FaultExecutionRuntime::new(
         &base,
@@ -445,21 +444,23 @@ fn failed_replay_installation_leaves_the_owned_continuation_unchanged() {
             0,
         )
         .unwrap_or_else(|error| panic!("recording boundary: {error}"));
-    let work_item = recorder
-        .recorded_work_items
-        .first()
-        .cloned()
-        .unwrap_or_else(|| panic!("recording must contain one action"));
-    let trace = ResolvedEffectTrace {
-        mode: FaultReplayMode::LockedEffect,
-        work_items: vec![work_item; 8],
-        cursor: 0,
-    };
-    assert!(owner.install_replay(trace).is_err());
-    assert!(owner.checkpoint().replay.is_none());
+    let work_item = first_recorded(&recorder);
+    let trace = trace_of(FaultReplayMode::LockedEffect, vec![work_item; 8]);
+    assert!(matches!(
+        owner.install_replay(trace),
+        Err(FaultExecutionError::Runtime(
+            FaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+                field: "thin_replay_events",
+                ..
+            })
+        ))
+    ));
+    let after = owner
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("after checkpoint: {error}"));
+    assert!(after.replay.is_none());
     assert_eq!(
-        owner
-            .checkpoint()
+        after
             .content_id()
             .unwrap_or_else(|error| panic!("after identity: {error}")),
         before
@@ -480,6 +481,7 @@ fn checkpoint_growth_is_rejected_before_the_live_backend_commits() {
     .unwrap_or_else(|error| panic!("initial owner: {error}"));
     let initial_size = initial
         .checkpoint()
+        .unwrap_or_else(|error| panic!("initial checkpoint: {error}"))
         .canonical_bytes()
         .unwrap_or_else(|error| panic!("initial bytes: {error}"))
         .len();
@@ -500,6 +502,7 @@ fn checkpoint_growth_is_rejected_before_the_live_backend_commits() {
     .unwrap_or_else(|error| panic!("limited owner: {error}"));
     let before = owner
         .checkpoint()
+        .unwrap_or_else(|error| panic!("before checkpoint: {error}"))
         .content_id()
         .unwrap_or_else(|error| panic!("before identity: {error}"));
     let mut backend = HostFaultActionSink::new(limits);
@@ -519,6 +522,7 @@ fn checkpoint_growth_is_rejected_before_the_live_backend_commits() {
     assert_eq!(
         owner
             .checkpoint()
+            .unwrap_or_else(|error| panic!("after checkpoint: {error}"))
             .content_id()
             .unwrap_or_else(|error| panic!("after identity: {error}")),
         before

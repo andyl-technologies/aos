@@ -193,6 +193,54 @@ fn decode_rejects_write_count_exceeding_payload() {
 }
 
 #[test]
+fn request_v5_carries_oldest_live_epoch_after_the_count() {
+    let request = BlockRequest::read(4, 512, 8)
+        .with_identity(BlockRequestIdentity::new(9, 4))
+        .with_oldest_live_epoch(6);
+
+    let wire = ok(request.encode());
+
+    assert_eq!(wire.len(), REQUEST_HEADER_LEN);
+    assert_eq!(wire[1], BLOCK_REQUEST_ABI_VERSION);
+    assert_eq!(wire[28..36], 6_u64.to_le_bytes());
+    assert_eq!(ok(BlockRequest::decode(&wire)), request);
+}
+
+#[test]
+fn request_and_response_versions_are_independent() {
+    let mut request = ok(BlockRequest::flush(1).encode());
+    request[1] = 4;
+    assert_eq!(
+        BlockRequest::decode(&request),
+        Err(BlockCodecError::VersionMismatch {
+            expected: BLOCK_REQUEST_ABI_VERSION,
+            found: 4,
+        })
+    );
+
+    let response = ok(BlockResponse::ok(1, Vec::new()).encode());
+    assert_eq!(response[1], BLOCK_RESPONSE_ABI_VERSION);
+    assert_eq!(BLOCK_RESPONSE_ABI_VERSION, 4);
+}
+
+#[test]
+fn oldest_live_epoch_cannot_follow_the_request_epoch() {
+    let request = BlockRequest::read(1, 0, 4).with_identity(BlockRequestIdentity::new(2, 1));
+    let rejected = BlockCodecError::OldestLiveEpochAfterEpoch {
+        epoch: 2,
+        oldest_live_epoch: 3,
+    };
+    assert_eq!(
+        request.clone().with_oldest_live_epoch(3).encode(),
+        Err(rejected)
+    );
+
+    let mut wire = ok(request.with_oldest_live_epoch(2).encode());
+    wire[28..36].copy_from_slice(&3_u64.to_le_bytes());
+    assert_eq!(BlockRequest::decode(&wire), Err(rejected));
+}
+
+#[test]
 fn decode_never_panics_on_arbitrary_bytes() {
     // A deterministic LCG fuzz: feed varied byte strings of varied length and
     // assert decode always returns (Ok or Err), never panics or OOB-reads.
@@ -201,7 +249,7 @@ fn decode_never_panics_on_arbitrary_bytes() {
         state = state
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        let len = (state >> 56) as usize % 40;
+        let len = (state >> 56) as usize % 48;
         let mut bytes = Vec::with_capacity(len);
         let mut s = state;
         for _ in 0..len {

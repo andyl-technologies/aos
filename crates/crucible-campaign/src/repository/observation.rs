@@ -6,6 +6,7 @@ use crate::ObservationCondition;
 struct ObservationProjection {
     disposition: ObservationDisposition,
     credits: Vec<ExpansionCredit>,
+    direct_selection: Option<direct_selection::DirectSelectionIndexEntry>,
     indexed_path: Option<(ConfigurationArtifactId, BranchPathId)>,
     frontier_updates: Vec<(
         BranchRequestId,
@@ -14,14 +15,22 @@ struct ObservationProjection {
     )>,
     graph: BTreeMap<CampaignHash, ContentId>,
     choice_index: BTreeMap<CampaignHash, ContentId>,
+    choice_sources: BTreeMap<CampaignHash, ContentId>,
     exploration: BTreeMap<CampaignHash, ContentId>,
     observations: BTreeMap<CampaignHash, ContentId>,
     corpus: BTreeMap<CampaignHash, ContentId>,
     coverage: BTreeMap<CampaignHash, ContentId>,
+    // Distinct frequency records named by the coverage upserts; publication
+    // stores them before it advances the coverage root.
+    coverage_frequencies: BTreeSet<crate::CoverageIdentityFrequency>,
     accounting: BTreeMap<CampaignHash, ContentId>,
 }
 
 mod candidate_validation;
+mod choice_sets;
+
+pub use choice_sets::{DiscoveredChoices, ProducedSelections};
+mod direct_selection;
 mod strict_order;
 
 impl CampaignRepository {
@@ -60,21 +69,20 @@ impl CampaignRepository {
                 return Err(integrity("observation-selection-publication-id-mismatch"));
             }
         }
+        self.publish_candidate_choice_sets(candidate)?;
         let child = self.put_configuration_artifact(candidate.child())?;
         let measurements = self.put_measurement_set(candidate.measurements())?;
         let properties = self.put_property_verdict_set(candidate.properties())?;
         let coverage = self.put_coverage_projection(candidate.coverage())?;
-        if let Some(bytes) = candidate.resolved_effect_trace() {
+        if let (Some(manifest), Some(segments)) = (
+            candidate.resolved_effect_trace_manifest(),
+            candidate.resolved_effect_trace_segments(),
+        ) {
             let trace = candidate
                 .observation()
                 .resolved_effect_trace()
                 .ok_or_else(|| integrity("observation-trace-identity-missing"))?;
-            let receipt = self
-                .blobs
-                .put_if_absent(trace, &BlobHandle::from_bytes(bytes.to_vec()))?;
-            if receipt.id != trace {
-                return Err(integrity("observation-trace-publication-id-mismatch"));
-            }
+            self.publish_resolved_effect_trace(trace, manifest, segments)?;
         }
         let observation = self.put_observation(candidate.observation())?;
 
@@ -88,6 +96,47 @@ impl CampaignRepository {
         }
         self.verify_campaign_closure(observation)?;
         ObservationId::from_content_id(observation).map_err(Into::into)
+    }
+
+    /// Publishes a segmented resolved-effect trace one segment at a time.
+    ///
+    /// Each segment is read from the producer's stores, authenticated against
+    /// the identity the observation lists, and stored before the next one is
+    /// read, so publication holds at most one segment in memory. The manifest
+    /// leaf is stored last. A failure can leave earlier authenticated segments
+    /// as unreferenced content-addressed leaves for ordinary collection.
+    fn publish_resolved_effect_trace(
+        &self,
+        trace: &ResolvedEffectTraceRef,
+        manifest_bytes: &[u8],
+        sources: &SegmentSources,
+    ) -> Result<(), CampaignRepositoryError> {
+        for &segment in trace.segments() {
+            if self.blobs.contains(segment)? {
+                continue;
+            }
+            let bytes = sources
+                .segment(segment)
+                .map_err(|_| integrity("observation-trace-segment-unavailable"))?;
+            if bytes.len() > MAX_SEGMENT_BYTES || !segment.authenticates(&bytes) {
+                return Err(integrity("observation-trace-segment-mismatch"));
+            }
+            let receipt = self
+                .blobs
+                .put_if_absent(segment, &BlobHandle::from_bytes(bytes))?;
+            if receipt.id != segment {
+                return Err(integrity("observation-trace-publication-id-mismatch"));
+            }
+        }
+
+        let manifest = trace.manifest();
+        let receipt = self
+            .blobs
+            .put_if_absent(manifest, &BlobHandle::from_bytes(manifest_bytes.to_vec()))?;
+        if receipt.id != manifest {
+            return Err(integrity("observation-trace-publication-id-mismatch"));
+        }
+        Ok(())
     }
 
     /// Publishes a canonical exact measurement set without advancing a campaign.
@@ -248,6 +297,21 @@ impl CampaignRepository {
                 return Err(integrity("observation-choice-index-publication-mismatch"));
             }
         }
+        if !projection.choice_sources.is_empty() {
+            let prior_choice_sources = self.choice_source_index(roots.observations)?;
+            let published_choice_sources =
+                self.insert_upserts(prior_choice_sources, &projection.choice_sources)?;
+            if projection
+                .observations
+                .get(&choice_source_index_anchor_key())
+                .copied()
+                != Some(published_choice_sources)
+            {
+                return Err(integrity(
+                    "observation-choice-source-index-publication-mismatch",
+                ));
+            }
+        }
         for credit in &projection.credits {
             let anchor = branch_credit_index_key(credit.branch_point());
             let prior_credit_index = self
@@ -260,6 +324,17 @@ impl CampaignRepository {
             )?;
             if projection.observations.get(&anchor).copied() != Some(published_credit_index) {
                 return Err(integrity("expansion-credit-index-publication-mismatch"));
+            }
+        }
+        if let Some(entry) = &projection.direct_selection {
+            let published = self.direct_selection_index_after(roots.observations, entry, true)?;
+            if projection
+                .observations
+                .get(&direct_selection_index_anchor_key())
+                .copied()
+                != Some(published)
+            {
+                return Err(integrity("direct-selection-index-publication-mismatch"));
             }
         }
         if !projection.frontier_updates.is_empty() {
@@ -278,6 +353,13 @@ impl CampaignRepository {
         roots.exploration = self.insert_upserts(roots.exploration, &projection.exploration)?;
         roots.observations = self.insert_upserts(roots.observations, &projection.observations)?;
         roots.corpus = self.insert_upserts(roots.corpus, &projection.corpus)?;
+        for frequency in &projection.coverage_frequencies {
+            if self.put_coverage_identity_frequency(*frequency)? != frequency.content_id()? {
+                return Err(integrity(
+                    "coverage-identity-frequency-publication-id-mismatch",
+                ));
+            }
+        }
         roots.coverage = self.insert_upserts(roots.coverage, &projection.coverage)?;
         roots.accounting = self.insert_upserts(roots.accounting, &projection.accounting)?;
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
@@ -293,10 +375,13 @@ impl CampaignRepository {
         )?;
         let next_content = self.put_snapshot(&next)?;
         let closure_growth_upper = observation_successor_growth(
-            observation.discovered_choices().len(),
+            usize::try_from(observation.discovered_choices().entry_count())
+                .map_err(|_| integrity("observation-successor-growth-overflow"))?,
             projection.credits.len(),
+            projection.direct_selection.is_some(),
             projection.indexed_path.is_some(),
             projection.frontier_updates.len(),
+            projection.coverage.len(),
         )?;
         let checkpoint = self.prepare_local_successor_checkpoint(
             current_content,
@@ -449,10 +534,12 @@ impl CampaignRepository {
             return Ok(ObservationProjection {
                 disposition: ObservationDisposition::DeterminismConflict { canonical },
                 credits: Vec::new(),
+                direct_selection: None,
                 indexed_path: None,
                 frontier_updates: Vec::new(),
                 graph: BTreeMap::new(),
                 choice_index: BTreeMap::new(),
+                choice_sources: BTreeMap::new(),
                 exploration: BTreeMap::new(),
                 observations: BTreeMap::from([(
                     observation_conflict_key(observation.attempt(), observation_id),
@@ -460,6 +547,7 @@ impl CampaignRepository {
                 )]),
                 corpus: BTreeMap::new(),
                 coverage: BTreeMap::new(),
+                coverage_frequencies: BTreeSet::new(),
                 accounting: BTreeMap::new(),
             });
         }
@@ -480,7 +568,10 @@ impl CampaignRepository {
                 observation.child_content().content_id(),
             );
         }
-        for choice_id in observation.discovered_choices() {
+        // The discovered set is read page by page. Its key order is also the
+        // nested choice index's key order, so index upserts are its entries.
+        let mut choice_index_upserts = BTreeMap::new();
+        self.for_each_discovered_choice(observation, |choice_id| {
             let choice = self.read_opportunity_cached(choice_id.content_id(), choice_cache)?;
             graph.insert(
                 map_key_content("graph.choice-opportunity", choice_id.content_id()),
@@ -489,22 +580,22 @@ impl CampaignRepository {
             graph.insert(
                 branch_point_opportunity_key(
                     choice.branch_point_id(observation.child()),
-                    *choice_id,
+                    choice_id,
                 ),
                 choice_id.content_id(),
             );
-        }
+            if maintain_choice_index {
+                choice_index_upserts
+                    .insert(choice_index_order_key(choice_id), choice_id.content_id());
+            }
+            Ok(())
+        })?;
         self.validate_compatible_upserts(roots.graph, &graph, "observation-graph-conflict")?;
-        let mut choice_index_upserts = BTreeMap::new();
-        if maintain_choice_index && !observation.discovered_choices().is_empty() {
+        if !choice_index_upserts.is_empty() {
             let choice_index = self
                 .merkle
                 .get(roots.graph, choice_index_anchor_key())?
                 .unwrap_or(MerkleMap::empty_content_id()?);
-            for choice_id in observation.discovered_choices() {
-                choice_index_upserts
-                    .insert(choice_index_order_key(*choice_id), choice_id.content_id());
-            }
             self.validate_compatible_upserts(
                 choice_index,
                 &choice_index_upserts,
@@ -586,6 +677,14 @@ impl CampaignRepository {
                 )?,
             );
         }
+        let direct_selection =
+            self.direct_selection_index_entry(roots.observations, &attempt, observation_content)?;
+        if let Some(entry) = &direct_selection {
+            observations.insert(
+                direct_selection_index_anchor_key(),
+                self.direct_selection_index_after(roots.observations, entry, false)?,
+            );
+        }
         let indexed_path = Some((observation.child_content(), observation.path()));
         if let Some((configuration, path)) = indexed_path {
             let anchor = configuration_path_index_key(configuration);
@@ -608,10 +707,31 @@ impl CampaignRepository {
                 )?,
             );
         }
-        let coverage = BTreeMap::from([(
+
+        // The anchor is required for every current snapshot, even when this
+        // observation discovers nothing, so a lineage cannot drop it silently.
+        let choice_source_index = self.choice_source_index(roots.observations)?;
+        let choice_source_upserts = self.choice_source_upserts(
+            roots.accounting,
+            choice_source_index,
+            observation_content,
+            observation,
+            ordinal,
+        )?;
+        if !choice_source_upserts.is_empty() {
+            observations.insert(
+                choice_source_index_anchor_key(),
+                self.merkle
+                    .root_after_upserts(choice_source_index, &choice_source_upserts)?,
+            );
+        }
+
+        let mut coverage = BTreeMap::from([(
             map_key_content("coverage.projection", observation.coverage().content_id()),
             observation.coverage().content_id(),
         )]);
+        let coverage_frequencies =
+            self.coverage_frequency_upserts(roots.coverage, observation.coverage(), &mut coverage)?;
         let mut accounting = BTreeMap::from([
             (
                 map_key_content(
@@ -690,16 +810,73 @@ impl CampaignRepository {
         Ok(ObservationProjection {
             disposition: ObservationDisposition::Canonical,
             credits,
+            direct_selection,
             indexed_path,
             frontier_updates,
             graph,
             choice_index: choice_index_upserts,
+            choice_sources: choice_source_upserts,
             exploration,
             observations,
             corpus,
             coverage,
+            coverage_frequencies,
             accounting,
         })
+    }
+
+    /// Adds one canonical observation's coverage to the global
+    /// coverage-identity frequency index.
+    ///
+    /// Every identity of the coverage projection gains one count, except
+    /// identities already at the saturation point, which add no upsert.
+    /// Absent identities start at one. The returned records are the distinct
+    /// values the upserts name.
+    pub(super) fn coverage_frequency_upserts(
+        &self,
+        coverage_root: ContentId,
+        coverage: crate::CoverageProjectionId,
+        upserts: &mut BTreeMap<CampaignHash, ContentId>,
+    ) -> Result<BTreeSet<crate::CoverageIdentityFrequency>, CampaignRepositoryError> {
+        let projection = self.read_coverage_projection(coverage.content_id())?;
+        let first = crate::CoverageIdentityFrequency::new(1)?;
+
+        // Records are shared by value, so a campaign holds at most one per
+        // count and this map stays small however many identities it serves.
+        let mut decoded = BTreeMap::<ContentId, crate::CoverageIdentityFrequency>::new();
+        let mut encoded = BTreeMap::<crate::CoverageIdentityFrequency, ContentId>::new();
+        let mut records = BTreeSet::new();
+        for identity in projection.identities() {
+            let key = coverage_identity_frequency_key(*identity);
+            let next = match self.merkle.get(coverage_root, key)? {
+                None => first,
+                Some(content) => {
+                    let current = match decoded.get(&content) {
+                        Some(current) => *current,
+                        None => {
+                            let current = self.read_coverage_identity_frequency(content)?;
+                            decoded.insert(content, current);
+                            current
+                        }
+                    };
+                    if current.is_saturated() {
+                        continue;
+                    }
+                    current.incremented()
+                }
+            };
+            let content = match encoded.get(&next) {
+                Some(content) => *content,
+                None => {
+                    let content = next.content_id()?;
+                    encoded.insert(next, content);
+                    content
+                }
+            };
+            upserts.insert(key, content);
+            records.insert(next);
+        }
+        Ok(records)
     }
 
     fn expansion_credits(

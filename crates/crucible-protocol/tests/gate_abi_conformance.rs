@@ -8,10 +8,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use crucible_protocol::app_random_branch_plan::{
     APP_RANDOM_BRANCH_PLAN_MAGIC, APP_RANDOM_BRANCH_PLAN_VERSION, AppRandomBranchPlan,
 };
-use crucible_protocol::plugin_setup_plan::{
-    PLUGIN_SETUP_PLAN_HEADER_BYTES, PLUGIN_SETUP_PLAN_MAGIC, PLUGIN_SETUP_PLAN_VERSION,
-    PluginSetupPlan,
-};
+use crucible_protocol::plugin_setup_plan::PluginSetupPlan;
 use crucible_protocol::selectable_catalog_plan::{
     SELECTABLE_CATALOG_PLAN_HEADER_BYTES, SELECTABLE_CATALOG_PLAN_MAGIC,
     SELECTABLE_CATALOG_PLAN_VERSION, SelectableCatalogPlan, SelectablePlanContinuation,
@@ -59,7 +56,7 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_selectable_v1_golden_vectors();
     assert_selectable_catalog_plan_v4_golden_vector();
     assert_selectable_pending_transport_v2_golden_vector();
-    assert_plugin_setup_plan_v2_golden_vector();
+    assert_plugin_setup_plan_v3_golden_vector();
     assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
@@ -115,11 +112,11 @@ fn assert_selectable_pending_transport_v2_golden_vector() {
 }
 
 #[test]
-fn plugin_setup_plan_v2_golden_vector_matches_live_codec() {
-    assert_plugin_setup_plan_v2_golden_vector();
+fn plugin_setup_plan_v3_golden_vector_matches_live_codec() {
+    assert_plugin_setup_plan_v3_golden_vector();
 }
 
-fn assert_plugin_setup_plan_v2_golden_vector() {
+fn assert_plugin_setup_plan_v3_golden_vector() {
     let selectable = SelectableCatalogPlan::new(
         SelectablePlanLimits::new(1, 1, 1)
             .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),
@@ -132,23 +129,26 @@ fn assert_plugin_setup_plan_v2_golden_vector() {
         .encode()
         .unwrap_or_else(|error| panic!("plugin setup plan must encode: {error}"));
 
-    let total_len = PLUGIN_SETUP_PLAN_HEADER_BYTES + 16 + SELECTABLE_CATALOG_PLAN_HEADER_BYTES;
-    let mut expected = vec![0_u8; total_len];
-    expected[..8].copy_from_slice(&PLUGIN_SETUP_PLAN_MAGIC);
-    expected[8..12].copy_from_slice(&PLUGIN_SETUP_PLAN_VERSION.to_be_bytes());
-    expected[12..16].copy_from_slice(&(PLUGIN_SETUP_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    expected[16..20].copy_from_slice(&(total_len as u32).to_be_bytes());
-    expected[20..24].copy_from_slice(&(16_u32).to_be_bytes());
-    expected[24..28].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    expected[28..36].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_MAGIC);
-    expected[36..40].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_VERSION.to_be_bytes());
-    expected[44..52].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
-    expected[52..56].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
-    expected[56..60].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    expected[60..64].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    expected[68..72].copy_from_slice(&(1_u32).to_be_bytes());
-    expected[84..92].copy_from_slice(&(1_u64).to_be_bytes());
-    expected[92..100].copy_from_slice(&(1_u64).to_be_bytes());
+    // Schema 3 fixes a 32-byte header, a 16-byte app-random body and a
+    // 112-byte selectable body. The absent console body still owns its zero
+    // length word at offset 28; nested bodies begin at offsets 32 and 48.
+    let mut expected = vec![0_u8; 160];
+    expected[..8].copy_from_slice(b"CRUCSUP3");
+    expected[8..12].copy_from_slice(&3_u32.to_be_bytes());
+    expected[12..16].copy_from_slice(&32_u32.to_be_bytes());
+    expected[16..20].copy_from_slice(&160_u32.to_be_bytes());
+    expected[20..24].copy_from_slice(&16_u32.to_be_bytes());
+    expected[24..28].copy_from_slice(&112_u32.to_be_bytes());
+    expected[28..32].copy_from_slice(&0_u32.to_be_bytes());
+    expected[32..40].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_MAGIC);
+    expected[40..44].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_VERSION.to_be_bytes());
+    expected[48..56].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
+    expected[56..60].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+    expected[60..64].copy_from_slice(&112_u32.to_be_bytes());
+    expected[64..68].copy_from_slice(&112_u32.to_be_bytes());
+    expected[72..76].copy_from_slice(&1_u32.to_be_bytes());
+    expected[88..96].copy_from_slice(&1_u64.to_be_bytes());
+    expected[96..104].copy_from_slice(&1_u64.to_be_bytes());
     assert_eq!(bytes, expected);
     assert_eq!(PluginSetupPlan::decode(&bytes), Ok(plan));
 }
@@ -293,7 +293,7 @@ fn guest_selectable_current_schemas_are_registered_exactly() {
             .any(|line| line == pending_request.as_str()),
         "missing exact selectable pending-request schema row"
     );
-    let setup_plan = "crucible.qemu-plugin.setup-plan\t2\tcrucible-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    let setup_plan = "crucible.qemu-plugin.setup-plan\t3\tcrucible-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
     assert!(
         registry.lines().any(|line| line == setup_plan),
         "missing exact plugin setup-plan schema row"
@@ -353,11 +353,11 @@ fn protocol_golden_vectors_freeze_literal_frame_bytes() {
 }
 
 fn assert_version_bump_regenerates_vectors() {
-    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 3, 0, 0, 0, 1]);
+    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 4, 0, 0, 0, 1]);
     assert_vector_bytes(
         "hello-ack",
         &[
-            0, 0, 0, 17, 0xF1, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
+            0, 0, 0, 17, 0xF1, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
         ],
     );
     assert_vector_bytes(

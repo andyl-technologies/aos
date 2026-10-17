@@ -8,9 +8,24 @@ impl CampaignRepository {
         parent: &LoadedSnapshot,
         transition: ContentId,
     ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
+        let fact = self.read_fact(transition)?;
+        self.incremental_closure_anchors_for_fact(parent, &fact)
+    }
+
+    /// Returns exact parent-owned anchors for one already decoded transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns original store, codec, or index errors while proving that a
+    /// fact-specific anchor is bound by the parent.
+    pub(super) fn incremental_closure_anchors_for_fact(
+        &self,
+        parent: &LoadedSnapshot,
+        fact: &CampaignFact,
+    ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
         let mut anchors = self.authenticated_head_closure_anchors(parent)?;
         let roots = parent.snapshot.roots();
-        match self.read_fact(transition)? {
+        match fact.clone() {
             CampaignFact::CampaignDerived(_) => {}
             CampaignFact::BranchRequestAccepted {
                 request: request_id,
@@ -117,20 +132,76 @@ impl CampaignRepository {
                 let evaluation = self.read_objective_evaluation(evaluation_id.content_id())?;
                 anchors.insert(evaluation.observation().content_id());
             }
+            CampaignFact::AttemptClosed { attempt, .. } => {
+                let attempt = attempt.content_id();
+                if self.merkle.get(
+                    roots.accounting,
+                    map_key_content("accounting.attempt", attempt),
+                )? == Some(attempt)
+                {
+                    anchors.insert(attempt);
+                }
+            }
+            // A resolution or selection names earlier savepoint facts. Each one
+            // that the parent's accounting index already binds is parent-owned,
+            // and with it the older snapshot that its request expected.
+            CampaignFact::SavepointCaptureResolved(resolution) => {
+                self.anchor_indexed_fact(
+                    &mut anchors,
+                    roots.accounting,
+                    savepoint_capture_request_key(resolution.request),
+                    resolution.request,
+                )?;
+            }
+            CampaignFact::SavepointContinuationSelected(selection) => {
+                self.anchor_indexed_fact(
+                    &mut anchors,
+                    roots.accounting,
+                    savepoint_capture_request_key(selection.request),
+                    selection.request,
+                )?;
+                self.anchor_indexed_fact(
+                    &mut anchors,
+                    roots.accounting,
+                    savepoint_capture_resolution_key(selection.request),
+                    selection.ready,
+                )?;
+            }
             CampaignFact::ChoiceOpportunityDiscovered { .. }
             | CampaignFact::ControlRequested(_)
             | CampaignFact::FindingPublished(_)
-            | CampaignFact::AttemptClosed { .. }
             | CampaignFact::PolicyActivated(_)
             | CampaignFact::BudgetGranted(_)
             | CampaignFact::PinChanged(_)
             | CampaignFact::PinCommandAccepted(_)
-            | CampaignFact::DiscoveryRequested(_)
-            | CampaignFact::SavepointCaptureRequested(_)
-            | CampaignFact::SavepointCaptureResolved(_)
-            | CampaignFact::SavepointContinuationSelected(_) => {}
+            | CampaignFact::DiscoveryRequested(_) => {}
+            CampaignFact::SavepointCaptureRequested(request) => {
+                let attempt = request.attempt.content_id();
+                if self.merkle.get(
+                    roots.accounting,
+                    map_key_content("accounting.attempt", attempt),
+                )? == Some(attempt)
+                {
+                    anchors.insert(attempt);
+                }
+            }
         }
         Ok(anchors)
+    }
+
+    /// Anchors a fact only when the parent's index binds exactly that fact.
+    fn anchor_indexed_fact(
+        &self,
+        anchors: &mut BTreeSet<ContentId>,
+        index: ContentId,
+        key: CampaignHash,
+        fact: CampaignFactId,
+    ) -> Result<(), CampaignRepositoryError> {
+        let fact = fact.content_id();
+        if self.merkle.get(index, key)? == Some(fact) {
+            anchors.insert(fact);
+        }
+        Ok(())
     }
 
     pub(in crate::repository) fn verify_campaign_closure_anchored(
@@ -145,50 +216,91 @@ impl CampaignRepository {
         )
     }
 
+    /// Authenticates one transition's closure relative to its parent.
+    ///
+    /// Besides the exact anchors, origin attempts bound by the parent's
+    /// accounting index are covered.
+    ///
+    /// # Errors
+    ///
+    /// Returns original store, codec, closure-bound, child, record, or trie
+    /// integrity errors.
+    pub(in crate::repository) fn verify_transition_closure_anchored(
+        &self,
+        transition: ContentId,
+        anchors: &BTreeSet<ContentId>,
+        parent: &LoadedSnapshot,
+    ) -> Result<usize, CampaignRepositoryError> {
+        self.walk_campaign_closure(
+            WalkStart::Entries(vec![WalkEntry::object(transition)]),
+            &mut WalkContext {
+                anchors,
+                exact_roots: false,
+                choice_cache: &mut ChoiceValidationCache::default(),
+                planner_context: None,
+                sink: None,
+                deferred_snapshots: None,
+                parent_accounting: Some(parent.snapshot.roots().accounting),
+                peak_resident: 0,
+            },
+        )
+    }
+
     /// Authenticates and returns every unique object in the supplied closures.
     ///
     /// The returned set includes Merkle nodes, Merkle leaf values, generic
-    /// content envelopes, campaign records, and opaque leaves. All roots are
-    /// verified as one bounded union, so shared subgraphs are charged once.
+    /// content envelopes, campaign records, and opaque leaves. A snapshot's
+    /// closure is authenticated by complete inductive history validation.
     /// This operation performs no writes and does not trust child references
     /// until the enclosing object has authenticated under its exact content ID.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignRepositoryError`] when any root or descendant is
-    /// missing, corrupt, semantically invalid, or the complete union exceeds
-    /// the campaign closure bound.
+    /// missing, corrupt, semantically invalid, or one closure walk exceeds its
+    /// resident object bound.
     pub fn authenticated_closure_ids(
         &self,
         roots: impl IntoIterator<Item = ContentId>,
     ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
         let mut objects = BTreeSet::new();
-        self.verify_campaign_closures_anchored_cached_collect(
-            roots,
-            &BTreeSet::new(),
-            &mut ChoiceValidationCache::default(),
-            Some(&mut objects),
-            None,
-        )?;
+        self.visit_authenticated_closure_ids(roots, &mut |id| {
+            objects.insert(id);
+        })?;
         Ok(objects)
     }
 
-    // Only archive checkpoint selections may opt into raw production leaves.
-    // The source resolver and destination exact store authenticate their semantics.
-    pub(in crate::repository) fn authenticated_closure_with_exact_leaves(
+    /// Authenticates the supplied closures and passes every object to `visit`.
+    ///
+    /// This is [`Self::authenticated_closure_ids`] without the collected set,
+    /// for callers that stream the closure into bounded or external storage.
+    /// An object may be passed more than once and in no particular order. The
+    /// visited identities are trustworthy only when the call returns `Ok`;
+    /// after an error the caller must discard everything it was passed. A
+    /// snapshot's history is authenticated one transition at a time, so the
+    /// traversal's own resident state does not grow with campaign length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when any root or descendant is
+    /// missing, corrupt, semantically invalid, or one closure walk exceeds its
+    /// resident object bound.
+    pub fn visit_authenticated_closure_ids(
         &self,
         roots: impl IntoIterator<Item = ContentId>,
-    ) -> Result<(BTreeSet<ContentId>, BTreeSet<ContentId>), CampaignRepositoryError> {
-        let mut objects = BTreeSet::new();
-        let mut exact_leaves = BTreeSet::new();
-        self.verify_campaign_closures_anchored_cached_collect(
+        visit: &mut dyn FnMut(ContentId),
+    ) -> Result<(), CampaignRepositoryError> {
+        self.walk_campaign_closures(
             roots,
             &BTreeSet::new(),
+            false,
             &mut ChoiceValidationCache::default(),
-            Some(&mut objects),
-            Some(&mut exact_leaves),
+            Some(&mut |id, _exact_leaf| {
+                visit(id);
+                Ok(())
+            }),
         )?;
-        Ok((objects, exact_leaves))
+        Ok(())
     }
 
     pub(in crate::repository) fn verify_campaign_closures_anchored_cached(
@@ -197,237 +309,36 @@ impl CampaignRepository {
         anchors: &BTreeSet<ContentId>,
         choice_cache: &mut ChoiceValidationCache,
     ) -> Result<usize, CampaignRepositoryError> {
-        self.verify_campaign_closures_anchored_cached_collect(
-            roots,
-            anchors,
-            choice_cache,
-            None,
-            None,
-        )
+        self.walk_campaign_closures(roots, anchors, false, choice_cache, None)
     }
 
-    pub(super) fn verify_campaign_closures_anchored_cached_collect(
+    /// Walks ordinary roots as one bounded union.
+    ///
+    /// # Errors
+    ///
+    /// Returns original store, codec, closure-bound, child, record, or trie
+    /// integrity errors, or the first error returned by `sink`.
+    pub(in crate::repository) fn walk_campaign_closures(
         &self,
         roots: impl IntoIterator<Item = ContentId>,
         anchors: &BTreeSet<ContentId>,
+        exact_roots: bool,
         choice_cache: &mut ChoiceValidationCache,
-        mut collected: Option<&mut BTreeSet<ContentId>>,
-        mut collected_exact_leaves: Option<&mut BTreeSet<ContentId>>,
+        sink: Option<&mut ClosureSink<'_>>,
     ) -> Result<usize, CampaignRepositoryError> {
-        let mut stack = roots.into_iter().map(|id| (id, false)).collect::<Vec<_>>();
-        let mut visited = BTreeSet::new();
-        let mut verified_merkle_positions = BTreeSet::new();
-
-        while let Some((id, exact_leaf)) = stack.pop() {
-            if anchors.contains(&id) {
-                continue;
-            }
-            if !visited.insert((id, exact_leaf)) {
-                continue;
-            }
-            if let Some(objects) = collected.as_deref_mut() {
-                objects.insert(id);
-            }
-            if visited
-                .len()
-                .checked_add(verified_merkle_positions.len())
-                .is_none_or(|objects| objects > MAX_CAMPAIGN_CLOSURE_OBJECTS)
-            {
-                return Err(integrity("campaign-closure-object-limit"));
-            }
-
-            if id.kind() == ObjectKind::MerkleNode {
-                // A full cold walk reads every yielded leaf below. Anchored
-                // incremental walks may skip known parent leaves, so they
-                // still check leaf presence during Merkle verification.
-                let verified = if anchors.is_empty() {
-                    self.merkle
-                        .verify_closure_structure_cached(id, &mut verified_merkle_positions)?
-                } else {
-                    self.merkle
-                        .verify_closure_objects_cached(id, &mut verified_merkle_positions)?
-                };
-                if let Some(objects) = collected.as_deref_mut() {
-                    objects.extend(
-                        verified_merkle_positions
-                            .iter()
-                            .map(|(node, _prefix)| *node),
-                    );
-                }
-                if visited
-                    .len()
-                    .checked_add(verified_merkle_positions.len())
-                    .is_none_or(|objects| objects > MAX_CAMPAIGN_CLOSURE_OBJECTS)
-                {
-                    return Err(integrity("campaign-closure-object-limit"));
-                }
-                stack.extend(verified.values.into_iter().map(|id| (id, false)));
-                continue;
-            }
-
-            let handle = self.blobs.read(id, None)?;
-            if exact_leaf {
-                // Exact-root choice and replay evidence use Observation identities
-                // for raw protocol bytes. Their parent role, not their kind alone,
-                // grants opaque traversal; the immutable digest remains checked.
-                if id.kind() != ObjectKind::Observation
-                    || id.schema_version() != 1
-                    || ContentId::for_source(id.kind(), id.schema_version(), &handle)? != id
-                {
-                    return Err(integrity("campaign-exact-leaf-identity-mismatch"));
-                }
-                if let Some(leaves) = collected_exact_leaves.as_deref_mut() {
-                    leaves.insert(id);
-                }
-                continue;
-            }
-            if is_opaque_campaign_leaf(id.kind()) {
-                let mut sink = std::io::sink();
-                handle.copy_to(&mut sink)?;
-                continue;
-            }
-            let bytes = handle.read_all(MAX_ENVELOPE_BYTES)?;
-            if !is_campaign_record_kind(id.kind()) {
-                let envelope = ContentEnvelope::from_canonical_bytes(&bytes)
-                    .map_err(CampaignCodecError::from)?;
-                if envelope.content_id(id.kind()) != id {
-                    return Err(integrity("campaign-closure-envelope-id-mismatch"));
-                }
-                let exact_root = collected_exact_leaves.is_some()
-                    && id.kind() == ObjectKind::ExactManifest
-                    && envelope.schema_name() == "crucible.executor.exact-checkpoint-root"
-                    && envelope.schema_version() == 5;
-                stack.extend(envelope.children().iter().map(|child| {
-                    let exact_leaf = exact_root
-                        && matches!(
-                            child.role(),
-                            "checkpoint-choice-closure" | "replay-oracle-evidence"
-                        );
-                    (child.id(), exact_leaf)
-                }));
-                continue;
-            }
-            let envelope = ObjectEnvelope::from_canonical_bytes(&bytes)?;
-            if envelope.content_id() != id {
-                return Err(integrity("campaign-closure-envelope-id-mismatch"));
-            }
-
-            match envelope.record_kind() {
-                crate::CampaignRecordKind::Lineage => {
-                    self.read_lineage(id)?;
-                }
-                crate::CampaignRecordKind::Policy => {
-                    self.read_policy(id)?;
-                }
-                crate::CampaignRecordKind::Fact => {
-                    self.read_fact(id)?;
-                }
-                crate::CampaignRecordKind::CandidateGeneratorSpec => {
-                    self.read_generator(id)?;
-                }
-                crate::CampaignRecordKind::ScenarioArtifact => {
-                    self.read_scenario_artifact(id)?;
-                }
-                crate::CampaignRecordKind::ConfigurationArtifact => {
-                    self.read_configuration_artifact(id)?;
-                }
-                crate::CampaignRecordKind::ReproductionArtifact => {
-                    self.read_reproduction_artifact(id)?;
-                }
-                crate::CampaignRecordKind::Finding => {
-                    self.read_finding_cached(id, choice_cache)?;
-                }
-                crate::CampaignRecordKind::FindingCandidateBundle => {
-                    let bundle = self.decode_finding_candidate_bundle(id)?;
-                    self.validate_finding_candidate_bundle(
-                        &bundle,
-                        super::finding_candidate::FindingCandidateValidation::Load,
-                    )?;
-                }
-                crate::CampaignRecordKind::FindingTriageReplayEvidence => {
-                    let evidence = self.decode_finding_triage_replay_evidence(id)?;
-                    self.validate_finding_triage_replay_evidence(&evidence)?;
-                }
-                crate::CampaignRecordKind::BranchRequest => {
-                    let request = self.decode_branch_request(id)?;
-                    self.validate_branch_request_references_shallow(&request)?;
-                }
-                crate::CampaignRecordKind::Proposal => {
-                    let proposal = self.decode_proposal(id)?;
-                    self.validate_proposal_references_shallow(&proposal)?;
-                }
-                crate::CampaignRecordKind::Attempt => {
-                    self.read_attempt_cached(id, choice_cache)?;
-                }
-                crate::CampaignRecordKind::AttemptAdmission => {
-                    let admission = self.decode_attempt_admission(id)?;
-                    self.validate_attempt_admission_references_shallow_cached(
-                        &admission,
-                        choice_cache,
-                    )?;
-                }
-                crate::CampaignRecordKind::PlannerStep => {
-                    self.read_planner_step(id)?;
-                }
-                crate::CampaignRecordKind::RetainedPlannerRequest => {
-                    self.read_planner_request(id)?;
-                }
-                crate::CampaignRecordKind::ExpansionState => {
-                    self.read_expansion_state(id)?;
-                }
-                crate::CampaignRecordKind::ContinuationProjection => {
-                    self.read_continuation_projection(id)?;
-                }
-                crate::CampaignRecordKind::ExpansionCredit => {
-                    self.read_expansion_credit(id)?;
-                }
-                crate::CampaignRecordKind::MeasurementSet => {
-                    self.read_measurement_set(id)?;
-                }
-                crate::CampaignRecordKind::PropertyVerdictSet => {
-                    self.read_property_verdict_set(id)?;
-                }
-                crate::CampaignRecordKind::CoverageProjection => {
-                    self.read_coverage_projection(id)?;
-                }
-                crate::CampaignRecordKind::Observation => {
-                    let observation = self.decode_observation(id)?;
-                    self.validate_observation_references_cached(&observation, choice_cache)?;
-                }
-                crate::CampaignRecordKind::ObjectiveEvaluation => {
-                    self.read_objective_evaluation_cached(id, choice_cache)?;
-                }
-                crate::CampaignRecordKind::RankingExplanation => {
-                    self.read_ranking_explanation_cached(id, choice_cache)?;
-                }
-                crate::CampaignRecordKind::SurvivorSelection => {
-                    self.read_survivor_selection_bundle_cached(id, choice_cache)?;
-                }
-                crate::CampaignRecordKind::PolicyArtifact => {
-                    self.validate_policy_artifact_references(&envelope)?;
-                }
-                crate::CampaignRecordKind::PlannerState => {
-                    self.validate_planner_state_references(&envelope)?;
-                }
-                crate::CampaignRecordKind::PlannerInvocation => {
-                    self.validate_planner_invocation_references(&envelope)?;
-                }
-                crate::CampaignRecordKind::ChoiceOpportunity => {
-                    self.validate_opportunity_references_cached(&envelope, choice_cache)?;
-                }
-                crate::CampaignRecordKind::ChoiceGroup => {
-                    self.validate_group_references(&envelope)?;
-                }
-                crate::CampaignRecordKind::Selection => {
-                    self.validate_selection_references(&envelope)?;
-                }
-                _ => {}
-            }
-            stack.extend(envelope.children().iter().map(|child| (child.id(), false)));
-        }
-        visited
-            .len()
-            .checked_add(verified_merkle_positions.len())
-            .ok_or_else(|| integrity("campaign-closure-object-limit"))
+        let entries = roots.into_iter().map(WalkEntry::object).collect();
+        self.walk_campaign_closure(
+            WalkStart::Entries(entries),
+            &mut WalkContext {
+                anchors,
+                exact_roots,
+                choice_cache,
+                planner_context: None,
+                sink,
+                deferred_snapshots: None,
+                parent_accounting: None,
+                peak_resident: 0,
+            },
+        )
     }
 }

@@ -31,7 +31,7 @@ pub(super) fn emit_node_slot(out: &mut String) {
     out.push_str("    _Atomic uint32_t logical_time_restore_ack;\n");
     out.push_str("    _Atomic uint64_t control_boundary_fault_command_frontier;\n");
     out.push_str("    _Atomic uint32_t control_boundary_capture_request;\n");
-    out.push_str("    uint8_t pad3[4];\n");
+    out.push_str("    _Atomic uint32_t control_boundary_publication_claim;\n");
     out.push_str("    _Atomic uint64_t timer_witness_generation;\n");
     out.push_str("    _Atomic uint64_t timer_witness_deadline_ps;\n");
     out.push_str("    _Atomic uint64_t timer_witness_deadline_tick;\n");
@@ -95,13 +95,13 @@ pub(super) fn emit_node_slot(out: &mut String) {
                 "control_boundary_capture_request",
                 "CONTROL_BOUNDARY_CAPTURE_REQUEST",
             ),
-            ("pad3", "PAD3"),
+            (
+                "control_boundary_publication_claim",
+                "CONTROL_BOUNDARY_PUBLICATION_CLAIM",
+            ),
             ("timer_witness_generation", "TIMER_WITNESS_GENERATION"),
             ("timer_witness_deadline_ps", "TIMER_WITNESS_DEADLINE_PS"),
-            (
-                "timer_witness_deadline_tick",
-                "TIMER_WITNESS_DEADLINE_TICK",
-            ),
+            ("timer_witness_deadline_tick", "TIMER_WITNESS_DEADLINE_TICK"),
             (
                 "timer_witness_armed_raw_icount",
                 "TIMER_WITNESS_ARMED_RAW_ICOUNT",

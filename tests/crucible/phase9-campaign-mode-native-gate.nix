@@ -100,6 +100,8 @@
       import os
       import shlex
 
+      ${builtins.readFile ./_phase9-campaign-mode-libtest.py}
+
       mode = ${builtins.toJSON mode}
       executor_derivation = os.environ["out"]
       expected_identity = ${builtins.toJSON expectedConfigurationIdentity}
@@ -134,30 +136,15 @@
       transcripts = []
       evidence = []
       for command_spec in commands:
-          executable = command_spec["executable"]
-          arguments = command_spec["arguments"]
-          expected_count = command_spec["expectedCount"]
-          list_command = " ".join(
-              [shlex.quote(executable)]
-              + [shlex.quote(argument) for argument in arguments]
-              + ["--list", "--format", "terse"]
+          command, transcript, passed_evidence = run_campaign_mode_test(
+              command_spec["executable"],
+              command_spec["arguments"],
+              command_spec["evidence"],
+              command_spec["expectedCount"],
+              primary.succeed,
           )
-          listed = primary.succeed(list_command, timeout=900)
-          listed_count = sum(
-              1 for line in listed.splitlines() if line.endswith(": test")
-          )
-          assert listed_count == expected_count, (
-              command_spec["evidence"], listed_count, expected_count, listed
-          )
-
-          command = " ".join(
-              [shlex.quote(executable)]
-              + [shlex.quote(argument) for argument in arguments]
-              + ["--test-threads=1"]
-          )
-          transcript = primary.succeed(command, timeout=900)
           transcripts.append(f"$ {command}\n{transcript}")
-          evidence.append(f"{command_spec['evidence']}=PASS")
+          evidence.append(passed_evidence)
 
       raw_result = "\n".join([
           "PASS",
@@ -193,6 +180,12 @@ in
       pname = "crucible-phase9-campaign-mode-${name}-${mode}";
       version = "0";
       src = null;
+      passthru.campaignModeReceipt = {
+        schemaVersion = 1;
+        executor = fleet;
+        inherit mode gate toplevel;
+        configurationIdentity = expectedConfigurationIdentity;
+      };
       buildDeps = [authority fleet pkgs.coreutils pkgs.findutils pkgs.gawk pkgs.grep];
       phases = [
         {

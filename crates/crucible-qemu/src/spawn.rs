@@ -42,6 +42,8 @@ pub(crate) use materialization::SealedAtomicExactRestoreInputs;
 pub(crate) use materialization::{
     QemuExactDeviceStateBinding, QemuGuardedExactRamInput, require_exact_restore_not_canceled,
 };
+#[cfg(test)]
+pub(crate) use run_directory::ConsoleSentinelOutput;
 pub use run_directory::QemuPreparedRunDirectory;
 use run_directory::{PinnedFileIdentity, open_prepared_root_overlay};
 
@@ -77,6 +79,12 @@ pub struct QemuChildProcessContract {
     cgroup_directory: Option<OwnedFd>,
     cgroup_procs: OwnedFd,
     cancellation_event: OwnedFd,
+    /// Attempt-wide sticky cancellation that mints per-node eventfds; absent
+    /// only for unvalidated test contracts.
+    cancellation_fanout: Option<Arc<crate::cancellation_fanout::QemuCancellationFanout>>,
+    /// Fan-out slot of a concurrent-node eventfd minted for this contract.
+    /// Duplicates never inherit it, so exactly one owner can retire the slot.
+    cancellation_membership: Option<crate::cancellation_fanout::QemuCancellationFanoutMembership>,
     maximum_vcpus: u32,
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
@@ -274,6 +282,8 @@ impl QemuChildProcessContract {
             cgroup_directory,
             cgroup_procs,
             cancellation_event,
+            cancellation_fanout: self.cancellation_fanout.clone(),
+            cancellation_membership: None,
             maximum_vcpus: self.maximum_vcpus,
             maximum_resident_bytes: self.maximum_resident_bytes,
             maximum_writable_bytes: self.maximum_writable_bytes,
@@ -281,6 +291,53 @@ impl QemuChildProcessContract {
             attempt_binding: Arc::clone(&self.attempt_binding),
             exact_checkpoint_root: self.exact_checkpoint_root,
         })
+    }
+
+    /// Duplicates this contract for one concurrently launched node.
+    ///
+    /// The duplicate matches [`Self::try_clone_for_attempt_generation`] except
+    /// that it carries its own cancellation eventfd, which the attempt's sticky
+    /// cancellation also signals. QEMU clears `O_NONBLOCK` on every descriptor
+    /// it receives over `SCM_RIGHTS`, and that flag belongs to the open file
+    /// description, so concurrent nodes must not hand one description to
+    /// several QEMU processes that each validate it. Unvalidated test
+    /// contracts have no attempt cancellation and keep a shared duplicate.
+    ///
+    /// The attempt retains the minted eventfd so that its cancellation keeps
+    /// reaching the node until the node's owner calls
+    /// [`Self::retire_concurrent_node_cancellation_after_reap`]. An attempt
+    /// may hold only a bounded number of such eventfds at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError::Io`] when a descriptor cannot be duplicated
+    /// or the attempt cannot mint another node eventfd.
+    pub fn try_clone_for_concurrent_node(&self) -> Result<Self, QemuSpawnError> {
+        let mut contract = self.try_clone_for_attempt_generation()?;
+        if let Some(fanout) = &self.cancellation_fanout {
+            let (event, membership) = fanout.mint().map_err(|source| QemuSpawnError::Io {
+                operation: "mint concurrent node cancellation eventfd",
+                source,
+            })?;
+            contract.cancellation_event = event;
+            contract.cancellation_membership = Some(membership);
+        }
+        Ok(contract)
+    }
+
+    /// Retires this concurrent node's cancellation eventfd from the attempt.
+    ///
+    /// Call this only after every QEMU process launched with this contract,
+    /// including a hot-fork child that received its eventfd, has been reaped;
+    /// the attempt stops signaling the eventfd afterwards. Dropping a
+    /// concurrent-node contract without retiring it keeps the eventfd
+    /// signaled for the rest of the attempt and occupies one of its bounded
+    /// node-eventfd slots. Contracts not produced by
+    /// [`Self::try_clone_for_concurrent_node`] have nothing to retire.
+    pub fn retire_concurrent_node_cancellation_after_reap(self) {
+        if let Some(membership) = self.cancellation_membership {
+            membership.retire_after_reap();
+        }
     }
 
     /// Derives a contract for a newly authenticated repository checkpoint.
@@ -332,6 +389,8 @@ impl QemuChildProcessContract {
             cgroup_directory: Some(cgroup_directory),
             cgroup_procs,
             cancellation_event,
+            cancellation_fanout: None,
+            cancellation_membership: None,
             maximum_vcpus: cgroup_limits.maximum_vcpus(),
             maximum_resident_bytes: cgroup_limits.maximum_resident_bytes(),
             maximum_writable_bytes,
@@ -339,6 +398,19 @@ impl QemuChildProcessContract {
             attempt_binding: Arc::new(AttemptResourceBinding),
             exact_checkpoint_root,
         })
+    }
+
+    /// Binds the attempt cancellation that mints per-node eventfds.
+    ///
+    /// `cancellation_fanout` must belong to the same attempt cgroup as this
+    /// contract's cancellation eventfd.
+    #[must_use]
+    pub(crate) fn with_cancellation_fanout(
+        mut self,
+        cancellation_fanout: Arc<crate::cancellation_fanout::QemuCancellationFanout>,
+    ) -> Self {
+        self.cancellation_fanout = Some(cancellation_fanout);
+        self
     }
 
     pub(crate) fn require_exact_checkpoint_root(
@@ -424,6 +496,8 @@ impl QemuChildProcessContract {
             cgroup_directory: None,
             cgroup_procs,
             cancellation_event,
+            cancellation_fanout: None,
+            cancellation_membership: None,
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,
@@ -453,6 +527,8 @@ impl QemuChildProcessContract {
             cgroup_directory: Some(cgroup_directory),
             cgroup_procs,
             cancellation_event,
+            cancellation_fanout: None,
+            cancellation_membership: None,
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,
@@ -512,6 +588,8 @@ pub struct QemuSpawnHostResources {
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    plugin_process_generation: u64,
+    plugin_setup_plan_digest: Option<[u8; 32]>,
 }
 
 impl QemuSpawnHostResources {
@@ -548,6 +626,8 @@ impl QemuSpawnHostResources {
             wake_fd: self.wake_fd,
             region_len: self.region_len,
             fault_node_hash: self.fault_node_hash,
+            plugin_process_generation: self.plugin_process_generation,
+            plugin_setup_plan_digest: self.plugin_setup_plan_digest,
         }
     }
 }
@@ -560,6 +640,8 @@ pub struct QemuSpawnSetupResources {
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    plugin_process_generation: u64,
+    plugin_setup_plan_digest: Option<[u8; 32]>,
 }
 
 impl QemuSpawnSetupResources {
@@ -591,6 +673,18 @@ impl QemuSpawnSetupResources {
     #[must_use]
     pub const fn fault_node_hash(&self) -> [u8; 32] {
         self.fault_node_hash
+    }
+
+    /// Returns the process incarnation retained from the actual launch command.
+    pub(crate) const fn plugin_process_generation(&self) -> u64 {
+        self.plugin_process_generation
+    }
+
+    /// Retains the original console-bearing command's complete setup digest.
+    ///
+    /// Ordinary no-console commands and bare descriptor fixtures carry none.
+    pub(crate) const fn plugin_setup_plan_digest(&self) -> Option<[u8; 32]> {
+        self.plugin_setup_plan_digest
     }
 
     /// Consumes the setup resources into their owned parts.
@@ -951,6 +1045,11 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     )?;
     let (mut resources, child_resources) = create_spawn_resources(region_len)?;
     resources.fault_node_hash = command.plugin_fault_node_hash();
+    resources.plugin_process_generation = command.plugin_process_generation();
+    resources.plugin_setup_plan_digest = command
+        .plugin_setup_plan()
+        .native_console_plan()
+        .map(|_console| command.plugin_setup_plan_digest());
     let child = spawn_process_with_resources(
         command.executable(),
         &launch_args,
@@ -1014,6 +1113,9 @@ fn create_spawn_resources(
             wake_fd: host_wake,
             region_len,
             fault_node_hash: [0; 32],
+            // No actual launch command has yet supplied a process owner.
+            plugin_process_generation: 0,
+            plugin_setup_plan_digest: None,
         },
         QemuSpawnChildResources {
             control_socket: child_control,
@@ -1116,9 +1218,52 @@ pub(crate) fn guarded_qemu_process_command(
     for (key, value) in envs {
         command.env(key, value);
     }
-    // The stage minimum is diagnostic-only and cannot escape the existing
-    // witness opt-in. Invalid or noncanonical values leave stage notices off.
-    if envs.contains(&("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1")) {
+
+    // Aggregate diagnostics retain fixed failure observations without enabling
+    // the legacy callback stream or native trace selections.
+    const AGGREGATE_DIAGNOSTICS: &str = "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS";
+    let aggregate = std::env::var(AGGREGATE_DIAGNOSTICS).ok().filter(|budget| {
+        budget
+            .parse::<u16>()
+            .is_ok_and(|budget| (1..=256).contains(&budget))
+    });
+    if let Some(budget) = &aggregate {
+        command.env(AGGREGATE_DIAGNOSTICS, budget);
+    }
+
+    // A bounded native final summary does not select routine trace producers.
+    if std::env::var("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY").as_deref() == Ok("1") {
+        command.env("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY", "1");
+    }
+
+    // This exact diagnostic opt-in reaches the plugin without inheriting other
+    // host environment or changing deterministic launch inputs.
+    // crucible-lint: allow host-nondeterminism-state -- a default-off observation flag cannot change control decisions.
+    if std::env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").as_deref() == Ok("1") {
+        command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", "1");
+    }
+    // The Linux fixture's exact opt-in reaches its bounded idle observer;
+    // aggregate diagnostics alone retain the original native I/O behavior.
+    // crucible-lint: allow host-nondeterminism-state -- a default-off observation flag cannot change control decisions.
+    if std::env::var("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE").as_deref() == Ok("1") {
+        let minimum = std::env::var_os("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS");
+        let admitted = minimum.as_ref().is_none_or(|value| {
+            value.to_str().is_some_and(|text| {
+                text.parse::<u64>()
+                    .is_ok_and(|value| value <= i64::MAX as u64 && value.to_string() == text)
+            })
+        });
+        if admitted {
+            command.env("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE", "1");
+            if let Some(minimum) = minimum {
+                command.env("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS", minimum);
+            }
+        }
+    }
+    // Aggregate mode uses this minimum for capped pending-return notices only;
+    // forwarding it does not enable the legacy callback or stage streams.
+    // Invalid or noncanonical values leave both filtered observations off.
+    if aggregate.is_some() || envs.contains(&("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1")) {
         const STAGE_MINIMUM: &str = "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN";
         if let Ok(minimum) = std::env::var(STAGE_MINIMUM)
             && minimum

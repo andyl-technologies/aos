@@ -198,7 +198,7 @@ fn node_continuation_codec_round_trips_complete_state() {
             logical_icount: 70,
             raw_icount: 1,
         },
-        console_observation_boundary: VirtualTime { ticks: 69 },
+        native_console_continuation: None,
         pending_preemption: Some(PreemptionDecision {
             node: NodeId {
                 name: String::from("vm-0"),
@@ -437,7 +437,7 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
             logical_icount: 1,
             raw_icount: 0,
         },
-        console_observation_boundary: VirtualTime { ticks: 1 },
+        native_console_continuation: None,
         pending_preemption: None,
         pending_network_outputs: Vec::new(),
         network_transport: QemuNetworkTransportCheckpoint::empty(),
@@ -455,12 +455,23 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
         Err(QemuNodeCheckpointCodecError::ExecutionBinding)
     );
     let mut unsupported_version = bytes.clone();
-    unsupported_version[..b"crucible.qemu-node-continuation.v7\0".len()]
+    unsupported_version[..b"crucible.qemu-node-continuation.v9\0".len()]
         .copy_from_slice(b"crucible.qemu-node-continuation.v?\0");
     assert_eq!(
         QemuNodeContinuationCheckpoint::from_compact_binary(&unsupported_version, binding),
         Err(QemuNodeCheckpointCodecError::Unsupported)
     );
+    // Reconstruct the retired version's extra socket-boundary coordinate.
+    let mut retired = bytes.clone();
+    let magic_length = b"crucible.qemu-node-continuation.v9\0".len();
+    retired[..magic_length].copy_from_slice(b"crucible.qemu-node-continuation.v8\0");
+    let native_tag_offset = magic_length + 32 + 3 * 8;
+    retired.splice(native_tag_offset..native_tag_offset, 1_u64.to_le_bytes());
+    assert_eq!(
+        QemuNodeContinuationCheckpoint::from_compact_binary(&retired, binding),
+        Err(QemuNodeCheckpointCodecError::Unsupported)
+    );
+
     bytes.push(0);
     assert_eq!(
         QemuNodeContinuationCheckpoint::from_compact_binary(&bytes, binding),
@@ -511,12 +522,12 @@ fn node_continuation_round_trips_large_and_full_capacity_compact_rings() {
 
 #[test]
 fn node_continuation_decode_reports_typed_collection_resource_limit() {
-    const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v7\0";
+    const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v9\0";
     let checkpoint = node_checkpoint_with_inbound_ring(1, 0);
     let mut bytes = checkpoint
         .to_compact_binary()
         .unwrap_or_else(|error| panic!("fixture should encode: {error}"));
-    let pending_count_offset = MAGIC.len() + 32 + 4 * 8 + 1;
+    let pending_count_offset = MAGIC.len() + 32 + 3 * 8 + 2;
     let requested = MAX_NODE_CONTINUATION_FRAMES as u64 + 1;
     bytes[pending_count_offset..pending_count_offset + 8].copy_from_slice(&requested.to_le_bytes());
 
@@ -544,7 +555,7 @@ fn node_checkpoint_with_inbound_ring(
             logical_icount: 1,
             raw_icount: 0,
         },
-        console_observation_boundary: VirtualTime { ticks: 1 },
+        native_console_continuation: None,
         pending_preemption: None,
         pending_network_outputs: Vec::new(),
         network_transport: QemuNetworkTransportCheckpoint {

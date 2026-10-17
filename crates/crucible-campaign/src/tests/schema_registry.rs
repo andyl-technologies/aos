@@ -65,13 +65,13 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             CampaignRecordKind::MeasurementSet
             | CampaignRecordKind::PropertyVerdictSet
             | CampaignRecordKind::CoverageProjection
+            | CampaignRecordKind::CoverageIdentityFrequency
             | CampaignRecordKind::Observation => "crucible-campaign::observation",
             CampaignRecordKind::ObjectiveEvaluation
             | CampaignRecordKind::RankingExplanation
             | CampaignRecordKind::SurvivorSelection => "crucible-campaign::objective",
-            CampaignRecordKind::ReproductionArtifact | CampaignRecordKind::Finding => {
-                "crucible-campaign::finding"
-            }
+            CampaignRecordKind::ReproductionArtifact => "crucible-campaign::reproduction",
+            CampaignRecordKind::Finding => "crucible-campaign::finding",
             CampaignRecordKind::FindingCandidateBundle => "crucible-campaign::finding_candidate",
             CampaignRecordKind::FindingTriageReplayEvidence
             | CampaignRecordKind::FindingTriageReplayEvidenceChunk => {
@@ -290,12 +290,12 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner) in [
         (
             "crucible.executor.prepared-semantic-attempt-result",
-            "7",
+            "11",
             "crucible-daemon::crucible_artifact::prepared_result",
         ),
         (
             "crucible.executor.prepared-result-journal-state",
-            "2",
+            "4",
             "crucible-daemon::prepared_result_journal",
         ),
     ] {
@@ -306,6 +306,24 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[2], owner);
         assert_eq!(record[3], "operational-record");
     }
+    let attempt_segment = rows
+        .get("crucible.attempt.event-log-segment")
+        .unwrap_or_else(|| panic!("missing attempt event-log segment schema"));
+    assert_eq!(
+        (attempt_segment[1], attempt_segment[2], attempt_segment[3]),
+        ("1", "crucible::attempt_log", "trace")
+    );
+    let attempt_manifest = rows
+        .get("crucible.attempt.event-log-manifest")
+        .unwrap_or_else(|| panic!("missing attempt event-log manifest schema"));
+    assert_eq!(
+        (
+            attempt_manifest[1],
+            attempt_manifest[2],
+            attempt_manifest[3]
+        ),
+        ("1", "crucible::attempt_log", "execution-model-payload")
+    );
     for (schema, version, owner, kind) in [
         (
             "crucible.qemu.vm-snapshot",
@@ -327,7 +345,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.production-exact-closure",
-            "9",
+            "10",
             "crucible-api::vm_lifecycle",
             "device-state",
         ),
@@ -345,7 +363,13 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.checkpoint-choice-closure",
-            "1",
+            "2",
+            "crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure",
+            "observation",
+        ),
+        (
+            "crucible.executor.checkpoint-choice-frame",
+            "2",
             "crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure",
             "observation",
         ),
@@ -366,14 +390,14 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner, kind) in [
         (
             "crucible.executor.finding-production-replay-capture",
-            "3",
+            "5",
             "crucible-daemon::finding_production_replay",
-            "trace",
+            "exact-manifest",
         ),
         (
-            "crucible.executor.finding-replay-capture-chunk",
+            "crucible.executor.finding-production-replay-capture-leaf",
             "1",
-            "crucible-daemon::finding_replay_capture_store",
+            "crucible-daemon::finding_production_replay",
             "trace",
         ),
         (
@@ -446,7 +470,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.campaign.transfer-journal",
-            "1",
+            "2",
             "crucible-daemon::campaign_transfer",
             "operational-record",
         ),
@@ -510,13 +534,13 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.crucible-reproduction-payload",
-            "4",
+            "5",
             "crucible-daemon::crucible_artifact",
         ),
         ("crucible.execution.scenario-form", "9", "crucible::model"),
         (
             "crucible.executor.crucible-configuration-payload",
-            "4",
+            "5",
             "crucible-daemon::crucible_artifact",
         ),
         (
@@ -531,7 +555,12 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.execution.reproduction-artifact",
-            "9",
+            "10",
+            "crucible::model",
+        ),
+        (
+            "crucible.execution.reproduction-artifact-manifest",
+            "1",
             "crucible::model",
         ),
     ] {
@@ -560,7 +589,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     let finding_bundle = rows
         .get(finding_bundle_schema)
         .expect("missing portable finding bundle schema");
-    assert_eq!(finding_bundle[1], "2");
+    assert_eq!(finding_bundle[1], "3");
     assert_eq!(
         finding_bundle[2],
         "crucible-cli::cli_campaign::finding_bundle"
@@ -582,6 +611,17 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     );
     assert_eq!(scan_index[3], "merkle-node");
     owned_campaign_schemas.insert(scan_index_schema);
+    let choice_source_schema = "crucible.campaign.observation-choice-source-index";
+    let choice_source = rows
+        .get(choice_source_schema)
+        .unwrap_or_else(|| panic!("missing observation choice-source index schema"));
+    assert_eq!(choice_source[1], "1");
+    assert_eq!(
+        choice_source[2],
+        "crucible-campaign::repository::choice_source_index"
+    );
+    assert_eq!(choice_source[3], "merkle-node");
+    owned_campaign_schemas.insert(choice_source_schema);
     for (schema, version, owner, kind) in [
         (
             "crucible.campaign.query-campaign-request-attempts-request",
@@ -594,6 +634,18 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             "2",
             "crucible-campaign::campaign_service::request_attempts",
             "component-message",
+        ),
+        (
+            "crucible.campaign.statistical-evidence",
+            "2",
+            "crucible-campaign::statistics::evidence",
+            "projection",
+        ),
+        (
+            "crucible.campaign.statistical-evidence-chunk",
+            "1",
+            "crucible-campaign::statistics::evidence",
+            "projection",
         ),
         (
             "crucible.campaign.state-identity",
@@ -709,6 +761,11 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             "administrative-record",
         ),
         (
+            "crucible.content-store.pack-table",
+            "crucible-cas::content_store",
+            "administrative-record",
+        ),
+        (
             "crucible.content-store.pack-repack-plan",
             "crucible-cas::content_store",
             "administrative-record",
@@ -717,10 +774,10 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         let row = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
-        let expected_version = if schema == "crucible.content-store.graph-configuration" {
-            "11"
-        } else {
-            "1"
+        let expected_version = match schema {
+            "crucible.content-store.graph-configuration" => "11",
+            "crucible.content-store.pack-index" | "crucible.content-store.pack-repack-plan" => "2",
+            _ => "1",
         };
         assert_eq!(row[1], expected_version);
         assert_eq!(row[2], owner);

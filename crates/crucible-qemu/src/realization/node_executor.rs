@@ -379,6 +379,8 @@ trait QemuFailedLaunchChildSource {
 
 mod admission;
 mod replay_physical;
+mod replay_timing;
+use crate::replay_performance::{ReplayLeg, ReplayPerformance, ReplayPhase};
 use admission::QemuReplayValidationNodeLauncher;
 pub use admission::{QemuReplayValidationExactAdmission, QemuReplayValidationThinAdmission};
 
@@ -392,6 +394,7 @@ pub struct QemuReplayValidationExecutor {
     event_log: EventLog,
     authority: Arc<QemuReplayObservationAuthority>,
     next_generation: u64,
+    performance: ReplayPerformance,
     exact_observation_generation: Option<u64>,
     thin_observation_generation: Option<u64>,
 }
@@ -502,6 +505,16 @@ impl QemuReplayValidationExecutor {
         config: &Configuration,
         snapshot: &QemuVmSnapshot,
     ) -> Result<QemuReplayOracleExactObservation, QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::ExactLoad, |executor| {
+            executor.load_materialized_exact_snapshot_probe_guarded_untimed(config, snapshot)
+        })
+    }
+
+    fn load_materialized_exact_snapshot_probe_guarded_untimed(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+    ) -> Result<QemuReplayOracleExactObservation, QemuVmRealizationError> {
         let admission = QemuReplayOracleProbeAdmission::new(snapshot);
         let snapshot = admission.snapshot();
         validate_checkpoint_matches_config(&snapshot.checkpoint, config, "exact snapshot probe")?;
@@ -528,6 +541,7 @@ impl QemuReplayValidationExecutor {
             Err(error) => (format!("unavailable ({error})"), None),
         };
         let calibration = node.logical_time_calibration().ok();
+        self.performance.bind_node(ReplayLeg::Exact, &node);
         self.active_node = Some(node);
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
         self.retain_runtime_basis(&runtime, config);
@@ -552,6 +566,23 @@ impl QemuReplayValidationExecutor {
     /// Returns [`QemuVmRealizationError`] when the prepared checkpoint basis,
     /// guarded launch, baked-genesis admission, or runtime state differs.
     pub fn load_prepared_baked_genesis_guarded(
+        &mut self,
+        process_contract: &QemuChildProcessContract,
+        config: &Configuration,
+        world: &crucible::World,
+        snapshot: &super::QemuBakedGenesisSnapshot,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::ThinLoad, |executor| {
+            executor.load_prepared_baked_genesis_guarded_untimed(
+                process_contract,
+                config,
+                world,
+                snapshot,
+            )
+        })
+    }
+
+    fn load_prepared_baked_genesis_guarded_untimed(
         &mut self,
         process_contract: &QemuChildProcessContract,
         config: &Configuration,
@@ -587,6 +618,18 @@ impl QemuReplayValidationExecutor {
     /// Returns [`QemuVmRealizationError`] when either guarded observation names
     /// another configuration.
     pub fn finish_replay_oracle_comparison(
+        &mut self,
+        snapshot: &QemuVmSnapshot,
+        configuration: &Configuration,
+        fat: QemuReplayOracleExactObservation,
+        thin: QemuReplayOracleThinObservation,
+    ) -> Result<QemuReplayOracleMatch, QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::Comparison, |executor| {
+            executor.finish_replay_oracle_comparison_untimed(snapshot, configuration, fat, thin)
+        })
+    }
+
+    fn finish_replay_oracle_comparison_untimed(
         &mut self,
         snapshot: &QemuVmSnapshot,
         configuration: &Configuration,
@@ -731,6 +774,7 @@ impl QemuReplayValidationExecutor {
         let runtime_id = Backend::fingerprint(&mut node)
             .map(|fingerprint| fingerprint.hash)
             .map_err(|source| node_backend_error(operation, source))?;
+        self.performance.bind_node(ReplayLeg::Thin, &node);
         self.active_node = Some(node);
         Ok(runtime_id)
     }

@@ -123,18 +123,6 @@ pub(super) fn try_reserve_runtime<T>(
     })
 }
 
-pub(super) fn recorded_effect_count(
-    work_items: &[ResolvedReplayWorkItem],
-) -> Result<usize, BindingRuntimeError> {
-    work_items.iter().try_fold(0_usize, |total, item| {
-        total
-            .checked_add(item.records.len())
-            .ok_or(BindingRuntimeError::CountOverflow(
-                "resolved_effect_records",
-            ))
-    })
-}
-
 // crucible-lint: allow rust-allow -- membership scheduling preserves every binding, target, phase, effect, and mapping input.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn append_membership_actions(

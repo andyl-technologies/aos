@@ -57,7 +57,8 @@ pub(crate) fn production_lifecycle_failure_class(
         | QemuAttemptProductionVmLifecycleError::ResourceContractMismatch
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)
         | QemuAttemptProductionVmLifecycleError::Lifecycle(_)
-        | QemuAttemptProductionVmLifecycleError::CheckpointRestore(_) => {
+        | QemuAttemptProductionVmLifecycleError::CheckpointRestore(_)
+        | QemuAttemptProductionVmLifecycleError::TraceStorage(_) => {
             SchedulerOperationalFailureClass::Terminal
         }
     }

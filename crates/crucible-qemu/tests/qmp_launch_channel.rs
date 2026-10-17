@@ -69,7 +69,7 @@ fn qmp_channel_adds_stable_unix_socket_to_launch_command() {
 }
 
 #[test]
-fn console_capture_uses_only_the_run_directory_output_socket() {
+fn console_capture_uses_only_the_sealed_native_backend() {
     let command = QemuLaunchCommandBuilder::new(
         default_profile(),
         default_vm_config(),
@@ -91,13 +91,12 @@ fn console_capture_uses_only_the_run_directory_output_socket() {
             .windows(2)
             .any(|window| { window == ["-serial", "chardev:crucible-console"] })
     );
-    assert!(command.args().windows(2).any(|window| {
-        window
-            == [
-                "-chardev",
-                "socket,id=crucible-console,path=crucible-console.sock,server=on,wait=off",
-            ]
-    }));
+    assert!(
+        command
+            .args()
+            .windows(2)
+            .any(|window| { window == ["-chardev", "crucible-console,id=crucible-console",] })
+    );
     assert!(validate_pre_spawn_qemu_launch_args(command.args()).is_ok());
     let chardevs = command
         .args()
@@ -105,10 +104,29 @@ fn console_capture_uses_only_the_run_directory_output_socket() {
         .filter(|window| window[0] == "-chardev")
         .map(|window| window[1].as_str())
         .collect::<Vec<_>>();
-    assert_eq!(
-        chardevs,
-        vec!["socket,id=crucible-console,path=crucible-console.sock,server=on,wait=off"]
+    assert_eq!(chardevs, vec!["crucible-console,id=crucible-console"]);
+    assert!(
+        !command
+            .args()
+            .iter()
+            .any(|argument| argument.contains("crucible-console.sock"))
     );
+
+    let setup = command.plugin_setup_plan();
+    let console = setup
+        .native_console_plan()
+        .expect("native capture must retain its sealed setup plan");
+    assert_eq!(console.plan().slot, default_plugin_config().slot());
+    assert_eq!(console.plan().streams.len(), 1);
+    assert_eq!(console.plan().streams[0].stream, 1);
+    assert_eq!(
+        console.plan().streams[0].device_identity,
+        console.plan().streams[0].device.fixed_console_identity()
+    );
+    let encoded = setup.encode().expect("sealed composite setup plan");
+    let decoded = crucible_protocol::plugin_setup_plan::PluginSetupPlan::decode(&encoded)
+        .expect("current composite setup plan must decode");
+    assert_eq!(decoded.native_console_plan(), Some(console));
 }
 
 #[test]

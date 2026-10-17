@@ -37,7 +37,9 @@
 //! domain-separated immutable-blob and mutable-ref contracts plus its closed
 //! composition-graph validator. [`content_envelope`] owns the generic canonical
 //! child-bearing object format used by storage, transfer, and closure walkers
-//! without depending on campaign semantics.
+//! without depending on campaign semantics. [`segment_store`] owns the read and
+//! write traits and in-memory store shared by RFC-0020 section 15 segmented
+//! logs.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -1353,3 +1355,4 @@ pub use invalidation::*;
 
 pub mod content_envelope;
 pub mod content_store;
+pub mod segment_store;

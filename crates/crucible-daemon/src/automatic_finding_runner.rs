@@ -369,10 +369,11 @@ where
 
         let reproduced_coverage = second.paired_reproduced_coverage().cloned();
         let (_, _, _, triage) = second.into_parts();
-        let (failures, _, _, _, paired_logs) = triage.into_parts();
-        let Some((_, _)) = paired_logs else {
+        let triage = triage.into_parts();
+        if triage.paired_divergence_logs.is_none() {
             return Ok(AutomaticFindingDeterminismProbe::Stable);
-        };
+        }
+        let failures = triage.failures;
         let Some(reproduced_coverage) = reproduced_coverage else {
             return Ok(AutomaticFindingDeterminismProbe::Incomplete);
         };
@@ -549,13 +550,17 @@ fn capture_qemu_finding_replay_material(
             } else {
                 crate::FindingProductionReplayTerminalOutcome::Failed
             };
+            // Production capture still re-seals the log prefix from entries,
+            // so the log is read back from its segments for this one replay.
+            let complete_log = evidence
+                .complete_log()
+                .map_err(|_| crate::FindingProductionReplayCaptureError::InvalidEventLog)?;
             let side = capture_qemu_finding_replay_side(
                 terminal,
-                evidence.causal_entries(),
+                &complete_log,
                 first,
                 evidence.timeout_record(),
                 evidence.policy_timeout(),
-                limits,
             )?;
             match side {
                 crate::FindingProductionReplayCaptureOutcome::Complete(side) => sides.push(side),
@@ -567,19 +572,21 @@ fn capture_qemu_finding_replay_material(
             }
         }
         FindingKind::Divergence => {
+            let paired_logs = evidence
+                .paired_complete_logs()
+                .map_err(|_| crate::FindingProductionReplayCaptureError::InvalidEventLog)?;
             let (Some(second), Some((expected_log, reproduced_log))) =
-                (second.as_ref(), evidence.paired_divergence_logs())
+                (second.as_ref(), paired_logs)
             else {
                 return Ok(None);
             };
-            for (log, snapshot) in [(expected_log, first), (reproduced_log, second)] {
+            for (log, snapshot) in [(&expected_log, first), (&reproduced_log, second)] {
                 match capture_qemu_finding_replay_side(
                     crate::FindingProductionReplayTerminalOutcome::Passed,
                     log,
                     snapshot,
                     None,
                     None,
-                    limits,
                 )? {
                     crate::FindingProductionReplayCaptureOutcome::Complete(side) => {
                         sides.push(side);
@@ -616,26 +623,39 @@ fn capture_qemu_finding_replay_side(
         crucible_campaign::PolicyTimeoutKind,
         crucible_campaign::BoundedStopProof,
     )>,
-    limits: crate::FindingProductionReplayCaptureLimits,
 ) -> Result<
     crate::FindingProductionReplayCaptureOutcome<crate::FindingProductionReplayExecutionSide>,
     crate::FindingProductionReplayCaptureError,
 > {
-    let suffix = snapshot.event_log_entries();
-    let prefix_len = suffix.first().map_or_else(
+    let suffix_len = usize::try_from(snapshot.event_log_len())
+        .map_err(|_| crate::FindingProductionReplayCaptureError::InvalidEventLog)?;
+    let prefix_len = snapshot.first_event_sequence().map_or_else(
         || {
             complete_log.len().saturating_sub(usize::from(
                 outcome == crate::FindingProductionReplayTerminalOutcome::Timeout,
             ))
         },
-        |entry| usize::try_from(entry.sequence()).unwrap_or(usize::MAX),
+        |sequence| usize::try_from(sequence).unwrap_or(usize::MAX),
     );
-    let Some(native_end) = prefix_len.checked_add(suffix.len()) else {
+    let Some(native_end) = prefix_len.checked_add(suffix_len) else {
         return Err(crate::FindingProductionReplayCaptureError::InvalidEventLog);
     };
-    if complete_log.get(prefix_len..native_end) != Some(suffix) {
-        return Err(crate::FindingProductionReplayCaptureError::InvalidEventLog);
-    }
+
+    // The recorded native suffix must equal the matching span of the complete
+    // log; the lengths agree, so a lockstep pass compares every entry.
+    let mut expected = complete_log
+        .get(prefix_len..native_end)
+        .ok_or(crate::FindingProductionReplayCaptureError::InvalidEventLog)?
+        .iter();
+    snapshot
+        .try_for_each_event_log_entry(|entry| {
+            if expected.next() == Some(entry) {
+                Ok(())
+            } else {
+                Err(())
+            }
+        })
+        .map_err(|_| crate::FindingProductionReplayCaptureError::InvalidEventLog)?;
     let trailing = complete_log
         .get(native_end..)
         .ok_or(crate::FindingProductionReplayCaptureError::InvalidEventLog)?;
@@ -662,7 +682,6 @@ fn capture_qemu_finding_replay_side(
         &complete_log[..prefix_len],
         snapshot,
         terminal_entry,
-        limits,
     )
 }
 
@@ -1042,6 +1061,13 @@ where
             )
             .map_err(terminal_campaign_error)?;
 
+            // Retained replay records go to disk under the attempt namespace.
+            let record_store = context.create_replay_record_store().map_err(|source| {
+                terminal_artifact_error(CrucibleArtifactError::ReplayRecord(
+                    crate::ReplayRecordError::StoreUnavailable { source },
+                ))
+            })?;
+
             let mut candidate_failure = None;
             let target_signature = signature.clone();
             let prepared = prepare_automatic_signature_preserving_finding_with_outcomes(
@@ -1052,6 +1078,7 @@ where
                     exact_pins,
                     exact_retention,
                     seed,
+                    record_store,
                 },
                 |candidate| match replay_candidate(
                     &self.store,

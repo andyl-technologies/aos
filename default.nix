@@ -2037,6 +2037,7 @@ in rec {
       inherit pkgs lib;
       mkSystem = mkFixtureSystem;
     };
+    headless-timeout = import ./lib/testing/headless-timeout.nix {inherit pkgs lib;};
     config-manifest = import ./lib/testing/config-manifest.nix {
       inherit pkgs lib;
       system = discoverSystems.server;

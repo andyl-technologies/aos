@@ -422,8 +422,8 @@ fn execute_initial_discovery(
             // fixtures require their exact-time event before completion.
             assert_eq!(explanation["observation"]["child_artifact"], genesis);
             assert_eq!(
-                explanation["observation"]["discovered_choices"],
-                serde_json::json!([])
+                explanation["observation"]["discovered_choice_count"],
+                serde_json::json!(0)
             );
             return Ok(Some(()));
         }

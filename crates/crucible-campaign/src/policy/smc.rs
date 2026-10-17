@@ -17,8 +17,11 @@ use crate::identity::{ChoiceDomainSemanticId, ProbabilityModelId, SelectableSema
 
 /// Maximum particle transitions represented by one pinned SMC design.
 ///
-/// Generation projection remains lazy, while this aggregate cap bounds the
-/// complete genealogy and report work a finished campaign can retain.
+/// This is an admission policy limit, not a memory guard. Replay retains one
+/// generation and one previous stage of source summaries, and a report keeps
+/// one compact summary per stage, so neither grows with this product. The cap
+/// still bounds replay time: planner request derivation replays from stage zero
+/// on every call, so its cost grows with the completed transition prefix.
 pub const MAX_SMC_TOTAL_PARTICLE_TRANSITIONS: u64 = 65_536;
 
 /// Deterministic ancestor-selection algorithm for an SMC design.

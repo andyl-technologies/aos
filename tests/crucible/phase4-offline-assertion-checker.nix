@@ -62,11 +62,11 @@
       }
       {
         label = "checked prefix reconstruction";
-        needle = "condition_prefix_from_recorded_entries";
+        needle = "fn append_pending";
       }
       {
         label = "every retained prefix fold";
-        needle = "for index in 0..event_log.len()";
+        needle = "self.evaluator.observe_prefix(&evaluation.prefix, oracle)";
       }
       {
         label = "online evaluator reuse";

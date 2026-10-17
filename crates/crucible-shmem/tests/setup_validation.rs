@@ -841,3 +841,7 @@ fn mmap_setup_region_keeps_guest_introspection_directions_distinct() {
 mod support;
 
 use support::*;
+
+#[cfg(unix)]
+#[path = "setup_validation/console_hot_fork.rs"]
+mod console_hot_fork;

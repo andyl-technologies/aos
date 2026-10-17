@@ -17,6 +17,31 @@ mod node_step_gate;
 mod rr_control_boundary_trace;
 mod runtime_determinism_trace;
 
+/// Retains one absolute host deadline through retries of an issued operation.
+///
+/// The private clock boundary alone samples host time. This opaque supervision
+/// value never contributes to modeled state or virtual-time ordering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HostSupervisionAbsoluteDeadline(deadline::AbsoluteHostDeadline);
+
+impl HostSupervisionAbsoluteDeadline {
+    /// Starts a checked host-only deadline without changing modeled time.
+    pub(crate) fn checked_after(timeout: std::time::Duration) -> Option<Self> {
+        deadline::AbsoluteHostDeadline::checked_after(timeout).map(Self)
+    }
+
+    /// Returns the original deadline's remaining host budget, saturated at zero.
+    pub(crate) fn remaining(self) -> std::time::Duration {
+        self.0.remaining()
+    }
+
+    /// Includes the exact deadline instant for existing test assertions.
+    #[cfg(test)]
+    pub(crate) fn has_not_elapsed(self) -> bool {
+        self.0.has_not_elapsed()
+    }
+}
+
 /// Keeps a host-only QEMU liveness deadline inside the supervision boundary.
 pub(super) struct HostSupervisionDeadline(deadline::HostSupervisionDeadline);
 

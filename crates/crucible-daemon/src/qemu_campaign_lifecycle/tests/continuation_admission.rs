@@ -114,10 +114,14 @@ fn continuation_accepts_an_authenticated_observation_source_frontier() {
     );
 
     let controls = validated_attempt_continuations(&input)
-        .unwrap_or_else(|()| panic!("authenticated observation source should validate"));
+        .unwrap_or_else(|()| panic!("authenticated observation source should validate"))
+        .controls()
+        .into_iter()
+        .map(|control| control.input().clone())
+        .collect::<Vec<_>>();
 
     assert_eq!(controls.len(), 1);
-    assert_eq!(controls[0].input().source_frontier_ticks(), 1);
+    assert_eq!(controls[0].source_frontier_ticks(), 1);
 }
 
 #[test]
@@ -227,6 +231,7 @@ fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_res
     let next_result = PreparedSemanticAttemptResult::new(
         first_result.observation().clone(),
         first_result.measurement_replay_evidence().to_vec(),
+        first_result.log_segments().clone(),
         first_result.finding().cloned(),
     )
     .expect("next prepared result without terminal evidence");
@@ -241,7 +246,7 @@ fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_res
         evidence.clone(),
     );
     resetting_factory
-        .prepare_observation(input.scenario())
+        .prepare_observation(input.scenario(), &fresh_runner_context())
         .expect("new fast-tier attempt resets per-worker evidence");
     assert_eq!(
         evidence

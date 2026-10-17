@@ -16,10 +16,11 @@ pub(super) fn request_from_frame(frame: &FrameEntry) -> Result<Request, DeviceEr
 /// Converts a pending response into an outbound shared-memory frame.
 pub(super) fn frame_from_pending_response(
     pending: &PendingResponse,
+    transport_source: Option<u32>,
 ) -> Result<FrameEntry, DeviceError> {
     Ok(FrameEntry::new(
         pending.delivery_icount(),
-        pending.key.src_node,
+        transport_source.unwrap_or(pending.key.src_node),
         pending.key.seq,
         &pending.response.payload,
     )?)

@@ -20,10 +20,12 @@ impl SingleScheduler {
             } else {
                 node.activity
             };
-            if matches!(
-                activity,
-                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-            ) {
+            if node.campaign_parked
+                || matches!(
+                    activity,
+                    SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+                )
+            {
                 continue;
             }
             let mut time = self.node_current_time(node)?.ticks;
@@ -100,24 +102,7 @@ impl SingleScheduler {
             .frontier
             .ticks
             .saturating_sub(self.node_current_time(node)?.ticks);
-        let native_timer = match node.exact_local_event {
-            ExactLocalEvent::TimerDeadline { virtual_time } => Some(virtual_time),
-            _ => None,
-        };
-        for deadline in native_timer.into_iter().chain(
-            node.vcpu_idle_states
-                .iter()
-                .filter_map(|vcpu| vcpu.next_deadline),
-        ) {
-            if deadline.ticks.checked_add(delta).is_none() {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "reactivating node `{}` overflows a native timer deadline",
-                        node.id.node.name
-                    ),
-                });
-            }
-        }
+        check_native_deadline_shift(node, delta, "reactivating")?;
         Ok(delta)
     }
 
@@ -128,26 +113,10 @@ impl SingleScheduler {
         activity: SchedulerNodeActivity,
         resume_delta: u64,
     ) {
-        let node = &mut self.nodes[index];
         if resume_delta != 0 {
-            node.time_mapping = NodeTimeMapping {
-                anchor_counter: node.counter,
-                anchor_time: SimInstant {
-                    ticks: self.frontier.ticks,
-                },
-            };
-            // The entire batch preflights these sums. Device completions are
-            // reprojected from physical counters by refresh_device_horizons;
-            // global input, trigger, and fault deadlines must not move.
-            if let ExactLocalEvent::TimerDeadline { virtual_time } = &mut node.exact_local_event {
-                virtual_time.ticks += resume_delta;
-            }
-            for vcpu in &mut node.vcpu_idle_states {
-                if let Some(deadline) = &mut vcpu.next_deadline {
-                    deadline.ticks += resume_delta;
-                }
-            }
+            self.reanchor_node_to_frontier(index, resume_delta);
         }
+        let node = &mut self.nodes[index];
         node.activity = activity;
         if matches!(
             activity,
@@ -156,4 +125,54 @@ impl SingleScheduler {
             self.device_horizons.remove(&node.id.node);
         }
     }
+
+    /// Moves a VM's logical clock to the frontier without retiring instructions.
+    ///
+    /// Callers preflight `delta` with [`check_native_deadline_shift`]. Native
+    /// timer reports keep their remaining duration. Device completions are
+    /// reprojected from physical counters by refresh_device_horizons; global
+    /// input, trigger, and fault deadlines must not move.
+    pub(super) fn reanchor_node_to_frontier(&mut self, index: usize, delta: u64) {
+        let frontier = self.frontier.ticks;
+        let node = &mut self.nodes[index];
+        node.time_mapping = NodeTimeMapping {
+            anchor_counter: node.counter,
+            anchor_time: SimInstant { ticks: frontier },
+        };
+        if let ExactLocalEvent::TimerDeadline { virtual_time } = &mut node.exact_local_event {
+            virtual_time.ticks += delta;
+        }
+        for vcpu in &mut node.vcpu_idle_states {
+            if let Some(deadline) = &mut vcpu.next_deadline {
+                deadline.ticks += delta;
+            }
+        }
+    }
+}
+
+/// Rejects a clock join whose native timer deadlines would overflow.
+pub(super) fn check_native_deadline_shift(
+    node: &RuntimeSchedulerNode,
+    delta: u64,
+    operation: &str,
+) -> Result<(), SchedulerError> {
+    let native_timer = match node.exact_local_event {
+        ExactLocalEvent::TimerDeadline { virtual_time } => Some(virtual_time),
+        _ => None,
+    };
+    for deadline in native_timer.into_iter().chain(
+        node.vcpu_idle_states
+            .iter()
+            .filter_map(|vcpu| vcpu.next_deadline),
+    ) {
+        if deadline.ticks.checked_add(delta).is_none() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "{operation} node `{}` overflows a native timer deadline",
+                    node.id.node.name
+                ),
+            });
+        }
+    }
+    Ok(())
 }

@@ -22,6 +22,11 @@ pub enum HostAssertionOutcomeKind {
     NeverReachedWarn,
     /// A fail-disposition reachability marker was never reached.
     NeverReachedFail,
+    /// A continuing prefix ended before an end-of-run obligation was decided.
+    ///
+    /// Only [`OfflineAssertionChecker::with_continuing_prefix`] produces this
+    /// kind. It never fails the run.
+    Undecided,
 }
 
 /// Assertion quantifier or marker flavor attached to outcomes and violations.
@@ -575,11 +580,27 @@ impl ExternalFormalTraceExporter {
 /// sets can be graded against retained runs.
 #[derive(Clone, Debug, Default)]
 pub struct OfflineAssertionChecker {
-    white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
-    guest_assertion_catalog: Vec<GuestAssertionMarker>,
-    code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
-    mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
-    terminal_quiescence: Option<SchedulerQuiescence>,
+    pub(super) white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
+    pub(super) guest_assertion_catalog: Vec<GuestAssertionMarker>,
+    pub(super) code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    pub(super) mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    pub(super) terminal_quiescence: Option<SchedulerQuiescence>,
+    pub(super) prefix_end: AssertionPrefixEnd,
+}
+
+/// How the last retained prefix relates to the end of the run.
+///
+/// End-of-run obligations, such as a `sometimes` predicate that has not yet
+/// held, are only decided once the run has ended. A run that stops where it
+/// can still continue has not ended, so those obligations stay undecided.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AssertionPrefixEnd {
+    /// The prefix ends the run; every obligation is finalized.
+    #[default]
+    Terminal,
+    /// The run can continue past the prefix; end-of-run obligations become
+    /// [`HostAssertionOutcomeKind::Undecided`].
+    Continuing,
 }
 
 impl OfflineAssertionChecker {
@@ -647,12 +668,23 @@ impl OfflineAssertionChecker {
         self
     }
 
+    /// Grades the retained log as a prefix of a run that can still continue.
+    ///
+    /// Outcomes the prefix decides keep their kinds: a false `always`, a
+    /// reached `unreachable`, a satisfied `sometimes`, or an expired
+    /// `eventually` deadline. Obligations that only the end of the run can
+    /// decide report [`HostAssertionOutcomeKind::Undecided`] instead of failing.
+    #[must_use]
+    pub fn with_continuing_prefix(mut self) -> Self {
+        self.prefix_end = AssertionPrefixEnd::Continuing;
+        self
+    }
+
     /// Grades `properties` against a retained event log using the black-box oracle.
     ///
     /// This entry point is for built-in black-box predicates and guest markers.
-    /// Named host predicates that inspect [`ObservedState::event_log_offset`]
-    /// should use [`Self::check_run_with_oracle`] with a [`RecordedAssertionLog`]
-    /// carrying the exact recorded prefix offsets.
+    /// Runs with named host predicates use [`Self::check_run_with_oracle`] with
+    /// a [`RecordedAssertionLog`] carrying the exact recorded prefix offsets.
     ///
     /// # Errors
     ///
@@ -664,8 +696,11 @@ impl OfflineAssertionChecker {
         event_log: &[SchedulerEventLogEntry],
     ) -> Result<HostAssertionReport, OfflineAssertionCheckError> {
         let mut oracle = BlackBoxHostOracle;
-        let recorded = RecordedAssertionLog::from_entries(event_log.to_vec());
-        self.check_run_internal(properties, &recorded, &mut oracle, false)
+        let mut check = self.start_check(properties, RecordedLogShape::of(event_log));
+        for entry in event_log {
+            check.push(entry.clone(), &mut oracle);
+        }
+        check.finish(&mut oracle)
     }
 
     /// Grades `properties` against a retained event log using `oracle`.
@@ -678,12 +713,13 @@ impl OfflineAssertionChecker {
     /// [`HostAssertionEvaluator::finalize_prefix`] observe that terminal prefix
     /// exactly once before applying end-of-run policies. Each observed point is
     /// reconstructed as a [`ConditionEventLogPrefix`] before evaluation. The
-    /// supplied [`RecordedAssertionLog`] should carry exact event-log offsets for
-    /// every prefix that can be observed by a named host predicate. A retained
-    /// offset makes its prefix an authoritative published boundary even when it
-    /// ends in an observable entry. Intermediate prefixes without retained
-    /// offsets are skipped for custom-oracle checks; the terminal prefix must
-    /// always have an exact offset.
+    /// supplied [`RecordedAssertionLog`] carries the exact event-log offset of
+    /// every prefix the run published. A retained offset makes its prefix an
+    /// authoritative published boundary even when it ends in an observable
+    /// entry. Intermediate prefixes without retained offsets are skipped for
+    /// custom-oracle checks; the terminal prefix must always have an exact
+    /// offset. Named predicates fold every entry whichever prefixes are
+    /// observed, so skipping a prefix never changes their states.
     ///
     /// # Errors
     ///
@@ -692,7 +728,9 @@ impl OfflineAssertionChecker {
     /// [`OfflineAssertionCheckError::MissingEventLogOffset`] when the terminal
     /// prefix has no recorded offset, or
     /// [`OfflineAssertionCheckError::EventLogOffsetMismatch`] when a supplied
-    /// offset's event count does not match the evaluated prefix length.
+    /// offset's event count does not match the evaluated prefix length, or
+    /// [`OfflineAssertionCheckError::Fold`] when a named predicate or console
+    /// matcher failed closed.
     pub fn check_run_with_oracle<O>(
         &self,
         properties: &Properties,
@@ -702,223 +740,45 @@ impl OfflineAssertionChecker {
     where
         O: HostAssertionOracle + ?Sized,
     {
-        self.check_run_internal(properties, recorded_log, oracle, true)
-    }
-
-    fn check_run_internal<O>(
-        &self,
-        properties: &Properties,
-        recorded_log: &RecordedAssertionLog,
-        oracle: &mut O,
-        require_recorded_offsets: bool,
-    ) -> Result<HostAssertionReport, OfflineAssertionCheckError>
-    where
-        O: HostAssertionOracle + ?Sized,
-    {
-        let mut evaluator = HostAssertionEvaluator::new(properties)
-            .with_white_box_policies(self.white_box_policies.clone())
-            .with_guest_assertion_catalog(self.guest_assertion_catalog.clone())
-            .with_resolved_code_points(
-                self.code_points
-                    .iter()
-                    .map(|(key, value)| ((key.0.clone(), key.1.clone()), *value)),
-            )
-            .with_resolved_mem_places(
-                self.mem_places
-                    .iter()
-                    .map(|(key, value)| ((key.0.clone(), key.1.clone()), value.clone())),
-            );
-        if let Some(quiescence) = self.terminal_quiescence.clone() {
-            evaluator = evaluator.with_terminal_scheduler_quiescence(quiescence);
+        let entries = recorded_log.entries();
+        let mut check = AssertionLogCheck::new(
+            self,
+            properties,
+            RecordedLogShape::of(entries),
+            std::sync::Arc::clone(&recorded_log.prefix_offsets),
+            true,
+        );
+        for entry in entries {
+            check.push(entry.clone(), oracle);
         }
-        let event_log = recorded_log.entries();
-        let terminal_prefix_len = event_log.len();
-        let terminal_prefix = condition_prefix_from_recorded_log(
-            recorded_log,
-            terminal_prefix_len,
-            require_recorded_offsets,
-        )?;
-
-        // With no host or declared guest states, only new enabled markers can
-        // change intermediate outcomes. Reapplying retained marker payloads is
-        // idempotent; guest marker states have no deadlines or lifecycle triggers.
-        // Prove temporal eligibility first, retaining the original loop
-        // for offsets, catalogs, and invalid or unsupported atomic histories.
-        let observe_new_markers_only = !require_recorded_offsets
-            && recorded_log.prefix_offsets.is_empty()
-            && evaluator.states.is_empty()
-            && evaluator.guest_marker_states.is_empty()
-            && self.guest_assertion_catalog.is_empty()
-            && intermediate_prefix_times_are_visible_or_atomic(event_log);
-        let mut pending_enabled_marker = false;
-        let mut latest_entry_ticks = 0;
-
-        for index in 0..event_log.len() {
-            let prefix_len = index + 1;
-            if prefix_len == terminal_prefix_len {
-                continue;
-            }
-            if observe_new_markers_only {
-                let entry = &event_log[index];
-                latest_entry_ticks = latest_entry_ticks.max(entry.at().ticks);
-                pending_enabled_marker |= matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::Observable(
-                        ObservableEventPayload::GuestAssertionMarker { node, .. }
-                    ) if self.white_box_policies.get(node) == Some(&WhiteBoxPolicy::Enabled)
-                );
-                // An atomic batch can hide a marker until a later visible entry.
-                // Observe its first valid original prefix, even before the batch's
-                // closing boundary, so violation coordinates remain unchanged.
-                if !pending_enabled_marker
-                    || latest_entry_ticks > EventEvaluationPoint::event_log_entry(entry).at().ticks
-                {
-                    continue;
-                }
-            }
-
-            let prefix_len_u64 = u64::try_from(prefix_len)
-                .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len })?;
-            let recorded_offset = recorded_log.event_log_offset(prefix_len_u64);
-            if require_recorded_offsets && recorded_offset.is_none() {
-                continue;
-            }
-            let prefix = match condition_prefix_from_recorded_log(
-                recorded_log,
-                prefix_len,
-                require_recorded_offsets,
-            ) {
-                Ok(prefix) => prefix,
-                Err(OfflineAssertionCheckError::ConditionEvaluation(
-                    ConditionEvaluationError::FutureEventLogEntry { .. },
-                )) if entry_awaits_atomic_evaluation_boundary(event_log, index)
-                    && (!require_recorded_offsets || recorded_offset.is_none()) =>
-                {
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            evaluator.observe_prefix(&prefix, oracle);
-            pending_enabled_marker = false;
-        }
-
-        Ok(evaluator.finalize_prefix(&terminal_prefix, oracle))
-    }
-}
-
-/// Proves that intermediate prefixes are visible or deferred by the original atomic rule.
-///
-/// A hidden observable prefix requires its first non-observable successor to be
-/// an evaluation boundary. A hidden causal prefix permits causal and observable
-/// successors until that boundary. Resolve these obligations at their first
-/// incompatible payload, even if later entries are temporally visible. This
-/// authenticates no new facts and visits each already authenticated entry once.
-fn intermediate_prefix_times_are_visible_or_atomic(event_log: &[SchedulerEventLogEntry]) -> bool {
-    let mut latest_entry_ticks = 0;
-    let mut awaiting_observable_boundary = false;
-    let mut awaiting_causal_boundary = false;
-
-    for entry in event_log {
-        match entry.payload() {
-            SchedulerEventLogPayload::EvaluationBoundary(_) => {
-                awaiting_observable_boundary = false;
-                awaiting_causal_boundary = false;
-            }
-            SchedulerEventLogPayload::Observable(_) => {}
-            SchedulerEventLogPayload::ResolvedHappening(_)
-            | SchedulerEventLogPayload::Decision(_) => {
-                if awaiting_observable_boundary {
-                    return false;
-                }
-            }
-            _ => {
-                if awaiting_observable_boundary || awaiting_causal_boundary {
-                    return false;
-                }
-            }
-        }
-
-        latest_entry_ticks = latest_entry_ticks.max(entry.at().ticks);
-        if latest_entry_ticks > EventEvaluationPoint::event_log_entry(entry).at().ticks {
-            match entry.payload() {
-                SchedulerEventLogPayload::Observable(_) => awaiting_observable_boundary = true,
-                SchedulerEventLogPayload::ResolvedHappening(_)
-                | SchedulerEventLogPayload::Decision(_) => {
-                    awaiting_causal_boundary = true;
-                }
-                _ => return false,
-            }
-        }
-    }
-
-    !awaiting_observable_boundary && !awaiting_causal_boundary
-}
-
-/// Reports whether an unpublished entry belongs to a completed atomic batch.
-fn entry_awaits_atomic_evaluation_boundary(
-    event_log: &[SchedulerEventLogEntry],
-    index: usize,
-) -> bool {
-    let trailing_batch = &event_log[index + 1..];
-    match event_log[index].payload() {
-        SchedulerEventLogPayload::Observable(_) => trailing_batch
-            .iter()
-            .find(|entry| !matches!(entry.payload(), SchedulerEventLogPayload::Observable(_)))
-            .is_some_and(|entry| {
-                matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::EvaluationBoundary(_)
-                )
-            }),
-        SchedulerEventLogPayload::ResolvedHappening(_) | SchedulerEventLogPayload::Decision(_) => {
-            // Quantum EMIT publishes causal entries and their evaluation boundary
-            // in one segment. A physical delivery can precede the prior point,
-            // but no reader can observe its intermediate flat prefix.
-            trailing_batch
-                .iter()
-                .find(|entry| {
-                    !matches!(
-                        entry.payload(),
-                        SchedulerEventLogPayload::ResolvedHappening(_)
-                            | SchedulerEventLogPayload::Decision(_)
-                            | SchedulerEventLogPayload::Observable(_)
-                    )
-                })
-                .is_some_and(|entry| {
-                    matches!(
-                        entry.payload(),
-                        SchedulerEventLogPayload::EvaluationBoundary(_)
-                    )
-                })
-        }
-        _ => false,
+        check.finish(oracle)
     }
 }
 
 /// Retained assertion-checking view of a recorded scheduler event log.
 ///
-/// Custom host predicate oracles can inspect [`ObservedState::event_log_offset`].
-/// To make those predicates byte-identical online and offline, this value stores
-/// the scheduler entries plus offsets reconstructed from retained event-log
+/// Custom-oracle checks evaluate exactly the prefixes the run published, and
+/// their violations cite those prefixes' offsets. This value stores the
+/// scheduler entries plus offsets reconstructed from retained event-log
 /// segments using the scheduler's canonical segment and prefix hashing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordedAssertionLog {
     pub(super) entries: Vec<SchedulerEventLogEntry>,
-    pub(super) prefix_offsets: BTreeMap<u64, EventLogOffset>,
+    pub(super) prefix_offsets: std::sync::Arc<BTreeMap<u64, EventLogOffset>>,
 }
 
 impl RecordedAssertionLog {
     /// Builds a recorded log from scheduler entries without segment offsets.
     ///
-    /// This is sufficient for [`OfflineAssertionChecker::check_run`], whose
-    /// default black-box oracle cannot inspect event-log offsets. Custom host
-    /// oracles should use [`Self::from_segments`] so evaluated prefixes carry the
-    /// same offsets the scheduler observed online.
+    /// This is sufficient for [`OfflineAssertionChecker::check_run`], which
+    /// observes every prefix. Custom host oracles should use
+    /// [`Self::from_segments`] so evaluated prefixes carry the same offsets
+    /// the scheduler observed online.
     #[must_use]
     pub fn from_entries(entries: Vec<SchedulerEventLogEntry>) -> Self {
         Self {
             entries,
-            prefix_offsets: BTreeMap::new(),
+            prefix_offsets: std::sync::Arc::default(),
         }
     }
 
@@ -1008,7 +868,7 @@ impl RecordedAssertionLog {
 
         Ok(Self {
             entries,
-            prefix_offsets,
+            prefix_offsets: std::sync::Arc::new(prefix_offsets),
         })
     }
 
@@ -1066,6 +926,10 @@ pub enum OfflineAssertionCheckError {
         /// Events appended by the segment.
         appended_events: u64,
     },
+    /// A streamed log's entries differ from its declared count or final time.
+    RecordedLogShapeMismatch,
+    /// The assertion fold failed closed, so the log has no verdict.
+    Fold(AssertionFoldFailure),
 }
 
 impl fmt::Display for OfflineAssertionCheckError {
@@ -1105,6 +969,11 @@ impl fmt::Display for OfflineAssertionCheckError {
                 formatter,
                 "offline assertion log event count overflow: events={events} appended_events={appended_events}"
             ),
+            Self::RecordedLogShapeMismatch => write!(
+                formatter,
+                "offline assertion log entries differ from the declared count or final time"
+            ),
+            Self::Fold(failure) => write!(formatter, "{failure}"),
         }
     }
 }
@@ -1113,12 +982,14 @@ impl Error for OfflineAssertionCheckError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::ConditionEvaluation(error) => Some(error),
+            Self::Fold(failure) => Some(failure),
             Self::MissingEventLogOffset { .. }
             | Self::EventLogOffsetMismatch { .. }
             | Self::PrefixLengthOverflow { .. }
             | Self::EventLogSegmentLengthOverflow { .. }
             | Self::EventLogByteOffsetOverflow { .. }
-            | Self::EventLogEventCountOverflow { .. } => None,
+            | Self::EventLogEventCountOverflow { .. }
+            | Self::RecordedLogShapeMismatch => None,
         }
     }
 }
@@ -1140,6 +1011,9 @@ pub struct HostAssertionEvaluator {
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     terminal_quiescence: Option<SchedulerQuiescence>,
     last_position: Option<HostAssertionPrefixPosition>,
+    guest_marker_cursor: Option<ObservableEventCursor>,
+    deadline_base: Option<ConditionEventLogPrefix>,
+    pub(super) fold: AssertionFold,
 }
 
 // Deadline crossing needs only the prior point; checkpoint binding needs its
@@ -1160,7 +1034,7 @@ impl HostAssertionPrefixPosition {
     }
 }
 
-const HOST_ASSERTION_CHECKPOINT_MAGIC: &[u8] = b"crucible.host-assertion-continuation.v2\0";
+const HOST_ASSERTION_CHECKPOINT_MAGIC: &[u8] = b"crucible.host-assertion-continuation.v3\0";
 const HOST_ASSERTION_CHECKPOINT_MAX_BYTES: usize = 268_435_456;
 
 /// Process-independent continuation of the streaming host assertion evaluator.
@@ -1177,6 +1051,7 @@ struct HostAssertionEvaluatorWire {
     once_latches: Vec<Vec<u8>>,
     terminal_quiescence: Option<SchedulerQuiescence>,
     last_prefix: Option<EventLogOffset>,
+    assertion_fold: AssertionFoldWire,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1220,6 +1095,7 @@ impl HostAssertionEvaluator {
                     .collect(),
                 terminal_quiescence: self.terminal_quiescence.clone(),
                 last_prefix: self.last_position.map(|position| position.offset),
+                assertion_fold: self.fold.to_wire(),
             },
         }
     }
@@ -1299,6 +1175,13 @@ impl HostAssertionEvaluatorCheckpoint {
             .map(|bytes| Predicate::from_compact_binary(bytes))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| HostAssertionCheckpointError::Malformed)?;
+        let fold = evaluator
+            .fold
+            .restored_from(
+                &self.wire.assertion_fold,
+                self.wire.last_prefix.map(|offset| offset.events),
+            )
+            .ok_or(HostAssertionCheckpointError::Binding)?;
         let mut staged = evaluator.clone();
         for (state, wire) in staged.states.iter_mut().zip(&self.wire.states) {
             state.lifecycle = wire.lifecycle;
@@ -1316,6 +1199,9 @@ impl HostAssertionEvaluatorCheckpoint {
             .wire
             .last_prefix
             .map(|_| HostAssertionPrefixPosition::from_prefix(current_prefix));
+        staged.guest_marker_cursor = None;
+        staged.deadline_base = None;
+        staged.fold = fold;
         *evaluator = staged;
         Ok(())
     }
@@ -1332,6 +1218,7 @@ fn validate_host_assertion_wire(
             .guest_marker_states
             .windows(2)
             .all(|pair| pair[0].id < pair[1].id)
+        || !wire.assertion_fold.is_canonical()
     {
         return Err(HostAssertionCheckpointError::Noncanonical);
     }
@@ -1376,6 +1263,11 @@ impl HostAssertionEvaluator {
     #[must_use]
     pub fn new(properties: &Properties) -> Self {
         let (states, guest_marker_states) = partition_declared_assertions(properties);
+        let fold = AssertionFold::declared_by(
+            states
+                .iter()
+                .flat_map(|state| property_predicates(&state.assertion.property)),
+        );
         Self {
             states,
             guest_marker_states,
@@ -1385,7 +1277,19 @@ impl HostAssertionEvaluator {
             mem_places: BTreeMap::new(),
             terminal_quiescence: None,
             last_position: None,
+            guest_marker_cursor: None,
+            deadline_base: None,
+            fold,
         }
+    }
+
+    /// Returns why named predicate evaluation failed closed, if it did.
+    ///
+    /// Once set, every named leaf evaluates false, so the evaluator's
+    /// outcomes and reports must not be used as a verdict.
+    #[must_use]
+    pub fn assertion_fold_failure(&self) -> Option<&AssertionFoldFailure> {
+        self.fold.failure()
     }
 
     /// Adds authoritative white-box opt-in policies for guest marker evaluation.
@@ -1459,12 +1363,14 @@ impl HostAssertionEvaluator {
     {
         let mut outcomes = Vec::new();
         outcomes.extend(self.observe_due_eventually_deadlines(prefix, oracle));
+        self.fold.fold_to(prefix, oracle);
+        let mut leaves = FoldedLeafStates::new(oracle, self.fold.states(), self.fold.console());
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
             if let Some(outcome) = observe_host_assertion_state(
                 state,
                 prefix,
-                oracle,
+                &mut leaves,
                 once_latches,
                 &self.white_box_policies,
                 &self.code_points,
@@ -1473,11 +1379,27 @@ impl HostAssertionEvaluator {
                 outcomes.push(outcome);
             }
         }
+        let failure = leaves.into_failure();
+        self.fold.record_failure(failure);
+        let resume = ObservableEventCursor::resume_index(
+            self.guest_marker_cursor.as_ref(),
+            prefix.observable_events(),
+        );
         outcomes.extend(observe_guest_marker_assertions(
             &mut self.guest_marker_states,
             prefix,
+            resume,
             &self.white_box_policies,
         ));
+        self.guest_marker_cursor = Some(ObservableEventCursor::at_end(prefix.observable_events()));
+        // A pending `eventually` deadline is evaluated from this prefix plus
+        // the entries that arrive before it, so keep the prefix only while
+        // some obligation can still expire. Its histories are shared.
+        let pending_deadline = self
+            .states
+            .iter()
+            .any(|state| state.terminal.is_none() && !state.pending_eventually.is_empty());
+        self.deadline_base = pending_deadline.then(|| prefix.clone());
         self.last_position = Some(HostAssertionPrefixPosition::from_prefix(prefix));
         sort_host_assertion_outcomes(&mut outcomes);
         outcomes
@@ -1535,17 +1457,23 @@ impl HostAssertionEvaluator {
 
         let mut outcomes = Vec::new();
         for deadline in deadlines {
-            let Some(deadline_prefix) =
-                prefix.with_facts_through_point(EventEvaluationPoint::assertion_deadline(deadline))
-            else {
+            let Some(deadline_prefix) = prefix.with_facts_through_point_after(
+                self.deadline_base.as_ref(),
+                EventEvaluationPoint::assertion_deadline(deadline),
+            ) else {
                 continue;
             };
+            // Entries through the deadline are folded for good; the empty
+            // step at the deadline itself is discarded after evaluation.
+            self.fold.fold_to(&deadline_prefix, oracle);
+            let deadline_states = self.fold.stepped_at(deadline_prefix.point(), oracle);
+            let mut leaves = FoldedLeafStates::new(oracle, &deadline_states, self.fold.console());
             let once_latches = &mut self.once_latches;
             for state in &mut self.states {
                 if let Some(outcome) = observe_eventually_deadline_state(
                     state,
                     &deadline_prefix,
-                    oracle,
+                    &mut leaves,
                     once_latches,
                     &self.white_box_policies,
                     &self.code_points,
@@ -1554,6 +1482,8 @@ impl HostAssertionEvaluator {
                     outcomes.push(outcome);
                 }
             }
+            let failure = leaves.into_failure();
+            self.fold.record_failure(failure);
         }
         outcomes
     }
@@ -1567,22 +1497,57 @@ impl HostAssertionEvaluator {
     where
         O: HostAssertionOracle + ?Sized,
     {
+        self.finalize_prefix_at_end(prefix, oracle, AssertionPrefixEnd::Terminal)
+    }
+
+    /// Finalizes all assertions at a prefix whose relation to the run end is `end`.
+    pub(super) fn finalize_prefix_at_end<O>(
+        &mut self,
+        prefix: &ConditionEventLogPrefix,
+        oracle: &mut O,
+        end: AssertionPrefixEnd,
+    ) -> HostAssertionReport
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
+        let reproduction_artifact = assertion_reproduction_artifact_from_prefix(prefix);
+        self.finalize_prefix_with_trace(prefix, oracle, end, reproduction_artifact)
+    }
+
+    /// Finalizes with a reproduction trace hash computed by the caller.
+    ///
+    /// A streamed check hashes the trace as entries arrive, so finalization
+    /// needs no retained copy of the log.
+    pub(super) fn finalize_prefix_with_trace<O>(
+        &mut self,
+        prefix: &ConditionEventLogPrefix,
+        oracle: &mut O,
+        end: AssertionPrefixEnd,
+        reproduction_artifact: ContentHash,
+    ) -> HostAssertionReport
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
         self.observe_prefix(prefix, oracle);
+        let mut leaves = FoldedLeafStates::new(oracle, self.fold.states(), self.fold.console());
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
             finalize_host_assertion_state(
                 state,
                 prefix,
-                oracle,
+                &mut leaves,
                 once_latches,
                 &self.white_box_policies,
                 &self.code_points,
                 &self.mem_places,
                 self.terminal_quiescence.as_ref(),
+                end,
             );
         }
+        let failure = leaves.into_failure();
+        self.fold.record_failure(failure);
         for state in &mut self.guest_marker_states {
-            finalize_guest_marker_assertion_state(state, prefix.point().at());
+            finalize_guest_marker_assertion_state(state, prefix.point().at(), end);
         }
         let outcomes = self
             .states
@@ -1607,7 +1572,6 @@ impl HostAssertionEvaluator {
                 )
             })
             .collect::<Vec<_>>();
-        let reproduction_artifact = assertion_reproduction_artifact_from_prefix(prefix);
         let violations =
             host_assertion_violations_from_outcomes(&outcomes, prefix, reproduction_artifact);
         let mut proximities = self
@@ -1874,7 +1838,7 @@ pub(super) fn observe_host_assertion_state<O>(
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> Option<HostAssertionOutcome>
 where
-    O: HostAssertionOracle + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     if state.terminal.is_some() {
         return None;
@@ -2005,7 +1969,7 @@ pub(super) fn observe_eventually_assertion<O>(
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> Option<HostAssertionOutcome>
 where
-    O: HostAssertionOracle + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     let at = prefix.point().at();
     state.evaluated = true;
@@ -2126,7 +2090,7 @@ pub(super) fn observe_eventually_deadline_state<O>(
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> Option<HostAssertionOutcome>
 where
-    O: HostAssertionOracle + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     if state.terminal.is_some() || state.pending_eventually.is_empty() {
         return None;
@@ -2205,7 +2169,7 @@ pub(super) fn observe_reachability_assertion<O>(
     expectation: ReachabilityExpectation,
 ) -> Option<HostAssertionOutcome>
 where
-    O: HostAssertionOracle + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     state.evaluated = true;
     state.lifecycle = PropertyLifecycleState::Passing;
@@ -2270,8 +2234,9 @@ pub(super) fn finalize_host_assertion_state<O>(
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     terminal_quiescence: Option<&SchedulerQuiescence>,
+    end: AssertionPrefixEnd,
 ) where
-    O: HostAssertionOracle + ?Sized,
+    O: AssertionLeafResolver + ?Sized,
 {
     if state.terminal.is_some() {
         return;
@@ -2279,6 +2244,15 @@ pub(super) fn finalize_host_assertion_state<O>(
 
     let at = prefix.point().at();
     let property = state.assertion.property.clone();
+    if end == AssertionPrefixEnd::Continuing && host_obligation_awaits_run_end(state, &property, at)
+    {
+        state.terminal(
+            HostAssertionOutcomeKind::Undecided,
+            at,
+            "end-of-run obligation is undecided at a continuing prefix",
+        );
+        return;
+    }
     match property {
         Property::Always { .. } => {
             if state.evaluated {
@@ -2377,6 +2351,37 @@ pub(super) fn finalize_host_assertion_state<O>(
                 );
             }
         },
+    }
+}
+
+/// Returns whether only the end of the run can decide this open host obligation.
+///
+/// An expired `eventually` deadline is decided by the prefix itself and still
+/// fails; an armed obligation whose deadline lies ahead is not.
+fn host_obligation_awaits_run_end(
+    state: &HostAssertionState,
+    property: &Property,
+    at: VirtualTime,
+) -> bool {
+    match property {
+        Property::Sometimes { .. }
+        | Property::AfterQuiescence { .. }
+        | Property::Reachable {
+            expectation: ReachabilityExpectation::Reachable { .. },
+            ..
+        } => true,
+        Property::Eventually { .. } => {
+            !state.pending_eventually.is_empty()
+                && state
+                    .pending_eventually
+                    .iter()
+                    .all(|obligation| at.ticks <= obligation.deadline.ticks)
+        }
+        Property::Always { .. }
+        | Property::Reachable {
+            expectation: ReachabilityExpectation::Unreachable,
+            ..
+        } => false,
     }
 }
 

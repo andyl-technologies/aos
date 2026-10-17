@@ -15,7 +15,7 @@ use crucible_campaign::{
 };
 
 use crate::{
-    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2, CampaignRuntimeDriver,
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3, CampaignRuntimeDriver,
     CampaignRuntimeStepDisposition, CrucibleArtifactError, CrucibleMeasurementError,
     CrucibleMeasurementReplayEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     decode_crucible_scenario_artifact, evaluate_crucible_objectives,
@@ -143,17 +143,13 @@ fn evaluate_input(
         .map_err(ObjectiveEvaluationDriverError::Campaign);
     }
 
-    let mut evidence = retained.evidence().iter();
-    let evidence_id = match (evidence.next(), evidence.next()) {
-        (Some(evidence_id), None) => *evidence_id,
-        _ => {
-            return Err(
-                ObjectiveEvaluationDriverError::InvalidReplayEvidenceCardinality {
-                    actual: retained.evidence().len(),
-                },
-            );
-        }
-    };
+    // The measurement set owns one replay leaf plus the log segments it
+    // references; verification below checks that exact set.
+    let evidence_id = crate::measurement_replay_leaf_id(retained.evidence()).ok_or(
+        ObjectiveEvaluationDriverError::InvalidReplayEvidenceCardinality {
+            actual: retained.evidence().len(),
+        },
+    )?;
     let evidence_bytes = repository.read_objective_evidence_leaf(
         input,
         evidence_id,
@@ -164,6 +160,7 @@ fn evaluate_input(
     let evaluation = verify_crucible_measurement_publication(
         input.measurements(),
         &evidence,
+        &crate::ObjectiveInputSegmentSource::new(repository, input),
         input.configuration().scenario(),
         input.configuration().configuration(),
         scenario.measurements(),
@@ -182,10 +179,10 @@ fn require_current_measurement_payload(
     measurements: &MeasurementSet,
 ) -> Result<(), CrucibleMeasurementError> {
     let actual = measurements.evaluation().payload_schema();
-    if actual != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if actual != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
             actual,
-            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
         });
     }
     Ok(())
@@ -195,9 +192,11 @@ fn require_current_measurement_payload(
 #[derive(Debug, thiserror::Error)]
 pub enum ObjectiveEvaluationDriverError {
     /// The retained v2 measurement payload did not name exactly one replay leaf.
-    #[error("Crucible measurement payload v2 named {actual} replay evidence leaves; expected one")]
+    #[error(
+        "Crucible measurement payload v2 named {actual} evidence objects without exactly one replay leaf"
+    )]
     InvalidReplayEvidenceCardinality {
-        /// Number of evidence leaves named by the retained payload.
+        /// Number of evidence objects named by the retained payload.
         actual: usize,
     },
     /// Repository evidence loading or authentication failed.
@@ -251,7 +250,7 @@ mod tests {
             require_current_measurement_payload(&measurements),
             Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
                 actual: 1,
-                expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+                expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
             })
         ));
     }

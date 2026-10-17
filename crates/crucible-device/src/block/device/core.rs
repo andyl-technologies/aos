@@ -343,6 +343,22 @@ impl BlockDevice {
         self.storage_faults.lose_controller(sequences)
     }
 
+    /// Retires media and flash continuations that can never be named again.
+    ///
+    /// See [`BlockFaultState::retire_inactive_media_contributors`] for the
+    /// liveness contract and determinism requirement. Returns the number of
+    /// retired continuations.
+    ///
+    /// # Errors
+    ///
+    /// Refuses before mutation when the storage observation revision is exhausted.
+    pub fn retire_inactive_storage_media(
+        &mut self,
+        live: &std::collections::BTreeSet<[u8; 32]>,
+    ) -> Result<usize, DeviceError> {
+        self.storage_faults.retire_inactive_media_contributors(live)
+    }
+
     /// Applies an asynchronous controller transition at an authorized host boundary.
     ///
     /// Unlike a duplicate-completion reset, this transition is not caused by

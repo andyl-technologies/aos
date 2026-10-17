@@ -1073,13 +1073,13 @@ fn happy_path_properties(world: &World) -> Result<Properties, EngineError> {
                 property: Property::Eventually {
                     trigger: Predicate::once(Predicate::console_match(
                         node("client"),
-                        RegexProgram::from_pattern("(^|\\n)CLIENT_STARTED(\\r?\\n|$)"),
+                        RegexProgram::from_pattern("(?m:^)CLIENT_STARTED\\r?\\n"),
                     )),
                     property: Predicate::all_of(vec![
                         Predicate::console_match(
                             node("client"),
                             RegexProgram::from_pattern(
-                                "(^|\\n)CLIENT_RESULT requests=100 successful=100 failed=0(\\r?\\n|$)",
+                                "(?m:^)CLIENT_RESULT requests=100 successful=100 failed=0\\r?\\n",
                             ),
                         ),
                         Predicate::node_state(node("client"), NodeLifecycle::Exited),
@@ -1340,7 +1340,7 @@ fn fault_campaign_violation_observations_from_artifact(
     artifact: &ReproductionArtifact,
 ) -> Result<Vec<ObservableEvent>, ExampleCorpusError> {
     let mut decoded = None;
-    for decision in artifact.schedule().decisions() {
+    for decision in artifact.schedule().decision_history() {
         let Decision::Override(override_decision) = decision else {
             continue;
         };
@@ -1507,6 +1507,7 @@ fn run_example_scenario_material(
             Vec::new(),
         )
         .with_trigger_world(scenario.world())
+        .with_trigger_console_matchers(graph)
         .with_effective_topology_edges(scheduler_edges),
     )?;
     let mut canonical_event_log = Vec::new();
@@ -1677,7 +1678,8 @@ fn assertion_state_event_from_outcome(outcome: &HostAssertionOutcome) -> Option<
         | HostAssertionOutcomeKind::NeverEvaluated
         | HostAssertionOutcomeKind::NeverTriggered
         | HostAssertionOutcomeKind::NeverReachedWarn
-        | HostAssertionOutcomeKind::NeverReachedFail => return None,
+        | HostAssertionOutcomeKind::NeverReachedFail
+        | HostAssertionOutcomeKind::Undecided => return None,
     };
     Some(ObservableEvent::assertion_state_changed(
         outcome.at,
@@ -1699,7 +1701,10 @@ fn evaluate_example_graph(
     .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
     .with_scheduler_quiescence(scheduler.quiescence()?)
     .with_world_white_box_policies(world);
-    Ok(pass.evaluate_event_graph(graph, state))
+    pass.evaluate_event_graph(graph, state)
+        .map_err(|undeclared| {
+            ExampleCorpusError::Scheduler(SchedulerError::UndeclaredConsoleMatcher(undeclared))
+        })
 }
 
 fn scenario_run_time_limit(steps: &[ExampleReplayStep]) -> u64 {
@@ -1800,7 +1805,7 @@ fn example_script_from_schedule(
 ) -> Result<Vec<ExampleReplayStep>, ExampleCorpusError> {
     let mut steps = Vec::new();
     let expected_prefix = format!("{EXAMPLE_REPLAY_STEP_POINT_PREFIX}{scenario_name}/");
-    for decision in schedule.decisions() {
+    for decision in schedule.decision_history() {
         let Decision::Override(override_decision) = decision else {
             return Err(invalid_replay_schedule(
                 scenario_name,
@@ -1889,6 +1894,19 @@ fn encode_observation(
             node.name,
             bytes_hex(bytes)
         )),
+        ObservableEventPayload::NativeConsoleByte { node, origin } => Ok(format!(
+            "native-console-byte|{}|{}|{}",
+            observation.at().ticks,
+            node.name,
+            bytes_hex(
+                &origin
+                    .to_canonical_bytes()
+                    .map_err(|_| invalid_replay_schedule(
+                        scenario_name,
+                        "invalid native console origin"
+                    ))?
+            ),
+        )),
         ObservableEventPayload::CoverageBlock {
             execution_icount,
             node,
@@ -1951,6 +1969,19 @@ fn decode_observation(
             node(node_name),
             bytes_from_hex(scenario_name, bytes)?,
         )),
+        ["native-console-byte", ticks, node_name, origin] => {
+            let origin = crate::NativeConsoleByteOrigin::from_canonical_bytes(&bytes_from_hex(
+                scenario_name,
+                origin,
+            )?)
+            .map_err(|_| invalid_replay_schedule(scenario_name, "invalid native console origin"))?;
+            ObservableEvent::native_console_byte(
+                decode_ticks(scenario_name, ticks)?,
+                node(node_name),
+                origin,
+            )
+            .map_err(|_| invalid_replay_schedule(scenario_name, "invalid native console origin"))
+        }
         ["node-state", ticks, node_name, state] => Ok(ObservableEvent::node_state(
             decode_ticks(scenario_name, ticks)?,
             node(node_name),
