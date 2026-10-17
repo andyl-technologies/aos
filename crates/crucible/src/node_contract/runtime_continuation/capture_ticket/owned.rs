@@ -166,7 +166,8 @@ owned_fields!(OriginalLineageRuntimeRecord; source_activation, owners, operation
 owned_fields!(crate::node_contract::SavedRuntimeOwner; identity, operation, domains);
 owned_fields!(crate::node_contract::SavedSchedulingCommit; node, operation, retained_outputs);
 owned_fields!(crate::node_contract::SavedRuntimeOperation;
-    operation, route, request, input_batch, result, scheduling_commit);
+    operation, route, request, input_batch, result, close_submission,
+    submission_effects, scheduling_commit);
 owned_fields!(crate::node_contract::OriginalLineageProvenanceRecord;
     node, stage_operation, batch, inventory, roots, objects);
 owned_fields!(crate::node_contract::OriginalLineageInputRecord;
@@ -355,6 +356,18 @@ impl OwnedStorage for BTreeMap<String, serde_json::Value> {
             let bytes = storage::add(bytes, key.owned_storage()?)?;
             storage::add(bytes, value.owned_storage()?)
         })
+    }
+}
+
+owned_fields!(crate::node_contract::Refusal; reason);
+
+impl OwnedStorage for crate::node_contract::Submission {
+    fn owned_storage(&self) -> Result<usize, RuntimeError> {
+        match self {
+            Self::Refused(refusal) => refusal.owned_storage(),
+            Self::Accepted => Ok(0),
+            Self::Uncertain(effects) => effects.owned_storage(),
+        }
     }
 }
 
@@ -695,5 +708,146 @@ impl NodeRuntime {
             maximum_decode_slot,
             maximum,
         )
+    }
+}
+
+// Test fixture construction intentionally fails immediately on invalid static DATA.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod submission_storage_tests {
+    use super::*;
+    use crate::node_contract::{
+        EffectKnowledge, NodeRoute, Refusal, RuntimeSnapshot, SavedRuntimeActivation,
+        SavedRuntimeOperation, SavedRuntimeResult, Submission,
+    };
+    use crucible_node_contract::{Phase, canonical};
+
+    fn snapshot() -> RuntimeSnapshot {
+        let reference = canonical::content_ref(b"activation", "application/octet-stream").unwrap();
+        let at = Position::new(U64::new(1), U64::new(1), Phase::Publication);
+        let operation = SavedRuntimeOperation {
+            operation: Id::new("operation").unwrap(),
+            route: NodeRoute {
+                node: Id::new("node").unwrap(),
+                owners: Vec::new(),
+            },
+            request: crate::node_contract::OperationRequest::Observe,
+            input_batch: None,
+            result: SavedRuntimeResult::Pending,
+            close_submission: None,
+            submission_effects: None,
+            scheduling_commit: None,
+        };
+        let mut operations = Vec::with_capacity(4);
+        operations.push(operation);
+
+        RuntimeSnapshot {
+            schema_version: 1,
+            source_activation: SavedRuntimeActivation {
+                generation: U64::new(1),
+                activation_id: Id::new("activation").unwrap(),
+                world_binding_hash: reference.hash,
+                owners: Vec::new(),
+                boundary: at,
+            },
+            capture_cut: at,
+            capture_ordinal: U64::new(1),
+            owners: Vec::new(),
+            operations,
+            inputs: Vec::new(),
+            terminal: None,
+            condition_stop: None,
+        }
+    }
+
+    fn prefix_with_spare_capacity(slots: usize, identifier_capacity: usize) -> (Vec<Id>, usize) {
+        let mut prefix = Vec::with_capacity(slots);
+        for value in ["first", "second"] {
+            let mut identifier = String::with_capacity(identifier_capacity);
+            identifier.push_str(value);
+            prefix.push(Id::new(identifier).unwrap());
+        }
+        assert!(prefix.capacity() > prefix.len());
+        assert!(
+            prefix
+                .iter()
+                .all(|id| id.allocated_capacity() > id.as_str().len())
+        );
+
+        let bytes = prefix.capacity() * size_of::<Id>()
+            + prefix.iter().map(Id::allocated_capacity).sum::<usize>();
+        (prefix, bytes)
+    }
+
+    #[test]
+    fn refused_close_counts_reason_spare_capacity_in_bounded_snapshot_walk()
+    -> Result<(), RuntimeError> {
+        let mut snapshot = snapshot();
+        let baseline =
+            NodeRuntime::original_snapshot_requested_storage_data(&snapshot, usize::MAX)?;
+        let mut reason = String::with_capacity(4096);
+        reason.push_str("original close refused");
+        let backing = reason.capacity();
+        assert!(backing > reason.len());
+        snapshot.operations[0].close_submission = Some(Submission::Refused(Refusal { reason }));
+
+        let exact = baseline + backing;
+        assert_eq!(
+            NodeRuntime::original_snapshot_requested_storage_data(&snapshot, exact)?,
+            exact
+        );
+        assert_eq!(
+            NodeRuntime::original_snapshot_requested_storage_data(&snapshot, exact - 1),
+            Err(RuntimeError::ResourceLimit)
+        );
+        let Some(Submission::Refused(refusal)) = &snapshot.operations[0].close_submission else {
+            panic!("observation changed the original submission");
+        };
+        assert_eq!(refusal.reason, "original close refused");
+        assert_eq!(refusal.reason.capacity(), backing);
+        Ok(())
+    }
+
+    #[test]
+    fn uncertain_close_and_dispatch_prefixes_keep_independent_spare_backing()
+    -> Result<(), RuntimeError> {
+        let mut snapshot = snapshot();
+        let baseline =
+            NodeRuntime::original_snapshot_requested_storage_data(&snapshot, usize::MAX)?;
+        let (close_prefix, close_backing) = prefix_with_spare_capacity(8, 256);
+        let (dispatch_prefix, dispatch_backing) = prefix_with_spare_capacity(12, 512);
+        assert_eq!(close_prefix, dispatch_prefix);
+        assert_ne!(close_prefix.as_ptr(), dispatch_prefix.as_ptr());
+        snapshot.operations[0].close_submission = Some(Submission::Uncertain(
+            EffectKnowledge::CommittedPrefix(close_prefix),
+        ));
+        snapshot.operations[0].submission_effects =
+            Some(EffectKnowledge::CommittedPrefix(dispatch_prefix));
+
+        let exact = baseline + close_backing + dispatch_backing;
+        assert_eq!(
+            NodeRuntime::original_snapshot_requested_storage_data(&snapshot, exact)?,
+            exact
+        );
+        assert_eq!(
+            NodeRuntime::original_snapshot_requested_storage_data(&snapshot, exact - 1),
+            Err(RuntimeError::ResourceLimit)
+        );
+        // A failed observation does not release either retained original prefix.
+        assert_eq!(
+            NodeRuntime::original_snapshot_requested_storage_data(&snapshot, exact)?,
+            exact
+        );
+
+        snapshot.operations[0].close_submission = Some(Submission::Accepted);
+        snapshot.operations[0].submission_effects = Some(EffectKnowledge::Unknown);
+        assert_eq!(
+            NodeRuntime::original_snapshot_requested_storage_data(&snapshot, baseline)?,
+            baseline
+        );
+        for effects in [EffectKnowledge::None, EffectKnowledge::MayHaveProgressed] {
+            assert_eq!(Submission::Uncertain(effects).owned_storage()?, 0);
+        }
+        Ok(())
     }
 }
