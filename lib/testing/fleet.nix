@@ -220,7 +220,23 @@
         # Every machine bakes per-VM identity into its image /etc. A test may
         # independently attach provisioning input through the metadata channel.
         effectiveSystem = mkEffectiveSystem {inherit m hostsEntries sshAuthorizedKey;};
-        compressedImage = effectiveSystem.config.system.build.image.raw;
+        # Fleet guests immediately decode these disks. Maximum compression
+        # adds minutes per machine without helping their boot or assertions.
+        compressedImage = effectiveSystem.config.system.build.image.raw.overrideAttrs (previous: {
+          phases = map (phase:
+            if phase.name == "install"
+            then let
+              deliveryCompression = "zstd --ultra -22 --long=27 -T1 --no-progress";
+              fleetCompression = "zstd --ultra -1 --long=27 -T1 --no-progress";
+            in
+              assert builtins.length (lib.splitString deliveryCompression phase.script) == 2;
+                phase
+                // {
+                  script = builtins.replaceStrings [deliveryCompression] [fleetCompression] phase.script;
+                }
+            else phase)
+          previous.phases;
+        });
         compressedImageName = "aos-${effectiveSystem.config.aos.system.name}.img.zst";
         imageDisk =
           pkgs.runCommand "aos-fleet-${m.name}-image-disk" {
