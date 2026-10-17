@@ -476,3 +476,6 @@ pub(super) fn projection_counter_scratch_data() -> usize {
 #[cfg(test)]
 #[path = "reservation_tests.rs"]
 mod tests;
+
+#[path = "reservation/settled.rs"]
+mod settled;

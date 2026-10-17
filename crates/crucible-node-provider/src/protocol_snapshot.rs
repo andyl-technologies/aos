@@ -1668,3 +1668,6 @@ pub(crate) use original_creator::OriginalProtocolCreatorView;
 
 mod host_metadata_quote;
 pub use host_metadata_quote::OriginalOwned11StateQuote;
+
+/// Preserves complete suffix ledger/history as inert versioned data, never a live permit.
+pub mod restored_suffix_history;

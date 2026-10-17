@@ -758,3 +758,6 @@ mod tests {
         );
     }
 }
+
+#[path = "producer_ingress/settled.rs"]
+mod settled;

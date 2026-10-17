@@ -1298,3 +1298,6 @@ mod witness_projection_tests {
 #[path = "restored_suffix/producer.rs"]
 mod producer;
 pub(crate) use producer::OriginalRestoredProducerRead;
+
+#[path = "restored_suffix/settled.rs"]
+mod settled;

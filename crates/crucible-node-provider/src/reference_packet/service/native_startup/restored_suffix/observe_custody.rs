@@ -591,3 +591,6 @@ mod tests {
         assert!(owner.terminal.is_some() && owner.original.is_some() && owner.body.is_some());
     }
 }
+
+#[path = "observe_custody/settled.rs"]
+mod settled;

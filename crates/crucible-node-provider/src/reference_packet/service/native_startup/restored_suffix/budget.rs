@@ -193,3 +193,6 @@ mod tests {
         assert_eq!(reentered.originals, 1);
     }
 }
+
+#[path = "budget/settled.rs"]
+mod settled;
