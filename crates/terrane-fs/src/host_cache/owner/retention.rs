@@ -49,10 +49,14 @@ pub(crate) use recovery_manifest::{
 
 /// Retains a native queue for durable metadata pins and missing-index repair.
 ///
-/// This owner enables no publication, eviction or native admission.
+/// This owner admits verified encoded chunks and metadata pairs only after
+/// actual recovery and acknowledged publisher Resume. Publication, eviction
+/// and consumer serving readiness remain separate unsupported commands.
 /// Cold records remain untrusted candidates until recovery reconciles
 /// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
+    /// Immutable validated request bounds copied before the worker starts.
+    pub(super) admission_bounds: super::admission::AdmissionBounds,
     /// Bounded admission to physical work retained independently of reply waiters.
     pub(super) commands: Option<mpsc::SyncSender<Command>>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -60,6 +64,20 @@ pub struct NativeMetadataOwner {
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    /// Transfers bounded untrusted chunk input to actual running admission.
+    AdmitChunk {
+        descriptor: terrane_core::identity::Descriptor,
+        position: terrane::store::ChunkPosition,
+        encoded: Vec<u8>,
+        response: oneshot::Sender<io::Result<super::NativeChunkAdmission>>,
+    },
+    /// Transfers bounded untrusted metadata pair input to actual running admission.
+    AdmitMetadata {
+        expected_id: terrane::pack::PackId,
+        pack: Vec<u8>,
+        index: Vec<u8>,
+        response: oneshot::Sender<io::Result<super::NativeMetadataAdmission>>,
+    },
     /// Transfers genuine completion through the sole physical Resume turn.
     Resume {
         completed: super::CompletedRecovery,
@@ -116,6 +134,8 @@ pub(super) struct Custody {
     sources: BTreeMap<[u8; 16], Arc<NativeManifestSource>>,
     index_repairs: BTreeMap<[u8; 16], IndexRepairCustody>,
     pub(super) faulted: bool,
+    /// Cancellation fault observed without taking an embedded mutex from Drop.
+    pub(super) admission_fault: Arc<std::sync::atomic::AtomicBool>,
     pub(super) recovery_required: bool,
     pub(super) generation: u64,
     pub(super) recovery_id: Option<[u8; 16]>,
@@ -178,6 +198,7 @@ impl NativeMetadataOwner {
     /// Refuses unavailable thread/runtime resources, stale native preparation,
     /// unsafe/malformed state custody, another state writer and cold scratch.
     pub fn start(preparation: NativeCachePreparation) -> io::Result<Self> {
+        let admission_bounds = super::admission::AdmissionBounds::new(&preparation.config)?;
         let (commands, receive) = mpsc::sync_channel(preparation.config.queued_commands);
         let (ready, startup) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
@@ -206,6 +227,34 @@ impl NativeMetadataOwner {
                 }
                 while let Ok(command) = receive.recv() {
                     match command {
+                        Command::AdmitChunk {
+                            descriptor,
+                            position,
+                            encoded,
+                            response,
+                        } => {
+                            let result = runtime.block_on(super::admission::chunk(
+                                &mut executor,
+                                descriptor,
+                                position,
+                                encoded,
+                            ));
+                            let _ = response.send(result);
+                        }
+                        Command::AdmitMetadata {
+                            expected_id,
+                            pack,
+                            index,
+                            response,
+                        } => {
+                            let result = runtime.block_on(super::admission::metadata(
+                                &mut executor,
+                                expected_id,
+                                pack,
+                                index,
+                            ));
+                            let _ = response.send(result);
+                        }
                         Command::Resume {
                             completed,
                             response,
@@ -247,6 +296,7 @@ impl NativeMetadataOwner {
             return Err(error);
         }
         Ok(Self {
+            admission_bounds,
             commands: Some(commands),
             worker: Some(worker),
         })
@@ -574,6 +624,7 @@ impl Custody {
             sources: BTreeMap::new(),
             index_repairs: BTreeMap::new(),
             faulted: false,
+            admission_fault: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             recovery_required: true,
             generation: 0,
             recovery_id: None,
@@ -600,8 +651,16 @@ impl Custody {
     ///
     /// # Errors
     /// Refuses stale native roots, replaced directories/snapshots and snapshots
-    /// created outside the physical owner.
+    /// created outside the physical owner, and abandoned physical admission.
     pub(super) fn check_current(&self) -> io::Result<()> {
+        if self
+            .admission_fault
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(io::Error::other(
+                "abandoned physical admission requires reconciliation",
+            ));
+        }
         self.preparation.confinement.check_current()?;
         self.preparation.layout().recheck()?;
         let root = self

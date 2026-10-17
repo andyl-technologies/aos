@@ -23,6 +23,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     worker: ThreadId,
     running: Option<Arc<PublisherRunningContext>>,
     failed_resume: Option<(ResumeFailureStage, CompletedRecovery)>,
+    admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
     manifest_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
     manifest_bodies: Vec<
@@ -45,6 +46,7 @@ impl NativeOwnerExecutor {
             worker: thread::current().id(),
             running: None,
             failed_resume: None,
+            admission_jobs: Vec::new(),
             adopted_inline: Vec::new(),
             manifest_sources: Vec::new(),
             manifest_bodies: Vec::new(),
@@ -70,6 +72,98 @@ impl NativeOwnerExecutor {
             ));
         }
         Ok(())
+    }
+
+    /// Checks the real acknowledged running owner without reusing cold recovery predicates.
+    ///
+    /// # Errors
+    /// Refuses another worker, missing Resume acknowledgment or faulted custody.
+    pub(in crate::host_cache::owner) fn admission_context(
+        &self,
+    ) -> io::Result<Arc<PublisherRunningContext>> {
+        self.check_physical_worker()?;
+        let context = self
+            .running
+            .as_ref()
+            .ok_or_else(|| io::Error::other("encoded admission requires acknowledged Resume"))?;
+        let owner = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("admission custody poisoned"))?;
+        owner.check_current()?;
+        if owner.faulted
+            || owner.recovery_required
+            || self.failed_resume.is_some()
+            || !Arc::ptr_eq(
+                context.publisher_session(),
+                &owner.preparation.publisher_session(),
+            )
+        {
+            return Err(io::Error::other(
+                "encoded admission requires current running custody",
+            ));
+        }
+        Ok(Arc::clone(context))
+    }
+
+    /// Registers actual owned inputs and empty physical slots before write effects.
+    ///
+    /// # Errors
+    /// Refuses another worker, exhausted finite registry or allocation failure.
+    pub(in crate::host_cache::owner) fn register_admission(
+        &mut self,
+        input: super::super::admission::Input,
+    ) -> io::Result<Arc<Mutex<super::super::admission::AdmissionJob>>> {
+        self.check_physical_worker()?;
+        let owner = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("admission custody poisoned"))?;
+        let limit = owner.preparation.config.state.records;
+        if self.admission_jobs.len() >= limit {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "native admission registry capacity exhausted",
+            ));
+        }
+        limit
+            .checked_mul(owner.preparation.config.reads.max_allocation_bytes)
+            .ok_or_else(|| io::Error::other("retained admission input memory overflow"))?;
+        self.admission_jobs
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        let job = Arc::new(Mutex::new(super::super::admission::AdmissionJob::new(
+            input,
+            Arc::clone(&self.custody),
+        )?));
+        self.admission_jobs.push(Arc::clone(&job));
+        Ok(job)
+    }
+
+    /// Releases rejected input only after proving that no physical work began.
+    ///
+    /// # Errors
+    /// Refuses another worker or poisoned custody; uncertain resources remain.
+    pub(in crate::host_cache::owner) fn reclaim_rejected_admission(
+        &mut self,
+        job: &Arc<Mutex<super::super::admission::AdmissionJob>>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let effect_free = job
+            .lock()
+            .map_err(|_| io::Error::other("admission job poisoned"))?
+            .is_effect_free();
+        if effect_free {
+            self.admission_jobs.retain(|entry| !Arc::ptr_eq(entry, job));
+        }
+        Ok(())
+    }
+
+    /// Borrows source custody admitted by this exact physical owner only.
+    pub(in crate::host_cache::owner) fn admission_jobs(
+        &self,
+    ) -> &[Arc<Mutex<super::super::admission::AdmissionJob>>] {
+        &self.admission_jobs
     }
 
     /// Retains actual source handles outside embedded state before write effects.

@@ -5,6 +5,7 @@
 //! measured publisher probe and completed recovery; configuration grants none
 //! of those authorities.
 
+mod admission;
 mod config;
 mod index_io;
 mod preparation;
@@ -23,6 +24,10 @@ mod retention;
 
 pub(super) use index_io::open_regular_at;
 
+pub use admission::{
+    NativeChunkAdmission, NativeChunkAdmissionError, NativeMetadataAdmission,
+    NativeMetadataAdmissionError,
+};
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
 pub use recovery::CompletedRecovery;
