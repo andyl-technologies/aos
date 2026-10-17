@@ -154,7 +154,7 @@ impl NativeOwnerExecutor {
             .map_err(|_| io::Error::other("admission job poisoned"))?
             .is_effect_free();
         if effect_free {
-            super::super::admission::remove_same_slot(&mut self.admission_jobs, job);
+            self.admission_jobs.retain(|entry| !Arc::ptr_eq(entry, job));
         }
         Ok(())
     }

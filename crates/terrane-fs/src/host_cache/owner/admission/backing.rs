@@ -46,14 +46,14 @@ impl AdmissionJob {
     /// The physical owner calls this after a producer returns an error. A
     /// started, partially registered or uncertain operation is never reclaimed.
     pub(in crate::host_cache::owner) fn is_effect_free(&self) -> bool {
-        reclaimable(
-            self.started.load(std::sync::atomic::Ordering::Acquire),
-            !self.token.is_empty() || !self.hashes.is_empty() || self.hold != 0,
-            self.directory_bytes != 0
-                || !self.files.is_empty()
-                || !self.directory_progress.is_empty(),
-            self.complete,
-        )
+        !self.started.load(std::sync::atomic::Ordering::Acquire)
+            && self.token.is_empty()
+            && self.hashes.is_empty()
+            && self.hold == 0
+            && self.directory_bytes == 0
+            && self.files.is_empty()
+            && self.directory_progress.is_empty()
+            && !self.complete
     }
 
     /// Reserves every physical member slot before filesystem effects.
@@ -191,22 +191,4 @@ pub(super) fn lock(
 ) -> io::Result<std::sync::MutexGuard<'_, AdmissionJob>> {
     job.lock()
         .map_err(|_| io::Error::other("admission resource custody poisoned"))
-}
-
-// This pure predicate is shared by actual job inspection and its regression;
-// its booleans are not exported as native proof or accepted from a request.
-fn reclaimable(started: bool, registered: bool, physical: bool, complete: bool) -> bool {
-    !started && !registered && !physical && !complete
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn started_registered_physical_and_complete_jobs_are_never_reclaimed() {
-        assert!(super::reclaimable(false, false, false, false));
-        assert!(!super::reclaimable(true, false, false, false));
-        assert!(!super::reclaimable(false, true, false, false));
-        assert!(!super::reclaimable(false, false, true, false));
-        assert!(!super::reclaimable(false, false, false, true));
-    }
 }

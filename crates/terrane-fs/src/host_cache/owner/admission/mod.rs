@@ -305,16 +305,6 @@ pub(in crate::host_cache::owner) async fn metadata(
     })
 }
 
-/// Removes only pointer-identical slots after the owner proves no effects began.
-///
-/// This container operation itself grants no native or cleanup authority.
-pub(in crate::host_cache::owner) fn remove_same_slot<T>(
-    registry: &mut Vec<Arc<T>>,
-    rejected: &Arc<T>,
-) {
-    registry.retain(|entry| !Arc::ptr_eq(entry, rejected));
-}
-
 /// Invalidates abandoned physical work without taking a state or client mutex.
 struct FailureGuard {
     fault: Arc<std::sync::atomic::AtomicBool>,
@@ -356,32 +346,6 @@ impl Drop for FailureGuard {
 #[cfg(test)]
 mod tests {
     use super::AdmissionBounds;
-
-    #[test]
-    fn rejected_inputs_release_exact_slots_before_later_valid_input() {
-        use std::sync::Arc;
-        use terrane_core::identity::{IdentityKind, TERRANE_V1};
-
-        let expected = TERRANE_V1.calculate(IdentityKind::Chunk, b"valid").unwrap();
-        let mut registry = Vec::new();
-        let retained = Arc::new(b"retained".to_vec());
-        registry.push(Arc::clone(&retained));
-        for _ in 0..64 {
-            let rejected = Arc::new(b"invalid".to_vec());
-            registry.push(Arc::clone(&rejected));
-            assert!(TERRANE_V1.verify(&expected, &rejected).is_err());
-
-            // Exercises the exact registry operation after pure verification
-            // rejection, without manufacturing any native custody receipt.
-            super::remove_same_slot(&mut registry, &rejected);
-            assert_eq!(registry.len(), 1);
-            assert!(Arc::ptr_eq(&registry[0], &retained));
-        }
-        let valid = Arc::new(b"valid".to_vec());
-        TERRANE_V1.verify(&expected, &valid).unwrap();
-        registry.push(valid);
-        assert_eq!(registry.len(), 2);
-    }
 
     #[test]
     fn untrusted_pair_input_is_bounded_with_checked_addition() {
