@@ -133,6 +133,11 @@ pub(super) fn diagnose_released_usage<E: std::fmt::Display>(
 /// The result is diagnostic text that also names processes whose descriptor
 /// or mapping tables were unreadable, because those can hide holders.
 pub(super) fn deleted_file_holders(directory: &Path) -> String {
+    deleted_file_holders_among(directory, |_pid| true)
+}
+
+/// Runs [`deleted_file_holders`] over the processes `include` selects.
+fn deleted_file_holders_among(directory: &Path, include: impl Fn(u32) -> bool) -> String {
     let device = match fs::metadata(directory) {
         Ok(metadata) => metadata.dev(),
         Err(source) => return format!("unavailable: run directory metadata: {source}"),
@@ -155,6 +160,9 @@ pub(super) fn deleted_file_holders(directory: &Path) -> String {
         else {
             continue;
         };
+        if !include(pid) {
+            continue;
+        }
         scanned_processes += 1;
         let command = fs::read_to_string(process.path().join("comm"))
             .map(|command| command.trim().to_owned())
