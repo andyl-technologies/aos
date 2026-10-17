@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn v9_loader_rejects_missing_or_corrupt_device_chunks() -> Result<(), Box<dyn std::error::Error>> {
+fn v10_loader_rejects_missing_or_corrupt_device_chunks() -> Result<(), Box<dyn std::error::Error>> {
     let store = tempfile::tempdir()?;
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())?;
     let source = fixture.source();
@@ -13,11 +13,11 @@ fn v9_loader_rejects_missing_or_corrupt_device_chunks() -> Result<(), Box<dyn st
         fixture.closure().manifest(),
         source.plan().fault_signals().resource_limits(),
     )?;
-    assert_eq!(manifest.format_version, 9);
+    assert_eq!(manifest.format_version, 10);
     let device = &manifest
         .targets
         .first()
-        .ok_or("v9 fixture has no target")?
+        .ok_or("v10 fixture has no target")?
         .exact_ram
         .device;
     let chunk = *device
@@ -44,7 +44,7 @@ fn v9_loader_rejects_missing_or_corrupt_device_chunks() -> Result<(), Box<dyn st
         let result = load_exact_checkpoint_set(store.path(), &scenario, source, identity);
         assert!(
             result.is_err(),
-            "v9 loader admitted {} device chunk",
+            "v10 loader admitted {} device chunk",
             if missing { "absent" } else { "byte-corrupt" }
         );
 
